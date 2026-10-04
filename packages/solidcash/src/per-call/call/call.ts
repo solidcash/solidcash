@@ -562,11 +562,12 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
 
   // The mapping nodes the entry writes, planned against the deployment's own classified inventory: the frame
   // declares the node a held key sits at, or the head sentinel a new key is spliced beside, exactly as the genesis
-  // and the proxy hop do.
+  // and the proxy hop do. A key the body reads out of its own records resolves against the records it spends.
   const mappingRecords = callEntryRecords({
     artifact,
     functionName,
     args,
+    state: deploymentStateValues(stateLayout, categoryId, deployment) as Readonly<Record<string, StateValue>>,
     callerLockingBytecode: options.callerLockingBytecode,
     categoryId,
     nodesByCollection: deployment.nodesByCollection,

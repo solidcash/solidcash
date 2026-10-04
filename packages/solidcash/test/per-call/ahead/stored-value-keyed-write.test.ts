@@ -8,15 +8,16 @@ import {
 /**
  * Walls ahead: a mapping write keyed by a value the body read out of another mapping, the escrow and marketplace
  * pattern "credit the party the record names" (`owed[deal.payee] += deal.amount`, a sale crediting
- * `proceeds[listing.seller]`, OpenZeppelin ERC721 debiting `_balances[_ownerOf(id)]`). Three walls stand in line:
+ * `proceeds[listing.seller]`, OpenZeppelin ERC721 debiting `_balances[_ownerOf(id)]`). One wall stands, the third;
+ * the first two are served:
  *
- * 1. Under the project build's options (`messageBus: true`, as the fixture's config sets it) the unit does not
- *    compile: the message-bus route generated for `open` fails its own type check, a route the per-call convention
- *    then discards.
+ * 1. Under the project build's options (`messageBus: true`, as the fixture's config sets it) the unit compiles. It
+ *    failed in the message-bus route generated for `open` while the memory-copy spelling crashed code generation
+ *    (2); the direct spelling compiled under those options all along.
  * 2. With the per-call options alone, the memory-copy spelling (`Deal memory d = deals[id]; owed[d.payee] += ...`)
- *    crashes code generation: the admission follows the local `d` to `deals[id]` and admits the key
- *    (`support.ts`, `keyOperandUnavailable`), but the key expression it hands the emitter still names `d`, and the
- *    batch derivation is emitted before `d` exists (`emitPerCallBatchWitnessDerivation`).
+ *    compiles: the derivation follows the local `d` to `deals[id]` (`support.ts`, `deriveKeyExpression`) and keys
+ *    the write exactly as the direct spelling does, so it meets wall 3 with the same key. Code generation crashed on
+ *    it until the emitted key stopped naming `d`, which the derivation runs before.
  * 3. The direct spelling (`owed[deals[id].payee] += deals[id].amount`) compiles, and the hop's own planner refuses
  *    it: its key resolution reads the call's arguments, the sender, constants and the record's scalar state, never
  *    another collection's node (`proxy/entry-writes.ts`, `resolveHopKey`; the plain path's
@@ -69,13 +70,16 @@ function chain(): Promise<Chain> {
 }
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a write keyed by a value read from another mapping', () => {
-  it('does not compile under the project options: the discarded bus route fails (should compile once fixed)', () => {
-    expect(() => compileProject(COPY_SOURCE)).toThrow(new RegExp('in call to function \'__message_bus_entry_open\' '
-      + 'where parameters \\(Deal,uint256,address,uint256,uint256,bigint\\) were expected'));
+  it('compiles under the project options, as the direct spelling does', () => {
+    expect(compileProject(COPY_SOURCE).Escrow!.composition?.refusedEntries ?? []).toStrictEqual([]);
   }, 300_000);
 
-  it('crashes code generation on the memory-copy spelling (should compile once fixed)', () => {
-    expect(() => compilePerCall(COPY_SOURCE)).toThrow('Expected variable \'d\' does not exist on the stack');
+  it('compiles the memory-copy spelling, keyed as the direct spelling is', () => {
+    const artifact = compilePerCall(COPY_SOURCE).Escrow!;
+    expect(artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
+    const access = artifact.abi.find((entry) => entry.name === 'release')?.entryAccesses
+      ?.find((candidate) => candidate.collection === 'owed');
+    expect(access?.keySources?.[0]?.expressionLabel).toBe(KEY_LABEL);
   }, 300_000);
 
   it('compiles the direct spelling: the key is a mapping entry the master holds', async () => {

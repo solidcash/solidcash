@@ -213,16 +213,18 @@ describe('a per-call master whose entry writes a two-key mapping target', () => 
   });
 
   it('refuses a key the body does not hold where the derivation runs', () => {
-    // A key read from state is not a value the master holds where it derives the slot, for either key level.
+    // A key read from state after an arm that may rewrite it is not a value the master holds where it derives the
+    // slot, for either key level: the record names the value the arm started from.
     const computed = 'pragma solidcash ^0.13.0;'
       + ' contract ComputedKey {'
       + '   address owner;'
       + '   mapping(address => mapping(address => uint)) allowances;'
-      + '   function approve(address spender, uint amount) {'
+      + '   function approve(address spender, uint amount, bool move) {'
+      + '     if (move) { this.owner = spender; }'
       + '     allowances[this.owner][spender] = amount;'
       + '   }'
       + ' }';
-    expect(refusalMessageOf(computed)).toContain("reads the state value 'owner'");
+    expect(refusalMessageOf(computed)).toContain("reads the state value 'owner' after the body writes it");
   });
 });
 

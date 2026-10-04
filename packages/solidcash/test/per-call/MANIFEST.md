@@ -366,13 +366,14 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   computes). The walls beyond the ladder (`docs/per-call/WALLS_BEYOND_LADDER.md`, agent W2) each pin today's
   refusal, titled with what should settle once served: `plain-root-calls` and `plain-root-writes` (a contract
   deployed without a proxy; its two-mapping constructor deploys since `deploy/constructor-loop-writes`),
-  `state-keyed-mapping-write` and
-  `stored-value-keyed-write` (a mapping key read from state), `proxied-native-value`, `role-admin-read-key` (role
-  helpers that return and emit, and a role write the body skips; the keys are served in
+  `stored-value-keyed-write` (a mapping key read from another mapping), `proxied-native-value`,
+  `role-admin-read-key` (role helpers that return and emit, and a role write the body skips; the keys are served in
   `call/role-admin-read-key`), `loop-counted-tail` (an event, hash or send per loop turn),
   `root-reentry-receiver-hook`, `two-deployments-one-artifact` and `read-node-spent-by-insert`, with
   `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out
-  (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`. The directory runs only under
+  (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, and a mapping key read from
+  the contract's own scalar state (`state-keyed-mapping-write`) to `call/state-keyed-mapping-write.test.ts`. The
+  directory runs only under
   `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack

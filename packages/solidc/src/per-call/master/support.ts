@@ -37,6 +37,7 @@ import {
   ArrayDeleteNode,
   ArrayPopNode,
   ArrayPushNode,
+  AssemblyStatementNode,
   AssignNode,
   BinaryOpNode,
   BlockNode,
@@ -46,6 +47,8 @@ import {
   CollectionIterationNode,
   ConstantDefinitionNode,
   ContractNode,
+  DeleteLocalNode,
+  DeleteStateNode,
   DoWhileNode,
   ExpressionNode,
   ExternalCallMode,
@@ -57,6 +60,7 @@ import {
   FunctionDefinitionNode,
   HexLiteralNode,
   IdentifierNode,
+  IndirectCallNode,
   InterfaceNode,
   IntLiteralNode,
   LiteralNode,
@@ -66,6 +70,8 @@ import {
   MappingAssignNode,
   MappingDeleteNode,
   MappingFieldAssignNode,
+  MethodCallNode,
+  MethodCallStatementNode,
   Node,
   NullaryOpNode,
   ParameterNode,
@@ -81,10 +87,13 @@ import {
   SwitchNode,
   TernaryOpNode,
   TryCatchNode,
+  TupleAssignmentNode,
   UnaryOpNode,
+  UncheckedNode,
   VariableDefinitionNode,
   WhileNode,
 } from '../../ast/AST.js';
+import { cloneNodeReplacing } from '../../ast/clone.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../../ast/Operator.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
 import { isDirectOwnerTransferNode } from '../../semantic/branchOps.js';
@@ -261,7 +270,8 @@ export const ORIGIN_FRAME_SLOT = '__internal__frameOrigin';
  * One of the three fields is set. A parameter the body holds and a frame value the head left are already on the
  * stack at their own depths. An expression is a value whose every operand the body already holds where it starts,
  * so the master emits it there and hashes it, which is why the shape admits nothing that reads a local the body
- * only computes later.
+ * only computes later. A read of the frame's own record is held as the record the frame declares, which the master
+ * reads in the segment the body reads it in.
  */
 export interface PerCallBatchKey {
   /** A parameter the body holds, read at its own stack depth. */
@@ -270,6 +280,11 @@ export interface PerCallBatchKey {
   readonly frameSlot?: string;
   /** An expression whose operands the body holds at its start, which the master emits for the derivation. */
   readonly expression?: ExpressionNode;
+  /**
+   * The segment the expression's reads of the frame's own record resolve against, as the calls the body makes before
+   * it reads them; absent for the first segment, where the derivation runs.
+   */
+  readonly stateSegment?: number;
 }
 
 /**
@@ -297,9 +312,10 @@ type BatchKeysResolution =
  *
  * A bare parameter is the body's own argument, and `msg.sender`/`tx.origin` are frame values the head leaves
  * tracked, so both are already on the stack. Any other key is derivable only when the body's own write carries an
- * expression whose every leaf is such a value, a compile-time constant, a state field the frame's record holds, or
- * a collection element whose address is fixed: such a value exists at the top of the body, where the derivation
- * runs, whereas a value the body only computes later does not.
+ * expression whose every leaf is such a value, a compile-time constant, a value the frame's record holds, or a
+ * collection element whose address is fixed: such a value exists at the top of the body, where the derivation
+ * runs, whereas a value the body only computes later does not. A record value is the one the body's own read sees
+ * (`deriveKeyExpression`).
  */
 function resolveBatchKey(
   entry: FunctionDefinitionNode,
@@ -361,11 +377,22 @@ function resolveBatchKey(
     return {
       kind: 'refusal',
       reason: `the body writes a mapping at slot ${slot} whose key ${keyIndex} '${source.canonical}' reads `
-        + `${unavailable}, and a master derives a target slot only from a bare parameter, the frame's sender, or a `
-        + 'compile-time value the body holds at its start',
+        + `${unavailable}, and a master derives a target slot only from a bare parameter, the frame's sender, a `
+        + 'value of its own record, or a compile-time value the body holds at its start',
     };
   }
-  return { kind: 'key', key: { expression } };
+  const derived = deriveKeyExpression(expression, entry, constants);
+  if (derived.kind === 'refusal') {
+    return {
+      kind: 'refusal',
+      reason: `the body writes a mapping at slot ${slot} whose key ${keyIndex} '${source.canonical}' reads `
+        + derived.reason,
+    };
+  }
+  return {
+    kind: 'key',
+    key: { expression: derived.expression, ...(derived.segment ? { stateSegment: derived.segment } : {}) },
+  };
 }
 
 /**
@@ -455,10 +482,11 @@ function resolveKeyIdentifier(
  * A literal and a compile-time constant exist at compile time. A cast, a unary operator, a binary operator and a
  * ternary are pure, so they are admitted exactly when their operands are, and a field read is admitted exactly when
  * the value it reads through is. A `msg.sender`/`tx.origin` read and a bare parameter are stack values the body
- * holds where the derivation runs; a local resolves to the single expression that binds it. A state value is only
- * reachable as the record its field is read through, and a mapping or array element is a value the body holds only
- * where its address is fixed. Every other node — a call, an environment value — is a value the shape does not
- * derive from, and the returned phrase names it so the refusal says which operand stopped it.
+ * holds where the derivation runs; a local resolves to the single expression that binds it. A state value is one the
+ * frame's record declares, read whole when it is one key-sized item or through a field of the record that holds it,
+ * and a mapping or array element is a value the body holds only where its address is fixed. Every other node (a
+ * call, an environment value, a value whose bytes live in a chunk run) is a value the shape does not derive from,
+ * and the returned phrase names it so the refusal says which operand stopped it.
  */
 function keyOperandUnavailable(
   node: ExpressionNode,
@@ -507,9 +535,12 @@ function keyOperandUnavailable(
       seen.delete(current.name);
       return inner;
     }
-    // A field the body reads out of a state record is a value it holds; the bare state read is not addressable.
+    // A field the body reads out of a state record is a value it holds, and so is a whole value that is one item.
     if (current instanceof StateAccessNode) {
-      if (!underField) return `the state value '${current.name}'`;
+      if (!underField) {
+        return current.stateVariable !== undefined && isKeySizedStateValue(current.stateVariable)
+          ? undefined : `the state value '${current.name}'`;
+      }
       // An element of a dynamic (chunk-backed) state array is not a value the body holds at its start: its bytes
       // live in the frame's chunk run, and the derivation, emitted before the body's first statement, cannot
       // produce it there — the emitter answers the read with a shape that does not leave one key value. A key
@@ -525,14 +556,315 @@ function keyOperandUnavailable(
 }
 
 /**
+ * True for a state value a key hashes as one item: one the record holds inline, not a value whose bytes live in a
+ * chunk run, nor a mapping, array, struct or tuple.
+ */
+function isKeySizedStateValue(variable: StateVariableNode): boolean {
+  const type = variable.type;
+  return variable.isDynamic !== true && !(type instanceof ArrayType || type instanceof MappingType
+    || type instanceof StructType || type instanceof TupleType || type instanceof TokenContainerType
+    || type instanceof FunctionType);
+}
+
+/** A key re-expressed where the derivation runs, and the segment its record reads resolve against. */
+type DerivedKeyExpression =
+  | { readonly kind: 'key'; readonly expression: ExpressionNode; readonly segment?: number }
+  | { readonly kind: 'refusal'; readonly reason: string };
+
+/**
+ * The key expression the derivation emits, re-expressed in the values the body holds where the derivation runs, or
+ * why the master cannot hold the value the body's own read sees.
+ *
+ * A local is followed to the single expression that binds it. A read of the frame's own record takes the value the
+ * body's read takes: the value the nearest straight-line assignment ahead of it left, folded as the published key
+ * label folds it (`SymbolTableTraversal.stateAssignedBefore`), or, where the body has not written the value, the
+ * record the frame declares in the segment the read runs in. A read behind a write no straight line folds (in a
+ * branch, a loop, a function the body invokes, or ahead of a call) is refused, as is one in a segment the source does
+ * not fix, and so are reads in two segments, since the derivation reads its key in one. The expression is the body's
+ * own node unless something was re-expressed, so a key that needs neither keeps the bytes it compiled to.
+ */
+function deriveKeyExpression(
+  expression: ExpressionNode,
+  entry: FunctionDefinitionNode,
+  constants: ReadonlySet<string>,
+): DerivedKeyExpression {
+  const params = new Set(entry.parameters.map((parameter) => parameter.name));
+  const isLocal = (node: Node): node is IdentifierNode => node instanceof IdentifierNode
+    && !constants.has(node.name) && !params.has(node.name);
+  const readsRecord = (node: Node): node is StateAccessNode => node instanceof StateAccessNode
+    && node.stateVariable !== undefined;
+  let needed = false;
+  walkSyntax(expression, (node) => {
+    if (readsRecord(node) || isLocal(node)) needed = true;
+    return !needed;
+  });
+  if (!needed) return { kind: 'key', expression };
+  const places = bodyReadPlaces(entry);
+  const segments = new Set<number>();
+  const derive = (root: ExpressionNode, seen: ReadonlySet<string>): ExpressionNode | string => {
+    const replacements = new Map<Node, ExpressionNode>();
+    let refusal: string | undefined;
+    walkSyntax(root, (node) => {
+      if (refusal !== undefined) return false;
+      if (readsRecord(node)) {
+        const value = readValue(node, seen);
+        if (typeof value === 'string') refusal = value;
+        else if (value !== node) replacements.set(node, value);
+        return false;
+      }
+      if (isLocal(node)) {
+        const definition = seen.has(node.name)
+          ? undefined : resolveKeyIdentifier(node.name, entry, constants, new Set(seen));
+        const value = definition === undefined
+          ? `the value '${node.name}', which is not bound to a single value`
+          : derive(definition, new Set([...seen, node.name]));
+        if (typeof value === 'string') refusal = value;
+        else replacements.set(node, value);
+        return false;
+      }
+      return true;
+    });
+    if (refusal !== undefined) return refusal;
+    return replacements.size === 0 ? root : cloneNodeReplacing(root, (candidate) => replacements.get(candidate));
+  };
+  const readValue = (read: StateAccessNode, seen: ReadonlySet<string>): ExpressionNode | string => {
+    const value = `the state value '${read.name}'`;
+    const assign = assignedBefore(read, places);
+    if (assign !== undefined) {
+      const unavailable = keyOperandUnavailable(assign.expression, constants, entry);
+      return unavailable === undefined ? derive(assign.expression, seen)
+        : `${value}, which the body assigned from ${unavailable}, and a master derives a target slot only from a `
+          + 'bare parameter, the frame\'s sender, a value of its own record, or a compile-time value the body holds '
+          + 'at its start';
+    }
+    const position = places.order.get(read);
+    if (position === undefined) return `${value} outside the body, which a master does not place in a segment`;
+    if ((places.writes.get(read.name) ?? []).some((write) => write <= position)) {
+      return `${value} after the body writes it, and a master folds a write into a key only from the one `
+        + 'straight-line assignment ahead of the read, with no call between them';
+    }
+    const calls = places.calls.get(read);
+    if (places.repeating.has(read) || calls === undefined || calls.least !== calls.most) {
+      return `${value} after calls the source does not fix, and a master reads a key's record only in a segment the `
+        + 'source names';
+    }
+    segments.add(calls.least);
+    return read;
+  };
+  const derived = derive(expression, new Set());
+  if (typeof derived === 'string') return { kind: 'refusal', reason: derived };
+  if (segments.size > 1) {
+    return {
+      kind: 'refusal',
+      reason: `values of its record in ${segments.size} segments, and a master reads a key's record in one`,
+    };
+  }
+  const [segment] = segments;
+  return { kind: 'key', expression: derived, ...(segment === undefined ? {} : { segment }) };
+}
+
+/** One straight-line statement of a body: what it may write, whether it is opaque, and the state assignment it is. */
+interface StraightLineStatement {
+  readonly writes: ReadonlySet<string>;
+  readonly opaque: boolean;
+  readonly assign?: StateAssignNode;
+}
+
+/**
+ * Where a body reads each of its nodes.
+ *
+ * `statements` and `positions` number the straight line as the published key labels number it, `calls` is how many
+ * calls the path made before the node's statement (undefined where the source does not fix it), `repeating` holds
+ * the nodes a loop can run again, `order` is each node's place in the walk, and `writes` is where each state value
+ * is written: after the write's own operands, directly or through a function the body invokes.
+ */
+interface BodyReadPlaces {
+  readonly statements: readonly StraightLineStatement[];
+  readonly positions: ReadonlyMap<Node, number>;
+  readonly calls: ReadonlyMap<Node, CallRange>;
+  readonly repeating: ReadonlySet<Node>;
+  readonly order: ReadonlyMap<Node, number>;
+  readonly writes: ReadonlyMap<string, readonly number[]>;
+}
+
+/** The state value or local a node writes, by name, or undefined for a node that writes neither. */
+function writtenName(node: Node): string | undefined {
+  if (node instanceof StateAssignNode || node instanceof DeleteStateNode || node instanceof StateArrayPushNode
+    || node instanceof StateArrayPopNode || node instanceof StateArrayAssignNode || node instanceof StateArrayDeleteNode) {
+    return node.name;
+  }
+  if (node instanceof AssignNode || node instanceof DeleteLocalNode) return node.identifier.name;
+  return undefined;
+}
+
+/** The function a node invokes: a resolved call, or a reference an indirect invocation runs. */
+function invokedFunction(node: Node): FunctionDefinitionNode | undefined {
+  if (node instanceof FunctionCallNode) return node.resolvedFunction;
+  if (node instanceof IdentifierNode) return node.functionReference;
+  return undefined;
+}
+
+/**
+ * True for a node the published key labels treat as a barrier to folding (`indexCanonStatements`): a call of any
+ * kind, an invocation of one of the contract's own functions, assembly, or a try.
+ */
+function opaqueToFolding(node: Node): boolean {
+  return node instanceof AssemblyStatementNode || node instanceof FunctionCallStatementNode
+    || node instanceof MethodCallStatementNode || node instanceof MethodCallNode || node instanceof TryCatchNode
+    || node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+    || node instanceof LowLevelCallStatementNode || node instanceof IndirectCallNode
+    || invokedFunction(node) !== undefined;
+}
+
+/** The state values a function writes, directly or through the functions it invokes. */
+function stateWrittenBy(
+  fn: FunctionDefinitionNode,
+  known: Map<FunctionDefinitionNode, ReadonlySet<string>>,
+): ReadonlySet<string> {
+  const cached = known.get(fn);
+  if (cached !== undefined) return cached;
+  const written = new Set<string>();
+  // A recursive invocation reads what is known so far, which is every write the cycle can reach once it closes.
+  known.set(fn, written);
+  walkInvocationAst(fn.body, (node) => {
+    const name = node instanceof AssignNode || node instanceof DeleteLocalNode ? undefined : writtenName(node);
+    if (name !== undefined) written.add(name);
+    const target = invokedFunction(node);
+    if (target !== undefined) for (const inner of stateWrittenBy(target, known)) written.add(inner);
+  });
+  return written;
+}
+
+/** Where a body reads each of its nodes, as `BodyReadPlaces` states it. */
+function bodyReadPlaces(entry: FunctionDefinitionNode): BodyReadPlaces {
+  const statements: StraightLineStatement[] = [];
+  const positions = new Map<Node, number>();
+  const number = (statement: Node): void => {
+    if (statement instanceof BlockNode) {
+      for (const inner of statement.statements ?? []) number(inner);
+      return;
+    }
+    if (statement instanceof UncheckedNode) {
+      number(statement.block);
+      return;
+    }
+    const position = statements.length;
+    const writes = new Set<string>();
+    let opaque = false;
+    walkInvocationAst(statement, (node) => {
+      const earlier = positions.get(node);
+      positions.set(node, earlier === undefined || earlier === position ? position : -1);
+      const name = writtenName(node);
+      if (name !== undefined) writes.add(name);
+      if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) if (element.name !== undefined) writes.add(element.name);
+      }
+      if (opaqueToFolding(node)) opaque = true;
+    });
+    statements.push({ writes, opaque, ...(statement instanceof StateAssignNode ? { assign: statement } : {}) });
+  };
+  if (entry.body !== undefined) number(entry.body);
+
+  // The calls before each statement, walked path by path as the batch write's own segment is.
+  const calls = new Map<Node, CallRange>();
+  const repeating = new Set<Node>();
+  const place = (value: unknown, incoming: CallRange): void => walkInvocationAst(value, (node) => {
+    if (!calls.has(node)) calls.set(node, incoming);
+  });
+  const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
+    let range = incoming;
+    for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
+    return range;
+  };
+  const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
+    if (statement instanceof BlockNode) return walkBlock(statement, incoming);
+    if (statement instanceof UncheckedNode) return walkBlock(statement.block, incoming);
+    if (statement instanceof BranchNode) {
+      place(statement.condition, incoming);
+      const afterCondition = advanceCallRange(incoming, statement.condition);
+      const thenRange = walkBlock(statement.ifBlock, afterCondition);
+      const elseRange = statement.elseBlock === undefined ? afterCondition : walkBlock(statement.elseBlock, afterCondition);
+      return joinCallRanges(thenRange, elseRange);
+    }
+    if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
+      || statement instanceof WhileNode || statement instanceof DoWhileNode) {
+      const fixed = callFreeNestedBlocks(statement) === undefined ? undefined : incoming;
+      if (!(statement instanceof SwitchNode)) walkInvocationAst(statement, (node) => { repeating.add(node); });
+      place(statement, fixed);
+      return fixed;
+    }
+    if (statement instanceof TryCatchNode) {
+      // A catch block is not an executable path, matching the invocation walk.
+      place(statement.expression, incoming);
+      return walkBlock(statement.tryBlock, advanceCallRange(incoming, statement.expression));
+    }
+    place(statement, incoming);
+    return advanceCallRange(incoming, statement);
+  };
+  walkBlock(entry.body, { least: 0, most: 0 });
+
+  // Every node's place in the walk, and where each state value is written: past the write's own operands, so a read
+  // in the value a write stores is not behind it.
+  const order = new Map<Node, number>();
+  const writes = new Map<string, number[]>();
+  const known = new Map<FunctionDefinitionNode, ReadonlySet<string>>();
+  const seen = new Set<object>();
+  const visit = (value: unknown): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    order.set(value, order.size);
+    if (value instanceof TryCatchNode) {
+      visit(value.expression);
+      visit(value.tryBlock);
+    } else {
+      for (const key in value) {
+        if (RESOLVED_AST_FIELDS.has(key)) continue;
+        const child = value[key as keyof Node];
+        if (child instanceof Node) visit(child);
+        else if (Array.isArray(child)) for (const item of child) visit(item);
+      }
+    }
+    const name = value instanceof AssignNode || value instanceof DeleteLocalNode ? undefined : writtenName(value);
+    const target = invokedFunction(value);
+    const written = [...(name === undefined ? [] : [name]), ...(target === undefined ? [] : stateWrittenBy(target, known))];
+    for (const variable of written) writes.set(variable, [...(writes.get(variable) ?? []), order.size]);
+  };
+  visit(entry.body);
+  return { statements, positions, calls, repeating, order, writes };
+}
+
+/**
+ * The straight-line assignment whose value a state read takes, or undefined when the read takes the value the frame
+ * started the segment with, or one no straight line fixes.
+ *
+ * This is `SymbolTableTraversal.stateAssignedBefore` over the body code generation sees: the nearest statement ahead
+ * of the read that assigns the value and nothing else, with no other write of it, call, invocation or assembly from
+ * there to the read. The read's own statement may write the value only as that statement's own assignment.
+ */
+function assignedBefore(read: StateAccessNode, places: BodyReadPlaces): StateAssignNode | undefined {
+  const position = places.positions.get(read);
+  if (position === undefined || position < 0) return undefined;
+  const assigns = (statement: StraightLineStatement): boolean =>
+    !statement.opaque && statement.assign?.name === read.name && statement.writes.size === 1;
+  const own = places.statements[position]!;
+  if (own.opaque || (own.writes.has(read.name) && !assigns(own))) return undefined;
+  for (let index = position - 1; index >= 0; index -= 1) {
+    const statement = places.statements[index]!;
+    if (assigns(statement)) return statement.assign;
+    if (statement.opaque || statement.writes.has(read.name)) return undefined;
+  }
+  return undefined;
+}
+
+/**
  * The batch a body can settle from its own frame, or undefined for a shape the derivation does not cover.
  *
  * Every one of a body's entry accesses is one write to a distinct target with at most the read of that same
  * target beside it, each target's key is one value the body holds where the derivation runs (a bare parameter, the
- * frame's sender, or a compile-time expression), and no target aliases another at run time. Under those conditions
- * the segment declares one record group per target, in the order the batches and their targets are listed here, so
- * the master can read each group back and derive that target's operands — and a read in the same access resolves
- * from the same group.
+ * frame's sender, a value of its own record, or a compile-time expression), and no target aliases another at run
+ * time. Under those conditions the segment declares one record group per target, in the order the batches and their
+ * targets are listed here, so the master can read each group back and derive that target's operands, and a read in
+ * the same access resolves from the same group.
  *
  * A body may write several collections: `balances[to] += amount; allowances[owner][spender] -= amount` is one
  * execution over two of them, and the union of their created records is the trailing region the body declares. The

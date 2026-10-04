@@ -1320,9 +1320,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private perCallCallFollowsBatchWrite = false;
   /**
-   * True while a declared-view read resolves against the batch's write segment, which the source fixes, in a body
-   * whose calls vary on its paths: the walk then names that segment instead of the one the execution has reached,
-   * where the write's spent records are declared kept at the views it wrote.
+   * True while a declared-view read resolves against a segment the source fixes (`perCallReadSegment`) in a body
+   * whose calls vary on its paths: the walk then names that segment instead of the one the execution has reached.
+   * The batch's write segment is one, where the write's spent records are declared kept at the views it wrote, and
+   * the segment a derived key reads its record in is another.
    */
   private perCallReadsWriteSegment = false;
   /**
@@ -4025,9 +4026,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * collection. The derivation is emitted at the top of the body, before the aliasing preflight snapshots the
    * witnesses, because a key the body computes is a value only the running code holds.
    *
-   * A key is a parameter the body holds, a frame value the head left (the sender or the origin), or a compile-time
-   * expression the body only computes at its start. The last is emitted here and removed after the operands are
-   * derived: it is not part of the body's frame, and leaving it would shift every depth the body reads afterwards.
+   * A key is a parameter the body holds, a frame value the head left (the sender or the origin), or an expression
+   * over values the body holds at its start, its own record's among them. The last is emitted here and removed after
+   * the operands are derived: it is not part of the body's frame, and leaving it would shift every depth the body
+   * reads afterwards.
    */
   private emitPerCallBatchWitnessDerivation(node: FunctionDefinitionNode): void {
     const batches = node.sortedBatchInfo ?? [];
@@ -4076,7 +4078,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const [keyIndex, key] of keys[index]!.entries()) {
         if (key.expression === undefined) continue;
         const before = this.stack.length;
-        this.visit(key.expression);
+        this.emitPerCallKeyExpression(key.expression, key.stateSegment);
         if (this.stack.length !== before + 1) {
           throw new SolidcDiagnosticError(
             'PER_CALL_CODEGEN_UNAVAILABLE',
@@ -4145,6 +4147,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.removeFromStack(depth);
     }
+  }
+
+  /**
+   * Emits one derived key where the derivation runs, its record reads resolved in the segment the body reads them in.
+   *
+   * The derivation runs where the body begins, in the first segment, and copies every value it reads: a parameter
+   * whose last use is the key is still the body's, which consumes it where it writes, so the key is emitted one scope
+   * deeper, where an identifier is picked rather than rolled. A key the body reads after some calls resolves its
+   * record reads against the view that later segment declares, as the body's own read does there; a slot the body
+   * already holds for a value belongs to the first segment, so the read does not take it.
+   */
+  private emitPerCallKeyExpression(expression: ExpressionNode, segment: number | undefined): void {
+    this.scopeDepth += 1;
+    if (segment === undefined || segment === 0) {
+      this.visit(expression);
+      this.scopeDepth -= 1;
+      return;
+    }
+    const readSegment = this.perCallReadSegment;
+    const readsWriteSegment = this.perCallReadsWriteSegment;
+    const staleWrites = new Set(this.perCallStaleWrites);
+    this.perCallReadSegment = segment;
+    this.perCallReadsWriteSegment = true;
+    for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
+    this.visit(expression);
+    this.perCallReadSegment = readSegment;
+    this.perCallReadsWriteSegment = readsWriteSegment;
+    this.perCallStaleWrites = staleWrites;
+    this.scopeDepth -= 1;
   }
 
   /**

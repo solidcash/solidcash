@@ -295,18 +295,20 @@ describe('a per-call master whose entry writes a verified mapping', () => {
   });
 
   it('refuses an entry whose mapping key the body does not hold where the derivation runs', () => {
-    // A key read from state is not a bare parameter, the frame's sender, or a compile-time value the body holds at
-    // its start, so the derivation has no value to hash there. The shape is left refused rather than derived
-    // approximately; `key-forms-write.test.ts` runs the admitted sender and expression keys through the machine.
+    // A key read from state after an arm that may rewrite it is no one value the derivation can hash where the body
+    // begins: the frame's record holds the value the arm started from, and no straight line names the other. The
+    // shape is left refused rather than derived approximately; `key-forms-write.test.ts` runs the admitted sender,
+    // expression and record keys through the machine.
     const stateKey = 'pragma solidcash ^0.13.0;'
       + ' contract ComputedKey {'
       + '   address owner;'
       + '   mapping(address => uint) balances;'
-      + '   function set(uint amount) {'
+      + '   function set(uint amount, bool move) {'
+      + '     if (move) { this.owner = msg.sender; }'
       + '     balances[this.owner] = amount;'
       + '   }'
       + ' }';
-    expect(refusalMessageOf(stateKey)).toContain("reads the state value 'owner'");
+    expect(refusalMessageOf(stateKey)).toContain("reads the state value 'owner' after the body writes it");
     // The one-target shape compiles, so the refusal is the state key and nothing else.
     expect(artifact.composition?.convention).toBe('per-call');
   });

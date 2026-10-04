@@ -20,8 +20,8 @@ import { refusalMessageOf } from './refused-entry.js';
 /** The reason a derived write key that reads an element of a dynamic state array is refused. */
 const DYNAMIC_ARRAY_KEY_REASON = "the body writes a mapping at slot 0 whose key 1 "
   + "'field:amount(arridx(state:entries,id:id))' reads an element of the dynamic state array 'entries', and a "
-  + 'master derives a target slot only from a bare parameter, the frame\'s sender, or a compile-time value the body '
-  + 'holds at its start';
+  + 'master derives a target slot only from a bare parameter, the frame\'s sender, a value of its own record, or a '
+  + 'compile-time value the body holds at its start';
 
 /** The reason a verified-mapping write behind a call the source does not fix is refused. */
 const WRITE_BEHIND_CALL_REASON = 'the body writes a verified mapping behind a call whose occurrence the source '

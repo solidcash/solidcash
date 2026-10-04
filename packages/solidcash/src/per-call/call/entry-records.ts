@@ -63,6 +63,11 @@ export interface CallEntryRecordsRequest {
   readonly artifact: Artifact;
   readonly functionName: string;
   readonly args: readonly FunctionArgument[];
+  /**
+   * The state the frame reads, decoded from the deployment's records: a key the artifact publishes as a read of the
+   * contract's own state (`state:<name>`, or an expression over one) resolves against it, as the body's read does.
+   */
+  readonly state?: Readonly<Record<string, StateValue>>;
   /** The frame's caller lock, which a `msg.sender` key resolves to. */
   readonly callerLockingBytecode: Uint8Array;
   /** The deployed category, as hex: the records' covenant and the token every node carries derive from it. */

@@ -130,6 +130,50 @@ describe('result-dependent topology propagation', () => {
       .rejects.toThrow(/cannot resolve newly reached callsite 0/);
   });
 
+  it('prunes calls past a short-circuit require whose frame-stable operand is false', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    const target = ctx.descriptors[1].contract;
+    const lock = `aa20${'01'.repeat(32)}87`;
+    Object.assign(target.inner, { lockingBytecode: lock });
+    (target.inner.artifact.abi as unknown[]).push({ name: 'run', selector: '00000002', inputs: [] });
+    (root.contract as unknown as { _externalRegistry: Map<string, unknown> })._externalRegistry.set('ITarget', target);
+    const hasCode: ExternalCallExpression = {
+      kind: 'binary', operator: '>',
+      left: {
+        kind: 'addressCodeLength', type: 'bigint',
+        expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      },
+      right: { kind: 'literal', type: 'bigint', value: '0' },
+    };
+    const probed: ExternalCallExpression = {
+      kind: 'binary', operator: '>', left: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
+      right: { kind: 'literal', type: 'bigint', value: '0' },
+    };
+    // require(target.code.length > 0 && ITarget(target).probe() > 0); ITarget(target).run();
+    root.artifact.abi[0]!.inputs = [{ name: 'target', type: 'address' }];
+    root.artifact.abi[0]!.externalCalls = [
+      { callsiteId: 0, interfaceName: 'ITarget', functionName: 'read', requiredDataNftIndices: [],
+        occurrence: 'conditional', condition: hasCode, hasReturnValues: true, returnTypes: ['uint256'],
+        addressSource: { kind: 'forward', paramIndex: 0 }, sourceEffectOrdinal: 0, argSources: [] },
+      { callsiteId: 1, interfaceName: 'ITarget', functionName: 'run', requiredDataNftIndices: [],
+        occurrence: 'conditional', preCallRequires: [{ kind: 'binary', operator: '&&', left: hasCode, right: probed }],
+        addressSource: { kind: 'forward', paramIndex: 0 }, sourceEffectOrdinal: 1, argSources: [] },
+    ];
+    (root.contract as unknown as { _resolveExternalArgs: unknown })._resolveExternalArgs = (
+      argSources: readonly { kind: string; paramIndex?: number }[], args: readonly unknown[],
+    ) => argSources.map((source) => source.kind === 'forward' ? args[source.paramIndex!] : undefined);
+
+    // The zero address has no code: the guard skips the producer and the require reverts before `run`.
+    root.args = [`0x${'00'.repeat(20)}`];
+    expect((await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf)).calls).toEqual([root]);
+    // A code-bearing target reaches both calls. The provisional zero seed of `probe` must not prune `run`.
+    root.args = [`0x${lock}`];
+    const reached = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
+    expect(reached.calls.map((call) => call.callsiteId)).toEqual([undefined, 0, 1]);
+    expect(reached.calls.slice(1).every((call) => call.contract === target)).toBe(true);
+  });
+
   it('keeps a compiler-published callee address authoritative in graph discovery', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];

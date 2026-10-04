@@ -44,6 +44,15 @@ function stateIndependentPredicate(value: unknown, seen = new Set<object>()): bo
   return Object.values(record).every((item) => stateIndependentPredicate(item, seen));
 }
 
+/** Every `&&` operand of a source require is necessary for it to pass. A frame-stable operand that is exactly
+ * false proves the revert even when a sibling operand reads state or a provisional producer result. */
+function frameStableConjuncts(predicate: ExternalCallExpression): ExternalCallExpression[] {
+  if (predicate.kind === 'binary' && predicate.operator === '&&' && predicate.left && predicate.right) {
+    return [...frameStableConjuncts(predicate.left), ...frameStableConjuncts(predicate.right)];
+  }
+  return stateIndependentPredicate(predicate) ? [predicate] : [];
+}
+
 /** Resolve a forwarded low-level payload against the selected runtime callee, then require its exact
  * canonical BCH call encoding. The worklist and the participant VM independently authenticate this row. */
 function decodeCanonicalRawInvocation(
@@ -515,14 +524,14 @@ async function rebuildCallTopology(
           let occurrence = 0;
           for (const { iteration, edge: template, outerIndex } of occurrences) {
             if (template.preCallRequires?.length) {
-              const predicates = template.preCallRequires.filter((predicate) => stateIndependentPredicate(predicate));
+              const predicates = template.preCallRequires.flatMap((predicate) => frameStableConjuncts(predicate));
               if (predicates.length > 0) {
                 const returns = returnsForOuter(predicates.map((expression) => ({
                   kind: 'expression', expression,
                 })), undefined, outerIndex);
                 await hydrate(predicates, [iteration], returns);
-                // A compiler-published necessary predicate that is exactly false proves the source require
-                // reverted before this edge. True or unknown does not prove the require passed; the VM does.
+                // A frame-stable conjunct of a compiler-published require that is exactly false proves the require
+                // reverted before this edge (`false && producer` short-circuits). True or unknown proves nothing.
                 if (predicates.some((predicate) => evaluate(predicate, iteration, returns) === false)) continue;
               }
             }

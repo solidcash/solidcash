@@ -271,7 +271,7 @@ import { isNumericType } from '../utils.js';
 import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
-  SortedMappingCodegenPendingError, PerCallStaleReadError,
+  SortedMappingCodegenPendingError, PerCallStaleReadError, PerCallAliasedReadError,
   ChainedEntryElementReadError, ConditionalDeployError, DirectHeterogeneousDeployError,
   NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
@@ -1099,6 +1099,17 @@ interface GenesisReadPlan {
   readonly turn?: MappingAssignNode | MappingDeleteNode;
 }
 
+/**
+ * A per-call write of a verified mapping under other keys that a read of the mapping follows in its segment: the
+ * slot the write lands in, the entry as the source names it, and what says at run time whether it ran, when that is
+ * not the write's own flag: a cache's dirty flag, or null where two paths' caches disagree and nothing does.
+ */
+interface AliasedSortedWrite {
+  readonly slot: number;
+  readonly written: string;
+  readonly gate?: string | null;
+}
+
 /** Where a sorted-mapping flow walk is: a branch arm or the code after an early return, and inside a loop. */
 interface SortedFlowScope {
   readonly arm?: 'branch' | 'early';
@@ -1827,6 +1838,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // The writes the body's flow lets keep their value, and the reads a kept or chained value has to serve.
   private sortedKeptWrites: WeakSet<Node> = new WeakSet();
   private sortedServedReads: WeakSet<Node> = new WeakSet();
+  // The reads a write of their collection under other keys precedes in the segment, each with those writes.
+  private sortedAliasedReads: WeakMap<Node, readonly AliasedSortedWrite[]> = new WeakMap();
   // Depth of plain counting loops (while / do-while / for) currently being emitted. A mapping WRITE inside such
   // a loop is unsound: the entry-write model reserves ONE output slot per (mapping, key-descriptor), so a loop
   // that writes distinct runtime keys keeps only the LAST entry (silent data loss), and a read-modify-write
@@ -24230,6 +24243,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. H(k) (composite for nested m[a][b]) computed FIRST so it sits at the bottom of the working area, giving
     // the proven [Hk32, slot32, nextKey32] layout.
     this.emitSortedKeyHash(node, slotIndex, loc);     // [Hk32]
+    if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) === undefined) {
+      this.emitPerCallAliasedReadGuard(node, loc);
+    }
 
     // 2. Entry address = base(master category) wrapped in the collection's entry covenant. Track the categoryId so
     // emitP2sh32FromCovenant's popFromStack consumes IT (not a real tracked var), then untrack the address.
@@ -25581,6 +25597,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (writtenIn === undefined || writtenIn === this.perCallSegmentIndex);
   }
 
+  /**
+   * Refuses a per-call read whose key names the entry a write under other keys rewrote earlier in its segment.
+   *
+   * Entry and exit `[..., Hk]`. The read proves its key against the view the segment declared before the write, and
+   * a frame may declare one node at both: a write of another key leaves that view right only where the two keys
+   * differ, and where they agree at run time the EVM's read takes the written value. A batch target's slot operand is
+   * its key's hash, so the run is refused where the hashes agree and the write ran (`refuseStaleSortedReads`): a
+   * cache's write ran where its dirty flag is set, and the flag its flush sets says the same once the dirty flag's
+   * last use has passed; a conditional write ran where its own flag is set. A write the frame holds no slot of, such
+   * as a loop's, is refused where the body is compiled.
+   */
+  private emitPerCallAliasedReadGuard(node: MappingAccessNode, loc: SingleLocationData): void {
+    for (const { slot, written, gate } of this.sortedAliasedReads.get(node) ?? []) {
+      const operand = `__internal__vmapBatchSlot_${slot}`;
+      if (this.getStackIndex(this.vmapWitnessName(operand), true) < 0) {
+        throw new PerCallAliasedReadError(node, this.sortedEntryText(node.collection!.name, node.keys), written);
+      }
+      this.emit(Op.OP_DUP, loc);
+      this.emitPickVMapWitness(operand, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      const ran = gate === null ? undefined : [gate, this.sortedWriteRanFlag(slot)]
+        .find((name): name is string => name !== undefined && this.getStackIndex(name, true) >= 0);
+      if (ran !== undefined) {
+        this.emitPickTrackedFromBottom(ran, loc);
+        this.emit(Op.OP_BOOLAND, loc);
+      }
+      this.emit(Op.OP_NOT, loc);
+      this.emit(Op.OP_VERIFY, loc);
+    }
+  }
+
+  /** The tracked flag a conditional write of a sorted slot sets where it runs, or undefined when it has none. */
+  private sortedWriteRanFlag(slot: number): string | undefined {
+    if (this.conditionalSortedWriteFlagSlots.has(slot)) {
+      return GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
+    }
+    const batch = [...this.conditionalSortedBatchFlags].find(([, slots]) => slots.includes(slot))?.[0];
+    return batch === undefined ? undefined : GenerateTargetTraversalWithLocation.condSortedBatchFlagName(batch);
+  }
+
   /** An entry as the source names it, its keys spelled out where they are plain. */
   private sortedEntryText(name: string, keys: readonly Node[]): string {
     const spell = (key: Node): string => {
@@ -25607,12 +25663,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the paths it lies on; branch arms, loops, early exits and lazily evaluated operands join their paths with the
    * fewest calls. The writes that keep their value are recorded for `sortedWriteMayKeepValue`, and the reads such a
    * value, or a chained write's, has to serve for `visitMappingAccess`.
+   *
+   * A write of the collection under other keys names the read's entry wherever the keys agree at run time, which the
+   * view the segment declared before it does not show. Such a read is recorded with the writes' slots for
+   * `emitPerCallAliasedReadGuard`, unless a literal sets the keys apart. A write the entry cache takes
+   * (`CacheMappingEntryInLoop`) only marks the cache dirty and reaches the entry where the cache is flushed, after
+   * the reads between them, so the mark counts as the write, under the key `-1 - slot`, with the dirty flag as the
+   * value that says at run time whether it ran.
    */
   private refuseStaleSortedReads(fn: FunctionDefinitionNode): void {
     this.sortedKeptWrites = new WeakSet();
     this.sortedServedReads = new WeakSet();
+    this.sortedAliasedReads = new WeakMap();
     if (!this.perCallMaster || fn.body === undefined) return;
-    type Pending = { readonly shape?: string; readonly calls: number };
+    // `gate` is a cache mark's dirty flag, or null where two paths' marks disagree.
+    type Pending = { readonly shape?: string; readonly calls: number; readonly gate?: string | null };
     type Flow = Map<number, Pending> | undefined;
     type Scope = { readonly arm?: 'branch' | 'early'; readonly loop: boolean };
     const varying = callsVaryOnPaths(fn.body);
@@ -25624,8 +25689,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && node.collection !== undefined && this.isChunkableValue(node.collection.innermostValueType)
       && (node.arrayIndex !== undefined || node.arrayPush === true || node.arrayPop === true);
     const writesLeft = new Map<number, number>();
+    const writtenKeys = new Map<number, readonly Node[]>();
+    // Each cache's dirty flag, with the slot its flush `if (dirty) { m[k] = cache; }` writes.
+    const flushed = new Map<string, number>();
     walkInvocationAst(fn.body, (candidate) => {
-      if (isWrite(candidate)) writesLeft.set(candidate.entrySlotIndex, (writesLeft.get(candidate.entrySlotIndex) ?? 0) + 1);
+      if (candidate instanceof BranchNode && candidate.condition instanceof IdentifierNode) {
+        const flush = candidate.ifBlock.statements?.[0];
+        if (flush instanceof MappingAssignNode && flush.expression instanceof IdentifierNode
+          && `${flush.expression.name}_dirty` === candidate.condition.name) {
+          flushed.set(candidate.condition.name, flush.entrySlotIndex);
+        }
+      }
+      if (!isWrite(candidate)) return;
+      writesLeft.set(candidate.entrySlotIndex, (writesLeft.get(candidate.entrySlotIndex) ?? 0) + 1);
+      writtenKeys.set(candidate.entrySlotIndex, candidate.keys);
     });
     const chainLeft = new Map(this.sortedCompositeWritesRemaining);
     const loops: { breaks: Flow[]; continues: Flow[] }[] = [];
@@ -25636,8 +25713,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const flow of live.slice(1)) {
         for (const [slot, pending] of flow) {
           const other = joined.get(slot);
-          joined.set(slot, other === undefined ? pending
-            : { shape: other.shape ?? pending.shape, calls: Math.min(other.calls, pending.calls) });
+          joined.set(slot, other === undefined ? pending : {
+            shape: other.shape ?? pending.shape, calls: Math.min(other.calls, pending.calls),
+            ...(slot < 0 && { gate: other.gate === pending.gate ? other.gate : null }),
+          });
         }
       }
       return joined;
@@ -25676,8 +25755,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     });
 
     const read = (node: MappingAccessNode, flow: Flow): void => {
-      if (flow === undefined || carried.has(node) || node.collection?.sorted !== true
+      if (flow === undefined || node.collection?.sorted !== true
         || node.isTokenContainerAccess === true || node.isGenesisRead === true || node.entrySlotIndex < 0) return;
+      const collection = node.collection.name;
+      const aliased = [...flow].flatMap(([key, other]) => {
+        const slot = key < 0 ? -1 - key : key;
+        const keys = writtenKeys.get(slot) ?? [];
+        return slot === node.entrySlotIndex || other.calls > 0 || this.entrySlots[slot]?.collection !== collection
+          || this.sortedKeysDistinct(keys, node.keys) ? []
+          : [{ slot, written: this.sortedEntryText(collection, keys), ...(key < 0 && { gate: other.gate ?? null }) }];
+      });
+      if (aliased.length > 0) this.sortedAliasedReads.set(node, aliased);
+      if (carried.has(node)) return;
       const pending = flow.get(node.entrySlotIndex);
       if (pending === undefined || pending.calls > 0) return;
       if (pending.shape === undefined) {
@@ -25761,6 +25850,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const child of children(node)) current = walk(child, current, scope);
       if (node instanceof MappingAccessNode) read(node, current);
       if (isWrite(node)) current = write(node, current, scope);
+      const cached = node instanceof AssignNode ? flushed.get(node.identifier.name) : undefined;
+      if (cached !== undefined && cached >= 0 && current !== undefined) {
+        current = new Map(current).set(-1 - cached, { calls: 0, gate: (node as AssignNode).identifier.name });
+      }
       if ((node instanceof ExternalFunctionCallNode && node.foldedIntoDeploy !== true)
         || ((node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
           && node.callMode === 'delegatecall')) {

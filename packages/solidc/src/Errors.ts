@@ -849,6 +849,18 @@ export class PerCallStaleReadError extends SolidCashError {
   }
 }
 
+/**
+ * A per-call body reads a verified-mapping entry, in the segment of a write of its collection under other keys,
+ * where the frame holds no slot of the write to compare the read's key with: the keys may name one entry at run time,
+ * and the read would see the view the segment declared before the write.
+ */
+export class PerCallAliasedReadError extends SolidCashError {
+  constructor(public node: Node, entry: string, written: string) {
+    super(node, `a read of \`${entry}\` after a write of \`${written}\` in its segment is not supported on the `
+      + 'per-call convention, where the two keys may name one entry: read it before the write');
+  }
+}
+
 // A function-pointer ARRAY form the lowering passes cannot express (yet). Raised with a specific reason
 // instead of the misleading downstream "Undefined state variable '<name>'" once no pass claims the array.
 export class FnPtrArrayLoweringError extends SolidCashError {

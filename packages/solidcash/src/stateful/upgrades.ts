@@ -885,8 +885,8 @@ export interface UpgradeProxyOptions {
 }
 
 /**
- * Assert proxy-held state layout stays append-only when retargeting to a new implementation (OZ storage
- * layout discipline adapted to NFT commitment fields).
+ * Assert the new implementation can decode the proxy's existing data-NFT commitments unchanged.
+ * Retargeting does not migrate commitments, so even an appended field in an existing NFT is unsafe.
  */
 export function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
   const prevLayout = previous.stateLayout;
@@ -926,8 +926,7 @@ export function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact):
     if (!newVar) {
       throw new Error(
         `Upgrade layout incompatibility: state variable '${oldVar.name}' exists in the old contract `
-        + 'but is missing in the new contract. State layouts must be append-only - '
-        + 'existing variables cannot be removed.',
+        + 'but is missing in the new contract. Existing encoded fields cannot be removed.',
       );
     }
     if (newVar.nftIndex !== oldVar.nftIndex || newVar.fieldIndex !== oldVar.fieldIndex) {
@@ -935,7 +934,7 @@ export function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact):
         `Upgrade layout incompatibility: state variable '${oldVar.name}' changed position `
         + `(old: nft=${oldVar.nftIndex}/field=${oldVar.fieldIndex}, `
         + `new: nft=${newVar.nftIndex}/field=${newVar.fieldIndex}). `
-        + 'State layouts must be append-only - existing variables cannot be reordered.',
+        + 'Existing encoded fields cannot be reordered.',
       );
     }
     if (newVar.type !== oldVar.type) {
@@ -953,6 +952,14 @@ export function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact):
       );
     }
     assertStructShape(oldVar.type);
+  }
+  for (const newVar of nextLayout.variables) {
+    if (!prevLayout.variables.some((variable) => variable.name === newVar.name)) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${newVar.name}' adds an encoded field `
+        + `to data NFT ${newVar.nftIndex}. Retargeting requires commitment migration for new fields.`,
+      );
+    }
   }
 }
 
@@ -986,8 +993,8 @@ export async function upgradeProxy<TImpl extends Artifact>(
     );
   }
 
-  // Param-mode keeps the proxy's own state layout (not grafted). Compare new impl fields against the
-  // live proxy holder so append-only discipline still applies to shared commitment slots.
+  // Param-mode keeps the proxy's own state layout (not grafted). Both the live proxy holder and the
+  // previous implementation must accept the new implementation's unchanged physical commitment layout.
   assertAppendOnlyProxyLayout(proxy.proxy.inner.artifact, implArtifact);
   assertAppendOnlyProxyLayout(proxy.implementation.inner.artifact, implArtifact);
 

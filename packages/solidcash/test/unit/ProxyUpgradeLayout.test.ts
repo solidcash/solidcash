@@ -18,6 +18,21 @@ describe('param-mode proxy upgrade layout', () => {
       .not.toThrow();
   });
 
+  it('rejects an appended field in an existing data NFT without migrating its commitment', () => {
+    const nextLayout: StateLayout = {
+      ...oldLayout,
+      variables: [
+        ...oldLayout.variables,
+        { name: 'extra', type: 'bigint', nftIndex: 0, fieldIndex: 1 },
+      ],
+    };
+    const existingCommitment = buildPushdataCommitment(oldLayout, { counter: 42n }, 0);
+    expect(() => parsePushdataCommitment(existingCommitment, nextLayout, 0))
+      .toThrow(/out of bounds/);
+    expect(() => assertAppendOnlyProxyLayout(artifact(oldLayout), artifact(nextLayout)))
+      .toThrow(/Upgrade layout incompatibility:.*extra.*migration/i);
+  });
+
   it('rejects a one-to-two data-NFT upgrade that changes NFT zero encoding', () => {
     const nextLayout: StateLayout = {
       ...oldLayout,

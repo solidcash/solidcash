@@ -2,7 +2,8 @@ import { binToHex, hash160, hexToBin, lockingBytecodeToCashAddress } from '@bita
 import { describe, expect, it } from 'vitest';
 import {
   findDeploymentByAddressValue, findDeploymentByLockingBytecode, registerDeployment,
-  registeredAddressValueLockingBytecode,
+  registeredAddressValueLockingBytecode, registeredPhysicalLockingBytecode,
+  registeredValueAddressLockingBytecode,
 } from '../../src/stateful/deployment-registry.js';
 import { createTestProvider } from '../test-util.js';
 
@@ -25,6 +26,23 @@ describe('typed deployment address resolution', () => {
       }
       expect(findDeploymentByLockingBytecode(provider, binToHex(word(payload)))).toBeUndefined();
     }
+  });
+
+  it('does not normalize an unrelated address string from a matching suffix', () => {
+    const provider = createTestProvider();
+    const physical = hexToBin(`aa20${'31'.repeat(32)}87`);
+    const logical = hexToBin(`aa20${'42'.repeat(32)}87`);
+    const address = lockingBytecodeToCashAddress({ bytecode: logical, prefix: 'bchtest' });
+    if (typeof address === 'string') throw new Error(address);
+    registerDeployment(provider, {
+      contractName: 'Target', address: address.address, lockingBytecode: binToHex(physical), contract: {},
+    });
+
+    expect(registeredValueAddressLockingBytecode(provider, address.address)).toEqual(physical);
+    expect(registeredPhysicalLockingBytecode(provider, address.address)).toEqual(physical);
+    const unrelated = `unrelated-${address.address}`;
+    expect(registeredValueAddressLockingBytecode(provider, unrelated)).toBeUndefined();
+    expect(registeredPhysicalLockingBytecode(provider, unrelated)).toBeUndefined();
   });
 
   it('leaves malformed words, unknown identities and ambiguous projections unresolved', () => {

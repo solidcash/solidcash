@@ -136,7 +136,7 @@ export function registeredPhysicalLockingBytecode(
   provider: NetworkProvider,
   address: string,
 ): Uint8Array | undefined {
-  const physical = findDeploymentByAddress(provider, address)?.lockingBytecode;
+  const physical = findDeploymentByExactAddress(provider, address)?.lockingBytecode;
   return physical ? hexToBin(physical) : undefined;
 }
 
@@ -145,7 +145,7 @@ export function registeredValueAddressLockingBytecode(
   provider: NetworkProvider,
   address: string,
 ): Uint8Array | undefined {
-  const deployment = findDeploymentByAddress(provider, address);
+  const deployment = findDeploymentByExactAddress(provider, address);
   if (!deployment) return undefined;
   const contract = deployment.contract as {
     inner?: { artifact?: Artifact };

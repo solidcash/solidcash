@@ -888,10 +888,39 @@ export interface UpgradeProxyOptions {
  * Assert proxy-held state layout stays append-only when retargeting to a new implementation (OZ storage
  * layout discipline adapted to NFT commitment fields).
  */
-function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
+export function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
   const prevLayout = previous.stateLayout;
   const nextLayout = next.stateLayout;
   if (!prevLayout || !nextLayout) return;
+  // upgradeProxy retargets the implementation without migrating the proxy's existing data NFTs.
+  // Even a 1 -> 2 increase changes NFT 0's commitment: multi-NFT layouts prefix every NFT with an
+  // index tag. A newly added NFT would also have no live UTXO to read or spend.
+  if (nextLayout.dataNftCount !== prevLayout.dataNftCount) {
+    throw new Error(
+      'Upgrade layout incompatibility: data NFT count changed '
+      + `(old: ${prevLayout.dataNftCount}, new: ${nextLayout.dataNftCount}). `
+      + 'Retargeting does not migrate existing proxy commitments or create data NFTs.',
+    );
+  }
+  const oldStructs = prevLayout.structs ?? [];
+  const newStructs = nextLayout.structs ?? [];
+  const checkedStructs = new Set<string>();
+  const assertStructShape = (type: string): void => {
+    const oldStruct = oldStructs.find((item) => type === item.name || type.startsWith(`${item.name}[`));
+    const newStruct = newStructs.find((item) => type === item.name || type.startsWith(`${item.name}[`));
+    if (!oldStruct && !newStruct) return;
+    const name = oldStruct?.name ?? newStruct!.name;
+    if (checkedStructs.has(name)) return;
+    checkedStructs.add(name);
+    if (!oldStruct || !newStruct
+      || JSON.stringify(oldStruct.fields) !== JSON.stringify(newStruct.fields)) {
+      throw new Error(
+        `Upgrade layout incompatibility: struct '${name}' changed. `
+        + 'Existing state fields must retain their complete encoded struct shape.',
+      );
+    }
+    for (const field of oldStruct.fields) assertStructShape(field.type);
+  };
   for (const oldVar of prevLayout.variables) {
     const newVar = nextLayout.variables.find((variable) => variable.name === oldVar.name);
     if (!newVar) {
@@ -916,6 +945,14 @@ function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
         + 'State variable types cannot change during upgrade.',
       );
     }
+    if ((newVar.dynamic === true) !== (oldVar.dynamic === true)
+      || (newVar.packed === true) !== (oldVar.packed === true)) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${oldVar.name}' changed its wire encoding. `
+        + 'Existing state fields cannot change dynamic or packed storage mode.',
+      );
+    }
+    assertStructShape(oldVar.type);
   }
 }
 

@@ -215,15 +215,18 @@ export default class TypeCheckTraversal extends AstTraversal {
    *
    * A body that writes a sorted mapping carries the sorted-batch operands, which the direct convention receives
    * from its SDK. A per-call master derives each operand from its own witness block instead
-   * (`per-call/master/support.ts`, `derivableBatchWitnessNames`), so the operand is not part of the frame a call
-   * pushes: neither the source nor a generated route writes it, and the call resolves against the parameters left
-   * over. A shape whose operands the master cannot derive is refused by name where the master is assessed.
+   * (`per-call/master/support.ts`, `derivableBatchWitnessNames`), so the operand is not part of the frame a source
+   * call pushes, and the call resolves against the parameters left over. A shape whose operands the master cannot
+   * derive is refused by name where the master is assessed. A generated route is the exception: it forwards the
+   * created-record count it holds at the handler's own position, so its call resolves against every parameter, as
+   * it does under the direct convention; the per-call convention drops the route's bodies before code generation.
    */
   private callSiteParameterTypes(fn: FunctionDefinitionNode): Type[] {
+    const derivesBatch = this.perCallComposition && this.currentFunction?.messageBusRoute !== true;
     return fn.parameters
       .filter((parameter) => parameter.name !== '__internal__msgSenderCategory'
         && parameter.name !== '__internal__msgSenderAnchorIdx'
-        && !(this.perCallComposition && PER_CALL_DERIVED_BATCH_PARAMETER.test(parameter.name)))
+        && !(derivesBatch && PER_CALL_DERIVED_BATCH_PARAMETER.test(parameter.name)))
       .map((parameter) => parameter.type);
   }
 

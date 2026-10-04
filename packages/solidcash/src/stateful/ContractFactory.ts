@@ -1,5 +1,5 @@
 import { Artifact, asmToBytecode } from '@solidcash/utils';
-import { hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
 import { Contract } from '../Contract.js';
@@ -9,7 +9,7 @@ import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { getNetworkPrefix } from '../utils.js';
+import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
 import { registerDeployment, registeredPhysicalLockingBytecode } from './deployment-registry.js';
 import { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';
@@ -419,10 +419,16 @@ export class ContractFactory<T extends Artifact = Artifact> {
     // ethers v5 `.deployed()` alias (MistSwap uses it 38x): resolves to the deployed contract, like waitForDeployment.
     // `deployed` is not on DeployedContract<T>, so cast through unknown (TS2352) to attach the extra accessor.
     (contract as unknown as { deployed: () => Promise<DeployedContract<T>> }).deployed = awaitDeployed;
+    // The registered lock is what an address argument naming this deployment is stored as (a constructor's or an
+    // entry's), so it must be the lock the deployment's frames present as `msg.sender` and `address(this)`. A
+    // per-call contract presents its own address, `addrV(category)`, which `target` carries: its handle's lock is
+    // the unfilled artifact's, which no frame presents, so a stored copy of it would never equal the caller.
+    const perCallAddress = (contract as StatefulContract)._perCallAddress;
     registerDeployment(provider, {
       contractName: this.artifact.contractName,
       address: contract.target,
-      lockingBytecode: contract.inner.lockingBytecode,
+      lockingBytecode: perCallAddress === undefined
+        ? contract.inner.lockingBytecode : binToHex(addressToLockScript(perCallAddress)),
       contract,
     });
     return contract;

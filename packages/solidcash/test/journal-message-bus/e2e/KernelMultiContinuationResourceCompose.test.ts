@@ -287,6 +287,218 @@ describe('kernel multi continuation resource lanes under composition', () => {
     expect(entries.find((entry) => binToHex(entry.slot) === slotHex(2n))?.value).toEqual(second);
   }, 300_000);
 
+  it('builds and sends three cold keys sharing one sorted predecessor through typed discovery', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => bytes) values;
+        function setTriple(int a, bytes av, int b, bytes bv, int c, bytes cv) public {
+          this.values[a] = av;
+          this.values[b] = bv;
+          this.values[c] = cv;
+          require(true);
+        }
+      }`, KERNEL);
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function setTriple(int a, bytes av, int b, bytes bv, int c, bytes cv) external;
+      }
+      contract Caller() {
+        function poke(address store, int a, bytes av, int b, bytes bv, int c, bytes cv) public {
+          IStore(store).setTriple(a, av, b, bv, c, cv);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const first = new Uint8Array(130).fill(0x11);
+    const second = new Uint8Array(160).fill(0x22);
+    const third = new Uint8Array(190).fill(0x33);
+    const call = caller.call.poke(store.inner.lockingBytecode, 1n, first, 2n, second, 3n, third);
+    expect(vmAccepts(await call.build())).toBe(true);
+    await expect(call.send()).resolves.toBeDefined();
+    const entries = await store.getEntries('values');
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(1n))?.value).toEqual(first);
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(2n))?.value).toEqual(second);
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(3n))?.value).toEqual(third);
+  }, 300_000);
+
+  it('builds and sends cold keys across two sorted predecessor gaps through typed discovery', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => bytes) values;
+        function setOne(int key, bytes value) public {
+          this.values[key] = value;
+          require(true);
+        }
+        function setTriple(int a, bytes av, int b, bytes bv, int c, bytes cv) public {
+          this.values[a] = av;
+          this.values[b] = bv;
+          this.values[c] = cv;
+          require(true);
+        }
+      }`, KERNEL);
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    await expect(store.call.setOne(4n, new Uint8Array(12).fill(0x44)).send()).resolves.toBeDefined();
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function setTriple(int a, bytes av, int b, bytes bv, int c, bytes cv) external;
+      }
+      contract Caller() {
+        function poke(address store, int a, bytes av, int b, bytes bv, int c, bytes cv) public {
+          IStore(store).setTriple(a, av, b, bv, c, cv);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    // Slot hashes for 1 and 3 precede 4; slot 7 follows it.
+    const first = new Uint8Array(130).fill(0x11);
+    const second = new Uint8Array(160).fill(0x33);
+    const third = new Uint8Array(190).fill(0x77);
+    const call = caller.call.poke(store.inner.lockingBytecode, 1n, first, 3n, second, 7n, third);
+    expect(vmAccepts(await call.build())).toBe(true);
+    await expect(call.send()).resolves.toBeDefined();
+    const entries = await store.getEntries('values');
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(1n))?.value).toEqual(first);
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(3n))?.value).toEqual(second);
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(4n))?.value).toEqual(new Uint8Array(12).fill(0x44));
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(7n))?.value).toEqual(third);
+  }, 300_000);
+
+  it('builds and sends an updated predecessor with a cold successor through typed discovery', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => bytes) values;
+        function setOne(int key, bytes value) public {
+          this.values[key] = value;
+          require(true);
+        }
+        function setPair(int firstKey, bytes firstValue, int secondKey, bytes secondValue) public {
+          this.values[firstKey] = firstValue;
+          this.values[secondKey] = secondValue;
+          require(true);
+        }
+      }`, KERNEL);
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    await expect(store.call.setOne(4n, new Uint8Array(12).fill(0x44)).send()).resolves.toBeDefined();
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function setPair(int firstKey, bytes firstValue, int secondKey, bytes secondValue) external;
+      }
+      contract Caller() {
+        function poke(address store, int firstKey, bytes firstValue, int secondKey, bytes secondValue) public {
+          IStore(store).setPair(firstKey, firstValue, secondKey, secondValue);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const updated = new Uint8Array(130).fill(0x44);
+    const inserted = new Uint8Array(160).fill(0x77);
+    const call = caller.call.poke(store.inner.lockingBytecode, 4n, updated, 7n, inserted);
+    expect(vmAccepts(await call.build())).toBe(true);
+    await expect(call.send()).resolves.toBeDefined();
+    const entries = await store.getEntries('values');
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(4n))?.value).toEqual(updated);
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(7n))?.value).toEqual(inserted);
+  }, 300_000);
+
+  it('updates one sorted predecessor while inserting two cold successors through typed discovery', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => bytes) values;
+        function setOne(int key, bytes value) public {
+          this.values[key] = value;
+          require(true);
+        }
+        function setTriple(int a, bytes av, int b, bytes bv, int c, bytes cv) public {
+          this.values[a] = av;
+          this.values[b] = bv;
+          this.values[c] = cv;
+          require(true);
+        }
+      }`, KERNEL);
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    await expect(store.call.setOne(4n, new Uint8Array(12).fill(0x44)).send()).resolves.toBeDefined();
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function setTriple(int a, bytes av, int b, bytes bv, int c, bytes cv) external;
+      }
+      contract Caller() {
+        function poke(address store, int a, bytes av, int b, bytes bv, int c, bytes cv) public {
+          IStore(store).setTriple(a, av, b, bv, c, cv);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const updated = new Uint8Array(130).fill(0x44);
+    const firstInsert = new Uint8Array(160).fill(0x77);
+    const secondInsert = new Uint8Array(190).fill(0x88);
+    const call = caller.call.poke(
+      store.inner.lockingBytecode, 4n, updated, 7n, firstInsert, 12n, secondInsert,
+    );
+    expect(vmAccepts(await call.build())).toBe(true);
+    await expect(call.send()).resolves.toBeDefined();
+    const entries = await store.getEntries('values');
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(4n))?.value).toEqual(updated);
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(7n))?.value).toEqual(firstInsert);
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(12n))?.value).toEqual(secondInsert);
+  }, 300_000);
+
   it('publishes a second resource beside the terminal primary band under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
 

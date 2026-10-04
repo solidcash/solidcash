@@ -551,35 +551,50 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           }
         }
       }
-      // Two cold keys can share one authenticated predecessor. The lower NEW
-      // links to the higher NEW, while only the lower key recreates P'. The
-      // independent per-slot insert seeds above cannot express this topology.
+      // Cold keys that share one authenticated predecessor form a sorted NEW
+      // chain. Only the lowest key recreates P'; the independent per-slot
+      // insert seeds above cannot express this shared-proof topology.
       for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {
-        if (!batch.linear || batch.slotIndices.length !== 2) continue;
-        const inserts = batch.slotIndices.map((index) => ctx.bPlannedEntryInserts.find(
-          (planned) => planned.slotIndex === index,
-        ));
-        if (!inserts[0] || !inserts[1]) continue;
-        const [firstSlot, secondSlot] = batch.slotIndices;
-        const firstProof = ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${firstSlot}`];
-        const secondProof = ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${secondSlot}`];
-        if (typeof firstProof !== 'bigint' || firstProof !== secondProof) continue;
-        const firstKey = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${firstSlot}`];
-        const secondKey = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${secondSlot}`];
-        if (!(firstKey instanceof Uint8Array) || !(secondKey instanceof Uint8Array)
-          || bytesToSlotValue(firstKey) === bytesToSlotValue(secondKey)) continue;
-        const firstIsLower = bytesToSlotValue(firstKey) < bytesToSlotValue(secondKey);
-        const lower = inserts[firstIsLower ? 0 : 1];
-        const higher = inserts[firstIsLower ? 1 : 0];
-        if (!lower || !higher) continue;
-        const higherKey = firstIsLower ? secondKey : firstKey;
-        const higherSlot = firstIsLower ? secondSlot : firstSlot;
-        const lowerSlot = firstIsLower ? firstSlot : secondSlot;
-        lower.newCommitment = `${lower.newCommitment.slice(0, 64)}${binToHex(higherKey)}`
-          + lower.newCommitment.slice(128);
-        ctx.bCompilerInternalArgs[`__internal__vmapBatchNext_${lowerSlot}`] = higherKey;
-        ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${higherSlot}`] = -1n;
-        ctx.bRelativeOutputInternalArgs.delete(`__internal__vmapBatchPredOut_${higherSlot}`);
+        if (!batch.linear || batch.slotIndices.length < 2) continue;
+        const byProof = new Map<bigint, Array<{
+          slotIndex: number; key: Uint8Array; planned?: NestedCalleePlannedEntryInsert;
+        }>>();
+        for (const routeSlotIndex of batch.slotIndices) {
+          const proof = ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${routeSlotIndex}`];
+          const key = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${routeSlotIndex}`];
+          const predOut = ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${routeSlotIndex}`];
+          const planned = ctx.bPlannedEntryInserts.find((candidate) => candidate.slotIndex === routeSlotIndex);
+          if (typeof proof !== 'bigint' || proof < 0n || predOut === -2n
+            || !(key instanceof Uint8Array)) continue;
+          const rows = byProof.get(proof) ?? [];
+          rows.push({ slotIndex: routeSlotIndex, key, planned });
+          byProof.set(proof, rows);
+        }
+        for (const rows of byProof.values()) {
+          if (rows.length < 2 || !rows.some((row) => row.planned)) continue;
+          rows.sort((left, right) => (bytesToSlotValue(left.key) < bytesToSlotValue(right.key) ? -1 : 1));
+          if (rows.some((row, index) => index > 0
+            && bytesToSlotValue(row.key) === bytesToSlotValue(rows[index - 1]!.key))) continue;
+          // An exact updated row can itself be the predecessor. It must lead the
+          // chain, and no second exact row may share that physical proof.
+          if (rows.some((row, index) => !row.planned && index !== 0)) continue;
+          if (!rows[0]!.planned && rows.some((row, index) => index > 0 && !row.planned)) continue;
+          for (let index = 0; index < rows.length; index++) {
+            const row = rows[index]!;
+            const successor = rows[index + 1];
+            if (successor) {
+              if (row.planned) {
+                row.planned.newCommitment = `${row.planned.newCommitment.slice(0, 64)}`
+                  + `${binToHex(successor.key)}${row.planned.newCommitment.slice(128)}`;
+              }
+              ctx.bCompilerInternalArgs[`__internal__vmapBatchNext_${row.slotIndex}`] = successor.key;
+            }
+            if (!row.planned || (index === 0 && rows[0]!.planned)) continue;
+            const predOut = `__internal__vmapBatchPredOut_${row.slotIndex}`;
+            ctx.bCompilerInternalArgs[predOut] = -1n;
+            ctx.bRelativeOutputInternalArgs.delete(predOut);
+          }
+        }
       }
       if (ctx.bBlockInputs) {
         for (const planned of ctx.bPlannedEntryInserts) {

@@ -14505,6 +14505,7 @@ function compileResolvedAst(
       assemblyBodies,
       emitsEvent: contractEmitsEvent,
       loopGuardRefusals: (mergedCompilerOptions as InternalCompilerOptions).__loopGuardRefusals,
+      fileConstants: ast.constantDefinitions,
     });
     if (!assessment.supported) {
       throw new SolidcDiagnosticError(
@@ -14513,7 +14514,7 @@ function compileResolvedAst(
         { requested: 'per-call', reason: assessment.reason, contract: ast.contract.name },
       );
     }
-    stripFrameParameters(ast.contract);
+    stripFrameParameters(ast.contract, ast.constantDefinitions);
     // A master admits a user's frame and a callee's. A callee's frame is covered by a validator that binds the
     // facts a master cannot see, so the master has to recognise the validator it names however its entry runs:
     // every master reserves the validator program's hash slot. A master that also makes calls keeps one

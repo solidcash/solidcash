@@ -134,6 +134,7 @@ import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
 import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
 import { blockEndsWithReturn, nestedStatementLists } from './EarlyReturnTransformation.js';
 import { isReturnFlag } from './ConfineReturns.js';
+import { castKeyLabel, constantKeyLabel, type CompileTimeKeyContext } from './compileTimeKeyValue.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -816,6 +817,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private writtenNames = new WeakMap<Node, { readonly names: Set<string>; readonly tuples: Set<string> }>();
   private writtenNamesOf?: FunctionDefinitionNode;
   private canonSeen: Set<string> = new Set(); // cycle guard for transitive local-key canonicalization
+  // Set while a mapping key is canonicalized: a constant or a byte-changing cast of a compile-time value is then
+  // published as the value the body hashes for it (`compileTimeKeyValue.ts`).
+  private keyValueFolding = false;
   // Each node's straight-line statement number in the function body, and each statement's state effects: a
   // canonical read of state the body already assigned names the assigned value, so the SDK evaluates it against
   // the state the call starts from.
@@ -10842,7 +10846,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.canonSeen.delete(node.name);
         return inner;
       }
-      return `id:${node.name}`;
+      // A constant a key reads is the value code generation inlines for it, which the SDK cannot look up by name.
+      const constant = this.keyValueFolding ? this.constantMap.get(node.name) : undefined;
+      const folded = constant === undefined ? undefined : constantKeyLabel(constant, this.compileTimeKeyContext());
+      return folded ?? `id:${node.name}`;
     }
     if (node instanceof StateAccessNode) {
       const assigned = this.stateAssignedBefore(node);
@@ -10862,7 +10869,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       return `unop:${node.operator}(${this.canonicalizeExpression(node.expression)})`;
     }
     if (node instanceof CastNode) {
-      return `cast:${node.type.toString()}(${this.canonicalizeExpression(node.expression)})`;
+      // The SDK reads a cast as its operand, so a key's cast that changes a compile-time value's bytes is folded.
+      const folded = this.keyValueFolding ? castKeyLabel(node, this.compileTimeKeyContext()) : undefined;
+      return folded ?? `cast:${node.type.toString()}(${this.canonicalizeExpression(node.expression)})`;
     }
     if (node instanceof NullaryOpNode) {
       return `nullop:${node.operator}`;
@@ -11019,7 +11028,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // local (localKeyDefs keeps the FIRST def) would inline a stale value -> the covenant's keyToSlot verify
       // rejects (fail closed), not silent corruption. Single-assignment computed locals (the common case) resolve.
       if (def) return { kind: 'expression', canonical: this.canonicalizeExpression(def) };
-      return { kind: 'expression', canonical: `id:${key.name}` };
+      return { kind: 'expression', canonical: this.canonicalizeExpression(key) };
     }
     if (key instanceof StateAccessNode) {
       // State the body assigned before the key is read names the assigned value, not the starting state.
@@ -11252,12 +11261,26 @@ export default class SymbolTableTraversal extends AstTraversal {
   private getMappingKeyDescriptors(keys: ExpressionNode[]): { keyParams: string[]; keySources: KeySourceInfo[] } {
     const keyParams: string[] = [];
     const keySources: KeySourceInfo[] = [];
-    for (const keyExpr of keys) {
-      const source = this.classifyKeySource(keyExpr);
-      keySources.push(source);
-      keyParams.push(source.kind === 'param' ? source.paramName! : source.canonical);
+    const folding = this.keyValueFolding;
+    this.keyValueFolding = true;
+    try {
+      for (const keyExpr of keys) {
+        const source = this.classifyKeySource(keyExpr);
+        keySources.push(source);
+        keyParams.push(source.kind === 'param' ? source.paramName! : source.canonical);
+      }
+    } finally {
+      this.keyValueFolding = folding;
     }
     return { keyParams, keySources };
+  }
+
+  /** How a key's compile-time values are folded: the constants this unit declares, converted as codegen does. */
+  private compileTimeKeyContext(): CompileTimeKeyContext {
+    return {
+      constantOf: (name) => this.constantMap.get(name),
+      solidityCompat: this.compilerOptions.solidityImportCompat === true,
+    };
   }
 
   visitBlock(node: BlockNode): Node {

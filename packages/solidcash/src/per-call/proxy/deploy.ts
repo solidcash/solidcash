@@ -4600,6 +4600,7 @@ export async function callPerCallProxyEntry(
     senderAddress: options.callerLockingBytecode, categoryId: options.proxyCategoryId, deployment: proxyPools,
     recordLayout: classificationLayout,
     nodeIdOf: (collection, slot) => `mapping-read-${collection}-${bytesToHex(slot)}`,
+    frameLabel: `the implementation's ${entryLabelFor(options.functionName)}`,
   });
   // The live deployment: the record's commitments give a dynamic value's length, and the category's chunk UTXOs
   // are both a dynamic value's chunks and a mapping value's continuation chunks. `collectionNodes` holds the

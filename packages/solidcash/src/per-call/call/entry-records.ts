@@ -246,6 +246,14 @@ interface KeyResolutionContext {
    * from the written value. The caller states the elements each write adds; absent leaves the key at the live length.
    */
   readonly stateLengthDeltas?: Readonly<Record<string, bigint>>;
+  /**
+   * The value a mapping collection's node holds for a key, read from the deployment the frame runs on.
+   *
+   * A key the body reads out of another mapping (`map:<collection>(<keys>)`, an admin role read before the role's
+   * members) is that node's value, or the type's default for a key no node holds, exactly as the body reads it.
+   * Absent leaves such a key unresolved, which is refused by name.
+   */
+  readonly readMappingValue?: (collection: string, keys: readonly FunctionArgument[]) => FunctionArgument | undefined;
 }
 
 /** Resolves one access's key(s) from the frame's own arguments, its sender, or a compile-time expression. */
@@ -264,7 +272,9 @@ function resolveKeys(
     // An artifact may publish the caller as an expression label rather than as a source kind. A root frame's
     // sender and its transaction origin are the same user, which is the coin the call spends.
     if (label !== undefined && CALLER_KEY_LABELS.has(label)) return request.callerLockingBytecode;
-    const evaluated = evalComputedKey(label, args, visible, request.state, request.stateLengthDeltas);
+    const evaluated = evalComputedKey(
+      label, args, visible, request.state, request.stateLengthDeltas, request.readMappingValue,
+    );
     if (evaluated !== undefined) return evaluated;
     const byName = encodedArgument(fn, args, label ?? '', structs);
     if (byName !== undefined) return byName;

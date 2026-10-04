@@ -44,6 +44,7 @@ import {
   BranchNode,
   CastNode,
   CollectionIterationNode,
+  ConstantDefinitionNode,
   ContractNode,
   DoWhileNode,
   EmitStatementNode,
@@ -169,8 +170,10 @@ function valueWitnessSlotsInParameters(fn: FunctionDefinitionNode): number {
 }
 
 /** Removes the frame parameters a master does not take, from every function and so from the published ABI. */
-export function stripFrameParameters(contract: ContractNode): void {
-  const constants = contractConstantNames(contract);
+export function stripFrameParameters(
+  contract: ContractNode, fileConstants: readonly ConstantDefinitionNode[] = [],
+): void {
+  const constants = constantNames(contract, fileConstants);
   const functions = [
     contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
   ];
@@ -269,9 +272,14 @@ export interface PerCallBatchKey {
   readonly expression?: ExpressionNode;
 }
 
-/** The contract-level and inherited constant names a key expression may read at compile time. */
-function contractConstantNames(contract: ContractNode): ReadonlySet<string> {
-  return new Set(contract.constantDefinitions.map((definition) => definition.name));
+/**
+ * The constant names a key expression may read at compile time: the contract's own and inherited ones and the
+ * unit's file-level ones, which code generation inlines alike.
+ */
+function constantNames(
+  contract: ContractNode, fileConstants: readonly ConstantDefinitionNode[],
+): ReadonlySet<string> {
+  return new Set([...fileConstants, ...contract.constantDefinitions].map((definition) => definition.name));
 }
 
 /** A target key the master can hold where it derives the slot, or the fact that stops it from holding one. */
@@ -336,9 +344,11 @@ function resolveBatchKey(
         + 'expression to read',
     };
   }
-  const identifier = keyNode instanceof IdentifierNode ? keyNode : undefined;
+  // A constant is a compile-time value code generation inlines wherever it is read, so the derivation emits it as the
+  // body's own key does; a local is followed to the one declaration that binds it.
+  const identifier = keyNode instanceof IdentifierNode && !constants.has(keyNode.name) ? keyNode : undefined;
   const expression = identifier === undefined
-    ? keyNode : resolveKeyIdentifier(identifier.name, entry, new Set());
+    ? keyNode : resolveKeyIdentifier(identifier.name, entry, constants, new Set());
   if (expression === undefined) {
     return {
       kind: 'refusal',
@@ -413,12 +423,14 @@ function mappingWriteKey(
  * Lowering rewrites a source key to a synthetic local in one documented place: an inlined call with a storage
  * pointer copies its value arguments into `__spN_<name>` locals before the substituted write, so the write's own
  * key is a read of that copy. Following the declaration recovers the argument the copy was made from, which the
- * master can emit at the top of the body when it is itself compile-time. A name bound more than once, or one bound
- * to a value the walk cannot follow to a single expression, is left unresolved so the caller refuses it.
+ * master can emit at the top of the body when it is itself compile-time. A local bound to a constant resolves to the
+ * constant, which code generation inlines. A name bound more than once, or one bound to a value the walk cannot
+ * follow to a single expression, is left unresolved so the caller refuses it.
  */
 function resolveKeyIdentifier(
   name: string,
   entry: FunctionDefinitionNode,
+  constants: ReadonlySet<string>,
   seen: Set<string>,
 ): ExpressionNode | undefined {
   if (seen.has(name)) return undefined;
@@ -432,8 +444,8 @@ function resolveKeyIdentifier(
     if (node instanceof AssignNode && node.identifier.name === name) reassigned = true;
   });
   if (definition === undefined || reassigned) return undefined;
-  return definition instanceof IdentifierNode
-    ? resolveKeyIdentifier(definition.name, entry, seen)
+  return definition instanceof IdentifierNode && !constants.has(definition.name)
+    ? resolveKeyIdentifier(definition.name, entry, constants, seen)
     : definition;
 }
 
@@ -488,7 +500,7 @@ function keyOperandUnavailable(
     if (current instanceof IdentifierNode) {
       if (constants.has(current.name) || params.has(current.name)) return undefined;
       if (seen.has(current.name)) return `the value '${current.name}'`;
-      const definition = resolveKeyIdentifier(current.name, entry, new Set(seen));
+      const definition = resolveKeyIdentifier(current.name, entry, constants, new Set(seen));
       if (definition === undefined) return `the value '${current.name}'`;
       seen.add(current.name);
       const inner = walk(definition, underField);
@@ -1724,6 +1736,8 @@ export interface PerCallMasterShapeInput {
   readonly emitsEvent: boolean;
   /** The bodies code generation refused for a loop guard their published recipe cannot carry, with the reason. */
   readonly loopGuardRefusals?: ReadonlyMap<string, string>;
+  /** The unit's file-level constants, which a body reads as it reads the contract's own. */
+  readonly fileConstants?: readonly ConstantDefinitionNode[];
 }
 
 /** One entry's external calls, in execution order, which that entry's own sites bind. */
@@ -1877,7 +1891,7 @@ function touchesDynamicState(body: BlockNode, dynamic: ReadonlySet<string>): boo
 export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCallMasterShapeAssessment {
   const { contract } = input;
   markDynamicStateBodies(contract);
-  const constants = contractConstantNames(contract);
+  const constants = constantNames(contract, input.fileConstants ?? []);
   const refuse = (reason: string): PerCallMasterShapeAssessment => ({ supported: false, reason });
   if (contract.constructorDef) {
     // The constructor runs as one more selector-dispatched body behind the same head, so it is admitted exactly when

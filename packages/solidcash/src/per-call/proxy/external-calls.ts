@@ -1713,8 +1713,8 @@ export function planCalleeWrites(callee: HopCallee, learnedValue?: Uint8Array): 
  * positions past the data records its block layout names, and each is spent on the entry covenant's read-only path.
  *
  * The node is the deployment's own classification, so no second classifier is built here, and the key is resolved
- * from the reach's own call data and its frame's sender. A key this hop cannot resolve to a node, or a node whose
- * value the hop cannot state, is refused by name rather than guessed at.
+ * from the reach's own call data, its frame's sender and the nodes of the mappings it reads a key out of. A key this
+ * hop cannot resolve to a node, or a node whose value the hop cannot state, is refused by name rather than guessed at.
  */
 function calleeReadNodes(options: {
   readonly artifact: Artifact;
@@ -1755,6 +1755,8 @@ function calleeReadNodes(options: {
    * shared with every reach that reads or writes it (`sharedNodeId`). Absent names it by the key the read resolved.
    */
   readonly nodeIdOf?: (collection: string, slot: Uint8Array) => string;
+  /** How a refusal names the frame: the callee by its contract and entry when absent. */
+  readonly frameLabel?: string;
 }): readonly HopCalleeReadNode[] {
   const fn = options.artifact.abi.find((candidate) => candidate.name === options.functionName);
   if (fn === undefined) return [];
@@ -1772,18 +1774,22 @@ function calleeReadNodes(options: {
     .sort((left, right) => left.offset - right.offset);
   // A read at no fixed entry slot has no position in the frame's segment, so the body would walk past it and read
   // a record the plan never declared: refused by name rather than dropped from the plan.
+  const frame = options.frameLabel ?? `the callee "${options.artifact.contractName}.${options.functionName}()"`;
   if (reads.some((access) => !slots.some((slot) => slot.slotIndex === access.slotIndex))) {
     throw new PerCallProxyDeployError(
-      `the callee "${options.artifact.contractName}.${options.functionName}()" reads a mapping key at no fixed `
-      + 'entry slot, which this hop does not declare a node for',
+      `${frame} reads a mapping key at no fixed entry slot, which this hop does not declare a node for`,
     );
   }
   // A chunkable collection's node tail holds only a digest past the inline limit, so the body takes the value
   // itself from its frame's block: the joined value is that witness, assembled from the deployment's own chunks.
-  const live = liveDeploymentOf(
-    options.categoryId, options.deployment,
-    options.recordLayout ?? options.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 },
-    options.createdNodes);
+  const layout = options.recordLayout ?? options.artifact.stateLayout
+    ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
+  const live = liveDeploymentOf(options.categoryId, options.deployment, layout, options.createdNodes);
+  // A key the body reads out of another mapping (`m[n[k]]`) is the value n's node holds for k, as the reaches placed
+  // before this one left it, or the type's default where no node holds k: the body reads it at its own position.
+  const readMappingValue = liveMappingValueReader(options.artifact, liveDeploymentOf(
+    options.categoryId, options.deployment, layout, options.createdNodes, options.rewrittenNodes,
+  ), options.artifact.structs);
   return slots.map((slot): HopCalleeReadNode => {
     let node: ReturnType<typeof readEntryNode>;
     try {
@@ -1795,11 +1801,12 @@ function calleeReadNodes(options: {
         categoryId: options.categoryId,
         nodesByCollection: options.deployment.nodesByCollection,
         slotIndex: slot.slotIndex!,
+        readMappingValue,
       });
     } catch (error) {
       throw new PerCallProxyDeployError(
-        `the callee "${options.artifact.contractName}.${options.functionName}()" reads a mapping node this hop `
-        + `cannot declare: ${error instanceof Error ? error.message : String(error)}`,
+        `${frame} reads a mapping node this hop cannot declare: `
+        + `${error instanceof Error ? error.message : String(error)}`,
       );
     }
     // A key the deployment does not hold may be one an earlier reach of this hop inserted: the list the insert
@@ -1834,9 +1841,8 @@ function calleeReadNodes(options: {
         value = joinedNodeValue(collection, node.commitment, live);
         if (value === undefined) {
           throw new PerCallProxyDeployError(
-            `the callee "${options.artifact.contractName}.${options.functionName}()" reads a mapping node of `
-            + `collection "${node.collection}" whose ${length}-byte value this hop cannot reassemble from the `
-            + "deployment's chunk records, so it cannot witness the body's read",
+            `${frame} reads a mapping node of collection "${node.collection}" whose ${length}-byte value this hop `
+            + "cannot reassemble from the deployment's chunk records, so it cannot witness the body's read",
           );
         }
       }
@@ -1881,12 +1887,16 @@ function closestCreatedBelow<Node extends { readonly collection: string; readonl
  * A read the planner cannot state leaves the frame planned without it, exactly as a write outside a sorted batch it
  * cannot state does: the callee's own frame reports its refusal when it is settled, naming the callee, rather than
  * the hop fabricating a plan for a record it cannot place. The hop's own implementation frame reads its nodes the
- * same way.
+ * same way. An entry that writes a sorted batch beside its reads is the exception: its batch's groups follow the
+ * read nodes on every path, so a read the planner cannot state is refused here by its own reason, rather than
+ * leaving the batch planner to name the first read it finds undeclared.
  */
 export function calleeReadNodesOrNone(options: Parameters<typeof calleeReadNodes>[0]): readonly HopCalleeReadNode[] {
   try {
     return calleeReadNodes(options);
-  } catch {
+  } catch (error) {
+    const fn = options.artifact.abi.find((candidate) => candidate.name === options.functionName);
+    if ((fn?.sortedBatchInfo ?? []).length > 0) throw error;
     return [];
   }
 }

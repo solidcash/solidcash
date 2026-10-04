@@ -368,7 +368,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   deployed without a proxy; its two-mapping constructor deploys since `deploy/constructor-loop-writes`),
   `state-keyed-mapping-write` and
   `stored-value-keyed-write` (a mapping key read from state), `proxied-native-value`, `role-admin-read-key` (role
-  mappings keyed by constants and stored values), `loop-counted-tail` (an event, hash or send per loop turn),
+  helpers that return and emit, and a role write the body skips; the keys are served in
+  `call/role-admin-read-key`), `loop-counted-tail` (an event, hash or send per loop turn),
   `root-reentry-receiver-hook`, `two-deployments-one-artifact` and `read-node-spent-by-insert`, with
   `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out
   (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`. The directory runs only under

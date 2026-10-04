@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
-  hash256,
+  binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
+  hash256, utf8ToBin,
 } from '@bitauth/libauth';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   buildEntryNftCovenantScript, buildPushdataCommitment, computeCollectionHash, encodeWitnessBlock,
   type RecordEntry, type WitnessBlock,
@@ -219,6 +220,52 @@ describe('a per-call master keyed by a compile-time expression', () => {
     const slot = keyToSlot(ZERO_KEY);
     const tampered = encodeEntryCommitment(slot, new Uint8Array(32), new Uint8Array([AMOUNT + 1]));
     expect(evaluateInsert(env, [VALUE_TAIL], ZERO_KEY, { nodeCommitment: tampered }).accepted).toBe(false);
+  });
+});
+
+/**
+ * A write keyed by a contract constant, and one keyed by a cast that widens a literal.
+ *
+ * Code generation inlines a constant wherever it is read, so the derivation emits the constant's value as the body's
+ * own key does, and the artifact publishes the key as the bytes the body hashes: the folded hash a `bytes32`
+ * constant holds, and the 32 bytes `bytes32(uint256(1))` widens the number to (`OP_NUM2BIN`, little-endian
+ * natively) rather than the one-byte number an off-chain reader reads through the cast.
+ */
+const CONSTANT_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract RoleBalances {'
+  + '   bytes32 constant ROLE = keccak256("ROLE");'
+  + '   mapping(bytes32 => uint) balances;'
+  + '   function set(uint amount) {'
+  + '     balances[ROLE] = amount;'
+  + '   }'
+  + ' }';
+
+const CAST_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract WideBalances {'
+  + '   mapping(bytes32 => uint) balances;'
+  + '   function set(uint amount) {'
+  + '     balances[bytes32(uint256(1))] = amount;'
+  + '   }'
+  + ' }';
+
+describe.each([
+  ['a contract constant', CONSTANT_KEY_SOURCE, keccak_256(utf8ToBin('ROLE')), utf8ToBin('ROLE')],
+  ['a cast that widens a literal', CAST_KEY_SOURCE, Uint8Array.from([1, ...new Uint8Array(31)]), Uint8Array.of(1)],
+])('a per-call master keyed by %s', (_shape, source, key, misread) => {
+  const env = envFor(source);
+
+  it('publishes the key as the bytes the body hashes and refuses no entry', () => {
+    expect(env.artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
+    const access = env.artifact.abi.find((entry) => entry.name === 'set')?.entryAccesses?.[0];
+    expect(access?.keySources?.[0]?.expressionLabel).toBe(`lit:0x${binToHex(key)}`);
+  });
+
+  it('derives the key from the compile-time value and is accepted by the machine', () => {
+    expect(evaluateInsert(env, [VALUE_TAIL], key)).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the node is planned at a key the body does not hash', () => {
+    expect(evaluateInsert(env, [VALUE_TAIL], misread).accepted).toBe(false);
   });
 });
 

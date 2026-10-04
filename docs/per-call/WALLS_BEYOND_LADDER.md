@@ -219,6 +219,13 @@ plan the implementation's sends the way `callPerCallEntry` plans `entry.transfer
 
 ### 2.6 AccessControl-shaped roles (rank 6)
 
+**Served** (agent AC1): a contract or file-level constant is a key (the master derives it as code generation
+inlines it), a key label publishes a constant and a byte-changing cast of a literal as the exact bytes the body
+hashes (`semantic/compileTimeKeyValue.ts`), and the admin check reads its key out of the admin node through the
+mapping reader `evalComputedKey` now takes. Served in `call/role-admin-read-key.test.ts`; the ahead replica is
+repointed at the walls past it: helpers that return a bool and emit (refused at compile time, X118), and a role
+write on a branch the body skips.
+
 Replica: `role-admin-read-key.test.ts` (4 cases). The member mapping inside a struct inside a mapping is served:
 `initialize` keyed by a role parameter deploys, and `grantByOwner(role, account)` settles. Then, in order: a
 contract constant as the key (`_roles[DEFAULT_ADMIN_ROLE]`; `_roles[MINTER]` with `MINTER = keccak256("MINTER")`
@@ -345,7 +352,7 @@ today and its title says what should settle once served.
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3 (control: parameter key) |
 | `stored-value-keyed-write.test.ts` | 5 | 2.4: bus-route defect, codegen crash, hop and plain refusals (control: open) |
 | `proxied-native-value.test.ts` | 3 | 2.5 |
-| `role-admin-read-key.test.ts` | 4 | 2.6 (control: owner grant) |
+| `role-admin-read-key.test.ts` | 3 | 2.6 served; repointed: returning helpers, a skipped role write |
 | `loop-counted-tail.test.ts` | 4 | 2.7 (control: scalar loop) |
 | `root-reentry-receiver-hook.test.ts` | 3 | 2.8 |
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |

@@ -22,11 +22,15 @@ import type { ValueChunkProducerPathDisposition } from './ValueChunkProducerIden
  * a direct computed key resolve WITHOUT a manual withEntryKey (Solidity auto-resolves such keys). Returns
  * undefined when the label is not evaluable (a bare local `id:pkh` with no inlined definition, or an unsupported
  * op); the caller then falls back to entryKeyOverrides / placeholder.
+ *
+ * `readMapping` reads the value a mapping collection's node holds for a key, as the body reads it: a caller that
+ * holds the deployment's nodes resolves a key read out of another mapping (`map:<collection>(<keys>)`) with it.
  */
 export function evalComputedKey(
   label: string | undefined, args: FunctionArgument[], inputs: readonly { name: string; type?: string }[],
   state?: Readonly<Record<string, StateValue>>,
   stateLengthDeltas?: Readonly<Record<string, bigint>>,
+  readMapping?: (collection: string, keys: readonly FunctionArgument[]) => unknown,
 ): Uint8Array | undefined {
   if (!label) return undefined;
   const encode = (value: unknown): Uint8Array | undefined => {
@@ -45,6 +49,16 @@ export function evalComputedKey(
       else if (s[i] === ',' && depth === 0) return [s.slice(0, i), s.slice(i + 1)];
     }
     return undefined;
+  };
+  // Every top-level operand of an argument list: `id:a,id:b` is two.
+  const splitArguments = (s: string): string[] => {
+    const operands: string[] = [];
+    let rest = s;
+    for (let pair = splitTopLevel(rest); pair !== undefined; pair = splitTopLevel(rest)) {
+      operands.push(pair[0]);
+      rest = pair[1];
+    }
+    return [...operands, rest];
   };
   const evalValue = (s: string): unknown => {
     let m = s.match(/^id:(.+)$/);
@@ -124,6 +138,12 @@ export function evalComputedKey(
       // variable, so it must be supplied by the caller; an unavailable array or index keeps the label unresolved and
       // the caller's existing placeholder path applies unchanged.
       const values = state?.[m[1]];
+      // A mapping is no state variable: its value at the keys is the node the caller's reader finds for them.
+      if (!Array.isArray(values) && readMapping !== undefined) {
+        const keys = splitArguments(m[2]).map(evalValue);
+        if (keys.some((key) => key === undefined)) return undefined;
+        return readMapping(m[1], keys as FunctionArgument[]);
+      }
       const index = evalValue(m[2]);
       const n = typeof index === 'bigint' ? Number(index)
         : typeof index === 'number' ? index : NaN;

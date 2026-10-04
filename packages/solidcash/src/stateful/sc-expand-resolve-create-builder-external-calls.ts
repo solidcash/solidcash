@@ -2,6 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — expand looped external calls and auto-resolve callees.
  */
 
+import { binToHex } from '@bitauth/libauth';
 import type {
   AbiFunction,
   ArgSource,
@@ -11,6 +12,7 @@ import type {
   StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { tryCashAddressToLockScript } from '../utils.js';
 
 /** Structural ExternalCallInfo to avoid importing StatefulContract through lifecycle types. */
 export type CreateBuilderResolvedExternalCall = {
@@ -28,6 +30,7 @@ export type CreateBuilderLoopIdxRange = {
 
 export interface ExpandResolveCreateBuilderExternalCallsHost {
   getExternalTargetEntriesByInterface(interfaceName: string): ReadonlyArray<{
+    address: string;
     instance?: unknown;
     method?: string;
   }>;
@@ -69,6 +72,15 @@ function containsReturningExpression(value: unknown, seen = new Set<object>()): 
   return Object.values(value).some((child) => Array.isArray(child)
     ? child.some((item) => containsReturningExpression(item, seen))
     : containsReturningExpression(child, seen));
+}
+
+function exactRegisteredLockHex(value: string | Uint8Array): string | undefined {
+  const lock = tryCashAddressToLockScript(value);
+  if (lock) return binToHex(lock);
+  if (typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/iu.test(value)) {
+    return value.replace(/^0x/iu, '').toLowerCase();
+  }
+  return undefined;
 }
 
 /**
@@ -196,6 +208,7 @@ export async function expandResolveCreateBuilderExternalCalls(
       // IERC20 value stored in a pool record). Resolve that authenticated address against deployments
       // first; an interface-name registration is only a fallback when no pinned deployment is available.
       let pinned: unknown;
+      let registeredAtAddress: unknown;
       if (ec.addressSource || ec.addressStateVar) {
         callerStateSnapshot ??= (await host.getFullState()).state;
         const address = ec.addressSource
@@ -206,9 +219,18 @@ export async function expandResolveCreateBuilderExternalCalls(
           : callerStateSnapshot[ec.addressStateVar!];
         if (typeof address === 'string' || address instanceof Uint8Array) {
           pinned = host.getExternalDeploymentByAddressValue(address);
+          const lockHex = exactRegisteredLockHex(address);
+          if (lockHex) {
+            const matches = host.getExternalTargetEntriesByInterface(ec.interfaceName).filter((entry) => (
+              entry.instance !== undefined
+              && (!entry.method || entry.method === ec.functionName)
+              && entry.address.replace(/^0x/iu, '').toLowerCase() === lockHex
+            ));
+            if (matches.length === 1) registeredAtAddress = matches[0]!.instance;
+          }
         }
       }
-      const registered = pinned ?? host.getExternalRegistryEntry(ec.interfaceName);
+      const registered = pinned ?? registeredAtAddress ?? host.getExternalRegistryEntry(ec.interfaceName);
       if (!registered) {
         canAutoResolve = false;
         break;

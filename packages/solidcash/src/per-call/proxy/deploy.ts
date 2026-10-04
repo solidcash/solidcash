@@ -2522,8 +2522,8 @@ function withNodeWriters(frames: Set<number>, callees: readonly HopCallee[]): Se
  * Each is what the callee frame the call's record names recorded in its `retval` (a proxy's fallback records its
  * delegate frame's), decoded the way that entry declares its returns.
  */
-function reachedCallResults(
-  externalPlan: HopExternalPlan, block: HopPlanBlock, calleeRetvals: ReadonlyMap<string, Uint8Array>,
+export function reachedCallResults(
+  externalPlan: Pick<HopExternalPlan, 'callees'>, block: HopPlanBlock, calleeRetvals: ReadonlyMap<string, Uint8Array>,
 ): Map<string, FunctionArgument> {
   const results = new Map<string, FunctionArgument>();
   for (const callee of externalPlan.callees) {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush } from '@bitauth/libauth';
-import { concatBytes, encodeWitnessBlock, splitFirstPush, type WitnessBlock } from '@solidcash/utils';
+import {
+  concatBytes, encodeIntegerValue, encodeResultList, encodeWitnessBlock, splitFirstPush, type WitnessBlock,
+} from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
@@ -23,8 +25,13 @@ import {
  * the token, each writing its balances. The token's nodes are spent once, and each frame's declarations of them are
  * chained in the order the frames run, as the hop chains them: the second transfer debits the vault's balance from
  * the view the first left, and rewrites the node the first created when the payee is the fee recipient. A plan whose
- * second transfer starts the vault's balance from before the first is refused by that transfer's own frame. Every
- * entry settles and every balance is read back through the views.
+ * second transfer starts the vault's balance from before the first is refused by that transfer's own frame.
+ *
+ * The vault sweeps its whole balance too: the transfer's amount is what the token's `balanceOf` returned to it a
+ * call earlier, so the call is planned stopped before the transfer, the read is settled on that plan, and the call is
+ * planned again from what it returned, as the hop plans one. A plan that states a smaller result, in the vault's
+ * record of the read and in the read's own `retval` alike, is refused by the read's own frame. Every entry settles
+ * and every balance is read back through the views.
  */
 
 const SOURCE = [
@@ -65,6 +72,10 @@ const SOURCE = [
   '  function payout(address to, uint256 amount, uint256 fee) external {',
   '    token.transfer(to, amount);',
   '    token.transfer(feeTo, fee);',
+  '  }',
+  '  function sweep(address to) external {',
+  '    uint256 held = token.balanceOf(address(this));',
+  '    token.transfer(to, held);',
   '  }',
   '}',
 ].join('\n');
@@ -117,6 +128,17 @@ function payoutChain(): Promise<Chain> {
   return payoutRun;
 }
 
+let sweepRun: Promise<Chain> | undefined;
+/** The sweeps' chain: the vault holding 30 of the token. */
+function sweepChain(): Promise<Chain> {
+  sweepRun ??= (async (): Promise<Chain> => {
+    const c = await deployChain(0x54, FEE_LOCK);
+    await mint(c, c.vault.address, 30n);
+    return c;
+  })();
+  return sweepRun;
+}
+
 /** One vault entry that has to settle: entered by the depositor, reaching the token, and broadcast. */
 async function settle(c: Chain, functionName: string, args: readonly FunctionArgument[]): Promise<PerCallCallResult> {
   const outcome = await enterPlain(c.world, c.vault, functionName, args, {
@@ -160,9 +182,11 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
   })) !== true).map((placed) => placed.id);
 }
 
-/** The settled transaction with one master's witness block replaced by `block`. */
-function withBlock(result: PerCallCallResult, master: string, block: WitnessBlock): VmTransaction {
-  const forged = structuredClone(result.transaction) as VmTransaction;
+/** The settled transaction, or `transaction` when given, with one master's witness block replaced by `block`. */
+function withBlock(
+  result: PerCallCallResult, master: string, block: WitnessBlock, transaction: VmTransaction = result.transaction,
+): VmTransaction {
+  const forged = structuredClone(transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
   const { rest } = splitFirstPush(forged.inputs[index]!.unlockingBytecode);
   forged.inputs[index] = {
@@ -237,5 +261,36 @@ describe('a plain root that pays out through one token twice', () => {
     expect(declared.viewIn).toStrictEqual(firstDeclared.viewOut);
     declared.viewIn = Uint8Array.from(firstDeclared.viewIn);
     expect(refusedOn(paid, withBlock(paid, second!.master, block))).toContain(second!.master);
+  }, 600_000);
+});
+
+describe('a plain root that sweeps what an earlier call returned', () => {
+  it('transfers the balance the read before it returned, as an insert and then in place, each read back', async () => {
+    const c = await sweepChain();
+    await settle(c, 'sweep', [USER_LOCK]);
+    expect(await balances(c, [c.vault.address, USER_LOCK])).toStrictEqual([0n, 30n]);
+    await mint(c, c.vault.address, 12n);
+    await settle(c, 'sweep', [USER_LOCK]);
+    expect(await balances(c, [c.vault.address, USER_LOCK])).toStrictEqual([0n, 42n]);
+  }, 600_000);
+
+  it('refuses at the balance read a plan that states a smaller result for it', async () => {
+    const c = await sweepChain();
+    await mint(c, c.vault.address, 5n);
+    const swept = await settle(c, 'sweep', [FEE_LOCK]);
+    expect(refusedOn(swept, structuredClone(swept.transaction) as VmTransaction)).toStrictEqual([]);
+    expect(await balances(c, [c.vault.address, FEE_LOCK])).toStrictEqual([0n, 5n]);
+    // The vault's record of the read carries what the read's own frame returned.
+    const [read] = swept.completed.filter((frame) => frame.functionName.endsWith('.balanceOf()'));
+    const readBlock = structuredClone(swept.draft.blockOf(read!.master)) as WitnessBlock;
+    const vaultBlock = structuredClone(swept.draft.blockOf('master')) as WitnessBlock;
+    expect(vaultBlock.calls[0]!.result).toStrictEqual(readBlock.retval);
+    // A builder states the read returned 1, in the record and the read's `retval` alike, so the two still agree.
+    const forged = encodeResultList([encodeIntegerValue(1n)]);
+    expect(forged).not.toStrictEqual(readBlock.retval);
+    readBlock.retval = forged;
+    vaultBlock.calls[0]!.result = forged;
+    const transaction = withBlock(swept, 'master', vaultBlock, withBlock(swept, read!.master, readBlock));
+    expect(refusedOn(swept, transaction)).toContain(read!.master);
   }, 600_000);
 });

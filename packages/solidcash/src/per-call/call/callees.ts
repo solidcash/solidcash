@@ -21,10 +21,11 @@
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
  * value's or a mapping value's chunks, sends value or co-spends a side-car; a frame that only reads a node an
  * earlier frame created; reaches of one collection one transaction cannot carry; a deployment entered twice whose
- * frames name data records that no order of its block keeps side by side; and a site that waits on an earlier call's
- * result. Two deployments of one contract are two blocks, each its own category's. A frame the plan runs beside the
- * callees on one of their contracts, a value send's `receive()`, counts among the contract's masters, and a callee
- * that runs after it starts from the views it left.
+ * frames name data records that no order of its block keeps side by side; and a callee frame's site that waits on an
+ * earlier call's result. A site of the entry's own that does stops the plan before it (`blocked`), and the call plans
+ * again once the frames of the earlier calls answered. Two deployments of one contract are two blocks, each its own
+ * category's. A frame the plan runs beside the callees on one of their contracts, a value send's `receive()`, counts
+ * among the contract's masters, and a callee that runs after it starts from the views it left.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -59,7 +60,7 @@ import { PerCallProxyDeployError } from '../proxy/errors.js';
 import {
   chainedNodeIds, deploymentStateValues, planHopExternalCalls, requireSatisfiableReachWrites, routingOf,
   sharedNodeWritersBefore,
-  type HopCallee, type HopCalleeRecord, type HopExternalPlan, type PerCallProxyExternal,
+  type HopCallee, type HopCalleeRecord, type HopExternalPlan, type HopPlanBlock, type PerCallProxyExternal,
 } from '../proxy/external-calls.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
 import { publishedLoopEffects } from './loop-turns.js';
@@ -93,6 +94,12 @@ export interface PlannedCallees {
   readonly eventCount: number;
   /** How many values the callee frames' bodies compute that the plan learns: returns, payloads and node views. */
   readonly learnable: number;
+  /**
+   * The entry's site the plan stops before, for a site whose argument or loop bound reads earlier calls' results that
+   * `reachedResults` does not hold yet. Such a plan states the calls before the site only: enough to learn those
+   * results from the frames of the calls that return them, never enough to broadcast.
+   */
+  readonly blocked?: HopPlanBlock;
 }
 
 /** What the callee frames' own bodies computed, by master, as far as the plan has learned it. */
@@ -121,6 +128,8 @@ export interface CalleePlanOptions {
   /** The root's own address, `address(this)`, and its caller's lock, `msg.sender`. */
   readonly selfAddress: Uint8Array;
   readonly senderAddress: Uint8Array;
+  /** The results earlier calls returned, as a stopped plan's frames handed them back (`reachedResultKey`). */
+  readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
 }
 
 /** The keys the root and the caller's named deployments are handed to the planner under, which no interface can be. */
@@ -323,13 +332,17 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       entryDeployment: { categoryId: options.categoryId, deployment: options.deployment, layout },
       selfAddress: options.selfAddress,
       senderAddress: options.senderAddress,
+      ...(options.reachedResults === undefined ? {} : { reachedResults: options.reachedResults }),
     });
   } catch (error) {
     if (!(error instanceof PerCallProxyDeployError)) throw error;
     return refuse(error.message);
   }
   plan = withSpelledCalls(plan, options.artifact, options.functionName);
-  if (plan.blocked !== undefined) {
+  // A site of the entry's own that reads earlier calls' results stops the plan before it, and the call learns those
+  // results from the calls' own frames before planning again (`call.ts`); a site of a callee frame's that does is
+  // refused by name.
+  if (plan.blocked !== undefined && plan.blocked.path !== '') {
     refuse(`${plan.blocked.where} reads an earlier call's result, which this call path does not plan yet`);
   }
   if (plan.conditionalProducers.length > 0) {
@@ -385,6 +398,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   return {
     calls: plan.calls, callBases: plan.callBases, callees: plan.callees, utxos: plan.utxos, blocks,
     contracts: [...byBlock.keys()], artifacts, eventCount, learnable,
+    ...(plan.blocked === undefined ? {} : { blocked: plan.blocked }),
   };
 }
 

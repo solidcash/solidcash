@@ -45,8 +45,10 @@
  * An entry that calls another contract runs each callee as a frame of the callee contract's own block, planned as
  * the proxy hop plans its delegate frame's calls (`callees.ts`): the callee's return, its events' payloads and the
  * views of the mapping nodes it writes are learned from its own close, deepest first, before the entry that reads
- * it. Its event outputs follow the entry's own, and the nodes it creates follow the entry's. The shapes `callees.ts`
- * does not settle yet are refused by name.
+ * it. Its event outputs follow the entry's own, and the nodes it creates follow the entry's. A call whose argument
+ * or loop bound reads an earlier call's result is planned once that call has answered, as the hop plans one: the
+ * plan stops before the site, the frames of the earlier calls are settled on it, and the call is planned again from
+ * what they returned. The shapes `callees.ts` does not settle yet are refused by name.
  *
  * What is not covered: a returning entry reached through a proxy hop whose forwarded call records no result. The
  * generated closure shape forwards with a bare `delegatecall(input)` and drops the result, so the hop cannot express
@@ -97,9 +99,12 @@ import {
   stateRecordUnlockingBytecode,
   type PerCallDeploymentSet,
 } from '../deploy/index.js';
-import { chainSharedNodeViews, placeOwnWrites, withChainEnds, withCreatedChainEnds } from '../proxy/deploy.js';
+import {
+  chainSharedNodeViews, placeOwnWrites, reachedCallResults, withChainEnds, withCreatedChainEnds,
+} from '../proxy/deploy.js';
 import { hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
+import { declareUnstatedCalls } from '../proxy/planning-refusal.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
 import { deploymentActivationFacts } from './activation-facts.js';
 import {
@@ -463,9 +468,10 @@ interface LaidEntryMapping {
   /**
    * The records each segment of a frame that makes `calls` calls declares: the nodes read apart, kept, in every one,
    * then each write's records in the segment its artifact publishes for it, kept on either side. `callBases` holds,
-   * for each published call site, the position of its first call in the frame, or -1 for none.
+   * for each published call site, the position of its first call in the frame, or -1 for none. A frame a stopped plan
+   * states only the first calls of (`truncated`) declares a write past its last stated call in its last segment.
    */
-  place(calls: number, callBases: readonly number[]): DraftRecordEntry[][];
+  place(calls: number, callBases: readonly number[], truncated: boolean): DraftRecordEntry[][];
 }
 
 /** The mapping records one frame reads and writes, with the ids its plan places. */
@@ -612,13 +618,14 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
         }),
         ...(laid?.values === undefined ? {} : { values: laid.values }),
         // Each write lands in the segment its artifact publishes, as the hop places its delegate frame's own.
-        place: (calls, callBases) => {
+        place: (calls, callBases, truncated) => {
           const segments = Array.from({ length: calls + 1 }, (): DraftRecordEntry[] => [...read.entries]);
           if (laid === undefined || writes === undefined) return segments;
           try {
             placeOwnWrites(segments, {
               artifact, functionName, label: `entry "${functionName}"`, laid: { ...laid, entries: written }, writes,
               indexOf: context.indexOf, category, createdBase: context.createdBase, calls, callBases,
+              ...(truncated ? { truncated } : {}),
             });
           } catch (error) {
             throw asCallRefusal(error, functionName);
@@ -649,8 +656,13 @@ interface SendShape {
   readonly payeeListedSends: ReadonlyMap<number, number>;
 }
 
-/** A call planned with the sends `shape` declares. */
-async function callInShape(options: PerCallCallOptions, shape: SendShape): Promise<PerCallCallResult> {
+/**
+ * A call planned with the sends `shape` declares, and with the results `reached` holds, keyed by `reachedResultKey`:
+ * what the earlier calls a site of the entry reads returned, as a plan stopped before that site learned them.
+ */
+async function callInShape(
+  options: PerCallCallOptions, shape: SendShape, reached: ReadonlyMap<string, FunctionArgument> = new Map(),
+): Promise<PerCallCallResult> {
   const { provider, artifact, categoryId, functionName } = options;
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
@@ -753,6 +765,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     calleePlan = await planEntryCallees({
       provider, artifact, functionName, args, externals: options.externals ?? {}, validatorProgram, categoryId,
       deployment, selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
+      ...(reached.size === 0 ? {} : { reachedResults: reached }),
     });
   } catch (error) {
     if (error instanceof PerCallCalleeError) throw new PerCallCallError(error.message);
@@ -1283,8 +1296,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     // publishes for it.
     const mappingSegments = laid === undefined ? undefined
       : mappingSpans !== undefined ? placeRecordsBySpan(laid.entries, mappingSpans, segmentCount)
-        : segmentCount > 1 && mappingRecords?.loopRun === undefined ? laid.place(segmentCount - 1, callBases)
-          : undefined;
+        : segmentCount > 1 && mappingRecords?.loopRun === undefined
+          ? laid.place(segmentCount - 1, callBases, calleePlan?.blocked !== undefined) : undefined;
     const segment = (_unused: unknown, position: number): DraftRecordEntry[] => [
       ...declared.map((record): DraftRecordEntry => {
         const index = recordIndex(record.id);
@@ -1608,6 +1621,10 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
     );
     const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: frameArtifacts, plan });
+    // A plan stopped before a site states the entry's calls before it only, so its calls from that site on are
+    // declared unbound: a body that holds its call count runs to that site and binds the calls before it, as the
+    // execution does, and stops on the first unbound record.
+    if (calleePlan?.blocked !== undefined) declareUnstatedCalls(candidate, artifact, MASTER_ID);
     draft = candidate;
     let stalled = false;
     try {
@@ -1633,6 +1650,21 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       if (calleeValuesOwed(calleePlan, calleeValues)) {
         settled = true;
         break;
+      }
+      // A plan stopped before a site of the entry's own is settled up to that site only: the frames of the calls
+      // before it have answered, so the site's earlier results are decoded from what they returned and the call is
+      // planned again from them. Each stop learns a result no earlier one did, so the stops end.
+      const stop = calleePlan.blocked;
+      if (stop !== undefined) {
+        const results = reachedCallResults(calleePlan, stop, calleeValues.retvals);
+        if ([...results.keys()].every((key) => reached.has(key))) {
+          throw new PerCallCallError(
+            `entry "${functionName}": ${stop.where} reads the result of the earlier call(s) `
+            + `${stop.producers.join(', ')}, and settling them returned nothing the call could decode, so the call `
+            + 'cannot be planned from it',
+          );
+        }
+        return callInShape(options, shape, new Map([...reached, ...results]));
       }
     }
     // A void entry that writes no mapping and emits nothing leaves nothing to learn: the plan is the one just
@@ -1707,7 +1739,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           listedSends: sendCount,
           skippedPayees: new Set([...shape.skippedPayees, payable.indexOf(payees[passed]!)]),
           payeeListedSends: shape.payeeListedSends,
-        });
+        }, reached);
       }
     }
     // A contract it pays hands back what its own body computed from its own program's close.
@@ -1747,7 +1779,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           ...payees.flatMap((payee, index) => (payeeShort[index] ? [[payee.transferPosition, payeeMade[index]!] as const]
             : [])),
         ]),
-      });
+      }, reached);
     }
     // Otherwise it either converged, or refused before writing anything owed.
     settled = true;

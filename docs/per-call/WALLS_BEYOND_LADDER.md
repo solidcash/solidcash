@@ -91,17 +91,22 @@ frames in the hop's settle order (`calleeSettleOrder`) and no frame while an ear
 still owes that node's view, so no frame is learned from a stale view and none needs learning again. Reaches one
 transaction cannot carry are refused as the hop refuses them (`requireSatisfiableReachWrites`), and a frame that only
 reads a node an earlier frame created is refused by name. A payout to a payee and to the fee recipient settles,
-whether the fee recipient is the payee or not (`call/plain-root-calls.test.ts`). One shape stands, pinned in
-`ahead/plain-root-calls.test.ts`:
+whether the fee recipient is the payee or not (`call/plain-root-calls.test.ts`). A sweep, whose transfer passes on
+what an earlier `balanceOf` returned (agent PL4): `planEntryCallees` hands back the plan the hop's planner stops
+before a site of the root's own (`blocked`), and `callInShape` declares the root's calls from that site on unbound
+(`declareUnstatedCalls`), so the root binds the calls before it and stops there, as the execution does. The frames of
+those calls are learned as on any plan, their results decoded with the hop's `reachedCallResults`, and the call
+planned again from them (`reachedResults`); each stop learns a result no earlier one did, or is refused by name. A
+stopped plan lays a write past its last stated call in its last segment, as the hop's does (`truncated`). The sweep
+settles, and a result stated smaller in the vault's record and the read's `retval` alike is refused by the read's own
+frame (`call/plain-root-calls.test.ts`; the replica retired). A callee frame's own site that waits on a result, and a
+call guarded on an earlier result, are still refused by name (`call/callees.ts` 345, 348). A plain burn through
+OpenZeppelin v5's `_update` (`from` debited, `to` = address(0) skipped, its kept predecessor `from`'s node) needs no
+rule of its own: the plain path lays its batch with the hop's `layBatchRecords`, so the skipped group continues from
+the view the debit leaves (`withLearnedViews`, `proxy/entry-writes.ts` 1380), and `call.ts`'s own chaining of a
+node's repeated declarations only restates that view.
 
-- **sweep** (an argument from an earlier call's result; refused at `call/callees.ts` 332). The hop stops its plan
-  before the site that reads the result and settles what precedes it (`planAndSettleHop`, `proxy/deploy.ts` 2577,
-  with `declareUnstatedCalls`, `proxy/planning-refusal.ts` 103). It reads the produced results back
-  (`producedCallResults` 2376, `reachedCallResults` 2524) and plans again with them (`planHopExternalCalls`'s
-  `externalReturns` and `reachedResults`, `proxy/external-calls.ts` 2801-2809). The plain path plans its calls once
-  (`planEntryCallees`, `callees.ts` 315), so it needs the same stop-and-replan loop in `callInShape`.
-
-Replicas: `plain-root-calls.test.ts` (4 cases, 2 since the deposit and the payout are served),
+Replicas: `plain-root-calls.test.ts` (4 cases, retired: the deposit, the payout and the sweep are served),
 `plain-root-writes.test.ts` (3, retired); `plain-genesis-writes.test.ts`
 retired: **the constructor half is served** (agent C2: genesis learns each created node from the body's close and
 plans run-time loops and several collections; `deploy/constructor-loop-writes.test.ts`).
@@ -122,7 +127,7 @@ entry "setName" writes mapping "names", whose values chunk, so the created node'
 the constructor of "MintAndAdmin" writes 2 mapping entry(ies) across 2 collection(s), and this deployment plans one collection's sorted writes
 ```
 
-The sweep case pins a pattern; its `where` clause is the `the call to "<iface>.<fn>"` of `external-calls.ts` 1231.
+The sweep case pinned a pattern; its `where` clause is the `the call to "<iface>.<fn>"` of `external-calls.ts` 1231.
 Controls that settle: `mint` (one collection) and a constructor that only mints.
 
 Read from the code but not run: a plain root calling a callee behind a proxy (`callees.ts` 261, "sits behind a
@@ -582,7 +587,7 @@ today and its title says what should settle once served.
 | File | Cases | Pins |
 | --- | --- | --- |
 | `composition-world.ts` | - | shared harness: project/per-call compile, plain and proxied deploy, both call paths, `recordMet` |
-| `plain-root-calls.test.ts` | 2 | 2.1: sweep; the deposit and the payout served (`call/plain-root-calls.test.ts`) |
+| `plain-root-calls.test.ts` | 2 | 2.1, retired: served (`call/plain-root-calls.test.ts`) |
 | `plain-root-writes.test.ts` | 3 | 2.1, retired: served (`call/plain-root-writes.test.ts`) |
 | `plain-genesis-writes.test.ts` | 2 | 2.1, retired: served (`deploy/constructor-loop-writes.test.ts`) |
 | `guarded-vault-root.test.ts` | 5 | 2.2, retired: served (`call/root-guard-across-call.test.ts`) |
@@ -609,7 +614,7 @@ replica above confirms it. The full table with every row and class is the append
 | --- | --- | --- | --- | --- |
 | 1 | solidcash `call/call.ts` 584, 707 | plain root: mapping write beside a call | H | 584 served (PL2); 707, beside a value call into a contract, stands |
 | 1 | solidcash `call/callees.ts` 339 | plain root: one callee entered twice, a frame writing nodes | H | served (PL3) |
-| 1 | solidcash `call/callees.ts` 318, 321 | plain root: argument from, or call guarded on, an earlier result | H | 318 conf. 2.1 |
+| 1 | solidcash `call/callees.ts` 318, 321 | plain root: argument from, or call guarded on, an earlier result | H | 318 served (PL4); 321 stands |
 | 1 | solidcash `call/entry-records.ts` 762, 786 | plain root: two collections; chunked mapping value | H | served (PL1) |
 | 1 | solidcash `deploy/genesis.ts` 548 | constructor writing two collections | H | conf. 2.1 |
 | 1 | solidcash `call/callees.ts` 258-271 | plain root: callee behind a proxy / delegate / sending value / touching chunks / side-car / unfixed segment | H | code |

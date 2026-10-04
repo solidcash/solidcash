@@ -31,18 +31,16 @@ export type RunCreateBuilderDerivePassHost = {
   deriveFullTransactionState: (...args: any[]) => Promise<any>;
 };
 
-/** A route can publish a continuation witness for a chunkable-capable writer whose selected value stays inline. */
+/** Only this state owner's materialized writes may activate its continuation witness. Nested callees share the
+ * builder's staged/derived output tables, so those tables alone cannot prove that this route wrote a long value. */
 export function hasMaterializedValueChunkWitness(
-  builder: Pick<StatefulTransactionBuilder,
-  'hasStagedValueChunkOutputs' | 'getValueChunkRawCommitments' | 'getDerivedChunkOutputs'>,
+  builder: Pick<StatefulTransactionBuilder, 'getValueChunkRawCommitments'>,
   runs: readonly { id: string }[],
+  ownedMaterializedChunkCounts: readonly number[],
 ): boolean {
-  if (builder.hasStagedValueChunkOutputs()) return true;
-  if (runs.some((run) => builder.getValueChunkRawCommitments(run.id)
-    .some(isValidComputedValueChunkCommitmentEncoding))) return true;
-  return [...builder.getDerivedChunkOutputs().values()].some((chunk) =>
-    chunk.semanticKind === 'valueChunk'
-      && isValidComputedValueChunkCommitmentEncoding(chunk.commitment));
+  return ownedMaterializedChunkCounts.some((count) => Number.isSafeInteger(count) && count > 0)
+    || runs.some((run) => builder.getValueChunkRawCommitments(run.id)
+      .some(isValidComputedValueChunkCommitmentEncoding));
 }
 
 /** Rebase graph write descriptors without flattening authenticated, separately placed resources. */
@@ -139,6 +137,7 @@ export async function runCreateBuilderDerivePass(
     timingEnabled: boolean;
     timing?: (label: string) => void;
     computedValueChunkRuns: readonly any[];
+    ownedMaterializedValueChunkCounts: readonly number[];
     overrides: any;
     applyMintingMasterFills: () => boolean;
     refreshNestedIdentityAnchorWitnesses: () => boolean;
@@ -156,7 +155,7 @@ export async function runCreateBuilderDerivePass(
     loopEntryVars, runtimeLoopEventOutputs, runtimeLoopTransferOutputs, emitInfos,
     derivTransferCount, derivTokenOps, externalCallUtxoGroups, externalOutStateUtxoGroups,
     returnEmitOutputIndex, stateLayout, allGroupEcSlots, functionName, timingEnabled,
-    timing, computedValueChunkRuns, overrides, applyMintingMasterFills,
+    timing, computedValueChunkRuns, ownedMaterializedValueChunkCounts, overrides, applyMintingMasterFills,
     refreshNestedIdentityAnchorWitnesses, refreshTopLevelIdentityAnchorWitnesses,
     eventBlockLayoutForDerive, delegatecallInputIndex, onChainState,
     valueChunkWriteStagingSession, buildStateInputUnlocker,
@@ -413,7 +412,9 @@ export async function runCreateBuilderDerivePass(
         // A chunkable-capable route can select an inline write: its reserved continuation band has
         // zero physical chunks. The provisional positive base used during derivation is not a witness
         // until a concrete chunk has materialized; preserve the compiler's absent sentinel otherwise.
-        finalArgs[topLevelValueChunkBase] = hasMaterializedValueChunkWitness(builder, computedValueChunkRuns)
+        finalArgs[topLevelValueChunkBase] = hasMaterializedValueChunkWitness(
+          builder, computedValueChunkRuns, ownedMaterializedValueChunkCounts,
+        )
           ? BigInt(resolvedGraphValueChunkOutputBase()) : -1n;
         bag.stateInputUnlocker = buildStateInputUnlocker();
         builder._setMasterUnlocker(bag.stateInputUnlocker);

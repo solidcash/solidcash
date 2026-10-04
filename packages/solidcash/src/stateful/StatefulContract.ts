@@ -12783,6 +12783,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       heapMb: Math.round((((globalThis as any).process?.memoryUsage?.().heapUsed ?? 0) / 1048576)),
     });
     const transportedProductions = overrides?.valueChunkProductions ?? [];
+    const ordinaryTransportedRoute = activeDelegateGroupIndex === undefined
+      && (abiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusGraphExecution === true;
     applyCreateBuilderTransportedProductionsImpl({
       transportedProductions,
       activeDelegateGroupIndex,
@@ -12911,8 +12913,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         entryArgs,
         pendingEntryValueTails,
         transportedProductions,
-        ordinaryTransportedRoute: activeDelegateGroupIndex === undefined
-          && (abiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusGraphExecution === true,
+        ordinaryTransportedRoute,
         valueChunkMints,
         maxBhLocktime,
         functionName,
@@ -12930,6 +12931,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         loopValueChunkMints,
       },
     );
+    // Registration above has materialized these owner-local continuations into the builder. Nested call chunks
+    // can occupy the same builder's staged/derived tables, but are not evidence for this route's ABI witness.
+    const ownedMaterializedValueChunkCounts = [
+      ...valueChunkMints.map((mint) => mint.chunks.length),
+      ...loopValueChunkMints.map((mint) => mint.chunks.length),
+      ...(ordinaryTransportedRoute
+        ? transportedProductions.map((production) => production.write.outputCount) : []),
+    ];
 
     await allocateCreateBuilderFundersImpl(
       {
@@ -13082,6 +13091,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         timingEnabled,
         timing,
         computedValueChunkRuns,
+        ownedMaterializedValueChunkCounts,
         overrides,
         applyMintingMasterFills,
         refreshNestedIdentityAnchorWitnesses,

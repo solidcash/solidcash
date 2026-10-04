@@ -9,7 +9,7 @@ import { createTestProvider } from '../test-util.js';
 function fixture(
   bindWrongInterface: boolean, unknownStoredTarget = false, connectRightWithoutDeployment = false,
   proxyOwnsState = false, incompatibleProxySlot = false, withCompilerProof = true,
-  incompatiblePrefixWidth = false,
+  incompatiblePrefixWidth = false, incompatibleNftCount = false,
 ): { read: () => Promise<unknown>; rightRead: () => unknown; wrongRead: () => unknown } {
   const provider = createTestProvider();
   const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
@@ -59,7 +59,7 @@ function fixture(
       variables: ownerVariables.map((variable) => variable.name === 'target'
         ? { ...variable, fieldIndex: incompatibleProxySlot ? variable.fieldIndex + 1 : variable.fieldIndex }
         : variable),
-      dataNftCount: 1, commitmentLimit: 128,
+      dataNftCount: incompatibleNftCount ? 2 : 1, commitmentLimit: 128,
     } }),
   } as Artifact;
   const host = {
@@ -115,6 +115,12 @@ describe('facade passthrough callee identity', () => {
 
   it('does not trust matching target coordinates after incompatible preceding fields', async () => {
     const test = fixture(false, false, false, true, false, true, true);
+    await expect(test.read()).rejects.toThrow('unrelated return probe was started');
+    expect(test.rightRead).not.toHaveBeenCalled();
+  });
+
+  it('does not trust matching target fields across different NFT wire modes', async () => {
+    const test = fixture(false, false, false, true, false, true, false, true);
     await expect(test.read()).rejects.toThrow('unrelated return probe was started');
     expect(test.rightRead).not.toHaveBeenCalled();
   });

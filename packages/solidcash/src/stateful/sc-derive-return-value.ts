@@ -65,10 +65,14 @@ type LogicalReturnContext = {
 function sameStatePrefixThroughField(
   owner: StateLayout, implementation: StateLayout, nftIndex: number, fieldIndex: number,
 ): boolean {
+  // The commitment codec prefixes every data NFT with an index only in multi-NFT layouts.
+  // A 1-to-2 NFT extension therefore changes the wire format even at NFT 0, field 0.
+  if ((owner.dataNftCount > 1) !== (implementation.dataNftCount > 1)) return false;
+  const wireNftCount = owner.dataNftCount > 1 ? 2 : 1;
   const prefixDigest = (layout: StateLayout): string => childStateLayoutDigest({
     variables: layout.variables.filter((variable) => variable.nftIndex < nftIndex
       || (variable.nftIndex === nftIndex && variable.fieldIndex <= fieldIndex)),
-    dataNftCount: nftIndex + 1,
+    dataNftCount: wireNftCount,
     commitmentLimit: layout.commitmentLimit,
     structs: layout.structs,
     // Collection entries are separate NFTs and cannot change scalar field offsets.

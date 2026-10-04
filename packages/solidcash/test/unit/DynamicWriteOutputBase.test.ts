@@ -34,6 +34,12 @@ function chunk(name: string, index = 0): Output {
   };
 }
 
+function provisionalChunk(name: string): Output {
+  const output = chunk(name);
+  output.token!.nft!.commitment = '00';
+  return output;
+}
+
 const predecessor: Output = {
   to: Uint8Array.of(0x52),
   amount: 1200n,
@@ -70,8 +76,41 @@ describe('physical direct-dynamic output witness', () => {
     expect(resolve([chunk('first')])).toBe(0);
   });
 
+  it('uses selected trailing placeholders as provisional coordinates only', () => {
+    const outputs = [predecessor, provisionalChunk('first'), provisionalChunk('first')];
+    const params = { route, stateLayout, contract, categoryId, outputs,
+      start: 1, selectedDynamicWrites: new Set(['first']), allowProvisionalChunks: true };
+    expect(resolveMaterializedDynamicWriteOutputBase(params)).toBe(1);
+    expect(() => resolveMaterializedDynamicWriteOutputBase({ ...params, allowProvisionalChunks: false }))
+      .toThrow(/undecodable first chunk/);
+  });
+
+  it('does not treat a provisional read-only twin outside the writer band as a write', () => {
+    const outputs = [provisionalChunk('first'), predecessor, provisionalChunk('first')];
+    expect(resolveMaterializedDynamicWriteOutputBase({
+      route, stateLayout, contract, categoryId, outputs,
+      start: 2, selectedDynamicWrites: new Set(['first']), allowProvisionalChunks: true,
+    })).toBe(2);
+  });
+
+  it('keeps canonical route-union twins as the base when no handler writes them', () => {
+    expect(resolveMaterializedDynamicWriteOutputBase({
+      route, stateLayout, contract, categoryId,
+      outputs: [chunk('first'), chunk('second')],
+      start: 0, selectedDynamicWrites: new Set(), allowProvisionalChunks: true,
+    })).toBe(0);
+  });
+
+  it('does not turn an inactive route-union placeholder into a writer base', () => {
+    expect(resolveMaterializedDynamicWriteOutputBase({
+      route, stateLayout, contract, categoryId,
+      outputs: [provisionalChunk('first')],
+      start: 0, selectedDynamicWrites: new Set(), allowProvisionalChunks: true,
+    })).toBe(-1);
+  });
+
   it('rejects duplicate or separated writer runs rather than guessing a base', () => {
-    expect(() => resolve([chunk('first'), chunk('first')])).toThrow(/noncanonical chunk/);
+    expect(() => resolve([chunk('first'), chunk('first')])).toThrow(/noncanonical first chunk/);
     expect(() => resolve([
       chunk('first'), { to: Uint8Array.of(0x51), amount: 1000n }, chunk('second'),
     ])).toThrow(/noncontiguous write band/);

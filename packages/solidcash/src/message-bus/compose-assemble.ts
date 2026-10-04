@@ -329,6 +329,8 @@ export async function assembleAtomicComposition(
     outputs: readonly Output[],
     categoryId: string,
     physicalOutputBase: number,
+    trailingBase: number | undefined,
+    selectedDynamicWrites?: ReadonlySet<string>,
   ): void => {
     if (!input || !isContractUnlocker(input.unlocker)) return;
     const unlocker = input.unlocker;
@@ -344,6 +346,11 @@ export async function assembleAtomicComposition(
       contract: unlocker.contract,
       categoryId,
       outputs,
+      // The compiler owns the dynamic writer's trailing band. Restrict provisional commitment
+      // locations to that band so a read-only preserved twin cannot become the write base.
+      start: trailingBase,
+      allowProvisionalChunks: trailingBase !== undefined,
+      selectedDynamicWrites,
     });
     pendingDynamicOutputWitnesses.push({
       unlocker,
@@ -403,6 +410,7 @@ export async function assembleAtomicComposition(
       actualSizes.push(blockSize);
       recordPhysicalDynamicOutputWitness(
         local.inputs[0], local.outputs, categories[participant.participant], aggregate.outputs.length,
+        participant.blockLayout?.trailingBase,
       );
       for (let localIndex = 0; localIndex < local.inputs.length; localIndex += 1) {
         registerAggregateInput(local.inputs[localIndex], participant.participant, localIndex, 'direct participant block');
@@ -2216,6 +2224,7 @@ export async function assembleAtomicComposition(
     const routeInput = routeInputOffset === null ? undefined : local.inputs[routeInputOffset];
     recordPhysicalDynamicOutputWitness(
       routeInput, local.outputs, categories[participant.participant], aggregate.outputs.length,
+      participant.blockLayout?.trailingBase, selectedDynamicWrites,
     );
     if (participant.executionKind === 1 && routeInputOffset !== null) {
       recordPhysicalPredOutWitnesses(

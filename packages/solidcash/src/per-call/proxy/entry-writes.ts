@@ -44,9 +44,11 @@
  * and otherwise the growth its `dynamicWriteGrowth` fact states; a run that cannot be sized from either is refused
  * by name rather than sized by guessing.
  *
- * A write to several collections is planned as one batch per collection, laid at its own place in the frame's
- * segment and in the created region. A shape this module still has no plan for — several batches beside a dynamic
- * value, several dynamic variables — is refused by the fact that is missing.
+ * A write to several collections is planned as one batch per collection, and a write to several dynamic values as
+ * one run per value. The frame's segment declares every batch's groups, then the runs, then the batches' value
+ * chunks, and the created region allocates their records in that order. Several runs, or one beside several batches,
+ * are laid in the order the artifact publishes (`dynamicWriteOrder`); an artifact that publishes none for such a
+ * shape is refused by that missing fact.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -59,6 +61,7 @@ import {
   bytesToHex,
   chunkCountForLength,
   computeCollectionHash,
+  concatBytes,
   decodePushdataValue,
   dynamicChunkSignature,
   dynamicLenKey,
@@ -69,6 +72,7 @@ import {
   isFixedWidthType,
   joinChunks,
   joinValueChunks,
+  packFixedWidthArray,
   parseArrayTypeString,
   parseChunkCommitment,
   parsePushdataCommitment,
@@ -80,6 +84,7 @@ import {
   type Artifact,
   type DynamicWriteGrowthAbi,
   type ExternalCallExpression,
+  type PrimitiveStateValue,
   type RecordEntry,
   type StateValue,
 } from '@solidcash/utils';
@@ -1509,6 +1514,26 @@ function appendedElementValue(
   return encodePushdataValue([...elements, element] as StateValue[], type, structs);
 }
 
+/**
+ * The value an append to a dynamic state array leaves.
+ *
+ * An array of fixed-width elements is stored as the tight blob its elements pack into, with no count (its record's
+ * length is the count times the width, as the state reader unpacks it), so the element is packed onto the live blob.
+ * Any other array frames its count and each element as pushdata.
+ */
+function appendedRunValue(
+  live: Uint8Array,
+  type: string,
+  element: StateValue,
+  structs: Artifact['structs'],
+): Uint8Array {
+  const elementType = parseArrayTypeString(type)?.elementType;
+  if (elementType === undefined || !isFixedWidthType(elementType)) {
+    return appendedElementValue(live, type, element, structs);
+  }
+  return concatBytes([live, packFixedWidthArray([element as PrimitiveStateValue], elementType)]);
+}
+
 /** The live state a hop's deployment holds, keyed by field name, as the entry's own body reads it. */
 function liveStateValues(request: HopEntryWritesRequest): Record<string, unknown> | undefined {
   const layout = request.artifact.stateLayout;
@@ -1655,6 +1680,29 @@ function resolveAppendedElement(
 }
 
 /**
+ * Plans the runs of chunk records the entry's dynamic writes occupy, in the order its frame declares them.
+ *
+ * The frame declares the runs past every batch's groups. One run beside at most one batch needs no order; several
+ * runs, or one beside several batches, take the order the artifact publishes (`dynamicWriteOrder`, state declaration
+ * order rather than the order the writes were emitted in). An artifact that publishes none, or one that does not
+ * name exactly the values the entry writes, is refused by name rather than laid in a guessed order.
+ */
+function planHopDynamicRuns(request: HopEntryWritesRequest, batchCount: number): readonly HopDynamicRun[] {
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  const written = fn?.dynamicWrites ?? [];
+  if (fn === undefined || written.length === 0) return [];
+  if (written.length === 1 && batchCount <= 1) return [planHopDynamicRun(request, fn, written[0]!)];
+  const order = fn.dynamicWriteOrder ?? [];
+  if (order.length !== written.length || !written.every((variable) => order.includes(variable))) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry writes ${written.length} dynamic value(s) beside `
+      + `${batchCount} sorted collection(s), and the artifact publishes no order its frame declares their runs in`,
+    );
+  }
+  return order.map((variable, at) => planHopDynamicRun(request, fn, variable, at < order.length - 1));
+}
+
+/**
  * Plans the run of chunk records a dynamic-state write occupies.
  *
  * A per-call body holds a dynamic value in a run of chunk NFTs at the value's own collection covenant, addressed
@@ -1679,22 +1727,18 @@ function resolveAppendedElement(
  *     from. Until the length is stated the run is laid at the live width; the record close precedes the run's pin
  *     in the body, which is what lets that first plan reach the close that sizes it.
  *
+ * A run another run follows in the frame's order (`followed`) is where the frame finds that later run: a read of it
+ * steps past the width this run's record declares, not the width a stated element gives. Until the record states the
+ * written value's length, a stated run is laid at the width the record does state, so the frame's reads reach the
+ * record's close and the derivation learns the length there.
+ *
  * The run's spent side is the live chunks, which the frame spends: those the written value still holds are recreated
- * in place, and a write that shortens the run consumes the rest with no successor. Every other shape is refused by
- * name: several dynamic variables, or a live set that does not match the record's own length.
+ * in place, and a write that shortens the run consumes the rest with no successor. A live set that does not match
+ * the record's own length is refused by name.
  */
-function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | undefined {
-  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
-  if (fn === undefined) return undefined;
-  const variables = fn.dynamicWrites ?? [];
-  if (variables.length === 0) return undefined;
-  if (variables.length > 1) {
-    throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes ${variables.length} dynamic value(s), and this `
-      + 'hop plans one run to one variable',
-    );
-  }
-  const variable = variables[0]!;
+function planHopDynamicRun(
+  request: HopEntryWritesRequest, fn: AbiFunction, variable: string, followed = false,
+): HopDynamicRun {
   const layout = request.artifact.stateLayout;
   const declared = layout?.variables.find((candidate) => candidate.name === variable);
   if (declared === undefined || declared.dynamic !== true) {
@@ -1721,7 +1765,11 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
   );
 
   if (element !== undefined) {
-    const written = appendedElementValue(spent, declared.type, element, structs);
+    const written = appendedRunValue(spent, declared.type, element, structs);
+    const recordLength = followed ? declaredRunLength(request, declared.name, declared.nftIndex) : undefined;
+    if (recordLength !== undefined && recordLength !== written.length) {
+      return sizedDynamicRun(variable, declared.type, recordLength, spentChunks, spentParticipants, 'record');
+    }
     const plan = planChunkRun({ layout, variable, spent, written });
     if (plan.spent.chunks.length > plan.written.chunks.length) {
       throw new PerCallProxyDeployError(
@@ -1738,7 +1786,7 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
   // that close instead of laying a run the body's own coordinate cannot read.
   const recordLength = declaredRunLength(request, declared.name, declared.nftIndex);
   const growthFloor = source === undefined && growth !== undefined
-    ? dynamicGrowthFloorLength(request, fn, growth, declared, spent, structs) : undefined;
+    ? dynamicGrowthFloorLength(request, fn, growth, declared, spent) : undefined;
   if (recordLength !== undefined || growthFloor !== undefined) {
     const length = Math.max(recordLength ?? 0, growthFloor ?? 0);
     return sizedDynamicRun(variable, declared.type, length, spentChunks, spentParticipants,
@@ -1796,11 +1844,12 @@ function sizedDynamicRun(
  * The elements the write appends grow the value by their own encoded length, and every appended element is framed
  * in at least one byte, so the live value's length plus the number of appended elements is a bound the run cannot
  * be narrower than. A packed element type - a built-in fixed-width element such as `uint` or `bytes32`, whose
- * elements sit at a constant stride - makes the bound exact, so the run settles from it alone. A framed element
- * type - a struct whose fields encode at their own length, a `string`, an unbounded `bytes` - leaves the exact
- * width to the body's own close: a call re-takes its plan from that close, so the bound is what lets the first plan
- * reach it rather than laying an empty run the body's own record coordinate cannot read, while a hop that states
- * its run once (a deployment's own first hop) has no such close to read and gets nothing.
+ * elements sit at a constant stride - makes the bound exact, so the run settles from it alone: the value is the
+ * tight blob its elements pack into, with no count (`appendedRunValue`), so the write adds its elements' width to
+ * the live blob. A framed element type - a struct whose fields encode at their own length, a `string`, an unbounded
+ * `bytes` - leaves the exact width to the body's own close: a call re-takes its plan from that close, so the bound is
+ * what lets the first plan reach it rather than laying an empty run the body's own record coordinate cannot read,
+ * while a hop that states its run once (a deployment's own first hop) has no such close to read and gets nothing.
  */
 function dynamicGrowthFloorLength(
   request: HopEntryWritesRequest,
@@ -1808,23 +1857,13 @@ function dynamicGrowthFloorLength(
   growth: DynamicWriteGrowthAbi,
   declared: NonNullable<Artifact['stateLayout']>['variables'][number],
   spent: Uint8Array,
-  structs: Artifact['structs'],
 ): number | undefined {
   const elements = growthElementCount(request, fn, growth, declared.name);
   const elementType = parseArrayTypeString(declared.type)?.elementType;
   if (elementType === undefined || !isFixedWidthType(elementType)) {
     return request.liveDeployment === undefined ? undefined : spent.length + elements;
   }
-  const liveCount = spent.length === 0 ? 0
-    : arrayLengthOf(decodePushdataValue(spent, 0, declared.type, structs).value);
-  const count = liveCount + elements;
-  const stride = fixedWidthBytes(elementType);
-  return encodePushdataValue(BigInt(count), 'bigint').length + count * stride;
-}
-
-/** The element count of a decoded array value; a value that does not decode as one counts no elements. */
-function arrayLengthOf(value: StateValue): number {
-  return Array.isArray(value) ? value.length : 0;
+  return spent.length + elements * fixedWidthBytes(elementType);
 }
 
 /**
@@ -2041,24 +2080,15 @@ function requireTrailingReadRun(request: HopEntryWritesRequest, batch: HopMappin
 export function hopEntryWrites(rawRequest: HopEntryWritesRequest): HopEntryWrites | undefined {
   const request = withAppendDeltas(rawRequest);
   const batches = planHopMappingBatches(request);
-  const dynamic = planHopDynamicRun(request);
+  const dynamics = planHopDynamicRuns(request, batches.length);
   // A read-only run is declared beside no mapping write, or past a run-time loop's records, one per turn, as the
   // declaration's last family: the frame finds the one run it reads there from the declaration's own end, and holds
   // it kept. A verified batch's body holds the records past its groups to the chunks it writes and counts no run it
   // only reads.
   const loopOnly = batches.length === 1 && batches[0]!.loopWritten === true;
   const reads = batches.length === 0 || loopOnly ? planHopReadRuns(request) : [];
-  if (loopOnly && reads.length > 0) requireTrailingReadRun(request, batches[0]!, dynamic !== undefined);
-  if (batches.length === 0 && dynamic === undefined && reads.length === 0) return undefined;
-  // One batch and one dynamic run sit in the frame's one segment, and the contract states the group's declared
-  // surplus in both loops that address the run. Several batches beside a run would need the compiler's own order
-  // for the two families, which it does not publish, so that shape is refused rather than guessed at.
-  if (batches.length > 1 && dynamic !== undefined) {
-    throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes ${batches.length} sorted collections beside a `
-      + `dynamic value, whose records this hop does not order`,
-    );
-  }
+  if (loopOnly && reads.length > 0) requireTrailingReadRun(request, batches[0]!, dynamics.length > 0);
+  if (batches.length === 0 && dynamics.length === 0 && reads.length === 0) return undefined;
   const spentUtxos = new Map<string, Utxo>();
   for (const batch of batches) {
     for (const node of batch.spent) {
@@ -2066,24 +2096,27 @@ export function hopEntryWrites(rawRequest: HopEntryWritesRequest): HopEntryWrite
       if (utxo !== undefined) spentUtxos.set(node.id, utxo);
     }
   }
-  for (const chunk of dynamic?.spent ?? []) spentUtxos.set(chunk.id, chunk.utxo);
+  for (const chunk of dynamics.flatMap((dynamic) => dynamic.spent)) spentUtxos.set(chunk.id, chunk.utxo);
   const readRunIds = reads.flatMap((run) => run.chunks.map((chunk) => chunk.id));
   for (const chunk of reads.flatMap((run) => run.chunks)) spentUtxos.set(chunk.id, chunk.utxo);
-  if (hopTraceOn() && (batches.length > 0 || dynamic !== undefined || reads.length > 0)) {
+  if (hopTraceOn() && (batches.length > 0 || dynamics.length > 0 || reads.length > 0)) {
     hopTrace(`writes ${request.functionName} batch=${batches.map((batch) => (
       `${batch.collection}${batch.loopWritten === true ? '(loop)' : ''}:`
       + `${batch.spent.length}spent/${batch.plan.written.length}written`)).join(',')} `
-      + `dyn=${dynamic === undefined ? 'none' : `${dynamic.variable}:${dynamic.plan.spent.chunks.length}spent/`
+      + `dyn=${dynamics.length === 0 ? 'none' : dynamics.map((dynamic) => (
+        `${dynamic.variable}:${dynamic.plan.spent.chunks.length}spent/`
         + `${dynamic.plan.written.chunks.length}written${dynamic.declaredChunks === undefined ? '' : 'sz'}`
         + (dynamic.declaredChunks === undefined ? ''
-          : `(${dynamic.declaredChunks}${dynamic.sizedFrom === 'growth' ? 'g' : ''})`)} `
+          : `(${dynamic.declaredChunks}${dynamic.sizedFrom === 'growth' ? 'g' : ''})`))).join(',')} `
       + `reads=${reads.map((run) => `${run.variable}:${run.chunks.length}`).join(',')}`);
   }
+  // A refusal names the first run whose width a stated fact fixed rather than a resolved element.
+  const sized = dynamics.find((dynamic) => dynamic.declaredChunks !== undefined);
   return {
     ...(batches[0] === undefined ? {} : { collection: batches[0].collection, signature: batches[0].signature }),
     participantIds: [
       ...batches.flatMap((batch) => batch.spent.map((node) => node.id)),
-      ...(dynamic?.spent.map((chunk) => chunk.id) ?? []),
+      ...dynamics.flatMap((dynamic) => dynamic.spent.map((chunk) => chunk.id)),
       ...readRunIds,
     ],
     ...(readRunIds.length === 0 ? {} : { readRunIds }),
@@ -2097,10 +2130,10 @@ export function hopEntryWrites(rawRequest: HopEntryWritesRequest): HopEntryWrite
     })),
     learningCandidates: [
       ...batches.flatMap((batch) => batch.learningCandidates),
-      ...(dynamic?.plan.written.chunks ?? []),
+      ...dynamics.flatMap((dynamic) => dynamic.plan.written.chunks),
     ],
     // The batch entries come first in the learned views, so a lookup by a batch node's slot is exact with only
-    // them; a dynamic run's chunks follow and are not looked up by slot.
+    // them; the dynamic runs' chunks follow, in run order, and are not looked up by slot.
     learningSlotOrder: batches.flatMap((batch) => batch.learningSlots),
     writtenNodes: batches.flatMap((batch) => batch.plan.written.map((node) => ({
       collection: batch.collection, slot: node.slot, commitment: node.after, existed: node.existed,
@@ -2112,66 +2145,161 @@ export function hopEntryWrites(rawRequest: HopEntryWritesRequest): HopEntryWrite
     spentUtxos,
     ...(batches.some((batch) => batch.unstatedValue === true) ? { awaitsValue: true } : {}),
     ...(batches[0]?.loopMints === undefined ? {} : { loopRun: batches[0].loopRun, loopMints: batches[0].loopMints }),
-    ...(dynamic?.declaredChunks === undefined
+    ...(sized?.declaredChunks === undefined
       ? {} : {
         sizedRun: {
-          variable: dynamic.variable,
-          chunks: dynamic.declaredChunks,
-          from: dynamic.sizedFrom ?? 'record',
+          variable: sized.variable,
+          chunks: sized.declaredChunks,
+          from: sized.sizedFrom ?? 'record',
         },
       }),
-    // A body that writes one collection is laid out exactly as the shipped planner computes it, dynamic run beside
-    // its batch. A body that writes several lays each batch's records at its own place in the created region.
-    lay: (context: HopEntryWritesContext): LaidHopEntryWrites => (batches.length <= 1
-      ? layEntryWrites(batches[0], dynamic, context, reads)
-      : layEntryWriteBatches(batches, context)),
+    lay: (context: HopEntryWritesContext): LaidHopEntryWrites => layEntryWrites(batches, dynamics, context, reads),
   };
 }
 
-/** Lays one batch's — or one dynamic run's — records at `context.createdBase`, as the entry's own write. */
+/** One batch's records, laid at the coordinates the entry's record families give it. */
+interface LaidBatch {
+  /** The records its target groups declare, or a run-time loop's nodes in mint order. */
+  readonly groupEntries: readonly RecordEntry[];
+  /** The records of the chunks its long values take, which the segment declares past every run. */
+  readonly valueChunkEntries: readonly RecordEntry[];
+  readonly inputs: Readonly<Record<string, DraftInput>>;
+  /** The outputs of the nodes it creates, from its node base. */
+  readonly nodeOutputs: readonly DraftSourceOutput[];
+  /** The outputs of its value chunks, from its chunk base. */
+  readonly chunkOutputs: readonly DraftSourceOutput[];
+  readonly createdNodes: LaidHopEntryWrites['createdNodes'];
+  readonly relinked: readonly RecordEntry[];
+  readonly learnedSlots: LaidHopEntryWrites['learnedSlots'];
+}
+
+/** One dynamic value's run, laid: its records, the chunks it spends, and the outputs of the chunks it grows. */
+interface LaidRun {
+  readonly entries: readonly RecordEntry[];
+  readonly inputs: Readonly<Record<string, DraftInput>>;
+  readonly outputs: readonly DraftSourceOutput[];
+}
+
+/**
+ * Lays the entry's own writes in the order its frame declares their record families.
+ *
+ * The segment declares every batch's groups, in the order the artifact publishes the batches, then the runs the
+ * entry only reads, then each written dynamic value's run, in the order `planHopDynamicRuns` fixed, then the chunks
+ * the batches' long values take: the frame walks the groups back to back, addresses each run past the groups and
+ * the runs ahead of it, and finds a value chunk by its address wherever it stands past them. A created record's
+ * declared index has to be the output the trailing region allocates it, so the indices are allocated in that same
+ * order: every created node, then the chunks the runs grow, then the value chunks. The chunks a run keeps are
+ * participants the frame spends and recreates in place, and the ones a shorter value leaves behind are participants
+ * it spends and does not recreate.
+ */
 function layEntryWrites(
-  batch: HopMappingBatch | undefined,
-  dynamic: HopDynamicRun | undefined,
+  batches: readonly HopMappingBatch[],
+  dynamics: readonly HopDynamicRun[],
   context: HopEntryWritesContext,
   reads: readonly HopReadRun[] = [],
 ): LaidHopEntryWrites {
-  // The record families that fill the trailing region are laid out in the order the compiler emits them: the
-  // batch's records, then a dynamic value's chunks, then a chunkable mapping value's chunks. A created record's
-  // declared index has to be the output the trailing region allocates it, so the families' indices are
-  // allocated in that same order — every created node, then the chunks the dynamic run grows, then the value
-  // chunks. The chunks a dynamic run keeps are participants the frame spends and recreates in place, and the ones a
-  // shorter value leaves behind are participants it spends and does not recreate.
-  const plan = batch?.plan;
-  const created = plan === undefined ? [] : plan.written.filter((node) => !node.existed);
-  const spentCount = dynamic?.plan.spent.chunks.length ?? 0;
-  const writtenCount = dynamic?.plan.written.chunks.length ?? 0;
-  const keptCount = Math.min(spentCount, writtenCount);
-  const dynamicCreatedCount = Math.max(0, writtenCount - spentCount);
-  const dynamicCreatedBase = context.createdBase + created.length;
-  const chunkBase = dynamicCreatedBase + dynamicCreatedCount;
-  const dynamicBase = batch?.learningCandidates.length ?? 0;
+  const total = (counts: readonly number[]): number => counts.reduce((sum, count) => sum + count, 0);
+  const nodeCounts = batches.map((batch) => batch.plan.written.filter((node) => !node.existed).length);
+  const grownCounts = dynamics.map((dynamic) =>
+    Math.max(0, dynamic.plan.written.chunks.length - dynamic.plan.spent.chunks.length));
+  let nodeBase = context.createdBase;
+  let runBase = nodeBase + total(nodeCounts);
+  let chunkBase = runBase + total(grownCounts);
+  // The learned views follow the same order: every batch's value-dependent nodes, then each run's written chunks.
+  let learnedBase = 0;
+  const laidBatches = batches.map((batch, at): LaidBatch => {
+    const laid = layBatchRecords(batch, context, {
+      nodeBase, chunkBase, learnedViews: context.learnedViews.slice(learnedBase),
+    });
+    nodeBase += nodeCounts[at]!;
+    chunkBase += batch.plan.chunks.length;
+    learnedBase += batch.learningCandidates.length;
+    return laid;
+  });
+  const laidRuns = dynamics.map((dynamic, at): LaidRun => {
+    const laid = layDynamicRun(dynamic, context, runBase, learnedBase);
+    runBase += grownCounts[at]!;
+    learnedBase += dynamic.plan.written.chunks.length;
+    return laid;
+  });
+  const read = layReadRuns(reads, context);
+  const groupEntries = laidBatches.flatMap((laid) => laid.groupEntries);
+  const runEntries = laidRuns.flatMap((laid) => laid.entries);
+  const valueChunkEntries = laidBatches.flatMap((laid) => laid.valueChunkEntries);
+  const entries = [...groupEntries, ...read.entries, ...runEntries, ...valueChunkEntries];
+  const inputs: Record<string, DraftInput> = { ...read.inputs };
+  for (const laid of [...laidRuns, ...laidBatches]) Object.assign(inputs, laid.inputs);
+  // The value witnesses the frame's block lists, in slot order: a slot the entry does not read stays empty,
+  // and the head parks one slot per value its master runs a body of.
+  const witnesses = new Map(batches.flatMap((batch) => [...batch.valueWitnesses]));
+  const values = witnesses.size === 0 ? undefined
+    : Array.from(
+      { length: Math.max(...witnesses.keys()) + 1 },
+      (_unused, slot) => witnesses.get(slot) ?? new Uint8Array(0),
+    );
+  const relinked = laidBatches.flatMap((laid) => laid.relinked);
+  if (hopTraceOn()) {
+    hopTrace(`laid entries=[${entries.map((entry) => `${entry.in}/${entry.out}`
+      + `:${bytesToHex(entry.viewIn).slice(0, 12)}>${bytesToHex(entry.viewOut ?? new Uint8Array(0)).slice(0, 12)}`
+      + `:${(entry.viewIn ?? new Uint8Array(0)).length}`).join(' ')}] `
+      + `dynamicOut=[${runEntries.map((entry) => entry.out).join(' ')}]`);
+  }
+  return {
+    entries,
+    inputs,
+    trailingOutputs: [
+      ...laidBatches.flatMap((laid) => laid.nodeOutputs),
+      ...laidRuns.flatMap((laid) => laid.outputs),
+      ...laidBatches.flatMap((laid) => laid.chunkOutputs),
+    ],
+    // The created records the transaction writes, in first-declaration order: every created node, then the runs
+    // the dynamic values grew, then the runs of chunk records long mapping values take.
+    createdOutputs: [
+      ...groupEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
+      ...runEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
+      ...valueChunkEntries.map((entry) => entry.out),
+    ],
+    createdNodes: laidBatches.flatMap((laid) => laid.createdNodes),
+    ...(relinked.length === 0 ? {} : { relinked }),
+    learnedSlots: laidBatches.flatMap((laid) => laid.learnedSlots),
+    ...(values === undefined ? {} : { values }),
+  };
+}
 
-  const dynamicLaid = dynamic === undefined ? undefined : layOutChunkRun({
+/**
+ * Lays one dynamic value's run: the chunks it keeps in place, the ones it grows and the ones a shorter value leaves.
+ *
+ * A grown chunk declares no input and takes the output its place past the kept chunks gives it from `createdBase`;
+ * a written chunk's end view is the one the learned views hold at `learnedBase` plus its place in the run.
+ */
+function layDynamicRun(
+  dynamic: HopDynamicRun,
+  context: HopEntryWritesContext,
+  createdBase: number,
+  learnedBase: number,
+): LaidRun {
+  const spentCount = dynamic.plan.spent.chunks.length;
+  const keptCount = Math.min(spentCount, dynamic.plan.written.chunks.length);
+  const laid = layOutChunkRun({
     plan: dynamic.plan,
     category: context.category,
-    base: spentCount === 0 ? chunkBase : context.indexOf(dynamic.spent[0]!.id),
+    base: spentCount === 0 ? createdBase : context.indexOf(dynamic.spent[0]!.id),
     writer: context.proxyMasterIndex,
     valueSatoshis: context.recordAmount,
     ...(context.releasedLock === undefined ? {} : { removedLock: context.releasedLock }),
   });
-  const dynamicEntries: RecordEntry[] = [];
-  const dynamicOutputs: DraftSourceOutput[] = [];
-  const dynamicInputs: Record<string, DraftInput> = {};
-  const learnedSlots: LaidHopEntryWrites['learnedSlots'][number][] = [];
-  (dynamicLaid?.records ?? []).forEach((record, offset) => {
+  const entries: RecordEntry[] = [];
+  const outputs: DraftSourceOutput[] = [];
+  const inputs: Record<string, DraftInput> = {};
+  laid.records.forEach((record, offset) => {
     if (record.role === 'removed') {
       // A chunk past the written value's width is consumed with no successor: its input is spent on the write path
       // and its index carries a plain output that takes its satoshis, which settlement reads as the record's value.
-      const spent = dynamic!.spent[offset]!;
-      dynamicEntries.push({
+      const spent = dynamic.spent[offset]!;
+      entries.push({
         in: context.indexOf(spent.id), out: INDEX_NONE, viewIn: record.viewIn, viewOut: new Uint8Array(0),
       });
-      dynamicInputs[spent.id] = {
+      inputs[spent.id] = {
         source: {
           lockingBytecode: record.input!.source.lockingBytecode, valueSatoshis: spent.utxo.satoshis,
           token: nodeToken(context.category, record.viewIn),
@@ -2181,26 +2309,21 @@ function layEntryWrites(
       };
       return;
     }
-    const learned = context.learnedViews[dynamicBase + offset] ?? record.entry.viewOut;
+    const learned = context.learnedViews[learnedBase + offset] ?? record.entry.viewOut;
     if (record.role !== 'kept') {
       // A created chunk declares no input: it is a trailing output at the index its family allocates.
-      dynamicEntries.push({
-        in: INDEX_NONE,
-        out: dynamicCreatedBase + (offset - keptCount),
-        viewIn: new Uint8Array(0),
-        viewOut: learned,
-      });
-      dynamicOutputs.push({
+      entries.push({ in: INDEX_NONE, out: createdBase + (offset - keptCount), viewIn: new Uint8Array(0), viewOut: learned });
+      outputs.push({
         lockingBytecode: record.output!.lockingBytecode,
         valueSatoshis: record.output!.valueSatoshis,
         token: nodeToken(context.category, learned),
       });
       return;
     }
-    const spent = dynamic!.spent[offset]!;
+    const spent = dynamic.spent[offset]!;
     const lockingBytecode = record.input!.source.lockingBytecode;
-    dynamicEntries.push({ in: record.index, out: record.index, viewIn: record.viewIn, viewOut: learned });
-    dynamicInputs[spent.id] = {
+    entries.push({ in: record.index, out: record.index, viewIn: record.viewIn, viewOut: learned });
+    inputs[spent.id] = {
       source: {
         lockingBytecode, valueSatoshis: spent.utxo.satoshis,
         token: nodeToken(context.category, record.viewIn),
@@ -2212,22 +2335,31 @@ function layEntryWrites(
       unlockingBytecode: record.input!.unlockingBytecode,
     };
   });
-  // The runs the entry only reads sit past the batch's records and ahead of the run a write grows.
-  const read = layReadRuns(reads, context);
-  if (batch === undefined || plan === undefined) {
-    return {
-      entries: [...read.entries, ...dynamicEntries],
-      inputs: { ...read.inputs, ...dynamicInputs },
-      trailingOutputs: dynamicOutputs,
-      createdOutputs: dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
-      createdNodes: [],
-      learnedSlots,
-    };
-  }
+  return { entries, inputs, outputs };
+}
+
+/**
+ * Lays one batch's records: its groups, or a run-time loop's nodes, and the chunks its long values take.
+ *
+ * Its created nodes take the outputs from `nodeBase` and its value chunks the ones from `chunkBase`, and a
+ * value-dependent node's end view is the one `learnedViews` holds at its place in the batch's own learning order.
+ */
+function layBatchRecords(
+  batch: HopMappingBatch,
+  context: HopEntryWritesContext,
+  bases: {
+    readonly nodeBase: number;
+    readonly chunkBase: number;
+    readonly learnedViews: readonly (Uint8Array | undefined)[];
+  },
+): LaidBatch {
+  const plan = batch.plan;
+  const created = plan.written.filter((node) => !node.existed);
   const afterBySlot = new Map(plan.written.map((node) => [bytesToHex(node.slot), node.after]));
   const learnedBySlot = new Map<string, Uint8Array>();
+  const learnedSlots: LaidHopEntryWrites['learnedSlots'][number][] = [];
   batch.learningSlots.forEach((slot, index) => {
-    const learned = context.learnedViews[index];
+    const learned = bases.learnedViews[index];
     if (learned !== undefined) {
       learnedBySlot.set(bytesToHex(slot), learned);
       learnedSlots.push({ collection: batch.collection, slot });
@@ -2247,14 +2379,14 @@ function layEntryWrites(
     placements.set(key, { out });
   }
   created.forEach((node, position) => {
-    placements.set(bytesToHex(node.slot), { out: context.createdBase + position });
+    placements.set(bytesToHex(node.slot), { out: bases.nodeBase + position });
   });
   const chunkPosition = new Map(plan.chunks.map((chunk, position) => [chunkKey(chunk.slot, chunk.index), position]));
   const nodePlacements: MappingNodePlacements = {
     placementOf: (slot) => placements.get(bytesToHex(slot)),
     chunkOutputOf: (slot, index) => {
       const position = chunkPosition.get(chunkKey(slot, index));
-      return position === undefined ? undefined : chunkBase + position;
+      return position === undefined ? undefined : bases.chunkBase + position;
     },
   };
   // A batch's segment declares a record per target group; a run-time loop's declares one per node, in the order its
@@ -2281,7 +2413,7 @@ function layEntryWrites(
     encodeFunctionArgument(1n, 'bigint') as Uint8Array,
     encodeFunctionArgument(BigInt(context.proxyMasterIndex), 'bigint') as Uint8Array,
   ]);
-  const inputs: Record<string, DraftInput> = { ...read.inputs, ...dynamicInputs };
+  const inputs: Record<string, DraftInput> = {};
   for (const node of batch.spent) {
     const satoshis = batch.utxoBySlot.get(bytesToHex(node.slot))?.satoshis ?? context.recordAmount;
     inputs[node.id] = {
@@ -2296,97 +2428,26 @@ function layEntryWrites(
       unlockingBytecode,
     };
   }
-  // A created node has no input, so it is a trailing output past the events, at the index it declares. The
-  // dynamic run's grown chunks and then the value chunks follow it, each carrying what the body computed.
-  const trailingOutputs: DraftSourceOutput[] = created.map((node): DraftSourceOutput => ({
-    lockingBytecode: lock, valueSatoshis: context.recordAmount,
-    token: nodeToken(context.category, writtenOf(node.slot)),
-  }));
-  const chunkOutputs = plan.chunks.map((chunk): DraftSourceOutput => ({
-    lockingBytecode: mappingValueChunkLock(context.category, batch.collection, chunk),
-    valueSatoshis: context.recordAmount,
-    token: nodeToken(context.category, chunk.commitment),
-  }));
-  // The value witnesses the frame's block lists, in slot order: a slot the entry does not read stays empty,
-  // and the head parks one slot per value its master runs a body of.
-  const valueSlots = batch.valueWitnesses.size === 0 ? undefined
-    : Array.from(
-      { length: Math.max(...batch.valueWitnesses.keys()) + 1 },
-      (_unused, slot) => batch.valueWitnesses.get(slot) ?? new Uint8Array(0),
-    );
-  if (hopTraceOn()) {
-    const laid = [...groupEntries, ...read.entries, ...dynamicEntries, ...valueChunkEntries];
-    hopTrace(`laid entries=[${laid.map((entry) => `${entry.in}/${entry.out}`
-      + `:${bytesToHex(entry.viewIn).slice(0, 12)}>${bytesToHex(entry.viewOut ?? new Uint8Array(0)).slice(0, 12)}`
-      + `:${(entry.viewIn ?? new Uint8Array(0)).length}`).join(' ')}] `
-      + `dynamicOut=[${dynamicEntries.map((entry) => entry.out).join(' ')}]`);
-  }
+  // A created node has no input, so it is a trailing output past the events, at the index it declares; a value
+  // chunk carries what the body computed at the index its own base gives it.
   return {
-    entries: [...groupEntries, ...read.entries, ...dynamicEntries, ...valueChunkEntries],
+    groupEntries,
+    valueChunkEntries,
     inputs,
-    trailingOutputs: [...trailingOutputs, ...dynamicOutputs, ...chunkOutputs],
-    // The created records the transaction writes, in first-declaration order: every created node, then the run
-    // the dynamic value grew, then the run of chunk records a long mapping value takes.
-    createdOutputs: [
-      ...groupEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
-      ...dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
-      ...valueChunkEntries.map((entry) => entry.out),
-    ],
+    nodeOutputs: created.map((node): DraftSourceOutput => ({
+      lockingBytecode: lock, valueSatoshis: context.recordAmount,
+      token: nodeToken(context.category, writtenOf(node.slot)),
+    })),
+    chunkOutputs: plan.chunks.map((chunk): DraftSourceOutput => ({
+      lockingBytecode: mappingValueChunkLock(context.category, batch.collection, chunk),
+      valueSatoshis: context.recordAmount,
+      token: nodeToken(context.category, chunk.commitment),
+    })),
     // A batch's created nodes sit at the created region's own indices, in the order the segment declares them.
     createdNodes: created.map((node, position) => ({
-      collection: batch.collection, slot: node.slot, out: context.createdBase + position,
+      collection: batch.collection, slot: node.slot, out: bases.nodeBase + position,
     })),
-    ...(relinked.length === 0 ? {} : { relinked }),
+    relinked,
     learnedSlots,
-    ...(valueSlots === undefined ? {} : { values: valueSlots }),
   };
-}
-
-/**
- * Lays every batch the entry writes, each at its own place in the created region.
- *
- * A body that writes two collections verifies them in the order the artifact publishes, so its frame's segment
- * declares the first batch's records and then the second's, and the transaction's created records follow the same
- * order: each batch's created nodes and value chunks are appended after the previous batch's, and the next batch's
- * declared output indices start where the previous batch's region ended.
- */
-function layEntryWriteBatches(
-  batches: readonly HopMappingBatch[],
-  context: HopEntryWritesContext,
-): LaidHopEntryWrites {
-  const entries: RecordEntry[] = [];
-  const inputs: Record<string, DraftInput> = {};
-  const trailingOutputs: DraftSourceOutput[] = [];
-  const createdOutputs: number[] = [];
-  const createdNodes: LaidHopEntryWrites['createdNodes'][number][] = [];
-  const relinked: RecordEntry[] = [];
-  const learnedSlots: LaidHopEntryWrites['learnedSlots'][number][] = [];
-  const valueSlots = new Map<number, Uint8Array>();
-  let createdBase = context.createdBase;
-  let learnedBase = 0;
-  for (const batch of batches) {
-    const laid = layEntryWrites(batch, undefined, {
-      ...context,
-      createdBase,
-      learnedViews: context.learnedViews.slice(learnedBase),
-    });
-    entries.push(...laid.entries);
-    Object.assign(inputs, laid.inputs);
-    trailingOutputs.push(...laid.trailingOutputs);
-    createdOutputs.push(...laid.createdOutputs);
-    createdNodes.push(...laid.createdNodes);
-    relinked.push(...laid.relinked ?? []);
-    learnedSlots.push(...laid.learnedSlots);
-    (laid.values ?? []).forEach((value, slot) => valueSlots.set(slot, value));
-    learnedBase += batch.learningCandidates.length;
-    createdBase += laid.trailingOutputs.length;
-  }
-  const values = valueSlots.size === 0 ? undefined
-    : Array.from(
-      { length: Math.max(...valueSlots.keys()) + 1 },
-      (_unused, slot) => valueSlots.get(slot) ?? new Uint8Array(0),
-    );
-  return { entries, inputs, trailingOutputs, createdOutputs, createdNodes, learnedSlots,
-    ...(relinked.length === 0 ? {} : { relinked }),
-    ...(values === undefined ? {} : { values }) };
 }

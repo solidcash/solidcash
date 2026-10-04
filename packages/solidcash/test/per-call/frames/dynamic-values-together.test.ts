@@ -11,7 +11,7 @@ import {
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
-  deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+  chunkRecordLockingBytecode, deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
@@ -40,8 +40,8 @@ import {
  * the composition when the first value grows or shrinks beside the second; the controls declare the later run where
  * the first value's old or new count alone ends, and forge a chunk output.
  *
- * The hop that plans a call's writes still plans one run per entry, so an entry that writes two dynamic values is
- * refused there by name; that planner is another stream's.
+ * The hop that plans a call's writes lays the two runs the same way, in the order the artifact publishes for them
+ * (`dynamicWriteOrder`).
  */
 
 const USER_LOCK = encodeLockingBytecodeP2pkh(Uint8Array.from({ length: 20 }, (_, at) => 0x5b + at * 3));
@@ -265,9 +265,28 @@ describe('two dynamic runs whose later run is declared at one of the first value
 });
 
 describe('the hop that plans a call\'s writes', () => {
-  it('refuses an entry that writes two dynamic values by name', () => {
-    const artifact = compileString(source(SHAPES[0]!), { composition: 'per-call' });
-    expect(() => hopEntryWrites({ artifact, functionName: 'set', callerLockingBytecode: USER_LOCK }))
-      .toThrow('entry writes 2 dynamic value(s), and this hop plans one run to one variable');
+  it('lays an entry that writes two dynamic values as one run per value, in the order the artifact publishes', () => {
+    const shape = SHAPES[0]!;
+    const artifact = compileString(source(shape), { composition: 'per-call' });
+    expect(artifact.abi.find((fn) => fn.name === 'set')?.dynamicWriteOrder).toStrictEqual(['first', 'second']);
+    // The record the body writes states each value's length, which sizes its run: two chunks, then one.
+    const written = hexToBin(buildPushdataCommitment(artifact.stateLayout!, {
+      first$len: BigInt(shape.first[1].length), second$len: BigInt(shape.second[1].length),
+    }, 0));
+    const writes = hopEntryWrites({
+      artifact, functionName: 'set', callerLockingBytecode: USER_LOCK, writtenCommitments: [written],
+    })!;
+    const category = seededCategory('dynamic values together hop');
+    const laid = writes.lay({
+      indexOf: (id) => { throw new Error(`no participant ${id}`); },
+      proxyMasterIndex: 1, createdBase: 10, recordAmount: CHUNK_VALUE, category, learnedViews: [],
+    });
+    // A deployment's own first hop starts from the empty values, so every chunk is created, the first value's ahead.
+    expect(laid.entries.map((entry) => [entry.in, entry.out]))
+      .toStrictEqual([[INDEX_NONE, 10], [INDEX_NONE, 11], [INDEX_NONE, 12]]);
+    const lock = (variable: string): string =>
+      bytesToHex(chunkRecordLockingBytecode(bytesToHex(category), variable, 'bytes'));
+    expect(laid.trailingOutputs.map((output) => bytesToHex(output.lockingBytecode)))
+      .toStrictEqual([lock('first'), lock('first'), lock('second')]);
   });
 });

@@ -681,6 +681,13 @@ export interface AbiFunction {
    * The count lets a consumer size the run the write creates when `dynamicWriteSources` publishes no element.
    */
   dynamicWriteGrowth?: Readonly<Record<string, DynamicWriteGrowthAbi>>;
+  /**
+   * The order a per-call frame declares the runs of chunk records its dynamic writes occupy: past every sorted
+   * batch's groups, one run per written value, in state declaration order, which `dynamicWrites` (the order the
+   * writes were emitted) need not follow. Published for an entry that writes several dynamic values, or one beside
+   * several sorted batches; one run beside at most one batch sits past that batch's groups and publishes none.
+   */
+  dynamicWriteOrder?: readonly string[];
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); the SDK derives the N (key,value) pairs from
   // the VM trace and creates N trailing entry NFT outputs (a runtime-variable count, like dynamicWrites chunks).
   entryLoopWrites?: readonly string[];

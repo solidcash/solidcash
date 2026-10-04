@@ -533,7 +533,7 @@ refusal past the alias, and the group form compiling past it.
 | Multicall / any low-level call but a forwarding delegatecall | `support.ts` 2840 | M | pinned in `conformance/cross-contract-identity` (delegatecall row) |
 | a loop over a mapping's array calling out (refund every bidder of `bids[id]`) | `external-calls.ts` 618/710, or `support.ts` 1953 first | M | likely overlaps R12 (a call routed through the root's own mapping value) |
 | overwrite or remove an element of a mapping's array (`lists[user][i] = last; pop()`) | `entry-writes.ts` 1503 | M | swap-and-pop removal; the enumerable set meets the compiler first (2.11) |
-| two dynamic state values written by one entry; sorted collections beside a dynamic value | `entry-writes.ts` 1623, 1988 | M | |
+| two dynamic state values written by one entry; sorted collections beside a dynamic value | `entry-writes.ts` 1623, 1988 | M | served (below) |
 | a mapping write in a loop not over the caller's array (ERC-1155 `_update` over `ids`, two keys per turn) | `support.ts` 667, `entry-records.ts` 346-421 | M | |
 | a constructor/`initialize` key or value the arguments do not fix | `genesis.ts` 520, 603 | M | |
 | a returning entry through the generated closure proxy | `deploy.ts` 2139 | L-M | not exercised here |
@@ -542,6 +542,37 @@ refusal past the alias, and the group form compiling past it.
 | assembly the lowering leaves in a body | `support.ts` 1943 | L | most OZ Yul is lowered |
 | one node touched by an enclosing and an enclosed frame; a chunked value across reaches; two inserts of one key | `external-calls.ts` 2324, 2338-2378, 2220 | M | known (`NEXT_BRANCH.md`) |
 | a read that re-enters its own contract | `read/read.ts` 651 | L-M | the read path's twin of 2.8 |
+
+**Several dynamic runs, and a run beside several batches: served** (agent DV1). Met behind the generated proxy:
+`the implementation's "pay" entry writes 2 sorted collections beside a dynamic value, whose records this hop does not
+order` (two mappings and a push) and `the implementation's "join" entry writes 2 dynamic value(s), and this hop plans
+one run to one variable` (two pushes; two strings set together, the same). The compiler admitted both: a master's
+write segment declares every batch's groups back to back (the derivation walk), then one run per written value in
+state declaration order, each at the wider of its two versions (`emitDynamicWriteVerification`,
+`dynamicReadPriorRuns`), then the value chunks it finds by address. `dynamicWrites` is emission order, so the artifact
+now publishes the frame's order as `dynamicWriteOrder` (several runs, or one beside several batches) and
+`hopEntryWrites` lays the families in it; an earlier batch's value chunks now follow the runs instead of sitting
+between two batches' groups. Past it, a second append to an array of fixed-width elements (`uint256[]`) threw
+`Invalid VM number: Failed to decode VM Number: the number is not minimally-encoded.`: the hop read the live run as
+a framed array (a count, then the elements), while such an array is stored as the tight blob its elements pack into
+(`StateReader`), so the element is now packed onto the live blob (`appendedRunValue`). Then (agent DV2):
+- the second of two pushes stopped on an `OP_VERIFY` at the later push (`... "join" entry did not settle through the
+  proxy: frame "implementation-master" of Roster.join() at line 25`): a read of the later run steps past the earlier
+  run's width as the data record declares it, and the first attempt declares the record before the body's close
+  states it, so a stated run that another run follows is laid at the record's width until the record is learned;
+- beside an external call, a run other than the first listed was refused as `writes a mapping record beside an
+  external call, and the segment that write lands in is not fixed`: `laidWriteRecords` now names every run's chunk by
+  its own covenant lock;
+- `dynamicGrowthFloorLength` sizes a fixed-width array grown by a bare `push()` as the tight blob, not a framed one
+  (a live blob read as a framed array miscounted, or threw `Invalid VM number` past a stated push of `7`).
+
+`call/dynamic-run-order.test.ts`. Past the lock fix, a field written before the call into the record the runs size
+(`entries += 1; ping(); stamps.push(); notes.push()`) is refused at the call: `... did not settle through the proxy:
+frame "implementation-master" of Journal.log() at line 56: no source message (Program failed an OP_VERIFY
+operation.)`. A record a dynamic write sizes is published as written in the last segment alone
+(`perCallRecordWriteSegments`), while the count is written before the call; pinned in
+`ahead/field-before-call-beside-runs.test.ts`. A callee frame states its records as the deployment holds them, so a
+callee that writes two dynamic values keeps a run another follows at the live width (predicted, not run).
 
 ## 4. Replicas to land
 
@@ -564,6 +595,7 @@ today and its title says what should settle once served.
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |
 | `read-node-spent-by-insert.test.ts` | 2 | 2.10 (control: head predecessor) |
 | `enumerable-set.test.ts` | 4 | 2.11 (adding and the views served in `call/enumerable-set.test.ts`) |
+| `field-before-call-beside-runs.test.ts` | 1 | section 3: a field written before a call into the record runs past it size (the runs alone served in `call/dynamic-run-order.test.ts`) |
 
 Run: `PER_CALL_AHEAD=1 yarn workspace solidcash vitest run --config vitest.per-call.config.ts test/per-call/ahead/<file>`.
 `recordMet` writes the met text to `$AHEAD_OBSERVE_DIR/met.txt` when that is set (used for the unattributed walls).

@@ -1480,6 +1480,27 @@ const dynamicWriteGrowthOf = (
   return growth;
 };
 
+/**
+ * Publish the order a per-call frame declares the runs of chunk records its dynamic writes occupy.
+ *
+ * The frame's write segment declares, past its own state records, every sorted batch's groups in `sortedBatchInfo`
+ * order and then one run per written dynamic value, in state declaration order: the order code generation pins the
+ * runs in (`emitDynamicWriteVerification`) and a read steps past them in (`dynamicReadPriorRuns`). `dynamicWrites`
+ * lists the values in the order the body's writes were emitted, which need not be that one, so a consumer that lays
+ * several runs, or one beside several batches, lays them by this list. One run beside at most one batch sits past
+ * that batch's groups and needs no statement: such an entry publishes none, and no other convention publishes any.
+ */
+const dynamicWriteOrderOf = (
+  func: FunctionDefinitionNode,
+  contract: ContractNode | undefined,
+  compilerOptions: CompilerOptions = {},
+): readonly string[] => {
+  if (compilerOptions.composition !== 'per-call' || contract === undefined || func.name === '__construct') return [];
+  const written = new Set(func.dynamicWrites ?? []);
+  if (written.size === 0 || (written.size === 1 && (func.sortedBatchInfo?.length ?? 0) <= 1)) return [];
+  return contract.stateVariables.filter((variable) => written.has(variable.name)).map((variable) => variable.name);
+};
+
 const transferEffects = (
   fn: FunctionDefinitionNode, contract: ContractNode,
 ): readonly FixedBchTransferAbi[] => {
@@ -2053,6 +2074,7 @@ function buildFunctionAbiMetadata(
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract, compilerOptions);
   const dynamicWriteGrowth = dynamicWriteGrowthOf(func, contract, compilerOptions);
+  const dynamicWriteOrder = dynamicWriteOrderOf(func, contract, compilerOptions);
   const iterationDomains = externalCallIterationDomains(func, compilerOptions);
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],
@@ -3157,6 +3179,7 @@ function buildFunctionAbiMetadata(
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
     ...(Object.keys(dynamicWriteSources).length > 0 && { dynamicWriteSources }),
     ...(Object.keys(dynamicWriteGrowth).length > 0 && { dynamicWriteGrowth }),
+    ...(dynamicWriteOrder.length > 0 && { dynamicWriteOrder }),
     ...(routeEntryLoopWrites && routeEntryLoopWrites.some(
       (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
     ) && {

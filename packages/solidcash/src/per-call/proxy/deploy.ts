@@ -527,14 +527,15 @@ function dynamicRunLock(category: Uint8Array, variable: string, type: string): U
   );
 }
 
-/** The dynamic value an entry's own write grows, with its declared type, or undefined for an entry that writes none. */
-function dynamicWriteVariable(
+/** The dynamic values an entry's own writes grow, each with its declared type; none for an entry that writes none. */
+function dynamicWriteVariables(
   artifact: Artifact, functionName: string,
-): { readonly variable: string; readonly type: string } | undefined {
-  const variable = artifact.abi.find((candidate) => candidate.name === functionName)?.dynamicWrites?.[0];
-  const declared = variable === undefined
-    ? undefined : artifact.stateLayout?.variables.find((candidate) => candidate.name === variable);
-  return variable === undefined || declared === undefined ? undefined : { variable, type: declared.type };
+): readonly { readonly variable: string; readonly type: string }[] {
+  const written = artifact.abi.find((candidate) => candidate.name === functionName)?.dynamicWrites ?? [];
+  return written.flatMap((variable) => {
+    const declared = artifact.stateLayout?.variables.find((candidate) => candidate.name === variable);
+    return declared === undefined ? [] : [{ variable, type: declared.type }];
+  });
 }
 
 /** One record an entry's own writes contribute, and the write it belongs to. */
@@ -548,11 +549,12 @@ interface LaidWriteRecord {
 /**
  * The records an entry's own writes contribute, each with the write it belongs to, in the order the plan lays them.
  *
- * The plan lays the sorted batch's nodes, then the run of chunk records a dynamic value's write occupies, then the
+ * The plan lays the sorted batch's nodes, then the run of chunk records each dynamic value's write occupies, then the
  * value chunks a long mapping value takes, and each write is declared in its own segment. A record names its write
  * by the coordinate it sits at: a batch record is a participant the plan lists under a mapping id, or an output the
- * write places at the collection's own covenant, while a run's chunk is any other participant, or an output the
- * value's own collection covenant locks.
+ * write places at the collection's own covenant, while a run's chunk is any other participant, or an output a
+ * value's own collection covenant locks. Each value's chunks sit at its own covenant, so a chunk names its run by
+ * that lock: the one its input spends, or the one its output carries.
  */
 function laidWriteRecords(options: {
   readonly laid: LaidHopEntryWrites;
@@ -560,42 +562,43 @@ function laidWriteRecords(options: {
   readonly indexOf: (id: string) => number;
   readonly category: Uint8Array;
   readonly createdBase: number;
-  /** The dynamic value the write grows, when the entry writes one. */
-  readonly dynamicVariable?: string;
-  readonly dynamicType?: string;
+  /** The dynamic values the writes grow, each with its declared type. */
+  readonly dynamicRuns?: readonly { readonly variable: string; readonly type: string }[];
 }): readonly LaidWriteRecord[] {
   const { laid, writes } = options;
   const readIds = new Set(writes.readRunIds ?? []);
   const readIndices = new Set([...readIds].map((id) => options.indexOf(id)));
   // The nodes a sorted batch spends, under whatever id the plan names them: the frame's own or a shared one.
   const nodeIds = new Set(writes.reachWrites.flatMap((write) => write.spentIds));
-  const runIndices = new Set<number>();
+  const runLocks = (options.dynamicRuns ?? []).map((run) => ({
+    variable: run.variable, lock: dynamicRunLock(options.category, run.variable, run.type),
+  }));
+  const runAt = (lock: Uint8Array | undefined): string | undefined =>
+    (lock === undefined ? undefined : runLocks.find((run) => bytesEqual(run.lock, lock))?.variable);
+  const runIndices = new Map<number, string | undefined>();
   for (const id of writes.participantIds) {
-    // The plan lists a sorted batch's nodes and a read run's chunks apart; every other participant belongs to the
-    // run the write grows.
-    if (!nodeIds.has(id) && !readIds.has(id)) runIndices.add(options.indexOf(id));
+    // The plan lists a sorted batch's nodes and a read run's chunks apart; every other participant belongs to a
+    // run a write grows.
+    if (!nodeIds.has(id) && !readIds.has(id)) {
+      runIndices.set(options.indexOf(id), runAt(laid.inputs[id]?.source.lockingBytecode));
+    }
   }
-  const runLock = options.dynamicVariable === undefined || options.dynamicType === undefined
-    ? undefined : dynamicRunLock(options.category, options.dynamicVariable, options.dynamicType);
-  const isRun = (entry: RecordEntry): boolean => {
-    if (entry.in !== INDEX_NONE) return runIndices.has(entry.in);
-    const output = laid.trailingOutputs[entry.out - options.createdBase];
-    return runLock !== undefined && output !== undefined && bytesEqual(output.lockingBytecode, runLock);
-  };
   const batch = { write: { collection: writes.collection } as LaidWriteIdentity, what: 'writes a mapping record' };
-  const run = options.dynamicVariable === undefined
-    ? undefined : { write: { variable: options.dynamicVariable }, what: 'writes a run of chunk records' };
   return laid.entries.map((entry): LaidWriteRecord => {
     if (entry.in !== INDEX_NONE && readIndices.has(entry.in)) {
       return { write: { read: true }, what: 'reads a run of chunk records', entry };
     }
-    const belongsToRun = isRun(entry);
-    if (belongsToRun && run === undefined) {
+    const spent = entry.in !== INDEX_NONE && runIndices.has(entry.in);
+    const variable = entry.in !== INDEX_NONE
+      ? runIndices.get(entry.in)
+      : runAt(laid.trailingOutputs[entry.out - options.createdBase]?.lockingBytecode);
+    if (spent && variable === undefined) {
       throw new PerCallProxyDeployError(
         'the entry lays a run of chunk records and the artifact publishes no dynamic value for it',
       );
     }
-    return { ...(belongsToRun ? run! : batch), entry };
+    return variable === undefined
+      ? { ...batch, entry } : { write: { variable }, what: 'writes a run of chunk records', entry };
   });
 }
 
@@ -722,8 +725,8 @@ function runSpanApartFromBatch(placed: readonly PlacedLaidWrite[]): SegmentSpan 
 
 /** True when the artifact publishes that the entry's frame reads its dynamic value's run apart from its batch. */
 function readsRunApart(artifact: Artifact, functionName: string): boolean {
-  const variable = dynamicWriteVariable(artifact, functionName)?.variable;
-  return variable !== undefined && publishedWriteFact(artifact, functionName, { variable })?.apart === true;
+  return dynamicWriteVariables(artifact, functionName)
+    .some(({ variable }) => publishedWriteFact(artifact, functionName, { variable })?.apart === true);
 }
 
 /**
@@ -787,7 +790,6 @@ export function placeOwnWrites(
     ...(options.callBases === undefined ? {} : { callBases: options.callBases }),
     ...(options.truncated === true ? { truncated: true } : {}),
   };
-  const dynamicVariable = dynamicWriteVariable(artifact, functionName);
   const placed = resolveLaidWriteSegments(
     laidWriteRecords({
       laid: options.laid,
@@ -795,8 +797,7 @@ export function placeOwnWrites(
       indexOf: options.indexOf,
       category: options.category,
       createdBase: options.createdBase,
-      ...(dynamicVariable === undefined ? {} : { dynamicVariable: dynamicVariable.variable }),
-      ...(dynamicVariable === undefined ? {} : { dynamicType: dynamicVariable.type }),
+      dynamicRuns: dynamicWriteVariables(artifact, functionName),
     }),
     (write, what) => resolvedWriteSegment({ artifact, functionName, label, what, write, calls, ...bounds }),
     label,
@@ -3892,15 +3893,13 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       }
       trailingCursor += laid.trailingOutputs.length;
       // Each of the frame's own writes is declared in its own segment, which the artifact publishes per write.
-      const dynamicVariable = dynamicWriteVariable(callee.artifact, callee.entry);
       records = laidWriteRecords({
         laid,
         writes,
         indexOf: (id) => participant(layout, id).index,
         category,
         createdBase,
-        ...(dynamicVariable === undefined ? {} : { dynamicVariable: dynamicVariable.variable }),
-        ...(dynamicVariable === undefined ? {} : { dynamicType: dynamicVariable.type }),
+        dynamicRuns: dynamicWriteVariables(callee.artifact, callee.entry),
       });
     }
     return { laid, records, createdBase, ...calleeEventPlan[position]! };

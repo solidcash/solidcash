@@ -1842,8 +1842,13 @@ async function callInShape(
       learnedPayees = fromPayees;
       continue;
     }
-    // A close on a declaration this call does not state hands nothing back: the plan is as far as it can go.
-    if (reading.ok) break;
+    // A close on a declaration this call does not state hands nothing back: the plan is as far as it can go. It is the
+    // body's own check refusing, as `require(msg.sender == owner)` does for a caller who is not the owner, so the
+    // run stopped before the values still owed and none of them is missing: the machine's verdicts name the refusal.
+    if (reading.ok) {
+      settled = true;
+      break;
+    }
     // The run left no declaration close to read. A run that made fewer sends than the plan declares stops at its
     // count, having pinned the sends it made in order: the listed sends past them, and the contracts it paid nothing,
     // are on branches it did not take, and the plan drops them.

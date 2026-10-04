@@ -155,8 +155,8 @@ export async function discoverInitialCallTopology(
   root: Prepared,
   rootCaller: Uint8Array,
   stateOf: (contract: StatefulContract) => Promise<Record<string, unknown>>,
-): Promise<Prepared[]> {
-  return (await rebuildCallTopology(rootCaller, stateOf, [root])).calls;
+): Promise<{ calls: Prepared[]; prunedByPreCallRequire: boolean }> {
+  return rebuildCallTopology(rootCaller, stateOf, [root]);
 }
 
 async function rebuildCallTopology(
@@ -165,7 +165,7 @@ async function rebuildCallTopology(
   prepared: readonly Prepared[],
   ctx?: ResultPropagationContext,
   results: Readonly<Record<number, string>> = {},
-): Promise<{ propagated: boolean; calls: Prepared[] }> {
+): Promise<{ propagated: boolean; calls: Prepared[]; prunedByPreCallRequire: boolean }> {
   const resultsByParent: ReturnType<typeof decodeResultsByParent> = ctx
     ? decodeResultsByParent(ctx, results) : new Map();
   const childrenByParent = new Map<number, Child[]>();
@@ -177,6 +177,7 @@ async function rebuildCallTopology(
   }
   const calls: Prepared[] = [];
   let propagated = false;
+  let prunedByPreCallRequire = false;
   const visit = async (entry: Child, incoming: Uint8Array, depth: number): Promise<void> => {
     if (depth > 7) throw new Error('messageBus: result-dependent call topology exceeds the graph depth limit');
     const { call, previous } = entry;
@@ -252,6 +253,29 @@ async function rebuildCallTopology(
               : ctx?.plan.invocations[child.previous]?.sourceLogicalIndex
                 ?? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
           ) === template.sourceLogicalIndex);
+          // A root source require can reject before any child resource exists. Only the root can use the
+          // topology resolver for this proof: at a nested call, msg.sender and tx.origin differ but older
+          // expression metadata records both as msgSender. Preserve nested children for VM validation.
+          if (depth === 0 && template.preCallRequires?.length) {
+            let rejected = false;
+            for (const guard of template.preCallRequires) {
+              try {
+                const returns = returnsFor([{ kind: 'expression', expression: guard }], template);
+                await hydrate([guard], [0], returns);
+                if (evaluate(guard, 0, returns) === false) {
+                  rejected = true;
+                  break;
+                }
+              } catch {
+                // An unresolved producer lane cannot prove this guard false. Other independent guards may still
+                // reject it; otherwise retain the call for final VM validation.
+              }
+            }
+            if (rejected) {
+              prunedByPreCallRequire = true;
+              continue;
+            }
+          }
           if (previous !== undefined && ctx !== undefined && !hasChangedDependency(
             [template.condition, template.iterationDomain, template.nestedIterationDomains,
               template.addressSource], childResults,
@@ -452,5 +476,5 @@ async function rebuildCallTopology(
   await visit({ call: prepared[0], ...(ctx && { previous: 0 }) }, rootCaller, 0);
   // Results are already carried by `prepared` at their original invocation identity; never remap the old
   // numeric result table over the new DFS indices (insertion/removal would cross-wire unrelated producers).
-  return { propagated, calls };
+  return { propagated, calls, prunedByPreCallRequire };
 }

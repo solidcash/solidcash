@@ -141,11 +141,12 @@ async function prepareTypedCallbackGraph(
     return pending;
   };
   let calls: PreparedAtomicMessageBusCall[];
+  let prunedByPreCallRequire: boolean;
   try {
-    calls = await discoverInitialCallTopology({
+    ({ calls, prunedByPreCallRequire } = await discoverInitialCallTopology({
       ...root,
       producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },
-    }, signer.getLockingBytecode(), stateOf);
+    }, signer.getLockingBytecode(), stateOf));
   } catch {
     // Discovery is speculative for ordinary graphs; legacy planning retains its existing diagnostic.
     return undefined;
@@ -155,10 +156,16 @@ async function prepareTypedCallbackGraph(
     const owner = `${call.contract.categoryId.toLowerCase()}:${call.contract.inner.lockingBytecode.toLowerCase()}`;
     ownerCounts.set(owner, (ownerCounts.get(owner) ?? 0) + 1);
   }
+  // A rejected root reaches no child. The ordinary builder can execute that source require directly; the
+  // atomic graph format starts at two invocations and must not fabricate a participant to fill the gap.
+  if (calls.length === 1) return undefined;
   // A typed address can select a different deployed owner than the interface registry suggests. If the
   // registered path is a callback, compose the runtime-resolved finite graph even when that choice removes
   // the repeated owner; falling back to the legacy registry-only guard would pin the callee incorrectly.
-  if (!registeredCallback && ![...ownerCounts.values()].some((count) => count > 1)) return undefined;
+  // A proven false pre-call require can change which siblings share an owner. Keep the remaining multi-call
+  // graph on the atomic path so the root VM can execute the require against the selected caller and returns.
+  if (!registeredCallback && !prunedByPreCallRequire
+    && ![...ownerCounts.values()].some((count) => count > 1)) return undefined;
 
   // A later write on a repeated participant can abort its aggregate route before an earlier getter publishes
   // its result. Seed that earlier read from the exact on-chain getter, then let the completed graph VM either

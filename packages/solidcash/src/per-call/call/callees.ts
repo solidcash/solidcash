@@ -471,10 +471,10 @@ export interface CalleeFrames {
   /** The records the frames' writes create, in master order, from `createdBase` on. */
   readonly createdOutputs: readonly DraftSourceOutput[];
   /**
-   * For a contract the calls enter more than once whose frames write its nodes, what the views of those nodes are
-   * chained from in the order the validator walks every frame of the call (`chainSharedNodeViews`): the input index
-   * of each node the frames touch, the declarations their writes transition a node with, and those that only relink
-   * one.
+   * For a contract the calls enter more than once whose frames write its nodes or data records, what the views of
+   * those are chained from in the order the validator walks every frame of the call (`chainSharedNodeViews`): the
+   * input index of each node the frames touch and of each data record they write, the declarations their writes
+   * transition one with, and those that only relink a node.
    */
   readonly chain?: {
     readonly nodes: ReadonlySet<number>;
@@ -538,12 +538,16 @@ export function calleeFrames(options: {
   // The master that writes each record, which the record's covenant names as the spend's authority.
   const writerOf = new Map<string, string>();
   // Each data record's view where the frames placed so far leave it. A contract's frames are placed in the order the
-  // validator walks them (V6), and a data record is chained as though none runs inside another of its own contract,
-  // so a frame starts from the view the last write before it leaves: that frame's unstated end, which the derivation
-  // learns from its own close. A node is chained by the walk instead (`chain`), and a frame inside a writer of its
-  // contract starts from the view that writer's own run leaves it, learned before the frame is read
-  // (`learnCalleeValue`).
+  // validator walks their first segments (V6), so a frame starts from the view the last write before it leaves: that
+  // frame's unstated end, which the derivation learns from its own close. A frame that runs inside another of its own
+  // contract moves the record between two of that frame's segments, so a record a frame writes on a contract the
+  // calls enter more than once is restated by the walk over every frame, as the hop chains it (`chainedRecords`),
+  // and so is a node (`chain`). A frame inside a writer of its contract starts from the view that writer's own run
+  // leaves a node, learned before the frame is read (`learnCalleeValue`).
   const chainEnds = new Map<string, Uint8Array>();
+  const enteredOf = new Map<string, number>();
+  for (const callee of callees) enteredOf.set(callee.block, (enteredOf.get(callee.block) ?? 0) + 1);
+  const chainedRecords = new Set<string>();
   const inputs: Record<string, DraftInput> = {};
   const eventOutputs: DraftSourceOutput[] = [];
   const createdOutputs: DraftSourceOutput[] = [];
@@ -669,6 +673,18 @@ export function calleeFrames(options: {
       ...readEntries,
       ...(byWrite === undefined ? writesAt(position) : []),
     ]);
+    // A record this frame writes on a contract the calls enter more than once is chained over every frame of the
+    // call, as the hop chains it: its writes are transitions of the walk, and every frame's kept declaration of it,
+    // an outer frame's segments after a call into the contract among them, takes the view the last write left.
+    if ((enteredOf.get(callee.block) ?? 0) > 1) {
+      declared.forEach((record, entryIndex) => {
+        if ((writes.get(callee.records.indexOf(record)) ?? []).length === 0) return;
+        chainedRecords.add(record.id);
+        for (const segment of segments) {
+          if (segment[entryIndex]!.viewOut === undefined) writeTransitions.add(segment[entryIndex]!);
+        }
+      });
+    }
     if (byWrite !== undefined) {
       try {
         placeOwnWrites(segments, {
@@ -797,9 +813,12 @@ export function calleeFrames(options: {
       if (placed !== undefined) nodes.add(placed.index);
     }
   }
+  // A data record a frame writes on such a contract chains in the same walk, as the hop chains it.
+  for (const id of chainedRecords) nodes.add(indexOf(id));
   return {
     masters, inputs, settles, eventOutputs, createdOutputs,
-    ...(chained ? { chain: { nodes, writes: writeTransitions, relinks: relinkTransitions } } : {}),
+    ...(chained || chainedRecords.size > 0
+      ? { chain: { nodes, writes: writeTransitions, relinks: relinkTransitions } } : {}),
   };
 }
 

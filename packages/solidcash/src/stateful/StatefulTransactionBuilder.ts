@@ -2300,6 +2300,7 @@ export class StatefulTransactionBuilder {
     return {
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       delegateReturnEventAfterEvents: this.delegateReturnEventAfterEvents,
+      plannedReturnOutputIndex: this.plannedReturnOutputIndex,
       categoryId: this.categoryId,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,

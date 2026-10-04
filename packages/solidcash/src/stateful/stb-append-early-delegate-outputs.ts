@@ -4,6 +4,7 @@
 
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 
 export type DeferredDelegateReturnEvent = {
@@ -16,6 +17,7 @@ export type DeferredDelegateReturnEvent = {
 export interface AppendEarlyDelegateOutputsHost {
   readonly delegateEntriesAfterLowLevel: boolean;
   readonly delegateReturnEventAfterEvents: boolean;
+  readonly plannedReturnOutputIndex: number;
   readonly categoryId: string;
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly pendingReturnEventOutputs: readonly DeferredDelegateReturnEvent[];
@@ -60,6 +62,18 @@ export function appendEarlyDelegateOutputs(
     deferredDelegateReturnEvents.push(...proxyReturnEvents);
   } else {
     for (const returnEvent of proxyReturnEvents) {
+      // The implementation may have output-only fixed slots between its preserved state and its return event.
+      // Inputs reserve those slots before nested callees; preserve the same geometry on the output side before
+      // materializing any external participant. Otherwise a callee master can occupy the published return index.
+      const planned = host.plannedReturnOutputIndex;
+      if (planned >= 0) {
+        if (builder.outputs.length > planned) {
+          throw new Error(`Delegated return output ${planned} overlaps an occupied physical slot`);
+        }
+        while (builder.outputs.length < planned) {
+          builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+        }
+      }
       addReturnOutput(builder, returnEvent.identity, {
         to: new Uint8Array([0x51]), amount: 800n,
         token: {

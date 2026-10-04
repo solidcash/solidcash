@@ -28886,6 +28886,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             for (let item = 0; item < 3; item += 1) bin(Op.OP_TOALTSTACK);
           }
           bin(Op.OP_ENDIF);
+          if (this.readsRecordsFromFrame) this.emitPerCallKeptBatchTarget(slot, loc);
 
           bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // proof commitment
           bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // predecessor output index
@@ -29132,6 +29133,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_VERIFY, loc);
       }
     });
+  }
+
+  /**
+   * Binds the group of a per-call batch target a branch guards, where its write did not run.
+   *
+   * Entry and exit with the target's proof view on top of the alternate stack. No other code holds such a group: the
+   * batch's own flag, where it has one, is set by any of its writes, so beside a write that ran a frame could declare
+   * the node rewritten to any value, or a node created for the key. The target's own flag decides: where it stays clear
+   * the group is the target's own node, and the view the segment ends it at keeps the slot and value the proof began
+   * with, beside the successor the checks above admitted, which an insert of another target relinks.
+   */
+  private emitPerCallKeptBatchTarget(slot: number, loc: SingleLocationData): void {
+    const flag = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
+    if (!this.conditionalSortedWriteFlagSlots.has(slot) || this.getStackIndex(flag, true) < 0) return;
+    // Each field read copies the parked proof.
+    const proofField = (field: 'slot' | 'value'): void => {
+      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+      if (field === 'slot') { this.emit(Op.OP_DROP, loc); return; }
+      this.emit(Op.OP_NIP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    };
+    this.emitPickTrackedFromBottom(flag, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    proofField('slot');
+    this.emit(Op.OP_DUP, loc);
+    this.emitPickVMapWitness(`__internal__vmapBatchSlot_${slot}`, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc); // a write that did not run creates no node
+    this.emitPickVMapWitness(`__internal__vmapBatchNext_${slot}`, loc);
+    this.emit(Op.OP_CAT, loc);
+    proofField('value');
+    this.emit(Op.OP_CAT, loc);
+    // The node's last view in the segment, at its coordinate: a node an earlier frame created, named -(out + 1), is
+    // declared at that output.
+    this.emitPickVMapWitness(`__internal__vmapBatchProof_${slot}`, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc); this.emit(Op.OP_ENDIF, loc);
+    this.emitRecordCommitmentRead('out', loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -43431,8 +43473,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot: the direct
-   * epilogue or the per-call single-target transition binds the node where it stays false. Loop, alias, invoked and
-   * multi-slot batch writes get none, and a per-call master flags only a one-slot batch target.
+   * epilogue or the per-call batch transition binds the node where it stays false. Loop, alias and invoked writes get
+   * none, nor does a direct multi-slot batch's target or a per-call one the body makes wherever it reaches it.
    */
   private allocateConditionalSortedWriteFlags(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
@@ -43459,21 +43501,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const inMultiSlotBatch = node.sortedBatchInfo?.some(
         (batch) => batch.slotIndices.length > 1 && batch.slotIndices.includes(slotIndex),
       ) ?? false;
-      // A per-call master binds only a one-slot batch target; in a direct multi-slot batch a relinked predecessor
-      // changes without an upsert of its own, which a flag would refuse.
-      if (this.perCallMaster ? !inSingleSlotBatch : inMultiSlotBatch) {
+      // A constructor arm completes only in the genesis derivation (no spend of a live master is its category's
+      // genesis), which mints a key no run wrote at its unwritten value, so it keeps the transitions that allow it.
+      const activation = this.perCallMaster && node.name !== '__construct'
+        ? perCallWriteActivation(node, slotIndex, this.constantExpressions) : undefined;
+      const mayNotRun = activation !== undefined && !isAlwaysActive(activation);
+      // A per-call master binds a one-slot batch target in its single-target transition, and a multi-slot batch's
+      // target the body may skip in the batch transition (`emitPerCallKeptBatchTarget`): the batch's own flag, which
+      // any of its writes sets, cannot tell which ran. In a direct multi-slot batch a relinked predecessor changes
+      // without an upsert of its own, which a flag would refuse.
+      if (this.perCallMaster ? !inSingleSlotBatch && !(inMultiSlotBatch && mayNotRun) : inMultiSlotBatch) {
         continue;
       }
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex));
       this.conditionalSortedWriteFlagSlots.add(slotIndex);
-      // A per-call frame may skip a flagged write the body does not make wherever it reaches it, so its access
-      // publishes the condition the write runs under. A constructor arm completes only in the genesis derivation
-      // (no spend of a live master is its category's genesis), which mints a key no run wrote at its unwritten
-      // value, so it keeps the transition that allows it.
-      const activation = this.perCallMaster && node.name !== '__construct'
-        ? perCallWriteActivation(node, slotIndex, this.constantExpressions) : undefined;
-      if (activation !== undefined && !isAlwaysActive(activation)) {
+      // A per-call frame may skip a flagged one-slot write the body does not make wherever it reaches it, so its
+      // access publishes the condition the write runs under. A multi-slot batch declares no skipped group: a write
+      // there that did not run declares its node kept.
+      if (mayNotRun && inSingleSlotBatch) {
         info.activation = activation;
         this.perCallSkippableSlots.add(slotIndex);
       }

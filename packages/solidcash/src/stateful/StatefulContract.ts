@@ -7443,6 +7443,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             'read',
           ])]
           : entryAccessForSlot(slotIndex)?.operations ?? [];
+    // An active fixed slot that is its collection's only write here: no batch, loop or sibling slot shares its lane.
+    const isSoleActiveFixedCollectionWrite = (collection: string, slotIndex: number): boolean =>
+      !inactiveMessageBusEntrySlots.has(slotIndex)
+      && (activeMessageBusWriteCollections === undefined || activeMessageBusWriteCollections.includes(collection))
+      && !(entryAbiFunction?.sortedBatchInfo?.some((batch) => batch.collection === collection) ?? false)
+      && !(entryAbiFunction?.sortedUpsertLoopInfo?.some((info) => info.collection === collection) ?? false)
+      && !(entryAbiFunction?.sortedInsertLoopInfo?.some((info) => info.collection === collection) ?? false)
+      && (entryAccesses ?? []).every((other, index) => (other.slotIndex ?? index) === slotIndex
+        || other.collection !== collection
+        || !entryOperations(other.slotIndex ?? index).some((operation) =>
+          operation === 'write' || operation === 'delete'));
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       nextBuildId();
@@ -8614,6 +8625,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   collection: access.collection, slotIndex, slot, value: vBytes, digest: sha256Sync(vBytes),
                   chunks: splitValueIntoValueChunks(vBytes),
                 });
+              }
+              // A present key takes the covenant's UPDATE arm at any value width: it recreates its own row and
+              // mints no NEW node. Pin the NEW lane empty as for computed updates and deletes; a speculative seed
+              // can otherwise derive this row's own output check and emit the row twice.
+              if (list.has(slot) && isSoleActiveFixedCollectionWrite(access.collection, slotIndex)) {
+                computedValueUpdateCollections.add(access.collection);
               }
             } else if (!inactiveMessageBusEntrySlots.has(slotIndex)
               && (activeMessageBusWriteCollections === undefined

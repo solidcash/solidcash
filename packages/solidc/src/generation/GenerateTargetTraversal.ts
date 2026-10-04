@@ -1315,6 +1315,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private perCallBatchWriteRuntime = false;
   /**
+   * Whether a call the source makes follows the batch write, so that a run can make it after the write: a close past
+   * the write then closes the segment the run's own count names, which may or may not be the write's.
+   */
+  private perCallCallFollowsBatchWrite = false;
+  /**
    * True while a declared-view read resolves against the batch's write segment, which the source fixes, in a body
    * whose calls vary on its paths: the walk then names that segment instead of the one the execution has reached,
    * where the write's spent records are declared kept at the views it wrote.
@@ -7675,6 +7680,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallDeclaredLoopSlot = -1;
     // Taken from the body as the function's visit begins, before any statement of it is rewritten.
     this.perCallLoopChain = this.perCallMaster ? perCallLoopChains(node) : undefined;
+    this.perCallCallFollowsBatchWrite = this.perCallMaster && (node.sortedBatchInfo?.length ?? 0) > 0
+      && !perCallBatchWriteFollowsEveryCall(node);
     this.perCallChainedLoop = undefined;
     this.perCallStaleWrites = new Set();
     this.perCallValueCallsAtSource = new Set();
@@ -27674,10 +27681,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // accounts for. A fixed body reaches it at the position its own calls name; a body whose calls the source does
     // not fix reaches it at the body's end, because a write no call follows closes the last segment the run opens.
     const batchWrite = (node.sortedBatchInfo?.length ?? 0) > 0;
-    // A value send closes a segment only where its recipient is a contract, which no position the source fixes
-    // counts, so a body that sends compares the write's fixed segment with the one its calls have reached.
+    // A body whose calls vary closes the segment its calls have reached, which a close's place in the source does
+    // not name once a call can run after the write: a call the run skips leaves the write's segment open to a later
+    // close, and a call one arm makes moves a close after the branch into a later segment. Such a body compares the
+    // write's fixed segment with the one its calls have reached at every close past the write; a close before the
+    // write is in an earlier segment on every path, and with no call after the write every close past it is in the
+    // write's. A value send closes a segment only where its recipient is a contract, which no position counts, so a
+    // body that sends compares the two at every close.
     const writeSegmentAtRunTime = batchWrite && !this.perCallBatchWriteRuntime && this.perCallCallsMadeActive
-      && (node.transferInfos?.length ?? 0) > 0;
+      && ((node.transferInfos?.length ?? 0) > 0
+        || (this.perCallCallFollowsBatchWrite && this.perCallSegmentIndex >= this.perCallBatchWriteSegment));
     const closesTheWriteSegment = batchWrite && !writeSegmentAtRunTime
       && (this.perCallBatchWriteRuntime ? atEnd : this.perCallSegmentIndex === this.perCallBatchWriteSegment);
     if (closesTheWriteSegment) {

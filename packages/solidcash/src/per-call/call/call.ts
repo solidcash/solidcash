@@ -71,6 +71,7 @@ import {
   type Artifact,
   type ExternalResultEncoding,
   type FixedBchTransferAbi,
+  type RecordEntry,
   type StateValue,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
@@ -96,6 +97,7 @@ import {
   stateRecordUnlockingBytecode,
   type PerCallDeploymentSet,
 } from '../deploy/index.js';
+import { placeOwnWrites } from '../proxy/deploy.js';
 import { hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
@@ -458,6 +460,12 @@ interface LaidEntryMapping {
   readonly entryMints?: readonly (LoopRecordMint | undefined)[];
   /** The long mapping values the body reads, by value-witness slot, which the frame's block lists. */
   readonly values?: readonly Uint8Array[];
+  /**
+   * The records each segment of a frame that makes `calls` calls declares: the nodes read apart, kept, in every one,
+   * then each write's records in the segment its artifact publishes for it, kept on either side. `callBases` holds,
+   * for each published call site, the position of its first call in the frame, or -1 for none.
+   */
+  place(calls: number, callBases: readonly number[]): DraftRecordEntry[][];
 }
 
 /** The mapping records one frame reads and writes, with the ids its plan places. */
@@ -584,7 +592,7 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
       // A batch declares a node once per group that names it, and the body writes it once, in its final form: a later
       // declaration continues from the view the one before it ends at, the value the body computed once it is learned.
       const ends = new Map<number, Uint8Array>();
-      const written = (laid?.entries ?? []).map((entry): DraftRecordEntry => {
+      const written = (laid?.entries ?? []).map((entry): RecordEntry => {
         const record = entry.in === INDEX_NONE ? entry.out : entry.in;
         const before = ends.get(record);
         ends.set(record, entry.viewOut);
@@ -603,6 +611,20 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
           ],
         }),
         ...(laid?.values === undefined ? {} : { values: laid.values }),
+        // Each write lands in the segment its artifact publishes, as the hop places its delegate frame's own.
+        place: (calls, callBases) => {
+          const segments = Array.from({ length: calls + 1 }, (): DraftRecordEntry[] => [...read.entries]);
+          if (laid === undefined || writes === undefined) return segments;
+          try {
+            placeOwnWrites(segments, {
+              artifact, functionName, label: `entry "${functionName}"`, laid: { ...laid, entries: written }, writes,
+              indexOf: context.indexOf, category, createdBase: context.createdBase, calls, callBases,
+            });
+          } catch (error) {
+            throw asCallRefusal(error, functionName);
+          }
+          return segments;
+        },
       };
     },
   };
@@ -735,13 +757,6 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   } catch (error) {
     if (error instanceof PerCallCalleeError) throw new PerCallCallError(error.message);
     throw error;
-  }
-  // A run of loops whose own turns make the calls places its records by the turns the artifact publishes.
-  if (calleePlan !== undefined && mappingRecords !== undefined && mappingRecords.loopRun === undefined) {
-    throw new PerCallCallError(
-      `entry "${functionName}" writes mapping "${mappingRecords.collection}" and makes ${calleePlan.calls.length} `
-      + 'external call(s), whose segments this call path does not place its writes in yet',
-    );
   }
 
   // The fallback is reached by the call data of a value send, which no entry's selector names.
@@ -1155,6 +1170,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const segmentCount = calleePlan !== undefined || payees.length > 0
     ? typedCalls.length + payees.length + 1
     : published?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1;
+  // Each published site's first call, past the value calls made before it.
+  const callBases = (calleePlan?.callBases ?? []).map((base) => (base < 0 ? base : typedCallPosition(base)));
   const recordIndex = (id: string): number => participant(layout, id).index;
   // Where each value-dependent node's declaration sits in the frame's segments, and the structural candidate it
   // starts from, so the value the body's close hands back can be read and written into the next attempt.
@@ -1177,7 +1194,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       functionName,
       run: mappingRecords.loopRun,
       mints: mints.filter((mint) => mint !== undefined),
-      callBases: (calleePlan?.callBases ?? []).map((base) => (base < 0 ? base : typedCallPosition(base))),
+      callBases,
       calls: segmentCount - 1,
     });
     if (typeof spans === 'string') throw new PerCallCallError(`entry "${functionName}": ${spans}`);
@@ -1261,9 +1278,13 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       indexOf: indexOfParticipant,
     });
     // A record's first segment starts from the commitment it was spent with, and each later one from the view the
-    // segment before it ended at: a body that calls closes one segment per call, and the views chain across them.
-    const mappingSegments = laid === undefined || mappingSpans === undefined
-      ? undefined : placeRecordsBySpan(laid.entries, mappingSpans, segmentCount);
+    // segment before it ended at: a body that calls closes one segment per call, and the views chain across them. A
+    // run of loops places its records by its turns, and a write beside the calls lands in the segment its artifact
+    // publishes for it.
+    const mappingSegments = laid === undefined ? undefined
+      : mappingSpans !== undefined ? placeRecordsBySpan(laid.entries, mappingSpans, segmentCount)
+        : segmentCount > 1 && mappingRecords?.loopRun === undefined ? laid.place(segmentCount - 1, callBases)
+          : undefined;
     const segment = (_unused: unknown, position: number): DraftRecordEntry[] => [
       ...declared.map((record): DraftRecordEntry => {
         const index = recordIndex(record.id);
@@ -1333,9 +1354,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       origin: CALLER_ID,
       calls: rootCalls,
       // Each published site's first call, past the value calls made before it.
-      ...(calleePlan === undefined ? {} : {
-        callBaseBySite: calleePlan.callBases.map((base) => (base < 0 ? base : typedCallPosition(base))),
-      }),
+      ...(calleePlan === undefined ? {} : { callBaseBySite: callBases }),
       // A returning entry's slot starts from the candidate its own comparison fails against; a void entry's is empty.
       retval: learnedRetval ?? retvalPlaceholderBytes ?? new Uint8Array(0),
       segments: Array.from({ length: segmentCount }, segment),

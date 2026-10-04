@@ -707,7 +707,7 @@ function resolveLaidWriteSegments(
 }
 
 /** One of an entry's laid records, the write it belongs to, and the segments that write lands in. */
-interface PlacedLaidWrite {
+export interface PlacedLaidWrite {
   readonly span: SegmentSpan;
   readonly entry: RecordEntry;
   readonly write: LaidWriteIdentity;
@@ -749,6 +749,62 @@ function hopLoopSpans(options: {
   if (typeof spans !== 'string') return spans;
   if (options.truncated === true) return loopMints.map(() => ({ least: options.calls, most: options.calls }));
   throw new PerCallProxyDeployError(`${options.label} cannot declare its loop's records: ${spans}`);
+}
+
+/** What one frame's own laid writes are declared in its segments from. */
+export interface OwnWritesPlacement {
+  readonly artifact: Artifact;
+  readonly functionName: string;
+  /** How a refusal names the frame's entry. */
+  readonly label: string;
+  readonly laid: LaidHopEntryWrites;
+  readonly writes: HopEntryWrites;
+  /** The input index of a participant id the layout placed. */
+  readonly indexOf: (id: string) => number;
+  readonly category: Uint8Array;
+  /** The first trailing output the writes create a record at. */
+  readonly createdBase: number;
+  /** The calls the frame makes, each closing one of its segments. */
+  readonly calls: number;
+  /** For each published call site of the entry, the position of its first call in the frame, or -1 for none. */
+  readonly callBases?: readonly number[];
+  /** True for a frame a stopped plan states only the first calls of. */
+  readonly truncated?: boolean;
+}
+
+/**
+ * Declares a frame's own writes in the segments they land in, after what each segment declares already, and answers
+ * each laid record with the segments its write lands in: the segment the artifact publishes for the write
+ * (`resolvedWriteSegment`), or a loop's turns for a run of loops (`hopLoopSpans`), with every record a write spends
+ * kept on either side (`placeLaidWrites`). The hop places its delegate frame's writes so, and the plain call path its
+ * root's.
+ */
+export function placeOwnWrites(
+  segments: DraftRecordEntry[][], options: OwnWritesPlacement,
+): readonly PlacedLaidWrite[] {
+  const { artifact, functionName, label, writes, calls } = options;
+  const bounds = {
+    ...(options.callBases === undefined ? {} : { callBases: options.callBases }),
+    ...(options.truncated === true ? { truncated: true } : {}),
+  };
+  const dynamicVariable = dynamicWriteVariable(artifact, functionName);
+  const placed = resolveLaidWriteSegments(
+    laidWriteRecords({
+      laid: options.laid,
+      writes,
+      indexOf: options.indexOf,
+      category: options.category,
+      createdBase: options.createdBase,
+      ...(dynamicVariable === undefined ? {} : { dynamicVariable: dynamicVariable.variable }),
+      ...(dynamicVariable === undefined ? {} : { dynamicType: dynamicVariable.type }),
+    }),
+    (write, what) => resolvedWriteSegment({ artifact, functionName, label, what, write, calls, ...bounds }),
+    label,
+    readsRunApart(artifact, functionName),
+    hopLoopSpans({ artifact, functionName, writes, calls, label, ...bounds }),
+  );
+  placeLaidWrites(segments, placed);
+  return placed;
 }
 
 /**
@@ -3676,41 +3732,20 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     releasedLock: options.callerLockingBytecode,
   });
   if (laidWrites !== undefined && options.entryWrites !== undefined) {
-    const dynamicVariable = dynamicWriteVariable(implementationArtifact, options.entry.functionName);
-    const placedWrites = resolveLaidWriteSegments(
-      laidWriteRecords({
-        laid: laidWrites,
-        writes: options.entryWrites,
-        indexOf: (id) => participant(layout, id).index,
-        category: options.proxyCategory,
-        createdBase,
-        ...(dynamicVariable === undefined ? {} : { dynamicVariable: dynamicVariable.variable }),
-        ...(dynamicVariable === undefined ? {} : { dynamicType: dynamicVariable.type }),
-      }),
-      (write, what) => resolvedWriteSegment({
-        artifact: implementationArtifact,
-        functionName: options.entry.functionName,
-        label: entryWritesLabel,
-        what,
-        write,
-        calls: calls.length,
-        ...(options.callBases === undefined ? {} : { callBases: options.callBases }),
-        ...(options.truncated === true ? { truncated: true } : {}),
-      }),
-      entryWritesLabel,
-      readsRunApart(implementationArtifact, options.entry.functionName),
-      hopLoopSpans({
-        artifact: implementationArtifact,
-        functionName: options.entry.functionName,
-        writes: options.entryWrites,
-        calls: calls.length,
-        label: entryWritesLabel,
-        ...(options.callBases === undefined ? {} : { callBases: options.callBases }),
-        ...(options.truncated === true ? { truncated: true } : {}),
-      }),
-    );
+    const placedWrites = placeOwnWrites(implementationSegments, {
+      artifact: implementationArtifact,
+      functionName: options.entry.functionName,
+      label: entryWritesLabel,
+      laid: laidWrites,
+      writes: options.entryWrites,
+      indexOf: (id) => participant(layout, id).index,
+      category: options.proxyCategory,
+      createdBase,
+      calls: calls.length,
+      ...(options.callBases === undefined ? {} : { callBases: options.callBases }),
+      ...(options.truncated === true ? { truncated: true } : {}),
+    });
     for (const { entry } of placedWrites) writeTransitions.add(entry);
-    placeLaidWrites(implementationSegments, placedWrites);
     // A read of a node the batch spends keeps the view the batch's own declaration of the node starts each segment
     // from: the spent view up to the write's segment, where the read is declared ahead of the transition, and the
     // written view after it. The frame proves the key against the node's first declaration in its segment, and the

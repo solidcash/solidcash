@@ -10,12 +10,12 @@ import {
  * for a proxied root (the ladder's roots are all proxied); the plain path refuses them by name before anything is
  * built:
  *
- * - a vault that pulls a token and credits the depositor (a mapping write beside a call),
  * - a payout that pays two parties through one token (one callee entered twice, each frame writing its nodes),
  * - a sweep that transfers what an earlier `balanceOf` returned (an argument from an earlier call's result).
  *
- * Each case pins the refusal met today; its title says what should settle once the plain path plans what the hop
- * plans. The file runs only under `PER_CALL_AHEAD=1`.
+ * A vault that pulls a token and credits the depositor (a mapping write beside a call) is served
+ * (`call/plain-root-calls.test.ts`). Each case pins the refusal met today; its title says what should settle once the
+ * plain path plans what the hop plans. The file runs only under `PER_CALL_AHEAD=1`.
  */
 
 const SOURCE = [
@@ -87,15 +87,6 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a plain root whose en
   it('compiles every entry: the walls below are the plain path\'s, not the compiler\'s', async () => {
     const c = await chain();
     expect(c.vault.artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
-  }, 300_000);
-
-  it('refuses a deposit that pulls a token and credits the depositor (should settle once served)', async () => {
-    const c = await chain();
-    const outcome = await enterPlain(c.world, c.vault, 'deposit', [10n], externalsOf(c));
-    expect(outcome.error).toBeInstanceOf(PerCallCallError);
-    expect(outcome.error!.message).toBe('entry "deposit" writes mapping "deposits" and makes 1 external call(s), '
-      + 'whose segments this call path does not place its writes in yet');
-    expect(outcome.coinSpent).toBe(false);
   }, 300_000);
 
   it('refuses a payout through one token twice (should settle once served)', async () => {

@@ -31,8 +31,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * write settles and is read back through the views. A plan that credits a party the record does not name is refused
  * by the entry's own frame, and one that declares the record naming another party by the transaction's settlement.
  *
- * `Escrow` sits behind its generated proxy, since the plain call path does not declare the chunk records a struct
- * value may span; `Ledger` is deployed both behind its proxy and plain.
+ * `Escrow` sits behind its generated proxy, and `Ledger` is deployed both behind its proxy and plain. A struct record
+ * opened on the plain call path is `call/plain-root-writes.test.ts`'s.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */

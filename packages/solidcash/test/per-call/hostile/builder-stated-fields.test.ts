@@ -441,8 +441,8 @@ describe('fields the settlement does not refuse', () => {
  * A per-call body holds a dynamic value in a run of chunk NFTs laid at its collection's covenant. The frame
  * declares the run's records and the record that carries the value's byte length, and the body's own close hands
  * back the length and the chunk bytes it computed. This second settlement runs the proxied path (the direct path
- * refuses a chunkable value by name), appends one element to a `Post[]`, and then asks whether the run's width and
- * the chunks' commitments are bound by the settlement.
+ * declares a dynamic value's run only beside a mapping write), appends one element to a `Post[]`, and then asks
+ * whether the run's width and the chunks' commitments are bound by the settlement.
  */
 const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'

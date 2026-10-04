@@ -31,7 +31,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * refused by the entry's own derivation.
  *
  * `Registry` sits behind its generated proxy and stores a struct per id; `Tickets` is deployed plain and stores a
- * number per id, since the plain call path does not declare the chunk records a struct value may span.
+ * number per id. A struct record opened on the plain call path is `call/plain-root-writes.test.ts`'s.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */

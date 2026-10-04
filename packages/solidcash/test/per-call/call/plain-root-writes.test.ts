@@ -20,9 +20,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * The call path plans a root frame's writes with the hop's own planner (`hopEntryWrites`), on the root's own records,
  * nodes and category: one sorted batch per collection, and a value that chunks laid with its run of chunk records.
  * An ERC-20 `transferFrom` entered by a user writes the allowance and both balances, two collections; a profile
- * stores a `string` per address, a value long enough to take chunk records and then a short one over it; and a mint
- * writes one collection of fixed-width values. Each settles and is read back through the views. A transfer whose
- * plan declares the allowance unspent is refused by the transferring frame itself.
+ * stores a `string` per address, a value long enough to take chunk records and then a short one over it; an escrow
+ * opens a struct record per id, a value that chunks too; and a mint writes one collection of fixed-width values.
+ * Each settles and is read back through the views. A transfer whose plan declares the allowance unspent is refused by
+ * the transferring frame itself.
  */
 
 const SOURCE = [
@@ -51,6 +52,12 @@ const SOURCE = [
   '  function setName(string calldata name) external { names[msg.sender] = name; count += 1; }',
   '  function nameOf(address who) external view returns (string memory) { return names[who]; }',
   '}',
+  'contract Escrow {',
+  '  struct Deal { address payee; uint256 amount; }',
+  '  mapping(uint256 => Deal) private deals;',
+  '  function open(uint256 id, address payee, uint256 amount) external { deals[id] = Deal(payee, amount); }',
+  '  function amountOf(uint256 id) external view returns (uint256) { return deals[id].amount; }',
+  '}',
 ].join('\n');
 
 const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
@@ -75,11 +82,19 @@ interface Deployed {
   readonly categoryId: string;
 }
 
-let worldRun: Promise<{ readonly world: World; readonly coin: Deployed; readonly profiles: Deployed }> | undefined;
+/** The chain every case runs on, and the contracts deployed on it. */
+interface Chain {
+  readonly world: World;
+  readonly coin: Deployed;
+  readonly profiles: Deployed;
+  readonly escrow: Deployed;
+}
 
-/** The chain every case runs on, with the token and the profiles deployed without a proxy. */
-function chain(): Promise<{ readonly world: World; readonly coin: Deployed; readonly profiles: Deployed }> {
-  worldRun ??= (async () => {
+let worldRun: Promise<Chain> | undefined;
+
+/** The chain every case runs on, with the token, the profiles and the escrow deployed without a proxy. */
+function chain(): Promise<Chain> {
+  worldRun ??= (async (): Promise<Chain> => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider });
     await fundShippedFacets(provider);
@@ -101,7 +116,10 @@ function chain(): Promise<{ readonly world: World; readonly coin: Deployed; read
       });
       return { artifact, categoryId: deployment.categoryId };
     };
-    return { world, coin: await deploy(artifacts.Coin!), profiles: await deploy(artifacts.Profiles!) };
+    return {
+      world, coin: await deploy(artifacts.Coin!), profiles: await deploy(artifacts.Profiles!),
+      escrow: await deploy(artifacts.Escrow!),
+    };
   })();
   return worldRun;
 }
@@ -190,6 +208,14 @@ describe('a plain root\'s own mapping writes on the plain call path', () => {
     await settle(world, profiles, 'setName', ['alice']);
     expect([await view(world, profiles, 'nameOf', [USER_LOCK]), await view(world, profiles, 'count')])
       .toStrictEqual(['alice', 2n]);
+  }, 600_000);
+
+  it('settles a struct record opened per id, whose value chunks, and reads it back', async () => {
+    const { world, escrow } = await chain();
+    await settle(world, escrow, 'open', [1n, OTHER_LOCK, 50n]);
+    await settle(world, escrow, 'open', [2n, USER_LOCK, 7n]);
+    expect([await view(world, escrow, 'amountOf', [1n]), await view(world, escrow, 'amountOf', [2n])])
+      .toStrictEqual([50n, 7n]);
   }, 600_000);
 
   it('refuses at the transferring frame a plan that declares the allowance unspent', async () => {

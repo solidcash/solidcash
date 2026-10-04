@@ -75,7 +75,33 @@ compiler paths under `packages/solidc/src/` (`support.ts` is `per-call/master/su
 
 ### 2.1 The plain call path is not the hop (rank 1)
 
-Replicas: `plain-root-calls.test.ts` (4 cases), `plain-root-writes.test.ts` (3); `plain-genesis-writes.test.ts`
+**Partly served.** The root's own writes (agent PL1): `call/call.ts` plans each frame's mapping writes with the hop's
+`hopEntryWrites` on the frame's own records, nodes and category, so two collections, a value that chunks and a
+struct record per id settle (`call/plain-root-writes.test.ts`; the replica `plain-root-writes` and the plain case of
+`stored-value-keyed-write` retired). A write beside the root's call (agent PL2): the root's laid writes are declared
+in the segment the artifact publishes for each, kept on either side, by the hop's own placement (`proxy/deploy.ts`
+`placeOwnWrites`), so a deposit credited past the token pull or ahead of it settles (`call/plain-root-calls.test.ts`).
+Routing the plain root through the hop's settle whole is more than that: `buildHopPlan` (`proxy/deploy.ts` 3423)
+builds a proxy master and a delegate master over the proxy's records, which a plain root does not have. Two shapes
+stand, pinned in `ahead/plain-root-calls.test.ts`:
+
+- **payout** (one token entered twice, each frame writing its nodes; refused at `call/callees.ts` 343). The planner
+  already plans the second reach against the first (`proxy/external-calls.ts` 1562-1592: `continuedNodes`,
+  `rewrittenNodes`, `reachedLinks`). What `calleeFrames` (`call/callees.ts` 410) lacks: a node an earlier frame
+  created is laid at that frame's output (the hop's `continuedOutputOf`, `proxy/deploy.ts` 3887); node views are
+  chained across the frames in the validator's order (`chainSharedNodeViews`, `proxy/deploy.ts` 3202, applied at
+  4183), where `calleeFrames` chains data records only (`chainEnds`, `callees.ts` 449); and a later frame is learned
+  again once an earlier frame's view changes (`settleCallees` and `calleeSettleOrder`, `proxy/deploy.ts` 1539 and
+  1498), where `learnCalleeValue` (`callees.ts` 646) matches a view against its candidate only.
+- **sweep** (an argument from an earlier call's result; refused at `call/callees.ts` 326). The hop stops its plan
+  before the site that reads the result and settles what precedes it (`planAndSettleHop`, `proxy/deploy.ts` 2577,
+  with `declareUnstatedCalls`, `proxy/planning-refusal.ts` 103). It reads the produced results back
+  (`producedCallResults` 2376, `reachedCallResults` 2524) and plans again with them (`planHopExternalCalls`'s
+  `externalReturns` and `reachedResults`, `proxy/external-calls.ts` 2801-2809). The plain path plans its calls once
+  (`planEntryCallees`, `callees.ts` 309), so it needs the same stop-and-replan loop in `callInShape`.
+
+Replicas: `plain-root-calls.test.ts` (4 cases, 3 since the deposit is served), `plain-root-writes.test.ts` (3,
+retired); `plain-genesis-writes.test.ts`
 retired: **the constructor half is served** (agent C2: genesis learns each created node from the body's close and
 plans run-time loops and several collections; `deploy/constructor-loop-writes.test.ts`).
 A per-call artifact deployed without a proxy is entered by the SDK's handle through `callPerCallEntry`
@@ -524,12 +550,12 @@ today and its title says what should settle once served.
 | File | Cases | Pins |
 | --- | --- | --- |
 | `composition-world.ts` | - | shared harness: project/per-call compile, plain and proxied deploy, both call paths, `recordMet` |
-| `plain-root-calls.test.ts` | 4 | 2.1: deposit, payout, sweep |
-| `plain-root-writes.test.ts` | 3 | 2.1: two collections, chunked string (control: mint) |
+| `plain-root-calls.test.ts` | 3 | 2.1: payout, sweep; the deposit served (`call/plain-root-calls.test.ts`) |
+| `plain-root-writes.test.ts` | 3 | 2.1, retired: served (`call/plain-root-writes.test.ts`) |
 | `plain-genesis-writes.test.ts` | 2 | 2.1, retired: served (`deploy/constructor-loop-writes.test.ts`) |
 | `guarded-vault-root.test.ts` | 5 | 2.2, retired: served (`call/root-guard-across-call.test.ts`) |
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3, retired: served (`call/state-keyed-mapping-write.test.ts`) |
-| `stored-value-keyed-write.test.ts` | 3 | 2.4: struct record opened plain; ERC721 transfer flipped to served (control: mint; `call/written-node-keyed-write.test.ts`), the rest served (`call/stored-value-keyed-write.test.ts`) |
+| `stored-value-keyed-write.test.ts` | 3 | 2.4, retired: served (the struct record opened plain in `call/plain-root-writes.test.ts`, the ERC721 transfer in `call/written-node-keyed-write.test.ts`, the rest in `call/stored-value-keyed-write.test.ts`) |
 | `proxied-native-value.test.ts` | 1 | 2.5 served (`call/proxied-native-value.test.ts`); repointed: a send to a contract |
 | `role-admin-read-key.test.ts` | 2 | 2.6, retired: served, with the walls past it (`call/role-helpers-return-and-emit`, `call/guarded-event`) |
 | `loop-counted-tail.test.ts` | 4 | 2.7, retired: served (`call/loop-turn-effects`, `call/proxied-native-value`) |
@@ -548,10 +574,10 @@ replica above confirms it. The full table with every row and class is the append
 
 | Rank | Site | Shape refused | Lik. | Status |
 | --- | --- | --- | --- | --- |
-| 1 | solidcash `call/call.ts` 584, 707 | plain root: mapping write beside a call | H | conf. 2.1 |
+| 1 | solidcash `call/call.ts` 584, 707 | plain root: mapping write beside a call | H | 584 served (PL2); 707, beside a value call into a contract, stands |
 | 1 | solidcash `call/callees.ts` 339 | plain root: one callee entered twice, a frame writing nodes | H | conf. 2.1 |
 | 1 | solidcash `call/callees.ts` 318, 321 | plain root: argument from, or call guarded on, an earlier result | H | 318 conf. 2.1 |
-| 1 | solidcash `call/entry-records.ts` 762, 786 | plain root: two collections; chunked mapping value | H | conf. 2.1 |
+| 1 | solidcash `call/entry-records.ts` 762, 786 | plain root: two collections; chunked mapping value | H | served (PL1) |
 | 1 | solidcash `deploy/genesis.ts` 548 | constructor writing two collections | H | conf. 2.1 |
 | 1 | solidcash `call/callees.ts` 258-271 | plain root: callee behind a proxy / delegate / sending value / touching chunks / side-car / unfixed segment | H | code |
 | 1 | solidcash `call/entry-records.ts` 271, 818, 884, 897, 911, 947, 346-421, 582, 879 | plain root: key not from arguments; several writes per target; reads; loop writes | M-H | 271 conf. 2.4; a key read out of another mapping served (MK1) |

@@ -87,3 +87,14 @@ export function skippedSends(frame: WriteActivationFrame): readonly number[] {
   return transfers.filter((transfer) => transfer.condition !== null && writeRuns(frame, transfer.condition) === false)
     .map((transfer) => transfer.transferIndex);
 }
+
+/**
+ * The transfer indices of the frame's entry its facts decide the body pays: a send no branch guards, and one whose
+ * condition those facts decide holds. A send whose condition its artifact does not reproduce (`condition: null`), one
+ * those facts do not decide, and one the entry publishes no row for are never decided here.
+ */
+export function takenSends(frame: WriteActivationFrame): readonly number[] {
+  const transfers = frame.artifact.abi.find((candidate) => candidate.name === frame.functionName)?.transfers ?? [];
+  return transfers.filter((transfer) => transfer.condition !== null && writeRuns(frame, transfer.condition) === true)
+    .map((transfer) => transfer.transferIndex);
+}

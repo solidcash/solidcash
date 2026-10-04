@@ -104,7 +104,7 @@ import { lockOfIdentity } from './address-identity.js';
 import {
   EntryWriteValueAwaited, entryWriteValueKey, statedMappingWrites, writeLandsBefore, type StatedMappingWrite,
 } from './written-values.js';
-import { skippedEmits, skippedSends, type WriteActivationFacts } from './write-activation.js';
+import { skippedEmits, skippedSends, takenSends, type WriteActivationFacts } from './write-activation.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
 export interface PerCallProxyExternal {
@@ -263,6 +263,11 @@ export interface HopCallee {
    * (`skippedSends`): the body pays no send there, so the frame lists none for it. Absent when none is.
    */
   readonly skippedSends?: readonly number[];
+  /**
+   * The transfer indices of the frame's entry the reach's own facts decide the body pays (`takenSends`): a send no
+   * branch guards, and one whose condition holds. Absent when none is.
+   */
+  readonly takenSends?: readonly number[];
 }
 
 /** The live facts one callee frame's own write plan is built from, kept so the write can be planned again. */
@@ -2071,16 +2076,21 @@ function reachSkippedEmits(
 }
 
 /**
- * The value sends one reach's own facts decide its body skips (`HopCallee.skippedSends`), from the facts its emits are
- * decided from (`reachSkippedEmits`). A reach whose sender the hop does not know decides none.
+ * The value sends one reach's own facts decide, from the facts its emits are decided from (`reachSkippedEmits`): those
+ * its body skips (`HopCallee.skippedSends`) and those it pays (`HopCallee.takenSends`). A reach whose sender the hop
+ * does not know decides none.
  */
-function reachSkippedSends(
+function reachDecidedSends(
   artifact: Artifact, entry: string, args: readonly FunctionArgument[], senderAddress: Uint8Array | undefined,
   facts: WriteActivationFacts,
-): { readonly skippedSends?: readonly number[] } {
+): { readonly skippedSends?: readonly number[]; readonly takenSends?: readonly number[] } {
   if (senderAddress === undefined) return {};
-  const skipped = skippedSends({ artifact, functionName: entry, args, senderAddress, facts });
-  return skipped.length === 0 ? {} : { skippedSends: skipped };
+  const frame = { artifact, functionName: entry, args, senderAddress, facts };
+  const skipped = skippedSends(frame);
+  const taken = takenSends(frame);
+  return {
+    ...(skipped.length === 0 ? {} : { skippedSends: skipped }), ...(taken.length === 0 ? {} : { takenSends: taken }),
+  };
 }
 
 /**
@@ -2182,7 +2192,7 @@ async function placeCalleeMasters(
       origin: { callerPath: reach.callerPath, callsiteId: reach.callsiteId, occurrence },
       ...reachSkippedEmits(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
         { stateValues, selfAddress: deployed.address, readMappingValue }),
-      ...reachSkippedSends(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
+      ...reachDecidedSends(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
         { stateValues, selfAddress: deployed.address, readMappingValue }),
     };
     // Reserve the slot before planning the callee's own calls, so a frame it reaches names this master as its
@@ -2391,7 +2401,7 @@ async function placeProxiedCallee(
       // It keeps its caller's sender, and runs on the proxy's state and nodes as the proxy.
       ...reachSkippedEmits(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
         { stateValues, selfAddress: proxyDeployed.address, readMappingValue }),
-      ...reachSkippedSends(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
+      ...reachDecidedSends(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
         { stateValues, selfAddress: proxyDeployed.address, readMappingValue }),
     };
     // A call back to the root that repeats a re-entry is placed without its own calls (`rootEntryRuns`).

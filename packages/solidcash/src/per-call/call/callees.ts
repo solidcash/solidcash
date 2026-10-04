@@ -334,10 +334,13 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
     return `${label} sits behind a proxy, whose delegate frame this call path does not plan yet`;
   }
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
-  // A send on a branch the reach's facts decide the body skips pays no output, so the frame lists no send for it, as
-  // the hop's callee frames list none (`skippedSends`). A send the call reaches, or one those facts do not decide,
-  // pays from the callee's containers, which this path does not plan for a callee.
-  if ((abi?.transferCount ?? 0) > new Set(callee.skippedSends ?? []).size) {
+  // A send the call reaches pays from the callee's containers, which this path does not plan for a callee: one no
+  // branch guards, which runs whenever the body does, and one whose condition the reach's facts decide holds
+  // (`takenSends`). Any other send is listed by none, as the hop's callee frames list none: one those facts decide the
+  // body skips pays no output (`skippedSends`), and one they do not decide (a row whose condition its artifact does
+  // not reproduce, or a send with no row) is the body's own to settle, which skips it or refuses the send it reaches.
+  const unguarded = (abi?.transfers ?? []).some((transfer) => transfer.condition === undefined);
+  if (unguarded || (callee.takenSends?.length ?? 0) > 0) {
     return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
   }
   if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;

@@ -8,14 +8,16 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN,
   sha256, buildChunkCommitment, splitValueIntoChunks,
 } from '@solidcash/utils';
-import type { AbiFunction } from '@solidcash/utils';
+import type { AbiFunction, ExternalCallExpression } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ContractUnlocker, Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
 import { addressToLockScript } from '../utils.js';
-import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
+import {
+  decodeAuthenticatedProducerResultVector, StatefulContract, StatefulFunctionCall,
+} from '../stateful/StatefulContract.js';
 import { reassertRoutedReadOnlyDynamicChunkTwins } from '../stateful/mutable-output-reassert.js';
 import { resolveMaterializedDynamicWriteOutputBase } from '../stateful/stb-reconcile-dynamic-chunk-output-witnesses.js';
 import { resolvePhysicalPredOutWitnesses } from './compose-predout-witness.js';
@@ -61,6 +63,13 @@ import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
 import { isPendingBatchPredecessor } from './pending-batch-predecessor.js';
 import { retainTerminalValueChunkProductions } from './terminal-value-chunk-productions.js';
 import { allowsDeferredComputeVmDiscovery } from './materialization-mode.js';
+import {
+  evaluateArgs4RecoveryArgument,
+  evaluateComputeRecipeExpression,
+  evaluateSignature65RecoveryArgument,
+  PendingComputeProducerResult,
+} from './compute-recipe-evaluator.js';
+import { deriveDirectCollectionLengthResult } from './compute-recipe-producer-state.js';
 import {
   probeEarlySourceRevertBeforeDeferredCompute,
   unresolvedComputeOffsetsForEarlyRevert,
@@ -167,6 +176,8 @@ export interface AssembleAtomicCompositionContext {
     graphKey: string;
     resources: ReadonlyMap<number, { input: UnlockableUtxo; output: Output }>;
   }>;
+  /** Exact caller-prepared producer candidates; never schema-shaped provisional results. */
+  preparedResults: Readonly<Record<number, string>>;
   rebalanceFeeTail: (builder: TransactionBuilder, subject: string) => void;
   eventLockingBytecodes: (participant: PlanParticipant) => string[];
   /** Written by assemble; read by outer _build after the last assemble call. */
@@ -205,6 +216,7 @@ export async function assembleAtomicComposition(
     participantReturnBlob,
     participantReturnCommitment,
     deferredComputeCache,
+    preparedResults,
     rebalanceFeeTail,
     eventLockingBytecodes,
     predOutClaimsSlot,
@@ -1190,6 +1202,157 @@ export async function assembleAtomicComposition(
       }
     } else {
       const controller = (local as DeferredComputeBuilder).__messageBusDeferredCompute;
+      if (controller?.hasUnresolved()) {
+        // The route carries a selected handler per logical row, while its compute slots are physical and
+        // ordered across those rows. Replay only compiler-published operands. A producer leaf can use a
+        // caller-prepared exact candidate or a compiler-proven read of selected pre-state; schema-shaped
+        // provisional graph results and failed aggregate traces never become compute operands.
+        const keccakPreimages: Array<Uint8Array | null> = [];
+        const recoveryArguments: Array<Uint8Array | null> = [];
+        for (let rowIndex = 0; rowIndex < routeRows.length; rowIndex += 1) {
+          const { handler, args } = routeRows[rowIndex];
+          const invocationIndex = participant.invocations[rowIndex];
+          const recipes = handler.computeSideCarRecipes;
+          const keccakCount = handler.keccakPreimageParams?.length ?? 0;
+          const recoveryCount = handler.ecrecoverEvmFlags?.length
+            ?? handler.ecrecoverArgParams?.length ?? 0;
+          if (recipes !== undefined && (recipes.version !== 1
+            || recipes.keccak.length !== keccakCount
+            || recipes.ecrecover.length !== recoveryCount)) {
+            throw new Error(`messageBus: handler ${handler.name} publishes mismatched compute recipe ordinals`);
+          }
+          const producerLeaves: ExternalCallExpression[] = [];
+          const visit = (expression: ExternalCallExpression): void => {
+            if (expression.kind === 'producerResult') producerLeaves.push(expression);
+            for (const child of [expression.target, expression.expression, expression.left,
+              expression.right, expression.condition, expression.ifTrue, expression.ifFalse,
+              ...(expression.args ?? [])]) {
+              if (child) visit(child);
+            }
+          };
+          for (const expression of recipes?.keccak ?? []) visit(expression);
+          for (const recipe of recipes?.ecrecover ?? []) {
+            if (recipe.kind === 'signature65') {
+              visit(recipe.hash);
+              visit(recipe.signature);
+            } else recipe.args.forEach(visit);
+          }
+          const producerValues = new Map<string, FunctionArgument>();
+          for (const leaf of producerLeaves) {
+            const leafKey = JSON.stringify([
+              leaf.callsiteId, leaf.sourceCallsiteId ?? null, leaf.resultIndex,
+            ]);
+            if (producerValues.has(leafKey)) continue;
+            const matches = plan.invocations.filter((candidate) =>
+              candidate.parent === invocationIndex
+              && candidate.consumerCallsiteId === leaf.callsiteId
+              && (leaf.sourceCallsiteId === undefined
+                || candidate.sourceCallsiteId === leaf.sourceCallsiteId));
+            if (matches.length !== 1) {
+              throw new Error(`messageBus: compute recipe producer ${String(leaf.callsiteId)} `
+                + `has ${matches.length} selected source occurrences`);
+            }
+            const producer = matches[0];
+            const resultIndex = leaf.resultIndex;
+            if (resultIndex === undefined || resultIndex < 0
+              || resultIndex >= producer.resultTypes.length) {
+              throw new Error('messageBus: compute recipe selects an invalid producer result component');
+            }
+            const prepared = preparedResults[producer.index];
+            let values: readonly FunctionArgument[] | undefined;
+            if (prepared !== undefined) {
+              if (results[producer.index] !== prepared) {
+                throw new Error('messageBus: compute recipe prepared producer differs from graph result');
+              }
+              const producerArtifact = plan.participants[producer.callee].artifact;
+              values = decodeAuthenticatedProducerResultVector(
+                hexToBin(prepared), producer.resultTypes,
+                producerArtifact.structs ?? producerArtifact.stateLayout?.structs,
+                producer.resultEncoding === 'evm-abi-v1', producerArtifact.enums,
+              ) as readonly FunctionArgument[] | undefined;
+            } else {
+              const producerArtifact = plan.participants[producer.callee].artifact;
+              const producerAbi = producerArtifact.abi.find((candidate) =>
+                candidate.selector?.toLowerCase() === producer.selectorHex.toLowerCase());
+              const selected = descriptors[producer.index];
+              if (producerAbi && selected) {
+                const hasPriorOwnerWrite = plan.invocations.some((candidate) => {
+                  if (candidate.index >= producer.index || candidate.callee !== producer.callee) return false;
+                  const priorAbi = producerArtifact.abi.find((entry) =>
+                    entry.selector?.toLowerCase() === candidate.selectorHex.toLowerCase());
+                  return priorAbi?.writesState !== false;
+                });
+                const length = await deriveDirectCollectionLengthResult({
+                  artifact: producerArtifact,
+                  abiFunction: producerAbi,
+                  args: selected.args,
+                  owner: selected.contract,
+                  ...(selected.executor && { executor: selected.executor }),
+                  hasPriorOwnerWrite,
+                });
+                if (length !== undefined) values = [length];
+              }
+            }
+            if (values?.[resultIndex] !== undefined) {
+              producerValues.set(leafKey, values[resultIndex]);
+            }
+          }
+          const recipeContext = {
+            artifact: participant.artifact,
+            args,
+            inputTypes: handler.inputs.filter((input) => !input.name.startsWith('__internal__'))
+              .map((input) => input.type),
+            producerResult: (leaf: ExternalCallExpression): FunctionArgument | undefined =>
+              producerValues.get(JSON.stringify([
+                leaf.callsiteId, leaf.sourceCallsiteId ?? null, leaf.resultIndex,
+              ])),
+          };
+          const candidate = (expression: ExternalCallExpression): Uint8Array | null => {
+            try {
+              const value = evaluateComputeRecipeExpression(expression, recipeContext);
+              if (!(value instanceof Uint8Array)) {
+                throw new Error('messageBus: compute recipe keccak preimage is not bytes');
+              }
+              return value;
+            } catch (error) {
+              if (error instanceof PendingComputeProducerResult) return null;
+              throw error;
+            }
+          };
+          for (let ordinal = 0; ordinal < keccakCount; ordinal += 1) {
+            const recipe = recipes?.keccak[ordinal];
+            keccakPreimages.push(recipe ? candidate(recipe) : null);
+          }
+          for (let ordinal = 0; ordinal < recoveryCount; ordinal += 1) {
+            const recipe = recipes?.ecrecover[ordinal];
+            if (!recipe) {
+              recoveryArguments.push(null);
+              continue;
+            }
+            try {
+              recoveryArguments.push(recipe.kind === 'signature65'
+                ? evaluateSignature65RecoveryArgument(recipe.hash, recipe.signature, recipeContext)
+                : evaluateArgs4RecoveryArgument(recipe.args, recipeContext));
+            } catch (error) {
+              if (error instanceof PendingComputeProducerResult) recoveryArguments.push(null);
+              else throw error;
+            }
+          }
+        }
+        if (keccakPreimages.length > 0 || recoveryArguments.length > 0) {
+          controller.resolveRecipes?.(keccakPreimages, recoveryArguments);
+          const refreshed = controller.refresh();
+          for (const offset of computeOffsets) {
+            const input = refreshed.inputs[offset];
+            const output = refreshed.outputs[offset];
+            if (!input || !output) {
+              throw new Error(`messageBus: participant ${participant.participant} lost recipe side-car slot ${offset}`);
+            }
+            local.inputs[offset] = input;
+            local.outputs[offset] = output;
+          }
+        }
+      }
       if (controller?.hasUnresolved()) {
         const inputBase = graph.layout.participantInputs[participant.participant];
         const executionInput = participant.executionKind === 1 && participant.executorOffset !== null

@@ -552,6 +552,7 @@ import {
   type EnsurePersistedValueChunkInputsHost,
 } from './stb-ensure-persisted-value-chunk-inputs.js';
 import {
+  applyDeferredEcrecoverArgument,
   resolveDeferredEcrecoverArgument as resolveDeferredEcrecoverArgumentImpl,
   type ResolveDeferredEcrecoverArgumentHost,
 } from './stb-resolve-deferred-ecrecover-argument.js';
@@ -3552,6 +3553,36 @@ export class StatefulTransactionBuilder {
     this.keccakComputeCommitments[batchIndex] = binToHex(rebuilt.commitment);
     this._refreshInputs();
     return true;
+  }
+
+  /**
+   * Bind compiler-published compute recipes after their graph operands have been observed. The indices are
+   * logical builtin-call ordinals, not physical side-car offsets (three keccak calls may share one NFT).
+   * A missing recipe member remains unresolved and cannot pass the ordinary composition gate.
+   */
+  applyDeferredComputeRecipes(
+    keccakPreimages: readonly (Uint8Array | null)[],
+    ecrecoverArguments: readonly (Uint8Array | null)[],
+  ): boolean {
+    const keccak = this.deferredKeccakCompute?.preimages ?? [];
+    const recovery = this.deferredEcrecoverCompute?.argBlobs ?? [];
+    if (keccakPreimages.length !== keccak.length || ecrecoverArguments.length !== recovery.length) {
+      throw new Error('messageBus: compute recipe cardinality disagrees with selected side-car calls');
+    }
+    let changed = false;
+    keccakPreimages.forEach((preimage, callIndex) => {
+      if (preimage !== null) {
+        changed = this.rebuildDeferredKeccakPreimage(callIndex, preimage) || changed;
+      }
+    });
+    ecrecoverArguments.forEach((argument, callIndex) => {
+      if (argument !== null) {
+        changed = applyDeferredEcrecoverArgument(
+          this._resolveDeferredEcrecoverArgumentHost(), callIndex, argument,
+        ) || changed;
+      }
+    });
+    return changed;
   }
 
   /**

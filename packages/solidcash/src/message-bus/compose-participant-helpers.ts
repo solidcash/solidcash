@@ -336,6 +336,11 @@ export const appendOnlyStateSuffix = (
 
 export interface DeferredComputeController {
   hasUnresolved(): boolean;
+  /** Bind compiler-published logical call recipes, never values learned from an incomplete VM trace. */
+  resolveRecipes?(
+    keccakPreimages: readonly (Uint8Array | null)[],
+    ecrecoverArguments: readonly (Uint8Array | null)[],
+  ): boolean;
   /** Pending compute work, for naming what a stalled resolution could not learn. */
   remaining?(): {
     keccakUnresolved: number; keccakTotal: number;

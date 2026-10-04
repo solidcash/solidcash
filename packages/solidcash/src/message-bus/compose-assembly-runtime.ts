@@ -191,6 +191,7 @@ export function createComposeAssemblyRuntime(
     participantReturnBlob,
     participantReturnCommitment,
     deferredComputeCache,
+    preparedResults: input.preparedResults,
     rebalanceFeeTail,
     eventLockingBytecodes,
     predOutClaimsSlot,

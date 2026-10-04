@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256,
-  hexToBin,
+  binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
+  hash256, hexToBin,
 } from '@bitauth/libauth';
 import {
   asmToScript, buildEntryNftCovenantScript, computeCollectionHash, encodeChunkableValueTail, encodeIntegerValue,
@@ -9,7 +9,9 @@ import {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../solidcash/src/Argument.js';
 import { derivePerCallGenesis } from '../../solidcash/src/per-call/deploy/index.js';
-import { encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
+import {
+  bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
+} from '../../solidcash/src/stateful/SortedList.js';
 import { compileString } from '../src/index.js';
 import { ConstructorStaleReadError } from '../src/Errors.js';
 import { buildValidatorProgram } from '../src/per-call/validator/index.js';
@@ -32,6 +34,11 @@ import { compositionProvider } from './per-call/machine.js';
  *
  * An element read takes its element from the value the read sees: an index past that value's length fails, as the
  * EVM's does, so the deployment is refused rather than given a value.
+ *
+ * A constructor that writes in a loop publishes what its deployment plans the writes by: the recipe of a value every
+ * write states, the array a run-time loop walks and its guard, and no recipe for a key its loop may write any number
+ * of times, zero included. The per-call genesis derives every such write from the body's own close, a key the loop
+ * left unwritten holding its default; what the body cannot write exactly is refused by name.
  */
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
@@ -427,4 +434,129 @@ describe('a constructor read after a write the body keeps no value for', () => {
       });
     }
   }
+});
+
+/** A constructor's loop write, the facts its artifact publishes, and the arguments its genesis is derived from. */
+interface LoopCase {
+  readonly name: string;
+  readonly members: string;
+  /** The recipe the write's entry access publishes, or undefined where the body may not run the write. */
+  readonly valueSource: string | undefined;
+  /** The run-time loop facts the artifact publishes, or undefined for a key the cache writes once after the loop. */
+  readonly loop: Record<string, string> | undefined;
+  readonly args: FunctionArgument[];
+  /** The key each created node is minted under, with the value tail the body wrote there. */
+  readonly minted: readonly (readonly [bigint, Uint8Array])[];
+}
+
+const SEEN = ' mapping(uint => bool) seen;';
+const SEEN_TRUE = Uint8Array.of(1);
+/** Three keys in the slot order a constructor's run of inserts walks, which its array has to be given in. */
+const [LOW, MID, HIGH] = [1n, 2n, 3n].sort((left, right) => (
+  bytesToSlotValue(keyToSlotMulti([num(left)])) < bytesToSlotValue(keyToSlotMulti([num(right)])) ? -1 : 1)) as
+  [bigint, bigint, bigint];
+const SEEN_LOOP = `${SEEN} constructor(uint[] memory ks) {`
+  + ' for (uint i = 0; i < ks.length; i++) { this.seen[ks[i]] = true; } }';
+const LOOPS: readonly LoopCase[] = [
+  {
+    name: 'an invariant key a loop writes, which the cache writes once if the loop turned',
+    members: `${TOTALS} constructor(uint k, uint n, uint v) { for (uint i = 0; i < n; i++) { this.totals[k] = v; } }`,
+    valueSource: undefined, loop: undefined, args: [7n, 2n, 9n], minted: [[7n, num(9n)]],
+  },
+  {
+    name: 'the same key when the loop runs no turn, which keeps its unwritten value',
+    members: `${TOTALS} constructor(uint k, uint n, uint v) { for (uint i = 0; i < n; i++) { this.totals[k] = v; } }`,
+    valueSource: undefined, loop: undefined, args: [7n, 0n, 9n], minted: [[7n, num(0n)]],
+  },
+  {
+    name: 'an invariant key each turn adds to, whose value depends on the turns run',
+    members: `${TOTALS} constructor(uint k, uint n) { for (uint i = 0; i < n; i++) { this.totals[k] += 1; } }`,
+    valueSource: undefined, loop: undefined, args: [7n, 3n], minted: [[7n, num(3n)]],
+  },
+  {
+    name: 'a literal under each element of an array',
+    members: SEEN_LOOP,
+    valueSource: 'lit:true', loop: { varyingArrayParam: 'ks', valueConst: '1' },
+    args: [[LOW, MID, HIGH]], minted: [[LOW, SEEN_TRUE], [MID, SEEN_TRUE], [HIGH, SEEN_TRUE]],
+  },
+  {
+    name: 'one argument under each element of an array',
+    members: `${TOTALS} constructor(uint[] memory ks, uint v) {`
+      + ' for (uint i = 0; i < ks.length; i++) { this.totals[ks[i]] = v; } }',
+    valueSource: 'id:v', loop: { varyingArrayParam: 'ks', valueScalarParam: 'v' },
+    args: [[LOW, HIGH], 6n], minted: [[LOW, num(6n)], [HIGH, num(6n)]],
+  },
+  {
+    name: 'the element of a second array under each element of the first',
+    members: `${TOTALS} constructor(uint[] memory ks, uint[] memory vs) {`
+      + ' for (uint i = 0; i < ks.length; i++) { this.totals[ks[i]] = vs[i]; } }',
+    valueSource: undefined, loop: { varyingArrayParam: 'ks', valueArrayParam: 'vs' },
+    args: [[LOW, HIGH], [10n, 20n]], minted: [[LOW, num(10n)], [HIGH, num(20n)]],
+  },
+  {
+    name: 'a literal under each element a flag array selects, a skipped element in any place',
+    members: `${SEEN} constructor(uint[] memory ks, uint[] memory fs) {`
+      + ' for (uint i = 0; i < ks.length; i++) { if (fs[i] == 1) { this.seen[ks[i]] = true; } } }',
+    valueSource: 'lit:true', loop: { varyingArrayParam: 'ks', predicateArrayParam: 'fs', predicateEquals: '1' },
+    args: [[MID, LOW, HIGH], [1n, 0n, 1n]], minted: [[MID, SEEN_TRUE], [HIGH, SEEN_TRUE]],
+  },
+];
+
+/** The nodes a per-call genesis mints for `members` with `args`, as their keys' slots to their value tails. */
+function mintedNodes(members: string, args: FunctionArgument[]): Map<string, string> {
+  const artifact = compileString(`${PRAGMA} contract Genesis {${members} function g() { require(true); } }`,
+    { composition: 'per-call' });
+  const genesis = derivePerCallGenesis({
+    artifact, category: CATEGORY, validatorProgram: buildValidatorProgram(), provider: compositionProvider(),
+    constructorArgs: args, senderLockingBytecode: encodeLockingBytecodeP2pkh(distinctBytes(20, 0x51)),
+  });
+  return new Map(genesis.entries.map((entry) => decodeEntryCommitment(hexToBin(entry.commitment)))
+    .filter((node) => node.slot.some((byte) => byte !== 0))
+    .map((node) => [binToHex(node.slot), binToHex(node.value)] as const));
+}
+
+describe('a constructor that writes a mapping in a loop', () => {
+  for (const shape of LOOPS) {
+    it(`publishes ${shape.name}, and the per-call genesis mints what the body wrote`, () => {
+      const artifact = compileString(`${PRAGMA} contract Genesis {${shape.members} function g() { require(true); } }`,
+        { composition: 'per-call' });
+      const constructor = artifact.abi.find((candidate) => candidate.name === '__construct')!;
+      expect(constructor.entryAccesses?.[0]?.valueSource).toBe(shape.valueSource);
+      const loop = constructor.sortedUpsertLoopInfo?.[0] as unknown as Record<string, unknown> | undefined;
+      expect(loop === undefined ? undefined
+        : Object.fromEntries(Object.keys(shape.loop ?? {}).map((fact) => [fact, loop[fact]])))
+        .toStrictEqual(shape.loop);
+      expect(mintedNodes(shape.members, shape.args)).toStrictEqual(new Map(shape.minted.map(([key, value]) => [
+        binToHex(keyToSlotMulti([num(key)])), binToHex(value),
+      ])));
+    });
+  }
+
+  it('refuses a loop guarded by a bool element, naming the guard the published recipe cannot carry', () => {
+    const members = `${SEEN} constructor(uint[] memory ks, bool[] memory fs) {`
+      + ' for (uint i = 0; i < ks.length; i++) { if (fs[i]) { this.seen[ks[i]] = true; } } }';
+    const artifact = compileString(`${PRAGMA} contract Genesis {${members} function g() { require(true); } }`,
+      { composition: 'per-call' });
+    expect(settlePerCall(artifact, [[3n], [true]]))
+      .toContain('KERNEL_UNBOUNDED_KEY: the loop writes \'seen\' under the guard');
+  });
+
+  it('refuses a loop that adds to keys an array may repeat, naming the read of an earlier turn\'s write', () => {
+    const members = `${TOTALS} constructor(uint[] memory ks) {`
+      + ' for (uint i = 0; i < ks.length; i++) { this.totals[ks[i]] += 1; } }';
+    expect(refusal(members, 'per-call'))
+      .toContain(readOf('totals[ks[i]]', 'totals[ks[i]]', 'in an earlier turn of its loop'));
+  });
+
+  it('refuses by name a key two turns of the loop repeat, which its run of inserts cannot write twice', () => {
+    expect(() => mintedNodes(SEEN_LOOP, [[3n, 3n]]))
+      .toThrow(/whose turns cannot be planned at genesis: PER_CALL_MAPPING_UNPLANNABLE: a sorted batch writes slot/);
+  });
+
+  it('refuses by name an array out of slot order, which a constructor\'s body may also read, naming the order', () => {
+    expect(() => mintedNodes(SEEN_LOOP, [[HIGH, LOW, MID]])).toThrow('writes mapping "seen" at element 1 of "ks" under a '
+      + 'key below the one before it, and a run-time loop inserts its keys in ascending slot order only; a '
+      + 'constructor\'s own array is not reordered for it, since its body may also store, emit or read the array: pass '
+      + '"ks" as its elements [1, 2, 0], the order `orderLoopKeyArgs` gives');
+  });
 });

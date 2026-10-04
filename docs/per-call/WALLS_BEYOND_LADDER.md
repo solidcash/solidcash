@@ -72,7 +72,9 @@ compiler paths under `packages/solidc/src/` (`support.ts` is `per-call/master/su
 
 ### 2.1 The plain call path is not the hop (rank 1)
 
-Replicas: `plain-root-calls.test.ts` (4 cases), `plain-root-writes.test.ts` (3), `plain-genesis-writes.test.ts` (2).
+Replicas: `plain-root-calls.test.ts` (4 cases), `plain-root-writes.test.ts` (3); `plain-genesis-writes.test.ts`
+retired: **the constructor half is served** (agent C2: genesis learns each created node from the body's close and
+plans run-time loops and several collections; `deploy/constructor-loop-writes.test.ts`).
 A per-call artifact deployed without a proxy is entered by the SDK's handle through `callPerCallEntry`
 (`StatefulContract.createStatefulFunctionCall` -> `PerCallFunctionCall` -> `call/call.ts`), which plans with its own
 narrower planners (`call/entry-records.ts`, `call/callees.ts`). The ladder's roots are all proxied, so none of this
@@ -338,7 +340,7 @@ today and its title says what should settle once served.
 | `composition-world.ts` | - | shared harness: project/per-call compile, plain and proxied deploy, both call paths, `recordMet` |
 | `plain-root-calls.test.ts` | 4 | 2.1: deposit, payout, sweep |
 | `plain-root-writes.test.ts` | 3 | 2.1: two collections, chunked string (control: mint) |
-| `plain-genesis-writes.test.ts` | 2 | 2.1: constructor writing two mappings (control: mint only) |
+| `plain-genesis-writes.test.ts` | 2 | 2.1, retired: served (`deploy/constructor-loop-writes.test.ts`) |
 | `guarded-vault-root.test.ts` | 5 | 2.2, retired: served (`call/root-guard-across-call.test.ts`) |
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3 (control: parameter key) |
 | `stored-value-keyed-write.test.ts` | 5 | 2.4: bus-route defect, codegen crash, hop and plain refusals (control: open) |

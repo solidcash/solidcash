@@ -364,8 +364,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   written and one payload event, the same entry with a whitelist write its call does not take, and the same entry
   with no guarded write) and `push-length-keyed-mapping-write.test.ts` (a loop write whose key the entry's own push
   computes). The walls beyond the ladder (`docs/per-call/WALLS_BEYOND_LADDER.md`, agent W2) each pin today's
-  refusal, titled with what should settle once served: `plain-root-calls`, `plain-root-writes` and
-  `plain-genesis-writes` (a contract deployed without a proxy), `state-keyed-mapping-write` and
+  refusal, titled with what should settle once served: `plain-root-calls` and `plain-root-writes` (a contract
+  deployed without a proxy; its two-mapping constructor deploys since `deploy/constructor-loop-writes`),
+  `state-keyed-mapping-write` and
   `stored-value-keyed-write` (a mapping key read from state), `proxied-native-value`, `role-admin-read-key` (role
   mappings keyed by constants and stored values), `loop-counted-tail` (an event, hash or send per loop turn),
   `root-reentry-receiver-hook`, `two-deployments-one-artifact` and `read-node-spent-by-insert`, with

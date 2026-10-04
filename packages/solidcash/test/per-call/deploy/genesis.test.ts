@@ -3,8 +3,8 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
   buildAnonymousEventNftCovenantScript, buildEntryNftCovenantScript, buildEventNftCovenantScript,
-  buildPushdataCommitment, bytesEqual, computeCollectionHash, computeEventNameHash, encodeEventCommitment,
-  encodeIntegerValue, hash256, scriptToBytecode, sha256, validatorAddress,
+  buildPushdataCommitment, bytesEqual, computeCollectionHash, computeEventNameHash, encodeChunkableValueTail,
+  encodeEventCommitment, encodeIntegerValue, encodePushdataValue, hash256, scriptToBytecode, sha256, validatorAddress,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator/index.js';
@@ -14,7 +14,9 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode, deployMaster, derivePerCallGenesis,
 } from '../../../src/per-call/deploy/index.js';
-import { planChunkRun, planMappingBatch, planMappingWrite } from '../../../src/per-call/composer/index.js';
+import {
+  planChunkRun, planMappingBatch, planMappingWrite, type MappingWritePlan,
+} from '../../../src/per-call/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -440,7 +442,7 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
     expect(accepted(genesis.program)).toBe(true);
   });
 
-  it('refuses a constructor that writes more than one collection, by name', () => {
+  it('derives a constructor that writes two collections, one batch per collection in the order it verifies them', () => {
     const multi = compileString(
       'pragma solidcash ^0.13.0;'
       + ' contract Multi {'
@@ -451,13 +453,25 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
       + ' }',
       { composition: 'per-call' },
     );
-    expect(() => derivePerCallGenesis({
+    const genesis = derivePerCallGenesis({
       artifact: multi, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
-    })).toThrow(/writes 2 mapping entry\(ies\) across 2 collection\(s\), and this deployment plans one collection/);
+    });
+    // Each collection's own head is relinked to its own node, which carries the value the body wrote under the key.
+    const planned = (value: bigint): MappingWritePlan => planMappingWrite({
+      keys: [encodeFunctionArgument(MAPPING_ADMIN, 'address') as Uint8Array],
+      value: encodeIntegerValue(value),
+      inventory: [headSentinelCommitment()],
+      encodeValue: (encoded) => encoded,
+    });
+    expect(genesis.entries).toStrictEqual([
+      ...planned(1n).written.map((node) => ({ collection: 'first', commitment: binToHex(node.after) })),
+      ...planned(2n).written.map((node) => ({ collection: 'second', commitment: binToHex(node.after) })),
+    ]);
+    expect(accepted(genesis.program)).toBe(true);
   });
 
-  it('refuses a struct literal as a mapping value, by name', () => {
+  it('derives a struct literal as a mapping value, the node carrying the encoding the body computed', () => {
     const seeded = compileString(
       'pragma solidcash ^0.13.0;'
       + ' struct Terms { address who; int start; }'
@@ -468,10 +482,20 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
       + ' }',
       { composition: 'per-call' },
     );
-    expect(() => derivePerCallGenesis({
+    const genesis = derivePerCallGenesis({
       artifact: seeded, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
-    })).toThrow(/writes mapping "terms" a value this deployment cannot resolve/);
+    });
+    const value = encodeChunkableValueTail(encodePushdataValue(
+      { who: encodeLockingBytecodeP2pkh(alicePkh), start: 5n }, 'Terms', seeded.structs,
+    ));
+    const plan = planMappingWrite({
+      keys: [encodeIntegerValue(7n)], value, inventory: [headSentinelCommitment()], encodeValue: (encoded) => encoded,
+    });
+    expect(genesis.entries).toStrictEqual(plan.written.map((node) => ({
+      collection: 'terms', commitment: binToHex(node.after),
+    })));
+    expect(accepted(genesis.program)).toBe(true);
   });
 });
 

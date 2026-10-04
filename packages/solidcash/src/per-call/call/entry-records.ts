@@ -320,6 +320,8 @@ export interface CallLoopWritePlan {
    * hands the frame. It is the identity unless the keys are reordered into the slot order the body's chain walks.
    */
   readonly arrayOrder: readonly number[];
+  /** The array whose elements select the turns (`if (flags[i] == 1)`), which walks in the key array's order. */
+  readonly predicateArrayParam?: string;
   /** The literal the loop stores under every key, when the artifact publishes one. */
   readonly valueBool?: boolean;
   readonly valueConst?: string;
@@ -410,25 +412,35 @@ export function planCallLoopWrites(
         );
       }),
     }));
+    // A guard on an array the call carries (`if (flags[i] == 1)`) selects the turns: the body walks every element
+    // and writes only under those whose guard element equals the published literal.
+    const selected = selectedTurns(request, info, visible, args, derived);
     // The emitted body chains a turn's insert in the gap its pending predecessor opened, so it reaches the node it
     // created only while each turn's key sits above the one before it: the turn below the pending takes the body's
     // normal path and co-spends the predecessor of the chain the plan built.
     //
     // One value stored under every key makes the write order unobservable, so the array is put in the slot order the
-    // body's chain walks and the turns follow it (`orderLoopKeyArgs` hands the frame that exact array). A loop whose
-    // value comes per key keeps the caller's order - its array is not this lane's to permute - and a key below the
-    // turn before it is refused by name, because the body cannot walk that array. So does a loop whose turns make
-    // calls: they run in the array's order, which reordering the array would change.
+    // body's chain walks and the turns follow it (`orderLoopKeyArgs` hands the frame that exact array, the elements a
+    // guard skips after them). A loop whose value comes per key keeps the caller's order - its array is not this
+    // lane's to permute - and a key below the turn before it is refused by name, because the body cannot walk that
+    // array. So does a loop whose turns make calls: they run in the array's order, which reordering would change.
     const invariantValue = info.valueBool !== undefined || info.valueConst !== undefined
       || (info.valueScalarParam ?? '') !== '';
     const calling = turnsOfLoop(request.artifact, request.functionName, info.collection, arrayName) !== undefined;
-    const ordered = invariantValue && !calling
-      ? [...derived].sort((left, right) => {
+    if (calling && selected.length !== derived.length) {
+      throw new PerCallCallRecordError(
+        `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop over "${arrayName}" `
+        + 'whose turns make calls and whose guard skips an element, and a skipped turn\'s segments are not planned',
+      );
+    }
+    const reordered = invariantValue && !calling;
+    const ordered = reordered
+      ? [...selected].sort((left, right) => {
         const leftSlot = bytesToSlotValue(keyToSlotMulti([...left.keys]));
         const rightSlot = bytesToSlotValue(keyToSlotMulti([...right.keys]));
         return leftSlot === rightSlot ? left.source - right.source : leftSlot < rightSlot ? -1 : 1;
       })
-      : derived;
+      : selected;
     let previous: bigint | undefined;
     for (const entry of ordered) {
       const value = bytesToSlotValue(keyToSlotMulti([...entry.keys]));
@@ -442,18 +454,69 @@ export function planCallLoopWrites(
       }
       previous = value;
     }
-    const turns: CallLoopWriteTurn[] = ordered.map((entry, turn) => ({ ...entry, turn }));
+    // A turn's position is where the frame's array holds its element: first in slot order when reordered, and the
+    // caller's own index otherwise.
+    const turns: CallLoopWriteTurn[] = ordered.map((entry, at) => ({ ...entry, turn: reordered ? at : entry.source }));
+    const skipped = derived.filter((entry) => !selected.includes(entry));
     return {
       collection: info.collection,
       op: (info as { readonly op?: string }).op ?? 'set',
       varyingArrayParam: arrayName,
       valueScalarParam: info.valueScalarParam ?? '',
       invariantValue,
-      arrayOrder: turns.map((turn) => turn.source),
+      arrayOrder: reordered ? [...ordered, ...skipped].map((entry) => entry.source) : derived.map((entry) => entry.source),
+      ...(info.predicateArrayParam === undefined ? {} : { predicateArrayParam: info.predicateArrayParam }),
       ...(info.valueBool === undefined ? {} : { valueBool: info.valueBool }),
       ...(info.valueConst === undefined ? {} : { valueConst: info.valueConst }),
       turns,
     };
+  });
+}
+
+/** An integer-valued argument element, or undefined for an element that is not one. */
+function integerElement(element: unknown): bigint | undefined {
+  if (typeof element === 'bigint') return element;
+  if (typeof element === 'number' && Number.isInteger(element)) return BigInt(element);
+  if (typeof element === 'boolean') return element ? 1n : 0n;
+  return undefined;
+}
+
+/**
+ * The turns a run-time loop's guard selects among the elements it walks.
+ *
+ * A loop the artifact publishes with `predicateArrayParam` writes only where that array's element at the turn's
+ * index equals `predicateEquals`; every other loop writes at every element. The guard array is the call's own
+ * argument, so the selection is fixed by the call data: an array shorter than the one the loop walks, or an element
+ * that is not an integer, is refused by name, as the body itself fails reading past the guard's end.
+ */
+function selectedTurns<T extends { readonly source: number }>(
+  request: KeyResolutionContext,
+  info: NonNullable<AbiFunction['sortedUpsertLoopInfo']>[number],
+  visible: AbiFunction['inputs'],
+  args: readonly FunctionArgument[],
+  derived: readonly T[],
+): readonly T[] {
+  const guardName = info.predicateArrayParam;
+  if (guardName === undefined) return derived;
+  const guardIndex = visible.findIndex((input) => input.name === guardName);
+  const guard = guardIndex < 0 ? undefined : args[guardIndex];
+  if (!Array.isArray(guard) || guard.length < derived.length) {
+    throw new PerCallCallRecordError(
+      `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop over `
+      + `"${info.varyingArrayParam}" guarded by "${guardName}", which the frame's arguments do not carry as an array `
+      + 'as long as the one the loop walks',
+    );
+  }
+  const equals = BigInt(info.predicateEquals ?? '0');
+  return derived.filter((entry) => {
+    const element = integerElement(guard[entry.source]);
+    if (element === undefined) {
+      throw new PerCallCallRecordError(
+        `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop guarded by `
+        + `"${guardName}", whose element ${entry.source} is not an integer`,
+      );
+    }
+    return element === equals;
   });
 }
 
@@ -470,7 +533,8 @@ export function planCallLoopWrites(
  * evaluation follows that same order"). It is semantics-preserving exactly where the artifact publishes the loop's
  * value as one literal or one scalar parameter - every iteration stores the same value under its key, so the final
  * mapping is the same whatever order the writes run in. A loop whose value comes per key (a value array, a runtime
- * local or an accumulation) keeps the caller's order: its array is not this function's to permute.
+ * local or an accumulation) keeps the caller's order: its array is not this function's to permute. A guard array
+ * that selects the turns is permuted with the keys, so each element keeps the guard that selects it.
  *
  * A shape `planCallLoopWrites` refuses is left exactly as the caller passed it, so the refusal is raised where the
  * call plans its records rather than here.
@@ -490,10 +554,15 @@ export function orderLoopKeyArgs(
   const visible = visibleInputs(fn);
   for (const plan of plans ?? []) {
     if (plan.arrayOrder.every((source, position) => source === position)) continue;
-    const arrayIndex = visible.findIndex((input) => input.name === plan.varyingArrayParam);
-    const elements = arrayIndex < 0 ? undefined : args[arrayIndex];
-    if (!Array.isArray(elements)) continue;
-    args[arrayIndex] = reorderedArguments(elements, plan.arrayOrder);
+    const walked = [...new Set([plan.varyingArrayParam, plan.predicateArrayParam ?? plan.varyingArrayParam])];
+    for (const name of walked) {
+      const arrayIndex = visible.findIndex((input) => input.name === name);
+      const elements = arrayIndex < 0 ? undefined : args[arrayIndex];
+      if (!Array.isArray(elements)) continue;
+      // A guard longer than the array the loop walks keeps its unread tail where it was.
+      const tail = [...elements.keys()].filter((at) => !plan.arrayOrder.includes(at));
+      args[arrayIndex] = reorderedArguments(elements, [...plan.arrayOrder, ...tail]);
+    }
   }
   return args;
 }

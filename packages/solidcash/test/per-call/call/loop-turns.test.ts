@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { planCallLoopWrites } from '../../../src/per-call/call/entry-records.js';
+import { orderLoopKeyArgs, planCallLoopWrites } from '../../../src/per-call/call/entry-records.js';
+import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -195,5 +197,72 @@ describe('the turns of a run-time-loop mapping write', () => {
       objections: answered.verdicts.filter((verdict) => !verdict.accepted)
         .map((verdict) => String(verdict.objection ?? 'refused')),
     }).toStrictEqual({ accepted: true, objections: [] });
+  }, 600_000);
+});
+
+/**
+ * A loop whose write a guard array selects (`if (flags[i] == 1)`): the artifact publishes the guard as the loop's
+ * `predicateArrayParam` and `predicateEquals`, and the body walks every element but writes only the selected ones.
+ * The turns are those elements, and a reordered key array carries its guard along, the skipped elements after.
+ */
+const GUARDED = compileStringMulti('pragma solidcash ^0.13.0;'
+  + ' contract Ledger {'
+  + '   mapping(address => uint) balances;'
+  + '   function grant(address[] workers, uint[] flags) {'
+  + '     for (int i = 0; i < workers.length; i = i + 1) { if (flags[i] == 1) { balances[workers[i]] = 42; } }'
+  + '   }'
+  + '   function ping() { require(true); }'
+  + ' }', { composition: 'per-call' }).Ledger!;
+// The slots ascend as key(3) < key(6) < key(5); the guard selects key(5) and key(6) and skips key(3).
+const FLAGS = [1n, 0n, 1n];
+
+describe('the turns of a run-time loop a guard array selects', () => {
+  it('derives a turn for each selected element, in slot order, the skipped ones walked after them', () => {
+    const plan = planCallLoopWrites({
+      artifact: GUARDED, functionName: 'grant', args: [WORKERS, FLAGS], callerLockingBytecode: new Uint8Array(0),
+    })![0]!;
+    expect(plan.predicateArrayParam).toBe('flags');
+    expect(plan.turns.map((turn) => turn.source)).toStrictEqual([2, 0]);
+    expect(plan.turns.map((turn) => turn.turn)).toStrictEqual([0, 1]);
+    expect(plan.arrayOrder).toStrictEqual([2, 0, 1]);
+    // The frame is handed the keys and the guard in that one order, so each flag stays with its key.
+    expect(orderLoopKeyArgs({
+      artifact: GUARDED, functionName: 'grant', args: [WORKERS, FLAGS], callerLockingBytecode: new Uint8Array(0),
+    })).toStrictEqual([[WORKERS[2]!, WORKERS[0]!, WORKERS[1]!], [1n, 1n, 0n]]);
+  });
+
+  it('refuses by name a guard array shorter than the keys, whose element the body would read past the end', () => {
+    expect(() => planCallLoopWrites({
+      artifact: GUARDED, functionName: 'grant', args: [WORKERS, [1n]], callerLockingBytecode: new Uint8Array(0),
+    })).toThrow('guarded by "flags", which the frame\'s arguments do not carry as an array as long as the one the loop');
+  });
+
+  it('settles the selected writes alone through the shipped call path', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: outpointHash(0x31), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funder.address, fundingUtxo);
+    await fundShippedFacets(provider);
+    const { categoryId } = await deployStatefulContract(GUARDED, [], {
+      provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
+    });
+    const callerUtxo = { txid: outpointHash(0x51), vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(binToHex(encodeLockingBytecodeP2pkh(alicePkh)), callerUtxo);
+    const answered = await callPerCallEntry({
+      provider, artifact: GUARDED, categoryId, functionName: 'grant', args: [WORKERS, FLAGS] as never,
+      callerUtxo, callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh),
+      funder: signature.unlockP2PKH(), vm: compositionMachine(),
+    });
+    expect(answered.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(answered.accepted).toBe(true);
+    const live = await readPerCallDeployment(provider, categoryId, GUARDED.stateLayout!);
+    const written = (live.nodesByCollection.get('balances') ?? [])
+      .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
+      .filter((node) => node.slot.some((byte) => byte !== 0))
+      .map((node) => [binToHex(node.slot), binToHex(node.value)] as const);
+    expect(new Map(written)).toStrictEqual(new Map([WORKERS[0]!, WORKERS[2]!].map((worker) => [
+      binToHex(keyToSlotMulti([element(worker)])), binToHex(encodeFunctionArgument(42n, 'uint256') as Uint8Array),
+    ])));
   }, 600_000);
 });

@@ -25,6 +25,24 @@ const incoming = { slot: keyToSlotMulti([bigIntToVmNumber(7n)], collection),
   value: { amount: 2_000n, enabled: true, recipient, flags: [false, true] } };
 
 describe('authenticated fixed-effect entry recipes', () => {
+  it('omits a satoshi container when the selected authenticated transfer amount is zero', async () => {
+    const handler: AbiFunction = {
+      name: 'refund', selector: 'aabbccdd', inputs: [{ name: 'key', type: 'int256' }],
+      blockLayout: { blockSize: 2, slots: [{ kind: 'master', offset: 0 },
+        { kind: 'satoshiContainer', offset: 1 }] },
+      transferCount: 1,
+      transfers: [{ transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 },
+        amount: { kind: 'literal', type: 'bigint', value: '1' },
+        amountRecipe: entryRecipe(['amount'], 'int256') }],
+    };
+    const selection = { artifact: { ...artifact, abi: [handler] }, selectors: [handler.selector] };
+    const host = { getState: async () => ({}), getEntries: async () => [incoming] };
+
+    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [[8n]] }, host)).toBe(false);
+    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [[7n]] }, host)).toBe(true);
+    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [undefined] }, host)).toBe(true);
+  });
+
   it('omits a container only after resolving every exact selected row against incoming entries', async () => {
     const handler: AbiFunction = { name: 'pay', selector: '11223344', inputs: [{ name: 'key', type: 'int256' }],
       blockLayout: { blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'satoshiContainer', offset: 1 }] },

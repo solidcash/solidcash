@@ -1,4 +1,6 @@
-import { decodePushdataValue, type AbiFunction, type Artifact, type ExternalCallExpression } from '@solidcash/utils';
+import {
+  decodePushdataValue, type AbiFunction, type Artifact, type ExternalCallExpression, type FixedBchTransferAbi,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import { evaluateChildDeploymentRecipe } from './compose-recipes.js';
@@ -33,6 +35,8 @@ export function selectedSatoshiContainerRequired(
   rowArguments?: readonly (readonly FunctionArgument[] | undefined)[],
   evaluatePredicate: (expression: ExternalCallExpression, args: readonly FunctionArgument[],
     handler: AbiFunction) => unknown = (expression, args) => evaluateFixedEffectPredicate(expression, args),
+  evaluateAmount: (transfer: FixedBchTransferAbi, args: readonly FunctionArgument[],
+    handler: AbiFunction) => unknown = () => undefined,
 ): boolean | undefined {
   const handlers = selectors.map((selector) => {
     const matches = selector === undefined ? [] : artifact.abi.filter((candidate) =>
@@ -50,8 +54,12 @@ export function selectedSatoshiContainerRequired(
     // arguments or an explicit authenticated context. Incomplete metadata and runtime loops remain conservative.
     if (!args || !transfers?.length || transfers.length !== handler!.transferCount
       || (handler!.runtimeLoopTransfers?.length ?? 0) > 0) return true;
-    return transfers.some((transfer) => !transfer.condition
-      || evaluatePredicate(transfer.condition, args, handler!) !== false);
+    return transfers.some((transfer) => {
+      if (transfer.condition && evaluatePredicate(transfer.condition, args, handler!) === false) return false;
+      // A zero-value recipe owns no BCH output. Keep unknown values conservative; the completed transaction's
+      // covenant VM remains the authority if a prior same-transaction write makes the effect reachable.
+      return evaluateAmount(transfer, args, handler!) !== 0n;
+    });
   });
 }
 
@@ -70,11 +78,15 @@ export async function resolveSelectedSatoshiContainerRequired(
 ): Promise<boolean | undefined> {
   const initial = selectedSatoshiContainerRequired(artifact, selectors, args);
   if (initial !== true) return initial;
-  const recipes = selectors.flatMap((selector) => artifact.abi
+  const transfers = selectors.flatMap((selector) => artifact.abi
     .filter((handler) => handler.selector?.toLowerCase() === selector?.toLowerCase())
-    .flatMap((handler) => handler.transfers?.map((transfer) => transfer.condition?.fixedEffectRecipe) ?? []));
+    .flatMap((handler) => handler.transfers ?? []));
+  const recipes = transfers.flatMap((transfer) => [transfer.condition?.fixedEffectRecipe, transfer.amountRecipe]);
   // Keep the argument-only path for old/unrelated handlers and avoid unnecessary state/provider queries.
-  if (!recipes.some((recipe) => recipe !== undefined)) return initial;
+  if (!recipes.some((recipe) => recipe !== undefined)
+    && !transfers.some((transfer) => transfer.amount.kind === 'literal' && transfer.amount.value === '0')) {
+    return initial;
+  }
   const state = await host.getState() as Readonly<Record<string, FunctionArgument>>;
   const entries = await loadFixedEffectEntries(recipes, artifact, host);
   const hasLogicalCaller = (value: unknown): boolean => !!value && typeof value === 'object'
@@ -88,6 +100,20 @@ export async function resolveSelectedSatoshiContainerRequired(
     const result = evaluateChildDeploymentRecipe(expression.fixedEffectRecipe, rowArgs,
       handler.inputs.map((input) => input.type), artifactUsesSolidityAbi(artifact), state, undefined, entries);
     return typeof result === 'boolean' ? result : undefined;
+  }, (transfer, rowArgs, handler) => {
+    // The typed recipe overrides the ABI's provisional amount source, matching transfer materialization.
+    if (transfer.amountRecipe) {
+      if (hasLogicalCaller(transfer.amountRecipe)) return undefined;
+      try {
+        const value = evaluateChildDeploymentRecipe(transfer.amountRecipe, rowArgs,
+          handler.inputs.map((input) => input.type), artifactUsesSolidityAbi(artifact), state, undefined, entries);
+        return typeof value === 'bigint' ? value : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
+      ? BigInt(transfer.amount.value) : undefined;
   });
 }
 

@@ -745,6 +745,65 @@ describe('Release 0 shared invocation analysis', () => {
       });
   });
 
+  it('publishes both domains for independent sibling loops with a prior internal call', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract IndependentSiblingLoops() {
+        function relay(address target, bigint value) internal {
+          ITarget(target).step(value);
+        }
+        function run(address target, bigint[] first, bigint[] second) public {
+          for (bigint i = 0; i < first.length; i = i + 1) {
+            relay(target, first[i]);
+          }
+          for (bigint j = 0; j < second.length; j = j + 1) {
+            ITarget(target).step(second[j]);
+          }
+          require(first.length + second.length >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
+    expect(calls).toHaveLength(2);
+    expect(calls?.[0].iterationDomain?.continueCondition).toMatchObject({
+      right: { expression: { source: { paramIndex: 1 } } },
+    });
+    expect(calls?.[1].iterationDomain?.continueCondition).toMatchObject({
+      right: { expression: { source: { paramIndex: 2 } } },
+    });
+  });
+
+  it('threads collection cardinality across unlowered sibling mutation loops', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(int value); }
+      contract SiblingMappingLoops() {
+        mapping(int => bool) public flags;
+        function relay(address target, int value) internal { ITarget(target).step(value); }
+        function update(address target, int[] added, int[] removed) public {
+          for (int i = 0; i < added.length; i = i + 1) {
+            flags[added[i]] = true;
+            relay(target, added[i]);
+          }
+          for (int j = 0; j < removed.length; j = j + 1) {
+            flags[removed[j]] = false;
+            relay(target, removed[j]);
+          }
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const names = [
+      '__internal__vmapRuntimeInputCount_flags',
+      '__internal__vmapRuntimeOutputCount_flags',
+    ];
+    const inputs = artifact.abi.find((fn) => fn.name === 'update')?.inputs.map((input) => input.name);
+    const routeInputs = artifact.messageBus?.route.inputs.map((input) => input.name);
+    expect(inputs).toEqual(expect.arrayContaining(names));
+    expect(routeInputs).toEqual(expect.arrayContaining(names));
+  });
+
   it('publishes a later loop domain across a prior abort-only branch', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint value); }

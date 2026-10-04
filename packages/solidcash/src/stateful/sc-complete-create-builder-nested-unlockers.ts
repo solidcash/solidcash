@@ -96,7 +96,6 @@ export async function completeCreateBuilderNestedUnlockers(
   const publicSelfAddress = params.publicSelfAddress as Uint8Array;
   const authenticatedSelfAddress = params.authenticatedSelfAddress as Uint8Array | undefined
     ?? publicSelfAddress;
-  const physicalSelfAddress = params.physicalSelfAddress as Uint8Array;
 
   for (const groupIdx of returningExternalGroups) {
     const child = externalCallUtxoGroups[groupIdx];
@@ -164,8 +163,8 @@ export async function completeCreateBuilderNestedUnlockers(
     const childPhysicalCallerLockingBytecode = childParentGroupIndex !== undefined
       && childParentGroupIndex >= 0
       ? externalCallUtxoGroups[childParentGroupIndex]?.externalContract.inner.lockingBytecode
-        ?? binToHex(physicalSelfAddress)
-      : binToHex(physicalSelfAddress);
+        ?? binToHex(publicSelfAddress)
+      : binToHex(publicSelfAddress);
     const childCallerSubjectLockingBytecode = child.callerIdentity?.lockingBytecode
       ?? childPhysicalCallerLockingBytecode;
     const needsMsgSenderAnchor = childFn.inputs.some((input) => input.name === '__internal__msgSenderAnchorIdx')

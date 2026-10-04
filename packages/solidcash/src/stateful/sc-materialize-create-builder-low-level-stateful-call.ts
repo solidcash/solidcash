@@ -262,13 +262,15 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   // proxy/state-owner context. New graph routes authenticate the same public CREATE identity for address(this)
   // and the outgoing caller. Older routes retain their physical self projection. Storage and executor identities
   // remain separately pinned by the delegate block.
-  const delegateCallerIdentity = Object.freeze({
-    categoryId: host.categoryId,
-    lockingBytecode: binToHex(authenticatedSelfAddress),
-  });
   const delegateSelfAddress = callInfo.contract.inner.artifact.messageBus?.route.inputs.some(
     (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
   ) ? authenticatedSelfAddress : publicSelfAddress;
+  const delegateCallerIdentity = Object.freeze({
+    categoryId: host.categoryId,
+    // The outgoing caller is exactly the state-owner identity used for address(this). A legacy delegate
+    // without a public-self witness uses the physical proxy; an authenticated CREATE route uses its SCID.
+    lockingBytecode: binToHex(delegateSelfAddress),
+  });
   const nestedExternalCalls: ExternalCallAbi[] = [];
   for (const nested of publishedNestedExternalCalls) {
     // A failed source require is a necessary-condition proof that no outgoing call was reached. Resolve

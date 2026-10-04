@@ -272,19 +272,19 @@ export async function applyOverrides(
       if (plan.transfer.condition !== undefined && !(await host.parentContract!._resolveCompilerEffectPredicate(
         plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState, entries, logicalCaller,
       ))) continue;
-      materialized.push({
-        outputSlot: plan.outputSlot,
-        ...materializeFixedBchTransfer(
-          plan.transfer,
-          plan.args,
-          plan.handler.inputs.map((input) => input.type),
-          plan.executionArtifact,
-          host.parentContract!.inner.provider,
-          authenticatedState as Readonly<Record<string, FunctionArgument>>,
-          logicalCaller,
-          entries,
-        ),
-      });
+      const transfer = materializeFixedBchTransfer(
+        plan.transfer,
+        plan.args,
+        plan.handler.inputs.map((input) => input.type),
+        plan.executionArtifact,
+        host.parentContract!.inner.provider,
+        authenticatedState as Readonly<Record<string, FunctionArgument>>,
+        logicalCaller,
+        entries,
+      );
+      // A zero-value fixed effect is an inactive conditional slot, not a positive BCH payment.
+      if (transfer.amount === 0n) continue;
+      materialized.push({ outputSlot: plan.outputSlot, ...transfer });
     }
     effectiveTransfers = materialized;
   }

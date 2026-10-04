@@ -635,15 +635,33 @@ const externalCallIterationDomains = (
   };
 
   const interfaceNames = new Set(interfaces.map((iface) => iface.name));
-  const priorLoopHasOpaqueLocalEffect = (root: WhileNode): boolean => {
+  const priorLoopHasOpaqueLocalEffect = (
+    root: WhileNode, recurrenceDependencies: ReadonlySet<object | string>,
+  ): boolean => {
     let found = false;
+    const touchesRecurrence = (value: unknown, seen = new Set<object>()): boolean => {
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if (value instanceof IdentifierNode && (recurrenceDependencies.has(definitionKey(value))
+        || recurrenceDependencies.has(`name:${value.name}`))) return true;
+      if (value instanceof StateAccessNode
+        && recurrenceDependencies.has(`state:${value.name}`)) return true;
+      return Object.entries(value).some(([key, child]) => !skip.has(key)
+        && (child instanceof Node ? touchesRecurrence(child, seen)
+          : Array.isArray(child) && child.some((item) => touchesRecurrence(item, seen))));
+    };
     const visit = (value: unknown, seen = new Set<object>()): void => {
       if (found || !(value instanceof Node) || seen.has(value)) return;
       seen.add(value);
       const interfaceCast = value instanceof FunctionCallNode && value.parameters.length === 1
         && value.resolvedFunction === undefined && value.lexicalIndirectCall !== true
         && interfaceNames.has(value.identifier.name);
-      if ((value instanceof FunctionCallNode && !interfaceCast) || value instanceof TupleAssignmentNode
+      // A prior internal helper cannot mutate a later loop's local bound unless that bound reaches the call.
+      // Its unrelated state effects do not change a recurrence derived only from other
+      // input arguments; state reads are separately excluded by stableRead below. Keep calls that touch a
+      // recurrence dependency conservative, along with local aggregate mutations and tuple assignments.
+      if ((value instanceof FunctionCallNode && !interfaceCast && touchesRecurrence(value))
+        || value instanceof TupleAssignmentNode
         || /^(ArrayAssignNode|ArrayPushNode|ArrayPopNode|ArrayDeleteNode|DeleteLocalNode|AssignmentExpressionNode)$/
           .test(value.constructor.name)) { found = true; return; }
       for (const [key, child] of Object.entries(value)) {
@@ -742,7 +760,7 @@ const externalCallIterationDomains = (
       if (depth === 0 && !replayBefore(fn.body, counter, state, (prior) => {
         const stableRead = ![counter.expression!, loop.condition, magnitude].some(recurrenceHasLiveExternalRead);
         const earlyExit = loopCanExitEarly(prior);
-        const opaqueEffect = priorLoopHasOpaqueLocalEffect(prior);
+        const opaqueEffect = priorLoopHasOpaqueLocalEffect(prior, deps);
         const dependencyWrites = [...deps].filter((dependency) => assignedIn(prior, dependency, counter));
         return stableRead && !earlyExit && !opaqueEffect && dependencyWrites.length === 0;
       })) break;

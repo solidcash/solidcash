@@ -132,7 +132,6 @@ export async function fixCreateBuilderDelegateUnlockers(
   const publicSelfAddress = params.publicSelfAddress;
   const authenticatedSelfAddress = params.authenticatedSelfAddress as Uint8Array | undefined
     ?? publicSelfAddress;
-  const physicalSelfAddress = params.physicalSelfAddress as Uint8Array;
   const compilerRouteDelegateLayout = params.compilerRouteDelegateLayout;
   const returnEmitOutputIndex = params.returnEmitOutputIndex as number;
   const groupProxyMasterIndices = params.groupProxyMasterIndices as any;
@@ -434,8 +433,8 @@ export async function fixCreateBuilderDelegateUnlockers(
           const parentGroupIndex = allGroupParentIndices[nestedProxyGroupIndex];
           const physicalCallerLockingBytecode = parentGroupIndex !== undefined && parentGroupIndex >= 0
             ? externalCallUtxoGroups[parentGroupIndex]?.externalContract.inner.lockingBytecode
-              ?? binToHex(physicalSelfAddress)
-            : binToHex(physicalSelfAddress);
+              ?? binToHex(publicSelfAddress)
+            : binToHex(publicSelfAddress);
           const callerSubjectLockingBytecode = nestedProxyGroup.callerIdentity?.lockingBytecode
             ?? physicalCallerLockingBytecode;
           const needsAnchor = callerSubjectLockingBytecode.toLowerCase()

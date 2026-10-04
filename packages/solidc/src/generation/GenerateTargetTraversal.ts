@@ -7005,6 +7005,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.runtimeLoopEventActive || this.runtimeLoopTransferActive) {
       this.emitRuntimeLoopEffectVerification(node);
     }
+    this.emitHomogeneousRuntimeLoopCardinality(node);
 
     // Collection-journal lowering can give an otherwise-void graph handler a typed return channel. It remains
     // an effect-owning handler: settle its event/transfer/deploy frame before the generic returning-internal
@@ -28628,7 +28629,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (hasThreadedCardinality) {
       this.emitConsumeVMapRuntimeCardinality(this.sortedUpsertLoopCounterName, false, loc);
       this.emitConsumeVMapRuntimeCardinality(this.sortedUpsertLoopOutCounterName, true, loc);
-    } else if (!this.currentFunctionIsDelegate) {
+    } else if (!this.currentFunctionIsDelegate && !this.homogeneousRuntimeLoopCollection(this.currentFunction)) {
       // Non-counter runtime loop lowerings retain their established local count pin. They have no route-threaded
       // cardinality ABI, so each direct invocation remains independently orphan-bound.
       const nFixed = this.entrySlots.filter(
@@ -28702,6 +28703,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertLoopJournalCursorName = '(kernel_journal_cursor)';
     this.sortedUpsertLoopInputCountParam = undefined;
     this.sortedUpsertLoopOutputCountParam = undefined;
+  }
+
+  /**
+   * A local count scan belongs to the whole collection, not to one sibling loop. For a function whose
+   * runtime streams all address the same collection, the existing function-wide entry counters are an exact
+   * aggregate even when a later loop takes zero trips or sits behind a conditional. Pin that aggregate once
+   * after the body, on every control-flow path, instead of comparing each loop's width with the whole tx.
+   */
+  private homogeneousRuntimeLoopCollection(node: FunctionDefinitionNode): string | undefined {
+    const infos = node.sortedUpsertLoopInfo ?? [];
+    // Generated aggregate handlers can carry their source loop summaries without owning the ordinary
+    // copy-in/copy-out counters. Only defer the local scan when those counters actually exist in this frame.
+    if (infos.length < 2 || this.currentFunctionIsDelegate
+      || !this.runtimeLoopEntryInputCountActive || !this.runtimeLoopEntryOutputCountActive) return undefined;
+    const collection = infos[0].collection;
+    if (!infos.every((info) => info.collection === collection)) return undefined;
+    if (this.getStackIndex(vmapRuntimeInputCountName(collection), true) >= 0
+      && this.getStackIndex(vmapRuntimeOutputCountName(collection), true) >= 0) return undefined;
+    return collection;
+  }
+
+  private emitHomogeneousRuntimeLoopCardinality(node: FunctionDefinitionNode): void {
+    const collection = this.homogeneousRuntimeLoopCollection(node);
+    if (!collection) return;
+    const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
+    const signature = this.vmapCollectionSignature(collection);
+    if (!signature) throw new Error(`Missing sorted-upsert collection signature for '${collection}'`);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(ul_aggregate_scan_addr)');
+    this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
+    this.stack[0] = '(ul_aggregate_scan_addr)';
+    const nFixed = this.entrySlots.filter(
+      (slot, index) => slot.collection === collection && this.ownsFixedEntrySlot(index),
+    ).length;
+    for (const [name, output] of [
+      [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, false],
+      [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, true],
+    ] as const) {
+      this.emitPickCompilerRouteFrameValue(name, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+      this.emitVerifyAdjacentUtxoCount(output, loc, nFixed);
+    }
+    const index = this.getStackIndex('(ul_aggregate_scan_addr)');
+    this.emit(encodeInt(BigInt(index)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(index);
   }
 
   /** Consume one loop's exact width from its physical collection's transaction-wide remainder. */

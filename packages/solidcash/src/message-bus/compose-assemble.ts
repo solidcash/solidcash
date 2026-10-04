@@ -16,6 +16,7 @@ import { TransactionBuilder } from '../TransactionBuilder.js';
 import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
 import { addressToLockScript } from '../utils.js';
 import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
+import { reassertRoutedReadOnlyDynamicChunkTwins } from '../stateful/mutable-output-reassert.js';
 import {
   chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment, valueChunkWriteResourceIdentity,
 } from '../stateful/StatefulTransactionBuilder.js';
@@ -728,6 +729,9 @@ export async function assembleAtomicComposition(
           transfer, supplied.args, inputTypes, executionArtifact, provider,
           authenticatedState, logicalCaller, entryResolver,
         );
+        // A zero-valued compiler recipe leaves its conditional output slot inactive. Do not ask the public
+        // positive-payment API to materialize it; final VM preflight still checks any executing transfer path.
+        if (materialized.amount === 0n) continue;
         const transferSlots = participant.blockLayout!.slots
           .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined);
         const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
@@ -1848,6 +1852,22 @@ export async function assembleAtomicComposition(
         proxyInput.unlocker, rootMessageEnvelope!, maximumInputBytes, executorOffset,
       );
     }
+    // Embedded delegates can move selected read-only chunks into the state owner's trailing band after the
+    // nested builder placed outputs. The union ABI may supply write-mode unlockers for these inputs, so use
+    // selected handler effects (not the unlocker flag) to identify which unchanged twins must be restored.
+    const selectedHandlers = participant.invocations.map((index) =>
+      findMessageBusHandlerForInvocation(participant.artifact, plan.invocations[index]));
+    const selectedDynamicWrites = new Set(selectedHandlers.flatMap((handler) => handler?.dynamicWrites ?? []));
+    const selectedReadOnlyDynamicLocks = [...new Set(selectedHandlers.flatMap((handler) =>
+      handler?.dynamicReads ?? []))].flatMap((name) => {
+      if (selectedDynamicWrites.has(name)) return [];
+      const variable = participant.artifact.stateLayout?.variables.find((candidate) =>
+        candidate.name === name && candidate.dynamic);
+      return variable === undefined ? [] : [addressToLockScript(getDynamicChunkAddress(
+        contract.inner, categories[participant.participant], variable.name, variable.type,
+      ))];
+    });
+    reassertRoutedReadOnlyDynamicChunkTwins(local.outputs, local.inputs, selectedReadOnlyDynamicLocks);
     for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
       const input = local.inputs[localIndex];
       registerAggregateInput(input, participant.participant, localIndex, 'participant block');

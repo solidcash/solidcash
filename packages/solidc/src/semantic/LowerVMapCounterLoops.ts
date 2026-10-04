@@ -6167,6 +6167,38 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const counterWorkLoopSet = new Set(counterWorkLoops.map(([loop]) => loop));
     const allSafe = counterWorkLoops.length > 0
       && counterWorkLoops.every(([loop]) => tryLower(loop, false));
+    // Some canonical loops have a valid per-iteration runtime-upsert lowering in codegen but cannot enter the
+    // permutation rewrite (for example, an eventful helper call inside the loop). Two such sibling loops over
+    // one collection still need one transaction-wide cardinality remainder: a local scan after either loop
+    // cannot distinguish the other loop's legitimate entries from orphans. Publish only the count witnesses
+    // here; these loops do not use the compact journal-access carrier owned by the full permutation lowering.
+    const fallbackRuntimeCountCollections = new Set<string>();
+    if (!allSafe && this.publishJournalAccessStreams) {
+      const loopCounts = new Map<string, number>();
+      for (const [loop, canonical] of counterWorkLoops) {
+        const collections = new Set<string>();
+        const visitWrite = (candidate: Node): void => {
+          if (candidate !== loop.block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
+          if (isWrite(candidate) && this.collections.has(candidate.name)
+            && counterKeyIndex(candidate, canonical.logical) >= 0) collections.add(candidate.name);
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) visitWrite(value);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) visitWrite(item);
+            }
+          }
+        };
+        visitWrite(loop.block);
+        for (const collection of collections) {
+          loopCounts.set(collection, (loopCounts.get(collection) ?? 0) + 1);
+        }
+      }
+      for (const [collection, count] of loopCounts) {
+        if (count >= 2) fallbackRuntimeCountCollections.add(collection);
+      }
+    }
     if (!allSafe) rollbackConstructedArrayPrefixCounts();
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
     // an `emit after` ahead of all repeated records. Serializable nested if/else predicates provide an exact
@@ -6368,7 +6400,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       node.runtimeLoopEvents = orderedSegments;
       node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0) + outerEmits.length;
     }
-    for (const collection of runtimeCountCollections) {
+    for (const collection of new Set([...runtimeCountCollections, ...fallbackRuntimeCountCollections])) {
       const inputCount = new ParameterNode(
         new IntType(true, 256), vmapRuntimeInputCountName(collection),
       );

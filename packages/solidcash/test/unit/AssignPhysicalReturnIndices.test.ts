@@ -205,6 +205,7 @@ import {
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
+import { reassertRoutedReadOnlyDynamicChunkTwins } from '../../src/stateful/mutable-output-reassert.js';
 import {
   describeValueChunkWrites, resolveChunkableEntryCollection,
 } from '../../src/stateful/StatefulContract.js';
@@ -4276,6 +4277,44 @@ describe('assignPhysicalReturnIndices', () => {
 
     expect(reassertReadOnlyMutableOneToOnes(outputs, [input], [input])).toBe(0);
     expect(outputs[0]).toBe(output);
+  });
+
+  it('restores selected read-only chunks ahead of a displaced mapping entry', () => {
+    const chunkLock = Uint8Array.of(0xaa, 0x20, 0x05, 0x87);
+    const entryLock = Uint8Array.of(0xaa, 0x20, 0x16, 0x87);
+    const chunk = (id: string, commitment: string, flag: bigint) => ({
+      txid: id.repeat(64), vout: 0, satoshis: 1200n,
+      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment } },
+      unlocker: {
+        generateLockingBytecode: () => chunkLock,
+        contract: { artifact: { contractName: 'ChunkNft_owner' } },
+        abiFunction: { inputs: [{ name: 'flag' }] },
+        params: [flag],
+      },
+    });
+    const first = chunk('1', '00aa', 1n);
+    const second = chunk('2', '01bb', 1n);
+    const entry = {
+      txid: '3'.repeat(64), vout: 0, satoshis: 1200n,
+      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment: 'entry' } },
+      unlocker: {
+        generateLockingBytecode: () => entryLock,
+        contract: { artifact: { contractName: 'EntryNft_owner' } },
+        abiFunction: { inputs: [{ name: 'flag' }] },
+        params: [1n],
+      },
+    };
+    const outputs: Output[] = [
+      { to: entryLock, amount: 1200n, token: entry.token },
+      { to: chunkLock, amount: 1200n, token: first.token },
+      { to: chunkLock, amount: 1200n, token: second.token },
+    ];
+
+    expect(reassertRoutedReadOnlyDynamicChunkTwins(outputs, [first, second, entry] as never, [])).toBe(0);
+    expect(reassertRoutedReadOnlyDynamicChunkTwins(
+      outputs, [first, second, entry] as never, [chunkLock],
+    )).toBe(2);
+    expect(outputs.map((output) => output.token?.nft?.commitment)).toEqual(['00aa', '01bb', 'entry']);
   });
 
   it('places the extraTransfer return at the post-rotate minting master', () => {

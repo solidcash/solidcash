@@ -359,6 +359,15 @@ function reachedThroughCalls(
   return true;
 }
 
+/**
+ * Whether a draft's derivation entered a frame: every call on its path from a root was bound (`reachedThroughCalls`).
+ * A frame planned past its caller's revert sits below a call the derivation never bound, so what its program records
+ * was computed from the plan's own inputs, not the execution's.
+ */
+export function frameEntered(draft: CompositionDraft, master: string): boolean {
+  return reachedThroughCalls(draft, frameCallers(draft), master);
+}
+
 export interface CompositionRefusalOptions {
   readonly draft: CompositionDraft;
   /** Every contract in the composition, whose error ABIs and debug metadata the reasons are read from. */

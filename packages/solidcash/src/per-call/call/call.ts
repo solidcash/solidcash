@@ -130,7 +130,7 @@ import {
   learnCalleeValue, planEntryCallees, scopedCalleeFrame, type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { deploymentStateValues } from '../proxy/external-calls.js';
-import { decodeReturnValues } from '../read/index.js';
+import { PerCallReadError, decodeReturnValues } from '../read/index.js';
 import {
   PerCallComposerError,
   UNFILLED_CALLEE_REF,
@@ -138,6 +138,7 @@ import {
   deploymentBlockId,
   deriveComposition,
   describeRefusedFrame,
+  frameEntered,
   layoutTransaction,
   participant,
   readPublishedStopSites,
@@ -1737,6 +1738,9 @@ async function callInShape(
   let armsDecided = false;
   const frameArtifacts = [artifact, ...(calleePlan?.artifacts ?? []), ...payees.map((payee) => payee.artifact)];
   let settled = false;
+  // The decoder's refusal of a result only a frame the derivation never entered recorded (`decodedCalleeResults`): the
+  // plan is settled as it stands and the refusal stands only when the verdicts name no contract reason.
+  let unlearnedResult: PerCallReadError | undefined;
   // A record's end view is learned up to the commitment the deployment itself holds: a contract compiled for a wider
   // commitment keeps a record past the composer's default of 128 bytes, and a view the composer would not learn leaves
   // the record's close comparing the body's commitment with a placeholder.
@@ -1845,7 +1849,14 @@ async function callInShape(
       // from them. Each stop learns a result no earlier one did, so the stops end.
       const stop = calleePlan.blocked;
       if (stop !== undefined) {
-        const results = reachedCallResults(calleePlan, stop, calleeValues.retvals);
+        const reached = decodedCalleeResults(
+          candidate, calleeValues.retvals, (retvals) => reachedCallResults(calleePlan, stop, retvals));
+        if ('unlearned' in reached) {
+          unlearnedResult = reached.unlearned;
+          settled = true;
+          break;
+        }
+        const { results } = reached;
         if ([...results.keys()].every((key) => prior.reached.has(key))) {
           throw new PerCallCallError(
             `entry "${functionName}": ${stop.where} reads the result of the earlier call(s) `
@@ -1861,7 +1872,14 @@ async function callInShape(
       // are is the execution's, and one they change is planned again from them, at most once per result a guard
       // reads.
       if (calleePlan.conditionalProducers.length > 0 && !armsDecided) {
-        const returns = producedCallResults(calleePlan, calleeValues.retvals);
+        const produced = decodedCalleeResults(
+          candidate, calleeValues.retvals, (retvals) => producedCallResults(calleePlan, retvals));
+        if ('unlearned' in produced) {
+          unlearnedResult = produced.unlearned;
+          settled = true;
+          break;
+        }
+        const returns = produced.results;
         const decided = await planCallees(returns);
         if (decided !== undefined && decided.blocked === undefined && samePlannedSites(decided, calleePlan)) {
           armsDecided = true;
@@ -2130,12 +2148,26 @@ async function callInShape(
     const reason = verdict.accepted ? undefined : reasons.get(verdict.id);
     return reason === undefined ? verdict : { ...verdict, objection: reason };
   });
+  // A call whose execution stops on a contract's own reason reports it, so a result left unlearned, which only a frame
+  // past that stop recorded, does not stand in for it; with no such reason the undecodable bytes are what the call
+  // cannot get past.
+  const reverted = refusal?.innermost !== undefined && (refusal.innermost.reason.message !== undefined
+    || refusal.innermost.reason.error !== undefined);
+  if (unlearnedResult !== undefined && !reverted) throw unlearnedResult;
 
   // The entry's own answer is the bytes the derived call records in the frame's `retval`, decoded through the same
-  // shipped decoder the read path uses. A call the entry refused never reached its return, so no value was recorded.
+  // shipped decoder the read path uses. A call the entry refused never reached its return, so no value was recorded,
+  // and a call that reverted on a contract's reason returns nothing: bytes recorded on the way there are not decoded
+  // in place of that reason.
   const retval = learnedRetval ?? new Uint8Array(0);
-  const values = learnedRetval === undefined
-    ? [] : decodeReturnValues(retval, entry.outputs, structs, entry.resultEncoding, artifact.enums);
+  let values: readonly StateValue[] = [];
+  try {
+    if (learnedRetval !== undefined) {
+      values = decodeReturnValues(retval, entry.outputs, structs, entry.resultEncoding, artifact.enums);
+    }
+  } catch (error) {
+    if (!(error instanceof PerCallReadError) || !reverted) throw error;
+  }
 
   // A record the entry does not declare is not spent, so it holds what it held.
   const writtenCommitments = records.map((record) => {
@@ -2189,6 +2221,31 @@ async function callInShape(
     ...(refusal === undefined ? {} : { refusal }),
     ...(broadcast === undefined ? {} : { broadcast }),
   };
+}
+
+/**
+ * The results the callee frames recorded, as `decode` reads them, or the decoder's refusal when the only frames whose
+ * bytes do not decode as their entries' returns are frames the derivation never entered (`frameEntered`).
+ *
+ * A frame planned past its caller's revert runs on the plan's own inputs, a view an enclosing writer never wrote among
+ * them, so what it records is no result of the execution and is left unlearned, as the hop meets an undecodable
+ * result only where the execution reaches the site that reads it. A frame the derivation entered recorded the
+ * execution's own bytes, so bytes there that do not decode stay an error.
+ */
+function decodedCalleeResults<T>(
+  draft: CompositionDraft,
+  retvals: ReadonlyMap<string, Uint8Array>,
+  decode: (retvals: ReadonlyMap<string, Uint8Array>) => T,
+): { readonly results: T } | { readonly unlearned: PerCallReadError } {
+  try {
+    return { results: decode(retvals) };
+  } catch (error) {
+    if (!(error instanceof PerCallReadError)) throw error;
+    const entered = new Map([...retvals].filter(([master]) => frameEntered(draft, master)));
+    if (entered.size === retvals.size) throw error;
+    decode(entered);
+    return { unlearned: error };
+  }
 }
 
 /** What a value send takes: a call's options without an entry or arguments, and the value it sends. */

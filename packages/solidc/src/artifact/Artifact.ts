@@ -2644,6 +2644,35 @@ function buildFunctionAbiMetadata(
     }
     return keyParams.length > 0 ? { collection: returned[0].name, keyParams } : undefined;
   })();
+  const directExternalReturn = (() => {
+    if (!func.modifiers.includes(FunctionModifier.VIEW)
+      && !func.modifiers.includes(FunctionModifier.PURE)
+      && func.sourceReadOnly !== true) return undefined;
+    const statements = func.body?.statements;
+    if (!statements || statements.length === 0) return undefined;
+    // Address-target synthesis may prepend a pure capture such as
+    // `__extaddr_source_IFoo = IFoo(source)`. It does not transform the return value.
+    const pureAddressCapture = (statement: Node): boolean => {
+      if (!(statement instanceof VariableDefinitionNode) || !statement.name.startsWith('__extaddr_')) {
+        return false;
+      }
+      const source = statement.expression instanceof CastNode
+        ? statement.expression.expression : statement.expression;
+      return source instanceof IdentifierNode
+        || (source instanceof StateAccessNode && source.stateVariable !== undefined);
+    };
+    if (!statements.slice(0, -1).every(pureAddressCapture)) return undefined;
+    const last = statements[statements.length - 1];
+    if (!(last instanceof ReturnNode)) return undefined;
+    const returned = last.expressions;
+    if (returned.length !== 1 || !(returned[0] instanceof ExternalFunctionCallNode)) return undefined;
+    const matchingCalls = (func.externalCalls ?? []).filter((call) => call.sourceCallNode === returned[0]);
+    if ((func.externalCalls ?? []).length !== 1 || matchingCalls.length !== 1
+      || !matchingCalls[0].hasReturnValues
+      || matchingCalls[0].batchInvocations || matchingCalls[0].condition
+      || matchingCalls[0].callValueEffect || matchingCalls[0].opaqueReturn) return undefined;
+    return { callsiteId: matchingCalls[0].slotIndex };
+  })();
   // Late semantic rewrites may introduce graph calls or entry mutations after the source program-point pass.
   // Never advertise a linear authority domain unless every emitted effect retained its compiler-owned identity.
   const publishedSourceEffectOrder = sourceEffectOrderForArtifact(
@@ -2742,6 +2771,7 @@ function buildFunctionAbiMetadata(
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),
     ...(directMappingReturn && { directMappingReturn }),
+    ...(directExternalReturn && { directExternalReturn }),
     ...(func.emitInfos && func.emitInfos.length > 0 && {
       emits: func.emitInfos.map((ei) => ({
         eventName: ei.eventName,

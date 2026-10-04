@@ -575,6 +575,9 @@ export interface AbiFunction {
     collection: string;
     keyParams: readonly string[];
   };
+  /** Compiler proof that a source read-only body, after only pure address-target captures,
+   * returns one external call's result unchanged. */
+  directExternalReturn?: { callsiteId: number };
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];
   /** Local call-result values forwarded as arguments into later external callsites. */

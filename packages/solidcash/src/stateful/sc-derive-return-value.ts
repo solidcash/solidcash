@@ -4,11 +4,13 @@
 
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
+  childStateLayoutDigest,
   decodePushdataValue,
   encodePushdataValue,
   getDefaultStateValue,
   type AbiFunction,
   type Artifact,
+  type StateLayout,
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -59,6 +61,21 @@ type LogicalReturnContext = {
   call: StatefulCall;
   args: readonly FunctionArgument[];
 };
+
+function sameStatePrefixThroughField(
+  owner: StateLayout, implementation: StateLayout, nftIndex: number, fieldIndex: number,
+): boolean {
+  const prefixDigest = (layout: StateLayout): string => childStateLayoutDigest({
+    variables: layout.variables.filter((variable) => variable.nftIndex < nftIndex
+      || (variable.nftIndex === nftIndex && variable.fieldIndex <= fieldIndex)),
+    dataNftCount: nftIndex + 1,
+    commitmentLimit: layout.commitmentLimit,
+    structs: layout.structs,
+    // Collection entries are separate NFTs and cannot change scalar field offsets.
+    collections: [],
+  });
+  return prefixDigest(owner) === prefixDigest(implementation);
+}
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
@@ -239,7 +256,7 @@ export async function deriveReturnValue(
   if (!physicalReturnSlot) {
     throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
   }
-  // A facade view that consists solely of one returning external call has the callee's exact return value.
+  // Only an exact compiler-proven external return has the callee's unchanged return value.
   // Read the authenticated callee directly rather than synthesizing a parent+delegate+callee transaction:
   // inserting the parent's own return channel into that synthetic balanced frame would shift the callee's
   // output coordinates away from its input coordinates. The callee still executes its covenant VM probe.
@@ -247,6 +264,9 @@ export async function deriveReturnValue(
   const passthrough = resultFunction?.externalCalls?.length === 1
     ? resultFunction.externalCalls[0] : undefined;
   const passthroughOnly = passthrough?.hasReturnValues === true
+    && resultFunction?.directExternalReturn !== undefined
+    && resultFunction?.directExternalReturn?.callsiteId === passthrough.callsiteId
+    && passthrough.addressStateVar !== undefined
     && (passthrough.returnTypes ?? []).length === outputs.length
     && (passthrough.returnTypes ?? []).every((type, index) => type === outputs[index]?.type)
     && (resultFunction?.emits?.length ?? 0) === 0
@@ -280,22 +300,28 @@ export async function deriveReturnValue(
         const facadeHost = delegatedCall.contract as StatefulContract & {
           implementation?: StatefulContract;
         };
-        const delegateSlot = delegatedCall.contract.inner.artifact.stateLayout?.variables.find((variable) => (
+        const delegateLayout = delegatedCall.contract.inner.artifact.stateLayout;
+        const ownerLayout = host.inner.artifact.stateLayout;
+        const delegateSlot = delegateLayout?.variables.find((variable) => (
           variable.name === addressStateVar
         ));
-        const ownerSlot = host.inner.artifact.stateLayout?.variables.find((variable) => (
+        const ownerSlot = ownerLayout?.variables.find((variable) => (
           variable.name === addressStateVar
         ));
         const isDelegatedFacade = (abiFunction?.lowLevelCalls?.length ?? 0) === 1
           && abiFunction?.lowLevelCalls?.[0]?.callMode === 'delegatecall'
           && (calls?.filter((call) => call.type === 'stateful').length ?? 0) === 1;
         // A delegate implementation reads the proxy's state category, not its own unused deployment state.
-        // Require the compiler-published field to occupy the same slot in both layouts before using the proxy
-        // as the source of the dynamic target. If the layouts disagree, retain the ordinary VM probe.
-        const ownerHoldsSlot = isDelegatedFacade && delegateSlot !== undefined && ownerSlot !== undefined
+        // Identical coordinates alone are insufficient: earlier fields with different widths can shift the
+        // target's encoded byte offset. Compare the physical prefix through the target before using proxy state.
+        const ownerHoldsSlot = isDelegatedFacade && delegateLayout !== undefined
+          && ownerLayout !== undefined && delegateSlot !== undefined && ownerSlot !== undefined
           && delegateSlot.nftIndex === ownerSlot.nftIndex
           && delegateSlot.fieldIndex === ownerSlot.fieldIndex
-          && delegateSlot.type === ownerSlot.type;
+          && delegateSlot.type === ownerSlot.type
+          && sameStatePrefixThroughField(
+            ownerLayout, delegateLayout, ownerSlot.nftIndex, ownerSlot.fieldIndex,
+          );
         const facadeState = isDelegatedFacade
           ? (ownerHoldsSlot ? await host.getState() : undefined)
           : await (facadeHost.implementation ?? facadeHost).getState();

@@ -2963,6 +2963,7 @@ function buildFunctionAbiMetadata(
         eventName: ei.eventName,
         eventSignature: ei.eventSignature,
         emitIndex: ei.emitIndex,
+        ...(ei.activation !== undefined && { activation: cloneExternalCallExpression(ei.activation) }),
       })),
     }),
     ...(runtimeLoopEvents.length > 0 && { runtimeLoopEvents }),

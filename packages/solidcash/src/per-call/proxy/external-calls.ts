@@ -101,6 +101,7 @@ import { lockOfIdentity } from './address-identity.js';
 import {
   EntryWriteValueAwaited, entryWriteValueKey, statedMappingWrites, writeLandsBefore, type StatedMappingWrite,
 } from './written-values.js';
+import { skippedEmits, type WriteActivationFacts } from './write-activation.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
 export interface PerCallProxyExternal {
@@ -249,6 +250,11 @@ export interface HopCallee {
   readonly origin?: HopCallOrigin;
   /** True when the plan stopped inside this frame's own calls, so it states only the calls before that point. */
   readonly truncated?: boolean;
+  /**
+   * The emit indices of the frame's entry whose condition the reach's own facts decide the body skips
+   * (`skippedEmits`): the frame lists each one's output with the empty commitment. Absent when none is.
+   */
+  readonly skippedEmits?: readonly number[];
 }
 
 /** The live facts one callee frame's own write plan is built from, kept so the write can be planned again. */
@@ -1956,6 +1962,20 @@ function calleeRecordSet(
 }
 
 /**
+ * The emits one reach's own facts decide its body skips (`HopCallee.skippedEmits`): its call data, the caller's address
+ * as `msg.sender`, the deployment's state, the nodes as the reaches before it left them, and the address the frame
+ * runs as. A reach whose sender the hop does not know decides none; each of its emits is learned from its own close.
+ */
+function reachSkippedEmits(
+  artifact: Artifact, entry: string, args: readonly FunctionArgument[], senderAddress: Uint8Array | undefined,
+  facts: WriteActivationFacts,
+): { readonly skippedEmits?: readonly number[] } {
+  if (senderAddress === undefined) return {};
+  const skipped = skippedEmits({ artifact, functionName: entry, args, senderAddress, facts });
+  return skipped.length === 0 ? {} : { skippedEmits: skipped };
+}
+
+/**
  * Places one master per reach of a direct callee, all of them in the callee deployment's one block.
  *
  * Each reach carries its own call data, so each takes a master of its own from the deployment's live pool: the
@@ -2052,6 +2072,8 @@ async function placeCalleeMasters(
       enteredBy,
       path,
       origin: { callerPath: reach.callerPath, callsiteId: reach.callsiteId, occurrence },
+      ...reachSkippedEmits(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
+        { stateValues, selfAddress: deployed.address, readMappingValue }),
     };
     // Reserve the slot before planning the callee's own calls, so a frame it reaches names this master as its
     // caller and sits after it.
@@ -2256,6 +2278,9 @@ async function placeProxiedCallee(
       enteredBy: proxyIndex,
       // The delegate frame runs the reach's entry, so its own sites are planned under the reach's path.
       path,
+      // It keeps its caller's sender, and runs on the proxy's state and nodes as the proxy.
+      ...reachSkippedEmits(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
+        { stateValues, selfAddress: proxyDeployed.address, readMappingValue }),
     };
     // Reserve the pair before planning the entry's own calls, so a frame it reaches names its own reach's
     // implementation master as its caller and sits after it.

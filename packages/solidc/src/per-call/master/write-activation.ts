@@ -16,6 +16,10 @@
  * frame fact carries (a call's result, the block's time), is not one the frame starts with, so the write is published
  * as skippable under a condition the builder cannot decide: `{ kind: 'unsupported' }`. A predicate that folds to
  * `true` is a write the body makes wherever it reaches it, which publishes none.
+ *
+ * An emit a branch guards publishes its condition the same way, on its `emits` row: the frame lists the event's
+ * output whether or not the body reaches the emit, and a skipped emit's output carries the empty commitment. Two
+ * exclusive arms that emit into one slot publish the condition either of them runs under.
  */
 
 import { IntType } from '@solidcash/utils';
@@ -38,6 +42,7 @@ import {
   DeleteLocalNode,
   DeleteStateNode,
   DoWhileNode,
+  EmitStatementNode,
   ExpressionNode,
   ExternalCallExpression,
   FieldAccessNode,
@@ -289,6 +294,22 @@ class ActivationSerializer {
     return path === undefined ? undefined : this.guardsHold(path, new Set());
   }
 
+  /**
+   * The disjunction of the conditions `sites` run under, two arms of one branch joined into the path they share, or
+   * undefined when one is not the frame's to decide.
+   */
+  activationOfAny(sites: readonly Node[]): ExternalCallExpression | undefined {
+    const paths = sites.map((site) => pathTo(this.entry.body, site));
+    if (paths.length === 0 || paths.some((path) => path === undefined)) return undefined;
+    let reached = NEVER;
+    for (const path of joinArms(paths as StatementPath[])) {
+      const taken = this.guardsHold(path, new Set());
+      if (taken === undefined) return undefined;
+      reached = either(reached, taken);
+    }
+    return reached;
+  }
+
   /** The conjunction of `path`'s guards, each read where its branch starts or its loop is entered. */
   private guardsHold(
     path: StatementPath, following: ReadonlySet<VariableDefinitionNode>,
@@ -470,4 +491,23 @@ export function perCallWriteActivation(
   const write = perCallSlotWrite(entry, slotIndex);
   const activation = write === undefined ? undefined : new ActivationSerializer(entry, constants).activationOf(write);
   return activation ?? UNDECIDED_WRITE_ACTIVATION;
+}
+
+/**
+ * The activation of a per-call body's emit at `emitIndex`, an emit some branch arm guards: the disjunction of the
+ * conditions the slot's emits run under, since exclusive arms may emit into one slot, `true` where they hold wherever
+ * the body reaches the slot (`isAlwaysActive`), or `UNDECIDED_WRITE_ACTIVATION` when one is not the frame's to decide.
+ */
+export function perCallEmitActivation(
+  entry: FunctionDefinitionNode,
+  emitIndex: number,
+  constants: ReadonlyMap<string, ExpressionNode>,
+): ExternalCallExpression {
+  const sites: Node[] = [];
+  walkInvocationAst(entry.body, (node) => {
+    if (node instanceof EmitStatementNode && node.runtimeLoopEvent === undefined && node.emitIndex === emitIndex) {
+      sites.push(node);
+    }
+  });
+  return new ActivationSerializer(entry, constants).activationOfAny(sites) ?? UNDECIDED_WRITE_ACTIVATION;
 }

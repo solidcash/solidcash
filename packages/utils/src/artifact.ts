@@ -167,6 +167,13 @@ export interface EmitAbi {
   eventName: string;
   eventSignature: string;
   emitIndex: number;
+  /**
+   * The condition a per-call emit a branch guards runs under, in a call site's `condition` language; absent for one
+   * the body makes wherever it reaches it. The frame lists the event's output either way: a builder decides it from
+   * the frame's facts and states a skipped emit's output with the empty commitment its not-taken arm closes against.
+   * `{ kind: 'unsupported' }` marks an emit whose condition those facts do not decide, learned from that close.
+   */
+  activation?: ExternalCallExpression;
 }
 
 /** One segment of the source-ordered runtime event plan. Exactly one repeat source is present. */

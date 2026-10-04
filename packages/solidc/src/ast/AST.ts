@@ -3089,6 +3089,8 @@ export interface EmitInfo {
   // itself (an inherited internal helper such as OpenZeppelin's `_approve`), leaving this metadata as the only
   // surviving record that the handler really emits the event. Overload resolution replaces it in TypeCheck.
   eventDefinition?: EventDefinitionNode;
+  /** The condition a per-call emit a branch guards runs under (`per-call/master/write-activation.ts`). */
+  activation?: ExternalCallExpression;
 }
 
 export interface RuntimeLoopEventInfo {

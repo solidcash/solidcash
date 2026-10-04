@@ -157,7 +157,9 @@ export function compositionEventLogs(
     for (const outputIndex of listed) {
       const output = outputs[outputIndex];
       const commitment = output?.token?.nft?.commitment;
-      if (output === undefined || commitment === undefined) continue;
+      // A frame lists the output of an emit its body skipped with the empty commitment, which no reached emit
+      // carries (a zero-parameter event writes a marker byte), so it is no log.
+      if (output === undefined || commitment === undefined || commitment.length === 0) continue;
       // The output's covenant names the declared event, and a commitment that does not decode against every
       // candidate is one the frame did not compute: it is not reported.
       const decoded = declaredEvents(artifact, category, output.lockingBytecode)

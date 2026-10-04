@@ -83,6 +83,7 @@ import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
   deployMaster,
+  eventCloseOf,
   eventLockingBytecode,
   eventSentinel,
   readComputedDeclaration,
@@ -93,6 +94,7 @@ import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
+import { skippedEmits } from '../proxy/write-activation.js';
 import { deploymentActivationFacts } from './activation-facts.js';
 import {
   adjacentRecordOrder, callEntryRecords, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices,
@@ -829,6 +831,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   // per emit, in emit order, at the covenant the body rebuilds; each output's commitment is the payload the body
   // computes, so the frame starts it from a sentinel the body's own comparison fails against and the derivation
   // learns what the body computed. An entry that emits nothing leaves the region to the created nodes, as before.
+  // An emit the frame's facts decide its body skips lists its output with the empty commitment its not-taken arm
+  // closes against, and a skip those facts do not decide is learned from that close.
   const eventDefinitions = new Map((artifact.events ?? []).map((definition) => [definition.signature, definition]));
   // A body that emits from a loop lists one output per event it emits, in the order it emits them.
   const emits = loopTurns.emits === undefined
@@ -841,9 +845,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const maximumCommitmentBytes = Math.max(
     stateLayout.commitmentLimit ?? 0, provider.consensusLimits?.maximumNftCommitmentBytes ?? 0, 32,
   );
-  const eventSentinels = emits.map((_emit, position) => eventSentinel(
-    category, artifact.contractName, position, maximumCommitmentBytes,
-  ));
+  const skippedEmitIndices = skippedEmits({
+    artifact, functionName, args, senderAddress: options.callerLockingBytecode, facts: activationFacts,
+  });
+  const eventSentinels = emits.map((emit, position) => (skippedEmitIndices.includes(emit.emitIndex)
+    ? new Uint8Array(0) : eventSentinel(category, artifact.contractName, position, maximumCommitmentBytes)));
   const eventIndices = emits.map((_emit, position) => layout.participantCount + position);
   const eventOutputs = (commitments: readonly (Uint8Array | undefined)[]): DraftSourceOutput[] =>
     emits.map((emit, position) => ({
@@ -1313,7 +1319,9 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   let completed: readonly FrameRequest[] = [];
   let learnedViews: readonly (Uint8Array | undefined)[] = learningCandidates.map(() => undefined);
   let learnedRetval: Uint8Array | undefined;
-  let learnedEvents: readonly (Uint8Array | undefined)[] = eventSentinels.map(() => undefined);
+  // A skipped emit's empty commitment is stated already; every other payload is the body's to hand back.
+  let learnedEvents: readonly (Uint8Array | undefined)[] = eventSentinels.map((stated) =>
+    (stated.length === 0 ? stated : undefined));
   let learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] = sendIndices.map(() => ({}));
   let learnedCallAmounts: readonly (bigint | undefined)[] = payees.map(() => undefined);
   let learnedPayees: readonly PayeeLearned[] = payees.map((_payee, index) => ({
@@ -1336,8 +1344,15 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       const learnedBefore = learnedPayees[index]!;
       const declares = (planned: Uint8Array, learned: Uint8Array | undefined): boolean =>
         bytesEqual(learned ?? planned, reading.declared);
-      const event = payeeEventSentinels[index]!.findIndex((sentinel, position) =>
-        declares(sentinel, learnedBefore.events[position]));
+      // An event's close names it by the commitment its output carries, a skipped emit's below its empty payload.
+      const eventClose = eventCloseOf(reading, payeeEventSentinels[index]!.map((sentinel, position) =>
+        learnedBefore.events[position] ?? sentinel));
+      const event = eventClose?.position ?? -1;
+      if (eventClose !== undefined && reading.declared.length === 0) {
+        return learnedPayees.map((learned, at) => (at !== index ? learned : {
+          ...learned, events: learned.events.map((known, position) => (position === event ? eventClose.payload : known)),
+        }));
+      }
       const view = payeeCandidates[index]!.findIndex((candidateView, position) =>
         declares(candidateView, learnedBefore.views[position]));
       // A send's lock is compared with the output's on top, and its amount with the output's value on top.
@@ -1437,10 +1452,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           (index === position ? Uint8Array.from(reading.computed) : view));
         continue;
       }
-      const eventPosition = eventSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));
-      if (eventPosition >= 0) {
-        learnedEvents = learnedEvents.map((view, index) =>
-          (index === eventPosition ? Uint8Array.from(reading.computed) : view));
+      // A reached emit closes its payload against the sentinel, and a skipped one the sentinel against the empty
+      // payload it computes.
+      const event = eventCloseOf(reading, eventSentinels);
+      if (event !== undefined) {
+        learnedEvents = learnedEvents.map((view, index) => (index === event.position ? event.payload : view));
         continue;
       }
       const lockPosition = sendLockSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));

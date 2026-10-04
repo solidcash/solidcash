@@ -60,7 +60,7 @@ import {
   type DraftMaster, type DraftRecordEntry, type DraftSourceOutput, type FrameRequest, type RecoverySideCars,
   type ShippedVmProgram,
 } from '../composer/index.js';
-import { readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
+import { eventCloseOf, readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
 import {
   adjacentRecordOrder, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices, orderLoopKeyArgs,
 } from '../call/entry-records.js';
@@ -78,6 +78,7 @@ import { decodeReturnValues } from '../read/index.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
 import { learnedReachedValue } from './reached-values.js';
+import { skippedEmits, type WriteActivationFacts } from './write-activation.js';
 import {
   hopEntryWrites, mappingHeadCollection, mappingNodeSlot, sharedNodeId,
   type HopEntryWrites, type LaidHopEntryWrites,
@@ -213,7 +214,7 @@ export interface PerCallProxyDeployment {
     readonly writtenRecordCommitments: readonly Uint8Array[];
     /** The commitment of the record at data NFT 0 after the entry ran, which a one-record proxy has. */
     readonly writtenRecordCommitment: Uint8Array;
-    /** The payload of each event the entry emitted, in emit order: what the entry's own body computed. */
+    /** The payload of each event output the entry listed, in emit order: what its body computed, empty where skipped. */
     readonly writtenEventCommitments: readonly Uint8Array[];
     /** The bytes the implementation frame recorded in its `retval`: what a returning entry's own body computed. */
     readonly retval: Uint8Array;
@@ -1000,25 +1001,30 @@ export async function deployPerCallProxy(
     args: options.initialize.args ?? [],
     callerLockingBytecode: options.callerLockingBytecode,
   });
+  // A write or an emit a branch guards is decided against the state the proxy's genesis mints: every field at its
+  // default but the implementation's address, and every collection empty.
+  const initializeFacts: WriteActivationFacts = {
+    stateValues: {
+      ...Object.fromEntries((implementationArtifact.stateLayout?.variables ?? []).map((variable) => [
+        variable.name, getDefaultStateValue(variable.type, implementationArtifact.stateLayout?.structs),
+      ])),
+      implementation: implementationMaster.address,
+    },
+    selfAddress: proxyMaster.address,
+    readMappingValue: liveMappingValueReader(implementationArtifact, {
+      category: proxyCategory, recordCommitments: [], chunks: [], nodesByCollection: new Map(),
+    }, implementationArtifact.structs),
+  };
   const entryWrites = hopEntryWrites({
     artifact: implementationArtifact,
     functionName: options.initialize.functionName,
     ...(initializeArgs.length === 0 ? {} : { args: initializeArgs }),
     callerLockingBytecode: options.callerLockingBytecode,
-    // A write a branch guards is decided against the state the proxy's genesis mints: every field at its default
-    // but the implementation's address, and every collection empty.
-    activationFacts: {
-      stateValues: {
-        ...Object.fromEntries((implementationArtifact.stateLayout?.variables ?? []).map((variable) => [
-          variable.name, getDefaultStateValue(variable.type, implementationArtifact.stateLayout?.structs),
-        ])),
-        implementation: implementationMaster.address,
-      },
-      selfAddress: proxyMaster.address,
-      readMappingValue: liveMappingValueReader(implementationArtifact, {
-        category: proxyCategory, recordCommitments: [], chunks: [], nodesByCollection: new Map(),
-      }, implementationArtifact.structs),
-    },
+    activationFacts: initializeFacts,
+  });
+  const skippedInitializeEmits = skippedEmits({
+    artifact: implementationArtifact, functionName: options.initialize.functionName, args: initializeArgs,
+    senderAddress: options.callerLockingBytecode, facts: initializeFacts,
   });
   // A head is minted only at genesis and a call never creates one. A delegate frame writes the proxy's records, so
   // the proxy's genesis mints the empty head of every sorted collection the implementation declares, whether or not
@@ -1122,6 +1128,7 @@ export async function deployPerCallProxy(
     ...(seed === undefined ? {} : { seed }),
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes, loopTurns.emits,
+      skippedInitializeEmits,
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.initialize.functionName),
@@ -1272,7 +1279,7 @@ interface SettledHop {
   readonly accepted: boolean;
   /** The commitment every record ends at, which the entry's own write computed. */
   readonly writtenCommitments: readonly Uint8Array[];
-  /** The payload of every event the entry emits, in emit order, which the entry's own body computed. */
+  /** The payload of every event output the entry lists, in emit order, which its body computed: empty where skipped. */
   readonly writtenEventCommitments: readonly Uint8Array[];
   /** The bytes the implementation frame recorded in its `retval`, which a returning entry's own body computed. */
   readonly retval: Uint8Array;
@@ -1473,13 +1480,14 @@ async function settleCallees(options: {
   const writeViews = new Map<string, readonly (Uint8Array | undefined)[]>(options.seed?.writeViews ?? []);
   const writeValues = new Map<string, Uint8Array>(options.seed?.writeValues ?? []);
   // Each callee's event payloads start from the sentinel the plan states there; the body's own comparison of the
-  // payload it computed against that declaration is what hands the value back.
+  // payload it computed against that declaration is what hands the value back. An emit the reach's facts decide the
+  // body skips starts from, and keeps, the empty commitment.
   const calleeEvents = new Map<string, readonly Uint8Array[]>(
     options.callees.map((callee): [string, readonly Uint8Array[]] => [
       callee.master,
       options.seed?.events.get(callee.master) ?? hopEventSentinels(
         callee.artifact, callee.entry, calleeEventCategory(options.callees, callee),
-        options.maximumCommitmentBytes,
+        options.maximumCommitmentBytes, undefined, callee.skippedEmits,
       ),
     ]).filter(([, commitments]) => commitments.length > 0),
   );
@@ -1659,19 +1667,15 @@ async function settleCallees(options: {
       }
       // A frame that emits compares each payload its own body computed against the commitment the plan states in
       // the event's output, so the same close hands the payload back. The frame's events are read after its writes,
-      // which is the order the body compares them in.
+      // which is the order the body compares them in. A skipped emit closes the commitment against its empty payload.
       const events = calleeEvents.get(callee.master) ?? [];
-      if (reading.ok && events.length > 0) {
-        const declaredAt = events.findIndex((entry) => bytesEqual(reading.declared, entry));
-        const computedAt = events.findIndex((entry) => bytesEqual(reading.computed, entry));
-        const at = declaredAt >= 0 ? declaredAt : computedAt;
-        if (at >= 0) {
-          if (trace) hopTrace(`stop callee=${callee.master} reason=learned-event at=${at}`);
-          const next = [...events];
-          next[at] = Uint8Array.from(declaredAt >= 0 ? reading.computed : reading.declared);
-          calleeEvents.set(callee.master, next);
-          continue;
-        }
+      const event = reading.ok ? eventCloseOf(reading, events) : undefined;
+      if (event !== undefined) {
+        if (trace) hopTrace(`stop callee=${callee.master} reason=learned-event at=${event.position}`);
+        const next = [...events];
+        next[event.position] = event.payload;
+        calleeEvents.set(callee.master, next);
+        continue;
       }
       // A chunkable mapping write whose value the artifact does not publish: the plan states no run, so the frame's
       // own pin stops on the chunk count its body computed, and the value and its digest are operands at that stop.
@@ -2087,16 +2091,17 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     // own computed writes, or of the events carries, and that is what names the value the entry computed: the plan
     // states a candidate for every one of them and the body compares them in the order the frame declares them, so
     // each attempt learns the first one whose computed value the plan had not stated yet. A body that writes two
-    // records and emits one event takes three attempts.
-    const learned = reading.ok
+    // records and emits one event takes three attempts. A skipped emit closes its output's commitment against the
+    // empty payload above it, which no record or write declares, so that close is read first.
+    const eventClose = reading.ok ? eventCloseOf(reading, writtenEvents) : undefined;
+    const skippedEvent = eventClose !== undefined && reading.ok && reading.declared.length === 0;
+    const learned = reading.ok && !skippedEvent
       ? writtenCommitments.findIndex((candidate) => bytesEqual(reading.declared, candidate))
       : -1;
-    const learnedExtra = reading.ok && learned < 0
+    const learnedExtra = reading.ok && !skippedEvent && learned < 0
       ? writtenExtras.findIndex((candidate) => bytesEqual(reading.declared, candidate))
       : -1;
-    const learnedEvent = reading.ok && learned < 0 && learnedExtra < 0
-      ? writtenEvents.findIndex((candidate) => bytesEqual(reading.declared, candidate))
-      : -1;
+    const learnedEvent = learned < 0 && learnedExtra < 0 ? eventClose?.position ?? -1 : -1;
     // A send's pin compares the lock and the amount the body computed with the output the plan listed for it.
     const sendsLearned = reading.ok && learned < 0 && learnedExtra < 0 && learnedEvent < 0 && options.value !== undefined
       ? learnHopSend(options.value, learnedSends, reading)
@@ -2190,7 +2195,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     } else if (learnedEvent >= 0) {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-event at=${learnedEvent}`);
       writtenEvents = writtenEvents.map((candidate, emitIndex) =>
-        (emitIndex === learnedEvent ? Uint8Array.from(reading.computed) : candidate));
+        (emitIndex === learnedEvent ? eventClose!.payload : candidate));
     } else {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-send`);
       learnedSends = sendsLearned!;
@@ -2932,16 +2937,20 @@ function hopEventOutputs(
   }));
 }
 
-/** The placeholder each of an entry's event outputs carries until the hop learns the payload it computed. */
+/**
+ * The placeholder each of an entry's event outputs carries until the hop learns the payload it computed, or the
+ * empty commitment of an emit the frame's facts decide its body skips (`skippedEmits`), which is stated outright.
+ */
 function hopEventSentinels(
   artifact: Artifact,
   functionName: string,
   category: Uint8Array,
   maximumCommitmentBytes: number,
   emits?: readonly number[],
+  skipped: readonly number[] = [],
 ): readonly Uint8Array[] {
-  return hopEmits(artifact, functionName, emits).map((_emit, position) =>
-    eventSentinel(category, artifact.contractName, position, maximumCommitmentBytes));
+  return hopEmits(artifact, functionName, emits).map((emit, position) => (skipped.includes(emit.emitIndex)
+    ? new Uint8Array(0) : eventSentinel(category, artifact.contractName, position, maximumCommitmentBytes)));
 }
 
 /**
@@ -3402,7 +3411,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
     const category = (owner ?? callee).category;
     const eventCommitments = options.calleeEventCommitments?.get(callee.master)
-      ?? hopEventSentinels(callee.artifact, callee.entry, category, maximumCommitmentBytes);
+      ?? hopEventSentinels(callee.artifact, callee.entry, category, maximumCommitmentBytes, undefined,
+        callee.skippedEmits);
     const eventOutputs = hopEventOutputs(callee.artifact, callee.entry, category, eventCommitments);
     const base = trailingCursor;
     trailingCursor += eventOutputs.length;
@@ -4657,7 +4667,7 @@ export interface PerCallProxyCallResult {
   readonly verdicts: readonly InitializeVerdict[];
   readonly accepted: boolean;
   readonly writtenCommitments: readonly Uint8Array[];
-  /** The payload of each event the entry emitted, in emit order. */
+  /** The payload of each event output the entry listed, in emit order: empty for an emit its body skipped. */
   readonly writtenEventCommitments: readonly Uint8Array[];
   /**
    * The bytes the implementation frame recorded in its `retval`, which a returning entry's own body computed.
@@ -4856,6 +4866,11 @@ export async function callPerCallProxyEntry(
     stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
     selfAddress: proxyMaster.address, senderAddress: options.callerLockingBytecode,
   });
+  // The emits a branch guards that the delegate frame's facts decide its body skips, decided as its writes are.
+  const skippedEntryEmits = skippedEmits({
+    artifact: implementationArtifact, functionName: options.functionName, args,
+    senderAddress: options.callerLockingBytecode, facts: writesRequest.activationFacts,
+  });
   // The value the call carries and the sends the entry pays, from the containers of the proxy, which holds the
   // balance: the delegate frame's `msg.value` is its caller's (V5), and its sends pay from its caller's containers.
   const hopValue = await planHopValue({
@@ -4885,6 +4900,7 @@ export async function callPerCallProxyEntry(
     ...(seed === undefined ? {} : { seed }),
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes, loopTurns.emits,
+      skippedEntryEmits,
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.functionName),

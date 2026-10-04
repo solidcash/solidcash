@@ -312,7 +312,9 @@ import {
   BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, SKIPPED_TARGET_SENTINEL, batchDerivationSlotName,
   buildBatchTargetsDerivationScript,
 } from '../per-call/master/batch-witness-derivation.js';
-import { isAlwaysActive, perCallWriteActivation } from '../per-call/master/write-activation.js';
+import {
+  isAlwaysActive, perCallEmitActivation, perCallWriteActivation,
+} from '../per-call/master/write-activation.js';
 import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
 import { genesisSpendCheck } from '../per-call/master/prologue.js';
 
@@ -9042,6 +9044,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitExternalOutStateVerification(node);
       }
       if (!this.functionHasDelegatecall && hasEventEmits) {
+        if (this.perCallMaster) this.publishPerCallEmitActivations(node);
         this.emitEventCovenantVerification(node);
       }
       // SEC-15. Reserved frame event ordinals the route has no pending emit for. Must follow the call above:
@@ -38596,7 +38599,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ENDIF, locationData);
       } else if (isConditionalEmit && graphHandlerEventWidth === 0) {
         this.emit(Op.OP_ELSE, locationData);
-        this.emitNotTakenEventSlotBinding(emitIndex, locationData);
+        if (this.perCallMaster) this.emitPerCallSkippedEventClose(emitIndex, locationData);
+        else this.emitNotTakenEventSlotBinding(emitIndex, locationData);
         this.emit(Op.OP_ENDIF, locationData);
       } else if (isConditionalEmit) {
         this.emit(Op.OP_ENDIF, locationData);
@@ -38649,6 +38653,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, locationData);
     this.emit(Op.OP_DROP, locationData);
     this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * SEC-10 in a per-call frame: a skipped emit's listed output carries the empty commitment, which the body closes
+   * against as it closes a reached emit's payload, with the empty payload above the commitment. The head proved the
+   * listed output exists, and a builder that lists it under a condition the frame's facts do not decide learns the
+   * skip from this close (`EmitAbi.activation`).
+   *
+   * Leaves the tracked stack unchanged: every value it pushes is consumed in the same span.
+   */
+  private emitPerCallSkippedEventClose(emitIndex: number, locationData: SingleLocationData): void {
+    this.emitEventOutputIndex(emitIndex, undefined, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+  }
+
+  /**
+   * Publishes on each conditional emit of a per-call entry the condition it runs under (`perCallEmitActivation`), from
+   * which a builder decides whether the frame's listed output carries the payload or the empty commitment. A
+   * constructor's emits publish none: its genesis learns each from the frame's own close, as it learns a payload.
+   */
+  private publishPerCallEmitActivations(node: FunctionDefinitionNode): void {
+    if (node.name === '__construct') return;
+    for (const info of node.emitInfos ?? []) {
+      if (!this.conditionalEmitIndices.has(info.emitIndex)) continue;
+      const activation = perCallEmitActivation(node, info.emitIndex, this.constantExpressions);
+      if (!isAlwaysActive(activation)) info.activation = activation;
+    }
   }
 
   /**

@@ -286,7 +286,8 @@ inlines it), a key label publishes a constant and a byte-changing cast of a lite
 hashes (`semantic/compileTimeKeyValue.ts`), and the admin check reads its key out of the admin node through the
 mapping reader `evalComputedKey` now takes. Served in `call/role-admin-read-key.test.ts`; the ahead replica is
 repointed at the walls past it: helpers that return a bool and emit (refused at compile time, X118), and a role
-write on a branch the body skips.
+write on a branch the body skips. The skipped write and the event beside it are served (agents GW1 and CE1, both
+publishing the condition they run under): `call/guarded-mapping-write.test.ts`, `call/guarded-event.test.ts`.
 
 **Served** (agent AH1): helpers that return a bool and emit, the library's current `_grantRole` and `_revokeRole`.
 X118 refuses a value-returning helper that emits behind OP_INVOKE, where its event would be dropped at its exit, so
@@ -295,7 +296,7 @@ desugaring that gives a multi-return helper that touches a collection that shape
 looked for a collection read, and these helpers only write and emit. It now also takes a helper that emits, in its
 body or through a function it calls. Served in `call/role-helpers-return-and-emit.test.ts` (a grant and a
 revocation with their events read back, the result discarded and returned); a grant to a holder, which neither
-writes nor emits, stays refused by the machine (a skipped write and a skipped event, agents GW1 and CE1). A helper
+writes nor emits, settles returning false (the skipped write and the skipped event, agents GW1 and CE1). A helper
 that cannot be inlined (recursive, used as a value, called where its effects cannot be hoisted) keeps X118.
 
 Replica: `role-admin-read-key.test.ts` (4 cases). The member mapping inside a struct inside a mapping is served:
@@ -458,7 +459,7 @@ today and its title says what should settle once served.
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3, retired: served (`call/state-keyed-mapping-write.test.ts`) |
 | `stored-value-keyed-write.test.ts` | 3 | 2.4: ERC721 transfer refused by name (control: mint), struct record opened plain; the rest served (`call/stored-value-keyed-write.test.ts`) |
 | `proxied-native-value.test.ts` | 1 | 2.5 served (`call/proxied-native-value.test.ts`); repointed: a send to a contract |
-| `role-admin-read-key.test.ts` | 3 | 2.6 served; repointed: returning helpers, a skipped role write |
+| `role-admin-read-key.test.ts` | 2 | 2.6 served, and the walls past it (`call/role-helpers-return-and-emit`, `call/guarded-event`): both cases settle |
 | `loop-counted-tail.test.ts` | 4 | 2.7, retired: served (`call/loop-turn-effects`, `call/proxied-native-value`) |
 | `root-reentry-receiver-hook.test.ts` | 3 | 2.8 |
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |

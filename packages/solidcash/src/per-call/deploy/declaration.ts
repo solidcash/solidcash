@@ -89,3 +89,25 @@ export function readComputedDeclaration(options: {
 export function declaresCommitment(reading: ReadDeclaration, written: Uint8Array): boolean {
   return bytesEqual(reading.declared, written);
 }
+
+/** The emit a close names, and what the body computed for it. */
+export interface EventClose {
+  /** The emit's position among the frame's listed event outputs. */
+  readonly position: number;
+  /** A reached emit's payload, or the empty payload of a skipped one. */
+  readonly payload: Uint8Array;
+}
+
+/**
+ * The emit a close names by the commitment its listed output carries in `stated`, and what the body computed for it.
+ * A reached emit closes its payload below the commitment; a skipped one closes the commitment below the empty payload
+ * it computes. An empty commitment is a skipped emit's, stated already, so it names no emit.
+ */
+export function eventCloseOf(reading: ReadDeclaration, stated: readonly Uint8Array[]): EventClose | undefined {
+  const named = (operand: Uint8Array): number =>
+    stated.findIndex((commitment) => commitment.length > 0 && bytesEqual(commitment, operand));
+  const reached = named(reading.declared);
+  if (reached >= 0) return { position: reached, payload: Uint8Array.from(reading.computed) };
+  const skipped = reading.declared.length === 0 ? named(reading.computed) : -1;
+  return skipped < 0 ? undefined : { position: skipped, payload: new Uint8Array(0) };
+}

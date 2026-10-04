@@ -1650,6 +1650,12 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   be consecutive, its head checks every one, and the body binds its `k`-th event or send at the run's first output
   plus `k` where it makes it and pins its count against the block's where it ends (`frame-tail.ts` `runSection`).
   The order a builder lists them in is published per entry (section 18, `loopEffects`).
+- **Skipped emits.** Outside a run the list holds one output per emit the body holds, reached or not. An emit a
+  branch guards that the body skips keeps its output, which carries the empty commitment, and the body closes that
+  commitment against the empty payload as it closes a reached emit's against its payload; a reached emit's is never
+  empty (a zero-parameter event carries a marker byte). Each such emit publishes the condition it runs under on its
+  `emits` row (`activation`), from which a builder states the empty commitment, or learns the skip from that close
+  where the frame's facts do not decide it.
 - **Counts.** `segCount == callCount + 1`.
 - **Exactness.** Lengths are exact, and nothing follows the last field (T33).
 

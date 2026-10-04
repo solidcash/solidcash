@@ -104,7 +104,7 @@ import {
 } from '../call/entry-records.js';
 import { PerCallComposerError } from '../composer/refusals.js';
 import { frameRevertReason } from '../composer/refusal.js';
-import { readComputedDeclaration, type DeclarationReading } from './declaration.js';
+import { eventCloseOf, readComputedDeclaration, type DeclarationReading } from './declaration.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 import { chunkRecordLockingBytecode, entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 
@@ -1401,6 +1401,13 @@ function learnDeclaration(step: LearningStep): LearnedDeclarations {
       ?? genesisReadingMessage(reading));
   }
   const { declared, computed } = reading;
+  // A skipped emit closes its output's commitment against the empty payload above it, which nothing else declares,
+  // so that close is read first; a reached emit's is read where it always was.
+  const event = eventCloseOf(reading, events);
+  const eventLearned = event === undefined ? undefined : {
+    records, events: events.map((commitment, at) => (at === event.position ? event.payload : commitment)), nodes, sideCars,
+  };
+  if (eventLearned !== undefined && declared.length === 0) return eventLearned;
   const witness = computedWitnesses.find((candidate) => bytesEqual(candidate.placeholder, declared));
   if (witness !== undefined) {
     return {
@@ -1414,12 +1421,7 @@ function learnDeclaration(step: LearningStep): LearnedDeclarations {
     learned[record] = Uint8Array.from(computed);
     return { records: learned, events, nodes, sideCars };
   }
-  const event = events.findIndex((commitment) => bytesEqual(commitment, declared));
-  if (event >= 0) {
-    const learned = [...events];
-    learned[event] = Uint8Array.from(computed);
-    return { records, events: learned, nodes, sideCars };
-  }
+  if (eventLearned !== undefined) return eventLearned;
   const node = nodes.findIndex((commitment) => bytesEqual(commitment, declared));
   if (node >= 0) {
     const learned = [...nodes];

@@ -13,10 +13,10 @@ import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedLi
  * reads out of storage), and past the library's current helpers, which return whether they changed the role and
  * emit (`_grantRole(...) internal returns (bool)`), served in `call/role-helpers-return-and-emit`.
  *
- * With void helpers the grants, revocations and renunciations settle, but a role write on a branch the body does
- * not take (revoking it again, renouncing it again) does not: the hop plans every write the entry's accesses
- * publish (`proxy/entry-writes.ts`, `planHopMappingBatches`), and an access does not say its write is guarded, so
- * the frame that skips the write is refused by the machine.
+ * With void helpers the grants, revocations and renunciations settle, and so does a role write on a branch the body
+ * does not take (revoking it again, renouncing it again): the write and the event beside it publish the condition
+ * they run under, and where the frame's facts skip them the hop keeps the node and lists the event's output with
+ * the empty commitment (`call/guarded-event`).
  *
  * The file runs only under `PER_CALL_AHEAD=1`.
  */
@@ -92,11 +92,6 @@ function metOf(outcome: Outcome<PerCallProxyCallResult>): string | undefined {
     : refusedVerdicts(outcome.result) ?? `accepted broadcast=${outcome.result.broadcast?.txid ?? 'none'}`);
 }
 
-/** The hop's words for a frame of `entry` the machine refused without a source message. */
-const unsettled = (entry: string): RegExp => new RegExp(`^the implementation's "${entry}" entry did not settle `
-  + `through the proxy: frame "implementation-master" of Guarded\\.${entry}\\(\\) at line \\d+: no source message `
-  + '\\(Program failed an OP_VERIFY operation\\.\\)$');
-
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: access-control role helpers and guarded role writes', () => {
   it('grants, revokes and renounces a role whose write the body makes (control)', async () => {
     const { world, guarded } = await chain();
@@ -109,14 +104,12 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: access-control role h
     }
   }, 600_000);
 
-  it('does not settle a role write on a branch the body does not take (should settle once served)', async () => {
+  it('settles a role write and its event on a branch the body does not take', async () => {
     const { world, guarded } = await chain();
     for (const [entry, args] of [['revokeRole', [ROLE, GRANTEE]], ['renounceRole', [OTHER_ROLE, USER_LOCK]]] as const) {
       const outcome = await enterProxied(world, guarded, entry, [...args]);
       recordMet(`role-admin-read-key/${entry}-not-held`, metOf(outcome));
-      expect(outcome.result?.broadcast).toBeUndefined();
-      expect(outcome.error?.message).toMatch(unsettled(entry));
-      expect(outcome.coinSpent).toBe(false);
+      expect(metOf(outcome)).toMatch(/^accepted broadcast=[0-9a-f]{64}$/);
     }
   }, 600_000);
 });

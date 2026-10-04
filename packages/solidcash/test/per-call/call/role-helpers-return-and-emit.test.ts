@@ -9,8 +9,7 @@ import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { eventLockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
+  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
 } from '../../../src/per-call/proxy/index.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -27,9 +26,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * helper's event where the helper's branch does. A grant to an account and a revocation settle with their event
  * read back from the broadcast, whether the entry discards the helper's result or returns it.
  *
- * A grant to an account that already holds the role takes the helper's other branch: it neither writes nor emits.
- * Both are walls of their own, a write on a branch the body skips and an event on such a branch, and the case is
- * pinned as refused until they are served.
+ * A grant to an account that already holds the role takes the helper's other branch: it neither writes nor emits,
+ * and returns false. The frame keeps the member's node and lists the event's output with the empty commitment, both
+ * decided from the frame's facts (`call/guarded-mapping-write`, `call/guarded-event`).
  */
 
 const SOURCE = [
@@ -273,22 +272,18 @@ describe('role helpers that return whether they changed the role and emit when t
     expect(await holds(world, DEFAULT_ADMIN_ROLE, ADMIN)).toBe(true);
   }, 600_000);
 
-  it('does not settle a grant to a holder, which neither writes nor emits (should settle once served)', async () => {
+  it('settles a grant to a holder, which neither writes nor emits, returning false', async () => {
     const world = await deployed();
     await settle(world, 'grantRole', [ROLE, GRANTEE]);
-    const before = (await world.network.getUtxosByTokenCategory(world.proxy)).map((utxo) => `${utxo.txid}:${utxo.vout}`);
-    const entry = await enter(world, 'grantIfNew', [ROLE, GRANTEE]);
-    const error = await entry.call.then(() => undefined, (caught: unknown) => caught);
-    // The helper's other branch returns false and makes no write and no event, but the hop plans the write the
-    // entry's access publishes and the frame lists the event, so the machine refuses the frame.
-    expect(error).toBeInstanceOf(PerCallProxyDeployError);
-    expect((error as Error).message).toMatch(new RegExp('^the implementation\'s "grantIfNew" entry did not settle '
-      + 'through the proxy: frame "implementation-master" of Roles\\.grantIfNew\\(\\) at line \\d+: no source '
-      + 'message \\(Program failed an OP_VERIFY operation\\.\\)$'));
-    expect((await world.network.getUtxosForLockingBytecode(ADMIN))
-      .some((utxo) => utxo.txid === entry.coin.txid && utxo.vout === entry.coin.vout)).toBe(true);
-    expect((await world.network.getUtxosByTokenCategory(world.proxy)).map((utxo) => `${utxo.txid}:${utxo.vout}`))
-      .toStrictEqual(before);
+    const before = (await world.network.getUtxosByTokenCategory(world.proxy)).length;
+    const result = await settle(world, 'grantIfNew', [ROLE, GRANTEE]);
+    // The helper's other branch makes no write and no event: the member's node is kept, and the event's output is
+    // listed with the empty commitment.
+    expect(result.value).toBe(false);
+    const lock = bytesToHex(eventLockingBytecode(hexToBin(world.proxy), GRANTED.signature, false));
+    expect(listedEvents(result)).toStrictEqual([`${lock}:`]);
+    // The listed event output is the category's one new UTXO: the kept node creates none.
+    expect((await world.network.getUtxosByTokenCategory(world.proxy)).length).toBe(before + 1);
     expect(await holds(world, ROLE, GRANTEE)).toBe(true);
   }, 600_000);
 });

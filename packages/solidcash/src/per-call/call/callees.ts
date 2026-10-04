@@ -47,8 +47,8 @@ import {
   type TransactionLayout,
 } from '../composer/index.js';
 import {
-  entryRecordReadUnlock, eventLockingBytecode, eventSentinel, readComputedDeclaration, stateRecordUnlockingBytecode,
-  type PerCallDeploymentSet,
+  entryRecordReadUnlock, eventCloseOf, eventLockingBytecode, eventSentinel, readComputedDeclaration,
+  stateRecordUnlockingBytecode, type PerCallDeploymentSet,
 } from '../deploy/index.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import {
@@ -179,15 +179,18 @@ function namedRecordIds(callee: HopCallee): readonly string[] {
 }
 
 /** The events one callee frame's entry emits, in emit order. */
-function emitsOf(callee: HopCallee): readonly { readonly eventSignature: string }[] {
+function emitsOf(callee: HopCallee): readonly { readonly eventSignature: string; readonly emitIndex: number }[] {
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
   return [...(abi?.emits ?? [])].sort((left, right) => left.emitIndex - right.emitIndex);
 }
 
-/** The payload each of a callee's event outputs carries until its own close hands back the one it computed. */
+/**
+ * The payload each of a callee's event outputs carries until its own close hands back the one it computed, or the
+ * empty commitment of an emit the reach's facts decide the body skips, which is stated outright.
+ */
 function calleeEventSentinels(callee: HopCallee, maximumCommitmentBytes: number): readonly Uint8Array[] {
-  return emitsOf(callee).map((_emit, position) =>
-    eventSentinel(callee.category, callee.artifact.contractName, position, maximumCommitmentBytes));
+  return emitsOf(callee).map((emit, position) => (callee.skippedEmits?.includes(emit.emitIndex)
+    ? new Uint8Array(0) : eventSentinel(callee.category, callee.artifact.contractName, position, maximumCommitmentBytes)));
 }
 
 /**
@@ -625,7 +628,8 @@ function owesValue(callee: HopCallee, values: CalleeValues): boolean {
   const payloads = values.events.get(callee.master) ?? [];
   const views = values.views.get(callee.master) ?? [];
   return (callee.returns && !values.retvals.has(callee.master))
-    || emitsOf(callee).some((_emit, position) => payloads[position] === undefined)
+    || emitsOf(callee).some((emit, position) => payloads[position] === undefined
+      && !(callee.skippedEmits?.includes(emit.emitIndex) ?? false))
     || (callee.entryWrites?.learningCandidates ?? []).some((_candidate, position) => views[position] === undefined);
 }
 
@@ -694,15 +698,14 @@ export function learnCalleeValue(options: {
       return { ...values, views: new Map([...values.views, [master, views]]) };
     }
     // An event's payload is compared against the commitment its output carries: the sentinel, or a payload learned.
+    // A skipped emit closes that commitment against the empty payload above it.
     const known = values.events.get(master) ?? [];
     const payloads = calleeEventSentinels(callee, options.maximumCommitmentBytes)
       .map((sentinel, at) => known[at] ?? sentinel);
-    const declaredEvent = payloads.findIndex((payload) => bytesEqual(reading.declared, payload));
-    const event = declaredEvent >= 0
-      ? declaredEvent : payloads.findIndex((payload) => bytesEqual(reading.computed, payload));
-    if (event >= 0) {
+    const event = eventCloseOf(reading, payloads);
+    if (event !== undefined) {
       const events = payloads.map((_payload, at) => known[at]);
-      events[event] = Uint8Array.from(declaredEvent >= 0 ? reading.computed : reading.declared);
+      events[event.position] = event.payload;
       return { ...values, events: new Map([...values.events, [master, events]]) };
     }
   }

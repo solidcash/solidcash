@@ -370,8 +370,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   plain path; keys read out of another mapping are served in `call/stored-value-keyed-write`), `proxied-native-value`
   (a send to a contract from a proxied root's body; value in and sends out through the proxy are served in
   `call/proxied-native-value`),
-  `role-admin-read-key` (a role write the body skips; the helpers that return and emit are served, and the keys in
-  `call/role-admin-read-key`), `root-reentry-receiver-hook` and `two-deployments-one-artifact`, with
+  `role-admin-read-key` (every wall served: the helpers that return and emit, the keys in `call/role-admin-read-key`,
+  and a role write and its event the body skips in `call/guarded-event`), `root-reentry-receiver-hook` and
+  `two-deployments-one-artifact`, with
   `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out
   (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, a mapping key read from the
   contract's own scalar state (`state-keyed-mapping-write`) to `call/state-keyed-mapping-write.test.ts`, an event,
@@ -411,6 +412,7 @@ listed under the table, and none of those is claimed anywhere else.
 | A record declared changed in a segment its frame's code does not write it in: a data record, another key's mapping node, a batch node outside its write's segment, or a guard shown unset between its two writes (T43, T44) | `unwritten-record-change.test.ts` (five cases), `shapes/mapping-write-beside-calls.test.ts` (five cases) and `call/root-write-skipped-call.test.ts` (a batch node past its write's segment, behind a guarded call and beside an arm that makes none) |
 | A reentrancy guard shown clear while the call it guards runs, so a frame re-entering the contract below that call would pass it: on the hop's own spend of a root behind its proxy, and on a composed callee that calls back into a guarded entry | `guard-view-across-call.test.ts` (two cases: refused at the delegate frame alone, beside the settled hop every input accepts, and at the outer frame; the honest re-entry is refused in the re-entered frame by the guard's own reason) |
 | A mapping write a branch guards declared on the side the body does not take: a node created or rewritten where the body skips the write, or a write the body makes declared skipped | `solidc/test/per-call/master/skipped-guarded-write.test.ts` (six refused beside the accepted taken and skipped declarations) and `call/guarded-mapping-write.test.ts` (a settled skip restated as a write, refused at the frame on both paths) |
+| An emit a branch guards listed on the side the body does not take: a reached emit's output with the empty commitment, a skipped emit's with a payload, or a skipped emit left unlisted; and a wrong payload | `call/guarded-event.test.ts` (four refused at the frame beside the settled spends and the faithful payload restated, behind a proxy and as a plain deployment) |
 | A standalone master whose reserved address slot is filled with an address its category does not derive | `standalone-address-slot.test.ts` (one case refused; a slot and a presented address that agree on a foreign address are accepted there, which is the residual only the deployment gate recomputes) |
 | One contract's masters split across two validators | `validator-split-view.test.ts` (one case, with a second validator input beside the first) |
 | An extra call naming an already-used signed input (the call-receipt residual) | `reused-signature.test.ts` (recorded as accepted, so adopting receipts flips it) |

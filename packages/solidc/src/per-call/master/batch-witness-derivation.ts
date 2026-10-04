@@ -305,13 +305,49 @@ class BatchTargetsDerivationBuilder {
       return;
     }
     // A skippable target's other record is either an insert's relinked predecessor, which changes, or the kept
-    // predecessor of a write the frame skipped.
+    // predecessor of a write the frame skipped. A predecessor an earlier group of the segment already left in its
+    // final form is declared kept by an insert too, so past the first group a kept record is a skip only where the
+    // record after it is not the node the insert creates.
     this.branch(() => this.deriveUpdate(target), () => {
       this.pick(`view_in0_${target}`);
       this.pick(`view_out0_${target}`);
       this.binary(Opcodes.OP_EQUAL, 'kept');
+      if (target > 0 || this.options.resume !== undefined) {
+        this.nextRecordCarriesSlot(target);
+        this.unary(Opcodes.OP_NOT, 'creates_none');
+        this.binary(Opcodes.OP_BOOLAND, 'kept');
+      }
       this.branch(() => this.deriveSkipped(target), () => this.deriveInsert(target));
     });
+  }
+
+  /**
+   * Leaves whether the record after the group's first is the node the target's insert creates: one no input holds,
+   * declared from the empty view, whose view carries the target's slot.
+   *
+   * The walk's list runs on past the segment into the rest of the block, so the bytes after the group may be another
+   * section's, of any shape: a copy is read, every field only where the bytes hold it, and anything that is not such
+   * a record reads as none.
+   */
+  private nextRecordCarriesSlot(target: number): void {
+    this.pick('records');
+    // An in, an out and the two length fields of the views.
+    this.op(Opcodes.OP_SIZE); this.num(12); this.op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_IF);
+    this.num(2); this.op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP);
+    this.raw(encodeDataPush(INDEX_NONE_BYTES)); this.op(Opcodes.OP_EQUAL, Opcodes.OP_SWAP); // [none, rest]
+    this.num(2); this.op(Opcodes.OP_SPLIT, Opcodes.OP_NIP); // out
+    this.num(4); this.op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP);
+    this.raw(encodeDataPush(new Uint8Array(4))); this.op(Opcodes.OP_EQUAL); // the empty view in: [none, rest, empty]
+    this.op(Opcodes.OP_ROT, Opcodes.OP_BOOLAND, Opcodes.OP_SWAP); // [created, rest]
+    this.num(4); this.op(Opcodes.OP_SPLIT, Opcodes.OP_NIP); // the view out's length
+    this.op(Opcodes.OP_SIZE); this.num(32); this.op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_IF);
+    this.num(32); this.op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+    // Two items stand where the copy did: the flag beneath the view's slot.
+    this.num(this.main.indexOf(`slot_${target}`) + 1); this.op(Opcodes.OP_PICK, Opcodes.OP_EQUAL);
+    this.op(Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_0, Opcodes.OP_ENDIF);
+    this.op(Opcodes.OP_BOOLAND);
+    this.op(Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_0, Opcodes.OP_ENDIF);
+    this.main[0] = 'creates';
   }
 
   /** One kept record that is not the target's node: the write was skipped, and the record proves the key absent. */

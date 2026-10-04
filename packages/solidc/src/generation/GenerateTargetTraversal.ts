@@ -314,7 +314,7 @@ import {
   buildBatchTargetsDerivationScript,
 } from '../per-call/master/batch-witness-derivation.js';
 import {
-  isAlwaysActive, perCallEmitActivation, perCallWriteActivation,
+  UNDECIDED_WRITE_ACTIVATION, isAlwaysActive, perCallEmitActivation, perCallWriteActivation,
 } from '../per-call/master/write-activation.js';
 import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
 import { genesisSpendCheck } from '../per-call/master/prologue.js';
@@ -28995,6 +28995,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
           this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
         };
+        // A per-call target whose group is declared skipped writes no node, so no link may name its slot: an equality
+        // with that slot on top is kept only where the target is not skipped.
+        const linkable = (other: number): void => {
+          if (!this.readsRecordsFromFrame || !this.perCallSkippableSlots.has(other)) return;
+          arg(`__internal__vmapBatchPredOut_${other}`); this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
+          bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_BOOLAND);
+        };
 
         for (const slot of targets) {
         // Runtime aliases have no proof input or target output. Their sentinel/hash equivalence was authenticated
@@ -29016,7 +29023,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           batchField(slot, 'next'); proofField(slot, 'next', 1); bin(Op.OP_EQUAL);
           for (const other of targets) {
             if (other === slot) continue;
-            batchField(slot, 'next'); batchField(other, 'slot'); bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
+            batchField(slot, 'next'); batchField(other, 'slot'); bin(Op.OP_EQUAL); linkable(other); bin(Op.OP_BOOLOR);
           }
           bin(Op.OP_VERIFY);
 
@@ -29059,7 +29066,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           for (const other of targets) {
             if (other === slot) continue;
             proofField(slot, 'slot', 1); batchField(other, 'slot');
-            bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
+            bin(Op.OP_EQUAL); linkable(other); bin(Op.OP_BOOLOR);
           }
           bin(Op.OP_NOTIF);
 
@@ -29096,7 +29103,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           for (const other of targets) {
             if (other === slot) continue;
             outputField(slot, 'next', 1); batchField(other, 'slot');
-            bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
+            bin(Op.OP_EQUAL); linkable(other); bin(Op.OP_BOOLOR);
           }
           bin(Op.OP_VERIFY);
           for (const other of targets) {
@@ -29126,6 +29133,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
           bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // proof commitment
           bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // predecessor output index
+          if (this.readsRecordsFromFrame && this.perCallSkippableSlots.has(slot)) {
+            bin(Op.OP_ELSE);
+            this.emitPerCallSkippedBatchTarget(slot, targets, loc);
+          }
           bin(Op.OP_ENDIF);
         }
         bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // packed batch slot/next blob
@@ -29410,6 +29421,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitRecordCommitmentRead('out', loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * Binds the one record a per-call batch target's skipped group keeps: the predecessor of a key its list does not
+   * hold.
+   *
+   * The derivation reads a group as skipped (`-2`) only from a record it declares kept, and the write site refuses
+   * the group where the write ran. Another target's group may declare the same record again: an insert relinks the
+   * predecessor its gap shares with the skipped key, and that target's own checks bind the record's end view. Where no
+   * target the batch does not skip proves from the record, the segment ends it at the view it began it at.
+   */
+  private emitPerCallSkippedBatchTarget(slot: number, targets: readonly number[], loc: SingleLocationData): void {
+    const arg = (name: string): void => this.emitPickVMapWitness(name, loc);
+    let compared = false;
+    for (const other of targets) {
+      if (other === slot) continue;
+      arg(`__internal__vmapBatchProof_${slot}`); arg(`__internal__vmapBatchProof_${other}`);
+      this.emit(Op.OP_NUMEQUAL, loc);
+      if (this.perCallSkippableSlots.has(other)) {
+        arg(`__internal__vmapBatchPredOut_${other}`); this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
+        this.emit(Op.OP_NUMNOTEQUAL, loc); this.emit(Op.OP_BOOLAND, loc);
+      }
+      if (compared) this.emit(Op.OP_BOOLOR, loc);
+      compared = true;
+    }
+    if (compared) this.emit(Op.OP_NOTIF, loc);
+    this.emitPerCallKeptProofNode(slot, loc, false);
+    if (compared) this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -43765,10 +43804,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex));
       this.conditionalSortedWriteFlagSlots.add(slotIndex);
-      // A per-call frame may skip a flagged one-slot write the body does not make wherever it reaches it, so its
-      // access publishes the condition the write runs under. A multi-slot batch declares no skipped group: a write
-      // there that did not run declares its node kept.
-      if (mayNotRun && inSingleSlotBatch) {
+      // A per-call frame may skip a flagged write the body does not make wherever it reaches it, so its access
+      // publishes the condition the write runs under. A multi-slot batch's target is published only where the frame's
+      // facts can decide it: one they cannot stays planned as written, its group the key's node.
+      if (mayNotRun && (inSingleSlotBatch || activation !== UNDECIDED_WRITE_ACTIVATION)) {
         info.activation = activation;
         this.perCallSkippableSlots.add(slotIndex);
       }

@@ -43,7 +43,6 @@ import {
   mappingChunkOutputUnavailable,
   mappingIndexUnavailable,
   mappingPredecessorMissing,
-  mappingSkippedWriteKeepsWrittenNode,
 } from './refusals.js';
 
 /** A node's commitment is a 32-byte slot followed by a 32-byte successor link, then the value tail. */
@@ -444,25 +443,31 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
   };
 
   const written: MappingWrittenNode[] = [];
-  const declared = new Set<string>();
-  const declare = (slot: Uint8Array, held: MappingNode | undefined): MappingBatchRecord => {
+  // The view each node's declarations have reached, which the next one continues from.
+  const reached = new Map<string, Uint8Array>();
+  const declare = (slot: Uint8Array, held: MappingNode | undefined, keep = false): MappingBatchRecord => {
     const key = bytesToHex(slot);
     const after = finalOf(slot, held);
-    const first = !declared.has(key);
-    if (first) {
-      declared.add(key);
+    if (!reached.has(key)) {
       written.push({ slot, existed: held !== undefined, before: held?.commitment ?? CREATE_VIEW_IN, after });
     }
-    const viewIn = held === undefined ? CREATE_VIEW_IN : first ? held.commitment : after;
+    const viewIn = held === undefined ? CREATE_VIEW_IN : reached.get(key) ?? held.commitment;
+    const viewOut = keep ? viewIn : after;
+    reached.set(key, viewOut);
     const continued = held !== undefined && (request.continuedSlots?.has(key) ?? false);
-    return { slot, existed: held !== undefined, ...(continued ? { continued: true } : {}), viewIn, viewOut: after };
+    return { slot, existed: held !== undefined, ...(continued ? { continued: true } : {}), viewIn, viewOut };
   };
   const groups = targets.map((target): MappingBatchGroup => {
     const held = findNode(nodes, target.slot);
     if (target.skipped) {
-      const kept = held ?? requirePredecessor(nodes, target.slot);
-      if (!bytesEqual(finalOf(kept.slot, kept), kept.commitment)) throw mappingSkippedWriteKeepsWrittenNode(kept.slot);
-      return { slot: target.slot, existed: held !== undefined, skipped: true, records: [declare(kept.slot, kept)] };
+      // The key's own node is declared in its final form, which an insert of another target may relink. The
+      // predecessor proving an absent key absent is declared kept where the groups before it left it, and a later
+      // group that relinks it continues from that view.
+      if (held !== undefined) {
+        return { slot: target.slot, existed: true, skipped: true, records: [declare(target.slot, held)] };
+      }
+      const predecessor = requirePredecessor(nodes, target.slot);
+      return { slot: target.slot, existed: false, skipped: true, records: [declare(predecessor.slot, predecessor, true)] };
     }
     if (held !== undefined) {
       return { slot: target.slot, existed: true, records: [declare(target.slot, held)] };

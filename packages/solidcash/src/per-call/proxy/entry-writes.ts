@@ -1365,19 +1365,31 @@ function chunkKey(slot: Uint8Array, index: number): string {
   return `${bytesToHex(slot)}#${index}`;
 }
 
-/** The batch plan with each value-dependent node's end view replaced by the commitment the body computed. */
+/**
+ * The batch plan with each value-dependent node's end view replaced by the commitment the body computed.
+ *
+ * A node's declarations carry on from one another: the first that writes the node ends at the learned view, and
+ * every later one starts and ends there, the kept record of a skipped write whose absent key the node precedes among
+ * them. Such a record declared before any write of the node keeps the view the node began with.
+ */
 function withLearnedViews(
   plan: MappingBatchPlan,
   learnedBySlot: ReadonlyMap<string, Uint8Array>,
 ): MappingBatchPlan {
   const learnedOf = (slot: Uint8Array): Uint8Array | undefined => learnedBySlot.get(bytesToHex(slot));
+  const written = new Set<string>();
   return {
     ...plan,
     groups: plan.groups.map((group) => ({
       ...group,
       records: group.records.map((record) => {
         const learned = learnedOf(record.slot);
-        return learned === undefined ? record : { ...record, viewOut: learned };
+        if (learned === undefined) return record;
+        const key = bytesToHex(record.slot);
+        if (written.has(key)) return { ...record, viewIn: learned, viewOut: learned };
+        if (group.skipped === true) return record;
+        written.add(key);
+        return { ...record, viewOut: learned };
       }),
     })),
     written: plan.written.map((node) => {

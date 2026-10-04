@@ -1127,6 +1127,14 @@ function planHopCollectionBatch(
         + `${access.operations.join('/')}, and this hop plans one write per target`,
       );
     }
+    // A swap-remove write whose key meets that of the delete following it is a no-op the body skips: the delete
+    // writes the entry, and the write's group keeps the key's predecessor.
+    const owner = access.aliasCondDeleteSlot === undefined ? undefined
+      : targets.find((target) => target.access.slotIndex === access.aliasCondDeleteSlot);
+    if (owner !== undefined && owner.keys.length === keys.length
+      && owner.keys.every((key, at) => bytesEqual(key, keys[at]!))) {
+      return { keys: [...keys], value: new Uint8Array(0), stated: false, skipped: true };
+    }
     // A write a branch guards is declared only where its condition holds on the frame's facts: a skipped one keeps
     // its node, or its absent key's predecessor. One those facts do not decide is planned as written, its node's end
     // view learned from whichever check the body stops at, the write's close or the arm not taken's; a node it would

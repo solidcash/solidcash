@@ -980,7 +980,7 @@ function derivableTargetBatches(
       const access = accesses.find((candidate) => candidate.slotIndex === slot);
       if (access === undefined) return undefined;
       if (!isOneWrite(access.operations)) return undefined;
-      if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
+      if (access.inLoop === true || aliasesOutsideBatch(access, batch)
         || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
     }
     derivable.push({
@@ -1092,6 +1092,17 @@ function readsOutsideBatch(
 }
 
 /**
+ * True for a write a `delete` of another key of its mapping follows (swap-and-pop's `m[last] = v; delete m[k]`)
+ * where that delete is no target of the same batch. Where it is, the frame declares the write skipped wherever the
+ * two keys meet at run time, and the delete wins as on the EVM.
+ */
+function aliasesOutsideBatch(
+  access: NonNullable<FunctionDefinitionNode['entryAccesses']>[number], batch: SortedBatch,
+): boolean {
+  return access.aliasCondDeleteSlot !== undefined && !batch.slotIndices.includes(access.aliasCondDeleteSlot);
+}
+
+/**
  * Whether an access is one write, optionally beside the read the write's own expression performs.
  *
  * A read of a sorted entry and the write of that same entry are one transition on one node: the frame declares one
@@ -1190,7 +1201,8 @@ function unsupportedBatchWriteShape(
     if (access.inLoop === true) {
       return `the body writes a mapping at slot ${slot} in a loop, so the records it declares are not a fixed set`;
     }
-    if (access.aliasCondDeleteSlot !== undefined || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) {
+    const batch = batches.find((candidate) => candidate.slotIndices.includes(slot))!;
+    if (aliasesOutsideBatch(access, batch) || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) {
       return `the body writes a mapping at slot ${slot} that can alias another target at run time, so its record `
         + 'is not fixed';
     }

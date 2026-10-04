@@ -25387,7 +25387,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. New value v at the bottom of the working area - kept tracked, consumed at the end. An int is BIN2NUM-
     // normalized to a minimal number (matches SDK bigIntToVmNumber); a bytesN value is CAT'd into the tail verbatim.
+    // A per-call swap-remove write's value is emitted one scope deeper, where an identifier is picked rather than
+    // rolled: the alias arm above skips it, so a last use rolled here would leave that arm a frame the other does not.
+    const aliasArm = aliasOwner !== undefined && this.readsRecordsFromFrame;
+    if (aliasArm) this.scopeDepth += 1;
     emitValue();
+    if (aliasArm) this.scopeDepth -= 1;
     if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
     // The body's last write to the entry, with a read of it still ahead: the read sees the value written here.
     if (mayKeepValue && (this.sortedReadsAhead.get(slotIndex) ?? 0) > 0
@@ -28941,7 +28946,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return owner !== undefined && targets.includes(owner);
       });
       const aliasOwner = aliasWrite === undefined ? undefined : this.entrySlots[aliasWrite].aliasCondDeleteSlot;
-      if (aliasWrite !== undefined && aliasOwner !== undefined) {
+      // A per-call frame takes the general arm for a swap-remove pair too: where the keys meet, the write is a no-op
+      // its frame declares skipped, as any skipped target.
+      if (aliasWrite !== undefined && aliasOwner !== undefined && !this.readsRecordsFromFrame) {
         const fixedField = (field: 'slot' | 'next'): void => commitmentField(() => {
           this.emitFixedEntryInputIndex(aliasOwner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
         }, field);
@@ -29266,7 +29273,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.readsRecordsFromFrame && this.conditionalSortedBatchFlags.has(batchRepr)) {
         const flagName = GenerateTargetTraversalWithLocation.condSortedBatchFlagName(batchRepr);
         const flagIndex = this.getStackIndex(flagName, true);
-        const generalArm = targets.length > 1 && !batch.linear && (aliasWrite === undefined || aliasOwner === undefined);
+        const generalArm = targets.length > 1 && !batch.linear;
         const unbound = [...targets].sort((a, b) => a - b).filter((slot) => !generalArm
           || !this.conditionalSortedWriteFlagSlots.has(slot)
           || this.getStackIndex(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot), true) < 0);
@@ -29468,7 +29475,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * second write takes the first's result, and two inserts of one key created two nodes. The direct convention's
    * dense rows refuse such a pair by their strict order; here the targets' slot operands, the hashes of their
    * run-time keys, are compared pairwise where the batch ran. A conditional batch that did not run keeps every node
-   * it spends, and keys that differ in a literal never agree.
+   * it spends, and keys that differ in a literal never agree. A target declared skipped writes nothing, so it meets
+   * another's key freely: a swap-remove write whose key meets its delete's is a no-op, and the delete wins.
    */
   private emitPerCallDistinctBatchTargets(
     node: FunctionDefinitionNode, targets: readonly number[], loc: SingleLocationData,
@@ -29492,6 +29500,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (ran !== undefined) {
           this.emitPickTrackedFromBottom(ran, loc);
           this.emit(Op.OP_BOOLAND, loc);
+        }
+        // A target declared skipped names no node of its own: the other target alone writes the entry.
+        for (const member of [slot, other]) {
+          if (!this.perCallSkippableSlots.has(member)) continue;
+          this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${member}`, loc);
+          this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
+          this.emit(Op.OP_NUMNOTEQUAL, loc); this.emit(Op.OP_BOOLAND, loc);
         }
         this.emit(Op.OP_NOT, loc);
         this.emit(Op.OP_VERIFY, loc);
@@ -43931,8 +43946,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // An invoked subroutine cannot set this frame's flag.
       if (invokedWrites.has(slotIndex)) continue;
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
-      // Alias writes carry their own key-inequality gate.
-      if (info.aliasCondDeleteSlot !== undefined || (info.runtimeAliasPriorSlots?.length ?? 0) > 0) continue;
+      // Alias writes carry their own key-inequality gate; a per-call master's swap-remove write is a target as any.
+      if ((info.aliasCondDeleteSlot !== undefined && !this.perCallMaster)
+        || (info.runtimeAliasPriorSlots?.length ?? 0) > 0) continue;
       if (this.collectionDefinitions.find((c) => c.name === info.collection)?.sorted !== true) continue;
       const inSingleSlotBatch = node.sortedBatchInfo?.some(
         (batch) => batch.slotIndices.length === 1 && batch.slotIndices[0] === slotIndex,
@@ -43961,6 +43977,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (mayNotRun && (inSingleSlotBatch || activation !== UNDECIDED_WRITE_ACTIVATION)) {
         info.activation = activation;
         this.perCallSkippableSlots.add(slotIndex);
+      }
+    }
+    // A per-call swap-remove write is a no-op wherever its key meets the delete of its batch that follows it, so its
+    // frame may declare it skipped there, whether a branch guards it or not.
+    if (this.perCallMaster && node.name !== '__construct') {
+      for (const batch of node.sortedBatchInfo ?? []) {
+        for (const slot of batch.slotIndices) {
+          const owner = this.entrySlots[slot]?.aliasCondDeleteSlot;
+          if (owner !== undefined && batch.slotIndices.includes(owner)) this.perCallSkippableSlots.add(slot);
+        }
       }
     }
   }

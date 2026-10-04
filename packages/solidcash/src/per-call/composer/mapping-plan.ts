@@ -411,11 +411,14 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
     value: request.encodeValue(write.value),
     skipped: write.skipped === true,
   }));
-  const seen = new Set<string>();
+  // A slot two writes name would be written twice. A skipped write writes nothing, so its key may meet a written
+  // one's, as a swap-remove write's meets the delete that follows it: the delete writes the entry.
+  const writtenSlots = new Set<string>();
   for (const target of targets) {
+    if (target.skipped) continue;
     const key = bytesToHex(target.slot);
-    if (seen.has(key)) throw mappingBatchRepeatsSlot(target.slot);
-    seen.add(key);
+    if (writtenSlots.has(key)) throw mappingBatchRepeatsSlot(target.slot);
+    writtenSlots.add(key);
   }
 
   // Each insert's predecessor in the original list, and the inserts every predecessor takes, lowest first.
@@ -462,12 +465,15 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
     if (target.skipped) {
       // The key's own node is declared in its final form, which an insert of another target may relink. The
       // predecessor proving an absent key absent is declared kept where the groups before it left it, and a later
-      // group that relinks it continues from that view.
-      if (held !== undefined) {
+      // group that relinks it continues from that view; so is the predecessor of a key another write rewrites.
+      if (held !== undefined && !writtenSlots.has(bytesToHex(target.slot))) {
         return { slot: target.slot, existed: true, skipped: true, records: [declare(target.slot, held)] };
       }
       const predecessor = requirePredecessor(nodes, target.slot);
-      return { slot: target.slot, existed: false, skipped: true, records: [declare(predecessor.slot, predecessor, true)] };
+      return {
+        slot: target.slot, existed: held !== undefined, skipped: true,
+        records: [declare(predecessor.slot, predecessor, true)],
+      };
     }
     if (held !== undefined) {
       return { slot: target.slot, existed: true, records: [declare(target.slot, held)] };

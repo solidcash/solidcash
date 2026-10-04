@@ -1939,6 +1939,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * by the tracked name of the copy kept until the end (`emitPerCallDynamicOriginChecks`).
    */
   private perCallDynamicOrigins = new Map<string, string>();
+  /** The dynamic variables whose copy the run census compared with the run the last segment begins with. */
+  private perCallDynamicOriginsCompared = new Set<string>();
   private valueChunkTrailingCountActive = false;
   private static readonly VALUE_CHUNK_TRAILING_COUNT = '__internal__valueChunkTrailingCount';
   private runtimeLoopEntryInputCountActive = false;
@@ -7879,6 +7881,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
     this.perCallDynamicOrigins = new Map();
+    this.perCallDynamicOriginsCompared = new Set();
     this.valueChunkTrailingCountActive = false;
     this.runtimeLoopEntryInputCountActive = false;
     this.runtimeLoopEntryJournalCountActive = false;
@@ -9114,8 +9117,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (w) this.coSpendPreservedDynValues.add(w.valueStackName);
         }
       }
-      // A per-call frame's dynamic write pre-allocated before a call: its run begins the last segment as it was read.
-      if (this.perCallDynamicOrigins.size > 0) this.emitPerCallDynamicOriginChecks(node);
       // Dynamic-storage writes: verify trailing chunk outputs (and consume old chunk inputs).
       // Local dynamic writes on a DELEGATE impl (Marketplace.jobs) must still verify even when the
       // function also contains nested delegatecalls — otherwise only the SDK layout is constrained.
@@ -9123,6 +9124,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && (!this.functionHasDelegatecall || this.currentFunctionIsDelegate)) {
         this.emitDynamicWriteVerification(node);
       }
+      // A per-call frame's dynamic write pre-allocated before a call: its run begins the last segment as it was read.
+      if (this.perCallDynamicOrigins.size > 0) this.emitPerCallDynamicOriginChecks(node);
       if (!this.functionHasDelegatecall && (node.sortedBatchInfo?.length ?? 0) > 0) {
         this.emitGuardedSortedBatchTransitionVerification(node);
       }
@@ -11421,19 +11424,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The frame's code reads the value where it pre-allocates the write, and an arm that does not run the write pins
    * that value back. A frame that re-enters this contract during the call and rewrites the value leaves the last
    * segment beginning at its own run, which the pin would write back over: the change is lost, as a write that did
-   * run but was pinned past the call loses it too. Read from the last segment's own declaration, the run must be the
-   * one the frame read, and each copy leaves the stack here.
+   * run but was pinned past the call loses it too. The run census compares the run the last segment begins with to
+   * the copy record by record (`emitPerCallChunkRunCensus`); a run it did not take is read from the last segment's
+   * own declaration here instead. Each copy leaves the stack here.
    */
   private emitPerCallDynamicOriginChecks(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     for (const [name, origin] of this.perCallDynamicOrigins) {
-      const sv = this.stateVariables.find((variable) => variable.name === name)!;
-      this.emitDynamicReadLoop(sv, loc);
-      this.emit(encodeInt(BigInt(this.getStackIndex(origin))), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.pushToStack('(dyn_origin)');
-      this.emit(Op.OP_EQUALVERIFY, loc);
-      this.popFromStack(2);
+      if (!this.perCallDynamicOriginsCompared.has(name)) {
+        const sv = this.stateVariables.find((variable) => variable.name === name)!;
+        this.emitDynamicReadLoop(sv, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex(origin))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.pushToStack('(dyn_origin)');
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        this.popFromStack(2);
+      }
       const index = this.getStackIndex(origin);
       this.emit(encodeInt(BigInt(index)), loc);
       this.emit(Op.OP_ROLL, loc);
@@ -11441,6 +11447,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(index);
     }
     this.perCallDynamicOrigins = new Map();
+    this.perCallDynamicOriginsCompared = new Set();
+  }
+
+  /**
+   * Leaves the commitment of a dynamic value's chunk `i`, `pushdata(i) ++ pushdata(slice)` with the slice the value's
+   * bytes from `i * 120`, at most 120 of them, as the write loop builds each chunk it pins. `value` and `index` are
+   * tracked names; pushes one tracked item.
+   */
+  private emitChunkCommitmentOf(value: string, index: string, loc: SingleLocationData): void {
+    const CHUNK = 120;
+    this.emit(encodeInt(BigInt(this.getStackIndex(index))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(chunk_commitment)');
+    this.emitPushdataEncode(new IntType(false, 32), loc);
+    this.stack[0] = '(chunk_commitment)';
+    this.emitPickCompilerRouteFrameValue(value, loc);
+    this.pushToStack('(chunk_slice)');
+    this.emit(encodeInt(BigInt(this.getStackIndex(index))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(CHUNK)), loc);
+    this.emit(Op.OP_MUL, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(BigInt(CHUNK)), loc);
+    this.emit(Op.OP_MIN, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitPushdataEncode(new BytesType(), loc);
+    this.stack[0] = '(chunk_slice)';
+    this.emit(Op.OP_CAT, loc);
+    this.popFromStack();
   }
 
   /**
@@ -35457,6 +35495,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * declaration of the data record starts from. With `closesSegment` the segment declares nothing past the run, so
    * no chunk is minted that a later read could take for the value's own. The run's width, its record count, is left
    * tracked as `(dyn_run_width)`.
+   *
+   * A value whose write the frame pre-allocated before a call keeps the value it read there (`perCallDynamicOrigins`),
+   * which the run must still be where the segment begins: the header is its length and each chunk consumed is its
+   * chunk, so a frame that rewrote the value during the call is refused rather than written over.
    */
   private emitPerCallChunkRunCensus(options: {
     readonly sv: StateVariableNode;
@@ -35472,7 +35514,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
 
     // The chunk count the value held when the segment began, from the header the segment declares it starts at.
-    this.emitSpentChunkCount(sv, '(dyn_run_old)', loc);
+    const origin = this.perCallDynamicOrigins.get(sv.name);
+    if (origin === undefined) {
+      this.emitSpentChunkCount(sv, '(dyn_run_old)', loc);
+    } else {
+      // The header is the length of the value the frame read, whose chunks the loop below compares.
+      const CHUNK = 120;
+      const previousReadSegment = this.perCallReadSegment;
+      this.perCallReadSegment = this.perCallSegmentIndex;
+      this.emitReadDynamicLen(sv, '(dyn_run_old)', loc);
+      this.perCallReadSegment = previousReadSegment;
+      pick(origin);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(BigInt(CHUNK)), loc);
+      this.emit(Op.OP_DIV, loc);
+      this.perCallDynamicOriginsCompared.add(sv.name);
+    }
     // The run's width covers both versions: the old chunks consumed and the new ones created.
     pick('(dyn_run_old)');
     pick('(dyn_nnew)', 1);
@@ -35508,10 +35570,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_LESSTHAN, loc);
     this.emit(Op.OP_IF, loc);
     // A chunk of the value the segment began with: its declared view is chunk i, and it is consumed.
-    this.emitPushdataDecode(new IntType(false, 32), loc); // [..., in, out, chunkIndex, rest]
-    this.emit(Op.OP_DROP, loc);
-    pick('(dyn_run_i)', 3);
-    this.emit(Op.OP_EQUALVERIFY, loc); // [..., in, out]
+    if (origin === undefined) {
+      this.emitPushdataDecode(new IntType(false, 32), loc); // [..., in, out, chunkIndex, rest]
+      this.emit(Op.OP_DROP, loc);
+      pick('(dyn_run_i)', 3);
+      this.emit(Op.OP_EQUALVERIFY, loc); // [..., in, out]
+    } else {
+      // The chunk the value the frame read holds at i, whose own commitment names the index.
+      this.pushToStack('(dyn_run_in)');
+      this.pushToStack('(dyn_run_out)');
+      this.pushToStack('(dyn_run_view)');
+      this.emitChunkCommitmentOf(origin, '(dyn_run_i)', loc);
+      this.emit(Op.OP_EQUALVERIFY, loc); // [..., in, out]
+      this.popFromStack(4);
+    }
     this.emit(Op.OP_SWAP, loc); // [..., out, in]
     // A chunk past the written value's own is consumed with no successor: the output at its input carries none of
     // the contract's records, so a segment that held it kept there cannot carry it on past the run.

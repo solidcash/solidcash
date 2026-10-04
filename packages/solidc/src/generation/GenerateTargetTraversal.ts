@@ -1411,10 +1411,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * True for a body whose calls vary and whose walk stops somewhere (`perCallFieldWalkStops`). Past that point
    * `perCallStaleWrites` decides alone, and it is one answer for paths that made different calls since a field's
    * write: a field a call closed on one of them would be rebuilt from the value written before that call, over the
-   * change a frame re-entering this one made below it. Such a body reads every pending field again after each call
-   * (`emitPerCallFieldsReread`), so none is ever closed where the code runs, and the set is right on every path.
+   * change a frame re-entering this one made below it. Such a body decides its pending fields itself instead: one
+   * the body's own sequence wrote where every path had made the same calls is current exactly where the run has
+   * made no call since (`perCallFieldsWrittenAt`), and every other one is held current on every path, read again
+   * after each call (`emitPerCallHeldFieldsReread`).
    */
   private perCallFieldsAlwaysCurrent = false;
+  /**
+   * The pending fields the body's own sequence wrote where every path had made the same number of calls, with that
+   * number, and has not written since. A field's slot holds its value exactly where the run's calls-made count is
+   * still that number, and the segment's declaration holds it everywhere else, so no call reads it again. A construct
+   * that runs on some paths only and writes such a field holds it first (`emitPerCallFieldsHeldThrough`).
+   */
+  private perCallFieldsWrittenAt = new Map<string, number>();
+  /** The fewest and the most calls the run can have made where the code being emitted runs; `most` may be unbounded. */
+  private perCallCallsLeast = 0;
+  private perCallCallsMost = 0;
+  /**
+   * Set inside a switch or a lazily evaluated operand, whose arms are emitted one after another although each runs
+   * from the same point: a call there does not raise the fewest calls made past it.
+   */
+  private perCallCallsLeastFrozen = 0;
+  /** The state writes in the body's own sequence of statements, which every path that reaches the next one made. */
+  private perCallSequentialWrites = new Set<Node>();
   /** The sends whose call into a contract the body makes where the source sends, so its end does not make it again. */
   private perCallValueCallsAtSource = new Set<number>();
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
@@ -7845,6 +7864,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallFieldSegments = undefined;
     this.perCallReachedSegments = new Set([0]);
     this.perCallFieldsAlwaysCurrent = false;
+    this.perCallFieldsWrittenAt = new Map();
+    this.perCallCallsLeast = 0;
+    this.perCallCallsMost = 0;
+    this.perCallCallsLeastFrozen = 0;
+    this.perCallSequentialWrites = new Set();
     this.perCallValueCallsAtSource = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
@@ -8584,6 +8608,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.perCallReachedSegments = new Set([0]);
     }
     this.perCallFieldsAlwaysCurrent = this.perCallCallsMadeActive && this.perCallFieldWalkStops(node.body);
+    if (this.perCallFieldsAlwaysCurrent) this.perCallSequentialWrites = this.perCallSequentialWritesOf(node.body);
     // A body that emits, sends or hashes inside a loop binds each where it makes it, at the position its count of
     // them names, so it carries the counts from its start, before its own control flow, as it carries its calls.
     const looped = this.perCallMaster && !this.isDefineSubTraversal ? loopEffectKinds(node) : new Set<string>();
@@ -10131,9 +10156,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. Evaluate condition and branch (existing logic)
     node.condition = this.visit(node.condition);
+    // Read with the condition still beneath it.
+    this.emitPerCallFieldsHeldThrough(node, node, locationData);
     this.popFromStack();
-    // Each arm runs from here, so the fields' segments are restored for the second and joined past the branch.
+    // Each arm runs from here, so the fields' segments are restored for the second and joined past the branch, and
+    // so are the calls the run can have made.
     const fieldsAtBranch = this.perCallFieldSnapshot();
+    const callsAtBranch = this.perCallCallsSnapshot();
     // So is a fixed-calls body's stale set, which must hold on both paths past the branch: an arm that rejoins reads
     // again each field it leaves closed where the other path can leave it current (`perCallFixedFields`).
     const staleAtBranch = this.perCallFixedFields() ? new Set(this.perCallStaleWrites) : undefined;
@@ -10201,6 +10230,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const segmentAfterIf = this.perCallSegmentIndex;
       const ordinalAfterIf = this.perCallOrdinal;
       const fieldsAfterIf = this.perCallFieldSnapshot();
+      const callsAfterIf = this.perCallCallsSnapshot();
 
       // Representative post-branch stack. When one branch aborts via revert its stack is
       // irrelevant (execution never reaches the code after the branch on that path), so the
@@ -10217,6 +10247,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.perCallSegmentIndex = segmentBeforeBranch;
         this.perCallOrdinal = ordinalBeforeBranch;
         this.perCallFieldRestore(fieldsAtBranch);
+        [this.perCallCallsLeast, this.perCallCallsMost] = callsAtBranch;
         if (staleAtBranch !== undefined) this.perCallStaleWrites = new Set(staleAtBranch);
         node.elseBlock = this.visit(node.elseBlock);
         staleAfterElse = settleElsePath(staleAfterIf, () => {});
@@ -10232,6 +10263,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (staleAtBranch !== undefined) this.perCallFixedFieldsJoin(node, staleAfterIf, staleAfterElse);
       this.perCallFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
+      this.perCallCallsAfterBranch(node, callsAtBranch, callsAfterIf);
 
       const endLocationData = {
         location: node.elseBlock ? node.elseBlock.location : node.ifBlock.location,
@@ -10249,6 +10281,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const segmentAfterIf = this.perCallSegmentIndex;
       const ordinalAfterIf = this.perCallOrdinal;
       const fieldsAfterIf = this.perCallFieldSnapshot();
+      const callsAfterIf = this.perCallCallsSnapshot();
       this.removeScopedVariables(stackDepth, node.ifBlock);
       // A branch must leave the tracked stack at the height it found it, or every later read is compiled
       // against the wrong shape: the else arm below STARTS from this arm's model, and so does the code after
@@ -10272,6 +10305,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.perCallSegmentIndex = segmentBeforeBranch;
         this.perCallOrdinal = ordinalBeforeBranch;
         this.perCallFieldRestore(fieldsAtBranch);
+        [this.perCallCallsLeast, this.perCallCallsMost] = callsAtBranch;
         if (staleAtBranch !== undefined) this.perCallStaleWrites = new Set(staleAtBranch);
         node.elseBlock = this.visit(node.elseBlock);
         this.joinPerCallPosition(node, segmentAfterIf, ordinalAfterIf);
@@ -10291,6 +10325,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (staleAtBranch !== undefined) this.perCallFixedFieldsJoin(node, staleAfterIf, staleAfterElse);
       this.perCallFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
+      this.perCallCallsAfterBranch(node, callsAtBranch, callsAfterIf);
 
       const endLocationData = {
         location: node.elseBlock ? node.elseBlock.location : node.ifBlock.location,
@@ -10316,6 +10351,77 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(this.blockEndsInFailure(node.ifBlock) ? [] : [afterIf]),
       ...(node.elseBlock !== undefined && this.blockEndsInFailure(node.elseBlock) ? [] : [afterElse]),
     ]);
+  }
+
+  /** The fewest and the most calls the run can have made where the code being emitted runs. */
+  private perCallCallsSnapshot(): readonly [least: number, most: number] {
+    return [this.perCallCallsLeast, this.perCallCallsMost];
+  }
+
+  /** True when `node` reaches a call that counts toward the run's calls made, or a send that may make one. */
+  private perCallReachesCountedCall(node: Node): boolean {
+    let reaches = false;
+    walkInvocationAst(node, (child) => {
+      if (child instanceof ExternalFunctionCallNode || isDirectOwnerTransferNode(child)) reaches = true;
+    });
+    return reaches;
+  }
+
+  /**
+   * Enters code that runs on some paths only and whose arms are emitted from one starting point (a switch, or an
+   * operand evaluated lazily): a call there neither raises the fewest calls made nor leaves the most bounded.
+   */
+  private perCallEnterLazyCalls(scope: Node): { readonly at: readonly [number, number]; readonly calls: boolean } {
+    const at = this.perCallCallsSnapshot();
+    const calls = this.perCallReachesCountedCall(scope);
+    if (calls) this.perCallCallsMost = Infinity;
+    this.perCallCallsLeastFrozen += 1;
+    return { at, calls };
+  }
+
+  /** Leaves code `perCallEnterLazyCalls` entered: the fewest calls made are those before it. */
+  private perCallLeaveLazyCalls(entered: { readonly at: readonly [number, number]; readonly calls: boolean }): void {
+    this.perCallCallsLeastFrozen -= 1;
+    [this.perCallCallsLeast, this.perCallCallsMost] = entered.at;
+    if (entered.calls) this.perCallCallsMost = Infinity;
+  }
+
+  /**
+   * A loop or a switch in a body whose fields are always current is entered holding each dated field it writes
+   * (`emitPerCallFieldsHeldThrough`). Its turns or arms run from its start, so past it the run has made at least the
+   * calls made before it, and with a call inside, any number more.
+   */
+  visit(node: Node): Node {
+    if (!this.perCallFieldsAlwaysCurrent || !(node instanceof WhileNode || node instanceof DoWhileNode
+      || node instanceof CollectionIterationNode || node instanceof SwitchNode)) return super.visit(node);
+    this.emitPerCallFieldsHeldThrough(node, node, { location: node.location, positionHint: PositionHint.START });
+    if (node instanceof SwitchNode) {
+      const entered = this.perCallEnterLazyCalls(node);
+      const visited = super.visit(node);
+      this.perCallLeaveLazyCalls(entered);
+      return visited;
+    }
+    const at = this.perCallCallsSnapshot();
+    const calls = this.perCallReachesCountedCall(node);
+    if (calls) this.perCallCallsMost = Infinity;
+    const visited = super.visit(node);
+    [this.perCallCallsLeast, this.perCallCallsMost] = at;
+    if (calls) this.perCallCallsMost = Infinity;
+    return visited;
+  }
+
+  /** The calls the run can have made past a branch: the fewest and the most over its arms that fall through. */
+  private perCallCallsAfterBranch(
+    node: BranchNode, atBranch: readonly [number, number], afterIf: readonly [number, number],
+  ): void {
+    const afterElse = node.elseBlock === undefined ? atBranch : this.perCallCallsSnapshot();
+    const paths = [
+      ...(this.blockEndsInFailure(node.ifBlock) ? [] : [afterIf]),
+      ...(node.elseBlock !== undefined && this.blockEndsInFailure(node.elseBlock) ? [] : [afterElse]),
+    ];
+    if (paths.length === 0) return;
+    this.perCallCallsLeast = Math.min(...paths.map(([least]) => least));
+    this.perCallCallsMost = Math.max(...paths.map(([, most]) => most));
   }
 
   /**
@@ -15348,9 +15454,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.left = this.visit(node.left);
     // Read with the condition still beneath it.
     this.perCallFieldsCurrentThrough(node.right, node, startLoc);
+    this.emitPerCallFieldsHeldThrough(node.right, node, startLoc);
     this.popFromStack(); // condition consumed by OP_IF
     // The right operand runs on some paths only, which the fields' segments do not follow where it calls or writes.
     this.perCallFieldsLostIn(node.right);
+    const lazy = this.perCallEnterLazyCalls(node.right);
     this.emit(Op.OP_IF, startLoc);
     const snapshot = [...this.stack];
     if (node.operator === BinaryOperator.AND) {
@@ -15367,6 +15475,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.right = this.visit(node.right);
     }
     this.emit(Op.OP_ENDIF, endLoc);
+    this.perCallLeaveLazyCalls(lazy);
     return node;
   }
 
@@ -15853,10 +15962,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.condition = this.visit(node.condition);
     // Read with the condition still beneath it.
     this.perCallFieldsCurrentThrough(node, node, locationData);
+    this.emitPerCallFieldsHeldThrough(node, node, locationData);
     this.popFromStack();
     // An arm that calls or writes a field runs on some paths only, which the fields' segments do not follow.
     this.perCallFieldsLostIn(node.ifTrue);
     this.perCallFieldsLostIn(node.ifFalse);
+    const lazy = this.perCallEnterLazyCalls(node);
 
     // OP_IF
     this.emit(Op.OP_IF, locationData);
@@ -15874,6 +15985,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // OP_ENDIF
     this.emit(Op.OP_ENDIF, { location: node.location, positionHint: PositionHint.END });
+    this.perCallLeaveLazyCalls(lazy);
 
     // Both branches leave one value on the stack
     return node;
@@ -16914,7 +17026,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(stackName);
       this.pendingStateWrites.set(key, stackName);
     }
-    this.perCallFieldWritten(sv, key);
+    this.perCallFieldWritten(sv, key, node);
   }
 
   /**
@@ -21423,7 +21535,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Encode to pushdata format
     this.emitPushdataEncode(sv.type, locationData);
 
-    this.perCallFieldWritten(sv, key);
+    this.perCallFieldWritten(sv, key, node);
 
     if (this.pendingStateWrites.has(key)) {
       // The slot is already ON THE STACK (pre-allocated before a branch, OR pushed by an earlier write to this
@@ -21485,7 +21597,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(stackName);
       this.pendingStateWrites.set(key, stackName);
     }
-    this.perCallFieldWritten(sv, key);
+    this.perCallFieldWritten(sv, key, node);
 
     return node;
   }
@@ -21493,15 +21605,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * A scalar field written where the code being emitted runs: its record is touched in this segment, for the record
    * rebuild at the end of the body, and the field is current again, so a read resolves from the slot rather than the
-   * declaration and a close takes the record as written here.
+   * declaration and a close takes the record as written here. A write in the body's own sequence where every path
+   * has made the same calls leaves the field current until the run's next call (`perCallFieldsWrittenAt`).
    */
-  private perCallFieldWritten(sv: StateVariableNode, key: string): void {
+  private perCallFieldWritten(sv: StateVariableNode, key: string, node: Node): void {
     if (this.perCallMaster && this.readsRecordsFromFrame) {
       const blockOffset = this.compactOffsetMap.get(sv.nftIndex);
       if (blockOffset !== undefined) this.perCallRecordSegment.set(blockOffset, this.perCallSegmentIndex);
     }
     this.perCallStaleWrites.delete(key);
     this.perCallFieldSet(key);
+    if (this.perCallFieldsAlwaysCurrent && this.perCallSequentialWrites.has(node)
+      && this.perCallCallsLeast === this.perCallCallsMost) {
+      this.perCallFieldsWrittenAt.set(key, this.perCallCallsLeast);
+    }
   }
 
   // ===== External State Read Support =====
@@ -21894,8 +22011,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.perCallOrdinal += 1;
       for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
       this.perCallFieldsCalled();
+      this.perCallCallCounted(true);
       if (this.perCallFieldsAlwaysCurrent) {
-        this.emitPerCallFieldsReread(node, { location: node.location, positionHint: PositionHint.END });
+        this.emitPerCallHeldFieldsReread(node, { location: node.location, positionHint: PositionHint.END });
       }
       return node;
     }
@@ -28241,7 +28359,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * answer for all of them (`perCallFixedFields`), and where the walk follows the field and tells its paths apart.
    */
   private perCallFieldStateExact(key: string): boolean {
-    if (!this.perCallCallsMadeActive) return true;
+    if (!this.perCallCallsMadeActive || this.perCallDecidesField(key)) return true;
     const segments = this.perCallFieldSegments?.get(key);
     if (segments === undefined) return false;
     return segments.closed.size === 0 || segments.current.size === 0
@@ -28262,9 +28380,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Whether a pending state field's slot holds its value where the code being emitted runs: on every path
    * (`'current'`), on none (`'closed'`), or in the run-time segments listed, which no path it is closed on reaches. A
-   * field the walk does not follow, or one current and closed in a shared segment, takes `perCallStaleWrites`.
+   * field the walk does not follow, or one current and closed in a shared segment, takes `perCallStaleWrites`; a body
+   * whose fields are always current decides its own (`perCallFieldsAlwaysCurrent`).
    */
   private perCallFieldState(key: string): 'current' | 'closed' | readonly number[] {
+    if (this.perCallDecidesField(key)) {
+      // Dated where every path had made `at` calls: current while the run has made no call since.
+      const at = this.perCallFieldsWrittenAt.get(key);
+      if (at === undefined) return 'current';
+      if (this.perCallCallsLeast > at) return 'closed';
+      return this.perCallCallsMost === at ? 'current' : [at];
+    }
     const segments = this.perCallFieldSegments?.get(key);
     if (segments !== undefined) {
       if (segments.closed.size === 0) return 'current';
@@ -28275,9 +28401,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return this.perCallStaleWrites.has(key) ? 'closed' : 'current';
   }
 
-  /** A pending field's slot set where the code being emitted runs: current in every segment the run can be in. */
+  /** True for a pending field a body whose fields are always current decides itself (`perCallFieldsAlwaysCurrent`). */
+  private perCallDecidesField(key: string): boolean {
+    return this.perCallFieldsAlwaysCurrent && this.perCallRefreshable(key);
+  }
+
+  /**
+   * A pending field's slot set where the code being emitted runs: current in every segment the run can be in, and
+   * held on every path from here, unless the write is one `perCallFieldWritten` dates.
+   */
   private perCallFieldSet(key: string): void {
     this.perCallFieldSegments?.set(key, { current: this.perCallReachedSegments, closed: new Set() });
+    this.perCallFieldsWrittenAt.delete(key);
   }
 
   /** A call made where the code being emitted runs: the run is one segment on, past every slot it set before. */
@@ -28372,14 +28507,64 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Reads every pending field held whole in its record again, where a call has just closed the segment and opened
-   * the next (`perCallFieldsAlwaysCurrent`). Right after a call every field is closed on every path that made it, so
-   * the read is the field's value there whatever the body did before, and the field is current from here.
+   * Reads every held field again, where a call has just closed the segment and opened the next
+   * (`perCallFieldsAlwaysCurrent`). Right after a call every field is closed on every path that made it, so the read
+   * is the field's value there whatever the body did before, and the field is held from here. A field dated where it
+   * was written (`perCallFieldsWrittenAt`) needs no read: past the call its declaration holds it.
    */
-  private emitPerCallFieldsReread(node: Node, loc: SingleLocationData): void {
+  private emitPerCallHeldFieldsReread(node: Node, loc: SingleLocationData): void {
     for (const key of [...this.pendingStateWrites.keys()]) {
-      if (this.perCallRefreshable(key)) this.emitPerCallFieldRefresh(key, node, loc);
+      if (this.perCallRefreshable(key) && !this.perCallFieldsWrittenAt.has(key)) {
+        this.emitPerCallFieldRefresh(key, node, loc);
+      }
     }
+  }
+
+  /** One more call the run makes where the code being emitted runs: on every path past it, or on some (`onEvery`). */
+  private perCallCallCounted(onEvery: boolean): void {
+    if (onEvery && this.perCallCallsLeastFrozen === 0) this.perCallCallsLeast += 1;
+    this.perCallCallsMost += 1;
+  }
+
+  /**
+   * Where a construct that runs on some paths only begins, in a body whose fields are always current: each dated
+   * field it writes (`perCallFieldsWrittenAt`) is read again where the run has made a call since its write, so it is
+   * held on every path from here, as the construct's own write leaves it on the paths that make it.
+   */
+  private emitPerCallFieldsHeldThrough(scope: Node | undefined, node: Node, loc: SingleLocationData): void {
+    if (!this.perCallFieldsAlwaysCurrent || this.perCallFieldsWrittenAt.size === 0) return;
+    const written = this.perCallFieldsWrittenIn(scope);
+    for (const [key, at] of [...this.perCallFieldsWrittenAt]) {
+      if (!written.has(key)) continue;
+      if (this.perCallCallsLeast > at) {
+        this.emitPerCallFieldRefresh(key, node, loc);
+      } else if (this.perCallCallsMost !== at) {
+        this.emitPerCallInSegments([at], loc);
+        this.emit(Op.OP_NOTIF, loc);
+        this.popFromStack();
+        this.emitPerCallFieldRefresh(key, node, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      }
+      this.perCallFieldsWrittenAt.delete(key);
+    }
+  }
+
+  /** The state writes in a body's own sequence of statements, reached through its nested blocks. */
+  private perCallSequentialWritesOf(body: BlockNode | undefined): Set<Node> {
+    const writes = new Set<Node>();
+    const walk = (block: BlockNode | undefined): void => {
+      for (const statement of block?.statements ?? []) {
+        if (statement instanceof BlockNode) walk(statement);
+        else if (statement instanceof UncheckedNode) walk(statement.block);
+        else if (statement instanceof StateAssignNode || statement instanceof DeleteStateNode
+          || statement instanceof StateArrayPushNode || statement instanceof StateArrayPopNode
+          || statement instanceof StateArrayAssignNode || statement instanceof StateArrayDeleteNode) {
+          writes.add(statement);
+        }
+      }
+    };
+    walk(body);
+    return writes;
   }
 
   /**
@@ -37220,7 +37405,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const written = closes && this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(false) : [];
     this.emitPerCallSegmentClose(loc, false);
     this.emitPerCallReceiveCallSite(node, lock, amount, loc);
-    if (this.perCallFieldsAlwaysCurrent) this.emitPerCallFieldsReread(node, loc);
+    this.perCallCallCounted(false);
+    if (this.perCallFieldsAlwaysCurrent) this.emitPerCallHeldFieldsReread(node, loc);
     else this.emitPerCallWrittenFieldsReread(written, node, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.perCallValueCallsAtSource.add(transferIndex);

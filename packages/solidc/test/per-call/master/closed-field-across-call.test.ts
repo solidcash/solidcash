@@ -31,8 +31,10 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  *
  * The last entries make their call on some paths only, or in a loop, and then run a loop the walk of their fields
  * does not follow: a field the body wrote is current on the paths that made no call since and closed on the others,
- * which no position tells apart. Such a body reads every pending field again after each call, so its loop's turns
- * and its reads past the loop take the field's value on every path.
+ * which no position tells apart. Such a body decides the field itself: one its own sequence wrote where every path
+ * had made the same calls is current exactly where the run has made no call since, one written anywhere else is
+ * read again after each call, and a loop that writes the first kind reads it again before its turns. Its loop's
+ * turns and its reads past the loop take the field's value on every path.
  */
 
 const CATEGORY_CALLER = seededCategory('closed field across call caller');
@@ -64,6 +66,10 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     for (int i = 0; i < 2; i = i + 1) { this.total = this.total + 1; } require(true); }'
   + '   function setThenLoopRead(int amount, int turns) { this.total = amount;'
   + `     for (int i = 0; i < turns; i = i + 1) { ${PING} } this.mark = this.total + 1; require(true); }`
+  + `   function guardThenLoopRead(int amount, int turns) { if (amount > 10) { ${PING} } this.total = amount;`
+  + `     for (int i = 0; i < turns; i = i + 1) { ${PING} } this.mark = this.total + 1; require(true); }`
+  + `   function setCallThenGuardedCount(int amount) { this.total = amount; ${PING} if (amount > 10) { ${PING} }`
+  + '     for (int i = 0; i < 2; i = i + 1) { this.total = this.total + 1; } require(true); }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
@@ -272,5 +278,16 @@ describe('a record field past a loop the walk does not follow, in a body whose c
     expectAccepted('setThenLoopRead', [42n, 0n], [[BEFORE, record(42n, 43n)]]);
     expectRefused('setThenLoopRead', [42n, 0n], [[BEFORE, record(42n, 1n)]]);
     expectAccepted('setThenLoopRead', [42n, 1n], [[BEFORE, record(42n)], [record(42n), record(42n, 43n)]]);
+  });
+
+  it('reads again after a loop\'s call a field written past a guarded call, and before a loop that writes it', () => {
+    expectAccepted('guardThenLoopRead', [42n, 0n], [[BEFORE, BEFORE], [BEFORE, record(42n, 43n)]]);
+    expectRefused('guardThenLoopRead', [42n, 0n], [[BEFORE, BEFORE], [BEFORE, record(42n, 1n)]]);
+    expectAccepted('guardThenLoopRead', [42n, 1n],
+      [[BEFORE, BEFORE], [BEFORE, record(42n)], [record(42n), record(42n, 43n)]]);
+    expectAccepted('setCallThenGuardedCount', 5n, [[BEFORE, record(5n)], [record(5n), record(7n)]]);
+    expectRefused('setCallThenGuardedCount', 5n, [[BEFORE, record(5n)], [record(5n), record(6n)]]);
+    expectAccepted('setCallThenGuardedCount', 42n,
+      [[BEFORE, record(42n)], [record(42n), record(42n)], [record(42n), record(44n)]]);
   });
 });

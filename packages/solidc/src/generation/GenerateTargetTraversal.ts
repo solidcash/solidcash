@@ -23254,6 +23254,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(new Uint8Array(12), locationData);
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.emit(Op.OP_ENDIF, locationData);
+      // The SDK encodes a forwarded 20-byte payload as the P2PKH of that hash. That lock is not the
+      // callee. Reduce every remaining native lock to its 20-byte identity so the stream substitution
+      // below can install the authenticated target. Empty and an already-narrow 20-byte value stay put.
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(0n), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(encodeInt(20n), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_BOOLOR, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData);
+      for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
     }
     // Imported-Solidity producer results carry addresses as 20-byte identities. The authenticated graph transcript
     // is deliberately native and names the full target locking bytecode. Recover that full value from the current

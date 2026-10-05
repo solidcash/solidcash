@@ -1,6 +1,6 @@
 # Performance: kernel vs per-call (W2)
 
-Measured 2026-10-05. One lane is in this file: per-call, proxied, at `12c011dfe`. The no-proxy lane and the kernel proxied lane are not in this run.
+Measured 2026-10-05. Two proxied lanes are in this file: per-call at `12c011dfe`, and the kernel lane at `d7f3c7ad6` in `.worktrees/kernel-beta-candidate`. The no-proxy lane is not in this run.
 
 ## How this lane was run
 
@@ -47,13 +47,38 @@ One profile for the worker (`--cpu-prof`), 97,050 samples:
 
 Compile is absent because the fixture was already compiled. The VM in the profile is stock `node_modules/@bitauth/libauth` (`3.1.0-next.8`) with the SDK overrides (`createVirtualMachine.js` `runPhases` is in the top self-time). `structuredClone` is also in the top self-time. That is the function-table copy the fork removes (`PERF_LIBAUTH.md`); this lane did not load the fork.
 
+## Kernel proxied lane
+
+Worktree `.worktrees/kernel-beta-candidate` at `d7f3c7ad6`. Its `solidcash.config.ts` does not set `composition`, so the compile is the direct kernel convention. The mock limits match the per-call config: `operationCostBudgetPerByte` 1,000,000, `maximumInputBytes` 10,000,000, `maximumTransactionBytes` 100,000,000. `MARKETPLACE_FIXTURE_STALE_OK` was unset. Fixture compile: 61 seconds, 22 sources, 26 artifacts, 0 cache hits. `MarketplaceV1.json` mtime 2026-10-05 10:29:32 UTC.
+
+The kernel worker heap is the config default, 8192 MB. The per-call run above set `SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB=6144`. Same titles, same limit numbers, different heap ceiling.
+
+`packages/testing/src/chai.ts` on this kernel commit requires a relaxed-network revert's message to contain the expected reason, and it rethrows a construction failure. It has no per-call frame-reason branch. These two titles are success paths, so that matcher did not decide them. It is not the older matcher that ignored reasons.
+
+CPU profile was not enabled, and this tree has no `SOLIDCASH_TX_TRACE`, so this lane has no CPU split and no transaction byte, fee, or input counts. The log's only runtime note is a `preflight-return-idx` line during take job (`inputIndex` 1352, `OP_VERIFY`), and the title still passed.
+
+| title | result | wall |
+|---|---|---:|
+| take job | passed | 126.242 s |
+| approve result | passed | 111.212 s |
+
+Vitest file duration 242.03 s (tests 237.46 s). Exit 0. Two passed, 64 skipped.
+
+| title | per-call wall | kernel wall |
+|---|---:|---:|
+| take job | 62.208 s | 126.242 s |
+| approve result | 131.787 s | 111.212 s |
+| fixture compile | 62 s | 61 s |
+
+take job is about twice as fast on per-call. approve result is slower on per-call (132 s against 111 s). The lanes are not uniformly ordered.
+
 ## The post-merge speed note
 
-The plan records post-merge per-call titles about 1.5 to 2 times faster than the pre-merge ladder, with close job before timeout at 27 s versus 49 s. This run did not re-time that title, and it has no pre-merge pair, so it does not identify that gap.
+The plan records post-merge per-call titles about 1.5 to 2 times faster than the pre-merge ladder, with close job before timeout at 27 s versus 49 s. This pair did not re-time that title. On the two titles that were timed, only take job matches a 2x gap, and it is per-call against the kernel lane at the same limits, not per-call against its own pre-merge ladder. approve result goes the other way.
 
-What is already measured, from the commit that landed before this plan: not re-running an evaluation that stopped on a failing close (`d8166489d`) took the slowest no-proxy title from 1,415 s to 1,286 s, about 9 percent, not 1.5 times. The worker above is 81 percent VM on stock libauth. A libauth change would land in that 81 percent. The 27 s versus 49 s gap is still unexplained by either number. Kernel versus per-call on the same title, same limits, and same matcher is the run that can separate kernel VM work from box load. That run is not this one.
+Not re-running an evaluation that stopped on a failing close (`d8166489d`) took the slowest no-proxy title from 1,415 s to 1,286 s, about 9 percent. The per-call worker profile is 81 percent VM on stock libauth. Neither number accounts for a 27 s versus 49 s close-job gap. That title is still untimed in this pair.
 
 ## Still to run
 
 - No-proxy per-call: approve sanity and refund sanity, same limits and the same matcher.
-- Kernel proxied harness built from `.worktrees/kernel-beta-candidate`'s config at its HEAD, same two titles, with the matcher difference stated if that tree's `revertedWith` is the older lenient one.
+- Kernel transaction bytes, fee, and input counts, and a kernel CPU profile. This run did not collect them.

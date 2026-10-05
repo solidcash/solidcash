@@ -15,6 +15,10 @@ import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
+import {
+  isRepeatedTypedLoopCallsite,
+  repeatedTypedLoopRefusal,
+} from './sc-expand-resolve-create-builder-external-calls.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { stageValueChunkWrite, type ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
@@ -226,6 +230,11 @@ export async function pushCreateBuilderDirectExternalCallGroup(
         );
       }
     }
+  }
+  // A return probe admits a repeated typed loop only because this group resolves each occurrence's result;
+  // without that resolver every row of the result array would decode iteration 0's value.
+  if (returnProbeOnly === true && isRepeatedTypedLoopCallsite(ec) && resolveLoopReturnCommitment === undefined) {
+    throw repeatedTypedLoopRefusal(ec);
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_RETURN === '1') {

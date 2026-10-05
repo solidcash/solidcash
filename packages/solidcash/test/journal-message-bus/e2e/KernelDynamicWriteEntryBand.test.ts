@@ -126,3 +126,66 @@ describe('an external view over a callee\'s own dynamic chunk run', () => {
     await expect(callerSc.call.readCount()).resolves.toBe(1n);
   }, 180_000);
 });
+
+/**
+ * A runtime `for` loop whose body calls one FIXED callee with a varying argument. The compiler publishes that
+ * callsite with `occurrence: 'loop'` plus `resultArrayOutput`, and the caller's covenant reads one return event per
+ * iteration at `externalReturnOutputIdx + i`, so the SDK must resolve each occurrence's value individually instead
+ * of decoding the provisional rolled array.
+ */
+describe('a caller loop over a fixed external getter', () => {
+  const CALLEE = `pragma solidity ^0.8.0;
+    struct Item { uint256 value; uint256 tag; }
+    contract Values {
+      Item[] items;
+      function add(uint256 value, uint256 tag) public {
+        this.items.push(Item(value, tag));
+        require(true);
+      }
+      function at(uint256 index) public view returns (Item memory) {
+        return items[index];
+      }
+    }`;
+
+  const CALLER = `pragma solidity ^0.8.0;
+    struct Item { uint256 value; uint256 tag; }
+    interface IValues {
+      function at(uint256 index) external view returns (Item memory);
+    }
+    contract Reader(IValues store) {
+      function many(uint256 index, uint256 limit) public view returns (Item[] memory) {
+        uint256 length = limit;
+        Item[] memory result = new Item[](length);
+        for (uint256 i = 0; i < length; i = i + 1) {
+          result[i] = store.at(i + index);
+        }
+        return result;
+      }
+    }`;
+
+  it('returns every occurrence value, not the first one repeated', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const calleeArt = compileString(CALLEE, KERNEL);
+    const callerArt = compileString(CALLER, KERNEL);
+
+    const callee = new Contract(calleeArt, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, callee, calleeArt.stateLayout!, {}, { saltContract: true },
+    );
+    const calleeSc = StatefulContract.withCategory(callee, calleeSetup.categoryId);
+    await (await calleeSc.call.add(11n, 1n)).wait();
+    await (await calleeSc.call.add(22n, 2n)).wait();
+
+    const caller = new Contract(callerArt, [hexToBin(calleeSc.inner.lockingBytecode)], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, caller, callerArt.stateLayout!, {}, { saltContract: true },
+    );
+    const callerSc = StatefulContract.withCategory(caller, callerSetup.categoryId, {
+      externals: { IValues: calleeSc },
+    });
+
+    const rows = (await callerSc.call.many(0n, 2n)) as unknown as Array<{ value: bigint; tag: bigint }>;
+    expect(rows.map((row) => row.value)).toEqual([11n, 22n]);
+    expect(rows.map((row) => row.tag)).toEqual([1n, 2n]);
+  }, 180_000);
+});

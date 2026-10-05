@@ -65,6 +65,21 @@ export interface ExpandResolveCreateBuilderExternalCallsResult {
   callerStateSnapshot: Record<string, StateValue> | undefined;
 }
 
+/**
+ * A published callsite one runtime loop can reach more than once with a FIXED callee (not an address-array
+ * expansion or a batched invocation list).
+ */
+export function isRepeatedTypedLoopCallsite(call: ExternalCallAbi): boolean {
+  return call.occurrence === 'loop' && !call.loopArrayVar && !call.batchInvocations
+    && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1);
+}
+
+/** Refusal for a repeated typed loop callsite that the legacy builder cannot compose. */
+export function repeatedTypedLoopRefusal(call: ExternalCallAbi): Error {
+  return new Error(`messageBus: typed loop callsite ${call.callsiteId ?? '?'} requires atomic composition; `
+    + 'connect a signer before sending');
+}
+
 function containsReturningExpression(value: unknown, seen = new Set<object>()): boolean {
   if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
   seen.add(value as object);
@@ -85,6 +100,7 @@ export async function expandResolveCreateBuilderExternalCalls(
   artifact: Artifact,
   publicSelfAddress: FunctionArgument | undefined,
   overrideExternalCalls: CreateBuilderResolvedExternalCall[] | undefined,
+  returnProbeOnly = false,
 ): Promise<ExpandResolveCreateBuilderExternalCallsResult> {
   let externalCalls = abiFunction?.externalCalls;
   let presetResolved: (CreateBuilderResolvedExternalCall | undefined)[] | undefined;
@@ -189,13 +205,11 @@ export async function expandResolveCreateBuilderExternalCalls(
   // that same callsite repeatedly, but expanding it here would duplicate the owner's master input and cannot
   // authenticate one ordered journal across the rows. The atomic composer handles that exact source domain;
   // without a connected signer, refuse rather than broadcasting only the first call as a successful prefix.
-  const repeatedLoop = externalCalls?.find((call) => call.occurrence === 'loop'
-    && !call.loopArrayVar && !call.batchInvocations
-    && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1));
-  if (repeatedLoop) {
-    throw new Error(`messageBus: typed loop callsite ${repeatedLoop.callsiteId ?? '?'} requires atomic composition; `
-      + 'connect a signer before sending');
-  }
+  // A return probe broadcasts nothing: when the loop's results form a published result array, it keeps the one
+  // callee block and resolves every occurrence's value separately (pushCreateBuilderDirectExternalCallGroup).
+  const repeatedLoop = externalCalls?.find((call) => isRepeatedTypedLoopCallsite(call)
+    && !(returnProbeOnly && call.resultArrayOutput !== undefined));
+  if (repeatedLoop) throw repeatedTypedLoopRefusal(repeatedLoop);
 
   if (externalCalls?.some((ec) => ec.loopArrayVar)) {
     const expanded: ExternalCallAbi[] = [];

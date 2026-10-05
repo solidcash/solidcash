@@ -259,6 +259,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     host.inner.artifact,
     publicSelfAddress,
     overrides?.externalCalls,
+    overrides?.returnProbeOnly === true,
   );
   let externalCalls = expandedExternal.externalCalls;
   const loopIdxRanges = expandedExternal.loopIdxRanges;

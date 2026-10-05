@@ -13,6 +13,7 @@ import type {
 import type { FunctionArgument } from '../Argument.js';
 import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
 import { connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex } from './deployment-registry.js';
+import { externalCallIterationIndices } from './external-call-iteration-domain.js';
 
 /** Structural ExternalCallInfo to avoid importing StatefulContract through lifecycle types. */
 export type CreateBuilderResolvedExternalCall = {
@@ -205,10 +206,27 @@ export async function expandResolveCreateBuilderExternalCalls(
   // that same callsite repeatedly, but expanding it here would duplicate the owner's master input and cannot
   // authenticate one ordered journal across the rows. The atomic composer handles that exact source domain;
   // without a connected signer, refuse rather than broadcasting only the first call as a successful prefix.
+  // A published ceiling above one is that variable-width journal even when this invocation takes one row.
+  // A domain that resolves to a single occurrence is one callee block, same as a call that is not a loop.
   // A return probe broadcasts nothing: when the loop's results form a published result array, it keeps the one
   // callee block and resolves every occurrence's value separately (pushCreateBuilderDirectExternalCallGroup).
-  const repeatedLoop = externalCalls?.find((call) => isRepeatedTypedLoopCallsite(call)
-    && !(returnProbeOnly && call.resultArrayOutput !== undefined));
+  const repeatedLoop = externalCalls?.find((call) => {
+    if (!isRepeatedTypedLoopCallsite(call)) return false;
+    if (returnProbeOnly && call.resultArrayOutput !== undefined) return false;
+    if ((call.maximumOccurrences ?? 0) > 1) return true;
+    const domain = call.iterationDomain;
+    if (!domain) return true;
+    try {
+      const count = externalCallIterationIndices(domain, (expression, bindings) =>
+        host.evaluateExternalExpression(
+          expression, args, artifact, callerStateSnapshot, abiFunction?.inputs,
+          undefined, 0, false, publicSelfAddress, bindings,
+        )).length;
+      return count > 1;
+    } catch {
+      return true;
+    }
+  });
   if (repeatedLoop) throw repeatedTypedLoopRefusal(repeatedLoop);
 
   if (externalCalls?.some((ec) => ec.loopArrayVar)) {

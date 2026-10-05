@@ -220,6 +220,9 @@ export default class OptimizeFixedArrayValues extends AstTraversal {
       for (const write of writes) elements[write.index] = write.value;
       const literal = new ArrayNode(elements);
       literal.location = declaration.location;
+      // Strictly ascending indexes below `bound` cover 0..bound-1 exactly when every slot was written.
+      // A shorter run still folds, and the zero-filled holes stay visible to key replay.
+      literal.coalescedPartial = writes.length !== bound;
       declaration.expression = literal;
       out.push(declaration);
       i = j;

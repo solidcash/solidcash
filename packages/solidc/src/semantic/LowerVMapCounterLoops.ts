@@ -1,5 +1,6 @@
 import {
   AddressSendExpressionNode, AddressTransferStatementNode, ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
+  ArrayNode,
   ArrayPopNode, ArrayPushNode,
   AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode, CollectionNode, ContinueNode,
   ContractNode,
@@ -6856,12 +6857,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const resultName = returned.expressions[0].name;
       const declaration = statements.find((statement) => statement instanceof VariableDefinitionNode
         && statement.name === resultName) as VariableDefinitionNode | undefined;
-      if (!declaration || declaration.expression
-        || !(declaration.type instanceof ArrayType) || declaration.type.bound !== width) return undefined;
-      const assignments = statements.filter((statement) => statement instanceof ArrayAssignNode
-        && statement.name === resultName) as ArrayAssignNode[];
-      if (statements.some((statement) => statement !== declaration && statement !== returned
-        && !assignments.includes(statement as ArrayAssignNode))) return undefined;
+      if (!declaration || !(declaration.type instanceof ArrayType)
+        || declaration.type.bound !== width) return undefined;
+      // OptimizeFixedArrayValues folds a complete straight-line vector into one literal before this pass.
+      // A partial fold zero-fills the hole and stays fenced; an explicit full literal is the same shape.
+      const literalElements = declaration.expression instanceof ArrayNode
+        && declaration.expression.coalescedPartial !== true
+        && declaration.expression.elements.length === width
+        ? declaration.expression.elements : undefined;
+      if (declaration.expression !== undefined && literalElements === undefined) return undefined;
+      const storedAssigns = statements.filter((statement): statement is ArrayAssignNode =>
+        statement instanceof ArrayAssignNode && statement.name === resultName);
+      if (literalElements) {
+        if (statements.some((statement) => statement !== declaration && statement !== returned)) return undefined;
+      } else if (statements.some((statement) => statement !== declaration && statement !== returned
+        && !storedAssigns.includes(statement))) return undefined;
+      const assignments: { index: ExpressionNode; value: ExpressionNode }[] = literalElements
+        ? literalElements.map((element, index) => {
+          const indexNode = new IntLiteralNode(BigInt(index));
+          indexNode.location = element.location ?? location;
+          indexNode.type = new IntType(true, 256);
+          return { index: indexNode, value: element };
+        })
+        : storedAssigns;
       const allowedFormalNames = new Set(target.parameters.map((parameter) => parameter.name));
       const expandOneScalarHelper = (expression: ExpressionNode): ExpressionNode | undefined => {
         const expand = (candidate: ExpressionNode): ExpressionNode | undefined => {
@@ -10321,6 +10339,34 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               writes: [],
               fixedCompleteWidth: width,
             });
+          } else if (statement.expression instanceof ArrayNode
+            && statement.expression.coalescedPartial !== true
+            && statement.expression.elements.length === width) {
+            const values = statement.expression.elements.map((element) =>
+              replaceArrayReads(replaceSnapshots(element, snapshots), active, []));
+            if (values.some((value) => this.hasObservableEffect(value))) {
+              node.messageBusUnboundedConstructedArray = true;
+              active.delete(statement.name);
+            } else {
+              const length = new IntLiteralNode(BigInt(width));
+              length.location = statement.location;
+              length.type = new IntType(true, 256);
+              active.set(statement.name, {
+                elementType: (statement.type as ArrayType).elementType,
+                defaultValue: createDefaultValueExpression(
+                  (statement.type as ArrayType).elementType, statement.location,
+                ),
+                length,
+                stablePrefixSource: cloneNode(length) as ExpressionNode,
+                writes: values.map((value, index) => {
+                  const indexNode = new IntLiteralNode(BigInt(index));
+                  indexNode.location = value.location ?? statement.location;
+                  indexNode.type = new IntType(true, 256);
+                  return { index: indexNode, value };
+                }),
+                fixedCompleteWidth: width,
+              });
+            }
           } else active.delete(statement.name);
         } else if (statement instanceof ArrayAssignNode && active.has(statement.name)) {
           const aliasGroup = active.get(statement.name)!.fixedAliasGroup;

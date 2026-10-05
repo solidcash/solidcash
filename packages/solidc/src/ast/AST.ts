@@ -2054,6 +2054,9 @@ export class TernaryOpNode extends ExpressionNode {
 
 export class ArrayNode extends ExpressionNode {
   blobEncoded: boolean = false;
+  // A partial ascending-write fold zero-fills the missing indexes. Those holes are the int default, not
+  // source stores, so a later key replay must not treat the literal as a complete vector.
+  coalescedPartial: boolean = false;
 
   constructor(
     public elements: ExpressionNode[],

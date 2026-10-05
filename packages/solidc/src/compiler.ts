@@ -5734,6 +5734,188 @@ function synthesizeMessageBusRoute(
     });
     return init;
   };
+  // A fixed local `T[N]` is the other vector that lowering replays: every index has one straight-line literal
+  // store, or the local is an alias or a pure single-return helper that itself has that shape. A missing index, a
+  // second store, or a store inside a branch stays on the KERNEL_UNBOUNDED_KEY fence.
+  const directFixedVector = (owner: FunctionDefinitionNode, arrayName: string): boolean => {
+    const statements = owner.body?.statements ?? [];
+    const declaration = statements.find((statement): statement is VariableDefinitionNode =>
+      statement instanceof VariableDefinitionNode && statement.name === arrayName);
+    const width = declaration?.type instanceof ArrayType ? declaration.type.bound : undefined;
+    if (width === undefined) return false;
+    const topAssigns = statements.filter((statement): statement is ArrayAssignNode =>
+      statement instanceof ArrayAssignNode && statement.name === arrayName);
+    let hiddenMutation = false;
+    walkInvocationAst(owner.body, (node) => {
+      const mutates = (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode
+        || node instanceof ArrayPushNode || node instanceof ArrayPopNode) && node.name === arrayName;
+      if (mutates && !(node instanceof ArrayAssignNode && topAssigns.includes(node))) hiddenMutation = true;
+    });
+    if (hiddenMutation) return false;
+    if (declaration!.expression instanceof ArrayNode
+      && declaration!.expression.coalescedPartial !== true
+      && declaration!.expression.elements.length === width
+      && topAssigns.length === 0) return true;
+    if (declaration!.expression !== undefined) return false;
+    const defined = new Set<number>();
+    for (const assign of topAssigns) {
+      if (!(assign.index instanceof IntLiteralNode)) return false;
+      const index = Number(assign.index.value);
+      if (!Number.isInteger(index) || index < 0 || index >= width || defined.has(index)) return false;
+      defined.add(index);
+    }
+    return defined.size === width;
+  };
+  // A folded helper literal is exact only when every element is a formal, a literal, or one non-recursive
+  // pure scalar call. A call left inside that scalar body (the recursive producer) stays fenced.
+  const fixedElementsReplayable = (
+    helper: FunctionDefinitionNode, elements: readonly ExpressionNode[],
+  ): boolean => {
+    const formals = new Set(helper.parameters.map((parameter) => parameter.name));
+    const expressionType = (expression: ExpressionNode, fn: FunctionDefinitionNode): string | undefined => {
+      if (expression.type !== undefined) return expression.type.toString();
+      if (!(expression instanceof IdentifierNode)) return undefined;
+      const parameters = fn.parameters.filter((parameter) => parameter.name === expression.name);
+      return parameters.length === 1 ? parameters[0].type.toString() : undefined;
+    };
+    const scalarReturnClosed = (fn: FunctionDefinitionNode): boolean => {
+      const statements = fn.body?.statements ?? [];
+      const returned = statements.length === 1 ? statements[0] : undefined;
+      if (!(returned instanceof ReturnNode) || returned.expressions.length !== 1) return false;
+      const names = new Set(fn.parameters.map((parameter) => parameter.name));
+      let closed = true;
+      walkInvocationAst(returned.expressions[0], (node) => {
+        if (node instanceof FunctionCallNode || node instanceof ExternalFunctionCallNode
+          || node instanceof IndirectCallNode || node instanceof MethodCallNode
+          || node instanceof StateAccessNode || node instanceof MappingAccessNode
+          || node instanceof ArrayAccessNode || node instanceof TupleIndexOpNode
+          || node instanceof TernaryOpNode) closed = false;
+        if (node instanceof IdentifierNode && !names.has(node.name)) closed = false;
+      });
+      return closed;
+    };
+    const elementClosed = (expression: ExpressionNode): boolean => {
+      if (expression instanceof IdentifierNode) return formals.has(expression.name);
+      if (expression instanceof LiteralNode) return true;
+      if (expression instanceof FunctionCallNode) {
+        const overloads = (byName.get(expression.identifier.name) ?? []).filter((candidate) =>
+          !candidate.isFreeFunction && candidate.parameters.length === expression.parameters.length);
+        const exact = overloads.filter((candidate) => expression.parameters.every((argument, index) =>
+          expressionType(argument, helper) === candidate.parameters[index]?.type.toString()));
+        const callee = exact.length === 1 ? exact[0] : undefined;
+        return callee !== undefined && !!callee.body && callee.modifiers.includes(FunctionModifier.PURE)
+          && (callee.visibility === 'internal' || callee.visibility === 'private')
+          && callee.customModifiers.length === 0 && callee.returnTypes.length === 1
+          && !(callee.returnTypes[0] instanceof ArrayType) && scalarReturnClosed(callee)
+          && expression.parameters.every((argument) => elementClosed(argument));
+      }
+      if (expression instanceof StateAccessNode || expression instanceof MappingAccessNode
+        || expression instanceof ArrayAccessNode || expression instanceof TupleIndexOpNode
+        || expression instanceof TernaryOpNode || expression instanceof ExternalFunctionCallNode
+        || expression instanceof IndirectCallNode || expression instanceof MethodCallNode
+        || expression instanceof ArrayNode || expression instanceof NewArrayNode) return false;
+      let closed = true;
+      for (const key of Object.keys(expression)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+          || key === 'stateVariable' || key === 'identifier') continue;
+        const value = (expression as unknown as Record<string, unknown>)[key];
+        if (value instanceof ExpressionNode && !elementClosed(value)) closed = false;
+        else if (Array.isArray(value) && value.some((item) =>
+          item instanceof ExpressionNode && !elementClosed(item))) closed = false;
+      }
+      return closed;
+    };
+    return elements.every((element) => elementClosed(element));
+  };
+  const isExactFixedLocalVector = (
+    owner: FunctionDefinitionNode, arrayName: string, seen: Set<string> = new Set(),
+  ): boolean => {
+    const identity = `${owner.name}\0${arrayName}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    const statements = owner.body?.statements ?? [];
+    const declaration = statements.find((statement): statement is VariableDefinitionNode =>
+      statement instanceof VariableDefinitionNode && statement.name === arrayName);
+    const width = declaration?.type instanceof ArrayType ? declaration.type.bound : undefined;
+    if (width === undefined) return false;
+    const topAssigns = statements.filter((statement): statement is ArrayAssignNode =>
+      statement instanceof ArrayAssignNode && statement.name === arrayName);
+    let hiddenMutation = false;
+    walkInvocationAst(owner.body, (node) => {
+      const mutates = (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode
+        || node instanceof ArrayPushNode || node instanceof ArrayPopNode) && node.name === arrayName;
+      if (mutates && !(node instanceof ArrayAssignNode && topAssigns.includes(node))) hiddenMutation = true;
+    });
+    if (hiddenMutation) return false;
+    const covers = (assigns: readonly ArrayAssignNode[]): boolean => {
+      const defined = new Set<number>();
+      for (const assign of assigns) {
+        if (!(assign.index instanceof IntLiteralNode)) return false;
+        const index = Number(assign.index.value);
+        if (!Number.isInteger(index) || index < 0 || index >= width || defined.has(index)) return false;
+        defined.add(index);
+      }
+      return defined.size === width;
+    };
+    const expression = declaration!.expression;
+    const literalVector = expression instanceof ArrayNode && expression.coalescedPartial !== true
+      && expression.elements.length === width && topAssigns.length === 0;
+    if (expression === undefined) return covers(topAssigns);
+    if (literalVector) return true;
+    if (topAssigns.length !== 0) return false;
+    if (expression instanceof IdentifierNode) {
+      // One alias hop. A second hop, or an alias of anything but a finished vector, stays fenced.
+      return directFixedVector(owner, expression.name);
+    }
+    if (!(declaration!.expression instanceof FunctionCallNode)) return false;
+    const call = declaration!.expression;
+    const lexicalType = (expression: ExpressionNode, fn: FunctionDefinitionNode): string | undefined => {
+      if (expression.type !== undefined) return expression.type.toString();
+      if (!(expression instanceof IdentifierNode)) return undefined;
+      const parameters = fn.parameters.filter((parameter) => parameter.name === expression.name);
+      if (parameters.length === 1) return parameters[0].type.toString();
+      const locals: VariableDefinitionNode[] = [];
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof VariableDefinitionNode && node.name === expression.name) locals.push(node);
+      });
+      return locals.length === 1 ? locals[0].type.toString() : undefined;
+    };
+    const targets = (byName.get(call.identifier.name) ?? []).filter((target) => {
+      const parameters = target.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+      return !target.isFreeFunction && parameters.length === call.parameters.length
+        && call.parameters.every((argument, index) =>
+          lexicalType(argument, owner) === parameters[index]?.type.toString());
+    });
+    if (targets.length !== 1) return false;
+    const target = targets[0];
+    const returnType = target.returnTypes.length === 1 ? target.returnTypes[0] : undefined;
+    if (!target.body || !target.modifiers.includes(FunctionModifier.PURE)
+      || (target.visibility !== 'internal' && target.visibility !== 'private')
+      || !(returnType instanceof ArrayType) || returnType.bound !== width) return false;
+    const helperStatements = target.body.statements ?? [];
+    const returned = helperStatements[helperStatements.length - 1];
+    if (!(returned instanceof ReturnNode) || returned.expressions.length !== 1
+      || !(returned.expressions[0] instanceof IdentifierNode)) return false;
+    const resultName = returned.expressions[0].name;
+    const resultDecl = helperStatements.find((statement) => statement instanceof VariableDefinitionNode
+      && statement.name === resultName);
+    if (!(resultDecl instanceof VariableDefinitionNode)
+      || !(resultDecl.type instanceof ArrayType) || resultDecl.type.bound !== width) return false;
+    const helperAssigns = helperStatements.filter((statement): statement is ArrayAssignNode =>
+      statement instanceof ArrayAssignNode && statement.name === resultName);
+    const foldedHelper = resultDecl.expression instanceof ArrayNode
+      && resultDecl.expression.coalescedPartial !== true
+      && resultDecl.expression.elements.length === width
+      && helperAssigns.length === 0;
+    if (helperStatements.some((statement) => statement !== resultDecl && statement !== returned
+      && !(statement instanceof ArrayAssignNode && helperAssigns.includes(statement)))) return false;
+    if (foldedHelper && resultDecl.expression instanceof ArrayNode) {
+      return fixedElementsReplayable(target, resultDecl.expression.elements);
+    }
+    if (resultDecl.expression !== undefined) return false;
+    return covers(helperAssigns);
+  };
   // Pre-admission sees source keys before LowerVMapCounterLoops can replace a local-vector read with its
   // compiler-owned replay. Admit only the narrow producer candidate which that pass can subsequently prove and
   // publish; all other constructed arrays keep the historical KERNEL_UNBOUNDED_KEY fence.
@@ -5785,7 +5967,13 @@ function synthesizeMessageBusRoute(
     visiting.add(seen);
     if (owner === source) {
       if (source.parameters.some((parameter) => parameter.name === arrayName)) return true;
-      if (isFrozenVectorCandidate(owner, arrayName)) return true;
+      if (isFrozenVectorCandidate(owner, arrayName) || isExactFixedLocalVector(owner, arrayName)) return true;
+      // A bounded local is decided above. One exact hop is admitted there; a second hop or a mutated
+      // alias must not walk back to the finished vector through the generic alias chain.
+      const boundedLocal = (owner.body?.statements ?? []).some((statement) =>
+        statement instanceof VariableDefinitionNode && statement.name === arrayName
+        && statement.type instanceof ArrayType && statement.type.bound !== undefined);
+      if (boundedLocal) return false;
       const init = localInitOf(owner, arrayName);
       const alias = init === undefined ? undefined : expressionIdentifier(init);
       return alias !== undefined

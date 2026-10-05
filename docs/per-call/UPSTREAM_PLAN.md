@@ -316,8 +316,9 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
 - Uncommitted work in the main checkout (2026-10-03 09:17-09:40): an unfinished kernel feature, row-local route
   witnesses (per-row witness bands for read-only argument keys in batched rows): `compiler.ts` +137,
   `LowerCollectionJournalHelpers.ts` +130, `StatefulContract.ts` +20, `KernelCutoverRoute.test.ts`, new
-  `KernelRowLocalRouteWitness.test.ts`. Leave it to its owner (two grok processes and a Claude session run in that
-  checkout); a copy is in `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scratchpad/rescue/`.
+  `KernelRowLocalRouteWitness.test.ts`. Pinned as `rescue/main-checkout-wip-2026-10-03` (`32e7016f4`, a snapshot
+  commit on `cac34c86d` made through a temporary index; the checkout itself is untouched). Leave the feature to its
+  owner (two grok processes and a Claude session run in that checkout); port it like P1-P10 once it is finished.
 
 ### W10. Land on solidcash_v0.13.1
 - After W6's final gate (and W5, W8 if they are in scope for the release): fast-forward `solidcash_v0.13.1` to the

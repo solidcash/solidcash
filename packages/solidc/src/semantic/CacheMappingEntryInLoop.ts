@@ -512,7 +512,7 @@ export function isFunctionEntryInvariantMappingKey(
 
 type EntryInfo = {
   mapping: string; keys: KeyKind[]; count: number; inLoop: boolean; bad: boolean;
-  written: boolean; readAfterWrite: boolean; fromModifier?: string;
+  written: boolean; readAfterWrite: boolean; fieldTouch: boolean; fromModifier?: string;
 };
 
 /** An entry the cache serves, as `collectCacheableEntries` selects it. */
@@ -1176,7 +1176,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (!e) {
         e = {
           mapping, keys: resolved.map((key) => key.key), count: 0, inLoop: false, bad: false,
-          written: false, readAfterWrite: false,
+          written: false, readAfterWrite: false, fieldTouch: false,
         };
         info.set(ek, e);
       }
@@ -1234,6 +1234,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (e) {
           e.count += 1;
           e.written = true;
+          // A coalesced `m[k].f = v` arrives as this whole assign and still needs the prior entry to rebuild
+          // the fields it does not set. A later whole overwrite does not, and must not gain a read by itself.
+          if (this.structMappings.has(n.name)) e.fieldTouch = true;
           if (inLoop) e.inLoop = true;
         }
       }
@@ -1299,6 +1302,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           e.fromModifier ??= n.fromModifier;
           e.count += 1;
           e.written = true;
+          e.fieldTouch = true;
           if (inLoop) e.inLoop = true;
         }
       }
@@ -1308,7 +1312,25 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           e.fromModifier ??= n.fromModifier;
           e.count += 1;
           e.written = true;
+          e.fieldTouch = true;
           if (inLoop) e.inLoop = true;
+        }
+      }
+      // InlineReturningStateHelpers rewrites `m[k].addElastic(e)` into `T t = m[k]; <mutate t>; m[k] = t`.
+      // That whole-struct assign is not a field write, so the rebuild cache missed it and the next call read
+      // the entry the first call had written. Count the assigns. One overwrite stays a write: only a repeat,
+      // a loop, or a later read takes the one-upsert cache, so a write-only assign does not gain a read.
+      if (n instanceof MappingAssignNode && this.structMappings.has(n.name) && n.keys.length === 1) {
+        const e = get(n.name, n.keys, true);
+        if (e) {
+          e.fromModifier ??= n.fromModifier;
+          if (n.arrayIndex === undefined && !n.arrayPush && !n.arrayPop) {
+            e.count += 1;
+            e.written = true;
+            if (inLoop) e.inLoop = true;
+          } else {
+            e.bad = true;
+          }
         }
       }
       const nowLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
@@ -1331,8 +1353,10 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // A struct entry needs the local rebuild path for even one field write, but a read-only struct access must
       // stay read-only. Treating every struct entry as cacheable synthesized an unconditional whole-entry flush
       // for plain reads, widening their ABI operation from `read` to `read,write` and requiring phantom outputs.
+      // A whole-struct overwrite is not a field write: one of them publishes the value it stores, and only a
+      // second write, a loop, or a read after the write shares one cached upsert.
       if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite
-        || (e.written && this.structMappings.has(e.mapping)))) continue;
+        || (e.fieldTouch && this.structMappings.has(e.mapping)))) continue;
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
       // A key declared by one top-level statement is invariant too, but it is not in scope at the function entry,
       // so its cache read is anchored at the entry's first use instead of hoisted (`anchorIndex` below).

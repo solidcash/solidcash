@@ -88,7 +88,7 @@ describe('KERNEL_* admission catalog kernel admission catalog', () => {
     expect(compilerSrc).toContain('normalizeKernelAdmissionReason(reason)');
   });
 
-  it('compileString still refuses early-return journal shapes with KERNEL_LAYOUT', () => {
+  it('compileString publishes an early return before a mapping write as the kept pre-value', () => {
     const artifact = compileString(`contract CatalogFenceProbe() {
       mapping(int => int) records;
       function helper(int key) internal {
@@ -100,7 +100,18 @@ describe('KERNEL_* admission catalog kernel admission catalog', () => {
         require(true);
       }
     }`, KERNEL);
+    // The early return is nested before the journal flush. key == 0 writes the entry's previous value;
+    // every other key writes 1. The handler stays on the kernel route.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'apply')?.entryAccesses?.[0].storedValueSource)
+      .toMatchObject({
+        expression: {
+          kind: 'ternary',
+          condition: { kind: 'binary', operator: '==' },
+          ifTrue: { kind: 'entryPreValue', name: 'records' },
+          ifFalse: { kind: 'literal', value: '1' },
+        },
+      });
   });
 });

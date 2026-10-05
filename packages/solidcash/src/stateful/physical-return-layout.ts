@@ -152,6 +152,22 @@ export function findViewTailDestinations(
   return dest;
 }
 
+/**
+ * Writer-return slots a view tail must never be packed onto. Every in-block writer contributes the coordinate it
+ * actually publishes at (`returnOutputIndex`), and its pre-placement plan only when nothing was built yet: the plan
+ * can still name the slot the writer held before a swap or a carrier union moved it, and reserving that stale slot
+ * evicts a real view tail from its assigned output.
+ */
+export function writerReturnSlotReservations(groups: ReadonlyArray<PhysicalReturnGroup>): Set<number> {
+  const slots = new Set<number>();
+  for (const [groupIdx, group] of groups.entries()) {
+    if (!groupOwnsInBlockReturnEvent(groups, groupIdx)) continue;
+    const placed = group.returnOutputIndex ?? group.plannedReturnOutputIndex;
+    if (placed !== undefined) slots.add(placed);
+  }
+  return slots;
+}
+
 export function assignPhysicalReturnIndices(
   groups: ReadonlyArray<PhysicalReturnGroup>,
   findMintingInputIndex: (categoryId: string) => number,
@@ -195,6 +211,21 @@ export function assignPhysicalReturnIndices(
   const loopWidth = (idx: number): number => Math.max(1, groups[idx].loopReturnCommitments?.length ?? 1);
   const collision = tails.some((idx) => (groups[idx].returnOutputIndex ?? -1) <= occupied);
   const needsWidth = tails.some((idx) => loopWidth(idx) > 1);
+  // Each logical tail family owns its own return channel: the caller reads a distinct callsite's result at its
+  // own `__internal__externalReturnOutputIdx*` coordinate. Planned coordinates can overlap (a shared participant's
+  // owner and its alias can both plan one slot), and when a band sends the packer back to the plans, the later
+  // family would land on the earlier one's output, where the earlier return then overwrites it.
+  const used = new Set<number>(assigned.values());
+  const claim = (desired: number, width: number): number => {
+    let index = Math.max(0, desired);
+    const overlaps = (candidate: number): boolean => {
+      for (let offset = 0; offset < width; offset += 1) if (used.has(candidate + offset)) return true;
+      return false;
+    };
+    while (overlaps(index)) index += 1;
+    for (let offset = 0; offset < width; offset += 1) used.add(index + offset);
+    return index;
+  };
   if (collision || needsWidth) {
     let nextTail = occupied + 1;
     if (!collision) {
@@ -212,8 +243,9 @@ export function assignPhysicalReturnIndices(
         suffixStart: packOptions?.suffixStart,
         tokenWriterPresent: packOptions?.tokenWriterPresent,
       });
-      assigned.set(groupIdx, placed);
-      nextTail = placed + loopWidth(groupIdx);
+      const claimed = claim(placed, loopWidth(groupIdx));
+      assigned.set(groupIdx, claimed);
+      nextTail = claimed + loopWidth(groupIdx);
     }
   } else {
     let nextTail = -1;
@@ -227,8 +259,9 @@ export function assignPhysicalReturnIndices(
         suffixStart: packOptions?.suffixStart,
         tokenWriterPresent: packOptions?.tokenWriterPresent,
       });
-      assigned.set(groupIdx, placed);
-      nextTail = placed + loopWidth(groupIdx);
+      const claimed = claim(placed, loopWidth(groupIdx));
+      assigned.set(groupIdx, claimed);
+      nextTail = claimed + loopWidth(groupIdx);
     }
   }
   return assigned;

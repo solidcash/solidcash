@@ -11,7 +11,7 @@ import {
   isPredOutReusableHole,
   redirectViewTailOffOpReturn,
 } from './mutable-output-reassert.js';
-import { packTailReturnPlacements } from './physical-return-layout.js';
+import { packTailReturnPlacements, writerReturnSlotReservations } from './physical-return-layout.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { isViewReturnTailOutput } from './value-chunk-band-helpers.js';
 import {
@@ -108,11 +108,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
   const returnSlot = tokenGroup?.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent');
   if (returnSlot) writerSlots.add(master + returnSlot.offset);
   for (const index of host.declaredMutableEntrySlotIndices()) writerSlots.add(index);
-  for (const [groupIdx, group] of host.externalCallUtxoGroups.entries()) {
-    if (!groupOwnsInBlockReturnEvent(host.externalCallUtxoGroups, groupIdx)) continue;
-    const placed = group.plannedReturnOutputIndex ?? group.returnOutputIndex;
-    if (placed !== undefined) writerSlots.add(placed);
-  }
+  for (const slot of writerReturnSlotReservations(host.externalCallUtxoGroups)) writerSlots.add(slot);
   const writerEnd = writerSlots.size > 0 ? Math.max(...writerSlots) : after - 1;
   const assignedTailStart = [...placements.values()].reduce(
     (min, index) => Math.min(min, index),

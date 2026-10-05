@@ -153,18 +153,22 @@ export function bindWriterReturnWitness(
   const physicalIndex = writer.sharedGroupIndex ?? writerGroupIndex;
   const physical = host.externalCallUtxoGroups[physicalIndex];
   if (!physical) return;
+  // The writer publishes at the participant's in-block slot. When the physical owner is a view whose own result
+  // is a tail, that slot is not the owner's: its `returnOutputIndex` and the witnesses naming it keep its tail.
+  const physicalOwnsInBlock = physicalIndex === writerGroupIndex
+    || groupOwnsInBlockReturnEvent(host.externalCallUtxoGroups, physicalIndex);
   const changed = writer.returnOutputIndex !== outputIndex
-    || physical.returnOutputIndex !== outputIndex;
+    || (physicalOwnsInBlock && physical.returnOutputIndex !== outputIndex);
   if (!changed) return;
 
   writer.returnOutputIndex = outputIndex;
-  physical.returnOutputIndex = outputIndex;
+  if (physicalOwnsInBlock) physical.returnOutputIndex = outputIndex;
   physical.refreshInternalArgs?.(
     { __internal__returnOutputIdx: BigInt(outputIndex) },
     { shiftPredOut: false },
   );
 
-  const witnessOwners = new Set([physicalIndex, writerGroupIndex]);
+  const witnessOwners = new Set(physicalOwnsInBlock ? [physicalIndex, writerGroupIndex] : [writerGroupIndex]);
   const carriers = [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups];
   for (const carrier of carriers) {
     if (!carrier.returnWitnessGroups || !carrier.refreshInternalArgs) continue;

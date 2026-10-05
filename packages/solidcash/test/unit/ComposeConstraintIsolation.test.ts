@@ -52,7 +52,7 @@ function context(beforeAssemble: () => Promise<void> = async () => {}): RunCompo
         return { builder: {}, actualSizes: [], incompleteDynamicChunks: [] };
       },
       actualSpansMatch: () => true,
-      deriveReturnResults: () => ({ 0: '01' }),
+      deriveReturnResults: () => ({ results: { 0: '01' } }),
       admit: (builder: unknown) => { constraintFixpoint.finalize(); return builder; },
     },
   } as unknown as RunComposeSemanticClaimLoopContext;
@@ -84,7 +84,7 @@ describe('composition constraint ownership', () => {
   it('still refuses a genuine claim cycle within a single build', async () => {
     const cycling = context();
     cycling.runtime.deriveReturnResults = (_graph, _builder, previous) => ({
-      0: previous[0] === '00' ? '01' : '00',
+      results: { 0: previous[0] === '00' ? '01' : '00' },
     });
     await expect(runComposeSemanticClaimLoop(cycling, vi.fn()))
       .rejects.toThrow('repeated non-final claim state');

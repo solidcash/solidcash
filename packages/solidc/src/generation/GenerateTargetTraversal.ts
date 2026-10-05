@@ -36239,13 +36239,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // value-chunk run whenever both output families are active in one balanced route.
       // Subtract 1 when the reserved returnEvent slot is NOT materialized (returnOutputIdx < 0) - it does not
       // occupy an output, so the trailing chunks sit one lower. One untracked value (the running outIdx-partial)
-      // is above the tracked stack here, hence the +1 pick offset.
+      // is above the tracked stack here, hence the +1 pick offset. The SDK compacts that slot only while no
+      // return event is pending, so a base anchored on a witnessed callee return - already the physical output
+      // after the return band - is not stepped down; it steps down only when no returning call ran and the
+      // anchor fell back to the block base (measured on a no-proxy marketplace entry: anchor 32, covenant 31).
       const roiIdx = hasReturnEventSlot && this.currentFunction.blockLayout?.trailingBase === undefined
         ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
       if (roiIdx >= 0) {
         this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc, 1);
         this.emit(encodeInt(0n), loc);
         this.emit(Op.OP_LESSTHAN, loc);
+        const anchoredWitnesses = returningExternalSlots.length > 0 && !this.perCallMaster
+          ? this.returnOutputWitnessNames(returningExternalSlots, returningExternalSlots.length) : [];
+        if (anchoredWitnesses.length > 0) {
+          // [base, roi < 0]: the running base and the flag sit untracked above the tracked stack.
+          anchoredWitnesses.forEach((name, index) => {
+            this.emitPickCompilerRouteFrameValue(name, loc, index === 0 ? 2 : 3);
+            if (index > 0) this.emit(Op.OP_MAX, loc);
+          });
+          this.emit(encodeInt(0n), loc);
+          this.emit(Op.OP_LESSTHAN, loc);
+          this.emit(Op.OP_BOOLAND, loc);
+        }
         this.emit(Op.OP_SUB, loc);
       }
       for (const ft of fReadTempNames) {
@@ -36260,6 +36275,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
+  }
+
+  /** The return-output index witnesses of returning call slots that are on the stack (named as the ABI names them). */
+  private returnOutputWitnessNames(slots: readonly ExternalCallSlot[], returningSlotCount: number): string[] {
+    return slots
+      .map((slot) => (returningSlotCount === 1
+        ? '__internal__externalReturnOutputIdx'
+        : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`))
+      .filter((name) => this.getStackIndex(name, true) >= 0);
   }
 
   /**
@@ -36299,11 +36323,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // slot named 31, and anchoring on the later-declared slot pointed the chunk covenant at a return-event
     // carrier. A call that did not run binds -1, which never wins the maximum; when none ran, the maximum plus one
     // is zero and the run starts where no returning call precedes it.
-    const returnParamNames = returningSlots.slice(0, last + 1)
-      .map((slot) => (returningSlots.length === 1
-        ? '__internal__externalReturnOutputIdx'
-        : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`))
-      .filter((name) => this.getStackIndex(name, true) >= 0);
+    const returnParamNames = this.returnOutputWitnessNames(returningSlots.slice(0, last + 1), returningSlots.length);
     if (returnParamNames.length === 0) {
       this.emitPublishedReturnAnchor(returningSlots, -1, blockSize, loc);
       return;

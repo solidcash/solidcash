@@ -75,9 +75,7 @@ export function reassertInBlockWriterReturns(
     const identity = `external-call:${group.fusedReturnGroupIndex ?? groupIdx}`;
     const pending = host.pendingReturnEventOutputs.find((event) =>
       event.identity === identity || event.identity === `${identity}:0`);
-    const writerAbi = physical.compilerRoute?.abiFunction
-      ?? (physical.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
-        ?.find((fn) => fn.name === (physical.functionName ?? physical.logicalFunctionName));
+    const writerAbi = selectWriterReturnAbi(group, physical);
     const writerReturnsBool = writerAbi?.outputs?.length === 1 && writerAbi.outputs[0].type === 'bool';
     const writerArtifact = physical.logicalArtifact ?? physical.externalContract?.inner?.artifact;
     const evmBool = writerReturnsBool && writerArtifact !== undefined
@@ -189,4 +187,27 @@ export function bindWriterReturnWitness(
     if (index >= 0) host.allInputs[index] = master;
   }
   host.syncBuilderUnlockers(builder);
+}
+
+/**
+ * ABI entry that describes the in-block return slot's value. That slot is published by the WRITER alias on the
+ * shared participant (`approve`/`transferFrom`: `writesState`, `outputs: [bool]`), not by the participant's
+ * physical owner (`balanceOf` is a `uint256` view that never writes). Resolving the owner's entry published the
+ * empty bool `00` for a successful writer, so a SafeERC20-style caller observed a false approval and refused. The
+ * owner's entry is the fallback only, for an alias that carries no ABI entry of its own.
+ */
+export function selectWriterReturnAbi<
+  T extends {
+    compilerRoute?: { abiFunction?: AbiFunction };
+    externalContract?: { inner?: { artifact?: { abi?: readonly AbiFunction[] } } };
+    functionName?: string;
+    logicalFunctionName?: string;
+  },
+>(group: T, owner: T): AbiFunction | undefined {
+  const abiOf = (candidate: T): readonly AbiFunction[] =>
+    candidate.externalContract?.inner?.artifact?.abi ?? [];
+  const named = (candidate: T): AbiFunction | undefined =>
+    abiOf(candidate).find((fn) => fn.name === (candidate.functionName ?? candidate.logicalFunctionName));
+  return group.compilerRoute?.abiFunction ?? named(group)
+    ?? owner.compilerRoute?.abiFunction ?? named(owner);
 }

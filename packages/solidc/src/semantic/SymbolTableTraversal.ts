@@ -10119,6 +10119,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           ...(expression.args ?? [])]
           .some((child) => child !== undefined && dependsOnRuntimeValue(child))
       );
+      // A producer result is not known when a later call's reachability is published. It is not a
+      // replayable require, and it must not drag a sibling conjunct into one opaque predicate.
+      const containsProducerResult = (expression: ExternalCallExpression): boolean => (
+        expression.kind === 'producerResult' || expression.kind === 'externalCall'
+        || [expression.expression, expression.left, expression.right, expression.condition,
+          expression.ifTrue, expression.ifFalse, expression.source?.expression,
+          ...(expression.args ?? [])]
+          .some((child) => child !== undefined && containsProducerResult(child))
+      );
       const preCallRequires = (dominatingStatements() ?? []).flatMap((statement) => {
         if (!(statement instanceof RequireNode)) return [];
         const callPriorStatements = priorStatements;
@@ -10129,12 +10138,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           const serialized = serializeExpression(statement.expression);
           // Lowered return-carrier checks can leave a literal `0 == 1` placeholder before their producer
           // call. A constant-only predicate cannot safely prove source reachability at this callsite.
+          // A predicate that reads a producer result is not replayable either, so it is split below.
           if (serialized && dependsOnRuntimeValue(serialized)
+            && !containsProducerResult(serialized)
             && !containsUnresolvedPreCallRequireNode(serialized)) return [serialized];
           // A resolvable false left operand proves an AND require reverted even when its right operand
           // depends on a producer result that cannot be known during graph discovery.
           if (serialized?.kind === 'binary' && serialized.operator === '&&'
             && serialized.left !== undefined
+            && !containsProducerResult(serialized)
             && !containsUnresolvedPreCallRequireNode(serialized.left)
             && dependsOnRuntimeValue(serialized)) return [serialized];
           // A conjunction may contain an external result that is not available during initial graph
@@ -10146,6 +10158,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             }
             const conjunct = serializeExpression(expression);
             return conjunct && !containsUnresolvedPreCallRequireNode(conjunct)
+              && !containsProducerResult(conjunct)
               && dependsOnRuntimeValue(conjunct) ? [conjunct] : [];
           };
           return statement.expression instanceof BinaryOpNode

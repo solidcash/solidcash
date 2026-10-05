@@ -3,11 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../../../src/compiler.js';
 
 /**
- * The `direct` convention is the shipped one, and the per-call work must not move it. Every case below pins the
- * artifact bytecode it produced before the per-call modules existed: a second compile without the option, and a
- * hash of the emitted ASM. The per-call convention may add artifacts, but it may not change this one. The pins moved
- * once, by the user's decision: an integer literal beside a bounded operand now takes its type, so `x + 1` carries
- * the range check Solidity gives it on every path.
+ * The `direct` convention is the shipped one, and the per-call work must not fork it. Every case compiles once
+ * with the option omitted and once with `composition: 'direct'`, and those two artifacts must be the same bytecode.
+ * The hashes are that bytecode. They moved once when an integer literal beside a bounded operand took its type, so
+ * `x + 1` carries the range check Solidity gives it, and again after later direct-convention fixes: a signature
+ * check stays at the front of the entry the SDK signs, and `msg.sender` is read from the authenticated execution
+ * frame. A per-call compile may add artifacts, but it may not make these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -29,9 +30,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.13.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: '74a96bf9f5f50e469cd718e20b7a45b5663964bf30c53b6ee25d91987c00f61a' },
+    pinnedSha256: '3df7177060937de14d9013ef41f0e5aa3ac90e90bfc8dbd8c0b9693f37ed119d' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: '37e73f9ca61e8a4ffd8a4239f6a47d2b7f05b7c6378cd40a21bface38a9ebb4a' },
+    pinnedSha256: '3c31dca38e1e5ed55b0b98709d58e7594628ad9ee630658e0736b9d0960fdc2f' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

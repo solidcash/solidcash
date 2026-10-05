@@ -3896,6 +3896,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * The descriptor this call binds, as its place in the entry's own list.
+   *
+   * The slot the direct collector assigned is that place. A compile-time-dead arm is given no slot, because the
+   * collector skips it, but the script still carries the arm, and the record an execution binds there is the
+   * position the path has reached. Both arms of a branch share that position, so the descriptor that names it is
+   * the one the skipped arm checks; a slot that names nothing else still refuses rather than binding another record.
+   */
+  private perCallDescriptorIndex(node: ExternalFunctionCallNode): number {
+    const sites = this.perCallSitesForCurrentFunction();
+    const index = node.callInfo?.externalCallSlotIndex;
+    if (index !== undefined && index >= 0) {
+      if (sites[index] !== undefined) return index;
+      throw this.perCallUnboundSite(node, index, sites.length);
+    }
+    const position = this.perCallOrdinal;
+    const namesThisCall = (site: MasterCallSite): boolean =>
+      site.interfaceName === node.interfaceName && site.functionName === node.functionName;
+    const atPosition = sites.findIndex((site) => site.ordinal === position && namesThisCall(site));
+    if (atPosition >= 0) return atPosition;
+    const byPosition = sites.findIndex((site) => site.ordinal === position);
+    if (byPosition >= 0) return byPosition;
+    const byName = sites.findIndex(namesThisCall);
+    if (byName >= 0) return byName;
+    throw this.perCallUnboundSite(node, index, sites.length);
+  }
+
+  /** The refusal a call site raises when no descriptor names the record it has to bind. */
+  private perCallUnboundSite(
+    node: ExternalFunctionCallNode, index: number | undefined, siteCount: number,
+  ): SolidcDiagnosticError {
+    return new SolidcDiagnosticError(
+      'PER_CALL_CODEGEN_UNAVAILABLE',
+      `the per-call call site '${node.interfaceName}.${node.functionName}' has no record to bind `
+      + `(slot ${index === undefined ? 'unset' : String(index)}, ${siteCount} site(s) for `
+      + `'${this.currentFunction.name}')`,
+      { interface: node.interfaceName, function: node.functionName, slot: index },
+    );
+  }
+
+  /**
    * Emits the checks one external call makes against its own witness record, where the source makes the call.
    *
    * The site is the record's position, which the source's slot index fixes for the straight-line calls the master
@@ -3904,17 +3944,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * decodes a return event, so a typed result reaches the body as the value it was recorded with.
    */
   private emitPerCallCallSite(node: ExternalFunctionCallNode, locationData: SingleLocationData): void {
-    const index = node.callInfo?.externalCallSlotIndex;
+    const index = this.perCallDescriptorIndex(node);
     const sites = this.perCallSitesForCurrentFunction();
-    if (index === undefined || sites[index] === undefined) {
-      throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call call site '${node.interfaceName}.${node.functionName}' has no record to bind `
-        + `(slot ${index === undefined ? 'unset' : String(index)}, ${sites.length} site(s) for `
-        + `'${this.currentFunction.name}')`,
-        { interface: node.interfaceName, function: node.functionName, slot: index },
-      );
-    }
     const site = sites[index]!;
     // The descriptor is the one the source means by this call, and the record it binds is the one at the position
     // the path has reached: a call inside a branch is at the same position on both arms, so the two arms bind their

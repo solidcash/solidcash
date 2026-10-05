@@ -4540,6 +4540,18 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         receivers.set(node.name, node.type);
         return false;
       }
+      if (node instanceof TupleAssignmentNode) {
+        // A tuple declaration publishes its locals after the RHS. `(IERC20 a, IERC20 b) = cond ? ...`
+        // is a real interface receiver for the calls that follow it.
+        if (node.tuple && visit(node.tuple, receivers)) return true;
+        if ((node.tupleExpressions ?? []).some((expression) => visit(expression, receivers))) return true;
+        for (const element of node.elements) {
+          if (element.name !== undefined && element.type !== undefined) {
+            receivers.set(element.name, element.type);
+          }
+        }
+        return false;
+      }
       if (node instanceof TryCatchNode) {
         // A failed operation aborts BCH execution, so the catch arms are not graph-call surfaces.
         return visit(node.expression, receivers) || visit(node.tryBlock, receivers);

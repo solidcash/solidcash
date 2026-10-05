@@ -167,7 +167,7 @@ function publishFunctionSources(
       // This collection has exactly one mutation in the entire handler. Its reads before that
       // mutation therefore refer to incoming entries, with keys captured at the read's source point.
       // Other collections may already have been changed and cannot use this pre-state proof.
-      if (node instanceof MappingAccessNode && node.name === target.name && !node.arrayIndex) {
+      if (node instanceof MappingAccessNode && node.name === access.collection && !node.arrayIndex) {
         const args = node.keys.map((key) => serialize(key, env));
         return args.every((arg): arg is ExternalCallExpression => arg !== undefined)
           ? { kind: 'entryPreValue', name: node.name, type, args } : undefined;

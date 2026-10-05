@@ -816,8 +816,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-owned: this entry's reachable scalar-handler call graph contains
   // a direct or mutual recursion cycle and requires SDK VM preflight.
   scalarJournalRecursive?: boolean;
-  /** A recursive varying-key mapping read which no authenticated affine stream claimed. Kernel admission must
-   * retain this marker across speculative clones and refuse the generic tail-loop representation. */
+  /** A recursive varying-key mapping read or write which no authenticated affine stream claimed. Kernel
+   * admission must retain this marker across speculative clones and refuse the generic tail-loop representation.
+   * The name still says read; a write-only shape sets it too, because that loop also has no per-frame key witness. */
   unloweredVaryingRecursiveMappingRead?: boolean;
   /** An indirect internal call may reach a journal-context ABI without a statically complete target set. The
    * kernel must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */

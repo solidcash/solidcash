@@ -3071,7 +3071,9 @@ export default class LowerTailRecursion extends AstTraversal {
     // A varying entry cannot use the invariant-entry cache, and the ordinary repeat loop publishes no key stream.
     // Leave every shape outside the exact rank proof above recursive so kernel admission fails closed.
     if (this.hasVaryingRecursiveMappingWrite(node) || this.hasVaryingRecursiveMappingRead(node)) {
-      node.unloweredVaryingRecursiveMappingRead = this.hasVaryingRecursiveMappingRead(node);
+      // A write-only shape has no mapping read, so copying only the read detector left it unmarked. The generic
+      // tail loop still has no per-frame key witness, and kernel admission refuses either side on this marker.
+      node.unloweredVaryingRecursiveMappingRead = true;
       return node;
     }
     const fold = selfCalls > 0 ? this.recursiveFoldShape([node], selfNames) : undefined;

@@ -47,18 +47,29 @@ contract C() {
   function setB(bytes v) { this.b = v; }
 }`;
 
-// Over the real operation-cost budget at its natural size (see RELEASE_READINESS): three dispatches through a
-// runtime-indexed internal fn-ptr memory array.
+// Over the real operation-cost budget at its natural size (see RELEASE_READINESS). Three dispatches over a
+// three-element table now settle (FunctionPointerArrayCall). Five dispatches over a ten-element table still
+// exceed the budget even at the maximum density reserve (BehaviorParityPins), which is the refusal this title
+// has to see named by the probe rather than swallowed.
 const FN_PTR_ARRAY = `contract C {
-  function add1(uint x) internal pure returns (uint) { return x + 1; }
-  function add2(uint x) internal pure returns (uint) { return x + 2; }
-  function mul10(uint x) internal pure returns (uint) { return x * 10; }
-  function pick(uint i, uint v) internal pure returns (uint) {
-    function(uint) internal pure returns (uint)[3] memory a;
-    a[0] = add1; a[1] = add2; a[2] = mul10;
-    return a[i](v);
+  function a(int x) public returns (int) { return x + 1; }
+  function b(int x) public returns (int) { return x + 2; }
+  function c(int x) public returns (int) { return x + 3; }
+  function d(int x) public returns (int) { return x + 5; }
+  function e(int x) public returns (int) { return x + 8; }
+  function test(int x, int i) internal returns (int) {
+    function(int) internal returns (int)[] memory arr = new function(int) internal returns (int)[](10);
+    arr[0] = a; arr[1] = b; arr[2] = c; arr[3] = d; arr[4] = e;
+    return arr[i](x);
   }
-  function ok() public pure { require(pick(0, 5) == 6); require(pick(1, 5) == 7); require(pick(2, 5) == 50); }
+  function ok() public returns (bool) {
+    require(test(10, 0) == 11);
+    require(test(10, 1) == 12);
+    require(test(10, 2) == 13);
+    require(test(10, 3) == 15);
+    require(test(10, 4) == 18);
+    return true;
+  }
 }`;
 
 // A whole-array assign, the X171 family.

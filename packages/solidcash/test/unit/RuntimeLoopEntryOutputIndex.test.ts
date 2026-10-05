@@ -9,11 +9,13 @@ describe('runtime loop entry output indices', () => {
       loopEntriesBeforeDynamicChunks: boolean;
       runtimeLoopTrailingSegments: unknown[];
       insertLoopPredecessorInputs: unknown[];
+      dynamicChunkInputs: unknown[];
       allInputs: unknown[];
     };
     builder.loopEntriesBeforeDynamicChunks = true;
     builder.runtimeLoopTrailingSegments = [];
     builder.insertLoopPredecessorInputs = [predecessor];
+    builder.dynamicChunkInputs = [];
     builder.allInputs = Array.from({ length: 7 }, (_, index) => index === 4 ? predecessor
       : { txid: index.toString(16).padStart(64, '0'), vout: 0 });
     expect(builder.getLoopEntryOutputBase()).toBe(4);
@@ -39,6 +41,35 @@ describe('runtime loop entry output indices', () => {
     expect((outputs[4] as any).token.nft.commitment).toBe('11'.repeat(65));
     expect((outputs[5] as any).token.nft.commitment).toBe('22'.repeat(65));
     expect(outputs[6]).toBe(calleeOutput);
+  });
+
+  it('compacts the predecessor coordinate by the old chunks of a same-call dynamic write', () => {
+    // Inputs: master, state, the written array's old chunk, the mapping predecessor, a funder. The covenant mints
+    // the predecessor rewrite at blockSize (2): the array's replacement chunk follows the entries at the suffix.
+    const chunk = { txid: 'cc'.repeat(32), vout: 0 };
+    const predecessor = { txid: 'aa'.repeat(32), vout: 1 };
+    const builder = Object.create(StatefulTransactionBuilder.prototype) as StatefulTransactionBuilder & {
+      loopEntriesBeforeDynamicChunks: boolean;
+      runtimeLoopTrailingSegments: unknown[];
+      insertLoopPredecessorInputs: unknown[];
+      dynamicChunkInputs: unknown[];
+      allInputs: unknown[];
+    };
+    builder.loopEntriesBeforeDynamicChunks = true;
+    builder.runtimeLoopTrailingSegments = [];
+    builder.insertLoopPredecessorInputs = [predecessor];
+    builder.dynamicChunkInputs = [chunk];
+    builder.allInputs = [
+      { txid: '00'.repeat(32), vout: 0 }, { txid: '01'.repeat(32), vout: 0 }, chunk, predecessor,
+      { txid: 'ff'.repeat(32), vout: 0 },
+    ];
+    expect(builder.getLoopEntryOutputBase()).toBe(2);
+
+    // A written chunk co-spent after the predecessor (the legacy input order) does not move it.
+    builder.allInputs = [
+      { txid: '00'.repeat(32), vout: 0 }, { txid: '01'.repeat(32), vout: 0 }, predecessor, chunk,
+    ];
+    expect(builder.getLoopEntryOutputBase()).toBe(2);
   });
 
   it('resolves interleaved segments after unsegmented entry outputs', () => {

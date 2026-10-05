@@ -5948,11 +5948,20 @@ export class StatefulTransactionBuilder {
       }
       // Legacy direct loops co-spend their predecessor before a nested callee. The compiler verifies the
       // predecessor recreation at that input's output coordinate; the later callee block must not move it.
-      const predecessorIndices = this.insertLoopPredecessorInputs.map((predecessor) => (
-        this.allInputs.findIndex((input) => input.txid.toLowerCase() === predecessor.txid.toLowerCase()
-          && input.vout === predecessor.vout)
-      )).filter((index) => index >= 0);
-      if (predecessorIndices.length > 0) return Math.min(...predecessorIndices);
+      // An old chunk of a dynamic array this call writes, co-spent ahead of the predecessor, compacts that
+      // coordinate by one: the array's replacement run is published at the suffix, after the entries, so the
+      // covenant's output base (emitTrailingWriteOutputBase) counts it on the input side only.
+      const inputIndexOf = (utxo: UnlockableUtxo): number => this.allInputs.findIndex((input) => (
+        input.txid.toLowerCase() === utxo.txid.toLowerCase() && input.vout === utxo.vout));
+      const predecessorIndices = this.insertLoopPredecessorInputs.map(inputIndexOf).filter((index) => index >= 0);
+      if (predecessorIndices.length > 0) {
+        const firstPredecessor = Math.min(...predecessorIndices);
+        const writtenChunksBefore = this.dynamicChunkInputs.filter((chunk) => {
+          const index = inputIndexOf(chunk);
+          return index >= 0 && index < firstPredecessor;
+        }).length;
+        return firstPredecessor - writtenChunksBefore;
+      }
       return this.getRuntimeLoopEventOutputBase() - this._trailingLoopEntryOutputCount();
     }
     if (this.delegateEntriesAfterLowLevel) {

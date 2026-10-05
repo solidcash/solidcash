@@ -84,26 +84,37 @@ describe('deployability certificate deployability / budget certificates', () => 
     expect(src).toMatch(/measuredBytecodeBytes:\s*asmToBytecode\(artifact\.bytecode\)\.length/);
   });
 
-  it('kernel-beta-manifest no longer uses stringly deployability not-asserted', () => {
+  it('kernel-beta-manifest screens route size and does not claim deployability', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const manifest = JSON.parse(readFileSync(
       join(here, '../../../../scripts/kernel-beta-manifest.json'),
       'utf8',
     )) as {
-      coldCompiles: Array<{ name: string; deployability: unknown }>;
+      coldCompiles: Array<{
+        name: string;
+        deployability?: unknown;
+        routeSizeScreen?: {
+          version: number;
+          p2shBytecodeLimit: number;
+          measuredRouteBytes: number;
+          routeAloneExceedsLimit: boolean;
+        };
+        modes: { kernel?: { routeBytes: number } };
+      }>;
     };
+    // The release gate forbids a deployability claim on these rows. The route-size screen is the pin.
     for (const entry of manifest.coldCompiles) {
-      expect(typeof entry.deployability).toBe('object');
-      expect(entry.deployability).not.toBe('not-asserted');
-      const cert = entry.deployability as {
-        version: number; status: string; withinP2shLimit: boolean;
-      };
-      expect(cert.version).toBe(1);
-      expect(['asserted', 'over-budget']).toContain(cert.status);
+      expect(entry.deployability).toBeUndefined();
+      const screen = entry.routeSizeScreen;
+      const routeBytes = entry.modes.kernel?.routeBytes;
+      expect(screen?.version).toBe(1);
+      expect(screen?.p2shBytecodeLimit).toBe(10_000);
+      expect(screen?.measuredRouteBytes).toBe(routeBytes);
+      expect(screen?.routeAloneExceedsLimit).toBe((routeBytes ?? 0) > (screen?.p2shBytecodeLimit ?? 0));
     }
     const marketplace = manifest.coldCompiles.find((entry) => entry.name === 'marketplace-v1');
-    expect((marketplace?.deployability as { status: string }).status).toBe('over-budget');
+    expect(marketplace?.routeSizeScreen?.routeAloneExceedsLimit).toBe(true);
     const unicrow = manifest.coldCompiles.find((entry) => entry.name === 'unicrow-claim');
-    expect((unicrow?.deployability as { status: string }).status).toBe('asserted');
+    expect(unicrow?.routeSizeScreen?.routeAloneExceedsLimit).toBe(false);
   });
 });

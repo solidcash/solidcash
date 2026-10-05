@@ -6416,6 +6416,14 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * True when dense placement will put a container UTXO at the published satoshi slot.
+   * Funder accounting must not also reserve a neutral input for that same slot.
+   */
+  hasLoadedSatoshiContainer(): boolean {
+    return this.satoshiContainerUtxo !== undefined;
+  }
+
+  /**
    * Check if the satoshi container is fully drained (all satoshis transferred out).
    */
   isSatoshiContainerDrained(): boolean {

@@ -102,4 +102,4 @@ No dependency change is in the tree. The measured case for the PR is the encodeD
 
 ## Marketplace titles
 
-The four-cell matrix has not been repeated on marketplace titles. One proxied per-call run on stock libauth with the SDK overrides on is in `PERF_KERNEL_VS_PERCALL.md`: take job 62.208 s, approve result 131.787 s, worker CPU 80.9 percent VM. The profile resolves `@bitauth/libauth` from `node_modules`, so it is the stock column, not the fork. Approve sanity, refund sanity, and the kernel lane are not timed yet.
+The four-cell matrix has not been repeated on marketplace titles. Every marketplace number in `PERF_KERNEL_VS_PERCALL.md` is stock `@bitauth/libauth` from `node_modules`, with the SDK overrides on. That doc records the proxied per-call lane (take job 62.208 s, approve result 131.787 s, worker CPU 80.9 percent VM), the kernel proxied lane (take job 126.242 s, approve result 111.212 s, no CPU profile), and the no-proxy per-call sanity titles (approve sanity 1044.307 s, refund sanity 718.767 s, worker CPU 89.5 percent VM). Kernel transaction bytes, fee, and input counts were not collected on that kernel run.

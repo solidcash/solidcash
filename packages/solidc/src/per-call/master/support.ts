@@ -63,7 +63,6 @@ import {
   IndirectCallNode,
   InterfaceNode,
   IntLiteralNode,
-  NewArrayNode,
   LiteralNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
@@ -73,6 +72,7 @@ import {
   MappingFieldAssignNode,
   MethodCallNode,
   MethodCallStatementNode,
+  NewArrayNode,
   Node,
   NullaryOpNode,
   ParameterNode,
@@ -483,12 +483,6 @@ function boundKeyExpression(
 }
 
 /**
- * The one value stored at a literal index of a local array, or undefined when that store is not a single assignment.
- *
- * Any other write of the array (another index, a push, a pop, a delete, or a whole-array assign) leaves the element
- * unresolved, so the caller refuses the key rather than hashing a value the body may not still hold.
- */
-/**
  * The local a literal-index read belongs to.
  *
  * The array is that local, or the one `new T[](N)` it was copied from. Inlining a helper argument substitutes the
@@ -510,6 +504,12 @@ function arrayElementLocal(array: ExpressionNode, entry: FunctionDefinitionNode)
   return count === 1 ? name : undefined;
 }
 
+/**
+ * The one value stored at a literal index of a local array, or undefined when that store is not a single assignment.
+ *
+ * Any other write of the array (another index, a push, a pop, a delete, or a whole-array assign) leaves the element
+ * unresolved, so the caller refuses the key rather than hashing a value the body may not still hold.
+ */
 function singleLiteralElement(node: ExpressionNode, entry: FunctionDefinitionNode): ExpressionNode | undefined {
   if (!(node instanceof ArrayAccessNode) || !(node.index instanceof IntLiteralNode)) return undefined;
   const name = arrayElementLocal(node.array, entry);

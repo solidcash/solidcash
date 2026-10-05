@@ -49,8 +49,12 @@ describe('kernel absent sorted reads beside writes', () => {
       }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed, sortedMappingsAll: false });
-    expect(artifacts.Ledger.delegateArtifact!.messageBus!.route.sortedBatchInfo)
-      .toEqual([{ collection: 'profiles', slotIndices: [0, 1] }]);
+    // The route is the union of the fixed sorted writes: profile writers occupy 0-7 and the
+    // messages append occupies 8-9. The absent profile read is not one of those writes.
+    expect(artifacts.Ledger.delegateArtifact!.messageBus!.route.sortedBatchInfo).toEqual([
+      { collection: 'profiles', slotIndices: [0, 1, 2, 3, 4, 5, 6, 7] },
+      { collection: 'messages', slotIndices: [8, 9] },
+    ]);
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x6d), provider);
     for (let index = 0; index < 16; index += 1) await provider.addUtxo(signer.getAddress(), {

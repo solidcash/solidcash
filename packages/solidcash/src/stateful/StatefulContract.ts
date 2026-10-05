@@ -7818,7 +7818,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ? paramName.slice('__message_bus_ek_'.length) : paramName;
             const idx = entryAbiFunction!.inputs.findIndex((inp) =>
               inp.name === paramName || inp.name === abiParamName);
-            const v = entryArgs[idx] as bigint | boolean | Uint8Array | string;
+            const v = entryArgs[idx] as bigint | number | boolean | Uint8Array | string;
             // An address key is hashed as its locking bytecode (matching the covenant's on-stack address and the
             // default entry model). Bytes keys arrive as Uint8Array (raw); ints as their VM number.
             if (keyType === 'address' && typeof v === 'string' && v.includes(':')) return addressToLockScript(v);
@@ -7830,10 +7830,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               return bigIntToVmNumber(BigInt(v));
             }
             try {
+              // A numeric key's on-stack form is its minimal VM number, so 0 is the EMPTY byte string. Falling
+              // through to the pushdata encoder hashes 0x00 instead, which is a different vmap slot: measured on
+              // the no-proxy MarketplaceV1 whitelist getter, the covenant wrote whitelistWorkers[0][worker] at
+              // sha256(sha256(empty) ++ sha256(worker-lockscript)) while the read looked up
+              // sha256(sha256(0x00) ++ sha256(worker-lockscript)), co-spent the neighbouring head sentinel and
+              // halted on the entry covenant's OP_VERIFY.
               return typeof v === 'bigint' ? bigIntToVmNumber(v)
-                : v instanceof Uint8Array ? v
-                  : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
-                    : encodePushdataValue(v as StateValue, keyType, stateLayout.structs);
+                : typeof v === 'number' ? bigIntToVmNumber(BigInt(v))
+                  : v instanceof Uint8Array ? v
+                    : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
+                      : encodePushdataValue(v as StateValue, keyType, stateLayout.structs);
             } catch (cause) {
               throw new Error(
                 `Cannot encode ${access.collection} entry key '${paramName}' (slot ${slotIndex}) as ${keyType}`,

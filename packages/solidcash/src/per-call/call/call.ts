@@ -90,6 +90,7 @@ import { createVirtualMachineBch2026ForProvider } from '../../network/createVirt
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
+import { traceBroadcast } from '../../tx-trace.js';
 import {
   deployMaster,
   eventCloseOf,
@@ -2374,6 +2375,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   const { encodeTransaction, hash256 } = await import('@bitauth/libauth');
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
+  traceBroadcast(builder.inputs, builder.outputs, transaction.inputs, rawBytes.length);
   const submitPrepared = provider.sendPreparedTransaction?.bind(provider);
   const txid = submitPrepared !== undefined
     ? await submitPrepared({ rawHex, rawBytes, transaction })

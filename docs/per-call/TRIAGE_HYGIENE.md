@@ -11,6 +11,7 @@ Surveyed 2026-10-05 on `feat/per-call` at `57dfa942e`. Nothing in this list is d
 | `packages/solidc/src/generation/GenerateTargetTraversal.ts` | `SOLIDC_DEBUG_COMPUTE_BASE`, `SOLIDC_DEBUG_ENTRY_INPUT_INDEX`, `SOLIDC_DEBUG_EMIT_TRAP`, `SOLIDC_DEBUG_NO_OUTLINE`, `SOLIDC_DEBUG_OUTLINE_TIMING`, `SOLIDC_DEBUG_CALL_INDEX`, `SOLIDC_DEBUG_DYNAMIC_FRAME` |
 | `packages/solidc/src/artifact/Artifact.ts` | `SOLIDC_DEBUG_TRANSFER_EFFECTS` |
 | `packages/solidcash/src/network/createVirtualMachine.ts` | `SOLIDC_DEBUG_SPLIT_FAILURE` (step probe, `console.error` of `split-failure` and `pick-count-layout`) |
+| `packages/solidcash/src/tx-trace.ts` | `SOLIDCASH_TX_TRACE` (one JSON line per broadcast: bytes, inputs, outputs, fee, largest unlocking script). Measurement hook. Remove before the tag. |
 | `packages/solidcash/src/stateful/stb-submit-final-transaction.ts` | `SOLIDC_DEBUG_REPAIR_CONVERGENCE`, `SOLIDC_DEBUG_EXTERNAL_ARGS` |
 | `packages/testing/src` | `SOLIDC_DEBUG_HARNESS_TIMING`, `SOLIDC_DEBUG_ROUTE_CONCISE`, `SOLIDC_DEBUG_EMIT_MATCH` |
 

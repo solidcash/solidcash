@@ -97,7 +97,8 @@ No dependency change is in the tree. The measured case for the PR is the encodeD
 `yarn test:unit` (`c8 ava`) on `/Code/libauth`.
 
 1. Without `yarn build:wasm`, five tests failed with `ENOENT` for `ripemd160.wasm`, `sha1.wasm`, `sha256.wasm`, `sha512.wasm`, and `secp256k1.wasm`. `test:unit` does not copy wasm; `yarn build` does. That run is not the suite result.
-2. After `yarn build:wasm`, the wasm tests passed, including `getEmbeddedSecp256k1Binary` and the BCH-2026 `OP_DEFINE` copy-on-write specs. The run reported 1271 passed, 118 known failures, 1985 skipped, 77 todo, and 1 uncaught exception: `src/lib/crypto/secp256k1.spec.ts` could not open the unplugged native package `secp256k1@5.0.0` at `.yarn/unplugged/secp256k1-npm-5.0.0-cbca9dfca0`. That is a missing install artifact, not a VM assertion. The log is `w1-libauth-suite.log`. A rerun after the native package is materialized is required before this cell is exit 0.
+2. After `yarn build:wasm`, a rerun still threw once: `secp256k1.spec.ts` could not open the unplugged native package `secp256k1@5.0.0`. The wasm VM tests had already passed. The package zip was in `.yarn/cache` and was extracted to the unplugged path Yarn named. `import('secp256k1')` then loaded.
+3. The restored `yarn test:unit` exited 0. Ava reported 1328 passed, 118 known failures, 1985 skipped, and 78 todo. There was no uncaught exception. The log is `w1-libauth-suite.log` and ends with `YARN_TEST_UNIT_EXIT=0`. The 118 known failures are Ava's expected-failure count, not a non-zero exit.
 
 ## Marketplace titles
 

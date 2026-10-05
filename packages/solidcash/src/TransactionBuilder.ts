@@ -25,6 +25,7 @@ import {
   isCovenantUnlocker,
 } from './interfaces.js';
 import { NetworkProvider } from './network/index.js';
+import { traceBroadcast } from './tx-trace.js';
 import {
   hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
   SHARED_LIBRARY_SALT, ExternalLibraryAbi,
@@ -1202,6 +1203,7 @@ export class TransactionBuilder {
     this.checkMaxFee(transaction);
     const txBin = encodeTransaction(transaction);
     const tx = binToHex(txBin);
+    traceBroadcast(this.inputs, this.outputs, transaction.inputs, txBin.length);
 
     // X131, the finalized-bytes gate at `TransactionBuilder.send`, one of the seven live broadcast sites in
     // `src/`. It reads the DECODED broadcast bytes rather than a

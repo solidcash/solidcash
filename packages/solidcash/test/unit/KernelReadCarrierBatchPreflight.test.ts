@@ -276,7 +276,7 @@ const dispositionArtifact = (): Artifact => {
       },
       kernelEntryJournal: {
         version: 1, kernelJournalDispositions: manifest,
-        kernelJournalDispositionCommitment: { version: 1, digest },
+        kernelJournalDispositionCommitment: { version: 1, digest: manifestDigest },
         capabilities: [{ kind: 'internal-read-carrier', version: 1, scopes: [
           { handlerSelector: '11111111', journalAccessStreamIndex: 0 },
           { handlerSelector: '11111111', journalAccessStreamIndex: 1 },

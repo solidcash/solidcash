@@ -1,6 +1,6 @@
 # Performance: kernel vs per-call (W2)
 
-Measured 2026-10-05. Two proxied lanes are in this file: per-call at `12c011dfe`, and the kernel lane at `d7f3c7ad6` in `.worktrees/kernel-beta-candidate`. The no-proxy lane is not in this run.
+Measured 2026-10-05. Three lanes: per-call proxied at `12c011dfe`, per-call no-proxy at `d326e325b` (measurement worktree, sources retargeted at the no-proxy contracts), and the kernel lane at `d7f3c7ad6`.
 
 ## How this lane was run
 
@@ -78,7 +78,37 @@ The plan records post-merge per-call titles about 1.5 to 2 times faster than the
 
 Not re-running an evaluation that stopped on a failing close (`d8166489d`) took the slowest no-proxy title from 1,415 s to 1,286 s, about 9 percent. The per-call worker profile is 81 percent VM on stock libauth. Neither number accounts for a 27 s versus 49 s close-job gap. That title is still untimed in this pair.
 
+## No-proxy per-call lane
+
+Worktree `.worktrees/per-call-noproxy-measure`, detached at `d326e325b`, `composition: 'per-call'`. Contract and test paths point at `/Code/effectiveacceleration.ai/contract-noproxy`. Same relaxed mock limits as the proxied config. `MARKETPLACE_FIXTURE_STALE_OK` was unset. Worker heap 6144 MB, one worker. `SOLIDCASH_TX_TRACE=1`.
+
+Fixture compile: 97 seconds, 22 sources, 26 artifacts, 0 cache hits. `MarketplaceV1.json` mtime 2026-10-05 10:37:32 UTC. The harness test file is a symlink to the no-proxy `marketplace.test.ts`. The first vitest launch exited before that symlink existed. The numbers below are the retry, against the fixture from that compile.
+
+| title | result | wall |
+|---|---|---:|
+| approve result and review / sanity checks | passed | 1044.307 s (17.4 min) |
+| refund / sanity checks | passed | 718.767 s (12.0 min) |
+
+Vitest file duration 1768.73 s (tests 1763.08 s). Exit 0. Two passed, 63 skipped. Both titles finished inside the original 20-minute budget. The harness timeout in `vitest.marketplace.config.ts` is still 40 minutes.
+
+Fee on a composed call equals its byte length (fee rate 1). The largest unlocking script is 135,908 bytes, above the 10,000-byte standard input limit.
+
+approve sanity, 33 broadcasts, 7,708,325 bytes, fee 7,720,215 satoshis. Twenty are multi-input. The largest is 1,314,520 bytes, 45 inputs, 71 outputs, fee 1,314,520, largest unlocking script 133,320 bytes.
+
+refund sanity, 10 broadcasts, all multi-input, 5,058,396 bytes, fee 5,058,396 satoshis. The largest is 989,220 bytes, 40 inputs, 61 outputs, fee 989,220, largest unlocking script 130,101 bytes.
+
+One CPU profile for the worker, 847,724 samples:
+
+| bucket | samples | share |
+|---|---:|---:|
+| VM (stock `libauth` plus `runPhases`) | 758756 | 89.5% |
+| derivation | 20649 | 2.4% |
+| compile | 98 | 0.0% |
+| other, of which garbage collection is 51474 samples (6.1%) | 68221 | 8.0% |
+
+The profile resolves `@bitauth/libauth` from `node_modules`, so this is stock libauth with the SDK overrides. `stateStepMutate` and `collect` in `createVirtualMachine.js` are the top self-time after the garbage collector.
+
 ## Still to run
 
-- No-proxy per-call: approve sanity and refund sanity, same limits and the same matcher.
-- Kernel transaction bytes, fee, and input counts, and a kernel CPU profile. This run did not collect them.
+- Kernel transaction bytes, fee, and input counts, and a kernel CPU profile. That run did not collect them.
+- The four-cell libauth matrix on these titles. Every marketplace number above is stock libauth with the SDK overrides on.

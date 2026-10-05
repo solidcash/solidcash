@@ -223,10 +223,10 @@ describe('large-contract state-local splitting', () => {
   });
 
   it('forwards the proxy master witness across calls between delegate facet entries', () => {
-    // Once the unsplit contract is too large, view entries move into facets too. `a` and `b` both call the
-    // view entry `owner` through their expanded modifier, so all three share a facet and `owner()` is an
-    // internal call to a delegate entry. Its compiler-owned proxy witness must propagate just like the
-    // return-output witness (FlexUSD's Ownable.onlyOwner shape).
+    // Once the unsplit contract is too large, view entries move into facets too. `a` and `b` call `owner`
+    // through their expanded modifier. That closure is larger than the unsplit contract once each entry is a
+    // delegate, so the public owner selector gets its own facet. Every delegate entry still receives the
+    // proxy master witness (FlexUSD's Ownable.onlyOwner shape).
     const unrelated = Array.from({ length: 10 }, (_, i) =>
       `function p${i}(uint v) public { x = x + v + ${i}; require(v >= 0); }`).join('');
     const source = `contract C {
@@ -241,8 +241,17 @@ describe('large-contract state-local splitting', () => {
     const bundle = compileStringSplit(source, {
       solidityImportCompat: true, maxShardBytes: unsplitBytes - 1,
     });
-    expect(bundle.manifest.facets.some((facet) =>
-      ['a', 'b', 'owner'].every((name) => facet.functions.includes(name)))).toBe(true);
+    const hasProxy = (facetName: string, functionName: string): boolean => bundle.facets[facetName].abi
+      .find((fn) => fn.name === functionName)?.inputs
+      .some((input) => input.name === '__internal__proxyMasterIndex') === true;
+    const callers = bundle.manifest.facets.find((facet) =>
+      ['a', 'b'].every((name) => facet.functions.includes(name)));
+    expect(callers).toBeDefined();
+    expect(hasProxy(callers!.name, 'a')).toBe(true);
+    expect(hasProxy(callers!.name, 'b')).toBe(true);
+    const ownerFacet = bundle.manifest.facets.find((facet) => facet.functions.includes('owner'));
+    expect(ownerFacet).toBeDefined();
+    expect(hasProxy(ownerFacet!.name, 'owner')).toBe(true);
   });
 
   it('does not require a return blob from an unconditionally reverting facet entry', () => {

@@ -25,6 +25,15 @@ function solidityAddressArgumentIdentity(bytes: Uint8Array): string | undefined 
   return identity && binToHex(identity);
 }
 
+/** The ABI word before address encoding. A 20-byte word is an identity, not a P2PKH payload. */
+function rawAddressWord(value: FunctionArgument): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
+  if (typeof value !== 'string' || value.includes(':')) return undefined;
+  const hex = value.replace(/^0x/iu, '');
+  if (!/^(?:[0-9a-f]{2})+$/iu.test(hex)) return undefined;
+  return hexToBin(hex);
+}
+
 const artifactExecutionIdentities = new WeakMap<object, string>();
 
 /**
@@ -434,9 +443,12 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       .filter((candidate): candidate is string => candidate !== undefined)
       .map((candidate) => candidate.toLowerCase());
     const sourceUsesSolidityAddresses = source.artifact.compiler?.options?.solidityImportCompat === true;
-    const suppliedIdentity = sourceUsesSolidityAddresses && encoded instanceof Uint8Array
-      && (encoded.length === 20 || encoded.length === 32)
-      ? solidityAddressArgumentIdentity(encoded) : undefined;
+    // Address encoding rewrites a 20-byte word into a P2PKH lock. Prove the word, so a p2sh32 owner whose
+    // payload is that word still matches, and a real locking script still matches by its exact bytes below.
+    const rawWord = rawAddressWord(supplied as FunctionArgument);
+    const suppliedIdentity = sourceUsesSolidityAddresses && rawWord
+      && (rawWord.length === 20 || rawWord.length === 32)
+      ? solidityAddressArgumentIdentity(rawWord) : undefined;
     const suppliedTargets = encodedHex === undefined ? [] : [encodedHex];
     const exactTarget = authenticatedTargets.find((candidate) => candidate === encodedHex);
     const projectedTargets = [...new Set(authenticatedTargets.filter((candidate) => {

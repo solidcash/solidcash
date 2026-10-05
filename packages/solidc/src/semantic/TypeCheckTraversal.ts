@@ -230,6 +230,15 @@ export default class TypeCheckTraversal extends AstTraversal {
       .map((parameter) => parameter.type);
   }
 
+  /** Source calls pass user parameters. A call that already carries hidden witnesses keeps that signature. */
+  private expectedCallSiteTypes(fn: FunctionDefinitionNode, argumentCount: number): Type[] {
+    const visible = fn.parameters
+      .filter((parameter) => !parameter.name.startsWith('__internal__'))
+      .map((parameter) => parameter.type);
+    if (argumentCount === visible.length) return visible;
+    return this.callSiteParameterTypes(fn);
+  }
+
   private rootFileId: string;
 
   /** ` at line N` for a warning, naming the imported file when line N is not in the file being compiled. */
@@ -1857,7 +1866,9 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.parameters.splice(senderParamIndex, 1);
       }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
-      const resolvedParamTypes = this.callSiteParameterTypes(node.resolvedFunction);
+      const resolvedParamTypes = this.expectedCallSiteTypes(
+        node.resolvedFunction, node.parameters.length,
+      );
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
         this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true
@@ -1884,7 +1895,9 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.parameters.splice(senderParamIndex, 1);
       }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
-      const resolvedParamTypes = this.callSiteParameterTypes(node.resolvedFunction);
+      const resolvedParamTypes = this.expectedCallSiteTypes(
+        node.resolvedFunction, node.parameters.length,
+      );
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
         this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true

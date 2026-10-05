@@ -202,11 +202,21 @@ export async function fanOutPlainUtxos(
  * override. The returned contract is ready to call and carries `deploymentTransaction()` + `waitForDeployment()`.
  */
 export class ContractFactory<T extends Artifact = Artifact> {
-  constructor(readonly artifact: T, readonly runner: ContractRunner) {}
+  constructor(
+    readonly artifact: T,
+    readonly runner: ContractRunner,
+    /**
+     * Deploy overrides every `deploy` call starts from, which the call's own trailing overrides then refine.
+     *
+     * A host that binds a project-wide deployment convention - the identity a deployment is addressed by, say -
+     * states it once here rather than at every call site.
+     */
+    private readonly defaultDeployOptions: DeployContractOptions = {},
+  ) {}
 
   /** Return a new factory bound to a different runner (ethers `factory.connect`). */
   connect(runner: ContractRunner): ContractFactory<T> {
-    return new ContractFactory(this.artifact, runner);
+    return new ContractFactory(this.artifact, runner, this.defaultDeployOptions);
   }
 
   /**
@@ -261,6 +271,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         && looksLikeOverrides(args[args.length - 1])) {
       overrides = args.pop() as DeployContractOptions;
     }
+    overrides = { ...this.defaultDeployOptions, ...overrides };
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
     const constructorArgs = normalizeRegisteredAddressArguments(
@@ -436,8 +447,10 @@ export class ContractFactory<T extends Artifact = Artifact> {
 }
 
 /** ethers/hardhat `getContractFactory` - build a ContractFactory from an artifact + runner. */
-export function getContractFactory<T extends Artifact>(artifact: T, runner: ContractRunner): ContractFactory<T> {
-  return new ContractFactory(artifact, runner);
+export function getContractFactory<T extends Artifact>(
+  artifact: T, runner: ContractRunner, defaultDeployOptions?: DeployContractOptions,
+): ContractFactory<T> {
+  return new ContractFactory(artifact, runner, defaultDeployOptions);
 }
 
 /**

@@ -236,6 +236,8 @@ interface EthersOptions {
   accountsPath?: string;
   accountSatoshis?: bigint;
   recoveryProjection: 'p2pkh' | 'evm';
+  /** False binds every deploy to the address its own transaction produces instead of a stable CREATE identity. */
+  logicalIdentity: boolean;
 }
 
 /** Hardhat signers use EIP-191 message signatures; the BCH SDK signer intentionally uses Bitcoin Signed Message. */
@@ -259,6 +261,8 @@ function withEthersMessageSigning<T extends Signer>(signer: T): T {
 
 function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOptions): SolidcashEthers {
   const { artifactsDir, accountsPath } = opts;
+  // Every deploy in the project starts from this convention; a call's own trailing overrides refine it.
+  const deployDefaults: DeployContractOptions = opts.logicalIdentity ? {} : { logicalNonce: false };
   const regtestFunding = new Map<string, Promise<void>>();
   const fundRegtestSigner = async (signer: Signer, satoshis: bigint | undefined): Promise<void> => {
     if (!(provider instanceof RegtestNetworkProvider) || satoshis === undefined) return;
@@ -394,7 +398,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     if (isSplitBundle(loaded)) {
       return new HardhatSplitContractFactory(SplitContractBundle.from(loaded, boundRunner));
     }
-    return wrapFactoryDeploy(sdkGetContractFactory(loaded as T, boundRunner));
+    return wrapFactoryDeploy(sdkGetContractFactory(loaded as T, boundRunner, deployDefaults));
   }) as SolidcashEthers['getContractFactory'];
   const contractAt = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
     addressOrCategory: string, runner?: ContractRunner) => {
@@ -415,7 +419,9 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
         .deploy(...args, ...(overrides ? [overrides] : []));
     }
     return (async () => {
-      const deployed = await sdkDeployContract(loaded as T, args, runner ?? defaultRunner(), overrides);
+      const deployed = await sdkDeployContract(
+        loaded as T, args, runner ?? defaultRunner(), { ...deployDefaults, ...overrides },
+      );
       registerDeployTargetChildren(deployed as Registerable);
       return deployed;
     })();
@@ -523,6 +529,7 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
       : config.compiler?.ecrecover === 'p2pkh' ? 'p2pkh'
         : config.compiler?.solidityImportCompat === true ? 'evm'
           : 'p2pkh',
+    logicalIdentity: config.logicalIdentity,
   };
   const base = buildConnection(name, selectedConfig, mnemonic, ethersOpts);
   // The active provider backs the module-global network helpers (loadFixture/time/...).

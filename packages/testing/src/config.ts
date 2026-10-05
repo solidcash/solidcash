@@ -68,6 +68,15 @@ export interface SolidcashConfig {
    * the contract's state once per transaction. Passed through to solidc `compileString` / `compileStringMulti`.
    */
   composition?: 'direct' | 'per-call';
+  /**
+   * Address a deployment by a stable, chain-independent CREATE identity (default) or by the address its own
+   * deployment transaction produces.
+   *
+   * A project whose contracts derive or compare each other's addresses - an EVM port computing expected
+   * addresses from the deployer and its nonce, say - needs the physical form, because the stable identity is
+   * deliberately not the address the deployment lands at.
+   */
+  logicalIdentity?: boolean;
   /** Optional generated TypeChain-compatible bindings. */
   typegen?: TypegenConfig;
 }
@@ -82,6 +91,7 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   solc?: Record<string, unknown>;
   compiler?: Record<string, unknown>;
   composition?: 'direct' | 'per-call';
+  logicalIdentity: boolean;
   typegen: {
     targets: { target: TypegenTarget; layout: 'typechain'; outDir: string; sourceDir?: string }[];
     jsonArtifactModules?: boolean;
@@ -104,6 +114,7 @@ export const solidcashConfigSchema = {
     defaultNetwork: { type: 'string' }, mnemonic: { type: 'string' },
     compiler: { type: 'object' }, solc: { type: 'object', deprecated: true },
     composition: { enum: ['direct', 'per-call'] },
+    logicalIdentity: { type: 'boolean' },
     networks: { type: 'object', additionalProperties: { type: 'object' } },
     accounts: { type: 'object' },
     typegen: { type: 'object', properties: { targets: { type: 'array', items: {
@@ -142,6 +153,7 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
     solc: compiler,
     compiler,
     composition: config.composition,
+    logicalIdentity: config.logicalIdentity ?? true,
     typegen: {
       jsonArtifactModules: config.typegen?.jsonArtifactModules,
       targets: configuredTargets.map((target) => ({

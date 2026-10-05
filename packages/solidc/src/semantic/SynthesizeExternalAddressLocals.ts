@@ -13,6 +13,8 @@ import {
   FieldAccessNode,
   ArrayAccessNode,
   MappingAccessNode,
+  BinaryOpNode,
+  UnaryOpNode,
   IntLiteralNode,
   TupleIndexOpNode,
   CastNode,
@@ -32,6 +34,7 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { Modifier } from '../ast/Globals.js';
+import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 
 /**
  * Rewrites an external method call whose target address is read from THIS contract's own (self-pinned) state
@@ -51,6 +54,17 @@ import { Modifier } from '../ast/Globals.js';
  * self-pinned state value, never a per-call caller witness - it is NOT lifted to a parameter.
  */
 const PREFIX = '__extaddr_';
+// Arithmetic of parameters and literals is still in scope at the function-body top.
+const INDEX_BINARY = new Map<BinaryOperator, string>([
+  [BinaryOperator.PLUS, 'plus'],
+  [BinaryOperator.MINUS, 'minus'],
+  [BinaryOperator.MUL, 'mul'],
+  [BinaryOperator.DIV, 'div'],
+  [BinaryOperator.MOD, 'mod'],
+]);
+const INDEX_UNARY = new Map<UnaryOperator, string>([
+  [UnaryOperator.NEGATE, 'neg'],
+]);
 const ADDRESS_METHODS = new Set(['send', 'call', 'staticcall', 'delegatecall']);
 const LOW_LEVEL_CALLS = new Set(['call', 'staticcall', 'delegatecall']);
 // Synthetic single-assignment alias locals safe to trace through: `__rh*`/`__inl*` are inliner-created bindings of
@@ -1136,11 +1150,19 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return undefined;
   }
 
-  // An index safe to evaluate at the function-body top: a literal, or a param (params are in scope there); NOT
-  // a local (declared later) - hoisting a local-indexed read would reference an undeclared name.
+  // An index safe to evaluate at the function-body top: a literal, a param, or arithmetic of those.
+  // A local is not safe: hoisting a local-indexed read would reference a name declared later.
   private indexSafe(e: ExpressionNode): boolean {
-    return e instanceof IntLiteralNode
-      || (e instanceof IdentifierNode && (this.currentParams.has(e.name) || this.stateRoots.has(e.name)));
+    if (e instanceof IntLiteralNode) return true;
+    if (e instanceof IdentifierNode) {
+      return this.currentParams.has(e.name) || this.stateRoots.has(e.name);
+    }
+    if (e instanceof CastNode) return this.indexSafe(e.expression);
+    if (e instanceof UnaryOpNode) return INDEX_UNARY.has(e.operator) && this.indexSafe(e.expression);
+    if (e instanceof BinaryOpNode) {
+      return INDEX_BINARY.has(e.operator) && this.indexSafe(e.left) && this.indexSafe(e.right);
+    }
+    return false;
   }
 
   // A stable underscore-joined name fragment for an access chain (root + fields + literal/param indices), so two
@@ -1159,6 +1181,17 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (expr instanceof ArrayAccessNode) {
       const arr = this.chainKey(expr.array); const idx = this.chainKey(expr.index);
       return arr && idx ? `${arr}_${idx}` : undefined;
+    }
+    if (expr instanceof BinaryOpNode) {
+      const left = this.chainKey(expr.left);
+      const right = this.chainKey(expr.right);
+      const op = INDEX_BINARY.get(expr.operator);
+      return left && right && op ? `${op}_${left}_${right}` : undefined;
+    }
+    if (expr instanceof UnaryOpNode) {
+      const inner = this.chainKey(expr.expression);
+      const op = INDEX_UNARY.get(expr.operator);
+      return inner && op ? `${op}_${inner}` : undefined;
     }
     if (expr instanceof TupleIndexOpNode) {
       const t = this.chainKey(expr.tuple);

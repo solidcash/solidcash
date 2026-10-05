@@ -39,6 +39,25 @@ Compiled 2026-10-05 from `/Code/mistswap/mistswap/contracts` with `compileFile`.
 
 Per-call deployment UTXOs are 17 to 21 (state records plus the default 12 masters and 4 validators). Direct deployment UTXOs are 2 to 5. MasterChef's five refusals are repeated `balanceOf` / `transferFrom` calls and a verified-mapping write behind an unfixed call. UniswapV2Factory's per-call script is 9,433 bytes, under the input limit, because `createPair` is refused. The other four per-call scripts are over 10,000 bytes.
 
+## Solidity corpus
+
+`examples/solidity-corpus` compiles `/Code/solidity/test/libsolidity/semanticTests` and `syntaxTests`: 5,202 files. Each file was compiled twice with `compileFile`, 8 second timeout, zero timeouts. Direct options are `solidityImportCompat: true`. Per-call adds `composition: 'per-call'`. Artifacts are paired by source path and contract name.
+
+| | direct | per-call |
+|---|---:|---:|
+| files compiled | 2574 | 2179 |
+| files that failed | 2628 | 3023 |
+| script bytes, sum | 1788551 | 10522654 |
+| script bytes, median | 335 | 4059 |
+| script bytes, max | 27187 | 129005 |
+| function-body bytes, sum | 727908 | 1654706 |
+| over 10,000 bytes | 6 | 48 |
+| refused entries | 0 | 86 on 56 artifacts |
+
+2,158 identities compiled on both sides. Per-call bytecode is larger on 2,008 of them, equal on 150, and smaller on none. The median growth is 3,668 bytes. Six are over 10,000 bytes on both sides. 38 more cross that line only under per-call.
+
+About 400 files compile on the direct convention and not under per-call. The repeated reason is `PER_CALL_CODEGEN_UNAVAILABLE`: the contract needs a master the head cannot build, or it uses `new` to create a contract. Smaller groups are a constructor the head cannot serve, an address slot reserved twice, and `msg.data` on a single-entry master.
+
 Per-call MarketplaceV1 is 135,056 script bytes against 265,204 on the kernel side. Every paired application contract is over the 10,000-byte input limit on both conventions. Mocknet is what allows those spends. UnicrowClaim is the one paired contract whose per-call script is larger (21,801 vs 16,557).
 
 ## Kernel-only contracts (no per-call artifact in this directory)

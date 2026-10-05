@@ -269,15 +269,17 @@ describe('entry presence in a direct delegate executor', () => {
       kept.outputs[entryOutput(kept, key)]!.token!.nft!.commitment = await notes.storedCommitment(key);
       await expect(notes.h.replay(kept)).resolves.toMatch(refusedAt(frame));
     }
-    // The batch's own topology is verified too: a rows witness the outputs do not follow is refused.
+    // Two fixed targets take their order from the slot hashes and each proof's next field. The packed
+    // rows blob is not read on that path, so this flips the successor the proof must match.
     const forged = decodeTransactionUnsafe(hexToBin(hex));
     const instructions = decodeAuthenticationInstructions(forged.inputs[frame]!.unlockingBytecode);
-    const rows = notes.pushOf('removeBothIf', '__internal__vmapBatchRows_notes');
-    const rowsPush = instructions[rows]!;
-    expect('data' in rowsPush).toBe(true);
-    const data = ('data' in rowsPush ? rowsPush.data : new Uint8Array()).slice();
-    data[40] ^= 1;
-    instructions[rows] = { ...rowsPush, data } as never;
+    const next = notes.pushOf('removeBothIf', '__internal__vmapBatchNext_0');
+    const nextPush = instructions[next]!;
+    expect('data' in nextPush).toBe(true);
+    const data = ('data' in nextPush ? nextPush.data : new Uint8Array()).slice();
+    expect(data.length).toBe(32);
+    data[0] ^= 1;
+    instructions[next] = { ...nextPush, data } as never;
     forged.inputs[frame]!.unlockingBytecode = encodeAuthenticationInstructions(instructions);
     await expect(notes.h.replay(forged)).resolves.toMatch(refusedAt(frame));
 

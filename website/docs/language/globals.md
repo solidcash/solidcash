@@ -44,14 +44,22 @@ contract Matured(int minAge) {
 To access the value of the `nSequence` field for variable assignment, use the [`sequenceNumber` introspection variable](#txinputsisequencenumber).
 :::
 
-Because of the way time locks work, **a corresponding time lock needs to be added to the transaction**. This can be done in the SolidCash SDK through [`addInput()`][addInput()] by passing the `sequence` as optional argument. However, the value passed into this function will always be treated as a number of blocks, so **it is currently not supported to use `this.age` as a number of second chunks**.
+Because of the way time locks work, **a corresponding time lock needs to be added to the transaction**. Pass the
+raw BIP68 sequence through the [`addInput()`][addInput()] `sequence` option. A block-based age uses the block count
+directly. A time-based age uses bit 22 plus a count of 512-second units; the value checked by `this.age` and the
+input sequence must use the same encoding:
+
+```ts
+const oneTimeUnit = (1 << 22) | 1; // one 512-second unit
+builder.addInput(utxo, unlocker, { sequence: oneTimeUnit });
+```
 
 ## Introspection variables
 Introspection functionality is used to create *covenant* contracts. Covenants are a technique used to put constraints on spending the money inside a smart contract. The main use case of this is limiting the addresses where money can be sent and the amount sent. To explore the possible uses of covenants inside smart contracts, read the [SolidCash Covenants Guide][covenants-guide].
 
 ### this.activeInputIndex
 ```solidity
-int this.activeInputIndex
+bigint this.activeInputIndex
 ```
 
 During the validation of a BCH transaction, every transaction input is evaluated in order, and the contract's code is evaluated in the context of the different inputs. `this.activeInputIndex` represents the index of the input that is currently being evaluated. This can be used in conjunction with the properties under `tx.inputs`.
@@ -63,17 +71,28 @@ bytes this.activeBytecode
 
 During the validation of a BCH transaction, every transaction input is evaluated in order, and the contract's code is evaluated in the context of the different inputs. `this.activeBytecode` represents the contract bytecode of the input that is currently being evaluated.
 
+### this.categoryId and this.category
+
+```solidity
+bytes this.categoryId
+bytes32 this.category
+```
+
+`this.categoryId` is the active contract's raw CashToken category introspection value. It uses consensus byte
+order and can include the trailing capability byte. `this.category` strips the capability and reverses the 32
+category bytes, producing the display-order ID used by SDK category strings and `this.tokens[...]`.
+
 
 ### tx.version
 ```solidity
-int tx.version
+bigint tx.version
 ```
 
 Represents the version of the current transaction. Different transaction versions can have differences in functionality. Currently only version 1 and 2 exist, where only version 2 has support for [BIP68][bip68].
 
 ### tx.locktime
 ```solidity
-int tx.locktime
+bigint tx.locktime
 ```
 
 Represents the `nLocktime` field of the transaction. This is similar to the [`tx.time`][tx.time] global variable but `tx.time` can only be used in `require` statements, not for variable declaration.
@@ -87,14 +106,14 @@ Represents the list of inputs of the evaluated transaction. This is an array, an
 
 #### tx.inputs.length
 ```solidity
-int tx.inputs.length
+bigint tx.inputs.length
 ```
 
 Represents the number of inputs in the transaction.
 
 #### tx.inputs[i].value
 ```solidity
-int tx.inputs[i].value
+bigint tx.inputs[i].value
 ```
 
 Represents the value of a specific input (in satoshis).
@@ -122,14 +141,14 @@ Represents the outpoint transaction hash where a specific input was initially lo
 
 #### tx.inputs[i].outpointIndex
 ```solidity
-int tx.inputs[i].outpointIndex
+bigint tx.inputs[i].outpointIndex
 ```
 
 Represents the outpoint index where a specific input was initially locked.
 
 #### tx.inputs[i].sequenceNumber
 ```solidity
-int tx.inputs[i].sequenceNumber
+bigint tx.inputs[i].sequenceNumber
 ```
 
 Represents the `nSequence` number of a specific input. This value of the input's `sequenceNumber` is only consensus-enforced as a relative timelock when using transaction version 2.
@@ -142,7 +161,8 @@ bytes tx.inputs[i].tokenCategory
 Represents the `tokenCategory` of a specific input. Returns `0x` when that specific input contains no tokens. When the input contains an NFT with a capability, the 32-byte `tokenCategory` is concatenated together with `0x01` for a mutable NFT and `0x02` for a minting NFT.
 
 :::caution
-The `tokenCategory` introspection variable returns the tokenCategory in the original unreversed order, this is unlike wallets and explorers which use the reversed byte-order. So be careful about the byte-order of `tokenCategory` when working with BCH smart contracts.
+This is the raw consensus representation, not the display-order ID used by wallets, explorers, and SDK category
+strings. Split any capability byte and reverse the 32 category bytes before comparing the two representations.
 :::
 
 #### tx.inputs[i].nftCommitment
@@ -154,7 +174,7 @@ Represents the NFT commitment data of a specific input.
 
 #### tx.inputs[i].tokenAmount
 ```solidity
-int tx.inputs[i].tokenAmount
+bigint tx.inputs[i].tokenAmount
 ```
 
 Represents the amount of fungible tokens of a specific input. Maximum size for a `tokenAmount` is a 64-bit integer.
@@ -164,14 +184,14 @@ Represents the list of outputs of the evaluated transaction. This is an array, a
 
 #### tx.outputs.length
 ```solidity
-int tx.outputs.length
+bigint tx.outputs.length
 ```
 
 Represents the number of outputs in the transaction.
 
 #### tx.outputs[i].value
 ```solidity
-int tx.outputs[i].value
+bigint tx.outputs[i].value
 ```
 
 Represents the value of a specific output (in satoshis).
@@ -191,7 +211,8 @@ bytes tx.outputs[i].tokenCategory
 Represents the `tokenCategory` of a specific output. Returns `0x` when that specific output contains no tokens. When the output contains an NFT with a capability, the 32-byte `tokenCategory` is concatenated together with `0x01` for a mutable NFT and `0x02` for a minting NFT.
 
 :::caution
-The `tokenCategory` introspection variable returns the tokenCategory in the original unreversed order, this is unlike wallets and explorers which use the reversed byte-order. So be careful about the byte-order of `tokenCategory` when working with BCH smart contracts.
+This is the raw consensus representation, not the display-order ID used by wallets, explorers, and SDK category
+strings. Split any capability byte and reverse the 32 category bytes before comparing the two representations.
 :::
 
 #### tx.outputs[i].nftCommitment
@@ -203,7 +224,7 @@ Represents the NFT commitment data of a specific output.
 
 #### tx.outputs[i].tokenAmount
 ```solidity
-int tx.outputs[i].tokenAmount
+bigint tx.outputs[i].tokenAmount
 ```
 
 Represents the amount of fungible tokens of a specific output. Maximum size for a `tokenAmount` is a 64-bit integer.
@@ -266,7 +287,7 @@ These are the Solidity-compatible caller globals, reinterpreted for the UTXO mod
 | Global | Type | Description |
 | --- | --- | --- |
 | `msg.sender` | `address` | Locking bytecode of the calling contract, falling back to `tx.origin` for a direct spend |
-| `msg.value` | `int` | Net satoshi change in the contract's satoshi container (sum of matching outputs minus sum of matching inputs) |
+| `msg.value` | `bigint` | Net satoshi change in the contract's satoshi container (sum of matching outputs minus sum of matching inputs) |
 | `msg.sig` | `bytes4` | The 4-byte selector of the current function (a compile-time constant) |
 | `msg.data` | `bytes` | The unlocking bytecode, with the redeem script stripped |
 | `tx.origin` | `address` | P2PKH locking bytecode of the first non-token input |
@@ -287,7 +308,7 @@ function the compiler synthesizes. Reads themselves are cheap.
 | --- | --- | --- | --- |
 | `block.number` | `uint32` | oracle (native floor) | A `>=` comparison lowers to a native `nLocktime` floor |
 | `block.timestamp` | `uint32` | oracle (native floor) | Matches the BCH header `nTime`; beats the ~1h median-time-past lag |
-| `block.chainid` | `bytes1` | baked constant | From the `chainId` compiler option; no oracle needed |
+| `block.chainid` | `uint256` | baked constant | The low byte of the numeric compiler option (`chainId & 0xff`); encoded compactly and needs no oracle |
 | `block.difficulty` | `uint32` | oracle | The raw `nBits` value. **Not randomness** |
 | `block.coinbase` | `address` | oracle | Full locking bytecode of coinbase output 0 |
 | `block.basefee` | `uint32` | derived | `Floor(1000 * block.totalFees / block.size)`, i.e. the block's realized fee rate in sat/KB |
@@ -296,7 +317,7 @@ function the compiler synthesizes. Reads themselves are cheap.
 | `block.gaslimit` | `uint` | fixed shim | Always `1000000`. Compiler-warned |
 | `block.blobbasefee` | `uint32` | alias | Aliases `block.basefee`; BCH has no EIP-4844 blobs. Compiler-warned |
 | `block.prevrandao` | `uint256` | transaction-local shim | `abs(int(sha256(input[0] prevout txid)))`. Compiler-warned |
-| `tx.gasprice` | `int` | derived | The current transaction's realized fee rate in sat/KB |
+| `tx.gasprice` | `uint32` | derived | The current transaction's realized fee rate in sat/KB |
 
 :::caution
 `block.prevrandao` is **not secure randomness**. The transaction builder chooses which UTXO sits at input 0,
@@ -325,6 +346,9 @@ Non-oracle alternatives for time and height are usually preferable when they suf
 `OP_CHECKSEQUENCEVERIFY`). They need no oracle state and no co-spend.
 :::
 
+Deployment, keeper operation, testing, trust assumptions, and the windowed hash protocol are covered in
+[Block Data & Oracles](/docs/guides/block-oracles).
+
 ### blockhash and blobhash
 
 ```solidity
@@ -337,23 +361,12 @@ EIP-4844 blobs, so it is a porting shim.
 
 ## ABI encoding and decoding
 
-| Expression | Description |
-| --- | --- |
-| `abi.encode(...)` | ABI-encode the arguments |
-| `abi.encodePacked(...)` | Encode without padding |
-| `abi.encodeWithSelector(selector, ...)` | Encode with an explicit 4-byte selector prefix |
-| `abi.encodeWithSignature("f(uint)", ...)` | Encode with a selector derived from a signature string |
-| `abi.encodeCall(IFoo.bar, (a, b))` | Type-safe encode against an interface function |
-| `abi.decode(data, (T1, T2))` | Decode into the given types |
-| `abi.decodeAt(data, (T), offset)` | Decode at a byte offset |
-| `bytes.concat(...)` | Concatenate byte values |
-| `string.concat(...)` | Concatenate strings |
+The `abi.encode*`, `abi.decode`, and schema-indexed `abi.decodeAt` functions support a compact native BCH format
+and an opt-in EVM-compatible format. Their exact framing, supported types, selector rules, and packed-encoding
+security caveat are documented in [ABI Encoding & Call Data](./abi-encoding.md).
 
-:::caution
-`abi.encodeWithSignature` and `abi.encodeCall` derive their selector with **sha256**, not Ethereum's
-`keccak256`, so encoded calldata is **not** cross-VM compatible by default. Use them for
-SolidCash-to-SolidCash calls, or enable the `evmCompat` compiler option for real keccak256 selectors.
-:::
+`bytes.concat(...)` concatenates bytes and `string.concat(...)` concatenates UTF-8 strings without adding ABI
+framing.
 
 ## Type introspection
 

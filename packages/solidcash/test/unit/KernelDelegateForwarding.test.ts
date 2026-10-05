@@ -14,6 +14,7 @@ import {
   externalReturnsForCallsites,
   producerResultOccurrenceIndex,
   repeatedExternalResultNeedsOccurrenceIdentity,
+  publishPreparedKernelDelegateOwnerFrame,
   resolvePreparedKernelDelegateExecution,
   resolvePreparedKernelDelegateOwnerFrame,
   resolvePublishedEntryBlockOffset, selectKernelDelegateForwardingGroupIndex,
@@ -173,13 +174,15 @@ describe('kernel delegate entry coordinates', () => {
     const evaluate = (
       initial: bigint | undefined, step: bigint | undefined,
       active: (counter: bigint) => boolean | undefined,
-    ) => evaluateExternalCallAffineIterationDomain(domain, (expression, bindings) => {
-      if (expression === initialValue) return initial;
-      if (expression === stepValue) return step;
-      const counter = bindings.get('counter');
-      if (typeof counter !== 'bigint') return undefined;
-      return active(counter);
-    });
+    ): ReturnType<typeof evaluateExternalCallAffineIterationDomain> => (
+      evaluateExternalCallAffineIterationDomain(domain, (expression, bindings) => {
+        if (expression === initialValue) return initial;
+        if (expression === stepValue) return step;
+        const counter = bindings.get('counter');
+        if (typeof counter !== 'bigint') return undefined;
+        return active(counter);
+      })
+    );
 
     expect(() => evaluate(undefined, 1n, () => true)).toThrow(/unresolved initial value/);
     expect(() => evaluate(0n, 1n, () => undefined)).toThrow(/unresolved continue condition/);
@@ -194,6 +197,20 @@ describe('kernel delegate entry coordinates', () => {
         expression === initialValue ? 0n : expression === stepValue ? 1n : bindings.has('counter')
       ),
     )).toThrow(/SDK hard cap/);
+  });
+
+  it('accepts a zero-trip domain below the SDK cap despite a wider compiler ceiling', () => {
+    const initialValue = { kind: 'initial' };
+    const stepValue = { kind: 'step' };
+    const continueCondition = { kind: 'condition' };
+    expect(evaluateExternalCallAffineIterationDomain({
+      counterName: 'counter', initialValue, stepValue, continueCondition,
+      maximumIterations: 65_535,
+    }, (expression, bindings) => {
+      if (expression === initialValue) return 0n;
+      if (expression === stepValue) return 1n;
+      return bindings.get('counter')! < 0n;
+    })).toEqual([]);
   });
 
   it('accepts exactly one authenticated iteration-domain result-consumer lane', () => {
@@ -382,14 +399,19 @@ describe('kernel delegate forwarding binding prerequisite', () => {
   });
 
   it('selects the authenticated delegate executor independently of group order', () => {
-    const group = (lockingBytecode: string, callMode = 'delegatecall') => ({
+    const group = (lockingBytecode: string, callMode = 'delegatecall'): {
+      callMode: string;
+      externalContract: { inner: { lockingBytecode: string } };
+    } => ({
       callMode,
       externalContract: { inner: { lockingBytecode } },
     });
     const decoy = group('cc20');
     const target = group('bb20');
     const ordinary = group('bb20', 'call');
-    const select = (groups: ReturnType<typeof group>[]) => selectKernelDelegateForwardingGroupIndex({
+    const select = (
+      groups: ReturnType<typeof group>[],
+    ): ReturnType<typeof selectKernelDelegateForwardingGroupIndex> => selectKernelDelegateForwardingGroupIndex({
       forwarding: metadata(),
       encodedProxyConstructorArgs: [bytes('bb20')],
       groups,
@@ -602,6 +624,22 @@ describe('kernel delegate forwarding binding prerequisite', () => {
     expect(selected.abiFunction).toBe(logical);
     expect(selected.args).toEqual(execution.args);
     expect(selected.args).not.toBe(execution.args);
+  });
+
+  it('publishes the promoted logical arguments independently of the physical delegate payload', () => {
+    const physicalPayload = [bytes('11'.repeat(35))];
+    const logicalArgs = [bytes('22'.repeat(35))];
+    const group = { functionArgs: physicalPayload } as any;
+
+    publishPreparedKernelDelegateOwnerFrame(group, {
+      abiFunction: { name: 'apply' } as any,
+      args: logicalArgs,
+    });
+
+    expect(group.functionArgs).toBe(physicalPayload);
+    expect(group.logicalFunctionName).toBe('apply');
+    expect(group.logicalFunctionArgs).toEqual(logicalArgs);
+    expect(group.logicalFunctionArgs).not.toBe(logicalArgs);
   });
 
   it('fails closed for an ambiguous promoted owner or mismatched decoded arity', () => {

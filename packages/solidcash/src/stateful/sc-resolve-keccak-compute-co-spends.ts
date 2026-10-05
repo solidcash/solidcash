@@ -7,8 +7,7 @@ import {
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY,
   keccakComputeLockingBytecode,
   keccakComputeLockingBytecodeLegacy,
-  type AbiFunction,
-  type Artifact,
+  type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
@@ -52,6 +51,8 @@ export type ResolveKeccakProbeCtx = {
   deferUnresolved?: boolean;
   artifactBytecode?: string;
   ecrecoverPreimages?: Array<Uint8Array | null>;
+  /** Compiler-selected direct parameter preimages decoded from the authenticated message-bus batch. */
+  plannedPreimages?: readonly (Uint8Array | null)[];
 };
 
 export type ResolveKeccakComputeCoSpendsResult = {
@@ -112,10 +113,15 @@ export async function resolveKeccakComputeCoSpends(
   // Direct-parameter preimages come straight from the args; complex/nested args (recorded null by codegen)
   // are resolved by a VM probe of the master (mirrors the stateless resolveKeccakPreimages, but positioned
   // at the block-layout keccakSideCar slots).
-  const preimages: (Uint8Array | null)[] = params.map(
-    (p) => (p ? (args[visible.findIndex((x) => x.name === p)] instanceof Uint8Array
-      ? args[visible.findIndex((x) => x.name === p)] : null) : null),
-  );
+  if (probeCtx?.plannedPreimages && probeCtx.plannedPreimages.length !== params.length) {
+    throw new Error('message-bus keccak recipe count does not match the selected compute calls');
+  }
+  const preimages: (Uint8Array | null)[] = params.map((p, index) => {
+    const planned = probeCtx?.plannedPreimages?.[index];
+    if (planned instanceof Uint8Array) return planned.slice();
+    const value = p ? args[visible.findIndex((x) => x.name === p)] : undefined;
+    return value instanceof Uint8Array ? value : null;
+  });
   // If the digest is itself a vmap key, its published expression can be evaluated without a circular probe.
   if (preimages.length === 1 && preimages[0] === null) {
     const inners = new Set(
@@ -147,9 +153,12 @@ export async function resolveKeccakComputeCoSpends(
       const a = toLbc(args[addressIndices[0]]);
       const b = toLbc(args[addressIndices[1]]);
       // The covenant's own ordering and packing rules; a Solidity-compat source packs 20-byte identities.
-      const solidityAddresses = host.inner.artifact !== undefined && artifactUsesSolidityAbi(host.inner.artifact);
-      const packed = a && b ? sortedAddressPairPacked(a, b, solidityAddresses) : undefined;
-      if (packed) preimages[0] = packed;
+      if (a && b) {
+        const solidityAddresses = host.inner.artifact !== undefined && artifactUsesSolidityAbi(host.inner.artifact);
+        const packed = sortedAddressPairPacked(a, b, solidityAddresses);
+        if (!packed) throw new Error('Solidity ABI keccak preimage needs canonical address arguments.');
+        preimages[0] = packed;
+      }
     }
   }
   preimages.push(...recoveryPreimages.map((preimage) =>

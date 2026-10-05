@@ -6,6 +6,45 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { FunctionArgument } from '../Argument.js';
 import type { Utxo } from '../interfaces.js';
+import { addressToLockScript } from '../utils.js';
+import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+
+/** Resolve an explicit target to one physical participant; never guess through an ambiguous address. */
+export function uniqueParticipantIndexForTarget(
+  targetLockingBytecodeHex: string | undefined,
+  candidates: readonly { index: number; lockingBytecodeHexes: readonly string[] }[],
+): number | undefined {
+  if (targetLockingBytecodeHex === undefined) return undefined;
+  const target = targetLockingBytecodeHex.toLowerCase();
+  const matches = candidates.filter((candidate) => candidate.lockingBytecodeHexes.some(
+    (lockingBytecode) => lockingBytecode.toLowerCase() === target,
+  ));
+  return matches.length === 1 ? matches[0].index : undefined;
+}
+
+export function participantGroupForTarget(
+  groups: readonly ExternalCallUtxoGroup[], candidateIndices: readonly number[],
+  targetLockingBytecodeHex: string | undefined,
+): number | undefined {
+  return uniqueParticipantIndexForTarget(targetLockingBytecodeHex, candidateIndices.map((index) => {
+    const group = groups[index];
+    const locks = new Set<string>();
+    const addHex = (value: unknown): void => {
+      if (typeof value === 'string' && /^(?:[0-9a-f]{2})+$/i.test(value)) locks.add(value.toLowerCase());
+    };
+    const addAddress = (value: unknown): void => {
+      if (typeof value !== 'string') return;
+      try { locks.add(binToHex(addressToLockScript(value))); } catch { /* not an address */ }
+    };
+    addHex(group?.externalContract?.inner?.lockingBytecode);
+    addAddress(group?.externalContract?._logicalAddress);
+    addAddress(group?.externalContract?.target);
+    const unlocker = group?.masterUtxo && 'unlocker' in group.masterUtxo
+      ? group.masterUtxo.unlocker : undefined;
+    if (unlocker) addHex(binToHex(unlocker.generateLockingBytecode()));
+    return { index, lockingBytecodeHexes: [...locks] };
+  }));
+}
 
 /**
  * Map `__internal__externalCallSelector` / `__internal__externalCallSelectorN` onto an ABI slot.
@@ -20,7 +59,7 @@ export function groupIndexForExternalCallSlot(params: {
 }): number | undefined {
   const call = params.externalCalls?.[params.slot];
   // A published callsite is slot-stable. Compact child arrays skip omitted conditionals, so
-  // `compactGroups[slot]` would bind a later call (MarketplaceData) onto an earlier unused slot
+  // `compactGroups[slot]` would bind a later call onto an earlier unused slot
   // (`__raw__` transfer). Only treat a *missing* map entry as omitted when the ABI says the
   // callsite is conditional; a required (`once`) call still falls back positionally.
   if (call?.callsiteId !== undefined) {
@@ -57,6 +96,7 @@ export function externalReturnParamSlot(
 export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boolean {
   return paramName === '__internal__externalCallInputBase'
     || paramName === '__internal__dynamicChunkInputBase'
+    || paramName === '__internal__dynamicChunkOutputBase'
     || /^__internal__extcallMasterIdx\d*$/.test(paramName)
     || /^__internal__extcallAnchorIdx\d*$/.test(paramName);
 }
@@ -76,7 +116,8 @@ export function vmapBatchWitnessFallback(paramName: string): Uint8Array | bigint
   if (/^__internal__vmapBatchSlot_\d+$/.test(paramName)) return new Uint8Array(32);
   if (/^__internal__vmapBatchNext_\d+$/.test(paramName)) return new Uint8Array(32);
   if (/^__internal__vmapBatchProof_\d+$/.test(paramName)) return -1n;
-  if (/^__internal__vmapBatchPredOut_\d+$/.test(paramName)) return -1n;
+  // -1 means an active UPDATE with no separate predecessor output; -2 means no transition.
+  if (/^__internal__vmapBatchPredOut_\d+$/.test(paramName)) return -2n;
   if (paramName === '__internal__vmapBatchTrailingCount') return 0n;
   return undefined;
 }
@@ -129,7 +170,7 @@ type PhysicalSelectorGroup = {
 /**
  * Bytes argument for a baked `__forward(bytes)` proxy. The caller covenant extracts the first 4-byte
  * unlocking push (skipping a short delegate-index prefix) and EQUALVERIFYs it against the logical
- * implementation selector. Compiler-route `SCB1` belongs on the co-spent implementation unlocker.
+ * implementation selector. A compiler route forwards `SCB1` through both proxy and implementation.
  */
 const COMPILER_ROUTE_SELECTOR_HEX = '53434231';
 
@@ -140,12 +181,14 @@ const isFunctionSelectorHex = (value: string | undefined): value is string => (
 export function selectProxyForwardInput(
   logicalSelectorHex: string | undefined,
   functionArgs: readonly FunctionArgument[] = [],
+  preferCompilerRoute = false,
 ): Uint8Array {
   const arg = functionArgs[0];
   const argHex = arg instanceof Uint8Array && arg.length === 4 ? binToHex(arg) : undefined;
+  if (preferCompilerRoute && argHex?.toLowerCase() === COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
   // A shared proxy master is created by the first nested call (often a view) and later retargeted
   // to the state-writing handler. Prefer that 4-byte functionArgs selector over a stale logical name.
-  // Compiler-route SCB1 still belongs on the implementation unlocker, not this slot.
+  // A compiler route opts in above because the proxy itself verifies the implementation's SCB1 selector.
   if (argHex && argHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
   if (isFunctionSelectorHex(logicalSelectorHex)
     && logicalSelectorHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) {
@@ -191,21 +234,6 @@ export function physicalExternalCallSelectorHex(
 }
 
 export {
-  evalComputedKey,
-  type RouteExpressionKeyRow,
-  parseRowArgsDecodeLabel,
-  visibleHandlerInputs,
-  canonicalAbiFunctionSignature,
-  entryAccessAt,
-  resolvePreparedProducerEntry,
-  selectVisibleCallArguments,
-  type DirectMappingReadPlan,
-  directMappingReadPlan,
-  canShareIdempotentCounterLoopSettlement,
-  matchingRouteRowsForExpressionKey,
-  resolveRouteRowExpressionKey,
-} from './route-expression-key.js';
-import {
   evalComputedKey,
   type RouteExpressionKeyRow,
   parseRowArgsDecodeLabel,

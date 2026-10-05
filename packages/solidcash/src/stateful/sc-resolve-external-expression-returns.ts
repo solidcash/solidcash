@@ -4,6 +4,8 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
+  getDefaultStateValue,
+  parseArrayTypeString,
   type AbiFunction,
   type ArgSource,
   type Artifact,
@@ -12,13 +14,16 @@ import {
   type ExternalResultConsumerAbi,
   type StateValue,
 } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
+import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
+import { visitExternalExpressionEvaluationPath } from '../message-bus/result-evaluation-path.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
 import {
-  findDeploymentByAddress,
-  findDeploymentByLockingBytecode,
+  findDeploymentByAddressValue,
   findDeploymentByName,
+  matchingDeploymentsBySolidityAddressPayload,
 } from './deployment-registry.js';
+import { DeferredTransitiveReturnProbeError } from './sc-discover-create-builder-transitive-external-calls.js';
 import { encodeExternalReturnValues } from './external-return-encoding.js';
 import {
   createGraphPlanningProducerResultContext,
@@ -41,6 +46,55 @@ function isStatefulContract(value: unknown): value is StatefulContract {
     && typeof (value as { _resolveExternalArgs?: unknown })._resolveExternalArgs === 'function';
 }
 
+function addressBytes(value: string | Uint8Array): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
+  try {
+    const cashaddr = tryCashAddressToLockScript(value);
+    if (cashaddr) return cashaddr;
+  } catch { return undefined; }
+  return /^(?:0x)?(?:[0-9a-f]{2})+$/iu.test(value)
+    ? hexToBin(value.replace(/^0x/iu, '')) : undefined;
+}
+
+function solidityPayload(bytes: Uint8Array): Uint8Array | undefined {
+  if (bytes.length === 20) return bytes;
+  if (bytes.length === 32 && bytes.subarray(0, 12).every((byte) => byte === 0)) {
+    return bytes.subarray(12);
+  }
+  return undefined;
+}
+
+function connectedContractMatchesAddress(contract: unknown, target: string | Uint8Array): boolean {
+  if (typeof contract !== 'object' || contract === null) return false;
+  const wanted = addressBytes(target);
+  if (!wanted) return false;
+  const connected = contract as {
+    inner?: { lockingBytecode?: string };
+    implementation?: { inner?: { lockingBytecode?: string } };
+    proxy?: { inner?: { lockingBytecode?: string }; _logicalAddress?: string };
+    _logicalAddress?: string;
+    address?: string;
+  };
+  const identities = [
+    connected.inner?.lockingBytecode,
+    connected.implementation?.inner?.lockingBytecode,
+    connected.proxy?.inner?.lockingBytecode,
+    connected._logicalAddress,
+    connected.proxy?._logicalAddress,
+    connected.address,
+  ];
+  const payload = solidityPayload(wanted);
+  const wantedHex = binToHex(wanted);
+  const payloadHex = payload && binToHex(payload);
+  return identities.some((identity) => {
+    const bytes = identity && addressBytes(identity);
+    if (!bytes) return false;
+    if (binToHex(bytes) === wantedHex) return true;
+    const projected = payload && lockingBytecodeToSolidityAddressPayload(bytes);
+    return projected !== undefined && binToHex(projected) === payloadHex;
+  });
+}
+
 export interface ResolveExternalExpressionReturnsHost {
   readonly inner: {
     artifact: Artifact;
@@ -60,6 +114,7 @@ export interface ResolveExternalExpressionReturnsHost {
     occurrenceIndex?: number,
     stateIncludesPriorWrites?: boolean,
     executionSelfAddress?: FunctionArgument,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument[] | undefined;
   evaluateExternalExpression(
     expression: ExternalCallExpression,
@@ -74,6 +129,7 @@ export interface ResolveExternalExpressionReturnsHost {
     localBindings?: ReadonlyMap<string, FunctionArgument>,
     stateLengthDeltas?: Readonly<Record<string, bigint>>,
     strictFieldAccess?: boolean,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument | undefined;
 }
 
@@ -93,6 +149,8 @@ export async function resolveExternalExpressionReturns(
     resultConsumers?: readonly ExternalResultConsumerAbi[];
     lane: 'condition';
   },
+  occurrenceIndex = 0,
+  executionCallerAddress?: FunctionArgument,
 ): Promise<Map<string, FunctionArgument>> {
   const resolved = new Map<string, FunctionArgument>();
   const producerByCallsite = new Map<number, ExternalCallAbi>();
@@ -109,25 +167,60 @@ export async function resolveExternalExpressionReturns(
     producerByCallsite.set(producer.callsiteId, producer);
   }
   const resolvingProducers = new Set<number>();
-  const provisionalValue = (type: string): FunctionArgument => type === 'bool' ? false
-    : type === 'string' ? ''
-      : type.endsWith('[]') ? []
-        : type.startsWith('bytes') || type.startsWith('address') ? new Uint8Array()
-          : 0n;
+  const provisionalValues = (types: readonly string[]): FunctionArgument[] => {
+    const artifact = registryOwner.inner.artifact;
+    const structs = artifact.structs ?? artifact.stateLayout?.structs;
+    let remainingElements = 10_000;
+    const value = (type: string, ancestors = new Set<string>()): ConstructorArgument => {
+      if (remainingElements <= 0) throw new Error('Provisional producer result exceeds the aggregate element limit.');
+      remainingElements -= 1;
+      const array = parseArrayTypeString(type);
+      if (array) {
+        if (array.bound === undefined) return [];
+        if (!Number.isSafeInteger(array.bound) || array.bound > remainingElements) {
+          throw new Error('Provisional producer result exceeds the aggregate element limit.');
+        }
+        return Array.from({ length: array.bound }, () => value(array.elementType, ancestors));
+      }
+      const struct = structs?.find((candidate) => candidate.name === type);
+      if (struct) {
+        if (ancestors.has(type)) throw new Error(`Circular provisional producer result type '${type}'.`);
+        const next = new Set(ancestors).add(type);
+        return Object.fromEntries(struct.fields.map((field) => [field.name, value(field.type, next)]));
+      }
+      if (type === 'string') return '';
+      if (artifact.enums?.some((candidate) => candidate.name === type)) return 0n;
+      return getDefaultStateValue(type) as ConstructorArgument;
+    };
+    return types.map((type) => value(type));
+  };
   const registeredTarget = (
     interfaceName: string, target: FunctionArgument | undefined,
   ): StatefulContract | {
       forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
     } | undefined => {
-    const deploymentAtTarget = typeof target === 'string'
-      ? (findDeploymentByAddress(host.inner.provider, target)
-        ?? findDeploymentByLockingBytecode(host.inner.provider, target))?.contract
-      : target instanceof Uint8Array
-        ? findDeploymentByLockingBytecode(host.inner.provider, binToHex(target))?.contract
-        : undefined;
-    return (deploymentAtTarget
-      ?? (registryOwner as unknown as { _externalRegistry: Map<string, StatefulContract> })._externalRegistry.get(interfaceName)
-      ?? host.externalRegistry.get(interfaceName)
+    const connected = [
+      (registryOwner as unknown as { _externalRegistry: Map<string, StatefulContract> })
+        ._externalRegistry.get(interfaceName),
+      host.externalRegistry.get(interfaceName),
+    ];
+    // A published target address is authoritative. An interface-name binding may supply the instance only
+    // when it identifies that same address; otherwise a return probe would execute an unrelated callee.
+    if (target !== undefined) {
+      if (typeof target !== 'string' && !(target instanceof Uint8Array)) return undefined;
+      const deployed = findDeploymentByAddressValue(host.inner.provider, target);
+      if (deployed) return deployed.contract as StatefulContract;
+      const targetBytes = addressBytes(target);
+      const payload = targetBytes && solidityPayload(targetBytes);
+      if (payload && matchingDeploymentsBySolidityAddressPayload(host.inner.provider, payload).length > 1) {
+        return undefined;
+      }
+      return connected.find((candidate) => connectedContractMatchesAddress(candidate, target)) as StatefulContract | {
+        forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
+      } | undefined;
+    }
+    return (connected[0]
+      ?? connected[1]
       ?? findDeploymentByName(host.inner.provider, interfaceName)?.contract) as StatefulContract | {
       forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
     } | undefined;
@@ -180,6 +273,8 @@ export async function resolveExternalExpressionReturns(
         : ec.addressStateVar !== undefined
           ? fnState?.[ec.addressStateVar] as FunctionArgument | undefined
           : ec.addressLiteral;
+      if ((ec.addressSource || ec.addressStateVar !== undefined || ec.addressLiteral !== undefined)
+        && resolvedTarget === undefined) return undefined;
       const child = registeredTarget(ec.interfaceName, resolvedTarget);
       // One unresolvable participant makes the whole frame unrepresentable: a partial list would leave that
       // slot's coordinates at the sentinel AND shift every later participant's physical block.
@@ -294,9 +389,12 @@ export async function resolveExternalExpressionReturns(
       ) as FunctionArgument;
     } catch (error) {
       if (!allowProvisional || !(error instanceof Error)
-        || !error.message.includes('Could not derive the return value')) throw error;
+        || (!(error instanceof DeferredTransitiveReturnProbeError)
+          && !error.message.includes('Could not derive the return value'))) throw error;
       if (!returnTypes?.length) return 0n;
-      const placeholders = returnTypes.map(provisionalValue);
+      // Planning may need an aggregate's elements before its state-dependent producer can execute.
+      // Preserve the published type shape; these seeds still cannot satisfy an exact result request.
+      const placeholders = provisionalValues(returnTypes);
       return placeholders.length === 1 ? placeholders[0] : placeholders as unknown as FunctionArgument;
     }
   };
@@ -314,15 +412,21 @@ export async function resolveExternalExpressionReturns(
       if (producer.addressSource?.kind === 'expression') await visit(producer.addressSource.expression);
       const values = host.resolveExternalArgs(
         sources, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-        0, false, executionSelfAddress,
+        occurrenceIndex, false, executionSelfAddress,
+        executionCallerAddress,
       );
       if (!values) return undefined;
       const target = producer.addressSource
         ? host.resolveExternalArgs(
           [producer.addressSource], functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-          0, false, executionSelfAddress,
+          occurrenceIndex, false, executionSelfAddress,
+          executionCallerAddress,
         )?.[0]
-        : undefined;
+        : producer.addressStateVar !== undefined
+          ? state?.[producer.addressStateVar] as FunctionArgument | undefined
+          : producer.addressLiteral;
+      if ((producer.addressSource || producer.addressStateVar !== undefined
+        || producer.addressLiteral !== undefined) && target === undefined) return undefined;
       const rawTarget = producer.interfaceName === '__raw__'
         ? registeredTarget(producer.interfaceName, target) : undefined;
       const rawExecutionTarget = rawTarget && typeof rawTarget === 'object' && 'proxy' in rawTarget
@@ -339,9 +443,9 @@ export async function resolveExternalExpressionReturns(
         planningContext,
         callsiteId,
         values,
-        // This cache is scoped to one compiler function and immutable state snapshot. The published callsite
-        // authenticates its target expression; arguments and provisional quality distinguish runtime seeds.
-        undefined,
+        // The same published callsite can execute against different runtime callees during graph planning.
+        // Keep the resolved target in the key even when its arguments and the state snapshot are unchanged.
+        target,
         allowProvisional,
         async () => {
           if (!rawFunction || !rawExecutionTarget) {
@@ -371,11 +475,7 @@ export async function resolveExternalExpressionReturns(
       resolvingProducers.delete(callsiteId);
     }
   };
-  const visit = async (expression: ExternalCallExpression | undefined): Promise<void> => {
-    if (!expression) return;
-    for (const child of [expression.target, expression.expression, expression.left, expression.right,
-      expression.condition, expression.ifTrue, expression.ifFalse]) await visit(child);
-    for (const child of expression.args ?? []) await visit(child);
+  const visitNode = async (expression: ExternalCallExpression): Promise<void> => {
     if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
       const producer = producerByCallsite.get(expression.callsiteId);
       const resultIndex = expression.resultIndex;
@@ -419,18 +519,29 @@ export async function resolveExternalExpressionReturns(
     const functionName = expression.name.slice(separator + 1);
     const values = (expression.args ?? []).map((argument) => host.evaluateExternalExpression(
       argument, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-      0, false, executionSelfAddress,
+      occurrenceIndex, false, executionSelfAddress,
+      undefined, undefined, false, executionCallerAddress,
     ));
     if (values.some((value) => value === undefined)) return;
     const target = expression.target && host.evaluateExternalExpression(
       expression.target, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-      0, false, executionSelfAddress,
+      occurrenceIndex, false, executionSelfAddress,
+      undefined, undefined, false, executionCallerAddress,
     );
+    if (expression.target && target === undefined) return;
     const value = await derive(
       interfaceName, functionName, values as FunctionArgument[], target,
       expression.type ? [expression.type] : undefined,
     );
     if (value !== undefined) resolved.set(JSON.stringify(expression), value);
+  };
+  const visit = async (expression: ExternalCallExpression | undefined): Promise<void> => {
+    if (!expression) return;
+    await visitExternalExpressionEvaluationPath(expression, visitNode, (candidate) => host.evaluateExternalExpression(
+      candidate, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
+      occurrenceIndex, false, executionSelfAddress,
+      undefined, undefined, false, executionCallerAddress,
+    ));
   };
   for (const source of argSources ?? []) await visit(source.expression);
   return resolved;

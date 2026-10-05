@@ -177,7 +177,9 @@ describe('hierarchical value-chunk producer identity', () => {
   });
 
   it('selects the terminal linear mutation using the exact reached producer path', () => {
-    const row = (occurrenceIndex: number, mutationEffectOrdinals: number[]) => ({
+    const row = (
+      occurrenceIndex: number, mutationEffectOrdinals: number[],
+    ): Parameters<typeof terminalValueChunkProducerClaim>[0]['rows'][number] => ({
       selector: '01020304',
       producerPath: {
         status: 'complete' as const,
@@ -248,6 +250,36 @@ describe('hierarchical value-chunk producer identity', () => {
       stateOwnerCategoryId: categoryId,
       stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
       resourceIdentity,
+    })).toBeUndefined();
+  });
+
+  it('accepts an exact whole-value occurrence without treating its handler as linear', () => {
+    const access = {
+      collection: collectionSignature, operations: ['write'], mutationEffectOrdinals: [7],
+      storedValueSource: { version: 1 as const, execution: 'unconditional-once' as const, mutationEffectOrdinal: 7 },
+    };
+    const row = {
+      selector: '01020304',
+      producerPath: { status: 'complete' as const, context: { version: 1 as const, sourcePath: producer().sourcePath } },
+      handler: { sourceEffectOrder: 'unsupported-flow' as const, entryAccesses: [access] },
+    };
+    const options = {
+      rows: [row], collectionIdentities: [collectionSignature], executionLockingBytecode: '51',
+      stateOwnerCategoryId: categoryId, stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
+      resourceIdentity,
+    };
+    expect(terminalValueChunkProducerClaim(options)?.producer.mutationSourceEffectOrdinal).toBe(7);
+    expect(terminalValueChunkProducerClaim({
+      ...options,
+      rows: [{ ...row, handler: { ...row.handler, entryAccesses: [{ ...access, storedValueSource: undefined }] } }],
+    })).toBeUndefined();
+    expect(terminalValueChunkProducerClaim({
+      ...options,
+      rows: [{ ...row, handler: { ...row.handler, entryAccesses: [{ ...access, mutationEffectOrdinals: [8] }] } }],
+    })).toBeUndefined();
+    expect(terminalValueChunkProducerClaim({
+      ...options,
+      rows: [{ ...row, handler: { ...row.handler, entryAccesses: [access, access] } }],
     })).toBeUndefined();
   });
 
@@ -471,7 +503,7 @@ describe('hierarchical value-chunk producer identity', () => {
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     expect(orderTransportedContinuationResourceClaims([first!, second!])).toEqual([first, second]);
-    expect(orderTransportedContinuationResourceClaims([first!, { ...second!, bandOffset: 8 }]))
+    expect(orderTransportedContinuationResourceClaims([first!, { ...second!, bandOffset: 6 }]))
       .toBeUndefined();
     expect(orderTransportedContinuationResourceClaims([first!, {
       ...second!,
@@ -490,5 +522,43 @@ describe('hierarchical value-chunk producer identity', () => {
     expect(selectSingletonValueChunkProducer(
       [claim()], resourceIdentity, producer().stateOwner,
     )).toMatchObject({ status: 'exact' });
+  });
+
+  it('keeps sparse continuation-resource bands in producer order without accepting overlap or overflow', () => {
+    const collectionHash = binToHex(computeCollectionHash(collectionSignature));
+    const secondSignature = 'payloads:mapping(uint256 => bytes)';
+    const secondHash = binToHex(computeCollectionHash(secondSignature));
+    const first = buildTransportedContinuationResourceClaim({
+      owner: producer().stateOwner,
+      collectionSignature,
+      collectionHash,
+      keySlot: '42'.repeat(32),
+      digest: 'aa'.repeat(32),
+      chunkCount: 1,
+      bandOffset: 5,
+      producerClaim: claim(),
+    })!;
+    const second = buildTransportedContinuationResourceClaim({
+      owner: producer().stateOwner,
+      collectionSignature: secondSignature,
+      collectionHash: secondHash,
+      keySlot: '43'.repeat(32),
+      digest: 'bb'.repeat(32),
+      chunkCount: 4,
+      bandOffset: 11,
+      producerClaim: {
+        producer: producer(1),
+        resourceIdentity: `${categoryId}:${secondHash}:${'43'.repeat(32)}`,
+      },
+    })!;
+    expect(orderTransportedContinuationResourceClaims([first, second])).toEqual([first, second]);
+    expect(orderTransportedContinuationResourceClaims([second, first])).toBeUndefined();
+    expect(orderTransportedContinuationResourceClaims([first, { ...second, bandOffset: 5 }]))
+      .toBeUndefined();
+    expect(orderTransportedContinuationResourceClaims([first, { ...first, bandOffset: 11 }]))
+      .toBeUndefined();
+    expect(orderTransportedContinuationResourceClaims([first, {
+      ...second, bandOffset: Number.MAX_SAFE_INTEGER - 1,
+    }])).toBeUndefined();
   });
 });

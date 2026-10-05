@@ -64,6 +64,7 @@ export interface NestedOutputReassertHost {
   readonly pinnedEntrySlots: ReadonlySet<number>;
   /** The executing frame's own block layout. */
   readonly blockLayout?: FunctionBlockLayout;
+  readonly requiredEntryOutputSlots: ReadonlySet<number>;
   readonly loopEntryVars: readonly NestedReassertLoopEntryVar[];
   readonly stateLayout: StateLayout;
   readonly categoryId: string;
@@ -87,14 +88,14 @@ export interface NestedOutputReassertHost {
 /**
  * Routed proxy groups emit an OP_TRUE spacer at their sequential slot. The
  * minting UTXO must still be recreated at INPUTINDEX. Insert it there and drop
- * one later P2PKH/OP_TRUE pad so view tails and the jobs suffix do not move.
+ * one later P2PKH/OP_TRUE pad so view tails and the value-chunk suffix do not move.
  */
 export function reassertNestedMintingMasters(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
-  ): void {
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
+): void {
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0);
   const tailStart = host.pendingReturnEventOutputs.length > 0
     ? Math.min(
       ...[...packTailReturnPlacements(
@@ -107,7 +108,7 @@ export function reassertNestedMintingMasters(
     )
     : suffixStart;
   const seen = new Set<string>();
-  for (const [groupIdx, group] of host.externalCallUtxoGroups.entries()) {
+  for (const group of host.externalCallUtxoGroups) {
     if (group.sharedGroupIndex !== undefined || !group.categoryId || seen.has(group.categoryId)) continue;
     seen.add(group.categoryId);
     const master = host.findMintingInputIndex(group.categoryId);
@@ -133,18 +134,23 @@ export function reassertNestedMintingMasters(
 export function stripSurplusEmptyCollectionEntriesForHost(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
-  ): void {
+): void {
   // A compiler-owned balanced block already placed every in-block vmap node at a layout offset. The
   // leftover-HEAD strip is for 1:1 P'+NEW inserts; applying it here converts the other seeded keys to
   // OP_TRUE and fails the batch EQUALVERIFY.
   if (skipCompilerOwnedInBlockCollectionStrip({
     preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
     pinnedEntryCount: host.pinnedEntrySlots.size,
+    requiredEntryCount: host.requiredEntryOutputSlots.size,
   })) return;
   const activeGroups = [
     ...host.externalCallUtxoGroups,
     ...host.lowLevelCallUtxoGroups,
   ];
+  // A direct fixed sorted batch owns a target at its declared entry slot plus a trailing predecessor. Its
+  // trailing count alone is not the collection's complete output width. Runtime upsert loops have no fixed
+  // entry slot, so their existing surplus/fail-closed handling must continue to run.
+  if (activeGroups.length === 0 && host.blockLayout?.slots.some((slot) => slot.kind === 'entry')) return;
   const groupCollections = activeGroups.map(groupChunkableValueWriteCollections);
   if (groupCollections.some((collections) => collections.length > 1)) return;
   const selectedCollections = new Set(groupCollections.flat());
@@ -205,7 +211,7 @@ function settlesInsertAsBatch(group: ExternalCallUtxoGroup, slotIndex: number | 
 export function reassertNestedSameIndexMutables(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
-  ): void {
+): void {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
     for (const [groupIndex, group] of host.externalCallUtxoGroups.entries()) {
@@ -229,18 +235,34 @@ export function reassertNestedSameIndexMutables(
   if (skipCompilerOwnedInBlockCollectionStrip({
     preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
     pinnedEntryCount: host.pinnedEntrySlots.size,
+    requiredEntryCount: host.requiredEntryOutputSlots.size,
   })) return;
   const plannedInsertByPredecessor = new Map<number, {
     outputIndex: number; commitment?: string; newCommitment?: string;
   }>();
+  const isCompilerOwnedBatchInsert = (
+    group: ExternalCallUtxoGroup,
+    insert: NonNullable<ExternalCallUtxoGroup['plannedEntryInserts']>[number],
+  ): boolean => {
+    if (insert.slotIndex === undefined) return false;
+    const predOut = `__internal__vmapBatchPredOut_${insert.slotIndex}`;
+    const proof = `__internal__vmapBatchProof_${insert.slotIndex}`;
+    const slot = `__internal__vmapBatchSlot_${insert.slotIndex}`;
+    const args = { ...group.compilerRoute?.internalArgs, ...group.internalArgs };
+    // The shared-proof follower has PredOut=-1 and therefore no relative output
+    // argument, but its NEW still belongs to the compiler's fixed batch slot.
+    return group.relativeOutputInternalArgs?.includes(predOut) === true
+      || (proof in args && slot in args && predOut in args);
+  };
   for (const [groupIndex, group] of host.externalCallUtxoGroups.entries()) {
     if (group.sharedGroupIndex !== undefined) continue;
     const base = host.getExternalCallMasterInputIndex(groupIndex);
     for (const insert of group.plannedEntryInserts ?? []) {
       // A callee that settles the write as a sorted batch keeps the new node at its entry slot and the relinked
-      // predecessor at the planned trailing coordinate, where materialization placed both. The twin below is
-      // the scalar layout, the predecessor recreated in place, and here would lose the relinked predecessor.
-      if (settlesInsertAsBatch(group, insert.slotIndex)) continue;
+      // predecessor at the planned trailing coordinate (outputBlockSlot), where materialization placed both. The
+      // twin below is the scalar layout, the predecessor recreated in place, and here would lose the relinked
+      // predecessor. The callee's ABI or the compiler's fixed batch-slot witnesses identify such an insert.
+      if (settlesInsertAsBatch(group, insert.slotIndex) || isCompilerOwnedBatchInsert(group, insert)) continue;
       plannedInsertByPredecessor.set(base + insert.blockSlot, {
         outputIndex: base + insert.outputBlockSlot,
         commitment: insert.commitment,
@@ -251,6 +273,7 @@ export function reassertNestedSameIndexMutables(
   for (const [groupIndex, group] of host.lowLevelCallUtxoGroups.entries()) {
     const base = host.getLowLevelCallMasterInputIndex(groupIndex);
     for (const insert of group.plannedEntryInserts ?? []) {
+      if (isCompilerOwnedBatchInsert(group, insert)) continue;
       plannedInsertByPredecessor.set(base + insert.blockSlot, {
         outputIndex: base + insert.outputBlockSlot,
         commitment: insert.commitment,
@@ -264,8 +287,8 @@ export function reassertNestedSameIndexMutables(
       ...host.lowLevelCallUtxoGroups.map((group) => group.categoryId),
     ].filter((id): id is string => !!id),
   );
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0);
   const tailStart = host.pendingReturnEventOutputs.length > 0
     ? Math.min(
       ...[...packTailReturnPlacements(
@@ -432,7 +455,7 @@ export function reassertNestedSameIndexMutables(
 export function reassertFixedStateOutputs(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
-  ): void {
+): void {
   type FixedStateOwner = {
     categoryId: string;
     stateLayout: StateLayout;

@@ -1,4 +1,4 @@
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   artifactExecutionIdentityFingerprint,
   scriptToBytecode,
@@ -7,12 +7,23 @@ import {
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 import {
-  assertNoUnboundCallOptions, assertPlannedOccurrenceCount, planCompiledGraph, resolveGraphAbiFunction,
+  MAX_GRAPH_INVOCATIONS, assertNoUnboundCallOptions, assertPlannedOccurrenceCount,
+  planCompiledGraph, resolveGraphAbiFunction,
   type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
 } from './graph.js';
 import { MessageBusDiagnosticError, type MessageBusDiagnosticContext } from './diagnostics.js';
+import { projectMessageBusHandlerArguments } from './message-bus.js';
 
 const MAX_WORKLIST_DEPTH = 7;
+
+function solidityAddressArgumentIdentity(bytes: Uint8Array): string | undefined {
+  if (bytes.length === 0) return '00'.repeat(20);
+  if (bytes.length === 32) {
+    return bytes.subarray(0, 12).every((byte) => byte === 0) ? binToHex(bytes.subarray(12)) : undefined;
+  }
+  const identity = lockingBytecodeToSolidityAddressPayload(bytes);
+  return identity && binToHex(identity);
+}
 
 const artifactExecutionIdentities = new WeakMap<object, string>();
 
@@ -75,7 +86,7 @@ export interface DeriveCompiledGraphOptions {
     /** Source-template identity when this is one row of a collapsed repeated-call batch. */
     batchLogicalIndex?: number;
   }) => WorklistParticipant | WorklistTargetResolution | undefined;
-  /** Correctness bound for source recursion and runtime-sized shapes. The callManifest v1 ceiling is 24. */
+  /** Optional tighter correctness bound for source recursion and runtime-sized shapes. */
   maximumInvocations?: number;
   /**
    * Runtime occurrence supplied by the same derivation probe which evaluated the root call. It selects only
@@ -90,6 +101,17 @@ export interface DeriveCompiledGraphOptions {
     callsiteId: number;
     kind: 'conditional' | 'loop';
   }) => number;
+  /**
+   * Compiler-discovered direct children in source execution order when two loop callsites share one
+   * authenticated outer domain. This is only a traversal schedule: every row still binds to its published
+   * callsite/occurrence and the caller's VM emission covenant authenticates the resulting order.
+   */
+  orderedOccurrences?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    selector?: string;
+    invocation: number;
+  }) => readonly { callsiteId: number; occurrence: number }[] | undefined;
   /**
    * Exact reached source-loop indices for one runtime-sized row template in a collapsed repeated-call batch.
    * Transparent graph discovery supplies this when predicates can remove individual loop iterations; ordinary
@@ -117,6 +139,16 @@ export interface DeriveCompiledGraphOptions {
     argument: number;
     occurrence: number;
   }) => FunctionArgument;
+  /** Reached source-loop iteration when a conditional row's compact occurrence differs from its source index. */
+  sourceIteration?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    selector?: string;
+    invocation: number;
+    callsiteId: number;
+    occurrence: number;
+    counterName?: string;
+  }) => number | undefined;
   /**
    * Runtime-resolved target and method for compiler-labelled function-pointer
    * and varying-selector callsites. The derivation probe supplies the concrete
@@ -181,6 +213,7 @@ const resolveArguments = (
   invocation: number,
   occurrence: number,
   expressionArgument: DeriveCompiledGraphOptions['expressionArgument'],
+  sourceIteration: DeriveCompiledGraphOptions['sourceIteration'],
 ): FunctionArgument[] => (call.argSources ?? []).map((source, argument) => {
   if (source.kind === 'forward' && source.paramIndex !== undefined) {
     const value = visibleArgs[source.paramIndex];
@@ -201,7 +234,16 @@ const resolveArguments = (
   if (source.kind === 'literal') return literal(source);
   if (source.kind === 'loopIndex' && source.initialValue !== undefined) {
     if (source.stepValue !== undefined) {
-      return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
+      const sourceIndex = sourceIteration?.({
+        participant: sourceParticipant, function: functionName,
+        ...(functionSelector !== undefined && { selector: functionSelector }),
+        invocation, callsiteId: call.callsiteId!, occurrence,
+        ...(source.counterName !== undefined && { counterName: source.counterName }),
+      }) ?? occurrence;
+      if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0) {
+        throw new Error(`messageBus: callsite ${call.callsiteId} has an invalid source iteration`);
+      }
+      return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(sourceIndex);
     }
     if (source.stepExpression) {
       const value = expressionArgument?.({
@@ -217,9 +259,12 @@ const resolveArguments = (
     }
   }
   if (source.kind === 'selfAddress') {
-    // `selfAddress` is the compiler's active-state-owner projection. It is distinct from the public identity a
-    // nested callee observes as msg.sender when that participant publishes an identity anchor. Preserve the exact
-    // source bytes here; graphInvocationCallerIdentity independently authenticates the caller-facing identity.
+    if (sourceParticipant.artifact.messageBus?.route.inputs.some(
+      (input) => input.name === '__internal__graphSelfIdentityInput',
+    ) && sourceParticipant.logicalLockingBytecode !== undefined) {
+      return hexToBin(sourceParticipant.logicalLockingBytecode);
+    }
+    // Native/older routes without a public-self witness retain the physical owner projection.
     if (!sourceParticipant.lockingBytecode) {
       throw new Error('messageBus: participant has no authenticated state-owner locking bytecode');
     }
@@ -254,9 +299,9 @@ const resolveArguments = (
  * once after the physical owner set is complete.
  */
 export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): CompiledGraphPlan {
-  const maximum = options.maximumInvocations ?? 24;
-  if (!Number.isInteger(maximum) || maximum < 1 || maximum > 24) {
-    throw new Error('messageBus: symbolic worklist maximum must be between 1 and 24');
+  const maximum = options.maximumInvocations ?? MAX_GRAPH_INVOCATIONS;
+  if (!Number.isInteger(maximum) || maximum < 1 || maximum > MAX_GRAPH_INVOCATIONS) {
+    throw new Error(`messageBus: symbolic worklist maximum must be between 1 and ${MAX_GRAPH_INVOCATIONS}`);
   }
   const participants: WorklistParticipant[] = [];
   const invocations: CompiledGraphInvocation[] = [];
@@ -320,8 +365,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       || (call.addressParam !== undefined
         && !fn.inputs.some((input) => input.name === call.addressParam));
     if (targetIsRuntimeDerived) {
-      throw new Error(
-        `messageBus: resource-derived callsite ${call.callsiteId} occurrence ${occurrence} lacks a target proof`,
+      throw new MessageBusDiagnosticError(
+        'L3_TARGET_UNRESOLVED',
+        `resource-derived callsite ${call.callsiteId} occurrence ${occurrence} lacks a target proof; `
+          + `call chain ${diagnosticContext(call).callChain?.join(' -> ')} -> ${call.interfaceName}.${call.functionName}`,
+        diagnosticContext(call),
       );
     }
     const registered = options.targets[call.interfaceName];
@@ -350,6 +398,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
   const assertForwardedTarget = (
     source: WorklistParticipant,
     fn: AbiFunction,
+    functionName: string,
+    invocation: number,
     visibleArgs: readonly FunctionArgument[],
     call: ExternalCallAbi,
     target: WorklistParticipant,
@@ -360,8 +410,18 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     if (!targetName) return undefined;
     const input = fn.inputs.findIndex((candidate) => candidate.name === targetName);
     if (input < 0) return undefined;
+    const outerCounter = (call.iterationDomain ?? call.nestedIterationDomains?.[0])?.counterName;
+    const sourceIndex = call.loopArrayVar ? options.sourceIteration?.({
+      participant: source, function: functionName,
+      ...(fn.selector !== undefined && { selector: fn.selector }),
+      invocation, callsiteId: call.callsiteId!, occurrence,
+      ...(outerCounter !== undefined && { counterName: outerCounter }),
+    }) ?? occurrence : occurrence;
+    if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0) {
+      throw new Error(`messageBus: callsite ${call.callsiteId} has an invalid target source iteration`);
+    }
     const supplied = call.loopArrayVar && Array.isArray(visibleArgs[input])
-      ? visibleArgs[input][occurrence] : visibleArgs[input];
+      ? visibleArgs[input][sourceIndex] : visibleArgs[input];
     if (supplied === undefined) {
       throw new Error(`messageBus: callsite ${call.callsiteId} target argument is unavailable`);
     }
@@ -373,17 +433,20 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     ]
       .filter((candidate): candidate is string => candidate !== undefined)
       .map((candidate) => candidate.toLowerCase());
-    const sourceUsesSolidityAddresses = source.artifact.compiler.options?.solidityImportCompat === true;
-    const suppliedTargets = encoded instanceof Uint8Array
-      ? [encodedHex!, ...(sourceUsesSolidityAddresses && encoded.length === 20
-        ? [binToHex(encodeLockingBytecodeP2pkh(encoded))] : [])]
-      : [];
-    const provedTarget = authenticatedTargets.find((candidate) => {
-      if (suppliedTargets.includes(candidate)) return true;
-      if (!sourceUsesSolidityAddresses || !(encoded instanceof Uint8Array) || encoded.length !== 20) return false;
+    const sourceUsesSolidityAddresses = source.artifact.compiler?.options?.solidityImportCompat === true;
+    const suppliedIdentity = sourceUsesSolidityAddresses && encoded instanceof Uint8Array
+      && (encoded.length === 20 || encoded.length === 32)
+      ? solidityAddressArgumentIdentity(encoded) : undefined;
+    const suppliedTargets = encodedHex === undefined ? [] : [encodedHex];
+    const exactTarget = authenticatedTargets.find((candidate) => candidate === encodedHex);
+    const projectedTargets = [...new Set(authenticatedTargets.filter((candidate) => {
+      if (suppliedIdentity === undefined) return false;
       const narrowed = lockingBytecodeToSolidityAddressPayload(hexToBin(candidate));
-      return narrowed !== undefined && binToHex(narrowed) === encodedHex;
-    });
+      return narrowed !== undefined && binToHex(narrowed) === suppliedIdentity;
+    }))];
+    // ABI address words are identities, not scripts. Resolve a canonical word only against this owner's
+    // authenticated locks; never pick arbitrarily when physical and logical locks have the same projection.
+    const provedTarget = exactTarget ?? (projectedTargets.length === 1 ? projectedTargets[0] : undefined);
     if (provedTarget === undefined) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
@@ -438,20 +501,39 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     const owner = intern(participant);
     const invocation = invocations.length;
+    let boundTarget = targetLockingBytecode
+      ?? participant.logicalLockingBytecode ?? participant.lockingBytecode;
+    if (parent !== null
+      && participants[invocations[parent].callee].artifact.compiler?.options?.solidityImportCompat === true
+      && /^(?:0{24})?[0-9a-f]{40}$/i.test(boundTarget)) {
+      // Imported Solidity may evaluate a state/producer-derived target as a 20-byte identity or ABI word.
+      // The native graph must name the exact co-spent lock, which the compiler re-projects and
+      // checks against that source value. Only the selected participant's authenticated identities
+      // are candidates; an unknown or ambiguous projection still fails planCompiledGraph's gate.
+      const identities = [...new Set([
+        participant.lockingBytecode.toLowerCase(), participant.logicalLockingBytecode?.toLowerCase(),
+      ].filter((value): value is string => value !== undefined))];
+      const matches = identities.filter((identity) => {
+        const projected = lockingBytecodeToSolidityAddressPayload(hexToBin(identity));
+        return projected !== undefined && binToHex(projected) === boundTarget.slice(-40).toLowerCase();
+      });
+      if (matches.length === 1) [boundTarget] = matches;
+    }
     invocations.push({
       parent, callee: owner, function: functionName, args,
       ...(selector !== undefined && { selector }), ...(callMode && { callMode }),
       ...(consumerCallsiteId !== undefined && { consumerCallsiteId }),
       ...(sourceOccurrence !== undefined && sourceOccurrence),
       ...(parent !== null && {
-        targetLockingBytecode: targetLockingBytecode
-          ?? participant.logicalLockingBytecode
-          ?? participant.lockingBytecode,
+        targetLockingBytecode: boundTarget,
       }),
       ...(parent === null && options.rootCaller !== undefined && { logicalCaller: options.rootCaller }),
     });
     activeInvocations.push(invocation);
     const fn = functionAbi(participant, functionName, selector);
+    // Outgoing expressions read the decoded handler frame. Solidity value-address inputs are ABI words in
+    // that frame, while a parameter used to select a call target retains its authenticated native lock.
+    const executionArgs = projectMessageBusHandlerArguments(participant.artifact, fn.name, fn.selector, args);
     assertNoUnboundCallOptions(
       participant.lockingBytecode, participant.artifact, fn, functionName,
     );
@@ -466,7 +548,32 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       );
     }
     active.set(key, activeCount + 1);
-    for (const call of fn.externalCalls ?? []) {
+    const publishedCalls = fn.externalCalls ?? [];
+    const ordered = options.orderedOccurrences?.({
+      participant, function: functionName, ...(fn.selector !== undefined && { selector: fn.selector }), invocation,
+    });
+    const scheduledCounts = new Map<number, number>();
+    const scheduledCalls = ordered?.map(({ callsiteId, occurrence }) => {
+      const call = publishedCalls.find((candidate) => candidate.callsiteId === callsiteId);
+      if (!call || call.batchInvocations || call.opaqueReturn || call.interfaceName === '__raw__'
+        || call.selectorArrayVar || call.fnPtrCall) {
+        throw new Error(`messageBus: ordered occurrence ${callsiteId} is not a typed non-batched callsite`);
+      }
+      const expected = scheduledCounts.get(callsiteId) ?? 0;
+      if (occurrence !== expected) {
+        throw new Error(`messageBus: ordered callsite ${callsiteId} occurrence ${occurrence} is not ${expected}`);
+      }
+      scheduledCounts.set(callsiteId, expected + 1);
+      return { call, occurrence };
+    });
+    if (scheduledCalls) {
+      for (const call of publishedCalls) {
+        const count = scheduledCounts.get(call.callsiteId!) ?? 0;
+        assertPlannedOccurrenceCount(call, count);
+      }
+    }
+    for (const { call, occurrence: scheduledOccurrence } of scheduledCalls
+      ?? publishedCalls.map((publishedCall) => ({ call: publishedCall, occurrence: undefined }))) {
       // Recognize a raw edge by its compiler-authored identity, not by opaqueReturn. A VOID low-level call is
       // a raw edge that returns nothing, so it must not claim opaqueReturn - that flag means "opaque
       // integrity-bound return". Keying the branch off the flag left the honestly published void artifact
@@ -547,10 +654,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded selector disagrees with source`);
             }
             const expectedArgs = resolveArguments(
-              participant, args, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
-              invocation, reached, options.expressionArgument,
+              participant, executionArgs, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
+              invocation, reached, options.expressionArgument, options.sourceIteration,
             );
-            const sourceUsesSolidityAddresses = participant.artifact.compiler.options?.solidityImportCompat === true;
+            const sourceUsesSolidityAddresses = participant.artifact.compiler?.options?.solidityImportCompat === true
+              || participant.artifact.compiler?.options?.evmCompat === true;
             const expectedEncoded = expectedArgs.map((argument, index) =>
               encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
             if (expectedEncoded.length !== encoded.length
@@ -559,14 +667,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                 if (!(argument instanceof Uint8Array) || !(actual instanceof Uint8Array)) return true;
                 if (binToHex(argument) === binToHex(actual)) return false;
                 const type = targetFunction.inputs[index].type;
-                // Solidity-compatible expression recovery represents an address by its 20-byte account payload,
-                // while a low-level call may transport the same value as canonical P2PKH locking bytecode. Accept
-                // exactly that compiler-owned conversion in addition to byte identity. Native SolidCash retains
-                // arbitrary locking bytecode addresses and therefore must not apply this lossy convention.
-                return !sourceUsesSolidityAddresses
-                  || (type !== 'address' && type !== 'address payable')
-                  || argument.length !== 20
-                  || binToHex(encodeLockingBytecodeP2pkh(argument)) !== binToHex(actual);
+                // Struct/return value lanes carry ABI words, while source expressions such as address(this)
+                // retain native locks. Compare only typed Solidity addresses by their canonical identity;
+                // leave the authenticated argument transcript untouched and keep native/bytes equality exact.
+                if (!sourceUsesSolidityAddresses || (type !== 'address' && type !== 'address payable')) return true;
+                const expectedIdentity = solidityAddressArgumentIdentity(argument);
+                const actualIdentity = solidityAddressArgumentIdentity(actual);
+                return expectedIdentity === undefined || actualIdentity === undefined
+                  || expectedIdentity !== actualIdentity;
               })) {
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
@@ -588,7 +696,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             }
           } else {
             const payload = resolveArguments(
-              participant, args, call, functionName, fn.selector, invocation, reached, options.expressionArgument,
+              participant, executionArgs, call, functionName, fn.selector, invocation, reached,
+              options.expressionArgument, options.sourceIteration,
             )[0];
             if (!(payload instanceof Uint8Array)) {
               throw new Error(`messageBus: raw callsite ${call.callsiteId} calldata is not bytes`);
@@ -600,7 +709,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           // A visible forwarded address is checked here. State/expression-derived targets intentionally have no
           // public ABI argument; their compiler-emitted graph projection binds the concrete owner on-chain.
           const provedTarget = assertForwardedTarget(
-            participant, fn, args, call, resolved.participant, reached, resolved.targetLockingBytecode,
+            participant, fn, functionName, invocation, args, call,
+            resolved.participant, reached, resolved.targetLockingBytecode,
           );
           expand(
             resolved.participant,
@@ -734,13 +844,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               targetFunction.selector,
               resolveArguments(
                 participant,
-                args,
+                executionArgs,
                 { ...call, functionName: targetFunction.name, argSources: row.argSources },
                 functionName,
                 fn.selector,
                 invocation,
                 occurrence,
                 options.expressionArgument,
+                options.sourceIteration,
               ),
               invocation,
               edgeCallMode(call),
@@ -762,8 +873,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         continue;
       }
       const occurrenceKind = call.occurrence ?? 'once';
-      let count = 1;
-      if (occurrenceKind !== 'once') {
+      let count = scheduledCalls ? scheduledCounts.get(call.callsiteId!) ?? 0 : 1;
+      if (occurrenceKind !== 'once' && !scheduledCalls) {
         count = options.occurrence?.({
           participant,
           function: functionName,
@@ -813,13 +924,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             resolvedFunction.selector,
             resolveArguments(
               participant,
-              args,
+              executionArgs,
               { ...call, functionName: resolved.function },
               functionName,
               fn.selector,
               invocation,
               reached,
               options.expressionArgument,
+              options.sourceIteration,
             ),
             invocation,
             edgeCallMode(call),
@@ -837,19 +949,22 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         }
         continue;
       }
-      for (let reached = 0; reached < count; reached += 1) {
+      for (const reached of scheduledOccurrence === undefined
+        ? Array.from({ length: count }, (_, occurrence) => occurrence) : [scheduledOccurrence]) {
         const resolvedTarget = takeTarget(call, participant, fn, functionName, invocation, reached);
         const target = resolvedTarget.participant;
         const targetFunction = functionAbi(target, call.functionName, resolvedTarget.selector);
         const provedTarget = assertForwardedTarget(
-          participant, fn, args, call, target, reached, resolvedTarget.targetLockingBytecode,
+          participant, fn, functionName, invocation, args, call,
+          target, reached, resolvedTarget.targetLockingBytecode,
         );
         expand(
           target,
           call.functionName,
           targetFunction.selector,
           resolveArguments(
-            participant, args, call, functionName, fn.selector, invocation, reached, options.expressionArgument,
+            participant, executionArgs, call, functionName, fn.selector, invocation, reached,
+            options.expressionArgument, options.sourceIteration,
           ),
           invocation,
           edgeCallMode(call),

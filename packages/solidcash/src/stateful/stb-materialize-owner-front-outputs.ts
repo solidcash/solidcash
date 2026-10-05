@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: STB build-phase extract — owner master/data front band, compute sidecars, outState, pre-callee chunks.
+ * phase-boundary extract: STB build-phase extract — owner master/data front band,
+ * compute sidecars, outState, pre-callee chunks.
  */
 
 import {
@@ -56,164 +57,27 @@ export function materializeOwnerFrontOutputs(
   currentState: Readonly<Record<string, StateValue>>,
 ): boolean {
 // Create master UTXO output (preserving locking bytecode and token)
-builder.addOutput({
-  to: host.masterUtxo.unlocker.generateLockingBytecode(),
-  amount: host.masterUtxo.satoshis,
-  token: host.masterUtxo.token,
-});
-
-// Create data NFT outputs with updated commitments (only for required NFTs)
-for (let i = 0; i < host.requiredNftIndices.length; i++) {
-  const nftIdx = host.requiredNftIndices[i];
-  const nftUtxo = host.dataNftUtxos[i];
-
-  const commitment = host.stateRawCommitments.get(nftIdx) ?? buildPushdataCommitment(
-    host.stateLayout, currentState, nftIdx, host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
-  );
-
   builder.addOutput({
-    to: nftUtxo.unlocker.generateLockingBytecode(),
-    amount: nftUtxo.satoshis,
-    token: {
-      amount: nftUtxo.token?.amount ?? 0n,
-      category: host.categoryId,
-      nft: {
-        capability: nftUtxo.token?.nft?.capability ?? 'mutable',
-        commitment,
-      },
-    },
-  });
-}
-
-// Create read-only data NFT outputs (commitment preserved unchanged)
-for (const roUtxo of host.readOnlyDataNftUtxos) {
-  builder.addOutput({
-    to: roUtxo.unlocker.generateLockingBytecode(),
-    amount: roUtxo.satoshis,
-    token: roUtxo.token,
-  });
-}
-
-const ownsFrontComputeResources = !host.delegateComputeResources || host.compilerRouteDelegateBlock;
-const blockhashOutput = (index: number): Output | undefined => {
-  const bhUtxo = host.blockhashCoSpendUtxos[index];
-  return bhUtxo ? {
-    to: bhUtxo.unlocker.generateLockingBytecode(),
-    amount: bhUtxo.satoshis,
-    token: bhUtxo.token,
-  } : undefined;
-};
-const keccakOutput = (index: number): Output | undefined => {
-  const kUtxo = host.keccakComputeCoSpendUtxos[index];
-  return kUtxo ? {
-    to: kUtxo.unlocker.generateLockingBytecode(),
-    amount: kUtxo.satoshis,
-    token: {
-      category: kUtxo.token?.category ?? host.categoryId,
-      amount: kUtxo.token?.amount ?? 0n,
-      nft: { capability: 'mutable' as const, commitment: host.keccakComputeCommitments[index] ?? '' },
-    },
-  } : undefined;
-};
-if (host.preserveBlockLayoutWidth && host.blockLayout && ownsFrontComputeResources) {
-  const blockhashOrdinals = host.blockhashCoSpendSlotOrdinals
-    ?? host.blockhashCoSpendUtxos.map((_utxo, index) => index);
-  const fixedComputeSlots = host.blockLayout.slots.filter((slot) => (
-    slot.kind === 'blockhashOracle' || slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
-  )).sort((left, right) => left.offset - right.offset);
-  let blockhashOrdinal = 0;
-  for (const slot of fixedComputeSlots) {
-    while (builder.outputs.length < slot.offset) {
-      builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
-    }
-    let output: Output | undefined;
-    if (slot.kind === 'blockhashOracle') {
-      const activeIndex = blockhashOrdinals.indexOf(blockhashOrdinal++);
-      output = activeIndex >= 0 ? blockhashOutput(activeIndex) : undefined;
-    } else if (slot.kind === 'keccakSideCar') {
-      output = keccakOutput(slot.slotIndex ?? 0);
-    } else {
-      output = host.ecrecoverComputeRecreates[slot.slotIndex ?? 0];
-    }
-    builder.addOutput(output ?? { to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
-  }
-} else {
-  // Legacy layouts emit their active compute resources densely; they do not publish inactive coordinates.
-  for (let index = 0; index < host.blockhashCoSpendUtxos.length; index++) {
-    builder.addOutput(blockhashOutput(index)!);
-  }
-  if (ownsFrontComputeResources) {
-    for (let index = 0; index < host.keccakComputeCoSpendUtxos.length; index++) {
-      builder.addOutput(keccakOutput(index)!);
-    }
-  }
-}
-
-// Dynamic keccak loop: recreate the N trailing side-cars, each with its iteration result R_i. In the MVP
-// layout (no other front-region slots) these sit at [blockSize, blockSize+N) - right after the data NFTs.
-for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
-
-// ecrecover recovery-pair recreations (right after the keccak side-cars, matching the ecrecoverSideCar slots):
-// A commits H_A (the A->B binding hash), B commits the recovered pubkey Q. Built by buildEcrecoverComputeSidecars.
-if (ownsFrontComputeResources && !host.preserveBlockLayoutWidth) {
-  for (const rec of host.ecrecoverComputeRecreates) builder.addOutput(rec);
-}
-
-// Create external outState outputs (same pattern as external call preservation)
-for (const group of host.externalOutStateUtxoGroups) {
-  // B's master output: preserved unchanged
-  const bMaster = group.masterUtxo as UnlockableUtxo;
-  builder.addOutput({
-    to: bMaster.unlocker.generateLockingBytecode(),
-    amount: bMaster.satoshis,
-    token: bMaster.token,
+    to: host.masterUtxo.unlocker.generateLockingBytecode(),
+    amount: host.masterUtxo.satoshis,
+    token: host.masterUtxo.token,
   });
 
-  // B's data NFT outputs with state updates
-  const bStateUpdates = host.externalCallStateUpdates.get(group.categoryId);
-  const bCurrentState: Record<
-  string, StateValue
-  > = {};
+  // Create data NFT outputs with updated commitments (only for required NFTs)
+  for (let i = 0; i < host.requiredNftIndices.length; i++) {
+    const nftIdx = host.requiredNftIndices[i];
+    const nftUtxo = host.dataNftUtxos[i];
 
-  for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
-    const nftIdx = group.requiredDataNftIndices[i];
-    const nftUtxo = group.dataNftUtxos[i];
-    if (nftUtxo?.token?.nft?.commitment) {
-      const parsed = parsePushdataCommitment(nftUtxo.token.nft.commitment, group.stateLayout, nftIdx);
-      for (const [key, value] of Object.entries(parsed)) {
-        bCurrentState[key] = value;
-      }
-    }
-  }
-
-  if (bStateUpdates) {
-    for (const [name, value] of bStateUpdates) {
-      bCurrentState[name] = value;
-    }
-  }
-
-  for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
-    const nftIdx = group.requiredDataNftIndices[i];
-    const nftUtxo = group.dataNftUtxos[i];
-    const nftVars = group.stateLayout.variables.filter((variable) => variable.nftIndex === nftIdx);
-    const nftIsImmutable = nftVars.length > 0 && nftVars.every((variable) => variable.immutable);
-    const nftHasUpdate = stateUpdatesTouchNft(group.stateLayout, bStateUpdates, nftIdx);
-    const inputCommitment = nftUtxo.token?.nft?.commitment;
-    const commitment = (nftHasUpdate ? undefined
-      : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
-      ?? (nftIsImmutable && inputCommitment
-        ? inputCommitment
-        : buildPushdataCommitment(
-        group.stateLayout, bCurrentState, nftIdx,
-        host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
-        ));
+    const commitment = host.stateRawCommitments.get(nftIdx) ?? buildPushdataCommitment(
+      host.stateLayout, currentState, nftIdx, host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
+    );
 
     builder.addOutput({
       to: nftUtxo.unlocker.generateLockingBytecode(),
       amount: nftUtxo.satoshis,
       token: {
         amount: nftUtxo.token?.amount ?? 0n,
-        category: group.categoryId,
+        category: host.categoryId,
         nft: {
           capability: nftUtxo.token?.nft?.capability ?? 'mutable',
           commitment,
@@ -222,39 +86,176 @@ for (const group of host.externalOutStateUtxoGroups) {
     });
   }
 
-  // B's keccak256 side-car recreations (after B's data NFT outputs, matching the input order).
-  for (const rec of group.keccakRecreates ?? []) builder.addOutput(rec);
-}
+  // Create read-only data NFT outputs (commitment preserved unchanged)
+  for (const roUtxo of host.readOnlyDataNftUtxos) {
+    builder.addOutput({
+      to: roUtxo.unlocker.generateLockingBytecode(),
+      amount: roUtxo.satoshis,
+      token: roUtxo.token,
+    });
+  }
 
-// Loop external-call case: when the read array's chunk run is co-spent BEFORE the callees (input order
-// master..chunk..callees), and the covenant verifies callee output==input by index, the chunk
-// preservation outputs must precede the callee outputs here too. Emit them now; the trailing
-// iteration-entry block below skips itself when this fired. Dense placement instead appends the callee
-// blocks right after the caller's block and the chunk run after them: emitting the copies here would put
-// them on the callees' coordinates, where the callees' own re-creations later overwrite them, so the
-// trailing block emits them at their own input indices.
-// Delegate trailing storage lives at implementationInput+trailingBase. Emitting read-only chunks
-// before the implementation band would occupy the impl master output (marketplace jobs at output 5).
-// Read-only chunks must not precede a co-spent implementation: that implementation
-// self-preserves at OP_INPUTINDEX, so jobs-at-output-5 overwrites the impl master.
-const loopChunkBeforeCallees = host.iterationEntryInputs.length > 0
+  const ownsFrontComputeResources = !host.delegateComputeResources || host.compilerRouteDelegateBlock;
+  const blockhashOutput = (index: number): Output | undefined => {
+    const bhUtxo = host.blockhashCoSpendUtxos[index];
+    return bhUtxo ? {
+      to: bhUtxo.unlocker.generateLockingBytecode(),
+      amount: bhUtxo.satoshis,
+      token: bhUtxo.token,
+    } : undefined;
+  };
+  const keccakOutput = (index: number): Output | undefined => {
+    const kUtxo = host.keccakComputeCoSpendUtxos[index];
+    return kUtxo ? {
+      to: kUtxo.unlocker.generateLockingBytecode(),
+      amount: kUtxo.satoshis,
+      token: {
+        category: kUtxo.token?.category ?? host.categoryId,
+        amount: kUtxo.token?.amount ?? 0n,
+        nft: { capability: 'mutable' as const, commitment: host.keccakComputeCommitments[index] ?? '' },
+      },
+    } : undefined;
+  };
+  if (host.preserveBlockLayoutWidth && host.blockLayout && ownsFrontComputeResources) {
+    const blockhashOrdinals = host.blockhashCoSpendSlotOrdinals
+    ?? host.blockhashCoSpendUtxos.map((_utxo, index) => index);
+    const fixedComputeSlots = host.blockLayout.slots.filter((slot) => (
+      slot.kind === 'blockhashOracle' || slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
+    )).sort((left, right) => left.offset - right.offset);
+    let blockhashOrdinal = 0;
+    for (const slot of fixedComputeSlots) {
+      while (builder.outputs.length < slot.offset) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+      }
+      let output: Output | undefined;
+      if (slot.kind === 'blockhashOracle') {
+        const activeIndex = blockhashOrdinals.indexOf(blockhashOrdinal++);
+        output = activeIndex >= 0 ? blockhashOutput(activeIndex) : undefined;
+      } else if (slot.kind === 'keccakSideCar') {
+        output = keccakOutput(slot.slotIndex ?? 0);
+      } else {
+        output = host.ecrecoverComputeRecreates[slot.slotIndex ?? 0];
+      }
+      builder.addOutput(output ?? { to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+    }
+  } else {
+  // Legacy layouts emit their active compute resources densely; they do not publish inactive coordinates.
+    for (let index = 0; index < host.blockhashCoSpendUtxos.length; index++) {
+      builder.addOutput(blockhashOutput(index)!);
+    }
+    if (ownsFrontComputeResources) {
+      for (let index = 0; index < host.keccakComputeCoSpendUtxos.length; index++) {
+        builder.addOutput(keccakOutput(index)!);
+      }
+    }
+  }
+
+  // Dynamic keccak loop: recreate the N trailing side-cars, each with its iteration result R_i. In the MVP
+  // layout (no other front-region slots) these sit at [blockSize, blockSize+N) - right after the data NFTs.
+  for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
+
+  // ecrecover recovery-pair recreations (right after the keccak side-cars, matching the ecrecoverSideCar slots):
+  // A commits H_A (the A->B binding hash), B commits the recovered pubkey Q. Built by buildEcrecoverComputeSidecars.
+  if (ownsFrontComputeResources && !host.preserveBlockLayoutWidth) {
+    for (const rec of host.ecrecoverComputeRecreates) builder.addOutput(rec);
+  }
+
+  // Create external outState outputs (same pattern as external call preservation)
+  for (const group of host.externalOutStateUtxoGroups) {
+  // B's master output: preserved unchanged
+    const bMaster = group.masterUtxo as UnlockableUtxo;
+    builder.addOutput({
+      to: bMaster.unlocker.generateLockingBytecode(),
+      amount: bMaster.satoshis,
+      token: bMaster.token,
+    });
+
+    // B's data NFT outputs with state updates
+    const bStateUpdates = host.externalCallStateUpdates.get(group.categoryId);
+    const bCurrentState: Record<
+    string, StateValue
+    > = {};
+
+    for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
+      const nftIdx = group.requiredDataNftIndices[i];
+      const nftUtxo = group.dataNftUtxos[i];
+      if (nftUtxo?.token?.nft?.commitment) {
+        const parsed = parsePushdataCommitment(nftUtxo.token.nft.commitment, group.stateLayout, nftIdx);
+        for (const [key, value] of Object.entries(parsed)) {
+          bCurrentState[key] = value;
+        }
+      }
+    }
+
+    if (bStateUpdates) {
+      for (const [name, value] of bStateUpdates) {
+        bCurrentState[name] = value;
+      }
+    }
+
+    for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
+      const nftIdx = group.requiredDataNftIndices[i];
+      const nftUtxo = group.dataNftUtxos[i];
+      const nftVars = group.stateLayout.variables.filter((variable) => variable.nftIndex === nftIdx);
+      const nftIsImmutable = nftVars.length > 0 && nftVars.every((variable) => variable.immutable);
+      const nftHasUpdate = stateUpdatesTouchNft(group.stateLayout, bStateUpdates, nftIdx);
+      const inputCommitment = nftUtxo.token?.nft?.commitment;
+      const commitment = (nftHasUpdate ? undefined
+        : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
+      ?? (nftIsImmutable && inputCommitment
+        ? inputCommitment
+        : buildPushdataCommitment(
+          group.stateLayout, bCurrentState, nftIdx,
+          host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
+        ));
+
+      builder.addOutput({
+        to: nftUtxo.unlocker.generateLockingBytecode(),
+        amount: nftUtxo.satoshis,
+        token: {
+          amount: nftUtxo.token?.amount ?? 0n,
+          category: group.categoryId,
+          nft: {
+            capability: nftUtxo.token?.nft?.capability ?? 'mutable',
+            commitment,
+          },
+        },
+      });
+    }
+
+    // B's keccak256 side-car recreations (after B's data NFT outputs, matching the input order).
+    for (const rec of group.keccakRecreates ?? []) builder.addOutput(rec);
+  }
+
+  // Loop external-call case: when the read array's chunk run is co-spent BEFORE the callees (input order
+  // master..chunk..callees), and the covenant verifies callee output==input by index, the chunk
+  // preservation outputs must precede the callee outputs here too. Emit them now; the trailing
+  // iteration-entry block below skips itself when this fired. Dense placement instead appends the callee
+  // blocks right after the caller's block and the chunk run after them: emitting the copies here would put
+  // them on the callees' coordinates, where the callees' own re-creations later overwrite them, so the
+  // trailing block emits them at their own input indices.
+  // Delegate trailing storage lives at implementationInput+trailingBase. Emitting read-only chunks
+  // before the implementation band would occupy its master output.
+  // Read-only chunks must not precede a co-spent implementation: that implementation
+  // self-preserves at OP_INPUTINDEX, so an early chunk output overwrites the master.
+  const loopChunkBeforeCallees = host.iterationEntryInputs.length > 0
   && host.externalCallUtxoGroups.length > 0
   && host.iterationChunksPrecedeCallees
   && !host.delegateDynamicChunksAtSuffix
   && !host.lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall');
-if (loopChunkBeforeCallees) {
-  for (const iterUtxo of host.iterationEntryInputs) {
-    builder.addOutput({
-      to: iterUtxo.unlocker.generateLockingBytecode(),
-      amount: iterUtxo.satoshis,
-      token: {
-        amount: iterUtxo.token?.amount ?? 0n,
-        category: host.categoryId,
-        nft: { capability: 'mutable', commitment: iterUtxo.token?.nft?.commitment ?? '' },
-      },
-    });
+  if (loopChunkBeforeCallees) {
+    for (const iterUtxo of host.iterationEntryInputs) {
+      builder.addOutput({
+        to: iterUtxo.unlocker.generateLockingBytecode(),
+        amount: iterUtxo.satoshis,
+        token: {
+          amount: iterUtxo.token?.amount ?? 0n,
+          category: host.categoryId,
+          nft: { capability: 'mutable', commitment: iterUtxo.token?.nft?.commitment ?? '' },
+        },
+      });
+    }
   }
-}
 
   return loopChunkBeforeCallees;
 }

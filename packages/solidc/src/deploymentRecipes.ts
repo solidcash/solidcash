@@ -5,7 +5,8 @@ import {
   computeCollectionSignature, EnumType, MappingType, PrimitiveType, StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
-  AbiEncodePackedNode, ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
+  AbiEncodePackedNode, ArrayAccessNode, ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode,
+  BoolLiteralNode,
   BranchNode, BreakNode,
   BytesConcatNode, CastNode,
   CollectionIterationNode,
@@ -23,6 +24,17 @@ import {
   StringConcatNode,
   DeleteStateNode,
   NullaryOpNode,
+  FieldAccessNode,
+  TupleIndexOpNode,
+  ArrayAssignNode,
+  ArrayDeleteNode,
+  ArrayPushNode,
+  ArrayPopNode,
+  CollectionNode,
+  MappingAccessNode,
+  MappingAssignNode,
+  MappingFieldAssignNode,
+  MappingDeleteNode,
 } from './ast/AST.js';
 import { GlobalFunction } from './ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
@@ -96,6 +108,40 @@ const materializableGenesisLeafType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|
 
 const physicalRecipeType = (type: { toString(): string }): string =>
   type instanceof EnumType ? 'bigint' : abiTypeString(type as never);
+
+type ProjectionPath = readonly (string | number)[];
+// Tokens carry declaration identity only. Values remain in the source-ordered environment, including branch
+// clones/joins; no analysis state is shared between compilations or leaked into the public recipe language.
+const projectionTokens = new WeakMap<object, Map<string, object>>();
+const projectionToken = (definition: object, path: ProjectionPath): object => {
+  let tokens = projectionTokens.get(definition);
+  if (!tokens) { tokens = new Map(); projectionTokens.set(definition, tokens); }
+  const name = JSON.stringify(path);
+  let token = tokens.get(name);
+  if (!token) { token = {}; tokens.set(name, token); }
+  return token;
+};
+
+const scalarProjections = (type: Type): { path: ProjectionPath; type: Type }[] => {
+  const leaves: { path: ProjectionPath; type: Type }[] = [];
+  let budget = 256;
+  const visit = (current: Type, path: ProjectionPath, parents: ReadonlySet<Type>): void => {
+    budget -= 1;
+    if (budget < 0 || parents.has(current)) return;
+    if (current instanceof StructType) {
+      const nested = new Set(parents).add(current);
+      for (const field of current.fields) visit(field.type, [...path, field.name], nested);
+    } else if (current instanceof ArrayType) {
+      if (current.bound === undefined || current.bound > budget) return;
+      const nested = new Set(parents).add(current);
+      for (let index = 0; index < current.bound; index += 1) visit(current.elementType, [...path, index], nested);
+    } else if (materializableGenesisLeafType.test(physicalRecipeType(current))) {
+      leaves.push({ path, type: current });
+    }
+  };
+  visit(type, [], new Set());
+  return budget < 0 ? [] : leaves;
+};
 
 const cloneEquivalentDefinition = (left: object, right: object): boolean => {
   if (left === right) return true;
@@ -258,6 +304,85 @@ export function childDeploymentValueRecipe(
   helperFunctions: readonly FunctionDefinitionNode[] = [],
   helperStack: ReadonlySet<FunctionDefinitionNode> = new Set(),
 ): ChildDeploymentValueRecipe | undefined {
+  if (expression instanceof FieldAccessNode || expression instanceof ArrayAccessNode
+    || expression instanceof TupleIndexOpNode || expression instanceof MappingAccessNode) {
+    const resolve = (value: ExpressionNode): ChildDeploymentValueRecipe | undefined => childDeploymentValueRecipe(
+      value, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack, helperFunctions, helperStack,
+    );
+    const project = (
+      value: ExpressionNode, path: ProjectionPath, type: Type | undefined = value.type,
+    ): ChildDeploymentValueRecipe | undefined => {
+      if (value instanceof FieldAccessNode) return project(
+        value.expression, [value.name, ...path], value.structType ?? value.expression.type,
+      );
+      if (value instanceof ArrayAccessNode) {
+        if (!(value.index instanceof IntLiteralNode) || value.index.value < 0n
+          || value.index.value > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
+        return project(value.array, [Number(value.index.value), ...path]);
+      }
+      if (value instanceof TupleIndexOpNode) return Number.isSafeInteger(value.index) && value.index >= 0
+        ? project(value.tuple, [value.index, ...path]) : undefined;
+      if (value instanceof MappingAccessNode) {
+        const collection = aliasDefinitions?.get(`entry.${value.name}`);
+        if (!(collection instanceof CollectionNode) || !(collection.type instanceof MappingType)
+          || !aliases?.has(collection) || value.keys.length !== collection.allKeyTypes.length) return undefined;
+        let selectedType = collection.innermostValueType;
+        let selectedPath = path;
+        if (value.arrayIndex) {
+          if (!(value.arrayIndex instanceof IntLiteralNode) || value.arrayIndex.value < 0n
+            || value.arrayIndex.value > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
+          selectedPath = [Number(value.arrayIndex.value), ...path];
+        }
+        for (const segment of selectedPath) {
+          if (selectedType instanceof StructType && typeof segment === 'string') {
+            const field = selectedType.fields.find((candidate) => candidate.name === segment);
+            if (!field) return undefined;
+            selectedType = field.type;
+          } else if (selectedType instanceof ArrayType && typeof segment === 'number'
+            && selectedType.bound !== undefined && segment >= 0 && segment < selectedType.bound) {
+            selectedType = selectedType.elementType;
+          } else return undefined;
+        }
+        const resultType = physicalRecipeType(selectedType);
+        if (!materializableGenesisLeafType.test(resultType)) return undefined;
+        const keys = value.keys.map((key, index) => bindRecipe(
+          key, physicalRecipeType(collection.allKeyTypes[index]), handlerInputs, handlerInputTypes ?? new Map(),
+          aliases, aliasDefinitions!, helperFunctions, collection.allKeyTypes[index],
+        ));
+        return keys.every((key) => key !== undefined) ? {
+          kind: 'entry', collection: computeCollectionSignature(collection.name, collection.type.toString()),
+          keys: keys as ChildDeploymentValueRecipe[], path: selectedPath, resultType,
+        } : undefined;
+      }
+      if (path.length === 0) return resolve(value);
+      if (value instanceof IdentifierNode) {
+        const linked = value.definition?.definition;
+        const named = aliasDefinitions?.get(value.name);
+        const definition = named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : linked;
+        return definition ? aliases?.get(projectionToken(definition, path)) : undefined;
+      }
+      const [head, ...tail] = path;
+      if (value instanceof FunctionCallNode && type instanceof StructType
+        && value.identifier.name === type.name && !value.resolvedFunction) {
+        const index = type.fields.findIndex((field) => field.name === head);
+        return index >= 0 && value.parameters[index]
+          ? project(value.parameters[index], tail, type.fields[index].type) : undefined;
+      }
+      if (value instanceof ArrayNode && typeof head === 'number') {
+        return value.elements[head] ? project(value.elements[head], tail) : undefined;
+      }
+      if (value instanceof TernaryOpNode) {
+        const condition = resolve(value.condition);
+        const ifTrue = project(value.ifTrue, path);
+        const ifFalse = project(value.ifFalse, path);
+        return condition?.resultType === 'bool' && ifTrue?.resultType && ifTrue.resultType === ifFalse?.resultType
+          ? { kind: 'conditional', resultType: ifTrue.resultType, condition, ifTrue, ifFalse } : undefined;
+      }
+      return undefined;
+    };
+    return project(expression, []);
+  }
   if (expression instanceof IdentifierNode) {
     const linkedDefinition = expression.definition?.definition;
     const namedDefinition = aliasDefinitions?.get(expression.name);
@@ -648,6 +773,7 @@ export function analyzeFixedBchEffectRecipes(
   fn: FunctionDefinitionNode,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
   stateVariables: readonly StateVariableNode[] = [],
+  collections: readonly CollectionNode[] = [],
 ): WeakMap<FixedBchEffectNode, FixedBchEffectRecipeAnalysis> {
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
@@ -678,9 +804,15 @@ export function analyzeFixedBchEffectRecipes(
     initialAliases.set(definition, { kind: 'state', name: variable.name, resultType });
     initialDefinitions.set(`this.${variable.name}`, definition);
   }
+  for (const collection of collections) {
+    if (!(collection.type instanceof MappingType)) continue;
+    initialDefinitions.set(`entry.${collection.name}`, collection);
+    initialAliases.set(collection, { kind: 'boolLiteral', value: true, resultType: 'bool' });
+    stateKeys.add(collection);
+  }
   // Rebind cloned direct reads to the scalar roots seeded above. Subsequent source-ordered writes and stateful
   // calls update or delete these aliases below, so a transfer can never silently reuse stale pre-state.
-  // Collections and transaction signatures are deliberately absent from the executable recipe language.
+  // Mapping entry authorization is seeded separately above; transaction signatures remain excluded.
   const collectPreState = (value: unknown, seen = new WeakSet<object>()): void => {
     if (Array.isArray(value)) {
       value.forEach((item) => collectPreState(item, seen));
@@ -711,6 +843,116 @@ export function analyzeFixedBchEffectRecipes(
   const cloneEnvironment = (environment: Environment): Environment => ({
     aliases: new Map(environment.aliases), definitions: new Map(environment.definitions),
   });
+  const escapedProjections = new WeakMap<object, ProjectionPath[]>();
+  const includesPath = (prefix: ProjectionPath, path: ProjectionPath): boolean => prefix.length <= path.length
+    && prefix.every((segment, index) => segment === path[index]);
+  const escapeProjection = (definition: object, path: ProjectionPath, environment: Environment): void => {
+    const paths = escapedProjections.get(definition) ?? [];
+    if (!paths.some((prefix) => includesPath(prefix, path))) {
+      escapedProjections.set(definition, [...paths.filter((prefix) => !includesPath(path, prefix)), path]);
+    }
+    environment.aliases.delete(definition);
+    for (const [encoded, token] of projectionTokens.get(definition) ?? []) {
+      if (includesPath(path, JSON.parse(encoded) as ProjectionPath)) environment.aliases.delete(token);
+    }
+  };
+  const invalidateDefinition = (definition: object, environment: Environment): void => {
+    environment.aliases.delete(definition);
+    for (const token of projectionTokens.get(definition)?.values() ?? []) environment.aliases.delete(token);
+  };
+  const aggregateReference = (
+    expression: ExpressionNode, environment: Environment,
+  ): { definition: object; type: Type; path: ProjectionPath } | undefined => {
+    if (expression instanceof IdentifierNode) {
+      const named = environment.definitions.get(expression.name);
+      const linked = expression.definition?.definition;
+      const definition = named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : linked;
+      const type = (definition as { type?: Type } | undefined)?.type;
+      return definition && type ? { definition, type, path: [] } : undefined;
+    }
+    if (expression instanceof FieldAccessNode) {
+      const parent = aggregateReference(expression.expression, environment);
+      const type = parent?.type instanceof StructType
+        ? parent.type.fields.find((field) => field.name === expression.name)?.type : undefined;
+      return parent && type ? { definition: parent.definition, type, path: [...parent.path, expression.name] } : undefined;
+    }
+    if (expression instanceof ArrayAccessNode || expression instanceof TupleIndexOpNode) {
+      const parent = aggregateReference(
+        expression instanceof ArrayAccessNode ? expression.array : expression.tuple, environment,
+      );
+      const index = expression instanceof TupleIndexOpNode ? expression.index
+        : expression.index instanceof IntLiteralNode ? Number(expression.index.value) : undefined;
+      return parent?.type instanceof ArrayType ? {
+        definition: parent.definition, type: parent.type.elementType,
+        // An unknown index may alias any element, but cannot mutate a sibling outside this array.
+        path: index !== undefined && Number.isSafeInteger(index) && index >= 0 ? [...parent.path, index] : parent.path,
+      } : undefined;
+    }
+    return undefined;
+  };
+  const bindProjections = (
+    definition: object, type: Type, expression: ExpressionNode | undefined, environment: Environment,
+  ): void => {
+    if (!(type instanceof StructType) && !(type instanceof ArrayType)) return;
+    // Aggregate-to-aggregate memory assignment may alias. Until its alias group is modeled, do not publish a
+    // snapshot for either side which could survive a mutation through the other reference.
+    const reference = expression && aggregateReference(expression, environment);
+    if (reference) {
+      escapeProjection(reference.definition, reference.path, environment);
+      escapeProjection(definition, [], environment);
+      return;
+    }
+    const invalidateEmbeddedAliases = (value: ExpressionNode, expected: Type, path: ProjectionPath = []): void => {
+      if (!(expected instanceof StructType) && !(expected instanceof ArrayType)) return;
+      const embedded = aggregateReference(value, environment);
+      if (embedded) {
+        // A lowered field update rebuilds its own aggregate. Other references embedded in a constructor can
+        // outlive this statement and alias future writes; fence both owners, including later reassignments.
+        if (embedded.definition !== definition || JSON.stringify(embedded.path) !== JSON.stringify(path)) {
+          escapeProjection(embedded.definition, embedded.path, environment);
+          escapeProjection(definition, path, environment);
+        }
+      } else if (value instanceof FunctionCallNode && expected instanceof StructType
+        && value.identifier.name === expected.name && !value.resolvedFunction) {
+        value.parameters.forEach((argument, index) => {
+          const field = expected.fields[index];
+          if (field) invalidateEmbeddedAliases(argument, field.type, [...path, field.name]);
+        });
+      } else if (value instanceof ArrayNode && expected instanceof ArrayType) {
+        value.elements.forEach((element, index) =>
+          invalidateEmbeddedAliases(element, expected.elementType, [...path, index]));
+      }
+    };
+    if (expression) invalidateEmbeddedAliases(expression, type);
+    const bindings = scalarProjections(type).map((leaf) => {
+      if (escapedProjections.get(definition)?.some((prefix) => includesPath(prefix, leaf.path))) {
+        return [projectionToken(definition, leaf.path), undefined] as const;
+      }
+      let selected = expression;
+      let selectedType: Type = type;
+      for (const segment of leaf.path) {
+        if (!selected) break;
+        if (typeof segment === 'string' && selectedType instanceof StructType) {
+          const field = new FieldAccessNode(selected, segment);
+          field.structType = selectedType;
+          selectedType = selectedType.fields.find((candidate) => candidate.name === segment)!.type;
+          selected = field;
+        } else if (typeof segment === 'number' && selectedType instanceof ArrayType) {
+          selected = new ArrayAccessNode(selected, new IntLiteralNode(BigInt(segment)));
+          selectedType = selectedType.elementType;
+        } else return [projectionToken(definition, leaf.path), undefined] as const;
+        selected.type = selectedType;
+      }
+      if (selected) selected.type = leaf.type;
+      return [projectionToken(definition, leaf.path), selected && bindRecipe(
+        selected, physicalRecipeType(leaf.type), handlerInputs, handlerInputTypes,
+        environment.aliases, environment.definitions, helperFunctions, leaf.type,
+      )] as const;
+    });
+    // Every RHS sees the old environment, even for a compiler-lowered reconstruction of this same struct.
+    for (const token of projectionTokens.get(definition)?.values() ?? []) environment.aliases.delete(token);
+    for (const [token, bound] of bindings) if (bound) environment.aliases.set(token, bound);
+  };
   const recipeUsesTransactionSignature = (
     value: ChildDeploymentValueRecipe, seen = new WeakSet<object>(),
   ): boolean => {
@@ -787,6 +1029,9 @@ export function analyzeFixedBchEffectRecipes(
     // Only declarations visible before the branch can escape its lexical join. A missing recipe in either arm
     // remains unknown; differing pure values use the typed conditional recipe shared with the SDK.
     const definitions = new Set<object>(environment.definitions.values());
+    for (const definition of [...definitions]) {
+      for (const token of projectionTokens.get(definition)?.values() ?? []) definitions.add(token);
+    }
     // State declarations are contract-scoped, so a value assigned independently in every reachable arm may
     // join even when no replayable pre-branch value existed. Locals declared inside an arm remain excluded.
     for (const definition of whenTrue.aliases.keys()) if (stateKeys.has(definition)) definitions.add(definition);
@@ -867,19 +1112,29 @@ export function analyzeFixedBchEffectRecipes(
     seen.add(value);
     if (value instanceof AssignNode) {
       const definition = resolvedDefinition(value.identifier, environment);
-      if (definition) environment.aliases.delete(definition);
+      if (definition) invalidateDefinition(definition, environment);
     } else if (value instanceof StateAssignNode) {
       environment.aliases.delete(stateDefinition(value.name));
     } else if (value instanceof DeleteLocalNode) {
       const definition = resolvedDefinition(value.identifier, environment);
-      if (definition) environment.aliases.delete(definition);
+      if (definition) invalidateDefinition(definition, environment);
     } else if (value instanceof DeleteStateNode) {
       environment.aliases.delete(stateDefinition(value.name));
+    } else if (value instanceof ArrayAssignNode || value instanceof ArrayDeleteNode
+      || value instanceof ArrayPushNode || value instanceof ArrayPopNode) {
+      const definition = environment.definitions.get(value.name);
+      if (definition) invalidateDefinition(definition, environment);
+      const collection = environment.definitions.get(`entry.${value.name}`);
+      if (collection) environment.aliases.delete(collection);
+    } else if (value instanceof MappingAssignNode || value instanceof MappingFieldAssignNode
+      || value instanceof MappingDeleteNode) {
+      const collection = environment.definitions.get(`entry.${value.name}`);
+      if (collection) environment.aliases.delete(collection);
     } else if (value instanceof TupleAssignmentNode) {
       for (const element of value.elements) {
         if (element.skip || !element.name) continue;
         const definition = environment.definitions.get(element.name);
-        if (definition) environment.aliases.delete(definition);
+        if (definition) invalidateDefinition(definition, environment);
       }
     }
     for (const [key, child] of Object.entries(value)) {
@@ -889,6 +1144,7 @@ export function analyzeFixedBchEffectRecipes(
   };
   const invalidateStatefulCalls = (
     value: unknown, environment: Environment, seen = new WeakSet<object>(),
+    expectedType?: Type,
   ): void => {
     if (Array.isArray(value)) {
       value.forEach((item) => invalidateStatefulCalls(item, environment, seen));
@@ -896,6 +1152,23 @@ export function analyzeFixedBchEffectRecipes(
     }
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
+    const constructorType = value instanceof FunctionCallNode
+      ? value.type instanceof StructType ? value.type : expectedType : undefined;
+    if (value instanceof FunctionCallNode && constructorType instanceof StructType
+      && value.identifier.name === constructorType.name && !value.resolvedFunction) {
+      value.parameters.forEach((argument, index) => invalidateStatefulCalls(
+        argument, environment, seen, constructorType.fields[index]?.type,
+      ));
+      return;
+    }
+    if (value instanceof FunctionCallNode) {
+      for (const argument of value.parameters) {
+        const reference = aggregateReference(argument, environment);
+        if (reference && (reference.type instanceof StructType || reference.type instanceof ArrayType)) {
+          escapeProjection(reference.definition, reference.path, environment);
+        }
+      }
+    }
     if (value instanceof FunctionCallNode && value.resolvedFunction
       && containsStatefulOperation(value.resolvedFunction.body?.statements)) {
       // Scalar-journal helpers deliberately remain behind OP_INVOKE. Their post-call state is authenticated by
@@ -967,7 +1240,9 @@ export function analyzeFixedBchEffectRecipes(
     let continuationSupported = activationSupported;
     for (const statement of block.statements ?? []) {
       if (statement instanceof VariableDefinitionNode) {
-        if (statement.expression) invalidateStatefulCalls(statement.expression, environment);
+        if (statement.expression) invalidateStatefulCalls(
+          statement.expression, environment, new WeakSet(), statement.type,
+        );
         if (statement.expression) snapshotEffects(
           statement.expression, environment, continuationActivation, continuationSupported, unsafe,
         );
@@ -977,20 +1252,24 @@ export function analyzeFixedBchEffectRecipes(
             statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes,
             environment.aliases, environment.definitions, helperFunctions, statement.type,
           ) : undefined;
+        bindProjections(key, statement.type, !unsafe ? statement.expression : undefined, environment);
         if (bound) environment.aliases.set(key, bound); else environment.aliases.delete(key);
         environment.definitions.set(statement.name, key);
         continue;
       }
       if (statement instanceof AssignNode) {
-        invalidateStatefulCalls(statement.expression, environment);
-        snapshotEffects(statement.expression, environment, continuationActivation, continuationSupported, unsafe);
         const key = resolvedDefinition(statement.identifier, environment);
         const targetType = key && (key as { type?: { toString(): string } }).type;
+        invalidateStatefulCalls(statement.expression, environment, new WeakSet(), targetType as Type | undefined);
+        snapshotEffects(statement.expression, environment, continuationActivation, continuationSupported, unsafe);
         const bound = !unsafe && key && targetType
           ? bindRecipe(
             statement.expression, abiTypeString(targetType as never), handlerInputs, handlerInputTypes,
             environment.aliases, environment.definitions, helperFunctions, targetType as Type,
           ) : undefined;
+        if (key && targetType) bindProjections(
+          key, targetType as Type, !unsafe ? statement.expression : undefined, environment,
+        );
         if (key && bound) environment.aliases.set(key, bound);
         else if (key) environment.aliases.delete(key);
         continue;
@@ -1014,9 +1293,15 @@ export function analyzeFixedBchEffectRecipes(
         snapshotEffects(
           statement.expression, environment, continuationActivation, continuationSupported, unsafe,
         );
+        // A require has no successful false continuation: the VM rejects the entire transaction. It is not
+        // an optional transfer-selection branch and need not be replayed by the SDK (e.g. a signature check
+        // or authenticated external result). Still snapshot effects in its expression and invalidate any
+        // stateful helper calls above. Retain the existing narrowing optimization for replayable guards, but
+        // an opaque precondition cannot make a previously known success-path activation opaque.
         const condition = !unsafe ? recipe(statement.expression, environment) : undefined;
-        continuationSupported = continuationSupported && condition?.resultType === 'bool';
-        continuationActivation = condition ? conjunction(continuationActivation, condition) : undefined;
+        if (condition?.resultType === 'bool') {
+          continuationActivation = conjunction(continuationActivation, condition);
+        }
         continue;
       }
       if (statement instanceof BranchNode) {
@@ -1243,285 +1528,285 @@ export function analyzeChildDeploymentRecipes(
   typedEffectOptions?: FinalizedTypedEffectIrOptions,
 ): WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis> {
   return withTypedEffectOptions(typedEffectOptions, () => {
-  const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
-  const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
-  let aliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
-    parameter,
-    { kind: 'handlerInput', inputIndex, resultType: abiTypeString(parameter.type) } as ChildDeploymentValueRecipe,
-  ]));
-  let aliasDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
-  const result = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
-  const containsReturn = (value: unknown, seen = new WeakSet<object>()): boolean => {
-    if (Array.isArray(value)) return value.some((item) => containsReturn(item, seen));
-    if (!(value instanceof Node) || seen.has(value)) return false;
-    seen.add(value);
-    if (value instanceof ReturnNode) return true;
-    for (const [key, child] of Object.entries(value)) {
-      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
-      if (containsReturn(child, seen)) return true;
-    }
-    return false;
-  };
-  const childControlArmJoinSafe = (block: BlockNode): boolean => {
-    const statements = block.statements ?? [];
-    const permittedBreak = statements.at(-1) instanceof BreakNode ? statements.at(-1) : undefined;
-    const containsAbruptExit = (value: unknown, seen = new WeakSet<object>()): boolean => {
-      if (Array.isArray(value)) return value.some((item) => containsAbruptExit(item, seen));
+    const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
+    const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+    let aliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
+      parameter,
+      { kind: 'handlerInput', inputIndex, resultType: abiTypeString(parameter.type) } as ChildDeploymentValueRecipe,
+    ]));
+    let aliasDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
+    const result = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
+    const containsReturn = (value: unknown, seen = new WeakSet<object>()): boolean => {
+      if (Array.isArray(value)) return value.some((item) => containsReturn(item, seen));
       if (!(value instanceof Node) || seen.has(value)) return false;
       seen.add(value);
-      if (value === permittedBreak) return false;
-      if (value instanceof BreakNode || value instanceof ContinueNode
+      if (value instanceof ReturnNode) return true;
+      for (const [key, child] of Object.entries(value)) {
+        if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+        if (containsReturn(child, seen)) return true;
+      }
+      return false;
+    };
+    const childControlArmJoinSafe = (block: BlockNode): boolean => {
+      const statements = block.statements ?? [];
+      const permittedBreak = statements.at(-1) instanceof BreakNode ? statements.at(-1) : undefined;
+      const containsAbruptExit = (value: unknown, seen = new WeakSet<object>()): boolean => {
+        if (Array.isArray(value)) return value.some((item) => containsAbruptExit(item, seen));
+        if (!(value instanceof Node) || seen.has(value)) return false;
+        seen.add(value);
+        if (value === permittedBreak) return false;
+        if (value instanceof BreakNode || value instanceof ContinueNode
         || value instanceof ReturnNode || value instanceof RevertNode) return true;
-      return Object.entries(value).some(([key, child]) => ![
-        'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
-      ].includes(key) && containsAbruptExit(child, seen));
+        return Object.entries(value).some(([key, child]) => ![
+          'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
+        ].includes(key) && containsAbruptExit(child, seen));
+      };
+      return !containsAbruptExit(block);
     };
-    return !containsAbruptExit(block);
-  };
-  const joinedRecipe = (
-    condition: ChildDeploymentValueRecipe,
-    whenTrue: ChildDeploymentValueRecipe | undefined,
-    whenFalse: ChildDeploymentValueRecipe | undefined,
-  ): ChildDeploymentValueRecipe | undefined => {
-    if (!whenTrue || !whenFalse) return undefined;
-    if (JSON.stringify(whenTrue) === JSON.stringify(whenFalse)) return whenTrue;
-    if (condition.resultType !== 'bool' || !whenTrue.resultType
+    const joinedRecipe = (
+      condition: ChildDeploymentValueRecipe,
+      whenTrue: ChildDeploymentValueRecipe | undefined,
+      whenFalse: ChildDeploymentValueRecipe | undefined,
+    ): ChildDeploymentValueRecipe | undefined => {
+      if (!whenTrue || !whenFalse) return undefined;
+      if (JSON.stringify(whenTrue) === JSON.stringify(whenFalse)) return whenTrue;
+      if (condition.resultType !== 'bool' || !whenTrue.resultType
       || whenTrue.resultType !== whenFalse.resultType) return undefined;
-    return {
-      kind: 'conditional', resultType: whenTrue.resultType,
-      condition, ifTrue: whenTrue, ifFalse: whenFalse,
+      return {
+        kind: 'conditional', resultType: whenTrue.resultType,
+        condition, ifTrue: whenTrue, ifFalse: whenFalse,
+      };
     };
-  };
 
-  const snapshotExpression = (value: unknown, unsafe: boolean, seen = new WeakSet<object>()): void => {
-    if (Array.isArray(value)) { value.forEach((item) => snapshotExpression(item, unsafe, seen)); return; }
-    if (!(value instanceof Node) || seen.has(value)) return;
-    seen.add(value);
-    if (value instanceof InstantiationNode) {
-      const siteAliases = new Map(aliases);
-      const siteAliasDefinitions = new Map(aliasDefinitions);
-      const constructorParameters = value.referencedContract?.parameters.length
-        ? value.referencedContract.parameters : value.referencedContract?.constructorDef?.parameters ?? [];
-      const constructorArgs = value.parameters.map((parameter, index) => (unsafe ? undefined
-        : childDeploymentValueRecipe(
-          parameter, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
-          constructorParameters[index]?.type, new Set(), helperFunctions,
-        )));
-      const salt = value.callOptions?.salt && !unsafe
-        ? childDeploymentValueRecipe(
-          value.callOptions.salt, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
-          undefined, new Set(), helperFunctions,
-        )
-        : undefined;
-      const callValue = value.callOptions?.value && !unsafe
-        ? childDeploymentValueRecipe(
-          value.callOptions.value, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
-          undefined, new Set(), helperFunctions,
-        )
-        : undefined;
-      result.set(value, {
-        aliases: siteAliases,
-        aliasDefinitions: siteAliasDefinitions,
-        constructorArgs,
-        ...(salt && { salt }),
-        ...(callValue && { value: callValue }),
-        supported: !unsafe && constructorArgs.every((recipe) => recipe !== undefined)
+    const snapshotExpression = (value: unknown, unsafe: boolean, seen = new WeakSet<object>()): void => {
+      if (Array.isArray(value)) { value.forEach((item) => snapshotExpression(item, unsafe, seen)); return; }
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof InstantiationNode) {
+        const siteAliases = new Map(aliases);
+        const siteAliasDefinitions = new Map(aliasDefinitions);
+        const constructorParameters = value.referencedContract?.parameters.length
+          ? value.referencedContract.parameters : value.referencedContract?.constructorDef?.parameters ?? [];
+        const constructorArgs = value.parameters.map((parameter, index) => (unsafe ? undefined
+          : childDeploymentValueRecipe(
+            parameter, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+            constructorParameters[index]?.type, new Set(), helperFunctions,
+          )));
+        const salt = value.callOptions?.salt && !unsafe
+          ? childDeploymentValueRecipe(
+            value.callOptions.salt, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+            undefined, new Set(), helperFunctions,
+          )
+          : undefined;
+        const callValue = value.callOptions?.value && !unsafe
+          ? childDeploymentValueRecipe(
+            value.callOptions.value, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+            undefined, new Set(), helperFunctions,
+          )
+          : undefined;
+        result.set(value, {
+          aliases: siteAliases,
+          aliasDefinitions: siteAliasDefinitions,
+          constructorArgs,
+          ...(salt && { salt }),
+          ...(callValue && { value: callValue }),
+          supported: !unsafe && constructorArgs.every((recipe) => recipe !== undefined)
           && (!value.callOptions?.salt || salt !== undefined)
           && (!value.callOptions?.value || callValue !== undefined),
-      });
-    }
-    for (const [key, child] of Object.entries(value)) {
-      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
-      snapshotExpression(child, unsafe, seen);
-    }
-  };
-
-  const invalidateAssignments = (value: unknown, seen = new WeakSet<object>()): void => {
-    if (Array.isArray(value)) { value.forEach((item) => invalidateAssignments(item, seen)); return; }
-    if (!(value instanceof Node) || seen.has(value)) return;
-    seen.add(value);
-    if (value instanceof AssignNode) {
-      const linked = definitionOf(value.identifier);
-      const named = aliasDefinitions.get(value.identifier.name);
-      const definition = linked && aliases.has(linked) ? linked
-        : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
-      if (definition) aliases.delete(definition);
-    } else if (value instanceof DeleteLocalNode) {
-      const linked = definitionOf(value.identifier);
-      const named = aliasDefinitions.get(value.identifier.name);
-      const definition = linked && aliases.has(linked) ? linked
-        : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
-      if (definition) aliases.delete(definition);
-    } else if (value instanceof TupleAssignmentNode) {
-      for (const element of value.elements) {
-        if (element.skip || !element.name) continue;
-        const definition = aliasDefinitions.get(element.name);
-        if (definition) aliases.delete(definition);
-        if (!element.existing) aliasDefinitions.set(element.name, element);
+        });
       }
-    }
-    for (const [key, child] of Object.entries(value)) {
-      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
-      invalidateAssignments(child, seen);
-    }
-  };
+      for (const [key, child] of Object.entries(value)) {
+        if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+        snapshotExpression(child, unsafe, seen);
+      }
+    };
 
-  const processBlock = (block: BlockNode, unsafe = false): void => {
-    let priorReturn = false;
-    for (const statement of block.statements ?? []) {
-      const statementUnsafe = unsafe || priorReturn;
-      if (statement instanceof VariableDefinitionNode) {
-        if (statement.expression) {
+    const invalidateAssignments = (value: unknown, seen = new WeakSet<object>()): void => {
+      if (Array.isArray(value)) { value.forEach((item) => invalidateAssignments(item, seen)); return; }
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof AssignNode) {
+        const linked = definitionOf(value.identifier);
+        const named = aliasDefinitions.get(value.identifier.name);
+        const definition = linked && aliases.has(linked) ? linked
+          : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
+        if (definition) aliases.delete(definition);
+      } else if (value instanceof DeleteLocalNode) {
+        const linked = definitionOf(value.identifier);
+        const named = aliasDefinitions.get(value.identifier.name);
+        const definition = linked && aliases.has(linked) ? linked
+          : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
+        if (definition) aliases.delete(definition);
+      } else if (value instanceof TupleAssignmentNode) {
+        for (const element of value.elements) {
+          if (element.skip || !element.name) continue;
+          const definition = aliasDefinitions.get(element.name);
+          if (definition) aliases.delete(definition);
+          if (!element.existing) aliasDefinitions.set(element.name, element);
+        }
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+        invalidateAssignments(child, seen);
+      }
+    };
+
+    const processBlock = (block: BlockNode, unsafe = false): void => {
+      let priorReturn = false;
+      for (const statement of block.statements ?? []) {
+        const statementUnsafe = unsafe || priorReturn;
+        if (statement instanceof VariableDefinitionNode) {
+          if (statement.expression) {
+            snapshotExpression(statement.expression, statementUnsafe);
+            invalidateAssignments(statement.expression);
+          }
+          const key = statement as object;
+          if (!statementUnsafe && statement.expression) {
+            const recipe = bindRecipe(
+              statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes, aliases,
+              aliasDefinitions, helperFunctions, statement.type,
+            );
+            if (recipe) aliases.set(key, recipe); else aliases.delete(key);
+          } else aliases.delete(key);
+          aliasDefinitions.set(statement.name, key);
+          continue;
+        }
+        if (statement instanceof AssignNode) {
           snapshotExpression(statement.expression, statementUnsafe);
           invalidateAssignments(statement.expression);
+          const linked = definitionOf(statement.identifier);
+          const named = aliasDefinitions.get(statement.identifier.name);
+          const key = linked && aliases.has(linked) ? linked
+            : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
+          if (key && !statementUnsafe) {
+            const targetType = abiTypeString((key as { type?: unknown }).type as never);
+            const recipe = bindRecipe(
+              statement.expression, targetType, handlerInputs, handlerInputTypes, aliases, aliasDefinitions,
+              helperFunctions, (key as { type?: Type }).type,
+            );
+            if (recipe) aliases.set(key, recipe); else aliases.delete(key);
+          } else if (key) aliases.delete(key);
+          continue;
         }
-        const key = statement as object;
-        if (!statementUnsafe && statement.expression) {
-          const recipe = bindRecipe(
-            statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes, aliases,
-            aliasDefinitions, helperFunctions, statement.type,
-          );
-          if (recipe) aliases.set(key, recipe); else aliases.delete(key);
-        } else aliases.delete(key);
-        aliasDefinitions.set(statement.name, key);
-        continue;
-      }
-      if (statement instanceof AssignNode) {
-        snapshotExpression(statement.expression, statementUnsafe);
-        invalidateAssignments(statement.expression);
-        const linked = definitionOf(statement.identifier);
-        const named = aliasDefinitions.get(statement.identifier.name);
-        const key = linked && aliases.has(linked) ? linked
-          : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
-        if (key && !statementUnsafe) {
-          const targetType = abiTypeString((key as { type?: unknown }).type as never);
-          const recipe = bindRecipe(
-            statement.expression, targetType, handlerInputs, handlerInputTypes, aliases, aliasDefinitions,
-            helperFunctions, (key as { type?: Type }).type,
-          );
-          if (recipe) aliases.set(key, recipe); else aliases.delete(key);
-        } else if (key) aliases.delete(key);
-        continue;
-      }
-      if (statement instanceof BlockNode && statement.scoped) {
-        const outerDefinitions = aliasDefinitions;
-        aliasDefinitions = new Map(aliasDefinitions);
-        processBlock(statement, statementUnsafe);
-        aliasDefinitions = outerDefinitions;
-        priorReturn ||= containsReturn(statement);
-        continue;
-      }
-      if (statement instanceof BranchNode) {
-        snapshotExpression(statement.condition, statementUnsafe);
-        const incomingAliases = new Map(aliases);
-        const incomingDefinitions = new Map(aliasDefinitions);
-        const condition = !statementUnsafe ? childDeploymentValueRecipe(
-          statement.condition, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
-          undefined, new Set(), helperFunctions,
-        ) : undefined;
-        const branchSupported = condition?.resultType === 'bool'
-          && childControlArmJoinSafe(statement.ifBlock)
-          && (!statement.elseBlock || childControlArmJoinSafe(statement.elseBlock));
-        // These callbacks execute synchronously and cannot escape this analysis iteration.
-        // eslint-disable-next-line @typescript-eslint/no-loop-func
-        const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
-          aliases = new Map(incomingAliases);
-          aliasDefinitions = new Map(incomingDefinitions);
-          processBlock(armBlock, statementUnsafe || !branchSupported);
-          return new Map(aliases);
-        };
-        const trueAliases = processArm(statement.ifBlock);
-        const falseAliases = statement.elseBlock ? processArm(statement.elseBlock) : incomingAliases;
-        aliases = new Map(incomingAliases);
-        aliasDefinitions = incomingDefinitions;
-        if (!branchSupported) {
-          invalidateAssignments(statement);
+        if (statement instanceof BlockNode && statement.scoped) {
+          const outerDefinitions = aliasDefinitions;
+          aliasDefinitions = new Map(aliasDefinitions);
+          processBlock(statement, statementUnsafe);
+          aliasDefinitions = outerDefinitions;
           priorReturn ||= containsReturn(statement);
           continue;
         }
-        const joined = new Map<object, ChildDeploymentValueRecipe>();
-        for (const definition of incomingDefinitions.values()) {
-          const recipe = joinedRecipe(condition, trueAliases.get(definition), falseAliases.get(definition));
-          if (recipe) joined.set(definition, recipe);
-        }
-        aliases = joined;
-        priorReturn ||= containsReturn(statement);
-        continue;
-      }
-      if (statement instanceof SwitchNode) {
-        snapshotExpression(statement.expression, statementUnsafe);
-        const incomingAliases = new Map(aliases);
-        const incomingDefinitions = new Map(aliasDefinitions);
-        const discriminant = !statementUnsafe ? childDeploymentValueRecipe(
-          statement.expression, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
-          undefined, new Set(), helperFunctions,
-        ) : undefined;
-        const matches = statement.cases.map((arm) => {
-          const armValue = !statementUnsafe ? childDeploymentValueRecipe(
-            arm.value, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+        if (statement instanceof BranchNode) {
+          snapshotExpression(statement.condition, statementUnsafe);
+          const incomingAliases = new Map(aliases);
+          const incomingDefinitions = new Map(aliasDefinitions);
+          const condition = !statementUnsafe ? childDeploymentValueRecipe(
+            statement.condition, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
             undefined, new Set(), helperFunctions,
           ) : undefined;
-          return discriminant && armValue ? {
-            kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
-          } as ChildDeploymentValueRecipe : undefined;
-        });
-        const switchSupported = discriminant !== undefined
+          const branchSupported = condition?.resultType === 'bool'
+          && childControlArmJoinSafe(statement.ifBlock)
+          && (!statement.elseBlock || childControlArmJoinSafe(statement.elseBlock));
+          // These callbacks execute synchronously and cannot escape this analysis iteration.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
+          const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
+            aliases = new Map(incomingAliases);
+            aliasDefinitions = new Map(incomingDefinitions);
+            processBlock(armBlock, statementUnsafe || !branchSupported);
+            return new Map(aliases);
+          };
+          const trueAliases = processArm(statement.ifBlock);
+          const falseAliases = statement.elseBlock ? processArm(statement.elseBlock) : incomingAliases;
+          aliases = new Map(incomingAliases);
+          aliasDefinitions = incomingDefinitions;
+          if (!branchSupported) {
+            invalidateAssignments(statement);
+            priorReturn ||= containsReturn(statement);
+            continue;
+          }
+          const joined = new Map<object, ChildDeploymentValueRecipe>();
+          for (const definition of incomingDefinitions.values()) {
+            const recipe = joinedRecipe(condition, trueAliases.get(definition), falseAliases.get(definition));
+            if (recipe) joined.set(definition, recipe);
+          }
+          aliases = joined;
+          priorReturn ||= containsReturn(statement);
+          continue;
+        }
+        if (statement instanceof SwitchNode) {
+          snapshotExpression(statement.expression, statementUnsafe);
+          const incomingAliases = new Map(aliases);
+          const incomingDefinitions = new Map(aliasDefinitions);
+          const discriminant = !statementUnsafe ? childDeploymentValueRecipe(
+            statement.expression, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+            undefined, new Set(), helperFunctions,
+          ) : undefined;
+          const matches = statement.cases.map((arm) => {
+            const armValue = !statementUnsafe ? childDeploymentValueRecipe(
+              arm.value, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+              undefined, new Set(), helperFunctions,
+            ) : undefined;
+            return discriminant && armValue ? {
+              kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
+            } as ChildDeploymentValueRecipe : undefined;
+          });
+          const switchSupported = discriminant !== undefined
           && matches.every((match) => match !== undefined)
           && statement.cases.every((arm) => childControlArmJoinSafe(arm.body))
           && (!statement.defaultCase || childControlArmJoinSafe(statement.defaultCase));
-        // Invoked synchronously for each arm; no callback escapes this switch-analysis iteration.
-        // eslint-disable-next-line @typescript-eslint/no-loop-func
-        const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
+          // Invoked synchronously for each arm; no callback escapes this switch-analysis iteration.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
+          const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
+            aliases = new Map(incomingAliases);
+            aliasDefinitions = new Map(incomingDefinitions);
+            processBlock(armBlock, statementUnsafe || !switchSupported);
+            return new Map(aliases);
+          };
+          const armAliases = statement.cases.map((arm) => processArm(arm.body));
+          const defaultAliases = statement.defaultCase ? processArm(statement.defaultCase) : incomingAliases;
           aliases = new Map(incomingAliases);
-          aliasDefinitions = new Map(incomingDefinitions);
-          processBlock(armBlock, statementUnsafe || !switchSupported);
-          return new Map(aliases);
-        };
-        const armAliases = statement.cases.map((arm) => processArm(arm.body));
-        const defaultAliases = statement.defaultCase ? processArm(statement.defaultCase) : incomingAliases;
-        aliases = new Map(incomingAliases);
-        aliasDefinitions = incomingDefinitions;
-        if (!switchSupported) {
-          invalidateAssignments(statement);
+          aliasDefinitions = incomingDefinitions;
+          if (!switchSupported) {
+            invalidateAssignments(statement);
+            priorReturn ||= containsReturn(statement);
+            continue;
+          }
+          let joined = new Map(defaultAliases);
+          for (let index = armAliases.length - 1; index >= 0; index -= 1) {
+            const next = new Map<object, ChildDeploymentValueRecipe>();
+            for (const definition of incomingDefinitions.values()) {
+              const recipe = joinedRecipe(matches[index]!, armAliases[index].get(definition), joined.get(definition));
+              if (recipe) next.set(definition, recipe);
+            }
+            joined = next;
+          }
+          aliases = joined;
           priorReturn ||= containsReturn(statement);
           continue;
         }
-        let joined = new Map(defaultAliases);
-        for (let index = armAliases.length - 1; index >= 0; index -= 1) {
-          const next = new Map<object, ChildDeploymentValueRecipe>();
-          for (const definition of incomingDefinitions.values()) {
-            const recipe = joinedRecipe(matches[index]!, armAliases[index].get(definition), joined.get(definition));
-            if (recipe) next.set(definition, recipe);
-          }
-          joined = next;
-        }
-        aliases = joined;
-        priorReturn ||= containsReturn(statement);
-        continue;
-      }
-      if (statement instanceof TryCatchNode) {
+        if (statement instanceof TryCatchNode) {
         // Script failure is fatal on BCH. A successful transaction executes the operation and try body; catch
         // clauses are dead and must neither publish sites nor invalidate aliases.
-        snapshotExpression(statement.expression, statementUnsafe);
-        snapshotExpression(statement.tryBlock, statementUnsafe);
-        invalidateAssignments(statement.expression);
-        invalidateAssignments(statement.tryBlock);
-        priorReturn ||= containsReturn(statement.tryBlock);
-        continue;
-      }
-      const controlFlow = statement instanceof BranchNode || statement instanceof WhileNode
+          snapshotExpression(statement.expression, statementUnsafe);
+          snapshotExpression(statement.tryBlock, statementUnsafe);
+          invalidateAssignments(statement.expression);
+          invalidateAssignments(statement.tryBlock);
+          priorReturn ||= containsReturn(statement.tryBlock);
+          continue;
+        }
+        const controlFlow = statement instanceof BranchNode || statement instanceof WhileNode
         || statement instanceof DoWhileNode || statement instanceof SwitchNode || statement instanceof TryCatchNode
         || statement instanceof UncheckedNode || statement instanceof CollectionIterationNode;
-      snapshotExpression(statement, statementUnsafe || controlFlow);
-      invalidateAssignments(statement);
-      priorReturn ||= containsReturn(statement);
-    }
-  };
-  // Early-return lowering can wrap later statements in synthetic control flow. Only a return-capable construct
-  // preceding a deployment makes that site unsafe; a terminal return after the site does not change its execution.
-  processBlock(fn.body);
-  return result;
+        snapshotExpression(statement, statementUnsafe || controlFlow);
+        invalidateAssignments(statement);
+        priorReturn ||= containsReturn(statement);
+      }
+    };
+    // Early-return lowering can wrap later statements in synthetic control flow. Only a return-capable construct
+    // preceding a deployment makes that site unsafe; a terminal return after the site does not change its execution.
+    processBlock(fn.body);
+    return result;
   });
 }
 

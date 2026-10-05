@@ -57,7 +57,6 @@ export function enforceDeclaredCollectionOutputCardinality(
     for (const repair of entryInsertLockRepairs(group)) {
       const collectionLock = group.batchPredecessorOutputs![0]?.lockingBytecode;
       if (!collectionLock) continue;
-      const identity = `${group.categoryId}:${binToHex(collectionLock)}`;
       const keepIndices = new Set<number>([
         ...group.batchPredecessorOutputs!.map(({ outputBlockSlot }) => master + outputBlockSlot),
         master + repair.predecessorOffset,

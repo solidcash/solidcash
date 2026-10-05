@@ -14,11 +14,16 @@ import { KERNEL_ENTRY_JOURNAL_ACCESS_TAG } from './KernelEntryJournal.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
+import { preserveTransportedValueChunkWriteGeometry } from './sc-prepare-derive-full-value-chunk-writes.js';
 import {
   valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
 } from './value-chunk-persist.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
+import {
+  resolveValueChunkWriteGeometry,
+  retainCompleteObservedValueChunkWriteGeometry,
+} from './value-chunk-write-geometry.js';
 
 export interface BuildStatefulFunctionCallHost {
   compilerRoute?: {
@@ -44,16 +49,35 @@ export async function buildStatefulFunctionCall(
   const stb = await host.applyOverrides();
   const buildFinalized = (): TransactionBuilder => {
     const valueChunkVariables = stb.getValueChunkVars();
+    const observedChunks = [...stb.getDerivedChunkOutputs()].map(([offset, chunk]) => ({
+      offset,
+      resourceIdentity: chunk.resourceIdentity,
+      resourcePart: chunk.resourcePart,
+    }));
     for (const group of [...stb.getExternalCallUtxoGroups(), ...stb.getLowLevelCallUtxoGroups()]) {
       // A delegate's continuation resources belong to its authenticated state owner (the proxy), not to the
       // implementation whose code executes the write. Finalization may refresh output coordinates, but it must
       // not silently change the category component of the stable resource identity established by derivation.
       const described = describeValueChunkWrites(group, group.valueChunkStateOwner?.categoryId);
-      if (described.length > 0 || group.valueChunkWrites === undefined) group.valueChunkWrites = described;
+      if (described.length > 0 || group.valueChunkWrites === undefined) {
+        const published = preserveTransportedValueChunkWriteGeometry(group, described);
+        group.valueChunkWrites = retainCompleteObservedValueChunkWriteGeometry(
+          published, group.valueChunkWrites ?? [], observedChunks,
+        );
+      }
     }
     const built = stb.build();
     stb.bindMaterializedValueChunkWitnesses(built, host.compilerRoute?.blockBase ?? 0);
-    const compilerValueChunkWrites = stb.getValueChunkWriteDescriptors();
+    const composedBlockBase = stb.getComposedBlockBase();
+    const compilerValueChunkWrites = resolveValueChunkWriteGeometry(
+      stb.getValueChunkWriteDescriptors(),
+      host.compilerRoute?.valueChunkProductions?.map((production) => production.write) ?? [],
+      [...stb.getDerivedChunkOutputs()].map(([offset, chunk]) => ({
+        offset: offset + composedBlockBase,
+        resourceIdentity: chunk.resourceIdentity,
+        resourcePart: chunk.resourcePart,
+      })),
+    );
     const runtimeEvents = stb.getRuntimeLoopEventOutputs();
     if (runtimeEvents.length > 0) {
       Object.defineProperty(built, '__messageBusRuntimeLoopEvents', {
@@ -145,18 +169,17 @@ export async function buildStatefulFunctionCall(
     }
     // Derived pins live at block-local coordinates; the composer range-checks every claim against the
     // participant's absolute trailing range, so shift them by the block base exactly once here.
-    const composedBlockBase = stb.getComposedBlockBase();
     for (const [localOffset, chunk] of stb.getDerivedChunkOutputs()) {
       const offset = localOffset + composedBlockBase;
       if (computedValueChunks.some((candidate) => candidate.offset === offset)) continue;
       computedValueChunks.push(Object.freeze({
-      offset,
-      commitment: chunk.commitment,
-      lockingBytecode: chunk.lockingBytecode.slice(),
-      categoryId: chunk.categoryId,
-      fixedIndex: chunk.fixedIndex,
-      resourceIdentity: chunk.resourceIdentity,
-      resourcePart: chunk.resourcePart,
+        offset,
+        commitment: chunk.commitment,
+        lockingBytecode: chunk.lockingBytecode.slice(),
+        categoryId: chunk.categoryId,
+        fixedIndex: chunk.fixedIndex,
+        resourceIdentity: chunk.resourceIdentity,
+        resourcePart: chunk.resourcePart,
       }));
     }
     // Every lock this participant may publish, tagged by the resource family it belongs to. The composer merges
@@ -175,7 +198,7 @@ export async function buildStatefulFunctionCall(
       for (const [offset, chunk] of stb.getDerivedChunkOutputs()) {
         noteLock(chunk.lockingBytecode, `chunk:${chunk.resourcePart ?? offset}`);
       }
-      noteLock(stb.getJobEventsRedeemLock(), 'jobEventsRedeem');
+      noteLock(stb.getValueChunkRedeemLock(), 'valueChunkRedeem');
       if (resourceLocks.size > 0) {
         Object.defineProperty(built, '__messageBusResourceLocks', {
           configurable: false,
@@ -202,6 +225,10 @@ export async function buildStatefulFunctionCall(
       value: Object.freeze({
         hasUnresolved: (): boolean => stb.hasUnresolvedDeferredKeccakPreimages()
           || stb.hasUnresolvedDeferredEcrecoverArguments(),
+        resolveRecipes: (
+          keccakPreimages: readonly (Uint8Array | null)[],
+          ecrecoverArguments: readonly (Uint8Array | null)[],
+        ): boolean => stb.applyDeferredComputeRecipes(keccakPreimages, ecrecoverArguments),
         // The composer reports a stall as one opaque sentence; the counts say whether the trace failed to expose
         // a keccak preimage or an ecrecover (hash,v,r,s) blob, which are different causes.
         remaining: (): ReturnType<typeof stb.getDeferredComputeRemainingForDiagnostics> =>
@@ -347,7 +374,7 @@ export async function buildStatefulFunctionCall(
               }
             } catch { /* no derived chunks */ }
             try {
-              classify(stb.getJobEventsRedeemLock(), 'jobEventsRedeem');
+              classify(stb.getValueChunkRedeemLock(), 'valueChunkRedeem');
             } catch { /* no session lock */ }
             try {
               console.error('trailing-band-coordinates', JSON.stringify({
@@ -712,27 +739,27 @@ export async function buildStatefulFunctionCall(
             }) as { stack?: Uint8Array[] } | undefined;
             const handlerSnapshots = Array.from({ length: 8 }, (_, offset) => ip - 7 + offset)
               .flatMap((wantedIp) => {
-              const state = [...trace].reverse().find((raw) => {
-                const candidate = raw as { ip?: number; instructions?: Array<{ opcode: number }> };
-                return candidate.ip === wantedIp
+                const state = [...trace].reverse().find((raw) => {
+                  const candidate = raw as { ip?: number; instructions?: Array<{ opcode: number }> };
+                  return candidate.ip === wantedIp
                   && candidate.instructions?.length === terminal?.instructions?.length;
-              }) as {
-                ip?: number; stack?: Uint8Array[]; alternateStack?: Uint8Array[];
-                instructions?: Array<{ opcode: number }>;
-              } | undefined;
-              if (!state?.stack) return [];
-              return [{
-                ip: state.ip,
-                opcode: state.instructions?.[wantedIp]?.opcode,
-                stackSize: state.stack.length,
-                altSize: state.alternateStack?.length,
-                top: state.stack.slice(-40).map((item, index, stack) => ({
-                  depth: stack.length - 1 - index,
-                  bytes: item.length,
-                  hex: binToHex(item).slice(0, 160),
-                })),
-              }];
-            });
+                }) as {
+                  ip?: number; stack?: Uint8Array[]; alternateStack?: Uint8Array[];
+                  instructions?: Array<{ opcode: number }>;
+                } | undefined;
+                if (!state?.stack) return [];
+                return [{
+                  ip: state.ip,
+                  opcode: state.instructions?.[wantedIp]?.opcode,
+                  stackSize: state.stack.length,
+                  altSize: state.alternateStack?.length,
+                  top: state.stack.slice(-40).map((item, index, stack) => ({
+                    depth: stack.length - 1 - index,
+                    bytes: item.length,
+                    hex: binToHex(item).slice(0, 160),
+                  })),
+                }];
+              });
             const diagnostic = {
               executionInput,
               inputBase,

@@ -1,7 +1,8 @@
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   ArrayType, addressToGraphEmissionBytes, decodePushdataValue, encodePushdataValue,
-  parseArrayTypeString, parseType,
+  MAX_MESSAGE_BUS_BLOB_BYTES, parseArrayTypeString, parseType,
   type Artifact, type StateValue, scriptToBytecode,
   type StructDefinitionInfo, type ExternalCallExpression, type ExternalResultEncoding,
 } from '@solidcash/utils';
@@ -9,6 +10,7 @@ import {
   encodeFunctionArgument, isSignatureTemplateArgumentForType, type ConstructorArgument, type FunctionArgument,
   type SignatureTemplateArgument,
 } from '../Argument.js';
+import { tryCashAddressToLockScript } from '../utils.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 import {
   findKernelAbiFunctionBySelector,
@@ -260,11 +262,24 @@ export function evaluateFixedEffectPredicate(
     if (expression.operator === '||' && typeof left === 'boolean' && left) return true;
     const right = evaluateFixedEffectPredicate(expression.right, args, state);
     if (right === undefined) return undefined;
-    const equal = left instanceof Uint8Array && right instanceof Uint8Array
-      ? left.length === right.length && left.every((byte, index) => byte === right[index])
-      : (typeof left === 'bigint' || typeof left === 'number')
-        && (typeof right === 'bigint' || typeof right === 'number')
-        ? BigInt(left) === BigInt(right) : left === right;
+    // An address(0) cast evaluates to the numeric literal zero here, while an authenticated address argument
+    // can arrive as empty bytes or an all-zero 20/32-byte ABI word. Match the compiler's address comparison
+    // domain before deciding whether a conditional fixed effect (such as a BCH transfer) is active.
+    const addressComparison = expression.left.type?.startsWith('address')
+      || expression.right.type?.startsWith('address');
+    const zeroAddress = (value: unknown): boolean => (
+      (typeof value === 'bigint' || typeof value === 'number') && BigInt(value) === 0n
+      || value instanceof Uint8Array && [0, 20, 32].includes(value.length)
+        && value.every((byte) => byte === 0)
+      || typeof value === 'string' && /^(?:0x)?(?:0{40}|0{64})$/iu.test(value)
+    );
+    let equal: boolean;
+    if (addressComparison && zeroAddress(left) && zeroAddress(right)) equal = true;
+    else if (left instanceof Uint8Array && right instanceof Uint8Array) {
+      equal = left.length === right.length && left.every((byte, index) => byte === right[index]);
+    } else if ((typeof left === 'bigint' || typeof left === 'number')
+      && (typeof right === 'bigint' || typeof right === 'number')) equal = BigInt(left) === BigInt(right);
+    else equal = left === right;
     switch (expression.operator) {
       case '&&': return typeof left === 'boolean' && typeof right === 'boolean' ? left && right : undefined;
       case '||': return typeof left === 'boolean' && typeof right === 'boolean' ? left || right : undefined;
@@ -360,6 +375,7 @@ const coerceAddressBytes = (value: StateValue): Uint8Array | undefined => {
     const hex = value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
     return hexToBin(hex);
   }
+  if (typeof value === 'string') return tryCashAddressToLockScript(value);
   return undefined;
 };
 
@@ -397,6 +413,45 @@ export function projectAddressFieldsInStateValue(
     return value.map((element) => projectAddressFieldsInStateValue(element, array.elementType, structs));
   }
   return value;
+}
+
+/**
+ * Reproduce the address representation seen by a Solidity-compatible kernel handler after its row is decoded.
+ * Value addresses use the ABI-word lane; an address which selects an outgoing call target stays native because
+ * the caller covenant must compare that exact locking bytecode with the authenticated participant identity.
+ */
+export function projectMessageBusHandlerArguments(
+  artifact: Artifact,
+  functionName: string,
+  selector: string | undefined,
+  args: readonly FunctionArgument[],
+): FunctionArgument[] {
+  if (artifact.compiler?.options?.solidityImportCompat !== true
+    && artifact.compiler?.options?.evmCompat !== true) return [...args];
+  const handler = resolveMessageBusHandler(artifact, functionName, selector);
+  const abiFunction = resolveMessageBusAbiFunction(artifact, functionName, selector);
+  if (!handler || !abiFunction) return [...args];
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  const callTargetAddressIndexes = new Set<number>();
+  for (const call of abiFunction.externalCalls ?? []) {
+    if (call.addressSource?.kind === 'forward' && typeof call.addressSource.paramIndex === 'number') {
+      callTargetAddressIndexes.add(call.addressSource.paramIndex);
+    }
+  }
+  return args.map((argument, index) => {
+    if (callTargetAddressIndexes.has(index)) return argument;
+    const inputType = handler.inputs[index]?.type;
+    if (inputType === undefined) return argument;
+    if (structs?.some((definition) => definition.name === inputType)
+      && argument && typeof argument === 'object' && !(argument instanceof Uint8Array)) {
+      return projectAddressFieldsInStateValue(argument as StateValue, inputType, structs) as FunctionArgument;
+    }
+    if (inputType === 'address' || inputType === 'address payable') {
+      const bytes = coerceAddressBytes(argument as StateValue);
+      if (bytes !== undefined) return addressToGraphEmissionBytes(bytes);
+    }
+    return argument;
+  });
 }
 
 /**
@@ -694,15 +749,31 @@ export function encodeMessageBatch(
     );
   }
   if (capability.version !== 1) {
+    if (capability.selector === '53434231') {
+      throw new MessageBusDiagnosticError(
+        'L3_PROTOCOL_METADATA_MALFORMED',
+        `artifact '${artifact.contractName}' pairs the version-1 message-bus selector with version ${String(capability.version)}`,
+        { metadataField: 'messageBus', actual: capability.version, expected: 1, ownerIdentity: artifact.contractName },
+      );
+    }
     throw new MessageBusDiagnosticError(
       'L3_PROTOCOL_VERSION_UNSUPPORTED',
       `artifact '${artifact.contractName}' advertises unsupported message bus version ${String(capability.version)}`,
       { metadataField: 'messageBus.version', actual: capability.version, expected: 1, ownerIdentity: artifact.contractName },
     );
   }
+  const expectedBlobBytes = capability.convention === 'kernel-row-loop'
+    ? ConsensusBch2026.maximumStackItemLength : MAX_MESSAGE_BUS_BLOB_BYTES;
+  const compilerPublished = artifact.compiler !== undefined || capability.resourceBudgets !== undefined;
   if (capability.selector !== '53434231'
     || !Number.isInteger(capability.maximumRows) || capability.maximumRows < 1
-    || !Number.isInteger(capability.maximumBlobBytes) || capability.maximumBlobBytes < 1) {
+    || !Number.isSafeInteger(capability.maximumBlobBytes) || capability.maximumBlobBytes < 1
+    || capability.maximumBlobBytes > expectedBlobBytes
+    || (compilerPublished && capability.maximumBlobBytes !== expectedBlobBytes)
+    || (capability.resourceBudgets !== undefined
+      && capability.maximumBlobBytes !== capability.resourceBudgets.maximumBlobBytes)
+    || (capability.minimumRows !== undefined && (!Number.isSafeInteger(capability.minimumRows)
+      || capability.minimumRows < 1 || capability.minimumRows > capability.maximumRows))) {
     throw new MessageBusDiagnosticError(
       'L3_PROTOCOL_METADATA_MALFORMED',
       `artifact '${artifact.contractName}' publishes malformed message-bus batch capability metadata`,
@@ -712,8 +783,9 @@ export function encodeMessageBatch(
           selector: capability.selector,
           maximumRows: capability.maximumRows,
           maximumBlobBytes: capability.maximumBlobBytes,
+          minimumRows: capability.minimumRows,
         },
-        expected: { selector: '53434231', positiveIntegerBounds: true },
+        expected: { selector: '53434231', maximumBlobBytes: expectedBlobBytes, positiveIntegerBounds: true },
         ownerIdentity: artifact.contractName,
       },
     );
@@ -727,9 +799,12 @@ export function encodeMessageBatch(
   const fixedChunkablePolicy = capability.fixedChunkableWritePolicy;
   if (fixedChunkablePolicy !== undefined) {
     const selectors = fixedChunkablePolicy.selectors.map(normalizeFunctionSelector);
+    const pooledSelectors = (fixedChunkablePolicy.pooledSelectors ?? []).map(normalizeFunctionSelector);
     if (fixedChunkablePolicy.version !== 1 || fixedChunkablePolicy.maximumRows !== 1
       || selectors.some((selector) => selector === undefined)
-      || new Set(selectors).size !== selectors.length) {
+      || new Set(selectors).size !== selectors.length
+      || pooledSelectors.some((selector) => selector === undefined || !selectors.includes(selector))
+      || new Set(pooledSelectors).size !== pooledSelectors.length) {
       throw new MessageBusDiagnosticError(
         'L3_PROTOCOL_METADATA_MALFORMED',
         `artifact '${artifact.contractName}' publishes malformed fixed chunkable-write policy metadata`,
@@ -738,7 +813,8 @@ export function encodeMessageBatch(
     }
     const selected = invocations.filter((invocation) => {
       const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
-      return handler !== undefined && selectors.includes(normalizeFunctionSelector(handler.selector));
+      const selector = handler === undefined ? undefined : normalizeFunctionSelector(handler.selector);
+      return selector !== undefined && selectors.includes(selector) && !pooledSelectors.includes(selector);
     }).length;
     if (selected > fixedChunkablePolicy.maximumRows && options.atomicContinuationConvergence !== true) {
       throw new Error(
@@ -802,7 +878,22 @@ export function encodeMessageBatch(
   const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
   const modeVersion = invocations.some((invocation) => invocation.callMode !== undefined);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
-  const fixedTupleValues = new Map<number, { primary: string; alternate: string }>();
+  const bindKeyPool = (
+    pool: readonly string[], value: FunctionArgument, encoded: Uint8Array,
+  ): void => {
+    const existing = pool.find((name) => {
+      const prior = keyWitnessValues.get(name);
+      return prior !== undefined && binToHex(prior.encoded) === binToHex(encoded);
+    });
+    if (existing !== undefined) return;
+    const free = pool.find((name) => !keyWitnessValues.has(name));
+    if (free === undefined) {
+      throw new MessageBusDiagnosticError('L3_RESOURCE_UNRESOLVED',
+        'message-bus fixed key pool exceeds its published physical capacity', { resourceIdentity: pool[0] });
+    }
+    keyWitnessValues.set(free, { value, encoded });
+  };
+  const fixedTupleValues = new Map<number, string[]>();
   const swappableGlobals = new Map<string, { value: FunctionArgument; encoded: Uint8Array; rowBase: string }>();
   // A resource route has one shared entry and one row-local alternative. The compiler can advertise the two as
   // swappable, allowing the batch to choose the value common to every relevant row rather than assuming the
@@ -893,7 +984,22 @@ export function encodeMessageBatch(
   }[] = [];
   const rows = invocations.map((invocation, rowIndex) => {
     const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
-    if (!handler) throw new Error(`Unknown message-bus batch handler '${invocation.function}'`);
+    if (!handler) {
+      if (invocation.selector !== undefined) {
+        try {
+          resolveMessageBusAbiFunction(artifact, invocation.function, invocation.selector);
+        } catch (error) {
+          if (error instanceof Error && /does not identify an ABI function/.test(error.message)) {
+            throw new Error(
+              `messageBus: selector ${invocation.selector} does not identify ABI function `
+              + `'${invocation.function}' in '${artifact.contractName}'`,
+            );
+          }
+          throw error;
+        }
+      }
+      throw new Error(`Unknown message-bus batch handler '${invocation.function}'`);
+    }
     if (!handler.eligible) {
       throw new Error(`Handler '${invocation.function}' is not batch eligible: ${handler.rejectionReason}`);
     }
@@ -921,31 +1027,16 @@ export function encodeMessageBatch(
     // Address params used as IFoo(addr) call targets must stay native locking bytecode so emission
     // targets EQUALVERIFY against authenticated participant locks. Other address value-args under
     // solidity-compat use ABI words so nested returning addresses match constructed emission rows.
-    const abiFunction = resolveMessageBusAbiFunction(artifact, invocation.function, invocation.selector);
-    const callTargetAddressIndexes = new Set<number>();
-    for (const call of abiFunction?.externalCalls ?? []) {
-      if (call.addressSource?.kind === 'forward' && typeof call.addressSource.paramIndex === 'number') {
-        callTargetAddressIndexes.add(call.addressSource.paramIndex);
-      }
-    }
     const projectAddressValueArgs = artifact.compiler?.options?.solidityImportCompat === true
       || artifact.compiler?.options?.evmCompat === true;
+    const projectedArgs = projectAddressValueArgs
+      ? projectMessageBusHandlerArguments(artifact, invocation.function, invocation.selector, args)
+      : args;
     const encoded = args.map((arg, index) => {
       const inputType = handler.inputs[index].type;
       const leaves = signatureLeavesByInput[index];
-      // Coerce hex-string address leaves inside structs before pushdata encode (avoids UTF-8 of hex text).
-      let value: FunctionArgument = arg;
-      if (projectAddressValueArgs
-        && !callTargetAddressIndexes.has(index)
-        && structs?.some((definition) => definition.name === inputType)
-        && value && typeof value === 'object' && !(value instanceof Uint8Array)) {
-        value = projectAddressFieldsInStateValue(value as StateValue, inputType, structs) as FunctionArgument;
-      } else if (projectAddressValueArgs
-        && !callTargetAddressIndexes.has(index)
-        && (inputType === 'address' || inputType === 'address payable')) {
-        const bytes = coerceAddressBytes(value as StateValue);
-        if (bytes !== undefined) value = addressToGraphEmissionBytes(bytes);
-      }
+      // Coerce graph value-address lanes before pushdata encoding; call targets remain exact native locks.
+      const value = projectedArgs[index] ?? arg;
       if (leaves.length === 0 || isEntireTransactionSignatureType(inputType)) {
         return encodeFunctionArgument(value, inputType, structs);
       }
@@ -1006,6 +1097,12 @@ export function encodeMessageBatch(
       });
     });
     const tupleGroups = new Map<number, NonNullable<typeof handler.batchKeyWitnesses>>();
+    // Collection-key witnesses use the language's native key encoding. Solidity-compatible row payloads project
+    // address values to 32-byte graph-emission words, but that transport representation is not the mapping key
+    // (or the route input) and must never participate in physical entry identity comparisons.
+    const encodeCollectionKeyArgument = (inputIndex: number): FunctionArgument => encodeFunctionArgument(
+      args[inputIndex], handler.inputs[inputIndex].type, structs,
+    );
     for (const binding of handler.batchKeyWitnesses ?? []) {
       if (binding.entryTupleGroup === undefined) continue;
       const group = tupleGroups.get(binding.entryTupleGroup) ?? [];
@@ -1035,7 +1132,7 @@ export function encodeMessageBatch(
         }
         const encodedValue = binding.source === 'msgSender'
           ? encodeFunctionArgument(value, 'address', structs)
-          : encoded[binding.inputIndex];
+          : encodeCollectionKeyArgument(binding.inputIndex);
         if (!(encodedValue instanceof Uint8Array)) {
           throw new MessageBusDiagnosticError(
             'L3_RESOURCE_UNRESOLVED',
@@ -1047,24 +1144,37 @@ export function encodeMessageBatch(
       });
       const identity = components.map(({ encoded: component }) => binToHex(component)).join(':');
       const prior = fixedTupleValues.get(groupId);
-      const lane = prior === undefined || prior.primary === identity
-        ? 'primary' : prior.alternate === prior.primary || prior.alternate === identity
-          ? 'alternate' : undefined;
-      if (lane === undefined) {
+      const laneInputs = (binding: (typeof bindings)[number]): readonly string[] => binding.keyPool
+        ?? [binding.routeInput, binding.alternateRouteInput!];
+      const laneCount = laneInputs(bindings[0]).length;
+      if (bindings.some((binding) => laneInputs(binding).length !== laneCount)) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',
-          `message-bus fixed collection tuple group ${groupId} exceeds two physical entries`,
+          `message-bus fixed collection tuple group ${groupId} has inconsistent physical lanes`,
           { handler: handler.name, invocationIds: [rowIndex] },
         );
       }
-      if (!prior) fixedTupleValues.set(groupId, { primary: identity, alternate: identity });
-      else if (lane === 'alternate') fixedTupleValues.set(groupId, { ...prior, alternate: identity });
+      const reached = prior ?? [];
+      let lane = reached.indexOf(identity);
+      if (lane < 0) lane = reached.length;
+      if (lane >= laneCount) {
+        throw new MessageBusDiagnosticError(
+          'L3_RESOURCE_UNRESOLVED',
+          `message-bus fixed collection tuple group ${groupId} exceeds `
+            + `${laneCount === 2 ? 'two' : laneCount} physical entries`,
+          { handler: handler.name, invocationIds: [rowIndex] },
+        );
+      }
+      if (lane === reached.length) reached.push(identity);
+      if (!prior) fixedTupleValues.set(groupId, reached);
       for (const { binding, value, encoded: component } of components) {
-        const routeInput = lane === 'primary' ? binding.routeInput : binding.alternateRouteInput!;
+        const routeInput = laneInputs(binding)[lane];
         keyWitnessValues.set(routeInput, { value, encoded: component });
-        // Until a second distinct tuple is reached, alias the alternate lane to the primary. The compiler and
-        // SDK then collapse equal targets through runtimeAliasPriorSlots instead of funding a fictitious key.
-        if (!prior) keyWitnessValues.set(binding.alternateRouteInput!, { value, encoded: component });
+        // Unused complete tuple lanes alias the first authenticated identity. The compiler and SDK collapse
+        // equal targets through runtimeAliasPriorSlots instead of funding fictitious independent keys.
+        if (!prior) for (const name of laneInputs(binding).slice(1)) {
+          keyWitnessValues.set(name, { value, encoded: component });
+        }
       }
     }
     for (const binding of handler.batchKeyWitnesses ?? []) {
@@ -1083,8 +1193,8 @@ export function encodeMessageBatch(
         }
         const sharedValue = args[binding.inputIndex];
         const varyingValue = args[varying.inputIndex];
-        const sharedEncoded = encoded[binding.inputIndex];
-        const varyingEncoded = encoded[varying.inputIndex];
+        const sharedEncoded = encodeCollectionKeyArgument(binding.inputIndex);
+        const varyingEncoded = encodeCollectionKeyArgument(varying.inputIndex);
         if (!(sharedEncoded instanceof Uint8Array) || !(varyingEncoded instanceof Uint8Array)) {
           throw new MessageBusDiagnosticError(
             'L3_RESOURCE_UNRESOLVED', 'message-bus swappable collection keys are not byte-encodable',
@@ -1105,6 +1215,10 @@ export function encodeMessageBatch(
         const selectedVarying = sharedMatches
           ? { value: varyingValue, encoded: varyingEncoded }
           : { value: sharedValue, encoded: sharedEncoded };
+        if (varying.keyPool) {
+          bindKeyPool(varying.keyPool, selectedVarying.value, selectedVarying.encoded);
+          continue;
+        }
         const priorVarying = keyWitnessValues.get(varyingInput);
         if (priorVarying && binToHex(priorVarying.encoded) !== binToHex(selectedVarying.encoded)) {
           throw new MessageBusDiagnosticError(
@@ -1135,7 +1249,7 @@ export function encodeMessageBatch(
         ? encodeFunctionArgument(value, 'address', structs)
         : binding.source === 'expression'
           ? encodeFunctionArgument(value, routeInputType ?? 'bytes', structs)
-          : encoded[binding.inputIndex] as Uint8Array;
+          : encodeCollectionKeyArgument(binding.inputIndex);
       if (!(encodedValue instanceof Uint8Array)) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',
@@ -1144,6 +1258,10 @@ export function encodeMessageBatch(
         );
       }
       const routeInput = routeInputName;
+      if (binding.keyPool) {
+        bindKeyPool(binding.keyPool, value, encodedValue);
+        continue;
+      }
       const prior = keyWitnessValues.get(routeInput);
       if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
         throw new MessageBusDiagnosticError(
@@ -1250,6 +1368,17 @@ export function encodeMessageBatch(
     throw new Error('message-bus batch row frames do not tile the authenticated blob');
   }
 
+  // Unused physical lanes must alias an authenticated lane, not introduce a default-valued phantom target.
+  for (const handler of capability.handlers) {
+    for (const binding of handler.batchKeyWitnesses ?? []) {
+      if (!binding.keyPool) continue;
+      const first = binding.keyPool.map((name) => keyWitnessValues.get(name)).find((value) => value !== undefined);
+      if (!first) continue;
+      for (const name of binding.keyPool) {
+        if (!keyWitnessValues.has(name)) keyWitnessValues.set(name, first);
+      }
+    }
+  }
   const routeWitnesses = capability.route.inputs
     .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
     .map((input) => {

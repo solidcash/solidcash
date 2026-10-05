@@ -3,14 +3,12 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { AbiFunction, Artifact, FunctionBlockLayout } from '@solidcash/utils';
-import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransportedContinuationResourceClaim } from './ValueChunkProducerIdentity.js';
 
 /**
- * The in-block return NFT is owned by one logical callsite. A later write fused onto the first
- * FakeToken group copies its layout; the earlier view must not read that writer's success flag.
+ * The in-block return NFT is owned by one logical callsite. A later write fused onto an earlier read
+ * copies its layout; the read must not consume the writer's result.
  */
 /** Structural participant/return-event shape (avoids importing late ExternalCallUtxoGroup). */
 export type InBlockReturnGroup = {
@@ -41,17 +39,17 @@ export function groupOwnsInBlockReturnEvent(
   const logicalOwner = groups[child.fusedReturnGroupIndex ?? groupIdx] ?? child;
   if ((logicalOwner.loopReturnCommitments?.length ?? 0) > 1) return false;
   const writesState = (group: InBlockReturnGroup): boolean => {
-    // Prefer the logical Solidity function. `__forward` is a proxy dispatcher marked
-    // writesState, but the first logical callsite on that master is often a view.
-    const names = [group.logicalFunctionName, group.functionName].filter(
-      (name): name is string => !!name && name !== '__forward',
-    );
+    // A fused group's logical name can describe a later writer, while this group's own function is a view.
+    // Use the source ABI of this callsite first; `__forward` is only a proxy dispatcher, not its effect.
     const abiList = (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined) ?? [];
-    return names.some((name) => {
-      const abi = abiList.find((fn) => fn.name === name)
-        ?? (name === group.functionName ? group.compilerRoute?.abiFunction : undefined);
-      return abi?.writesState === true;
-    });
+    const direct = group.functionName === '__forward' ? undefined
+      : abiList.find((fn) => fn.name === group.functionName);
+    if (direct) return direct.writesState === true;
+    const logical = group.logicalFunctionName === '__forward' ? undefined
+      : abiList.find((fn) => fn.name === group.logicalFunctionName);
+    if (logical) return logical.writesState === true;
+    return group.compilerRoute?.abiFunction?.name === group.functionName
+      && group.compilerRoute?.abiFunction?.writesState === true;
   };
   // A state-writing logical callsite owns the physical block's return slot. If a later writer is fused onto the
   // same master, earlier views keep dedicated tails so they cannot read that writer's result. A standalone view
@@ -146,7 +144,7 @@ export function selectMaterializedTailReturnEvents(
     if (groupOwnsInBlockReturnEvent(groups, groupIndex)) continue;
     const candidates = parsed.filter((entry) => entry.groupIndex === groupIndex);
     // Authoritative precomputed / rolled-loop commitments must materialize even when pending was
-    // cleared between seedPrecomputedReturnEvents and build (common on Marketplace publishJobPost).
+    // cleared between seedPrecomputedReturnEvents and build.
     // Requiring pending candidates here dropped meceTags(tags_[i]) returns so meceCount stayed 0.
     const authoritativeParts = (group.loopReturnCommitments?.length ?? 0) > 0
       ? group.loopReturnCommitments
@@ -249,7 +247,7 @@ export function isCompilerDescribedMintingBandWriter(
   // convention mean "not described", never permission to recover legacy geometry from an ABI name.
   if (ownerConvention === 'kernel-row-loop') return false;
   if ([group.logicalArtifact, group.externalContract?.inner?.artifact]
-    .some((artifact) => artifact?.messageBus?.convention === 'kernel-row-loop')) {
+    .some((candidateArtifact) => candidateArtifact?.messageBus?.convention === 'kernel-row-loop')) {
     return false;
   }
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
@@ -332,7 +330,7 @@ export function tokenWriterReturnIndex(
   const returnSlot = blockLayout?.slots?.find((slot) => slot.kind === 'returnEvent');
   const inBlock = master + (returnSlot?.offset ?? (blockLayout?.blockSize ?? 8) - 1);
   // Persist nNew=3 at 25–27 collides with FakeToken extraTransfer at master+7.
-  // Marketplace EQUALVERIFYs dest master+7 live; only slide when that dest is
+  // The callee EQUALVERIFYs dest master+7 live; only slide when that dest is
   // inside the jobEvents band. Identity SCIDs on dest 31 are overwritten.
   let dest = (band && inBlock >= band.start && inBlock <= band.end) ? band.end + 1 : inBlock;
   if (occupied && dest !== inBlock) {
@@ -509,14 +507,14 @@ export function participantRelocationExtraFunders(parts: {
 export function valueChunkBandWidth(parts: {
   minimum?: number;
   planned?: number;
-  jobEventsCount?: number;
+  entryChunkCount?: number;
   derivedEnd?: number;
   chunkBase?: number;
 }): number {
   const derivedWidth = parts.derivedEnd !== undefined && parts.chunkBase !== undefined
     ? Math.max(0, parts.derivedEnd - parts.chunkBase + 1)
     : 0;
-  return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.jobEventsCount ?? 0, derivedWidth);
+  return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.entryChunkCount ?? 0, derivedWidth);
 }
 
 /** Total trailing width reserved by ordered per-resource continuation bands. */
@@ -525,7 +523,7 @@ export function valueChunkBandWidthForContinuationClaims(
   parts: {
     minimum?: number;
     planned?: number;
-    jobEventsCount?: number;
+    entryChunkCount?: number;
     derivedEnd?: number;
     chunkBase?: number;
   } = {},
@@ -538,9 +536,10 @@ export function valueChunkBandWidthForContinuationClaims(
 export function continuationOutputBaseBeforeSuffix(
   outputCount: number,
   authenticatedSuffixCount: number,
+  minimumFixedPrefix = 0,
 ): number {
   if (authenticatedSuffixCount <= 0) return outputCount;
-  return Math.max(0, outputCount - authenticatedSuffixCount - 1);
+  return Math.min(outputCount, Math.max(minimumFixedPrefix, outputCount - authenticatedSuffixCount - 1));
 }
 
 /** Prefer a planner-owned continuation band; allocate before the authenticated suffix only when none exists. */
@@ -555,11 +554,9 @@ export function selectValueChunkOutputBase(parts: {
 
 
 /**
- * Extra occupancy for view-tail packing. Tails that already sit *before* the
- * live jobEvents band (arbitratorRegistered at 17, meceTags at 19) must stay;
- * moving them after a getEvents-populated write-count makes the next
- * updateJobPost read an empty bool (ip 8913 "arbitrator not registered").
- * Only tails that land inside the band are pushed past `band.end`.
+ * Extra occupancy for view-tail packing. Tails already before the live
+ * continuation band must stay there; only tails that overlap the band
+ * are pushed past `band.end`.
  */
 export function viewTailOccupancyCap(
   plannedTails: readonly number[],
@@ -573,15 +570,15 @@ export function viewTailOccupancyCap(
 
 export type ViewTailPackOptions = {
   band?: { start: number; end: number };
-  /** First reserved suffix index (OP_RETURN / jobs). Tails must not land here. */
+  /** First reserved suffix index (OP_RETURN / value chunks). Tails must not land here. */
   suffixStart?: number;
   tokenWriterPresent?: boolean;
 };
 
 /**
- * Keep planned view witnesses (16/17) when a prior getEvents grew nNew and
- * packing would land on the jobEvents band or the terminal OP_RETURN. A
- * FakeToken writer still parks tails after its swapped block.
+ * Keep planned view witnesses when a prior write grew the continuation band
+ * and packing would land on it or the terminal OP_RETURN. A separate minting
+ * writer still parks tails after its swapped block.
  */
 export function clampViewTailPlacement(parts: {
   planned: number;
@@ -601,7 +598,7 @@ export function clampViewTailPlacement(parts: {
     && parts.packed > parts.band.end;
   if (onBand(parts.packed) || onSuffix(parts.packed) || packedPastBand) {
     if (plannedSafe) return parts.planned;
-    // A prior FakeToken park (29+) leaked into a view-only probe. Sit just after
+    // A prior minting-writer park leaked into a view-only probe. Sit just after
     // the implementation (band.start - blockSize + 1 === impl+1).
     if (!parts.tokenWriterPresent && parts.band) return Math.max(0, parts.band.start - 4);
     return parts.packed;
@@ -614,7 +611,7 @@ export function clampViewTailPlacement(parts: {
 }
 
 /** Occupancy width: planned write, last extracted/persisted v, and already-derived slots. */
-export function liveJobEventsBandWidth(parts: {
+export function liveChunkableValueBandWidth(parts: {
   plannedWidth?: number;
   persistWidth?: number;
   derivedWidth?: number;

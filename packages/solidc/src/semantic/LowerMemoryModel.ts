@@ -412,7 +412,10 @@ export default class LowerMemoryModel extends AstTraversal {
     // unbound, flattening would bypass recomputation of every outgoing graph row. Reference-typed arguments
     // do not weaken that boundary: keep the handler as a subroutine and lower its memory values in its own body.
     // Detached signature handlers have the same hard boundary because CHECKSIG authenticates that exact body.
-    if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) return false;
+    // Collection-pool clones likewise carry a compiler-owned pending-value exit. A decoded array argument is
+    // an isolated ABI value, not a user memory alias requiring pass-by-reference inlining; flattening the clone
+    // would reopen persisted entries beside the route cache and lose sequential read/write semantics.
+    if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler || fn.forceCollectionJournalPool) return false;
     if (fn.customModifiers.length !== 0 || !fn.body) return false;
     if (!fn.parameters.some((p) => this.isRefType(p.type))) return false;
     if (this.bodyHas(fn.body, (n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;

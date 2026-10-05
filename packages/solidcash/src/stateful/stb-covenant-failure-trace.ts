@@ -172,10 +172,11 @@ export function logCovenantFailureTrace(
         )),
       ];
       const identityWitnesses = failedAbiInputs.flatMap((input, inputIndex) => (
-        /^__internal__(?:msgSenderCategory|externalCallInputBase|externalReturnOutputIdx\d*|returnOutputIdx|extcallMasterIdx\d*|extcallAnchorIdx\d*)$/.test(input.name) ? [{
-          name: input.name,
-          value: String(failedBuilderInput.unlocker?.params?.[inputIndex]),
-        }] : []
+        /^__internal__(?:msgSenderCategory|externalCallInputBase|returnOutputIdx)$/.test(input.name)
+        || /^__internal__(?:externalReturnOutputIdx\d*|extcallMasterIdx\d*|extcallAnchorIdx\d*)$/.test(input.name) ? [{
+            name: input.name,
+            value: String(failedBuilderInput.unlocker?.params?.[inputIndex]),
+          }] : []
       ));
       const anchorInputs = host.externalIdentityAnchorUtxos.map((anchor, anchorIndex) => {
         const inputIndex = builder.inputs.findIndex((input) => input.txid.toLowerCase() === anchor.txid.toLowerCase()
@@ -228,24 +229,24 @@ export function logCovenantFailureTrace(
             nft?: { capability?: string; commitment?: Uint8Array };
           };
         }>(
-          values: T[],
-        ): { lock: number[]; category: Array<{
-          index: number; lock: string; capability?: string; commitment?: string;
-        }> } => ({
-          lock: failedLockHex === undefined ? [] : values.flatMap((value, index) => (
-            binToHex(value.lockingBytecode) === failedLockHex ? [index] : []
-          )),
-          category: failedCategoryHex === undefined ? [] : values.flatMap((value, index) => (
-            value.token?.category !== undefined && binToHex(value.token.category) === failedCategoryHex
-              ? [{
-                index,
-                lock: binToHex(value.lockingBytecode),
-                capability: value.token.nft?.capability,
-                commitment: value.token.nft?.commitment === undefined
-                  ? undefined : binToHex(value.token.nft.commitment),
-              }] : []
-          )),
-        });
+            values: T[],
+          ): { lock: number[]; category: Array<{
+            index: number; lock: string; capability?: string; commitment?: string;
+          }> } => ({
+            lock: failedLockHex === undefined ? [] : values.flatMap((value, index) => (
+              binToHex(value.lockingBytecode) === failedLockHex ? [index] : []
+            )),
+            category: failedCategoryHex === undefined ? [] : values.flatMap((value, index) => (
+              value.token?.category !== undefined && binToHex(value.token.category) === failedCategoryHex
+                ? [{
+                  index,
+                  lock: binToHex(value.lockingBytecode),
+                  capability: value.token.nft?.capability,
+                  commitment: value.token.nft?.commitment === undefined
+                    ? undefined : binToHex(value.token.nft.commitment),
+                }] : []
+            )),
+          });
         console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\n${ringText}\n`
           + `lastLockMismatch=${JSON.stringify(lastMismatch ?? null)} `
           + `equalOk=${outputBytecodeMatches.filter((entry) => entry.matches).length}\n`

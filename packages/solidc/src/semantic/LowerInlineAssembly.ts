@@ -471,7 +471,7 @@ function packWords(types: Type[]): number {
 
 // The whole-slot footprint of a fixed-size array or struct type (>0), else 0 for a value / mapping / dynamic
 // type (those pack by byte width). A fixed array T[k] and a struct occupy whole slots in EVM and never pack with
-// a neighbour, so the following var starts a fresh slot - this is the constraint fixpoint layout fix (was collapsed to 1 slot).
+// a neighbour, so the following var starts a fresh slot. This fixes the prior one-slot collapsed layout.
 function compositeSlotWords(t: Type): number {
   if (t instanceof ArrayType && t.bound !== undefined) {
     // Compute the fixed array's whole-slot footprint ARITHMETICALLY (all elements share one type), rather than
@@ -2352,9 +2352,11 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
         const byte = loc(new ArrayAccessNode(
           loc(new IdentifierNode(ptr.name), call), intLit(at, call),
         ), call);
-        // Preserve the raw one-byte result: the surrounding assignment supplies exactly the destination cast,
-        // avoiding an otherwise duplicated uint8 (or unnecessary uint256) range check.
-        return byte;
+        // Yul byte() always produces a uint256 word, including when it is nested inside another Yul expression
+        // (e.g. lt(byte(...), 0xc0)). Keeping the raw bytes1 here happened to work for a direct assignment because
+        // assignment lowering added the destination cast, but made the same value ill-typed in arithmetic and
+        // comparisons. Reinterpret the selected byte at the builtin boundary; later casts can still narrow it.
+        return loc(new CastNode(UINT256, byte, false), call);
       }
       if (runtimeMem) {
         // LowerMemoryModel rewrites assembly-observed `bytes memory` values to pointers in __yulmem. Reading the
@@ -2365,9 +2367,10 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
         const padded = loc(new BytesConcatNode([
           yulmem(call), memZeroBytes(intLit(32n, call), call),
         ]), call);
-        return loc(new ArrayAccessNode(
+        const byte = loc(new ArrayAccessNode(
           padded, addE(lowerValue(inner.args[0]), intLit(n, call), call),
         ), call);
+        return loc(new CastNode(UINT256, byte, false), call);
       }
     }
     const word = loc(new CastNode(BYTES32, lowerValue(args[1]), false), call);
@@ -3706,6 +3709,10 @@ export default class LowerInlineAssembly extends AstTraversal {
       const last = inner[inner.length - 1];
       if (wasAssembly && last instanceof ReturnNode) {
         out.push(...inner);
+        // A Yul return halts the function. Earlier named-return normalization may have appended a default
+        // return after the still-opaque assembly block; keeping that unreachable suffix changes the stack frame
+        // and duplicates the covenant even though the source never reaches it. A storage-pointer return
+        // (`c.slot := s.slot`) is an assignment in the source, so what follows it stays.
         if (last.isYulReturn) break;
       } else {
         out.push(visited);

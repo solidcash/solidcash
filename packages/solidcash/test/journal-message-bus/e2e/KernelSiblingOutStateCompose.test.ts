@@ -47,7 +47,8 @@ describe('kernel sibling outState under composition', () => {
     );
 
     // Match KernelPreCallOutStateCompose storeThenCompare: Mid projects Leaf.outState after the
-    // shared write under recipe (no Mid local scalar write — that path still needs VM repair under VM-validator-only finalization).
+    // shared write under recipe (no Mid local scalar write — that path still needs
+    // VM repair under VM-validator-only finalization).
     const midArtifact = compileString(`pragma solidcash >=0.8.0;
       interface ILeaf {
         public int stored;

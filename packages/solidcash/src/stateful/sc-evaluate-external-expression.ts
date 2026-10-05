@@ -13,7 +13,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, tryCashAddressToLockScript } from '../utils.js';
 import { decodeAuthenticatedProducerResultVector, encodeExternalReturnValues } from './external-return-encoding.js';
 import { p2pkhLockingBytecode } from './legacy-job-event-wire.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
@@ -47,20 +47,20 @@ export interface EvaluateExternalExpressionHost {
 }
 
 export function evaluateExternalExpression(
-host: EvaluateExternalExpressionHost,
-expression: ExternalCallExpression,
-functionArgs: FunctionArgument[],
-artifact: Artifact,
-state?: Record<string, unknown>,
-callerInputs?: readonly { type: string }[],
-externalReturns?: ReadonlyMap<string, FunctionArgument>,
-occurrenceIndex = 0,
-stateIncludesPriorWrites = false,
-executionSelfAddress?: FunctionArgument,
-localBindings?: ReadonlyMap<string, FunctionArgument>,
-stateLengthDeltas?: Readonly<Record<string, bigint>>,
-strictFieldAccess = false,
-executionCallerAddress?: FunctionArgument,
+  host: EvaluateExternalExpressionHost,
+  expression: ExternalCallExpression,
+  functionArgs: FunctionArgument[],
+  artifact: Artifact,
+  state?: Record<string, unknown>,
+  callerInputs?: readonly { type: string }[],
+  externalReturns?: ReadonlyMap<string, FunctionArgument>,
+  occurrenceIndex = 0,
+  stateIncludesPriorWrites = false,
+  executionSelfAddress?: FunctionArgument,
+  localBindings?: ReadonlyMap<string, FunctionArgument>,
+  stateLengthDeltas?: Readonly<Record<string, bigint>>,
+  strictFieldAccess = false,
+  executionCallerAddress?: FunctionArgument,
 ): FunctionArgument | undefined {
   const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
     evaluateExternalExpression(host,
@@ -100,6 +100,15 @@ executionCallerAddress?: FunctionArgument,
   };
   const inferredType = (candidate: ExternalCallExpression): string => {
     if (candidate.type) return candidate.type;
+    if (candidate.kind === 'field' && candidate.expression && candidate.name) {
+      const ownerType = inferredType(candidate.expression);
+      return (artifact.structs ?? artifact.stateLayout?.structs)
+        ?.find((struct) => struct.name === ownerType)
+        ?.fields.find((field) => field.name === candidate.name)?.type ?? '';
+    }
+    if (candidate.kind === 'state' && candidate.name) {
+      return artifact.stateLayout?.variables.find((variable) => variable.name === candidate.name)?.type ?? '';
+    }
     if (candidate.kind === 'call' && candidate.name
       && (artifact.structs ?? artifact.stateLayout?.structs)
         ?.some((struct) => struct.name === candidate.name)) return candidate.name;
@@ -160,9 +169,17 @@ executionCallerAddress?: FunctionArgument,
   const narrowAddress = (locking: Uint8Array): Uint8Array => {
     if (locking.length === 0) return new Uint8Array(20);
     if (locking.length === 20) return locking;
+    // A projected Solidity struct field can already be an ABI address word.
+    if (locking.length === 32) return locking.slice(12);
     if (locking.length === 23) return locking.slice(2, 22);
     if (locking.length === 35) return hash160Sync(locking);
     return locking.slice(3, 23);
+  };
+  const addressBytes = (value: string): Uint8Array | undefined => {
+    if (/^0x(?:[0-9a-fA-F]{2})*$/.test(value)
+      && [42, 48, 52, 66, 72].includes(value.length)) return hexToBin(value.slice(2));
+    if (value.includes(':')) return addressToLockScript(value);
+    return undefined;
   };
   const readsAuthenticatedState = (
     candidate: ExternalCallExpression | undefined,
@@ -186,6 +203,9 @@ executionCallerAddress?: FunctionArgument,
       return new Uint8Array([value ? 1 : 0]);
     }
     if (typeof value === 'bigint' || typeof value === 'number') {
+      if (solidityImportCompat && (typeHint === 'address' || typeHint === 'address payable')) {
+        return numberBe(BigInt(value), 20);
+      }
       const widthMatch = typeHint.match(/^u?int(\d+)$/);
       // Solidity abi.encodePacked uses the declared natural width, big-endian (and two's-complement for signed
       // values). Native SolidCash keeps its BCH VM-number contract below: little-endian sign-magnitude with one
@@ -211,6 +231,10 @@ executionCallerAddress?: FunctionArgument,
     // else (including a user string that merely starts with malformed hex) keeps the text encoding.
     if (typeof value === 'string') {
       const canonicalHex = /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
+      if (solidityImportCompat && typeHint === 'uint160') {
+        const locking = addressBytes(value);
+        return locking === undefined ? undefined : narrowAddress(locking);
+      }
       if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
       if (canonicalHex && typeHint === 'uint160' && value.length === 42) {
         return concat([hexToBin(value.slice(2)), new Uint8Array([0])]);
@@ -248,7 +272,13 @@ executionCallerAddress?: FunctionArgument,
       return utf8ToBin(value);
     }
     if (value instanceof Uint8Array) {
+      // Match the compiler's packed address-as-integer extension: native locks remain intact, but a
+      // Solidity ABI word contributes only its address identity, not its twelve framing bytes. Check this
+      // before zero-address handling because a zero ABI word still packs twenty bytes.
+      if (solidityImportCompat && typeHint === 'uint160') return narrowAddress(value);
       if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
+      // Native artifacts retain their established unprojected representation.
+      if (typeHint === 'uint160' && value.length === 32) return value;
       if (typeHint === 'uint160') {
         if (isStandardLockingBytecode(value)) return value;
         const narrowed = value.length === 0 ? new Uint8Array(20)
@@ -389,14 +419,21 @@ executionCallerAddress?: FunctionArgument,
     if (value === undefined) return undefined;
     if (expression.operator === '.length') {
       if (typeof value === 'string' || Array.isArray(value) || value instanceof Uint8Array) {
-        // Same-function dynamic writes (jobs.push then w[jobs.length-1]) must see the post-write
+        // Ethers passes `bytes` arguments as 0x-prefixed hex strings. Their Solidity length is the decoded
+        // byte count, while a real `string` still counts its characters. Use the published operand type so
+        // a text value that happens to look like hex keeps its string semantics.
+        const byteLength = typeof value === 'string'
+          && inferredType(expression.expression).startsWith('bytes')
+          && /^0x(?:[0-9a-fA-F]{2})*$/.test(value)
+          ? (value.length - 2) / 2 : value.length;
+        // Same-function dynamic writes (values.push then w[values.length-1]) must see the post-write
         // length. fixedKeySources already apply stateLengthDeltas via evalComputedKey; varyingKeyExpressions
-        // must match or publishJobPost whitelist keys resolve to -1 against empty pre-state.
+        // must match or a later constructed key resolves to -1 against empty pre-state.
         const stateName = expression.expression.kind === 'state' ? expression.expression.name : undefined;
         const writeDelta = stateName ? stateLengthDeltas?.[stateName] ?? 0n : 0n;
         const legacyDelta = !stateIncludesPriorWrites && typeof expression.value === 'string'
           ? BigInt(expression.value) : 0n;
-        return BigInt(value.length) + writeDelta + legacyDelta;
+        return BigInt(byteLength) + writeDelta + legacyDelta;
       }
     }
     if (expression.operator === '!') return !value;
@@ -409,7 +446,7 @@ executionCallerAddress?: FunctionArgument,
     const value = evaluate(expression.expression);
     const bytes = value instanceof Uint8Array ? value
       : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/iu.test(value)
-        ? hexToBin(value.replace(/^0x/iu, '')) : undefined;
+        ? hexToBin(value.replace(/^0x/iu, '')) : tryCashAddressToLockScript(value);
     if (!bytes) return undefined;
     // Match graph codegen's authenticated contract-address predicate: P2SH20/P2SH32 are code-bearing,
     // while P2PKH and the zero address are not. Only zero/nonzero is observable from this recipe.
@@ -476,6 +513,10 @@ executionCallerAddress?: FunctionArgument,
       if (expression.operator === '&') return a & b;
       if (expression.operator === '|') return a | b;
       if (expression.operator === '^') return a ^ b;
+      // A stored-element bigint shift is represented as a typed expression, not as an unchecked JS shift.
+      // Bound the shift count before allocation; the result remains subject to normal script-size checks.
+      if (expression.operator === '<<' && expression.type === 'bigint'
+        && expression.left.type === 'bigint' && b >= 0n && b <= 4_096n) return a << b;
       if (expression.operator === '<') return a < b;
       if (expression.operator === '<=') return a <= b;
       if (expression.operator === '>') return a > b;
@@ -484,12 +525,23 @@ executionCallerAddress?: FunctionArgument,
     return undefined;
   }
   if (expression.kind === 'ternary' && expression.condition && expression.ifTrue && expression.ifFalse) {
-    return evaluate(expression.condition) ? evaluate(expression.ifTrue) : evaluate(expression.ifFalse);
+    const condition = evaluate(expression.condition);
+    return condition === undefined ? undefined : evaluate(condition ? expression.ifTrue : expression.ifFalse);
   }
   if (expression.kind === 'cast' && expression.expression) {
     const value = evaluate(expression.expression);
     if (value === undefined) return undefined;
     if (expression.type === 'bytes' && typeof value === 'string') return utf8ToBin(value);
+    if (expression.type === 'uint160'
+      && (value instanceof Uint8Array || (solidityImportCompat && typeof value === 'string'
+        && ['address', 'address payable'].includes(inferredType(expression.expression))))) {
+      const raw = typeof value === 'string' ? addressBytes(value) : value;
+      if (raw === undefined) return undefined;
+      const bytes = narrowAddress(raw);
+      return solidityImportCompat
+        ? bytes.reduce((number, byte) => (number << 8n) | BigInt(byte), 0n)
+        : [...bytes].reverse().reduce((number, byte) => (number << 8n) | BigInt(byte), 0n);
+    }
     if (expression.type?.startsWith('uint') || expression.type?.startsWith('int')) {
       if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
       if (value instanceof Uint8Array) {
@@ -554,7 +606,20 @@ executionCallerAddress?: FunctionArgument,
     if (expression.parameters && expression.statements
       && expression.parameters.length === values.length) {
       const bindings = new Map(localBindings);
-      expression.parameters.forEach((name, index) => bindings.set(name, values[index]!));
+      // A helper owns its evaluation frame, not the shared producer-result cache. Clone array arguments
+      // once while preserving aliases within the frame, so local memory assignments retain their semantics.
+      const arrayCopies = new Map<FunctionArgument, FunctionArgument>();
+      const localValue = (value: FunctionArgument): FunctionArgument => {
+        if (!Array.isArray(value)) return value;
+        const existing = arrayCopies.get(value);
+        if (existing !== undefined) return existing;
+        const copy: FunctionArgument[] = [];
+        arrayCopies.set(value, copy as FunctionArgument);
+        arrayCopies.set(copy as FunctionArgument, copy as FunctionArgument);
+        for (const element of value) copy.push(localValue(element));
+        return copy as FunctionArgument;
+      };
+      expression.parameters.forEach((name, index) => bindings.set(name, localValue(values[index]!)));
       let remainingIterations = 10_000;
       let invalid = false;
       type Execution = { returned: boolean; value?: FunctionArgument };
@@ -562,10 +627,25 @@ executionCallerAddress?: FunctionArgument,
         evaluateExternalExpression(host,
           candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
           stateIncludesPriorWrites, executionSelfAddress, bindings,
-          undefined, false, executionCallerAddress,
+          stateLengthDeltas, strictFieldAccess, executionCallerAddress,
         )
       );
-      const defaultValue = (type: string | undefined): FunctionArgument => {
+      let remainingDefaultElements = 10_000;
+      const defaultValue = (type: string | undefined): FunctionArgument | undefined => {
+        if (remainingDefaultElements <= 0) return undefined;
+        remainingDefaultElements -= 1;
+        const fixedArray = type?.match(/^(.*)\[(\d+)\]$/u);
+        if (fixedArray) {
+          const length = Number(fixedArray[2]);
+          if (!Number.isSafeInteger(length) || length > remainingDefaultElements) return undefined;
+          const elements: FunctionArgument[] = [];
+          for (let index = 0; index < length; index += 1) {
+            const element = defaultValue(fixedArray[1]);
+            if (element === undefined) return undefined;
+            elements.push(element);
+          }
+          return elements as FunctionArgument;
+        }
         if (type === 'bool') return false;
         if (type === 'string') return '';
         if (type?.endsWith('[]')) return [];
@@ -588,28 +668,25 @@ executionCallerAddress?: FunctionArgument,
             const value = statement.expression
               ? evaluateWith(statement.expression) : defaultValue(statement.type);
             if (value === undefined) { invalid = true; return { returned: false }; }
-            bindings.set(statement.name, value);
+            bindings.set(statement.name, localValue(value));
           } else if (statement.kind === 'assign' && statement.name && statement.expression) {
             const value = evaluateWith(statement.expression);
             if (value === undefined) { invalid = true; return { returned: false }; }
-            bindings.set(statement.name, value);
-          } else if (statement.kind === 'arrayAssign' && statement.name && statement.expression) {
-            const target = bindings.get(statement.name);
-            const index = statement.index ? evaluateWith(statement.index) : undefined;
+            bindings.set(statement.name, localValue(value));
+          } else if (statement.kind === 'arrayAssign' && statement.name && statement.index && statement.expression) {
+            // In place: a local array binding is this frame's own copy (`localValue`), never a forward-bound
+            // argument, and an alias of it is the same memory array, as a Solidity memory assignment makes it.
+            const array = bindings.get(statement.name);
+            const index = evaluateWith(statement.index);
             const position = typeof index === 'bigint' ? Number(index)
               : typeof index === 'number' ? index : NaN;
-            if (!Array.isArray(target) || !Number.isSafeInteger(position)
-              || position < 0 || position >= target.length) {
+            const value = evaluateWith(statement.expression);
+            if (!Array.isArray(array) || !Number.isSafeInteger(position) || position < 0
+              || position >= array.length || value === undefined) {
               invalid = true;
               return { returned: false };
             }
-            const value = evaluateWith(statement.expression);
-            if (value === undefined) { invalid = true; return { returned: false }; }
-            // Copy on write: a local array may alias a forward-bound argument, and the caller's own value is not
-            // the helper's to mutate.
-            const next = (target as FunctionArgument[]).slice();
-            next[position] = value;
-            bindings.set(statement.name, next as unknown as FunctionArgument);
+            array[position] = value;
           } else if (statement.kind === 'while' && statement.condition && statement.statements) {
             while (true) {
               const condition = evaluateWith(statement.condition);
@@ -631,6 +708,11 @@ executionCallerAddress?: FunctionArgument,
             return { returned: true, value };
           } else if (statement.kind === 'expression' && statement.expression) {
             if (evaluateWith(statement.expression) === undefined) {
+              invalid = true;
+              return { returned: false };
+            }
+          } else if (statement.kind === 'require' && statement.condition) {
+            if (evaluateWith(statement.condition) !== true) {
               invalid = true;
               return { returned: false };
             }

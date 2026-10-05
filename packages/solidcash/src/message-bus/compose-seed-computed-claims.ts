@@ -19,6 +19,7 @@ import {
 import { convergeMessageBusComputedResourceOutputs } from './preflight.js';
 import { canSeedComputedValueChunkClaim } from './compose-recipes.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
+import { isVmValidationOnly } from './materialization-mode.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 type FinalizedGraph = ReturnType<typeof finalizeAtomicInvocationGraph>;
@@ -55,14 +56,16 @@ export function seedComposeComputedClaims(
   // A resource claim learned on the prior pass must seed the new local probe. Otherwise the verifier sees
   // the old local commitment, rejects it against the new manifest before the implementation executes, and
   // the covenant cannot reach the pin which originally authenticated the claim. Restrict seeding to exact
-  // mutable data-NFT lineage and compiler-declared entry coordinates; every other resource class keeps its
-  // ordinary derivation path.
+  // mutable data-NFT lineage and compiler-declared entry coordinates (including a token-free trailing
+  // coordinate authenticated as a sorted insertion); every other resource class keeps its ordinary path.
   let seededComputedResource = false;
   for (const slot of resourceSlots) {
-    if (slot.kind !== 'dataNft' && slot.kind !== 'entry') continue;
+    if (slot.kind !== 'dataNft' && slot.kind !== 'entry' && slot.kind !== 'trailing') continue;
     const claim = claimedResourceEffects.find((effect) => effect.participant === slot.participant
       && effect.offset === slot.offset
-      && (slot.kind === 'dataNft' ? effect.mode === 0 : effect.mode === 0 || effect.mode === 1));
+      && (slot.kind === 'dataNft' ? effect.mode === 0
+        : slot.kind === 'entry' ? effect.mode === 0 || effect.mode === 1
+          : effect.mode === 1));
     if (!claim) continue;
     const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
     const input = provisional.inputs[absolute];
@@ -75,6 +78,14 @@ export function seedComposeComputedClaims(
       const inputMutable = input?.token?.nft?.capability === 'mutable';
       if ((claim.mode === 0 && (!inputMutable || input.token!.category !== output.token.category))
         || (claim.mode === 1 && inputMutable)) continue;
+    }
+    if (slot.kind === 'trailing') {
+      const outputLockingBytecode = output.to instanceof Uint8Array
+        ? output.to : addressToLockScript(output.to);
+      const tokenCategoryHex = `${binToHex(hexToBin(output.token.category).reverse())}01`;
+      if (input?.token !== undefined
+        || binToHex(outputLockingBytecode) !== claim.lockingBytecodeHex
+        || tokenCategoryHex !== claim.tokenCategoryHex) continue;
     }
     const proposed = hexToBin(claim.outputCommitmentHex);
     const action = canApplyRepairedNftCommitment({
@@ -115,9 +126,19 @@ export function seedComposeComputedClaims(
   // the repaired commitment rather than treating the late write as an unclaimed output mutation.
   // Top-level dynamic chunk RMW is the same class: local probes freeze the prior chunk commitment while the
   // route already authenticates the concat-derived replacement (aa→aabb) on the complete graph.
-  const resourceConvergence = convergeMessageBusComputedResourceOutputs(provisional);
+  // Recipe mode may seed prior semantic claims, but it cannot mutate outputs from a newly exposed failed VM
+  // frame. Leave that next frontier to the non-mutating post-event discovery pass; devOracle retains the legacy
+  // in-place convergence behavior.
+  const resourceConvergence = isVmValidationOnly()
+    ? { repairs: 0, rounds: 0, outputs: [] as number[] }
+    : convergeMessageBusComputedResourceOutputs(provisional);
   const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(provisional);
-  const dynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(provisional);
+  // Recipe mode cannot apply VM-mined chunk repairs. Intermediate semantic graphs are provisional, so
+  // validating every one repeats an expensive full-graph VM pass without changing any claim. The stable
+  // graph is still checked for incomplete chunks and the final admit validates every chunk covenant.
+  const dynamicChunkConvergence = isVmValidationOnly()
+    ? { repairs: 0, rounds: 0, ownedOutputs: [], authenticatedOutputs: [], outputs: [] }
+    : convergeMessageBusComputedDynamicChunkOutputs(provisional);
   if (seededComputedResource || seededComputedValueChunk
     || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0
     || dynamicChunkConvergence.repairs > 0) {

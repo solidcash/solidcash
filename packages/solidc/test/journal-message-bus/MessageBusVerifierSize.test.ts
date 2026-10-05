@@ -22,9 +22,9 @@ describe('atomic verifier bytecode specialization', () => {
     // facilities produce the default kernel participant below; the exact pair remains a drift tripwire,
     // while the bounds retain deliberate headroom below BCH's deployment limit.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 152,
-      composed: 1389,
-      frameworkTax: 1237,
+      direct: 140,
+      composed: 1372,
+      frameworkTax: 1232,
     });
     expect(composed).toBeLessThanOrEqual(1400);
     expect(composed - direct).toBeLessThanOrEqual(1250);

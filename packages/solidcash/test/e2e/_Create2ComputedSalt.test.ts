@@ -177,6 +177,7 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
     const [p0, p1] = [lockingBytecodeToSolidityAddressPayload(t0)!, lockingBytecodeToSolidityAddressPayload(t1)!];
     const packed = new Uint8Array(p0.length + p1.length);
     packed.set(p0, 0); packed.set(p1, p0.length);
+    expect(packed).toHaveLength(40);
     const salt = keccak_256(packed);
     const expected = new Contract(childArt, [], {
       provider, addressType: 'p2sh32', category: hexToBin(result.childCategoryId), salt,

@@ -20,9 +20,9 @@ const vmRejects = (builder: TransactionBuilder): boolean => {
   const transaction = builder.buildLibauthTransaction();
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
-  return transaction.inputs.some((_input, inputIndex) => (
-    vm.debug({ inputIndex, sourceOutputs, transaction }) as Array<{ error?: unknown }>
-  ).some((state) => state.error !== undefined));
+  return transaction.inputs.some((_input, inputIndex) => vm.evaluate({
+    inputIndex, sourceOutputs, transaction,
+  }).error !== undefined);
 };
 
 const replacePush = (

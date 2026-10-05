@@ -29,7 +29,7 @@ export interface RepackViewTailsHost {
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   findMintingInputIndex(categoryId: string): number;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   dynamicChunkOutputCount(): number;
   viewTailPackOptions(suffixStart?: number): ViewTailPackOptions;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
@@ -38,7 +38,7 @@ export interface RepackViewTailsHost {
 /**
  * JobEvents occupancy is only final after the first materialization. If planned
  * view-tail witnesses still name a mutable collection slot, pack them after that
- * band and refresh unlockers for one rematerialize. Does not move jobs suffix.
+ * band and refresh unlockers for one rematerialize. Does not move the value-chunk suffix.
  */
 export function repackViewTailsAfterMaterialization(
   host: RepackViewTailsHost,
@@ -64,7 +64,7 @@ export function repackViewTailsAfterMaterialization(
     : -1;
   const writerEnd = Math.max(
     lastCollidingMutableWriterIndex(builder.outputs, planned),
-    viewTailOccupancyCap(planned, host.getPublishJobEventsBand()),
+    viewTailOccupancyCap(planned, host.getChunkableValueWriteBand()),
     derivedEnd,
   );
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -83,9 +83,9 @@ export function repackViewTailsAfterMaterialization(
     });
   }
   if (writerEnd < 0) return false;
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = jobsCount > 0
-    ? builder.outputs.length - jobsCount - 1
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = suffixChunkCount > 0
+    ? builder.outputs.length - suffixChunkCount - 1
     : builder.outputs.length;
   const reserved = new Set<number>();
   for (const [index, input] of host.allInputs.entries()) {

@@ -56,6 +56,13 @@ export const decodeBool = (ptr: {bytes: Uint8Array, index: number}): boolean => 
   return result;
 }
 
+export const decodePackedUint160Address = (ptr: { bytes: Uint8Array, index: number }): string => {
+  if (ptr.bytes.length - ptr.index < 20) throw new RangeError('Incomplete packed uint160 address');
+  const result = getAddress(hexlify(ptr.bytes.slice(ptr.index, ptr.index + 20)));
+  ptr.index += 20;
+  return result;
+};
+
 export const decodeAddress = (ptr: {bytes: Uint8Array, index: number}): string => {
   const bytes = ptr.bytes;
   // Packed uint160 may prefix a VM sign byte 0x00 in front of a real locking
@@ -66,8 +73,8 @@ export const decodeAddress = (ptr: {bytes: Uint8Array, index: number}): string =
   }
   const rest = ptr.bytes.length - ptr.index;
   const index = ptr.index;
-  // Packed `uint160(address)` on BCH publishes the locking bytecode. Recognize the standard forms
-  // before the 20-byte Solidity-account fallback so p2sh32 tokens survive event replay.
+  // Native BCH event payloads can carry a full locking bytecode. Recognize those standard forms
+  // before the 20-byte Solidity identity fallback.
   if (rest >= 35 && bytes[index] === 0xaa && bytes[index + 1] === 0x20 && bytes[index + 34] === 0x87) {
     const slice = bytes.slice(index, index + 35);
     ptr.index += 35;
@@ -104,19 +111,9 @@ export const decodeAddress = (ptr: {bytes: Uint8Array, index: number}): string =
     // following packed field remains.
     return ZeroAddress;
   }
-  const result = getAddress(hexlify(ptr.bytes.slice(ptr.index, ptr.index + 20)));
-  // Packed `uint160` is 20 bytes. A following packed bool is 0x00/0x01 and must
-  // not be eaten as the unsigned VM sign byte (that would drop whitelistWorkers).
-  const after20 = ptr.bytes.length - (index + 20);
-  if (after20 === 1 && (bytes[index + 20] === 0 || bytes[index + 20] === 1)) {
-    ptr.index += 20;
-    return result;
-  }
-  // These event schemas cast addresses to uint160 before packing. SolidCash's unsigned VM-number width retains
-  // one trailing sign byte, so consume 21 while exposing the first 20 account bytes.
-  ptr.index += 21;
-
-  return result;
+  // Solidity-compatible `abi.encodePacked(uint160(address))` contributes exactly 20 bytes, even when
+  // another field follows. The native-lock cases above retain their own lengths.
+  return decodePackedUint160Address(ptr);
 }
 
 export const decodeUint256 = (ptr: {bytes: Uint8Array, index: number}): bigint => {

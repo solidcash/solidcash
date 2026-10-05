@@ -544,3 +544,25 @@ function endsWithReturn(last: StatementNode, failing = false): boolean {
 function endsEveryPath(statement: StatementNode): boolean {
   return endsWithReturn(statement) || (holdsReturn(statement) && endsWithReturn(statement, true));
 }
+
+/**
+ * Keep a void helper's `return;` local when its body is spliced into another function. With `keepYulReturns`, an
+ * assembly return stays: it halts the whole call, as it does on the EVM, so it is the caller's return.
+ */
+export function normalizeVoidInlineReturns(fn: FunctionDefinitionNode, keepYulReturns = false): void {
+  fn.accept(new EarlyReturnTransformation());
+  const stripReturns = (block: BlockNode): void => {
+    const kept: StatementNode[] = [];
+    for (const statement of block.statements ?? []) {
+      if (statement instanceof ReturnNode && !(keepYulReturns && statement.isYulReturn)) continue;
+      if (statement instanceof BranchNode) {
+        stripReturns(statement.ifBlock);
+        if (statement.elseBlock) stripReturns(statement.elseBlock);
+      } else if (statement instanceof BlockNode) stripReturns(statement);
+      else if (statement instanceof UncheckedNode) stripReturns(statement.block);
+      kept.push(statement);
+    }
+    block.statements = kept;
+  };
+  stripReturns(fn.body);
+}

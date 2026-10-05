@@ -1,4 +1,17 @@
-import { Artifact, RequireStatement, sourceMapToLocationData, Type } from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth';
+import {
+  Artifact, RequireStatement, Type, decodeBool, decodeInt, decodeString, sourceMapToLocationData,
+} from '@solidcash/utils';
+
+const decodeCustomErrorArgument = (type: string, value: Uint8Array): unknown => {
+  if (type === 'bool') return decodeBool(value);
+  if (type === 'int' || type === 'uint' || type === 'bigint' || /^u?int\d+$/.test(type)) {
+    return decodeInt(value);
+  }
+  if (type === 'string') return decodeString(value);
+  if (type === 'bytes' || /^bytes\d+$/.test(type) || type === 'address') return `0x${binToHex(value)}`;
+  return undefined;
+};
 
 export class TypeError extends Error {
   constructor(actual: string, expected: Type) {
@@ -72,6 +85,8 @@ export class FailedTransactionEvaluationError extends FailedTransactionError {
 }
 
 export class FailedRequireError extends FailedTransactionError {
+  readonly errorArgs?: readonly unknown[];
+
   constructor(
     public artifact: Artifact,
     public failingInstructionPointer: number,
@@ -80,18 +95,56 @@ export class FailedRequireError extends FailedTransactionError {
     public bitauthUri: string,
     public libauthErrorMessage?: string,
     functionSourceMap?: string,
+    preferDirectCheckSigPredicate = false,
+    stackAtFailure?: readonly Uint8Array[],
   ) {
     const { statement, lineNumber } = getLocationDataForInstructionPointer(
       artifact, failingInstructionPointer, functionSourceMap, requireStatement.line,
     );
+    const failingStatement = preferDirectCheckSigPredicate
+      ? directCheckSigPredicate(statement) ?? statement : statement;
 
     const baseMessage = `${artifact.contractName}.scash:${lineNumber} Require statement failed at input ${inputIndex} in contract ${artifact.contractName}.scash at line ${lineNumber}`;
     const baseMessageWithRequireMessage = `${baseMessage} with the following message: ${requireStatement.message}`;
-    const fullMessage = `${requireStatement.message ? baseMessageWithRequireMessage : baseMessage}.\nFailing statement: ${statement}`;
+    const fullMessage = `${requireStatement.message ? baseMessageWithRequireMessage : baseMessage}.\nFailing statement: ${failingStatement}`;
 
     super(fullMessage, bitauthUri);
+    const types = requireStatement.errorArgumentTypes;
+    if (types && stackAtFailure && stackAtFailure.length >= types.length) {
+      try {
+        const values = stackAtFailure.slice(-types.length).map((value, index) =>
+          decodeCustomErrorArgument(types[index], value));
+        if (values.every((value) => value !== undefined)) this.errorArgs = values;
+      } catch { /* Invalid sideband data must not mask the source-level revert. */ }
+    }
   }
 }
+
+/** NULLFAIL rejects the nonempty signature inside a direct checkSig call before the enclosing require runs. */
+const directCheckSigPredicate = (statement: string): string | undefined => {
+  const opening = /^require\s*\(/.exec(statement.trim());
+  if (!opening) return undefined;
+  const source = statement.trim();
+  const start = opening[0].length;
+  let depth = 0;
+  let quote: string | undefined;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote !== undefined) {
+      if (char === '\\') index += 1;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") { quote = char; continue; }
+    if (char === '(') { depth += 1; continue; }
+    if (char === ')' && depth > 0) { depth -= 1; continue; }
+    if ((char === ',' || char === ')') && depth === 0) {
+      const predicate = source.slice(start, index).trim();
+      return /^checkSig\s*\(/.test(predicate) ? predicate : undefined;
+    }
+  }
+  return undefined;
+};
 
 const getLocationDataForInstructionPointer = (
   artifact: Artifact,

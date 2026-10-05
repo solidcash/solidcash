@@ -7,6 +7,8 @@ export class ExternalExpressionPathError extends Error {
   }
 }
 
+export class ExternalExpressionUnresolvedConditionError extends ExternalExpressionPathError {}
+
 /**
  * Visit one expression in runtime evaluation order. Conditional expressions and short-circuit operators visit
  * only the selected branch, after their condition has been resolved. This prevents an inactive producer-result
@@ -26,7 +28,7 @@ export async function visitExternalExpressionEvaluationPath(
       await visit(candidate.condition);
       const condition = evaluate(candidate.condition);
       if (condition === undefined) {
-        throw new ExternalExpressionPathError('ternary condition cannot be resolved before selecting an arm.');
+        throw new ExternalExpressionUnresolvedConditionError('ternary condition cannot be resolved before selecting an arm.');
       }
       await visit(Boolean(condition) ? candidate.ifTrue : candidate.ifFalse);
       await visitNode(candidate);
@@ -39,7 +41,7 @@ export async function visitExternalExpressionEvaluationPath(
       await visit(candidate.left);
       const left = evaluate(candidate.left);
       if (left === undefined) {
-        throw new ExternalExpressionPathError(
+        throw new ExternalExpressionUnresolvedConditionError(
           `'${candidate.operator}' left operand cannot be resolved before short-circuit selection.`,
         );
       }

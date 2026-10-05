@@ -20,11 +20,15 @@ zero is the sole state-input slot. Each contract commits a fixed prefix and maxi
 bytecode, while each transaction commits `actualSize = fixedSize + trailingUsed`. Only that contiguous used
 prefix is physically present; unused trailing capacity is not padded with inputs or outputs. All call-manifest
 rows carry participant-local offsets, and every absolute access is derived as `base(owner/consumer) + offset`
-while verifying the transaction. `Vi` is participant `Pi`'s artifact-specialized, self-preserved verifier NFT.
+while verifying the transaction. In V1–V4, `Vi` is participant `Pi`'s artifact-specialized, self-preserved verifier NFT.
+The opt-in V5 direct-participant profile instead packs verifier NFTs only for routed participants; a marked direct
+participant has no verifier NFT or filler slot and executes its ordinary covenant in its state block.
 The fee input is paired with change immediately after the verifier region. There are no controller or projection
 slots. The SDK derives all absolute indices; application code supplies none.
 
 ## Message envelope
+
+The verifier-input transport below remains the default for deployed V1–V4 artifacts.
 
 Every verifier unlocking bytecode carries the same call manifest as its first canonical `PUSHDATA2` push (the minimum
 two-participant message envelope is already larger than 255 bytes). Arguments follow in
@@ -50,6 +54,44 @@ Each verifier also receives an inert density-reserve push. The SDK sizes this re
 verifier's actual program arguments and message envelope, bringing its unlocking bytecode to a 9,000-byte floor.
 Larger arguments displace reserve bytes rather than accumulating a fixed 2,048-byte pad. Finalized VM and byte
 preflight remain authoritative if a verifier needs more computation or the transaction approaches relay size.
+
+An opt-in root-route transport (`messageBusRootEnvelope: true`) carries one canonical envelope in the direct
+root's input-0 SCB1 unlocking frame, immediately after the five-byte selector push and before the batch and
+reserve pushes. Every V5 verifier reads that exact `PUSHDATA2` carrier, proves its `L3C1` domain and declared
+manifest length, and returns only its binding digest (plus a lifecycle suffix where applicable). V5 verifier
+unlockings omit their own envelope pushes; their covenants no longer perform the redundant local-envelope hash
+comparison. The manifest codec, participant/verifier/fee slot layout, and verifier NFT commitment format stay
+unchanged. The different verifier program produces a different covenant address, so existing verifier NFTs are
+not silently migrated. Composer and preflight require all participants to advertise the same transport; V5
+verifiers also reject legacy envelope pushes in every verifier slot, preventing a co-spent legacy participant
+from authenticating a private manifest. This transport is for direct-root atomic compositions; standalone
+input-0 SCB1 routes do not gain an atomic carrier by enabling it.
+
+An independent opt-in proxy-root transport (`messageBusProxyForwardEnvelope: true`) uses the existing baked
+`__forward(bytes)` proxy without changing its bytecode. Input 0 forwards `SCB1 || PUSHDATA2(L3C1 envelope)`;
+the root implementation input starts with the identical bytes after its selector push. The proxy covenant checks
+the complete forwarded prefix, and every V5 verifier independently parses the canonical input-0 frame and
+compares it with that executor prefix. The root verifier also requires the delegate index to lie inside its
+authenticated participant block. Only these two root inputs carry the envelope; verifier unlockings omit it.
+The SDK rejects mixed transports and malformed proxy/executor pairs. This mode is opt-in, cannot be combined
+with `messageBusRootEnvelope`, and likewise changes the verifier covenant address; existing NFTs are not
+silently migrated.
+
+`messageBusDirectParticipant: true` enables a separate `L3BUS5\0\0` call-manifest profile for a mixed
+routed/direct composition. Each participant record appends `authority:u8` after the V4 lifecycle suffix:
+`0` means routed and `1` means direct. V5 retains V4's optional transaction-signature frame on routed rows;
+the direct row requires an empty frame. This profile requires a routed root plus at least one direct
+participant. The verifier region contains one NFT per routed
+participant in participant order, with no synthetic authority for a direct participant. A direct participant
+may consume one void, leaf invocation with one scalar argument in a fixed state block; it owns no manifest
+child or effect rows. The routed verifier binds the source-evaluated runtime target to the actual direct input,
+its category and balanced block geometry, and the exact selector and visible argument in that input's
+unlocking script. A hidden low-level-call index is bound out of range, so an unrepresented nested call fails
+closed if its branch executes. The direct input's own consensus-executed covenant validates its state
+transition. This does **not** pin a contract-typed dynamic address to one compiled implementation. Direct
+methods that depend on `msg.sender` or read `msg.data` are outside this first-slice profile until caller-slot
+and hidden-calldata semantics are certified. Other unsupported direct shapes are refused, and V1–V4 artifacts
+remain byte-for-byte unchanged when the option is omitted.
 
 SDK-only effect/return derivation probes temporarily use state-input outpoint index `ffffffff`, which cannot name a
 real transaction output. The route skips its final binding check only for that impossible probe outpoint; the SDK restores

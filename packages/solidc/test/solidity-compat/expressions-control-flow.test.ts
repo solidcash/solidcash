@@ -53,6 +53,72 @@ describe('constant zero-divisor diagnostics', () => {
   });
 });
 
+describe('external-call argument state provenance', () => {
+  it('publishes a dominating dynamic-state field write instead of the pre-transaction read', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      interface ISink { function observe(bool enabled) external; }
+      contract C {
+        struct Record { bool enabled; address owner; }
+        Record[] records;
+        address sink;
+        constructor(address sink_) { sink = sink_; }
+        function append(address[] memory members) public {
+          records.push();
+          uint256 index = records.length - 1;
+          Record storage record = records[index];
+          record.enabled = members.length > 0;
+          record.owner = msg.sender;
+          ISink(sink).observe(record.enabled);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+    const call = artifact.abi.find((candidate) => candidate.name === 'append')?.externalCalls
+      ?.find((candidate) => candidate.interfaceName === 'ISink' && candidate.functionName === 'observe');
+    expect(call?.argSources?.[0]).toEqual({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        operator: '>',
+        left: {
+          kind: 'unary',
+          operator: '.length',
+          expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        },
+        right: { kind: 'literal', type: 'bigint', value: '0' },
+      },
+    });
+  });
+});
+
+describe('direct collection return provenance', () => {
+  it('publishes an exact parameter-keyed collection getter without relying on conventional names', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      contract C {
+        mapping(address => mapping(address => uint256)) credits;
+        function quota(address holder, address delegate) public view returns (uint256) {
+          return credits[holder][delegate];
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'quota')?.directMappingReturn).toEqual({
+      collection: 'credits',
+      keyParams: ['holder', 'delegate'],
+    });
+  });
+
+  it('does not classify a transformed collection value as a direct getter', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      contract C {
+        mapping(address => uint256) credits;
+        function quota(address holder) public view returns (uint256) {
+          return credits[holder] + 1;
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'quota')?.returnStateAccess).toBeUndefined();
+  });
+});
+
 describe('hex string separator validation', () => {
   const cc = (literal: string): string => compileString(
     `contract C { function f() public pure { bytes memory x = ${literal}; } }`,
@@ -116,6 +182,9 @@ describe('cycle-safe AST metadata walks', () => {
 
   it('handles a self-function reference passed to abi.encode', () => {
     expect(ok('contract C { function f() public view { abi.encode(this.f); } }')).toBe('C');
+    expect(ok('contract C { function f() public view { abi.encode(this.f, this.f); } }')).toBe('C');
+    expect(() => ok('contract C { function f() public view returns (bytes memory) {'
+      + ' return abi.encode(this.f); } }')).toThrow(/unsupported type.*function/i);
   });
 
   it('handles comparisons of self-function references', () => {
@@ -539,10 +608,36 @@ describe('conditionally evaluated external-read helpers', () => {
 });
 
 describe('cast-wrapped low-level call targets', () => {
-  it('pins address(local).call(data) to the live local locking bytecode', () => {
+  it('publishes the exact source of a computed low-level target', () => {
     const src = 'contract C { function f(address a, address b, bool pickA, bytes calldata data) public {'
-      + ' address target = pickA ? a : b; (bool ok,) = address(target).call(data); require(ok); } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+      + ' address target = pickA ? a : b; address(target).call(data); require(data.length > 0); } }';
+    const artifact = compileString(src, { solidityImportCompat: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.lowLevelCalls).toEqual([{
+      callMode: 'call',
+      dataParamIndex: 3,
+      occurrence: 'once',
+      target: { kind: 'computed' },
+      targetSource: {
+        kind: 'expression',
+        expression: {
+          kind: 'ternary',
+          condition: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+          ifTrue: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          ifFalse: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        },
+      },
+      // The serialized payload the per-call SDK reads to auto-wire the co-spent callee.
+      dataSource: { kind: 'forward', paramIndex: 3 },
+    }]);
+  });
+
+  it('does not publish an exact source for a reassigned low-level target', () => {
+    const src = 'contract C { function f(address a, address b, bytes calldata data) public {'
+      + ' address target = a; target = b; address(target).call(data); require(data.length > 0); } }';
+    const artifact = compileString(src, { solidityImportCompat: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.lowLevelCalls?.[0]?.targetSource).toBeUndefined();
   });
 });
 
@@ -851,6 +946,14 @@ describe('ecrecover(hash, v, r, s) alias maps to a recovery projection under the
   });
   it("ecrecover:'evm' is byte-identical to ecrecoverEvm (20-byte keccak address)", () => {
     expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toBe(bc(mkB20('ecrecoverEvm'), {}));
+  });
+  it('returns a zero-address sentinel for invalid v before reading recovery sidecars', () => {
+    // A zero uint8 can be encoded as Script's empty item. Test v before concatenating the argument blob, and
+    // enter the sidecar path only for Ethereum recovery IDs 27 and 28, for either address projection.
+    const guard = 'OP_2 OP_PICK OP_BIN2NUM 1b 1d OP_WITHIN OP_TOALTSTACK '
+      + 'OP_CAT OP_CAT OP_CAT OP_FROMALTSTACK OP_IF';
+    expect(bc(mkAddr('ecrecover'), { ecrecover: 'p2pkh' })).toContain(guard);
+    expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toContain(guard);
   });
   it('solidityImportCompat defaults ecrecover to the exact EVM projection', () => {
     expect(bc(mkB20('ecrecover'), {})).toBe(bc(mkB20('ecrecover'), { ecrecover: 'evm' }));

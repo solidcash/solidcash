@@ -1117,7 +1117,7 @@ describe('StatefulTransactionBuilder', () => {
       const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
       const tx = builder.build();
       const provisionalBase = tx.outputs.length;
-      const chunk = (to: Uint8Array, index: number, tail: string) => ({
+      const chunk = (to: Uint8Array, index: number, tail: string): (typeof tx.outputs)[number] => ({
         to, amount: 1200n,
         token: { category: categoryId, amount: 0n,
           nft: { capability: 'mutable' as const,
@@ -1170,7 +1170,7 @@ describe('StatefulTransactionBuilder', () => {
       const tx = builder.build();
       const blockBase = 121;
       const stateStart = tx.outputs.length;
-      const chunk = (to: Uint8Array, index: number) => ({
+      const chunk = (to: Uint8Array, index: number): (typeof tx.outputs)[number] => ({
         to, amount: 1200n,
         token: { category: categoryId, amount: 0n,
           nft: { capability: 'mutable' as const, commitment: `${index.toString(16).padStart(2, '0')}00aa` } },

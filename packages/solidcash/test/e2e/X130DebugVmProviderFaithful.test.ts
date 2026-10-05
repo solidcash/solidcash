@@ -29,7 +29,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *
  * - FAIL-OPEN, now CLOSED (row 1). `decrement(3).build()` was ADMITTED at `operationCostBudgetPerByte: 150`
  *   while the decider refuses that shape. It is now refused, quoting 150 x 687 = 103,050.
- * - FAIL-CLOSED, now OPEN (row 2). `decrement(24).build()` was REFUSED at the stock 800 x density on the
+ * - FAIL-CLOSED, now OPEN (row 2). `decrement(40).build()` is REFUSED at the stock 800 x density on the
  *   relaxed DEFAULT profile, which the decider accepts. NEWLY BUILDABLE, and reported rather than hidden.
  *
  * NEWLY BUILDABLE IS NOT A NEW WITNESS PATH. Nothing about the covenant scripts, the state derivation or the
@@ -203,27 +203,27 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
     expect(sendError, 'the decider refused a shape .build() admitted').toBeUndefined();
   });
 
-  it('2. NEWLY BUILDABLE: depth 24 on an explicitly RELAXED budget, which the decider accepts', async () => {
+  it('2. BUILDABLE: depth 40 on an explicitly RELAXED budget, which the decider accepts', async () => {
     // The FAIL-CLOSED half: a bare VM applied the stock 800 per byte and refused, while a provider publishing
     // 10,000,000 has that value read and the decider accepts. This asked for the relaxed budget by way of the
     // DEFAULT profile until the default became the real 800 (see MOCK_CONSENSUS_LIMITS); the property under
     // test is that the PUBLISHED value is honoured, so it now names the relaxed budget explicitly.
     const provider = budgetProfile(MOCK_RELAXED_OPERATION_COST);
     expect(provider.consensusLimits.operationCostBudgetPerByte).toBe(MOCK_RELAXED_OPERATION_COST);
-    const { builder, error } = await buildOutcome(provider, 24n);
+    const { builder, error } = await buildOutcome(provider, 40n);
     expect(error, '.build() still refuses a depth the decider accepts').toBeUndefined();
     expect(builder).toBeDefined();
     // The decider settles the funded, signed form of the same shape (see row 1b on why not the built bytes).
-    const { error: sendError } = await sendCapturingPreflightInput(await recursionContract(provider), 24n);
+    const { error: sendError } = await sendCapturingPreflightInput(await recursionContract(provider), 40n);
     expect(sendError, 'the decider refused a depth .build() now admits').toBeUndefined();
   });
 
-  it('2b. GUARD: lowering only the attacked field to 800 refuses depth 24 again, quoting 800 x density', async () => {
+  it('2b. GUARD: lowering only the attacked field to 800 refuses depth 40 again, quoting 800 x density', async () => {
     // Differs from row 2 in `operationCostBudgetPerByte` alone. It also reproduces the pre-repair verdict
     // exactly - the stock 800 is what a bare VM applied - so row 2 is the published value being read, not the
     // gate being removed.
     const provider = budgetProfile(STOCK_BUDGET_PER_BYTE);
-    const { builder, error } = await buildOutcome(provider, 24n);
+    const { builder, error } = await buildOutcome(provider, 40n);
     expect(builder).toBeUndefined();
     expect(error).toMatch(/exceed the operation cost density limit/);
     assertDensityCeiling(error!, STOCK_BUDGET_PER_BYTE);
@@ -266,12 +266,12 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
     // Every live network (Electrum, regtest, FullStack, Bitcoin RPC) publishes no `consensusLimits`, so this is
     // the behaviour they all get: `createVirtualMachineBch2026ForProvider` early-returns libauth's own factory
     // and the debug VM is byte-identical to the pre-repair one. Clearing the field on a provider that WOULD
-    // have admitted depth 24 (row 2) is what isolates the published limits as the only thing that changed.
+    // have admitted depth 40 (row 2) is what isolates the published limits as the only thing that changed.
     const provider = new MockNetworkProvider();
     const sc = await recursionContract(provider) as unknown as Recursor;
     (provider as unknown as { consensusLimits: unknown }).consensusLimits = undefined;
     let error: string | undefined;
-    try { await sc.decrement(24n).build(); } catch (e) { error = (e as Error).message; }
+    try { await sc.decrement(40n).build(); } catch (e) { error = (e as Error).message; }
     expect(error, 'a limits-less provider must decide exactly as the bare VM did').toBeDefined();
     assertDensityCeiling(error!, STOCK_BUDGET_PER_BYTE);
   });

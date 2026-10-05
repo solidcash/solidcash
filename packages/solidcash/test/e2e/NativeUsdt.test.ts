@@ -458,6 +458,17 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / the mappin
     expect(await allowanceOf(d, ADDR.owner(), ADDR.bob())).toBe(8n * UNIT);
   });
 
+  it('transferFrom preserves the maximum uint256 allowance', async () => {
+    const d = await funded();
+    await open(d, d.signers.bob);
+    const unlimited = (1n << 256n) - 1n;
+    await d.as(d.signers.owner).call.approve(ADDR.bob(), unlimited).send();
+    expect(await allowanceOf(d, ADDR.owner(), ADDR.bob())).toBe(unlimited);
+    await d.as(d.signers.bob).call.transferFrom(ADDR.owner(), ADDR.bob(), 12n * UNIT).send();
+    expect(await allowanceOf(d, ADDR.owner(), ADDR.bob())).toBe(unlimited);
+    expect(await balanceOf(d, ADDR.bob())).toBe(12n * UNIT);
+  });
+
   it('a non-owner transfers on, so balances really move', async () => {
     const d = await funded();
     await open(d, d.signers.bob);

@@ -137,7 +137,7 @@ export async function loadCreateBuilderOutStateReads(
 
     // Compute outState input count for base offset adjustments
     outStateInputCount = externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
     );
 
     // Inject _externalOutStateInputBase if ABI expects it (i.e. not all shared)
@@ -180,7 +180,7 @@ export async function loadCreateBuilderOutStateReads(
       );
       group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
 
-      currentOutStateBase += 1 + group.dataNftUtxos.length;
+      currentOutStateBase += 1 + group.dataNftUtxos.length + (group.keccakInputs?.length ?? 0);
     }
   }
 

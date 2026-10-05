@@ -62,7 +62,10 @@ Unlike on Ethereum, on Bitcoin Cash you can never have a transaction which has t
 In open contract systems competing transactions can happen organically and by accident, when 2 different users who might be on different sides of the world, interact with your on-chain system at roughly the same time. This situation can be called "UTXO contention" because 2 users simultaneously try to spend the same anyone-can-spend covenant.
 
 :::tip
-To design around UTXO-contention it is smart to always create multiple duplicate UTXOs for public covenants. This way each of the UTXOs represents a distinct "thread" in a multi-threaded system enabling simultaneous interactions.
+Replicated stateless verifier UTXOs can absorb independent spends. Stateful contract threads are different: each
+master owns a disjoint partition of the contract's state resources, so they are not interchangeable clones of one
+global state. Use [Concurrency](/docs/guides/concurrency) and [Threading](/docs/sdk/threading) to choose a partition
+which matches the application's conflict domain.
 :::
 
 ### Intentional Double-Spends

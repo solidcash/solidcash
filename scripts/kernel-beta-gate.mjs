@@ -12,9 +12,13 @@ const manifestPath = resolve(root, 'scripts/kernel-beta-manifest.json');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 const testsOnly = process.argv.includes('--tests-only');
 const coldOnly = process.argv.includes('--cold-only');
+const manifestOnly = process.argv.includes('--manifest-only');
+const sourcesOnly = process.argv.includes('--sources-only');
 const allowDirty = process.argv.includes('--allow-dirty');
 
-if (testsOnly && coldOnly) throw new Error('--tests-only and --cold-only are mutually exclusive');
+if ([testsOnly, coldOnly, manifestOnly, sourcesOnly].filter(Boolean).length > 1) {
+  throw new Error('--tests-only, --cold-only, --manifest-only, and --sources-only are mutually exclusive');
+}
 
 const run = (command, args, options = {}) => {
   const child = spawnSync(command, args, {
@@ -104,6 +108,17 @@ const actualColdMatrix = manifest.coldCompiles.map((entry) =>
   `${entry.name}:${Object.keys(entry.modes).sort().join(',')}`).sort();
 if (JSON.stringify(actualColdMatrix) !== JSON.stringify(requiredColdMatrix)) {
   throw new Error(`kernel beta manifest must contain the exact cold matrix: ${requiredColdMatrix.join('; ')}`);
+}
+for (const entry of manifest.coldCompiles) {
+  const screen = entry.routeSizeScreen;
+  const routeBytes = entry.modes.kernel?.routeBytes;
+  if (entry.deployability !== undefined || screen?.version !== 1
+    || screen.p2shBytecodeLimit !== 10_000
+    || !Number.isSafeInteger(routeBytes) || routeBytes < 0
+    || screen.measuredRouteBytes !== routeBytes
+    || screen.routeAloneExceedsLimit !== (routeBytes > screen.p2shBytecodeLimit)) {
+    throw new Error(`${entry.name}: route-size screen must match the pinned kernel route and cannot claim deployability`);
+  }
 }
 const requiredProofs = manifest.requiredKernelProofs;
 if (!Array.isArray(requiredProofs) || requiredProofs.length === 0) {
@@ -204,11 +219,28 @@ const sourceClosureSha256 = (entrySource) => {
   for (const { display, contents } of files) hash.update(`${display}\0${contents.length}\0${contents}`);
   return hash.digest('hex');
 };
+const verifySourceFingerprints = () => {
+  for (const entry of manifest.coldCompiles) {
+    const source = resolve(root, entry.source);
+    if (!existsSync(source)) throw new Error(`${entry.name}: maintained source is missing at ${source}`);
+    const digest = sha256File(source);
+    if (digest !== entry.sourceSha256) {
+      throw new Error(`${entry.name}: source digest ${digest} does not match ${entry.sourceSha256}`);
+    }
+    const closureDigest = sourceClosureSha256(source);
+    if (closureDigest !== entry.sourceClosureSha256) {
+      throw new Error(`${entry.name}: source closure digest ${closureDigest} `
+        + `does not match ${entry.sourceClosureSha256}`);
+    }
+  }
+  return 'matched';
+};
 const stableCompileResult = (result) => ({
   convention: result.convention,
   sizes: result.sizes,
   hashes: result.hashes,
   handlers: result.handlers,
+  deployability: result.deployability,
 });
 const pinnedCompileResult = (result) => ({
   convention: result.convention,
@@ -282,6 +314,36 @@ const profile = (entry, mode) => {
   return result;
 };
 
+if (manifestOnly) {
+  console.log(JSON.stringify({
+    gate: 'kernel-beta',
+    diagnosticOnly: true,
+    censusCommit: manifest.censusCommit,
+    head: git('rev-parse', 'HEAD'),
+    manifest: 'static-valid',
+    sourceFingerprints: 'unchecked',
+    tests: 'skipped',
+    coldCompiles: 'skipped',
+  }, null, 2));
+  process.exit(0);
+}
+// A stale fixture input is a release failure independent of test or compiler results. Check it before either
+// expensive stage, and expose a read-only diagnostic that can run under focused-test restrictions.
+const sourceFingerprints = testsOnly ? 'unchecked' : verifySourceFingerprints();
+if (sourcesOnly) {
+  console.log(JSON.stringify({
+    gate: 'kernel-beta',
+    diagnosticOnly: true,
+    censusCommit: manifest.censusCommit,
+    head: git('rev-parse', 'HEAD'),
+    manifest: 'static-valid',
+    sourceFingerprints,
+    tests: 'skipped',
+    coldCompiles: 'skipped',
+  }, null, 2));
+  process.exit(0);
+}
+
 if (!coldOnly) {
   for (const { argv: [command, ...args] } of manifest.testCommands) run(command, args);
 } else {
@@ -293,17 +355,6 @@ const requiredProofReport = coldOnly ? 'skipped' : verifyRequiredProofInventory(
 const compileReport = [];
 if (!testsOnly) {
   for (const entry of manifest.coldCompiles) {
-    const source = resolve(root, entry.source);
-    if (!existsSync(source)) throw new Error(`${entry.name}: maintained source is missing at ${source}`);
-    const digest = sha256File(source);
-    if (digest !== entry.sourceSha256) {
-      throw new Error(`${entry.name}: source digest ${digest} does not match ${entry.sourceSha256}`);
-    }
-    const closureDigest = sourceClosureSha256(source);
-    if (closureDigest !== entry.sourceClosureSha256) {
-      throw new Error(`${entry.name}: source closure digest ${closureDigest} `
-        + `does not match ${entry.sourceClosureSha256}`);
-    }
     for (const [mode, expected] of Object.entries(entry.modes)) {
       const first = profile(entry, mode);
       const second = profile(entry, mode);
@@ -321,6 +372,7 @@ if (!testsOnly) {
         mode,
         convention: first.convention,
         sizes: first.sizes,
+        deployability: first.deployability,
         hashes: first.hashes,
         handlers: first.handlers,
         compilerMs: [first.timing.compilerMs, second.timing.compilerMs],
@@ -338,6 +390,7 @@ console.log(JSON.stringify({
   diagnosticOnly: allowDirty || testsOnly || coldOnly,
   censusCommit: manifest.censusCommit,
   head: git('rev-parse', 'HEAD'),
+  sourceFingerprints,
   tests: coldOnly ? 'skipped' : 'passed',
   requiredKernelProofs: requiredProofReport,
   coldCompiles: testsOnly ? 'skipped' : compileReport,

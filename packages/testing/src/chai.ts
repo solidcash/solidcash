@@ -7,6 +7,7 @@
  */
 import 'solidcash/vitest';
 import { cashAddressToLockingBytecode, binToHex, hash160 } from '@bitauth/libauth';
+import { decodedAddressEncoding, decodedSolidityAddressIdentity } from '@solidcash/utils';
 import { getActiveProvider } from './network-helpers.js';
 
 // A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
@@ -70,16 +71,32 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
   };
   const actualBytes = addressBytes(actual);
   const expectedBytes = addressBytes(expected);
+  // Only ABI-typed Solidity address results permit identity projection. Untyped bytes32, digests, and native
+  // locking bytecodes still compare exactly, even if they happen to resemble a padded address word.
+  if (decodedAddressEncoding(actual) === 'evm-abi-v1' || decodedAddressEncoding(expected) === 'evm-abi-v1') {
+    const left = actualBytes ?? (isCashAddr(actual) ? decode(actual) : undefined);
+    const right = expectedBytes ?? (isCashAddr(expected) ? decode(expected) : undefined);
+    const leftIdentity = left && decodedSolidityAddressIdentity(left);
+    const rightIdentity = right && decodedSolidityAddressIdentity(right);
+    if (leftIdentity && rightIdentity) return [binToHex(leftIdentity), binToHex(rightIdentity)];
+  }
   if (actualBytes && isCashAddr(expected)) {
     const lockingBytecode = decode(expected);
     if (lockingBytecode) {
-      return [binToHex(actualBytes), binToHex(payload(lockingBytecode, actualBytes.length) ?? lockingBytecode)];
+      // Solidity event decoders return an EVM address string, while deployed BCH contracts expose a CashAddress.
+      // A P2SH32 script has no direct 20-byte payload: its Solidity identity is hash160(full script).
+      // Keep raw byte arrays exact unless they carry ABI address typing (handled above).
+      const projected = typeof actual === 'string' && actualBytes.length === 20
+        ? decodedSolidityAddressIdentity(lockingBytecode) : undefined;
+      return [binToHex(actualBytes), binToHex(projected ?? payload(lockingBytecode, actualBytes.length) ?? lockingBytecode)];
     }
   }
   if (isCashAddr(actual) && expectedBytes) {
     const lockingBytecode = decode(actual);
     if (lockingBytecode) {
-      return [binToHex(payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
+      const projected = typeof expected === 'string' && expectedBytes.length === 20
+        ? decodedSolidityAddressIdentity(lockingBytecode) : undefined;
+      return [binToHex(projected ?? payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
     }
   }
   if (actualBytes && expectedBytes) {
@@ -507,7 +524,10 @@ class EmitAssertion implements PromiseLike<void> {
                 mismatch: mismatch instanceof Error ? mismatch.message : String(mismatch),
               });
             }
-            throw mismatch ?? new Error(`event '${this.event}' arguments did not match`);
+            if (mismatch instanceof Error) throw mismatch;
+            throw new Error(mismatch === undefined
+              ? `event '${this.event}' arguments did not match`
+              : String(mismatch));
           }
         }
         if (this.negate) throw new Error(`expected not to emit '${this.event}'`);
@@ -608,6 +628,8 @@ class EmitAssertion implements PromiseLike<void> {
 /** chai `Assertion` shim. Language chains are no-ops; terminals delegate to Vitest. */
 class Assertion {
   private negate = false;
+  private hasObservedRevertError = false;
+  private observedRevertError: unknown;
 
   constructor(private actual: any) {}
 
@@ -634,6 +656,7 @@ class Assertion {
     }
     return this;
   }
+
   get with(): this { return this; }
   get at(): this { return this; }
   get of(): this { return this; }
@@ -803,7 +826,8 @@ class Assertion {
    * A per-call contract's refusal names its own frame's reason and, for a custom error, the argument tuple it was
    * raised with; the reason is compared exactly, and a failure the harness produced (a construction error, a
    * planner refusal, an unsupported shape) does not satisfy a contract-reason expectation. A direct-convention
-   * contract or a mock provider exposes no such reason, so those keep their previous lenient behaviour.
+   * contract or a mock provider exposes no such frame reason: on a relaxed network its runtime error must still
+   * name the expected reason, and elsewhere the Vitest matcher decides.
    */
   private revertExpectation(reason: RegExp | string): {
     promise: Promise<void>;
@@ -819,7 +843,7 @@ class Assertion {
       ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
       ?.writesState === false;
     const perCallCall = typeof (this.actual as { compose?: unknown })?.compose === 'function';
-    if (!this.negate && (perCallCall || (!viewRead && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))))) {
+    if (!this.negate && (perCallCall || (!viewRead && relaxed))) {
       // A per-call call is awaited rather than `.send()`-ed: a read-only entry is read, a writing entry is sent,
       // so a pass-through expectation never broadcasts a read the way a forced `send()` would.
       const started = perCallCall
@@ -830,9 +854,14 @@ class Assertion {
         (error) => {
           const failure = perCallFailure(error);
           if (!perCallCall && failure === undefined) {
-            // Legacy: a failed layout/derivation is not the Solidity require named in the assertion; any other
-            // failure is accepted where the richer per-call facts are unavailable.
+            // A failed layout/derivation is not the Solidity require named in the assertion, and a relaxed-network
+            // revert must name the expected reason in its runtime error. The error is kept for `.withArgs`.
             if (isConstructionFailure(error)) throw error;
+            const message = errorMessage(error);
+            const matches = reason instanceof RegExp ? reason.test(message) : message.includes(reason);
+            if (!matches) throw error;
+            this.observedRevertError = error;
+            this.hasObservedRevertError = true;
             return;
           }
           outcome.perCall = true;
@@ -853,11 +882,7 @@ class Assertion {
       return { promise, outcome };
     }
     const e = ensureVitest();
-    const assertion = Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
-    const promise = this.negate ? assertion : assertion.catch((error) => {
-      if (delegatedSourceDeclaresReason(this.actual, reason)) return;
-      throw error;
-    });
+    const promise = Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
     return { promise, outcome };
   }
 
@@ -865,9 +890,9 @@ class Assertion {
    * Custom-error revert with optional argument verification.
    *
    * A per-call contract reports the contract's own error arguments, so `.withArgs(...)` is compared against them;
-   * a refusal that carries no tuple is refused loudly rather than passed without checking. A locally modelled
-   * contract attaches its argument tuple. A compiled covenant only carries the error *name* in its debug metadata:
-   * when no argument tuple reaches the matcher the assertion keeps the previous informative failure.
+   * a refusal that carries no tuple is refused loudly rather than passed without checking. Local models and
+   * source-attributed compiled covenants can attach the executed tuple to the error. Require that evidence for
+   * `.withArgs(...)`; a name-only diagnostic must not silently satisfy an argument assertion.
    */
   revertedWithCustomError(_contract: any, name: string): Promise<void> & { withArgs: (...a: any[]) => Promise<void> } {
     const { promise, outcome } = this.revertExpectation(new RegExp(name));
@@ -876,12 +901,11 @@ class Assertion {
       await promise;
       const actualArgs = outcome.perCall ? outcome.errorArgs : await this.revertArgumentTuple();
       if (actualArgs === undefined) {
-        // A per-call refusal is where arguments can be observed; when it named none the matcher refuses rather
-        // than passing without checking. A compiled covenant carries only the error name.
-        if (outcome.perCall) {
-          throw new Error(`cannot verify custom error ${name} arguments: the failure carried no argument tuple`);
-        }
-        return;
+        // Arguments are verified only against an observed tuple: a per-call refusal that named none, or a name-only
+        // diagnostic, refuses rather than passing without checking.
+        throw new Error(outcome.perCall
+          ? `cannot verify custom error ${name} arguments: the failure carried no argument tuple`
+          : `Custom error ${name}: cannot yet verify its arguments`);
       }
       expected.forEach((want, index) => {
         const got = actualArgs[index];
@@ -899,8 +923,11 @@ class Assertion {
     return p;
   }
 
-  /** Argument tuple a locally modelled contract attached to its custom-error revert, when one is available. */
+  /** Argument tuple attached to the rejection already checked above, when one is available. */
   private async revertArgumentTuple(): Promise<readonly unknown[] | undefined> {
+    if (this.hasObservedRevertError) {
+      return (this.observedRevertError as { errorArgs?: readonly unknown[] })?.errorArgs;
+    }
     try {
       const resolved = await Promise.resolve(this.actual);
       if (resolved && typeof resolved.debug === 'function') resolved.debug();

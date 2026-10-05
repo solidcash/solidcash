@@ -6,31 +6,18 @@ SolidCash provides composite data types for organizing complex data: structs, en
 
 ## Structs
 
-Structs group related fields into a single composite type.
+Structs group related fields into one value. They can be declared at file, contract, library, or interface scope;
+file-level declarations can be imported.
 
 ```solidity
-struct User {
-    bytes20 addr;
-    string name;
-    int balance;
-}
-```
-
-### Defining Structs
-
-Structs can be defined at **file level** (importable across files) or inside a contract:
-
-```solidity
-// File-level struct (importable)
 struct Pair { int x; int y; }
 
 contract MyContract() {
-    // Contract-level struct
     struct Config { bytes20 admin; int threshold; }
 }
 ```
 
-### Creating Struct Instances
+### Construction and defaults
 
 ```solidity
 struct User { bytes20 addr; string name; int balance; }
@@ -40,21 +27,47 @@ contract Demo() {
     function build(bytes20 who) {
         User memory user = User(who, "Alice", 100);
         Pair memory p = Pair(10, 20);
-
-        // Field access
-        int balance = user.balance;
-        string name = user.name;
-
-        require(balance == 100 && name.length > 0 && p.x + p.y == 30);
+        require(user.balance == 100 && user.name.length > 0 && p.x + p.y == 30);
     }
 }
 ```
 
-Structs can also be built with named arguments: `Pair({ x: 10, y: 20 })`.
+Named construction can reorder or omit fields. Omitted fields receive their type's default value:
 
-### Structs in State
+```solidity
+Pair a = Pair({ y: 20, x: 10 });
+Pair b = Pair({ x: 10 }); // y is 0
+Pair c = Pair({});        // both fields are 0
+```
 
-Structs are stored as concatenated fixed-width fields in NFT commitments:
+Defaults apply recursively: zero for integers and fixed bytes, `false` for booleans, empty unbounded
+bytes/string/arrays, and an all-default nested struct.
+
+### Fields and nested writes
+
+Fields can be value types, nested structs, or fixed/dynamic arrays. Circular value definitions are rejected.
+Reads and writes can follow nested chains:
+
+```solidity
+struct Point { int x; int y; }
+struct Box { Point corner; string label; }
+
+Box b = Box(Point(1, 2), "old");
+b.corner.x = 9;
+b.label = "new";
+require(b.corner.x == 9);
+```
+
+A field write is a read-modify-write of the containing value. This works for local values, direct state structs,
+mapping values, array elements, and nested combinations:
+
+```solidity
+this.config.threshold = next;
+this.users[key].profile.name = newName;
+this.rows[i].point.x = 7;
+```
+
+### Structs in state
 
 ```solidity
 struct User { bytes20 addr; string name; int balance; }
@@ -66,21 +79,54 @@ contract Registry() {
         this.users[key] = User(key, name, balance);
     }
 
-    // Partial field update - only modifies `name`, keeps other fields
     function rename(bytes20 key, string newName) {
         this.users[key].name = newName;
     }
 }
 ```
 
-### Nested Structs
+Mapping-bearing structs are storage-only shapes. When used as state, their scalar and mapping leaves are flattened
+into authenticated state resources; they are not materialized as a local or ABI value containing a mapping.
+
+### Struct arrays
 
 ```solidity
-struct Address { bytes20 hash; bool isToken; }
-struct Account { Address addr; int balance; }
+struct Row { uint64 id; string label; }
+
+Row[] rows;
+
+function update(int i, string label) {
+    this.rows[i].label = label;
+}
 ```
 
-### Importing Structs
+Struct arrays support construction, `push`, `pop`, indexed reads and writes, nested field updates, and
+swap-with-last `delete(index)`. Fixed-width elements use a flat chunk stream with O(1) offset calculation;
+variable-width elements use framed chunk packing and require a sequential walk to find an element. See
+[Arrays](./arrays.md).
+
+### Encoding and SDK values
+
+A struct value is encoded as its fields in declaration order, using the normal recursive value encoding. It is
+not necessarily fixed-width: `string`, unbounded `bytes`, `bigint`, and variable-width nested fields make the
+whole struct variable-width. A large value in a verified mapping is stored using the mapping's authenticated
+head plus value chunks rather than being truncated to one NFT commitment.
+
+Struct definitions are included in the artifact and state layout. Across the TypeScript SDK boundary, pass a
+plain record keyed by field name:
+
+```ts
+const user = {
+  addr: alicePkhBytes,
+  name: 'Alice',
+  balance: 100n,
+};
+```
+
+Integer fields use `bigint`, booleans use `boolean`, strings accept JavaScript strings, and byte fields use
+`Uint8Array`. An omitted or `undefined` field receives its default.
+
+### Importing structs
 
 ```solidity
 import { User, Pair } from "./types.scash";
@@ -130,11 +176,7 @@ Enums can be file-level or contract-level. File-level enums are importable:
 import { Status } from "./enums.scash";
 ```
 
-:::caution
-An imported enum can currently only be used as a **value** (`Status.ACTIVE`, `int(Status.ACTIVE)`), not as a
-**type annotation**. `Status s = Status.ACTIVE;` on an imported enum fails to resolve the type. Declare the
-enum in the same file when you need to annotate a variable with it.
-:::
+Imported enums can be used both as qualified values and as declaration types.
 
 ## User-Defined Value Types (UDVT)
 

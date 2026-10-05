@@ -53,6 +53,21 @@ export type KernelExecutionPlan = {
   budgets?: KernelResourceBudget;
 };
 
+function assertKernelBudgetNumbers(
+  values: Partial<KernelResourceBudget> | undefined,
+  source: 'published budget' | 'budget usage',
+): void {
+  if (values === undefined) return;
+  if (values === null || typeof values !== 'object' || Array.isArray(values)) {
+    throw new Error(`kernel-plan: ${source} must be an object`);
+  }
+  for (const [axis, value] of Object.entries(values)) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`kernel-plan: ${source} ${axis} must be a non-negative safe integer`);
+    }
+  }
+}
+
 export function createKernelExecutionPlan(
   partial: Omit<KernelExecutionPlan, 'kernelPlanVersion' | 'dynamicWritesPublished'> & {
     dynamicWrites?: readonly string[];
@@ -79,6 +94,7 @@ export function createKernelExecutionPlan(
 
 /** Canonical digest of every execution-affecting descriptor. */
 export function digestKernelExecutionPlan(plan: KernelExecutionPlan): string {
+  assertKernelBudgetNumbers(plan.budgets, 'published budget');
   const canonical = {
     kernelPlanVersion: plan.kernelPlanVersion,
     handlerId: plan.handlerId,
@@ -115,6 +131,7 @@ export function assertKernelPlanComplete(plan: KernelExecutionPlan): void {
   if (plan.dynamicWrites === undefined) {
     throw new Error('kernel-plan: dynamicWrites missing (use [] for empty)');
   }
+  assertKernelBudgetNumbers(plan.budgets, 'published budget');
 }
 
 /** Reject envelopes that exceed published worst-case budgets before UTXO fetch. */
@@ -122,6 +139,8 @@ export function assertWithinKernelBudgets(
   plan: KernelExecutionPlan,
   usage: Partial<KernelResourceBudget>,
 ): void {
+  assertKernelBudgetNumbers(plan.budgets, 'published budget');
+  assertKernelBudgetNumbers(usage, 'budget usage');
   const budgets = plan.budgets ?? {};
   const checks: Array<[keyof KernelResourceBudget, number | undefined]> = [
     ['maximumRows', usage.maximumRows],

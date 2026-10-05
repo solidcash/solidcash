@@ -157,6 +157,7 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
     });
     const route = (artifact: typeof sugar): typeof artifact.abi[number] | undefined =>
       artifact.abi.find((fn) => fn.name === 'f');
+    expect(route(sugar)?.sourceEffectOrder).toBe('unsupported-flow');
     expect(route(sugar)).toEqual(route(hand));
     expect(sugar.bytecode.length).toBeGreaterThan(0);
   });

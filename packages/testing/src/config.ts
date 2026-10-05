@@ -25,7 +25,10 @@ export interface NetworkConfig {
     operationCostBudgetPerByte: number;
     hashDigestIterationsPerByte: number;
   }>;
-  policy?: Partial<{ enforceDust: boolean }>;
+  policy?: Partial<{
+    enforceDust: boolean;
+    enforceProductionInputLimit: boolean;
+  }>;
 }
 
 export interface AccountsConfig {

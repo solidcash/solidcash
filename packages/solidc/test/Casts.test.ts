@@ -1,9 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
 // Type casts: bytesN<->bytesM, uint160/bytes20(address), uint256<->int, address casts.
+
+// Vitest can reuse a restored console spy; each warning assertion must see only its own compilation.
+beforeEach(() => vi.clearAllMocks());
 
 describe('EVM CREATE2 address compatibility warning', () => {
   const opts = { solidityImportCompat: true };
@@ -131,6 +134,21 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     warn.mockRestore();
   });
 
+  it('interprets the address identity as big-endian only in Solidity-compatible numeric casts', () => {
+    const source = 'contract C() { function f(address a, uint160 e) { require(uint160(a) == e); } }';
+    const native = bytecodeToAsm(hexToBin(compileString(source, { messageBus: false }).debug.bytecode));
+    const compatible = bytecodeToAsm(hexToBin(compileString(source, {
+      messageBus: false, solidityImportCompat: true,
+    }).debug.bytecode));
+    const evmCompatible = bytecodeToAsm(hexToBin(compileString(source, {
+      messageBus: false, evmCompat: true,
+    }).debug.bytecode));
+    expect(native).not.toContain('OP_REVERSEBYTES');
+    expect(compatible).toContain('OP_REVERSEBYTES');
+    expect(compatible).toContain('OP_BIN2NUM');
+    expect(evmCompatible).toContain('OP_REVERSEBYTES');
+  });
+
   it('uint160(address) HASH160s a 35-byte P2SH32 instead of the P2PKH offset-3 extract', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
@@ -141,13 +159,14 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     warn.mockRestore();
   });
 
-  it('abi.encodePacked(uint160(address)) publishes the locking bytecode under solidityImportCompat', () => {
+  it('abi.encodePacked(uint160(address)) publishes the narrowed 20-byte Solidity identity', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(uint160(a)); } }',
       { solidityImportCompat: true, messageBus: false }).debug.bytecode));
-    expect(asm).not.toContain('OP_3 OP_SPLIT OP_NIP');
-    expect(asm).not.toContain('OP_HASH160');
+    expect(asm).toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(asm).toContain('OP_BIN2NUM');
+    expect(asm).toContain('OP_REVERSEBYTES');
     warn.mockRestore();
   });
 

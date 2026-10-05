@@ -195,6 +195,22 @@ describe('SBE-22: declaration-only files compile under solidityImportCompat (sol
     expect(a.isLibrary).toBe(true);
   });
 
+  it('retains interface-level events and custom errors in a declaration artifact', () => {
+    const a = compileString(
+      'interface IERC20Errors { event Observed(address indexed account);'
+      + ' error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed); }',
+      { solidityImportCompat: true },
+    );
+
+    expect(a.events).toEqual([expect.objectContaining({
+      name: 'Observed', signature: 'Observed(address)',
+    })]);
+    expect(a.errors).toEqual([expect.objectContaining({
+      name: 'ERC20InsufficientBalance',
+      signature: 'ERC20InsufficientBalance(address,uint256,uint256)',
+    })]);
+  });
+
   it('compiles a file-level enum declaration (carries the enum)', () => {
     const a = compileString('enum Status { Pending, Shipped, Accepted }', { solidityImportCompat: true });
     expect(a.bytecode).toBe('');

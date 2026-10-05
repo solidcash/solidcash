@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { compileFileMulti } from 'solidc';
+import { asmToBytecode } from '@solidcash/utils';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hasLegacy = process.argv.includes('--legacy');
@@ -65,8 +66,17 @@ const artifacts = compileFileMulti(source, options);
 const compilerMs = performance.now() - compilerStarted;
 const artifact = artifacts[contractName];
 if (!artifact) throw new Error(`${contractName} was not emitted while compiling ${source}`);
+const redeemScriptBytes = asmToBytecode(artifact.bytecode).length;
+const deployability = artifact.messageBus?.deployability;
+if (!deployability || deployability.measuredBytecodeBytes !== redeemScriptBytes
+  || deployability.withinP2shLimit !== (redeemScriptBytes <= deployability.p2shBytecodeLimit)
+  || deployability.status !== (deployability.withinP2shLimit ? 'asserted' : 'over-budget')) {
+  throw new Error(`${contractName}: compiler deployability certificate does not match emitted redeem-script bytes`);
+}
 
 const bodyBytes = (body) => typeof body === 'string' ? body.length / 2 : 0;
+const routeSelector = artifact.messageBus?.selector;
+const selectorBodies = Object.entries(artifact.functionBodies ?? {});
 const sha256 = (value) => createHash('sha256').update(value ?? '').digest('hex');
 const metadataProjection = {
   messageBus: artifact.messageBus,
@@ -94,11 +104,15 @@ const result = {
   source,
   declarations: compileAllDeclarations ? 'all' : contractName,
   convention: artifact.messageBus?.convention,
+  deployability,
   sizes: {
-    routeBytes: bodyBytes(artifact.functionBodies?.[artifact.messageBus?.selector ?? '']),
+    redeemScriptBytes,
+    routeBytes: bodyBytes(routeSelector ? artifact.functionBodies?.[routeSelector] : undefined),
+    directSelectorBodiesBytes: selectorBodies
+      .filter(([selector]) => selector !== routeSelector)
+      .reduce((total, [, body]) => total + bodyBytes(body), 0),
     fullBytes: bodyBytes(artifact.debug?.bytecode),
-    functionBodiesBytes: Object.values(artifact.functionBodies ?? {})
-      .reduce((total, body) => total + bodyBytes(body), 0),
+    functionBodiesBytes: selectorBodies.reduce((total, [, body]) => total + bodyBytes(body), 0),
     artifactJsonBytes: Buffer.byteLength(JSON.stringify(artifact)),
   },
   hashes: {

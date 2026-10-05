@@ -38,8 +38,8 @@ export interface ComposeLifecycleMaps {
 export function resolveComposeLifecycleMaps(
   plan: CompiledGraphPlan,
   options: Pick<
-    ComposeAtomicMessageBusOptions,
-    'lifecycleSplits' | 'lifecycleMerges' | 'lifecycleSelfdestructs'
+  ComposeAtomicMessageBusOptions,
+  'lifecycleSplits' | 'lifecycleMerges' | 'lifecycleSelfdestructs'
   >,
 ): ComposeLifecycleMaps {
   const suppliedSplits = options.lifecycleSplits ?? [];

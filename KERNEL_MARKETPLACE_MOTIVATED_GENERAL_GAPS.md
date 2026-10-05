@@ -22,7 +22,7 @@
 | **G2b** | **Landed this goal (iter 2)** — address fields inside structs on message-bus / graph-emission args project to ABI words (`encodeMessageBatch` + GTT `emitPushdataEncode` under `graphEmissionHandler`); settle `KernelNestedReturningStructAddressCompose` |
 | **G3** | **Deferred post-beta (iter 3)** — `planCompiledGraph` refuses foreign `targetLockingBytecode` (`G3ForeignTargetRefusal`); live compose wrong-lock wedge still open; see `{SCRATCH}/mb-mkt-iter-3.log` |
 | **G4** | **Deferred post-beta (iter 4)** — route publishes dyn/PredOut witnesses that `__forward` omits; see `{SCRATCH}/mb-mkt-iter-4.log` |
-| **G2c** | **Deferred follow-on (iter 5)** — nested returning address into a struct field via expression/argSource rebuild remains open after G2b prepared-arg settle |
+| **G2c** | **Settled in a later follow-up** — nested returning address into a struct field now composes and passes the BCH-2026 VM. Lowered struct arguments had exposed the same external-call AST node twice; call-slot collection and assignment now count that source node once, while distinct source calls retain separate slots. The focused `KernelNestedReturningStructAddressCompose` and compiler `ExternalCalls` titles cover both properties. |
 
 ## Five-iteration log
 | Iter | Candidate | Outcome |

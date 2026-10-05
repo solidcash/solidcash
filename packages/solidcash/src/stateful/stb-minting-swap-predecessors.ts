@@ -4,7 +4,7 @@
  * Free functions over MintingSwapPredecessorHost (extends ScaledPreserveEmitHost).
  */
 
-import type { AbiFunction, Artifact, FunctionBlockLayout } from '@solidcash/utils';
+import type { AbiFunction, Artifact, EntryAccessAbi, FunctionBlockLayout } from '@solidcash/utils';
 import { buildEntryNftCovenantScript, computeCollectionHash } from '@solidcash/utils';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -13,7 +13,6 @@ import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { shouldKeepPersistAtLayoutBase } from './early-value-chunk-helpers.js';
-import { legacyIsJobEventsCollection } from './legacy-planning-heuristics.js';
 import {
   assignPersistPredecessors,
   orderPersistPredecessorCandidates,
@@ -30,8 +29,8 @@ import {
   hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
   isPersistedChunkableValueWriteReady,
-  jobEventsPublishCategory,
-  persistJobEventsTokenCategory,
+  chunkableValueWriteCategory,
+  persistedValueChunkCategory,
 } from './stb-chunkable-write-planning.js';
 import {
   chunkableValueWriteInputIndex,
@@ -47,12 +46,12 @@ import {
 } from './value-chunk-geometry.js';
 
 export interface MintingSwapPredecessorHost extends Omit<
-  ScaledPreserveEmitHost,
-  'allInputs' | 'mintingOutputSwap' | 'externalCallUtxoGroups'
+ScaledPreserveEmitHost,
+'allInputs' | 'mintingOutputSwap' | 'externalCallUtxoGroups'
 > {
   readonly allInputs: UnlockableUtxo[];
   funderUtxos: UnlockableUtxo[];
-  pendingJobEventsPredecessors: UnlockableUtxo[];
+  pendingValueChunkPredecessors: UnlockableUtxo[];
   readonly preserveBlockLayoutWidth: boolean;
   readonly compilerRouteDelegateBlock: boolean;
   readonly entryNfts: readonly EntryNftInfo[];
@@ -63,6 +62,27 @@ export interface MintingSwapPredecessorHost extends Omit<
   setMintingOutputSwap(swap: { from: number; width: number; categoryId: string } | undefined): void;
   getRelocationFunderUtxos(): UnlockableUtxo[];
   setRelocationFunderUtxos(next: UnlockableUtxo[]): void;
+}
+
+/** Route slot indices are physical; a selected handler's local ordinal is only a legacy fallback. */
+export function physicalEntryAccessForSlot(
+  route: Pick<AbiFunction, 'entryAccesses'> | undefined,
+  handlers: readonly Pick<AbiFunction, 'entryAccesses'>[],
+  slotIndex: number,
+): EntryAccessAbi | undefined {
+  const atSlot = (fn: Pick<AbiFunction, 'entryAccesses'>): EntryAccessAbi | undefined =>
+    fn.entryAccesses?.find((access, denseIndex) => access !== undefined
+      && (access.slotIndex ?? denseIndex) === slotIndex);
+  if (route?.entryAccesses !== undefined) return atSlot(route);
+  return handlers.map(atSlot).find((access) => access !== undefined);
+}
+
+/** A learned commitment belongs to the exact collection covenant lock, not just its output coordinate. */
+export function cachedEntryOutputOwnsLock(
+  cachedLockingBytecodeHex: string,
+  currentLockingBytecode: Uint8Array,
+): boolean {
+  return cachedLockingBytecodeHex.toLowerCase() === binToHex(currentLockingBytecode).toLowerCase();
 }
 
 /**
@@ -82,16 +102,11 @@ export function externalEntryLockingBytecode(
     group.logicalFunctionName,
     group.functionName,
   ].filter((name): name is string => name !== undefined));
-  const routedFunction = group.compilerRoute?.abiFunction;
-  const abiFunctions = [
-    routedFunction && functionNames.has(routedFunction.name) ? routedFunction : undefined,
-    ...artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
-      .filter((candidate) => functionNames.has(candidate.name))),
-  ].filter((candidate): candidate is AbiFunction => candidate !== undefined);
-  const entryAccess = abiFunctions
-    .map((candidate) => candidate.entryAccesses?.find((access, denseIndex) =>
-      (access.slotIndex ?? denseIndex) === (slot.slotIndex ?? 0)))
-    .find((candidate) => candidate !== undefined);
+  const abiFunctions = artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
+    .filter((candidate) => functionNames.has(candidate.name)));
+  const entryAccess = physicalEntryAccessForSlot(
+    group.compilerRoute?.abiFunction, abiFunctions, slot.slotIndex ?? 0,
+  );
   const collections = [group.stateLayout, ...artifacts.map((artifact) => artifact.stateLayout)]
     .flatMap((layout) => layout?.collections ?? [])
     .filter((collection, index, all) => all.findIndex((candidate) => (
@@ -102,7 +117,8 @@ export function externalEntryLockingBytecode(
       || candidate.signature === entryAccess.collection)
     // Interface artifacts can omit implementation entry-access metadata. A state layout with exactly one
     // collection still identifies an entry slot without ambiguity; refuse to guess when several exist.
-    : collections.length === 1 ? collections[0] : undefined;
+    : group.compilerRoute?.abiFunction?.entryAccesses === undefined && collections.length === 1
+      ? collections[0] : undefined;
   return collection?.signature ? scriptToLockingBytecode(
     buildEntryNftCovenantScript(
       hexToBin(group.categoryId), computeCollectionHash(collection.signature),
@@ -113,8 +129,8 @@ export function externalEntryLockingBytecode(
   ) : undefined;
 }
 
-/** ExtraTransfer swap parks p2pkh funders on the jobEvents band. Put predecessor chunks back. */
-export function placeJobEventsPredecessorInputs(
+/** An extra-transfer swap can park funders on the value-chunk band; put predecessor chunks back. */
+export function placeValueChunkPredecessorInputs(
   host: MintingSwapPredecessorHost,
   extras: UnlockableUtxo[] = [],
 ): void {
@@ -124,13 +140,13 @@ export function placeJobEventsPredecessorInputs(
   // ordinary builder options and leave the materialized block immutable.
   if (host.preserveBlockLayoutWidth || host.compilerRouteDelegateBlock
     || host.blockLayout?.trailingCapacity !== undefined) return;
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (!band) return;
-  const categoryId = jobEventsPublishCategory(host);
+  const categoryId = chunkableValueWriteCategory(host);
   const persistUpdate = isPersistedChunkableValueWriteReady(host)
     && !isInitialChunkableValueWrite(host);
   const persistCategory = persistUpdate
-    ? (persistJobEventsTokenCategory(host) ?? categoryId) : categoryId;
+    ? (persistedValueChunkCategory(host) ?? categoryId) : categoryId;
   const persistLock = (persistCategory ? settlement().persistedJobEventsLocks.get(persistCategory) : undefined)
     ?? (categoryId ? settlement().persistedJobEventsLocks.get(categoryId) : undefined);
   const persistHex = persistLock ? binToHex(persistLock) : '';
@@ -163,9 +179,9 @@ export function placeJobEventsPredecessorInputs(
       if (!info.exists || !info.utxo) continue;
       if (describedCollection !== undefined) {
         if (info.collection !== describedCollection) continue;
-      } else if (hasChunkableValueWriteMetadata(host)
-        || !legacyIsJobEventsCollection(info.collection)) {
-        // Metadata ambiguity is a refusal. The source-name match is compatibility-only for old plans.
+      } else if (hasChunkableValueWriteMetadata(host) || persistHex === '') {
+        // With no descriptor, admit only an already authenticated persisted continuation lock.
+        // The candidate's exact lock and commitment are checked by consider() below.
         continue;
       }
       consider(info.utxo);
@@ -254,7 +270,7 @@ export function placeJobEventsPredecessorInputs(
 
 /** Move a participant block off a compiler-owned dynamic-output band without changing existing order. */
 export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (!band) return;
   const collisionIndex = collidingParticipantGroupIndex(
     host.externalCallUtxoGroups,
@@ -293,7 +309,7 @@ export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): 
   const bandEnd = Math.max(band.end + 1, persistEndExclusive);
   // Count the full consecutive token run (master + data + existing entries).
   // A band-limited width of 1 tries to swap the minting NFT with the data NFT
-  // and aborts, leaving minting on chunk slot 22 so jobs derive 0 of 2.
+  // and aborts, leaving minting on a chunk slot so derived chunks are missing.
   // A same-size swap of all 5 tokens lands the master at 27 and breaks the
   // known-good return at 33. Rotate K funders from *after* the token run
   // in front of it so the run stays consecutive and the master clears the
@@ -322,11 +338,11 @@ export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): 
     // places view tails. Exact `from+width` is too brittle: a later 2-wide shift (26→28) would drop
     // the flag, skip tail placement, and compact `meceTags` onto `arbitratorRegistered`.
     if (shouldRetainMintingOutputSwap(start, chunkBase, nNew, previousSwap, tokenGroup.categoryId)) {
-      placeJobEventsPredecessorInputs(host, host.pendingJobEventsPredecessors);
+      placeValueChunkPredecessorInputs(host, host.pendingValueChunkPredecessors);
       return;
     }
     host.setMintingOutputSwap(undefined);
-    placeJobEventsPredecessorInputs(host, host.pendingJobEventsPredecessors);
+    placeValueChunkPredecessorInputs(host, host.pendingValueChunkPredecessors);
     return;
   }
   host.setMintingOutputSwap(undefined);
@@ -373,7 +389,7 @@ export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): 
   const funderBlock = host.allInputs.slice(start + tokenWidth, start + tokenWidth + shift);
   host.allInputs.splice(start, tokenWidth + shift, ...funderBlock, ...tokenBlock);
   host.setMintingOutputSwap({ from: start, width: shift, categoryId: tokenGroup.categoryId });
-  placeJobEventsPredecessorInputs(host, host.pendingJobEventsPredecessors);
+  placeValueChunkPredecessorInputs(host, host.pendingValueChunkPredecessors);
   const newMaster = host.findMintingInputIndex(tokenGroup.categoryId);
   if (newMaster < 0) return;
   // Sparse blocks still own their output-only coordinates. Keep later

@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { EnumDefinitionAbi, StructDefinitionInfo } from '@solidcash/utils';
+import { encodePushdataValue, type EnumDefinitionAbi, type StructDefinitionInfo } from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth';
 import {
   decodeEvmInvocationResult, encodeEvmInvocationResult,
 } from '../../src/stateful/evm-abi-result.js';
 import { decodeAuthenticatedProducerResultVector } from '../../src/stateful/StatefulContract.js';
+import {
+  isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, selectEvmReturnCommitment,
+} from '../../src/stateful/external-return-encoding.js';
 
 const schemas: readonly StructDefinitionInfo[] = [
   {
@@ -38,6 +42,74 @@ const branch = {
 };
 
 describe('canonical EVM ABI invocation result decoding', () => {
+  it('selects framed nested aggregate results using the producer schema and independent row offsets', () => {
+    const first = encodeEvmInvocationResult([branch, 3n], ['Branch', 'Mode'], schemas, enumerations);
+    const second = encodeEvmInvocationResult(['next row', true], ['string', 'bool']);
+    const vector = Uint8Array.of(...first, ...second);
+    const framed = encodePushdataValue(vector, 'bytes');
+    const groups = [['Branch', 'Mode'], ['string', 'bool']];
+    expect(isCanonicalEvmReturnSequence(vector, groups)).toBe(false);
+    expect(isCanonicalEvmReturnSequence(vector, groups, schemas, enumerations)).toBe(true);
+    expect(isCanonicalEvmReturnBlob(framed, groups, schemas, enumerations)).toBe(true);
+    expect(selectEvmReturnCommitment(
+      [new Uint8Array(32), framed], groups, false, schemas, enumerations,
+    )).toBe(binToHex(vector));
+    expect(selectEvmReturnCommitment([vector], groups, false, schemas, enumerations)).toBeUndefined();
+    expect(isCanonicalEvmReturnSequence(
+      vector, [['Branch', 'Mode', 'string', 'bool']], schemas, enumerations,
+    )).toBe(false);
+  });
+
+  it('rejects framed aggregate candidates with malformed offsets, enums, padding, or suffixes', () => {
+    const valid = encodeEvmInvocationResult([branch, 3n], ['Branch', 'Mode'], schemas, enumerations);
+    const wrongOffset = valid.slice(); wrongOffset[31] = 96;
+    const unknownEnum = valid.slice(); unknownEnum[63] = 2;
+    const note = new TextEncoder().encode('alpha');
+    const noteOffset = valid.findIndex((_byte, index) => note.every((byte, offset) => valid[index + offset] === byte));
+    expect(noteOffset).toBeGreaterThanOrEqual(0);
+    const dirtyPadding = valid.slice(); dirtyPadding[noteOffset + note.length] = 1;
+    const suffix = Uint8Array.of(...valid, ...new Uint8Array(32));
+    for (const invalid of [wrongOffset, unknownEnum, dirtyPadding, suffix, valid.slice(0, -1)]) {
+      const framed = encodePushdataValue(invalid, 'bytes');
+      expect(isCanonicalEvmReturnBlob(framed, [['Branch', 'Mode']], schemas, enumerations)).toBe(false);
+      expect(selectEvmReturnCommitment(
+        [framed], [['Branch', 'Mode']], false, schemas, enumerations,
+      )).toBeUndefined();
+    }
+  });
+
+  it('re-encodes canonical address words returned from typed stored structs and arrays', () => {
+    const payload = Uint8Array.from({ length: 20 }, (_value, index) => index + 1);
+    const addressWord = new Uint8Array(32);
+    addressWord.set(payload, 12);
+    const recordSchema: readonly StructDefinitionInfo[] = [{
+      name: 'Record', fields: [
+        { name: 'owner', type: 'address' }, { name: 'peers', type: 'address payable[]' },
+      ],
+    }];
+    const encoded = encodeEvmInvocationResult(
+      [{ owner: addressWord, peers: [addressWord, new Uint8Array(32)] }], ['Record'], recordSchema,
+    );
+    expect(encoded).toEqual(encodeEvmInvocationResult(
+      [{ owner: payload, peers: [payload, new Uint8Array(20)] }], ['Record'], recordSchema,
+    ));
+    expect(decodeEvmInvocationResult(encoded, ['Record'], recordSchema)).toEqual([
+      { owner: payload, peers: [payload, new Uint8Array(20)] },
+    ]);
+    expect(encodeEvmInvocationResult(
+      [`0x${Array.from(addressWord, (byte) => byte.toString(16).padStart(2, '0')).join('')}`], ['address'],
+    )).toEqual(addressWord);
+  });
+
+  it('rejects noncanonical address words rather than truncating them to a payload', () => {
+    for (const length of [21, 31, 32, 33]) {
+      const malformed = new Uint8Array(length);
+      malformed[0] = 1;
+      expect(() => encodeEvmInvocationResult([malformed], ['address']))
+        .toThrow('EVM ABI address requires exactly 20 payload bytes');
+    }
+  });
+
   it('round-trips nested structs, fixed and dynamic arrays, bytes, strings, enums, and scalars', () => {
     const types = ['Branch', 'Mode', 'bytes', 'address', 'bytes4', 'bool', 'uint8'];
     const address = Uint8Array.from({ length: 20 }, (_value, index) => index + 1);

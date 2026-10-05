@@ -14,7 +14,9 @@ import { compileString } from './direct-compile.js';
 import { compileString as compileMessageBus } from '../dist/compiler.js';
 
 describe('returned external-call loop metadata', () => {
-  const makeBody = (step = 1n, competingWrite = false, allocationBound = 'count') => {
+  const makeBody = (step = 1n, competingWrite = false, allocationBound = 'count'): {
+    target: ExternalFunctionCallNode; body: BlockNode;
+  } => {
     const target = new ExternalFunctionCallNode(
       'IData', new IdentifierNode('data'), 'get', [new IdentifierNode('i')],
     );
@@ -80,7 +82,7 @@ describe('returned external-call loop metadata', () => {
         }
       }
     `;
-    const compileAt = (messageBusKernel: boolean) => compileMessageBus(source, {
+    const compileAt = (messageBusKernel: boolean): ReturnType<typeof compileMessageBus> => compileMessageBus(source, {
       forceStateful: true,
       solidityImportCompat: true,
       messageBus: true,
@@ -107,6 +109,39 @@ describe('returned external-call loop metadata', () => {
       expect(calls.filter(({ functionName }) => functionName === 'read')).toHaveLength(1);
       expect(calls[1]).toMatchObject({ occurrence: 'loop', resultArrayOutput: 0 });
     }
+  });
+
+  it('publishes an external return nested in a struct argument once while retaining distinct calls', () => {
+    const artifact = compileMessageBus(`pragma solidity ^0.8.0;
+      struct Peer { address who; uint256 tag; }
+      interface IHelper { function who() external view returns (address); }
+      interface ICallee {
+        function act(Peer memory peer) external;
+        function actPair(address first, address second) external;
+      }
+      contract Owner(address helper, address callee) {
+        function apply() public {
+          ICallee(callee).act(Peer({ who: IHelper(helper).who(), tag: 7 }));
+          require(true);
+        }
+        function applyPair() public {
+          ICallee(callee).actPair(IHelper(helper).who(), IHelper(helper).who());
+          require(true);
+        }
+      }`, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+    });
+    const applyCalls = artifact.abi.find((entry) => entry.name === 'apply')!.externalCalls!;
+    const pairCalls = artifact.abi.find((entry) => entry.name === 'applyPair')!.externalCalls!;
+    expect(applyCalls.map((call) => call.functionName)).toEqual(['who', 'act']);
+    expect(pairCalls.map((call) => call.functionName)).toEqual(['who', 'who', 'actPair']);
+    expect(applyCalls.map((call) => call.callsiteId)).toEqual([0, 1]);
+    expect(pairCalls.map((call) => call.callsiteId)).toEqual([0, 1, 2]);
   });
 
   it('does not clone an effectful producer to derive a constructed collection key', () => {
@@ -281,6 +316,33 @@ describe('state-backed external-call expected address', () => {
   });
 });
 
+describe('state-field arguments after sibling writes', () => {
+  it('retains the state read after a storage-pointer partial struct update', () => {
+    const artifact = compileString(`
+      struct Roles { address creator; address arbitrator; address worker; }
+      struct Job { Roles roles; uint state; }
+      interface IFee { function getFee(address arbitrator) external view returns (uint); }
+      contract C(IFee feeContract) {
+        Job[] jobs;
+        function pay(uint id, address worker) public {
+          Job storage job = jobs[id];
+          job.state = 1;
+          job.roles.worker = worker;
+          feeContract.getFee(job.roles.arbitrator);
+          require(true);
+        }
+      }
+    `, { solidityImportCompat: true, forceStateful: true });
+    const call = artifact.abi.find((candidate) => candidate.name === 'pay')?.externalCalls
+      ?.find((candidate) => candidate.functionName === 'getFee');
+    const source = JSON.stringify(call?.argSources);
+    expect(source).toContain('"name":"jobs"');
+    expect(source).toContain('"name":"arbitrator"');
+    expect(source).not.toContain('"kind":"reference"');
+    expect(source).not.toContain('"kind":"unsupported"');
+  });
+});
+
 describe('unlocking selector extract', () => {
   it('takes the first 4-byte script push, not a 0x04 prefix plus three selector bytes', () => {
     const artifact = compileString(
@@ -320,13 +382,31 @@ describe('external-call witness frame access', () => {
 describe('address.code with an authenticated external-call slot', () => {
   it('checks the requested address before using the authenticated slot as a code marker', () => {
     const artifact = compileMessageBus(
-      'interface IERC20 { function balanceOf(address a) external returns (int); }'
+      'interface IERC20 { function balanceOf(address a) external returns (int);'
+      + ' function approve(address a, int n) external returns (bool); }'
       + ' contract C() { function f(address token) {'
       + ' require(token.code.length > 0 && IERC20(token).balanceOf(msg.sender) > 0, "invalid token");'
+      + ' IERC20(token).approve(msg.sender, 1);'
       + ' require(true); } }',
     );
     expect(artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls?.[0]?.addressParam)
       .toBe('token');
+    expect(artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls?.[0]?.condition)
+      .toEqual({
+        kind: 'binary', operator: '>',
+        left: {
+          kind: 'addressCodeLength',
+          expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          type: 'bigint',
+        },
+        right: { kind: 'literal', type: 'bigint', value: '0' },
+      });
+    expect(artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls?.[1]?.preCallRequires)
+      .toContainEqual(expect.objectContaining({
+        kind: 'binary', operator: '&&', left: expect.objectContaining({
+          kind: 'binary', operator: '>', left: expect.objectContaining({ kind: 'addressCodeLength' }),
+        }),
+      }));
     // Preserve address(0) as empty `.code`; only a non-empty address may select the authenticated slot marker.
     expect(artifact.bytecode).toContain('OP_DUP OP_SIZE OP_0 OP_NUMEQUAL OP_IF OP_ELSE OP_DROP');
   });
@@ -334,6 +414,34 @@ describe('address.code with an authenticated external-call slot', () => {
 
 describe('inactive conditional external-call identity', () => {
   const IFACE = 'interface IERC20 { function transfer(address t, int a) external returns (bool); }';
+  it('preserves an outer parameter predicate through an inlined public helper call', () => {
+    const artifact = compileString(`pragma solidity ^0.8.19;
+      interface IData {
+        function updateUserRating(address worker, uint8 rating) external;
+      }
+      contract C {
+        IData data;
+        mapping(uint => uint8) ratings;
+        function review(uint jobId, address worker, uint8 rating) public {
+          ratings[jobId] = rating;
+          data.updateUserRating(worker, rating);
+          require(true);
+        }
+        function approveResult(uint jobId, address worker, uint8 rating) public {
+          // The caller's rating guards this call, while the helper's same-named parameter receives a literal.
+          if (rating > 0) { review(jobId, worker, uint8(5)); }
+          require(true);
+        }
+      }
+    `, { solidityImportCompat: true, messageBus: true });
+    const calls = artifact.abi.find((candidate) => candidate.name === 'approveResult')?.externalCalls ?? [];
+    expect(calls.map((call) => call.functionName)).toEqual(['updateUserRating']);
+    expect(calls[0].condition).toEqual({
+      kind: 'binary', operator: '>',
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+      right: { kind: 'literal', type: 'bigint', value: '0' },
+    });
+  });
   it('skips UTXOBYTECODE identity when the SDK binds masterIdx < 0', () => {
     const artifact = compileString(`${IFACE}
       contract C(IERC20 token) {
@@ -504,7 +612,7 @@ describe('SBE-13: void external-call helpers are inlined at internal call sites 
     const a = compileString(`${IFACE}
       contract C(IERC20 token1, IERC20 token2) {
         int n;
-        function _safe(IERC20 t, address f, address r, int v) {
+        function _safe(IERC20 t, address f, address r, int v) internal {
           bool sent = t.transferFrom(f, r, v); require(sent);
         }
         function go(address f, address r, sig s, pubkey pk) {
@@ -695,7 +803,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' (bool ok, bytes memory result) = target.call(payload); require(ok); return result; } }'
       + ' contract C { uint256 marker; function run(address target, uint256 value) public {'
       + ' Raw.call(target, abi.encodeCall(ITarget.approve, (address(this), value)));'
-      + ' this.marker = value; require(true); } }';
+      + ' this.marker = 1; require(true); } }';
     const artifact = compileString(src, {
       solidityImportCompat: true,
       messageBus: true,
@@ -887,6 +995,82 @@ describe('Named-arg external interface call', () => {
         function f(bytes32 cat, address who) { int b = IBank(cat).balanceOf({day: 5, who: who}); this.n = b; }
       }`);
     expect(a.contractName).toBe('C');
+  });
+});
+
+describe('pre-call require reachability metadata', () => {
+  const header = `pragma solidity ^0.8.19;
+    interface ITarget { function ping() external; }
+    contract C {
+      struct Job { address worker; uint8 state; }
+      mapping(uint256 => Job) jobs;
+      ITarget target;
+  `;
+
+  it('publishes source require guards separately from branch activation', () => {
+    const artifact = compileString(`${header}
+      function run(uint256 id) public {
+        require(jobs[id].worker == msg.sender, "not worker");
+        require(jobs[id].state == 1, "wrong state");
+        target.ping();
+      }
+    }`, { solidityImportCompat: true, forceStateful: true });
+    const call = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0];
+    expect(call?.condition).toBeUndefined();
+    expect(call?.preCallRequires).toHaveLength(2);
+    expect(call?.preCallRequires?.[0]).toMatchObject({
+      kind: 'binary', operator: '==', left: { kind: 'field', name: 'worker' },
+      right: { kind: 'source', source: { kind: 'msgSender' } },
+    });
+  });
+
+  it('serializes a guard at the require, before an intervening state write', () => {
+    const artifact = compileString(`${header}
+      function run(uint256 id) public {
+        require(jobs[id].state == 1);
+        jobs[id].state = 0;
+        target.ping();
+      }
+    }`, { solidityImportCompat: true, forceStateful: true });
+    const guard = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0]?.preCallRequires?.[0];
+    expect(guard?.left).toMatchObject({ kind: 'field', name: 'state' });
+    expect(guard?.left?.expression).toMatchObject({ kind: 'stateAccess', name: 'jobs' });
+  });
+
+  it('does not publish a lowered constant placeholder around a returning external call', () => {
+    const artifact = compileString(`pragma solidity ^0.8.19;
+      interface ITarget { function check() external returns (uint256); }
+      interface IOther { function ping() external; }
+      contract C { ITarget target; IOther other;
+        function run() public { require(target.check() > 0); other.ping(); }
+      }`, { solidityImportCompat: true, forceStateful: true });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls ?? [];
+    expect(calls.map((call) => call.functionName)).toEqual(['check', 'ping']);
+    expect(calls[1]?.preCallRequires).toBeUndefined();
+  });
+
+  it('publishes a replayable necessary conjunct before a later call', () => {
+    const artifact = compileString(`pragma solidity ^0.8.19;
+      interface IToken { function balanceOf(address owner) external returns (uint256); }
+      interface ISink { function ping() external; }
+      contract C(ISink sink) {
+        function run(address token) public {
+          require(token.code.length > 0 && IToken(token).balanceOf(msg.sender) > 0);
+          sink.ping();
+          require(true);
+        }
+      }`, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls ?? [];
+    expect(calls.map((call) => call.functionName)).toEqual(['balanceOf', 'ping']);
+    expect(calls[1]?.preCallRequires).toContainEqual({
+      kind: 'binary', operator: '>',
+      left: {
+        kind: 'addressCodeLength',
+        expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        type: 'bigint',
+      },
+      right: { kind: 'literal', type: 'bigint', value: '0' },
+    });
   });
 });
 

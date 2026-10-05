@@ -27,7 +27,8 @@ export function isVmValidationOnly(): boolean {
 }
 
 /**
- * VM-validator-only finalization: whether STB finalization may enter VM-mined computed-output repair after a covenant failure.
+ * VM-validator-only finalization: whether STB may enter VM-mined
+ * computed-output repair after a covenant failure.
  * Recipe → false (validator only). Explicit `devOracle` → true (legacy planner loop).
  */
 export function allowsFinalizationVmRepairs(): boolean {
@@ -65,8 +66,18 @@ export function refuseVmExtractedRepairsIfRecipe(proposalCount: number): void {
  * unified would-apply recipe gate: single family gate for resource / value-chunk / dynamic-chunk would-apply counts.
  * Domain helpers compute `wouldApply` via their own counters, then funnel here so recipe
  * refuse semantics cannot drift across converge surfaces.
+ *
+ * `provenRevert` names a source revert that holds on every repaired transaction. Rejecting the call needs no
+ * VM-mined state, so recipe surfaces that revert instead of the refusal; any other failure stays refused.
  */
-export function gateWouldApplyRepairsIfRecipe(wouldApplyCount: number): number {
+export function gateWouldApplyRepairsIfRecipe(
+  wouldApplyCount: number,
+  provenRevert?: () => Error | undefined,
+): number {
+  if (wouldApplyCount > 0 && activeMode === 'recipe' && provenRevert !== undefined) {
+    const revert = provenRevert();
+    if (revert !== undefined) throw revert;
+  }
   refuseVmExtractedRepairsIfRecipe(wouldApplyCount);
   return wouldApplyCount;
 }

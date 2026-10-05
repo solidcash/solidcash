@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — prepare call descriptors, fee funder, provider, upgrade targets, state cache.
+ * Compose phase-boundary extract: prepare call descriptors, fee funder,
+ * provider, upgrade targets, and state cache.
  */
 
 import type { FunctionArgument } from '../Argument.js';
@@ -18,6 +19,7 @@ import type {
   ComposeAtomicMessageBusOptions,
 } from './compose-prepared-invocation.js';
 import { resolveMessageBusAbiFunction } from './message-bus.js';
+import { stageUniqueDirectValueProductions } from './compose-direct-value-productions.js';
 
 export interface PrepareComposeDescriptorsResult {
   descriptors: CallDescriptor[];
@@ -52,8 +54,8 @@ export async function prepareComposeDescriptors(
     );
     if (selected?.selector !== undefined) descriptor.selector = selected.selector;
   }
-  if (descriptors.length < 2) {
-    throw new Error('messageBus: atomic composition requires at least two prepared calls');
+  if (descriptors.length < 1) {
+    throw new Error('messageBus: atomic composition requires at least one prepared call');
   }
   const feeFunder = funderUtxo(options.funder);
   const rootCaller = feeFunder.unlocker.generateLockingBytecode();
@@ -78,6 +80,7 @@ export async function prepareComposeDescriptors(
     }
     return pending;
   };
+  await stageUniqueDirectValueProductions(descriptors, stateOf);
   const descriptorWitnesses = await deriveComposeDescriptorWitnesses(descriptors, stateOf);
   return {
     descriptors,

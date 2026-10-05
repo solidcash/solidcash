@@ -36,7 +36,7 @@ export interface DeriveFullPhase2DynamicChunksHost {
 }
 
 export type DeriveFullPhase2DynamicChunkVar = ReturnType<
-  StatefulTransactionBuilder['getDynamicChunkVars']
+StatefulTransactionBuilder['getDynamicChunkVars']
 >[number];
 
 export type DeriveFullPhase2DynamicChunksResult = {
@@ -72,7 +72,7 @@ export function deriveFullPhase2ApplyDynamicChunks(
   const chunkVars = stb.getDynamicChunkVars();
   // StatefulTransactionBuilder already incorporates the composed delegate block base. Dynamic chunks
   // are inserted before later composed output families, so they are not generally at the transaction
-  // tail (Marketplace has message-bus/event outputs after this region).
+  // tail (message-bus and event outputs may follow this region).
   const getPhysicalChunkOutputBase = (): number => {
     if (chunkVars.length === 0) return stb.getChunkOutputBase();
     const suffixVar = chunkVars.find((variable) => variable.delegateSuffix === true);
@@ -109,7 +109,10 @@ export function deriveFullPhase2ApplyDynamicChunks(
         && (dv.delegate !== true || Number(derivedLength) > 0 || existing.length === 0);
       const len = hasDerivedLength ? Number(derivedLength) : 0;
       const decodedCount = hasDerivedLength ? Math.ceil(len / DYNAMIC_CHUNK_SIZE) : existing.length;
-      const nNew = dv.delegateSuffix === true ? Math.max(decodedCount, existing.length) : decodedCount;
+      // A known post-state length owns the entire new run, including retired tail chunks. Keeping the old
+      // width on a shrink shifts TXOUTPUTCOUNT-1-nNew and republishes chunks the covenant must consume.
+      // When the delegate has not exposed its length yet, decodedCount already retains the speculative width.
+      const nNew = decodedCount;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DYNAMIC_MIN === '1') {
         console.error('dynamic-min', {
@@ -119,6 +122,7 @@ export function deriveFullPhase2ApplyDynamicChunks(
       }
       if (existing.length !== nNew) {
         stb.setChunkRawCommitments(dv.name, Array.from({ length: nNew }, (_, i) => existing[i] ?? '00'));
+        commitmentProgress += Math.abs(existing.length - nNew);
       }
       const derivedDynamicValue = derivedAState[dv.name];
       let derivedDynamicBytes = typeof derivedDynamicValue === 'string'
@@ -181,7 +185,8 @@ export function deriveFullPhase2ApplyDynamicChunks(
             // exposes a structurally complete dynamic value.
           }
         }
-        stb.setChunkRawCommitments(dv.name, dv.delegateSuffix === true && existing.length > exact.length
+        stb.setChunkRawCommitments(dv.name, dv.delegateSuffix === true && !hasDerivedLength
+          && existing.length > exact.length
           ? [...exact, ...existing.slice(exact.length)] : exact);
         commitmentProgress += exact.filter((commitment, index) => commitment !== existing[index]).length;
       }

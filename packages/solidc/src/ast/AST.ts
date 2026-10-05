@@ -1,4 +1,6 @@
 import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi, ConstructedKeyVectorV1Abi, AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import type { AbiFunction } from '@solidcash/utils';
+import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './Operator.js';
@@ -244,6 +246,10 @@ export interface KeySourceInfo {
   // native P2PKH input's lockscript, so the SDK computes slot = keyToSlot(76a914<pkh>88ac) of the sender.
   senderOp?: 'msg.sender' | 'tx.origin';
   canonical: string;       // canonical string for deduplication (all kinds)
+  /** SDK-only key expression after a proven adjacent, unconditional mapping write. */
+  postWriteExpressionLabel?: string;
+  /** Mapping collections this key reads before any mutation in the source handler. */
+  preWriteMappingCollections?: string[];
 }
 
 export interface EntryAccessInfo {
@@ -278,6 +284,14 @@ export interface EntryAccessInfo {
   valueParam?: string;
   // Canonical whole-value expression used by the SDK when it can be evaluated off-chain (notably literals).
   valueSource?: string;
+  /** Whole-value replay and per-mutation reachability proof; does not imply linear handler control flow. */
+  storedValueSource?: {
+    version: 1;
+    execution: 'unconditional-once';
+    mutationEffectOrdinal: number;
+    valueType: string;
+    expression: ExternalCallExpression;
+  };
   /**
    * Exact off-chain replay recipe for the element consumed by one chunkable sorted-array push. The recipe is
    * attached to the mutation's compiler-owned source-effect ordinal; omission means the push must not be
@@ -292,8 +306,8 @@ export interface EntryAccessInfo {
   /** Exact collection-array mutation represented by this access. */
   arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
   /**
-   * Optional fixed-chunkable activation recipe. Absent means the write is unconditional. When present, the SDK
-   * evaluates it against authenticated row arguments and omits continuation bands / write planning when false.
+   * Optional fixed entry-mutation activation recipe. Absent means the write is unconditional. When present, the
+   * SDK evaluates it against authenticated row arguments and omits inactive write planning (including bands).
    * A per-call write a branch guards publishes the condition it runs under (`per-call/master/write-activation.ts`).
    */
   activation?: ExternalCallExpression;
@@ -441,6 +455,8 @@ export type KernelReadCarrierSyntheticParameterRole =
   | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
+  /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
+  mappingArrayPagination?: NonNullable<AbiFunction['mappingArrayPagination']>;
   symbolTable?: SymbolTable;
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
   // this is false; undefined remains the conservative value for compiler-synthesized functions created later.
@@ -469,6 +485,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusPhysicalEntrySlotAlternatives?: number[][];
   /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
   messageBusRouteDynamicResources?: string[];
+  /** Authenticated participant-master offset used by message-bus handler code generation. */
+  messageBusOwnerInputOffset?: number;
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
   messageBusUpgradeRoute?: boolean;
   /**
@@ -547,6 +565,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     targetSource?: import('@solidcash/utils').ArgSource;
     dataSource?: import('@solidcash/utils').ArgSource;
   }[];
+
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK
   // auto-wires the delegatecall co-spend from a registered library instance, so the caller need not name the
   // library function again. `args` are positional: a forwarded enclosing-function parameter or a literal; the
@@ -724,6 +743,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     completedDescriptorDigest: string;
     streamDescriptorDigests: readonly string[];
   }[];
+
   /** Ordered compiler-private disposition manifest owned by this generated aggregate route. */
   messageBusKernelJournalDispositions?: readonly {
     selectorHex: string;
@@ -735,6 +755,7 @@ export class FunctionDefinitionNode extends Node implements Named {
       disposition: 'carrier' | 'eager-journal' | 'neutral';
     }[];
   }[];
+
   /** Digest emitted only by the authenticated aggregate route as the SCJD v1 bytecode marker. */
   messageBusKernelJournalDispositionCommitmentDigest?: string;
 
@@ -835,8 +856,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param
    * activated). The generated participant route authenticates that at most one row from the complete marked
    * selector family executes, so its body is the unique terminal continuation producer. This is an occurrence
-   * bound, not permission to chain mutations. */
+   * bound, not permission to chain mutations unless completed lowering additionally proves route pooling. */
   messageBusFixedChunkableWriteMaxRows?: 1;
+  /** Completed collection-journal lowering proved every access to these resources shares the route cache. */
+  messageBusPooledChunkableWrite?: true;
   /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
   messageBusFixedChunkableWriteEffectOrdinal?: number;
   /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
@@ -845,6 +868,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     effectOrdinal: number;
     activation?: ExternalCallExpression;
   }>;
+
   /** This handler owns one direct push into a chunkable sorted mapping-array entry (unconditional and/or
    * bool-param activated with empty else). Kernel route lowering threads the typed pending array through every
    * selected OP_INVOKE row and flushes it exactly once, so repeated same-key rows compose without intermediate
@@ -871,6 +895,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     keyComponentIndex?: number;
     /** The same tuple component in the route's one fixed alternate physical lane. */
     alternateRouteInput?: string;
+    /** Fixed physical key pool, selected by complete tuple identity when entryTupleGroup is present. */
+    keyPool?: string[];
   }[];
 
   /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */
@@ -898,6 +924,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Physical implementation-relative event offsets published by the selected split facet. Delegate-only data
    * NFT slots are already removed, so the root's immutable-event pin and the facet covenant name one output. */
   splitDelegateEventOffsets?: number[];
+  /** Exact signatures of collections whose split facet authenticates complete input and output cardinality.
+   * The root excludes only these addresses from its otherwise-strict mutable-NFT conservation. */
+  splitDelegateCensusedCollectionSignatures?: string[];
   /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;
@@ -913,6 +942,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Base contracts named in an explicit `override(A, B)` specifier (empty for a bare `override`).
   overrideBases: string[] = [];
   usesMsgSender?: boolean;
+  /** This function or a named internal callee reads msg.data. */
+  usesMsgData?: boolean;
   usesMsgValue?: boolean;
   /**
    * Compiler-owned message-bus batch clone whose one supported tail external call is verified against the authenticated
@@ -950,6 +981,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   keccakCompute?: boolean;      // keccak256 uses the compute-and-commit result-NFT model (side-car computes it)
   keccakPreimageParams?: (string | null)[]; // per keccak256 call (codegen emission order): the param feeding it
   // (SDK transparent co-spend); null = not a direct param
+  /** Source-site keys in exactly the order emitKeccakComputeCall reserved its ordinals. Compiler-internal. */
+  keccakComputeSites?: string[];
   keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds the static count;
   // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
@@ -1069,7 +1102,10 @@ export class StateVariableNode extends Node implements Named, Typed {
   }
 }
 
-export abstract class StatementNode extends Node { }
+export abstract class StatementNode extends Node {
+  /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
+  messageBusFixedChunkableWriteGuard?: string;
+}
 
 export class StateAssignNode extends StatementNode {
   stateVariable?: StateVariableNode;
@@ -1314,6 +1350,9 @@ export class BranchNode extends StatementNode {
    * resources (notably chunk NFTs) for handlers which were never selected.
    */
   preserveConditionalEntryWrites?: boolean;
+
+  /** Replayable source guard for a compiler-owned dirty-bit flush whose condition is otherwise opaque to the ABI. */
+  kernelEntryActivation?: ExternalCallExpression;
 
   constructor(
     public condition: ExpressionNode,
@@ -1639,8 +1678,14 @@ export class MappingAssignNode extends StatementNode implements Named {
   noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
+  /** SDK-only post-write keys proven from adjacent source statements before entry caching. */
+  postWriteKeyExpressions?: ExpressionNode[];
+  /** Collections read by this key before any source mutation. */
+  preWriteMappingCollections?: string[];
   /** Function-local program point shared with external-call effects. */
   sourceEffectOrdinal?: number;
+  /** Exact argument-only value of a cached final write on its replayable dirty arm. */
+  kernelValueSource?: { expression: string; parameters: string[] };
   // A counter-loop general RMW (`m[i] = f(m[i], ...)`) replaces the same-entry read in `expression` with this
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.
@@ -1951,6 +1996,9 @@ export class BinaryOpNode extends ExpressionNode {
 }
 
 export class UnaryOpNode extends ExpressionNode {
+  /** Preserves source-level `this` after lowering to active-input bytecode introspection. */
+  isThisExpression = false;
+
   // Solidity before 0.8 permits unsigned negation and evaluates it modulo the
   // destination width (e.g. `d & -d` in FullMath).
   legacyWrappingNegation = false;
@@ -2085,6 +2133,10 @@ export class ArrayAssignNode extends StatementNode implements Named {
   arrayType?: ArrayType;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  /** SDK-only post-write keys proven before this bare mapping assignment is lowered. */
+  postWriteKeyExpressions?: ExpressionNode[];
+  /** Collections read by this key before any source mutation. */
+  preWriteMappingCollections?: string[];
 
   constructor(
     public name: string,
@@ -2765,14 +2817,20 @@ export interface ExternalCallArgSource {
   initialValue?: string;
   stepValue?: string;
   stepExpression?: ExternalCallExpression;
+  counterName?: string;
   paramName?: string;
   value?: string;
   type?: string;
   expression?: ExternalCallExpression;
+  /** Source-level `address(this)`, distinct from physical active-input bytecode introspection. */
+  logicalIdentity?: boolean;
 }
 
 export interface ExternalCallExpression {
   kind: string;
+  /** Compiler-internal source identity for compute-call association; ignored by SDK expression replay. */
+  computeSourceSite?: string;
+  fixedEffectRecipe?: ChildDeploymentValueRecipe;
   name?: string;
   /** Physical producer/consumer lane after repeated-owner collapse. */
   callsiteId?: number;
@@ -2799,7 +2857,8 @@ export interface ExternalCallExpression {
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block'
+  | 'require';
   name?: string;
   type?: string;
   index?: ExternalCallExpression;
@@ -2829,6 +2888,9 @@ export interface ExternalCallSlot {
   // expected address instead of reading a param/state - caller-independent. A non-locking-bytecode literal
   // (e.g. a 20-byte ETH address) makes the identity check un-satisfiable (fails closed). Never a caller input.
   addressLiteral?: string;
+  // A source ternary whose condition and both same-interface address arms are unmodified function/constructor
+  // parameters. The direct epilogue may re-evaluate this exact choice to authenticate the co-spent callee.
+  runtimeTernaryAddress?: boolean;
   // Set when the call target is an array element `IFoo(arr[i]).m()`: the state array (of addresses) whose
   // every element is co-spent + verified as a callee in a loop (the source `for` loop is left as harmless
   // iteration; the epilogue reads the array and loop-verifies callee[base+i].master.LBC == arr[i]).
@@ -2879,6 +2941,8 @@ export interface ExternalCallSlot {
   argSources?: ExternalCallArgSource[];
   /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
   condition?: ExternalCallExpression;
+  /** Necessary source `require` predicates reached before this call, evaluated at their own program points. */
+  preCallRequires?: ExternalCallExpression[];
   /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
   resultArrayOutput?: number;
   rawFunctionName?: string;
@@ -2999,6 +3063,8 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerStaticLowLevelCalls for a per-call low-level call it lowered to this typed call; threaded to the
   // external call node in semantic analysis.
   lowLevelRoute?: LowLevelRoute;
+  // A fixed-method pointer table still broadcasts across every table element even without a selector sidecar.
+  pointerTableBroadcast: boolean = false;
   // Set when InlineReturningStateHelpers copies a supported global operator implementation into an entry point.
   // SynthesizeExternalAddressLocals uses it to materialize the operator's pure helper-return receiver without
   // broadening computed-receiver acceptance for unrelated Solidity-negative fixtures.

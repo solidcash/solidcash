@@ -32,6 +32,20 @@ export type ComputedChunkRepairResult = {
   }>;
 };
 
+function logRepairConvergenceTiming(
+  sweep: number,
+  inputIndex: number,
+  stage: string,
+  startedAt: number,
+  result: ComputedChunkRepairResult,
+): void {
+  console.error('repair-convergence-timing', {
+    sweep, inputIndex, stage, ms: Date.now() - startedAt,
+    changed: result.changed, passed: result.passed,
+    repairedOutputs: result.repairedOutputs.length,
+  });
+}
+
 export interface ConvergedFinalTransactionHost {
   readonly masterUtxo: UnlockableUtxo;
   readonly categoryId: string;
@@ -298,11 +312,9 @@ export function assertConvergedFinalTransaction(
           convergenceRounds.repairMs += Date.now() - repairStartedAt;
         }
         const reportConvergenceTiming = (stage: string): void => {
-          if (debugPreflightTiming) console.error('repair-convergence-timing', {
-            sweep, inputIndex, stage, ms: Date.now() - repairStartedAt,
-            changed: result.changed, passed: result.passed,
-            repairedOutputs: result.repairedOutputs.length,
-          });
+          if (debugPreflightTiming) {
+            logRepairConvergenceTiming(sweep, inputIndex, stage, repairStartedAt, result);
+          }
         };
         reportConvergenceTiming('repair-complete');
         if (debugRepairs) console.error('repair-convergence', JSON.stringify({

@@ -2,8 +2,8 @@
 // per-slot master index for under-declared interfaces.
 import { describe, it, expect } from 'vitest';
 import { compileStringMulti } from 'solidc';
-import { Contract, StatefulContract } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { Contract, StatefulContract, messageBus } from '../../src/index.js';
+import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 
 describe('unbounded bytes return', () => {
@@ -122,7 +122,8 @@ describe('unbounded bytes return', () => {
     });
 
     // Two distinct returning methods cannot both execute from the callee's one master input without an
-    // authenticated batch route: the second return output would only be a placeholder. Refused by name.
+    // authenticated batch route: the second return output would only be a placeholder. Refused by name;
+    // messageBus.compose authenticates both logical invocations.
     it('CROSS-CONTRACT: refuses two returning calls to one participant without a batch route', async () => {
       const src = `
         interface IA {
@@ -141,7 +142,9 @@ describe('unbounded bytes return', () => {
             this.seen = returned; this.saved = value;
           }
         }`;
-      const arts = compileStringMulti(src, { solidityImportCompat: true });
+      const arts = compileStringMulti(src, {
+        solidityImportCompat: true, messageBus: true, messageBusGraphContext: true,
+      });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
         provider, a, arts.A.stateLayout!, { marker: 0n }, { saltContract: true },
@@ -160,6 +163,22 @@ describe('unbounded bytes return', () => {
         .withExternalCall(aSc, 'echo', [VAL])
         .withExternalCall(aSc, 'wide', [73n, wide])
         .send()).rejects.toThrow(/calls to echo and wide share one state owner but both return values.*compose/);
+      const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+      await messageBus.compose({
+        calls: [
+          bSc.call.use(hexToBin(aAddr), VAL, 73n, wide),
+          aSc.call.echo(VAL),
+          aSc.call.wide(73n, wide),
+        ],
+        funder: fee,
+        changeAddress: fee.unlocker.generateLockingBytecode(),
+      }).send();
+      const state = await bSc.getState();
+      expect(binToHex(state.digest as Uint8Array)).toBe(
+        '8f33bbbe76e4f01dd1b24499fc6ab72e92f704f9444722cd3805ba8cc18fd2c6',
+      );
+      expect(state.seen).toBe(73n);
+      expect(binToHex(state.saved as Uint8Array)).toBe(binToHex(wide));
     });
 
     it('CROSS-CONTRACT: settles two non-returning calls to one participant as one batch', async () => {

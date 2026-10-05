@@ -16,8 +16,21 @@ import {
   freezeGeometry,
   recordMonotonePass,
 } from './monotone-lattice.js';
-import { preflightMessageBusBlockAssembly } from './preflight.js';
+import {
+  preflightMessageBusBlockAssembly, provenSourceRevertIndependentOfRepair, type RefusedOutputRepair,
+} from './preflight.js';
 import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
+import { builderConstraintFixpoint } from './constraint-fixpoint-session.js';
+import {
+  computedValueChunkOutputIndexInBand,
+  computedValueChunkOutputPin,
+  isValidComputedValueChunkCommitmentEncoding,
+} from '../stateful/computed-value-chunk-pin.js';
+export {
+  computedValueChunkOutputIndexInBand,
+  computedValueChunkOutputPin,
+  isValidComputedValueChunkCommitmentEncoding,
+} from '../stateful/computed-value-chunk-pin.js';
 
 export interface ComputedValueChunkConvergence {
   repairs: number;
@@ -29,11 +42,74 @@ export interface ComputedValueChunkConvergence {
 const isP2sh32 = (bytecode: Uint8Array | undefined): bytecode is Uint8Array => !!bytecode
   && bytecode.length === 35 && bytecode[0] === 0xaa && bytecode[1] === 0x20 && bytecode[34] === 0x87;
 
+/** Retire duplicate provisional outputs only when a complete zero-based continuation run proves its owner. */
+export function retireOutputsOutsideAuthenticatedValueChunkRuns(
+  outputs: Array<{
+    to?: string | Uint8Array;
+    amount?: bigint;
+    token?: { category?: string; nft?: { capability?: string; commitment?: string } };
+  }>,
+  runs: readonly (readonly number[])[],
+): number[] {
+  const authoritativeByRoot = new Map<string, Set<number>>();
+  for (const indices of runs) {
+    if (indices.length === 0) continue;
+    let root: string | undefined;
+    let valid = true;
+    for (const [offset, outputIndex] of indices.entries()) {
+      if (outputIndex !== indices[0] + offset) { valid = false; break; }
+      const output = outputs[outputIndex];
+      const lock = output?.to instanceof Uint8Array ? output.to : undefined;
+      if (!isP2sh32(lock)
+        || output.token?.nft?.capability !== 'mutable'
+        || !isValidComputedValueChunkCommitmentEncoding(output.token.nft.commitment ?? '')
+        || valueChunkIndexFromCommitment(output.token.nft.commitment ?? '') !== offset) {
+        valid = false;
+        break;
+      }
+      const candidate = `${output.token.category ?? ''}:${binToHex(lock)}`;
+      if (root !== undefined && candidate !== root) { valid = false; break; }
+      root = candidate;
+    }
+    if (!valid || root === undefined) continue;
+    const authoritative = authoritativeByRoot.get(root) ?? new Set<number>();
+    for (const index of indices) authoritative.add(index);
+    authoritativeByRoot.set(root, authoritative);
+  }
+
+  const retired: number[] = [];
+  for (const [outputIndex, output] of outputs.entries()) {
+    const lock = output?.to instanceof Uint8Array ? output.to : undefined;
+    if (!isP2sh32(lock) || output.token?.nft?.capability !== 'mutable') continue;
+    const root = `${output.token.category ?? ''}:${binToHex(lock)}`;
+    const authoritative = authoritativeByRoot.get(root);
+    if (authoritative === undefined || authoritative.has(outputIndex)) continue;
+    outputs[outputIndex] = {
+      to: Uint8Array.of(0x51),
+      amount: output.amount !== undefined && output.amount > 0n ? output.amount : 1000n,
+    };
+    retired.push(outputIndex);
+  }
+  return retired;
+}
+
 export interface ComputedValueChunkValueObservation {
   write: ValueChunkWriteDescriptor;
   value: Uint8Array;
   lockingBytecode: Uint8Array;
   chunkCount: number;
+}
+
+function traceComputedValueChunkObservation(
+  inputIndex: number,
+  observation: ComputedValueChunkValueObservation,
+): void {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_CHUNKS !== '1') return;
+  console.error('computed-value-convergence-observation', JSON.stringify({
+    inputIndex, resource: valueChunkWriteResourceIdentity(observation.write),
+    bytes: observation.value.length, lock: binToHex(observation.lockingBytecode),
+  }));
 }
 
 export interface IndexedComputedValueChunkValueObservation extends ComputedValueChunkValueObservation {
@@ -81,10 +157,10 @@ export function matchComputedValueChunkStack(
       locks: [lockHex],
       writes: writes.map((write) => ({
         resource: valueChunkWriteResourceIdentity(write),
-        candidates: stack.filter((value) => value.length > VALUE_INLINE_LIMIT).map((value) => ({
-          bytes: value.length,
-          value: binToHex(value),
-          lock: binToHex(persistValueChunkLock(write.categoryId, value, write) ?? new Uint8Array()),
+        candidates: stack.filter((candidate) => candidate.length > VALUE_INLINE_LIMIT).map((candidate) => ({
+          bytes: candidate.length,
+          value: binToHex(candidate),
+          lock: binToHex(persistValueChunkLock(write.categoryId, candidate, write) ?? new Uint8Array()),
         })),
       })),
       matches: found.map((match) => ({
@@ -227,23 +303,30 @@ export function countWouldApplyValueChunkRepairs(
   lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
   commitmentProposals: ReadonlyMap<number, Uint8Array>,
 ): number {
-  let wouldApply = 0;
+  const repair = wouldApplyValueChunkRepairOutputs(builder, lockingBytecodeProposals, commitmentProposals);
+  return repair.lockingBytecodes.length + repair.commitments.length;
+}
+
+/** Outputs whose locking bytecode or commitment a value-chunk repair would rewrite. */
+export function wouldApplyValueChunkRepairOutputs(
+  builder: ValueChunkRepairBuilder,
+  lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
+  commitmentProposals: ReadonlyMap<number, Uint8Array>,
+): { lockingBytecodes: number[]; commitments: number[] } {
+  const lockingBytecodes: number[] = [];
+  const commitments: number[] = [];
   for (const [outputIndex, expected] of lockingBytecodeProposals) {
     const output = builder.outputs[outputIndex];
     if (!output) continue;
     const current = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
-    if (current === undefined) {
-      wouldApply += 1;
-      continue;
-    }
-    if (binToHex(current) !== binToHex(expected)) wouldApply += 1;
+    if (current === undefined || binToHex(current) !== binToHex(expected)) lockingBytecodes.push(outputIndex);
   }
   for (const [outputIndex, expected] of commitmentProposals) {
     const output = builder.outputs[outputIndex];
     if (!output?.token?.nft || output.token.nft.capability !== 'mutable') continue;
-    if (output.token.nft.commitment !== binToHex(expected)) wouldApply += 1;
+    if (output.token.nft.commitment !== binToHex(expected)) commitments.push(outputIndex);
   }
-  return wouldApply;
+  return { lockingBytecodes, commitments };
 }
 
 /** Refuse VM-mined value-chunk repairs that would change state under recipe. */
@@ -251,10 +334,13 @@ export function gateWouldApplyValueChunkRepairsIfRecipe(
   builder: ValueChunkRepairBuilder,
   lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
   commitmentProposals: ReadonlyMap<number, Uint8Array>,
+  provenRevert?: (repair: RefusedOutputRepair) => Error | undefined,
 ): number {
-  return gateWouldApplyRepairsIfRecipe(countWouldApplyValueChunkRepairs(
-    builder, lockingBytecodeProposals, commitmentProposals,
-  ));
+  const repair = wouldApplyValueChunkRepairOutputs(builder, lockingBytecodeProposals, commitmentProposals);
+  return gateWouldApplyRepairsIfRecipe(
+    repair.lockingBytecodes.length + repair.commitments.length,
+    provenRevert && ((): Error | undefined => provenRevert(repair)),
+  );
 }
 
 /**
@@ -272,6 +358,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
     return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs: [], outputs: [] });
   }
   const owners = new Map<number, Set<number>>();
+  const outputBaseByInput = new Map<number, number>();
   for (const block of assembly.blocks) {
     const trailingBase = block.blockLayout.trailingBase;
     if (trailingBase === undefined || trailingBase >= block.blockLayout.blockSize) continue;
@@ -291,17 +378,22 @@ export function convergeMessageBusComputedValueChunkOutputs(
       const value = argumentIndex < 0 ? undefined : unlocker?.params?.[argumentIndex];
       if (typeof value !== 'bigint') continue;
       const outputBase = Number(value);
-      if (!Number.isSafeInteger(outputBase) || outputBase < trailingStart || outputBase >= trailingEnd) continue;
+      if (!computedValueChunkOutputIndexInBand(outputBase, {
+        start: trailingStart, end: trailingEnd - 1,
+      })) continue;
       const first = builder.outputs[outputBase];
       const category = first?.token?.category;
       if (category === undefined || first.token?.nft?.capability !== 'mutable'
         || first.token.amount !== 0n
+        || !isValidComputedValueChunkCommitmentEncoding(first.token.nft.commitment)
         || valueChunkIndexFromCommitment(first.token.nft.commitment) !== 0) continue;
+      outputBaseByInput.set(inputIndex, outputBase);
       for (let outputIndex = outputBase; outputIndex < trailingEnd; outputIndex += 1) {
         const output = builder.outputs[outputIndex];
         const chunkIndex = outputIndex - outputBase;
         if (output?.token?.category !== category || output.token.nft?.capability !== 'mutable'
           || output.token.amount !== 0n
+          || !isValidComputedValueChunkCommitmentEncoding(output.token.nft.commitment)
           || valueChunkIndexFromCommitment(output.token.nft.commitment) !== chunkIndex) break;
         // A computed run is intentionally born with the builder's non-P2SH placeholder lock: its exact P2SH32
         // lock exists only on the complete graph VM stack below. Requiring the output to already be P2SH32 makes
@@ -338,7 +430,8 @@ export function convergeMessageBusComputedValueChunkOutputs(
   }
 
   const changedOutputs = new Set<number>();
-  // constraint fixpoint / item-10 follow-on: value-chunk repairs progress on the same monotone lattice as fixed-state resources.
+  // Constraint fixpoint: value-chunk repairs progress on the same
+  // monotone lattice as fixed-state resources.
   const commitmentLattice = new MonotoneCell<string>();
   const seenStates = new Set<string>();
   const maximumRounds = owners.size * 2 + 1;
@@ -363,6 +456,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
       'value-chunk',
       [stateKey],
       'messageBus: computed value-chunk output convergence entered a repeated state',
+      builderConstraintFixpoint(builder),
     );
     if (picked === undefined) {
       finalizeMonotonePass(commitmentLattice, stateKey);
@@ -378,8 +472,11 @@ export function convergeMessageBusComputedValueChunkOutputs(
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const lockingBytecodeProposals = new Map<number, Uint8Array>();
     const commitmentProposals = new Map<number, Uint8Array>();
+    const roundConfirmedByInput = new Map<number, Set<number>>();
     const inputIndices = new Set([...owners.values()].flatMap((indices) => [...indices]));
     for (const inputIndex of inputIndices) {
+      const outputBase = outputBaseByInput.get(inputIndex);
+      if (outputBase === undefined) continue;
       const inputWrites = describedWrites.filter((write) => (
         write.outputCount > 0 && owners.get(write.outputBase)?.has(inputIndex)
       ));
@@ -388,16 +485,18 @@ export function convergeMessageBusComputedValueChunkOutputs(
         beforeOperation: (unknownState) => {
           const state = unknownState as AuthenticationProgramStateCommon;
           const opcode = state.instructions[state.ip]?.opcode;
+          if (opcode === Op.OP_OUTPUTBYTECODE) {
+            const pin = computedValueChunkOutputPin(state, outputBase);
+            if (pin && owners.get(pin.outputIndex)?.has(inputIndex)) {
+              const confirmed = roundConfirmedByInput.get(inputIndex) ?? new Set<number>();
+              confirmed.add(pin.outputIndex);
+              roundConfirmedByInput.set(inputIndex, confirmed);
+            }
+          }
           if (opcode === Op.OP_EQUALVERIFY && state.instructions[state.ip - 1]?.opcode === Op.OP_DROP
             && !state.controlStack.some((frame) => frame === false)) {
             for (const observation of matchComputedValueChunkStack(state.stack, inputWrites)) {
-              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-                console.error('computed-value-convergence-observation', JSON.stringify({
-                  inputIndex, resource: valueChunkWriteResourceIdentity(observation.write),
-                  bytes: observation.value.length, lock: binToHex(observation.lockingBytecode),
-                }));
-              }
+              traceComputedValueChunkObservation(inputIndex, observation);
               const chunks = chunksFromValue(observation.value, {
                 lockingBytecode: observation.lockingBytecode,
                 write: observation.write,
@@ -460,6 +559,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
     }
     gateWouldApplyValueChunkRepairsIfRecipe(
       builder, lockingBytecodeProposals, commitmentProposals,
+      (repair) => provenSourceRevertIndependentOfRepair(builder, repair),
     );
     let changed = false;
     for (const [outputIndex, expected] of lockingBytecodeProposals) {
@@ -483,6 +583,26 @@ export function convergeMessageBusComputedValueChunkOutputs(
       changed = true;
     }
     if (!changed) {
+      const completeRuns = [...roundConfirmedByInput.entries()].flatMap(([inputIndex, confirmed]) => {
+        const outputBase = outputBaseByInput.get(inputIndex);
+        if (outputBase === undefined) return [];
+        const owned: number[] = [];
+        for (let outputIndex = outputBase; owners.get(outputIndex)?.has(inputIndex); outputIndex += 1) {
+          owned.push(outputIndex);
+        }
+        return owned.length > 0 && owned.every((outputIndex) => confirmed.has(outputIndex)) ? [owned] : [];
+      });
+      const retirementPreview = builder.outputs.map((output) => output && { ...output });
+      const wouldRetire = retireOutputsOutsideAuthenticatedValueChunkRuns(
+        retirementPreview, completeRuns,
+      );
+      gateWouldApplyRepairsIfRecipe(wouldRetire.length);
+      for (const outputIndex of retireOutputsOutsideAuthenticatedValueChunkRuns(
+        builder.outputs, completeRuns,
+      )) {
+        changedOutputs.add(outputIndex);
+        repairs += 1;
+      }
       const finalKey = ownedOutputs
         .map((outputIndex) => {
           const output = builder.outputs[outputIndex];

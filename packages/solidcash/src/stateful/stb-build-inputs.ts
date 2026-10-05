@@ -45,19 +45,53 @@ export interface BuildInputsHost {
   lowLevelCallInputBase?: number;
   compilerRouteDelegateBlock: boolean;
   preserveBlockLayoutWidth: boolean;
+  externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
+  logicalIdentityUtxo?: UnlockableUtxo;
   loopEntriesBeforeDynamicChunks: boolean;
   trailingLoopEntryOutputCount(): number;
+  dynamicChunkOutputCount(): number;
   delegateLoopEntryVars(): Array<{ collection: string; delegate?: boolean }>;
+}
+
+/**
+ * Identity slots are suffix-authenticated. Keep the caller's logical identity last, while allowing
+ * compiler-published identity slots before it to absorb callee anchors. Anchors which do not have a
+ * published slot remain in the legacy post-block tail.
+ */
+export function identityAnchorPlacement(
+  layout: FunctionBlockLayout | undefined,
+  externalAnchors: readonly UnlockableUtxo[],
+  logicalAnchor?: UnlockableUtxo,
+): { byOffset: ReadonlyMap<number, UnlockableUtxo>; trailing: UnlockableUtxo[] } {
+  const anchors = [...externalAnchors, ...(logicalAnchor ? [logicalAnchor] : [])];
+  const offsets = (layout?.slots ?? [])
+    .filter((slot) => slot.kind === 'identityAnchor')
+    .map((slot) => slot.offset)
+    .sort((left, right) => left - right);
+  const positionedCount = Math.min(offsets.length, anchors.length);
+  const positionedAnchors = anchors.slice(anchors.length - positionedCount);
+  const positionedOffsets = offsets.slice(offsets.length - positionedCount);
+  return {
+    byOffset: new Map(positionedOffsets.map((offset, index) => [offset, positionedAnchors[index]])),
+    trailing: anchors.slice(0, anchors.length - positionedCount),
+  };
+}
+
+/** Trailing state outputs precede independently preserved read/identity co-spends in the output frame. */
+export function orderPostBlockTrailingAndReadInputs<T>(
+  trailing: readonly T[], readOnly: readonly T[],
+): T[] {
+  return [...trailing, ...readOnly];
 }
 
 export function buildInputs(
   host: BuildInputsHost,
-entryInputs: UnlockableUtxo[],
-tokenContainerInputs: UnlockableUtxo[],
-satoshiContainerInputs: UnlockableUtxo[],
-externalOutStateInputs: UnlockableUtxo[],
-externalCallInputs: UnlockableUtxo[],
-lowLevelCallInputs: UnlockableUtxo[],
+  entryInputs: UnlockableUtxo[],
+  tokenContainerInputs: UnlockableUtxo[],
+  satoshiContainerInputs: UnlockableUtxo[],
+  externalOutStateInputs: UnlockableUtxo[],
+  externalCallInputs: UnlockableUtxo[],
+  lowLevelCallInputs: UnlockableUtxo[],
 ): UnlockableUtxo[] {
   // Dense (position-indexed) placement keeps the caller's own resources at published slot offsets so
   // `masterInputIndex + slotOffset` reads (entry NFT EQUALVERIFY, etc.) see the right UTXO. Legacy order puts
@@ -70,8 +104,11 @@ lowLevelCallInputs: UnlockableUtxo[],
   // past the caller's complete block (compose already does this; plain `.send()` must match).
   const hasExternalGroups = externalOutStateInputs.length > 0 || externalCallInputs.length > 0;
   const denseBlockLayout = host.blockLayout;
+  const identityPlacement = identityAnchorPlacement(
+    denseBlockLayout, host.externalIdentityAnchorUtxos, host.logicalIdentityUtxo,
+  );
   const useDensePlacement = denseBlockLayout !== undefined
-    && (host.funderUtxos.length > 0 || hasExternalGroups);
+    && (host.funderUtxos.length > 0 || hasExternalGroups || identityPlacement.byOffset.size > 0);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_INPUT_ORDER === '1') {
     console.error('input-order-guard', JSON.stringify({
@@ -197,6 +234,7 @@ lowLevelCallInputs: UnlockableUtxo[],
         }
         case 'satoshiContainer':
           if (satoshiContainerInputs.length > 0) positioned[slot.offset] = satoshiContainerInputs[0];
+          else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
           break;
         case 'tokenContainer':
           if (tcIdx < tokenContainerInputs.length) positioned[slot.offset] = tokenContainerInputs[tcIdx++];
@@ -232,6 +270,12 @@ lowLevelCallInputs: UnlockableUtxo[],
             }
           } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
           break;
+        case 'identityAnchor': {
+          const anchor = identityPlacement.byOffset.get(slot.offset);
+          if (anchor) positioned[slot.offset] = anchor;
+          else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
+          break;
+        }
         case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent': {
           const f = funderPool.shift();
           if (f) positioned[slot.offset] = f;
@@ -291,7 +335,7 @@ lowLevelCallInputs: UnlockableUtxo[],
     }
     // Keep the full block width when delegate upsert predecessors must sit at
     // INPUTINDEX+blockSize. Compacting away a missing dataNft (or similar) hole
-    // parks HEAD on the returnEvent funder and fails publishJobPost's verify.
+    // parks the predecessor on the returnEvent funder and fails the writer's bytecode check.
     if (host.compilerRouteDelegateBlock || earlyInsertPredecessors.length > 0) {
       for (let i = 0; i < positioned.length; i++) {
         if (positioned[i] !== undefined) continue;
@@ -400,25 +444,25 @@ lowLevelCallInputs: UnlockableUtxo[],
         immediateDelegateLlc.push(...remainingLlc);
       }
     }
-    const llcBeforeJobs = splitActiveDelegateBand ? immediateDelegateLlc : [];
+    const immediateDelegateCallsBeforeResourceBand = splitActiveDelegateBand ? immediateDelegateLlc : [];
     // Dynamic chunks must occupy INPUTINDEX+blockSize before an insert band and nested callees.
     // Always carve dynamic-array old-chunk inputs out of trailingOverflow (not only whitelist INSERT).
-    // Otherwise nested LLC precedes chunks and post-two's emitDynamicReadLoop hits a non-chunk at
+    // Otherwise nested LLC precedes chunks and the dynamic read loop hits a non-chunk at
     // INPUTINDEX+blockSize (capability/chunkIndex EQUALVERIFY 01 vs empty). Iteration-entry
-    // predecessors stay whitelist-gated so ordinary publishJobPost band order is unchanged when
+    // predecessors are included only for an actual insert band, preserving ordinary band order when
     // there are no old chunks.
     const trailingOverflow = trailingInputs.slice(trailingIdx);
-    const jobsBand = trailingOverflow.filter((input) => (
+    const preInsertResourceBand = trailingOverflow.filter((input) => (
       host.dynamicChunkInputs.includes(input)
       || (earlyInsertPredecessors.length > 0 && host.iterationEntryInputs.includes(input))
     ));
-    const trailingRest = trailingOverflow.filter((input) => !jobsBand.includes(input));
+    const trailingRest = trailingOverflow.filter((input) => !preInsertResourceBand.includes(input));
     // When old chunks are present, pad the fixed block to full width so the first chunk is exactly
     // at INPUTINDEX+blockSize (compaction of empty dataNft holes would pull chunks forward).
     // Padding is applied below at assemble time via blockPadFunders.
     let returnEventPad: UnlockableUtxo | undefined;
     let newNodePad: UnlockableUtxo | undefined;
-    // Expanded after pad helpers exist: nested LLC masters (e.g. publishJobEvent) padded to ABI blockSize.
+    // Expanded after pad helpers exist: nested LLC masters padded to ABI blockSize.
     let nestedLlcWithBlockPads: UnlockableUtxo[] = nestedLlcAfterInsertBand;
     if (earlyInsertPredecessors.length > 0) {
       // Bare P2PKH pads would become tx.origin (first non-token input). Tag them as
@@ -428,7 +472,7 @@ lowLevelCallInputs: UnlockableUtxo[],
           amount: 0n,
           // Own category: returnEvent UTXOTOKENCATEGORY checks against the contract
           // category. Zero-cat is "no token" (tx.origin); foreign 01… kept the pad
-          // tokenful but failed EQUALVERIFY on whitelist publishJobPost.
+          // tokenful but failed EQUALVERIFY on the nested writer.
           category: host.categoryId,
           // 32-byte commitment so an accidental OP_SPLIT 32 on this pad cannot
           // fail with "stack item length 0" during early introspection.
@@ -507,8 +551,8 @@ lowLevelCallInputs: UnlockableUtxo[],
       // Trailing pad is surplus for NEW after HEAD (sorted upsert insert).
       const nodePad = takePadFunder();
       if (nodePad) newNodePad = asTokenPad(nodePad);
-      // Expand nested LLC masters (publishJobEvent blockSize 5) so INPUTINDEX+offset
-      // introspection stays in-range after insert-band shifted them past the jobs band.
+      // Expand nested LLC masters so INPUTINDEX+offset introspection stays in-range
+      // after the insert band shifts them past the value-chunk band.
       // Prefer each group's real blockInputs; only pad with funders when the band is short.
       if (!host.compilerRouteDelegateBlock && nestedLlcAfterInsertBand.length > 0) {
         const expanded: UnlockableUtxo[] = [];
@@ -525,7 +569,7 @@ lowLevelCallInputs: UnlockableUtxo[],
             }
             pastConsumed = true;
           }
-          // Immediate delegate already sits before the jobs band; only expand nested callees.
+          // Immediate delegate already precedes the value-chunk band; only expand nested callees.
           if (group.callMode === 'delegatecall' && expanded.length === 0
             && immediateDelegateLlc.length > 0
             && items.every((item, index) => item === immediateDelegateLlc[index])) {
@@ -550,17 +594,22 @@ lowLevelCallInputs: UnlockableUtxo[],
       }
     }
     const postBlockParticipants = [
-      // Read-only co-spends the dense walk did not place in a `readOnlyDataNft` slot. Their OUTPUTS are
-      // materialized unconditionally (`build()` emits one preservation output per read-only UTXO), so leaving
-      // them out of the input list silently unbalances the frame and drops whatever identity they carry - a
-      // `msg.sender`-keyed frame then resolves against nothing. The legacy ordering appends them; do the same
-      // here instead of relying on a slot the published layout may not have.
-      ...host.readOnlyDataNftUtxos.slice(readOnlyIdx),
+      // Trailing state is emitted immediately after the complete fixed block. Keep its balancing inputs before
+      // read/identity preservation inputs, whose outputs remain 1:1 at their later coordinates. Reversing these
+      // bands lets a caller-identity recreation overwrite a newly inserted mapping node in return probes.
+      ...orderPostBlockTrailingAndReadInputs(
+        trailingRest,
+        // Read-only co-spends the dense walk did not place in a `readOnlyDataNft` slot. Their OUTPUTS are
+        // materialized unconditionally (`build()` emits one preservation output per read-only UTXO), so leaving
+        // them out of the input list silently unbalances the frame and drops whatever identity they carry - a
+        // `msg.sender`-keyed frame then resolves against nothing. The legacy ordering appends them; do the same
+        // here instead of relying on a slot the published layout may not have.
+        host.readOnlyDataNftUtxos.slice(readOnlyIdx),
+      ),
       ...gapInputs.slice(gapIdx),
       ...deferredExternalCallInputs,
       ...(splitActiveDelegateBand ? nestedLlcWithBlockPads : remainingLlc),
       ...host.lowLevelCallRawInputs,
-      ...trailingRest,
       ...host.trailingDisposalInputs.slice(trailingDisposalIdx),
     ];
     if (earlyInsertPredecessors.length > 0
@@ -569,9 +618,9 @@ lowLevelCallInputs: UnlockableUtxo[],
       const assembled = [
         ...result,
         ...(host.compilerRouteDelegateBlock ? lowLevelCallInputs : []),
-        ...llcBeforeJobs,
+        ...immediateDelegateCallsBeforeResourceBand,
         ...(returnEventPad ? [returnEventPad] : []),
-        ...jobsBand,
+        ...preInsertResourceBand,
         ...earlyInsertPredecessors,
         ...(newNodePad ? [newNodePad] : []),
         ...postBlockParticipants,
@@ -585,8 +634,8 @@ lowLevelCallInputs: UnlockableUtxo[],
         hasReturnEventPad: returnEventPad !== undefined,
         hasNewNodePad: newNodePad !== undefined,
         hasTokenFreeP2pkh,
-        jobsBand: jobsBand.length,
-        llcBeforeJobs: llcBeforeJobs.length,
+        preInsertResourceBand: preInsertResourceBand.length,
+        immediateDelegateCallsBeforeResourceBand: immediateDelegateCallsBeforeResourceBand.length,
         nestedLlcAfter: nestedLlcAfterInsertBand.length,
         slotsHaveReturnEvent: denseBlockLayout.slots.some((slot) => slot.kind === 'returnEvent'),
         remainingLlc: remainingLlc.length,
@@ -607,24 +656,34 @@ lowLevelCallInputs: UnlockableUtxo[],
       });
     }
     const blockPadFunders: UnlockableUtxo[] = [];
-    if (host.dynamicChunkInputs.some((input) => jobsBand.includes(input))) {
+    if (host.dynamicChunkInputs.some((input) => preInsertResourceBand.includes(input))) {
       const targetWidth = denseBlockLayout.blockSize
         + (host.compilerRouteDelegateBlock ? lowLevelCallInputs.length : 0)
-        + llcBeforeJobs.length;
+        + immediateDelegateCallsBeforeResourceBand.length;
       const currentWidth = result.length
         + (host.compilerRouteDelegateBlock ? lowLevelCallInputs.length : 0)
-        + llcBeforeJobs.length;
+        + immediateDelegateCallsBeforeResourceBand.length;
       while (currentWidth + blockPadFunders.length < targetWidth && funderPool.length > 0) {
         blockPadFunders.push(funderPool.shift()!);
       }
     }
+    // Reuse old dynamic-chunk coordinates, then reserve one neutral input for each new chunk before any
+    // following participant. Its one-to-one master output must start after the complete growing chunk run.
+    const dynamicGrowth = !host.compilerRouteDelegateBlock && !host.delegateEntriesAfterLowLevel
+      && host.dynamicChunkInputs.length > 0 && postBlockParticipants.length > 0
+      ? Math.max(0, host.dynamicChunkOutputCount() - host.dynamicChunkInputs.length) : 0;
+    if (dynamicGrowth > funderPool.length) {
+      throw new Error(`Dynamic chunk growth needs ${dynamicGrowth} balanced input slot(s)`);
+    }
+    const dynamicGrowthPads = funderPool.splice(0, dynamicGrowth);
     const assembled = [
       ...result,
       ...blockPadFunders,
       ...(host.compilerRouteDelegateBlock ? lowLevelCallInputs : []),
-      ...llcBeforeJobs,
+      ...immediateDelegateCallsBeforeResourceBand,
       ...(returnEventPad ? [returnEventPad] : []),
-      ...jobsBand,
+      ...preInsertResourceBand,
+      ...dynamicGrowthPads,
       ...earlyInsertPredecessors,
       ...(newNodePad ? [newNodePad] : []),
       ...postBlockParticipants,
@@ -633,7 +692,7 @@ lowLevelCallInputs: UnlockableUtxo[],
     // Ensure each nested materialized LLC master keeps its compiler-described contiguous band. Prefer the
     // group's real blockInputs over synthetic pads: UTXOBYTECODE(INPUTINDEX+slot) must inspect the resource
     // assigned to that physical slot, independent of the handler or application spelling.
-    if (earlyInsertPredecessors.length > 0 && jobsBand.length > 0) {
+    if (earlyInsertPredecessors.length > 0 && preInsertResourceBand.length > 0) {
       repairMaterializedLowLevelCallBlocks(assembled, host.lowLevelCallUtxoGroups);
     }
     return assembled;
@@ -651,7 +710,10 @@ lowLevelCallInputs: UnlockableUtxo[],
     );
     const groupInputs = (group: ExternalCallUtxoGroup): UnlockableUtxo[] => {
       const master = group.masterUtxo as UnlockableUtxo | undefined;
-      const inputs = group.blockInputs ?? (master ? [master, ...group.dataNftUtxos] : []);
+      const inputs = [
+        ...(group.blockInputs ?? (master ? [master, ...group.dataNftUtxos] : [])),
+        ...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo),
+      ];
       return inputs.flatMap((input) => {
         if (master && input
           && input.txid.toLowerCase() === master.txid.toLowerCase() && input.vout === master.vout) {
@@ -768,7 +830,7 @@ lowLevelCallInputs: UnlockableUtxo[],
       ...prefix,
       ...host.funderUtxos.slice(0, alignmentPaddingCount),
       // X151: read-only dynamic chunks first, then RMW old write chunks at the same
-      // impl+trailingBase band (closeJob reads jobs[i] from input 10), then predecessors.
+      // implementation trailing-base band, then predecessors.
       ...host.iterationEntryInputs, ...host.dynamicChunkInputs, ...host.trailingDisposalInputs,
       ...host.insertLoopPredecessorInputs,
       ...host.funderUtxos.slice(alignmentPaddingCount, fixedPaddingCount),

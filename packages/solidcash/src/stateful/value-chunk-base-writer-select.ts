@@ -7,7 +7,6 @@
 import { binToHex } from '@bitauth/libauth';
 import type {
   AbiFunction,
-  Artifact,
   EntryAccessAbi,
   EventDefinitionAbi,
   FunctionBlockLayout,
@@ -18,6 +17,7 @@ import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { absoluteValueChunkOutputBaseFromResolve } from '../message-bus/layout-resolver.js';
 import {
+  groupChunkableValueWriteCollections,
   permitsLegacyNamedValueChunkFallback,
 } from './chunkable-value-write-selection.js';
 import {
@@ -31,7 +31,7 @@ import {
   type KernelEntryJournalSettlementOutputPlanEntry,
 } from './KernelEntryJournal.js';
 import {
-  LEGACY_JOB_EVENTS_COLLECTION_ALIASES,
+  legacyNamedJobEventCollectionFallback,
 } from './legacy-planning-heuristics.js';
 import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 
@@ -171,8 +171,8 @@ export type ProtectedLoopEntryCollectionSelection =
 /** Select collection locks which same-index INSERT repair must not use as disposable relocation pads. */
 export function selectProtectedLoopEntryCollections(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-    'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
-    | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites'>>,
+  'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
+  | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites' | 'stateLayout'>>,
   ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): ProtectedLoopEntryCollectionSelection {
   let described = false;
@@ -218,11 +218,18 @@ export function selectProtectedLoopEntryCollections(
       collections.add(access.collection);
     }
   }
-  if (!described) return {
-    status: 'absent',
-    collections: permitsLegacyNamedValueChunkFallback(groups, ownerConvention)
-      ? [LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0]] : [],
-  };
+  if (!described) {
+    const declared = [...new Set(groups.flatMap(groupChunkableValueWriteCollections))];
+    if (declared.length > 0) return { status: 'exact', collections: declared };
+    // Descriptor-free legacy artifacts retain their historical adapter, but unrelated or empty group sets
+    // cannot claim this application's collection merely because the owner uses legacy-unroll.
+    return {
+      status: 'absent',
+      collections: [legacyNamedJobEventCollectionFallback(
+        groups, permitsLegacyNamedValueChunkFallback(groups, ownerConvention),
+      )].filter((collection): collection is string => collection !== undefined),
+    };
+  }
   return {
     status: ambiguous ? 'ambiguous' : 'exact',
     collections: [...collections],
@@ -246,7 +253,7 @@ export function selectExternalEventProbeInput(
 }
 
 export type CompilerWriterEventCandidate = Pick<ExternalCallUtxoGroup,
-  'categoryId' | 'blockLayout' | 'compilerRoute' | 'eventOutputs'>;
+'categoryId' | 'blockLayout' | 'compilerRoute' | 'eventOutputs'>;
 
 export type CompilerWriterEventSelection =
   | { status: 'absent' }
@@ -449,6 +456,41 @@ export type ParticipantImmutableEventDestination = {
   destination: number;
 };
 
+/** Event signatures follow compiler-published physical slot identities when present. */
+export function groupEventSignatures(
+  group: Pick<ExternalCallUtxoGroup, 'compilerRoute'>,
+  abiFunction?: Pick<AbiFunction, 'emits'>,
+): Array<string | undefined> {
+  const published = group.compilerRoute?.eventSignaturesBySlot ?? [];
+  const declared = abiFunction?.emits ?? [];
+  return Array.from({ length: Math.max(published.length, declared.length) }, (_, index) => (
+    published[index] ?? declared[index]?.eventSignature
+  ));
+}
+
+/** Delegate execution mutates the physical proxy's state, not the implementation's. */
+export function lowLevelCallStateOwnerCategory(
+  groupIndex: number,
+  group: Pick<ExternalCallUtxoGroup, 'categoryId' | 'callMode'>,
+  proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+  'categoryId' | 'delegateCallGroupIndex' | 'sharedGroupIndex'>>,
+  rootStateOwnerCategory = group.categoryId,
+  rootDelegateGroupIndex?: number,
+): string {
+  if (group.callMode !== 'delegatecall') return group.categoryId;
+  if (groupIndex === rootDelegateGroupIndex) return rootStateOwnerCategory;
+  const ownerCategories = new Set<string>();
+  for (const [candidateIndex, candidate] of proxyGroups.entries()) {
+    const ownerIndex = candidate.sharedGroupIndex ?? candidateIndex;
+    const owner = proxyGroups[ownerIndex] ?? candidate;
+    const delegateIndex = candidate.delegateCallGroupIndex ?? owner.delegateCallGroupIndex;
+    if (delegateIndex === groupIndex) ownerCategories.add(owner.categoryId);
+  }
+  if (ownerCategories.size === 0) return rootStateOwnerCategory;
+  if (ownerCategories.size === 1) return [...ownerCategories][0];
+  throw new Error(`Delegate execution group ${groupIndex} has multiple physical state owners`);
+}
+
 /**
  * Absolute immutable-event coordinates owned by low-level execution frames.
  *
@@ -458,17 +500,15 @@ export type ParticipantImmutableEventDestination = {
 export function lowLevelCallImmutableEventDestinations(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
   'categoryId' | 'callMode' | 'blockLayout' | 'compilerRoute'>>,
-  proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup, 'categoryId' | 'delegateCallGroupIndex'>>,
+  proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+  'categoryId' | 'delegateCallGroupIndex' | 'sharedGroupIndex'>>,
   inputBaseForGroup: (groupIndex: number) => number,
 ): ParticipantImmutableEventDestination[] {
   const destinations: ParticipantImmutableEventDestination[] = [];
   for (const [groupIndex, group] of groups.entries()) {
     const base = inputBaseForGroup(groupIndex);
     if (base < 0) continue;
-    const proxyGroup = group.callMode === 'delegatecall'
-      ? proxyGroups.find((candidate) => candidate.delegateCallGroupIndex === groupIndex)
-      : undefined;
-    const categoryId = proxyGroup?.categoryId ?? group.categoryId;
+    const categoryId = lowLevelCallStateOwnerCategory(groupIndex, group, proxyGroups);
     const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'returnEvent') {

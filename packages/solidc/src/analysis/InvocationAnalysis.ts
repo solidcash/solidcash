@@ -1,9 +1,11 @@
 import { binToHex } from '@bitauth/libauth';
 import { SplitStateFootprint } from '@solidcash/utils';
 import {
-  AssignNode, ContractNode, DeleteLocalNode, FunctionCallNode, FunctionCallStatementNode,
+  AssignNode, BlockNode, BoolLiteralNode, BranchNode, CollectionIterationNode, ContractNode,
+  DeleteLocalNode, FunctionCallNode,
+  FunctionCallStatementNode,
   FunctionDefinitionNode, IdentifierNode, IndirectCallNode, Node, TupleAssignmentNode,
-  TryCatchNode, VariableDefinitionNode,
+  TryCatchNode, VariableDefinitionNode, WhileNode,
 } from '../ast/AST.js';
 
 export interface InvocationFunctionSummary {
@@ -31,6 +33,18 @@ export interface InvocationAnalysis {
 
 const contractInvocationAnalysisCache = new WeakMap<ContractNode, InvocationAnalysis>();
 
+/** A same-signature contract member shadows a file-level function in a contract body. */
+export function visibleFreeFunctionsForContract(
+  contractFunctions: readonly FunctionDefinitionNode[],
+  freeFunctions: readonly FunctionDefinitionNode[],
+): FunctionDefinitionNode[] {
+  const sourceSignature = (fn: FunctionDefinitionNode): string => `${fn.name}(${fn.parameters
+    .filter((parameter) => !parameter.name.startsWith('__internal__'))
+    .map((parameter) => parameter.type.toString()).join(',')})`;
+  const memberSignatures = new Set(contractFunctions.map(sourceSignature));
+  return freeFunctions.filter((fn) => !memberSignatures.has(sourceSignature(fn)));
+}
+
 /**
  * Solidity `address.transfer` / `.send` before symbol resolution. `this.transfer` is already a
  * TransferStatementNode at parse; the address-receiver spelling is still `to.transfer` / `to.send`.
@@ -48,6 +62,7 @@ export function walkInvocationAst(
   value: unknown,
   visit: (node: Node) => void,
   seen = new Set<object>(),
+  options: { pruneLiteralDeadControlFlow?: boolean } = {},
 ): void {
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
@@ -55,8 +70,21 @@ export function walkInvocationAst(
   if (value instanceof TryCatchNode) {
     // BCH script failure aborts evaluation, so catches are not executable paths. Keep every footprint and
     // admission survey aligned with code generation by walking only the operation and successful try body.
-    walkInvocationAst(value.expression, visit, seen);
-    walkInvocationAst(value.tryBlock, visit, seen);
+    walkInvocationAst(value.expression, visit, seen, options);
+    walkInvocationAst(value.tryBlock, visit, seen, options);
+    return;
+  }
+  if (options.pruneLiteralDeadControlFlow && value instanceof BranchNode
+    && value.condition instanceof BoolLiteralNode) {
+    // Auto-selection asks whether a graph edge can execute. Keep normal analysis conservative; only this
+    // explicit opt-in ignores the arm that a literal condition makes unreachable.
+    const active = value.condition.value ? value.ifBlock : value.elseBlock;
+    if (active) walkInvocationAst(active, visit, seen, options);
+    return;
+  }
+  if (options.pruneLiteralDeadControlFlow && value instanceof WhileNode
+    && value.condition instanceof BoolLiteralNode && value.condition.value === false) {
+    // Unlike do-while, a while loop with a literal-false condition executes zero body iterations.
     return;
   }
   // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating
@@ -66,11 +94,62 @@ export function walkInvocationAst(
       || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
       || key === 'collection' || key === 'type' || key === 'location' || key === 'name' || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex' || key === 'abiType') continue;
     const child = value[key as keyof Node];
-    if (child instanceof Node) walkInvocationAst(child, visit, seen);
+    if (child instanceof Node) walkInvocationAst(child, visit, seen, options);
     else if (Array.isArray(child)) {
-      for (const item of child) walkInvocationAst(item, visit, seen);
+      for (const item of child) walkInvocationAst(item, visit, seen, options);
     }
   }
+}
+
+/** Walk executable nodes with the names actually in scope at each source position. */
+function walkScopedFootprintAst(
+  value: Node | undefined,
+  visit: (node: Node, locallyBound: ReadonlySet<string>) => void,
+  initialNames: ReadonlySet<string>,
+): void {
+  const active = new Set<Node>();
+  const walk = (node: Node | undefined, locallyBound: ReadonlySet<string>): void => {
+    if (!node || active.has(node)) return;
+    active.add(node);
+    visit(node, locallyBound);
+    if (node instanceof TryCatchNode) {
+      walk(node.expression, locallyBound);
+      const successNames = new Set(locallyBound);
+      for (const parameter of node.returnParameters ?? []) successNames.add(parameter.name);
+      walk(node.tryBlock, successNames);
+    } else if (node instanceof BlockNode) {
+      const blockNames = new Set(locallyBound);
+      for (const statement of node.statements ?? []) {
+        walk(statement, blockNames);
+        if (statement instanceof VariableDefinitionNode) blockNames.add(statement.name);
+        if (statement instanceof TupleAssignmentNode) {
+          for (const element of statement.elements) {
+            if (element.name !== undefined && element.type !== undefined) blockNames.add(element.name);
+          }
+        }
+      }
+    } else if (node instanceof CollectionIterationNode) {
+      const iterationNames = new Set(locallyBound);
+      if (node.keyName) iterationNames.add(node.keyName);
+      if (node.valueName) iterationNames.add(node.valueName);
+      walk(node.body, iterationNames);
+    } else {
+      for (const key in node) {
+        if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+          || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+          || key === 'collection' || key === 'type' || key === 'location' || key === 'name'
+          || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex'
+          || key === 'abiType') continue;
+        const child = node[key as keyof Node];
+        if (child instanceof Node) walk(child, locallyBound);
+        else if (Array.isArray(child)) {
+          for (const item of child) if (item instanceof Node) walk(item, locallyBound);
+        }
+      }
+    }
+    active.delete(node);
+  };
+  walk(value, initialNames);
 }
 
 export function directCallNames(fn: FunctionDefinitionNode): Set<string> {
@@ -112,7 +191,6 @@ export function collectNamedFunctionClosure(
 
 export interface FootprintAnalysisCache {
   directCalls: WeakMap<FunctionDefinitionNode, Set<string>>;
-  bodyNodes: WeakMap<FunctionDefinitionNode, { locallyBound: Set<string>; nodes: Node[] }>;
   directFootprints: WeakMap<FunctionDefinitionNode, SplitStateFootprint>;
   /** Contract scalar-state namespace used while analysing pre-semantic Solidity-compatible bare identifiers. */
   stateNames?: ReadonlySet<string>;
@@ -120,7 +198,7 @@ export interface FootprintAnalysisCache {
 
 export function createFootprintAnalysisCache(stateNames?: ReadonlySet<string>): FootprintAnalysisCache {
   return {
-    directCalls: new WeakMap(), bodyNodes: new WeakMap(), directFootprints: new WeakMap(),
+    directCalls: new WeakMap(), directFootprints: new WeakMap(),
     ...(stateNames && { stateNames: new Set(stateNames) }),
   };
 }
@@ -147,33 +225,14 @@ export function analyseFunctionFootprint(
       const directReads = new Set<string>();
       const directWrites = new Set<string>();
       const directEffects = new Set<string>();
+      const bareWriteTargets = new WeakSet<IdentifierNode>();
       let directUnknown = false;
-      let locallyBound: Set<string>;
-      let nodes: Node[] | undefined;
-      const cached = cache?.bodyNodes.get(candidate);
-      if (cached) ({ locallyBound, nodes } = cached);
-      else {
-        if (cache) {
-          locallyBound = new Set([
-            ...candidate.parameters.map((parameter) => parameter.name),
-            ...candidate.returnNames,
-          ]);
-          nodes = [];
-          walkInvocationAst(candidate.body, (node) => {
-            nodes!.push(node);
-            if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
-            if (node instanceof TupleAssignmentNode) {
-              for (const element of node.elements) {
-                if (element.name !== undefined && element.type !== undefined) locallyBound.add(element.name);
-              }
-            }
-          });
-          cache.bodyNodes.set(candidate, { locallyBound, nodes });
-        } else {
-          locallyBound = locallyBoundNames(candidate);
+      const analyseNode = (node: Node, locallyBound: ReadonlySet<string>): void => {
+        // The generic walk also visits an Assign/Delete target's IdentifierNode. A plain write does not read
+        // that value; compound assignments retain a separate identifier in their desugared RHS and still do.
+        if (node instanceof AssignNode || node instanceof DeleteLocalNode) {
+          bareWriteTargets.add(node.identifier);
         }
-      }
-      const analyseNode = (node: Node): void => {
         const kind = node.constructor.name;
         const shaped = node as unknown as { name?: string; keys?: Node[] };
         const resourceName = shaped.name;
@@ -200,11 +259,11 @@ export function analyseFunctionFootprint(
         } else if (node instanceof DeleteLocalNode && cache?.stateNames?.has(node.identifier.name)
           && !locallyBound.has(node.identifier.name)) {
           directWrites.add(`state:${node.identifier.name}`);
-        } else if (node instanceof IdentifierNode && cache?.stateNames?.has(node.name)
+        } else if (node instanceof IdentifierNode && !bareWriteTargets.has(node)
+          && cache?.stateNames?.has(node.name)
           && !locallyBound.has(node.name)) {
           directReads.add(`state:${node.name}`);
-        }
-        else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
+        } else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
           directReads.add(collectionResourceName(bareReadName, undefined));
         } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource
           && resourceName && !locallyBound.has(resourceName)) {
@@ -235,11 +294,10 @@ export function analyseFunctionFootprint(
           directEffects.add('external-call');
         } else if (node instanceof IndirectCallNode) directUnknown = true;
       };
-      if (nodes) {
-        for (const node of nodes) analyseNode(node);
-      } else {
-        walkInvocationAst(candidate.body, analyseNode);
-      }
+      walkScopedFootprintAst(candidate.body, analyseNode, new Set([
+        ...candidate.parameters.map((parameter) => parameter.name),
+        ...candidate.returnNames,
+      ]));
       const directFootprint: SplitStateFootprint = {
         reads: [...directReads],
         writes: [...directWrites],
@@ -259,34 +317,6 @@ export function analyseFunctionFootprint(
     effects: [...effects].sort(),
     ...result,
   };
-}
-
-/**
- * Parameter and local-declaration names bound inside one function - never a contract collection.
- *
- * A NAMED RETURN (`returns (uint[] memory amounts)`) and a tuple DECLARATION (`(uint a, uint[] b) = f()`) bind
- * a local exactly as a parameter or a `var` declaration does, and symbol resolution resolves an element access
- * on either to that local. Omitting them made the bare-element branches below read `amounts[i]` in
- * UniswapV2Router02 as a collection access and publish `collection:amounts:*` for a name the contract never
- * declares; the message-bus route is gated on this footprint, so every such handler was refused
- * 'collection-helper-route-not-enabled' with no collection involved at all. Only tuple elements that DECLARE
- * (they carry a type) are bound here - an `existing` element names a variable bound at its own declaration,
- * and treating one as local would hide a genuine state write from the footprint.
- */
-function locallyBoundNames(fn: FunctionDefinitionNode): Set<string> {
-  const names = new Set<string>([
-    ...fn.parameters.map((parameter) => parameter.name),
-    ...fn.returnNames,
-  ]);
-  walkInvocationAst(fn.body, (node) => {
-    if (node instanceof VariableDefinitionNode) names.add(node.name);
-    if (node instanceof TupleAssignmentNode) {
-      for (const element of node.elements) {
-        if (element.name !== undefined && element.type !== undefined) names.add(element.name);
-      }
-    }
-  });
-  return names;
 }
 
 export function collectionResourceName(name: string, keys: Node[] | undefined): string {
@@ -320,24 +350,12 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
   }
   const calls = new Map<number, Set<number>>();
   const footprintCache: FootprintAnalysisCache = {
-    directCalls: new WeakMap(), bodyNodes: new WeakMap(), directFootprints: new WeakMap(),
+    directCalls: new WeakMap(), directFootprints: new WeakMap(),
   };
   for (const fn of functions) {
     const out = new Set<number>();
     const directCalls = new Set<string>();
-    const locallyBound = new Set([
-      ...fn.parameters.map((parameter) => parameter.name),
-      ...fn.returnNames,
-    ]);
-    const bodyNodes: Node[] = [];
     walkInvocationAst(fn.body, (node) => {
-      bodyNodes.push(node);
-      if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
-      if (node instanceof TupleAssignmentNode) {
-        for (const element of node.elements) {
-          if (element.name !== undefined && element.type !== undefined) locallyBound.add(element.name);
-        }
-      }
       if (node instanceof FunctionCallNode) {
         if (!node.fromThisCall) directCalls.add(node.identifier.name);
         const id = node.resolvedFunction?.functionId;
@@ -346,7 +364,6 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
     });
     calls.set(fn.functionId!, out);
     footprintCache.directCalls.set(fn, directCalls);
-    footprintCache.bodyNodes.set(fn, { locallyBound, nodes: bodyNodes });
   }
 
   let next = 0;

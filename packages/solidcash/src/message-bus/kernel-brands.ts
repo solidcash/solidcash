@@ -6,10 +6,10 @@
  * nominal at compile time; constructors validate and fail closed at runtime.
  */
 
-declare const __kernelBrand: unique symbol;
+declare const kernelBrand: unique symbol;
 
 /** Nominal brand: `T` at runtime, distinct from other brands at the type level. */
-export type KernelBrand<T, B extends string> = T & { readonly [__kernelBrand]: B };
+export type KernelBrand<T, B extends string> = T & { readonly [kernelBrand]: B };
 
 export type ParticipantId = KernelBrand<number, 'ParticipantId'>;
 export type AbsoluteInputIndex = KernelBrand<number, 'AbsoluteInputIndex'>;

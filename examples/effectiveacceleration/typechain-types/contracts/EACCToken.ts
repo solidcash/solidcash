@@ -17,8 +17,6 @@ export type StringSlotStruct = { value: string; };
 export type StringSlotStructOutput = [value: string] & { value: string; };
 export type BytesSlotStruct = { value: Uint8Array | string; };
 export type BytesSlotStructOutput = [value: Uint8Array | string] & { value: Uint8Array | string; };
-export type RecoverError = 0n | 1n | 2n | 3n;
-export type Rounding = 0n | 1n | 2n | 3n;
 
 export type EACCToken = StatefulContract<typeof EACCTokenArtifact>;
 export type EACCTokenConstructorArgs = [];

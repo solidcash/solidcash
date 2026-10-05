@@ -42,7 +42,7 @@ const assertKernelRoute = (source: string, handlerName: string): ReturnType<type
 };
 
 describe('message-bus kernel cutover route', () => {
-  it('publishes active-entry callers for ordinary routes and owner callers for delegate routes', () => {
+  it('publishes active-entry callers for ordinary and delegate routes', () => {
     const source = `
 pragma solidcash ^0.13.0;
 interface ISink { function ping() external; }
@@ -59,13 +59,13 @@ contract Caller(address sink) {
 
     const delegated = compileString(source, { ...OPTIONS, autoDelegate: true });
     expect(delegated.abi.find((entry) => entry.name === 'fire')?.externalCalls?.[0]?.callerIdentity)
-      .toEqual({ version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0 });
+      .toEqual({ version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff });
 
     const explicitDelegate = compileString(
       source.replace('function fire() public {', 'function fire() public delegate {'), OPTIONS,
     );
     expect(explicitDelegate.abi.find((entry) => entry.name === 'fire')?.externalCalls?.[0]?.callerIdentity)
-      .toEqual({ version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0 });
+      .toEqual({ version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff });
   });
 
   it('journals a parameter-keyed mapping helper on the runtime row loop', () => {
@@ -116,6 +116,30 @@ contract Token() {
 `, 'credit');
     const credit = artifact.messageBus?.handlers.find((handler) => handler.name === 'credit');
     expect(credit?.outputs?.some((output) => output.type.includes('bool'))).toBe(true);
+  });
+
+  it('keeps a returning ERC-20 mapping writer with an event on kernel row dispatch', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Token() {
+  mapping(address => mapping(address => uint)) allowances;
+  event Approval(address indexed owner, address indexed spender, uint value);
+  function approve(address spender, uint value) public returns (bool) {
+    allowances[msg.sender][spender] = value;
+    emit Approval(msg.sender, spender, value);
+    return true;
+  }
+  function revoke(address spender) public returns (bool) {
+    allowances[msg.sender][spender] = 0;
+    emit Approval(msg.sender, spender, 0);
+    return true;
+  }
+}
+`, 'approve');
+    const approve = artifact.messageBus?.handlers.find((handler) => handler.name === 'approve');
+    expect(approve?.eligible).toBe(true);
+    expect(approve?.outputs?.some((output) => output.type.includes('bool'))).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'revoke')?.eligible).toBe(true);
   });
 
   it('pools an explicit read-only mapping result wrapper with sibling writers', () => {

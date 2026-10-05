@@ -34,16 +34,16 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *
  * MEASURED AT 0.0.8. `createVirtualMachineBch2026ForProvider(provider)` agrees with the decider on every shape
  * tried: P2PKH and `decrement(3)` at `operationCostBudgetPerByte` 150 and 800, `maximumStackItemBytes: 8`,
- * `decrement(24)`/`(40)` on the relaxed default, in both dust regimes. A bare `createVirtualMachineBch2026()`
+ * `decrement(40)` on the relaxed default, in both dust regimes. A bare `createVirtualMachineBch2026()`
  * diverges in BOTH directions:
  *
  * - FAIL-OPEN under a strict profile: it accepts a P2PKH spend (row 1) and a `decrement(3)` (row 2) that the
  *   decider refuses at 150 x density.
- * - FAIL-CLOSED under the relaxed default: it refuses `decrement(24)`/`(40)` at the stock 800 x density that
+ * - FAIL-CLOSED under the relaxed default: it refuses `decrement(40)` at the stock 800 x density that
  *   the decider accepts (row 4).
  *
  * The fail-open direction is the one that must not stand, so the repair is applied at
- * `_strictRecursiveVmPreflight`. Consequence reported rather than hidden: `decrement(24)` is NEWLY BUILDABLE on
+ * `_strictRecursiveVmPreflight`. Consequence reported rather than hidden: `decrement(40)` is BUILDABLE on
  * the default profile. That is the gate ceasing to refuse what the network accepts, not a new witness path -
  * the covenant scripts and the state derivation are untouched, and the decider still verifies every input.
  *
@@ -60,7 +60,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * so does the decider, byte-identically. It held only at 0.0.7, where nothing enforced the budget.
  *
  * THE REPAIR IS FAIL-OPEN IF THIS TREE IS EVER AT 0.0.7, measured both ways. At 0.0.7 the decider applies the
- * stock 800 and REFUSES `decrement(24)`/`(40)`, while the repaired preflight reads the published 10,000,000 and
+ * stock 800 and REFUSES `decrement(40)`, while the repaired preflight reads the published 10,000,000 and
  * admits them - a broadcast-time failure that used to be a build-time one. Row 0 is the only thing standing
  * between that and silence, and a failing test is not a runtime guard. A runtime assertion in
  * `MockNetworkProvider`'s constructor - that the installed `@mem-cash/validation` honours `consensus` - would
@@ -305,23 +305,19 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
 
   it('4. the bare VM was also FAIL-CLOSED: it refused a depth the decider accepts', async () => {
     // The relaxed DEFAULT profile - what every unconfigured caller gets. A bare VM applies the stock 800 per
-    // byte and refuses; the provider publishes 10,000,000 and accepts. NEWLY BUILDABLE after the repair.
+    // byte and refuses; the provider publishes 10,000,000 and accepts.
     //
-    // DEPTH BAND, measured (unlocking script 684 B, density 725, stock ceiling 580,000, 3 trials each):
-    //   depth 12, 20 -> bare ACCEPTS, decider accepts (below the ceiling)
-    //   depth 24, 28, 40 -> bare REFUSES by 22, 14, 22, decider ACCEPTS   <- the divergence this row pins
-    //   depth 80 -> bare refuses by 38 and the decider refuses too (its own limits finally bite)
-    // The overshoot is always a handful of units because the refusal fires on the first operation past the
-    // ceiling; that is inherent, not a fragile choice of depth. What IS fragile is the 20 -> 24 boundary: a
-    // codegen change that shifts per-operation cost moves it, and this row would flip. If it ever does, read
-    // the band above rather than relaxing the assertion.
+    // The former depth-24 witness now fits the bare VM after codegen changes. Depth 40 still proves the same
+    // divergence on the finalized transaction bytes: the stock 800-per-byte VM refuses, while the provider-
+    // configured VM and the network both accept. If codegen shifts the boundary again, find a new concrete
+    // separating depth rather than dropping either side of this assertion.
     // Asked for the relaxed budget by way of the DEFAULT profile until the default became the real 800 (see
     // MOCK_CONSENSUS_LIMITS). What this row pins is bare-VM-versus-decider divergence at a PUBLISHED relaxed
     // budget, which is unchanged; it just has to name the budget now instead of inheriting it.
     const provider = costProfile(MOCK_RELAXED_OPERATION_COST, true);
     expect(provider.consensusLimits.operationCostBudgetPerByte).toBe(MOCK_RELAXED_OPERATION_COST);
     const sc = await recursionContract(provider);
-    const { builder, error } = await sendCapturingPreflightInput(sc, 24n);
+    const { builder, error } = await sendCapturingPreflightInput(sc, 40n);
     expect(error, 'the repaired gate should no longer refuse this depth').toBeUndefined();
     expect(builder).toBeDefined();
 

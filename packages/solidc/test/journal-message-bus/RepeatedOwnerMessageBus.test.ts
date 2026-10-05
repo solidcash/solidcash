@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { compileFile } from '../../src/compileFile.js';
 import {
   compileString,
   compileStringMulti,
@@ -47,7 +48,10 @@ describe('inferred message-bus batching for repeated external callees', () => {
   });
 
   it('publishes deterministic pre-collapse source callsites for every batch row', () => {
-    const projection = () => compileString(SOURCE).abi.find((fn) => fn.name === 'run')
+    const projection = (): Array<{
+      physicalCallsiteId: number | undefined;
+      rows: Array<{ sourceCallsiteId: number | undefined; logicalIndex: number }> | undefined;
+    }> | undefined => compileString(SOURCE).abi.find((fn) => fn.name === 'run')
       ?.externalCalls?.map((call) => ({
         physicalCallsiteId: call.callsiteId,
         rows: call.batchInvocations?.map((row) => ({
@@ -140,6 +144,37 @@ describe('inferred message-bus batching for repeated external callees', () => {
       .toBeGreaterThan(0);
   });
 
+  it('numbers external effects after an inlined helper at their caller program point', () => {
+    const artifact = compileString(`
+      interface IReader { function read(uint key) external view returns (uint); }
+      interface ISink { function record(uint value) external; }
+      contract Ordered(address reader, address sink) {
+        function relay(uint value) internal { ISink(sink).record(value); }
+        function run() public {
+          for (uint i = 0; i < 2; i++) {
+            uint observed = IReader(reader).read(i);
+            relay(observed);
+          }
+        }
+      }
+    `, { forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
+    expect(calls?.map((call) => call.functionName)).toEqual(['read', 'record']);
+    expect(calls?.[0].sourceEffectOrdinal).toBeLessThan(calls?.[1].sourceEffectOrdinal!);
+  });
+
+  it('keeps an inlined nested payout after the repeated producer calls', () => {
+    const artifact = compileFile('../../examples/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol', {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'claimMultiple')?.externalCalls;
+    const ordinal = (name: string): number | undefined => calls?.find((call) =>
+      call.functionName === name)?.sourceEffectOrdinal;
+    expect(ordinal('setClaimed')).toBeGreaterThan(ordinal('splitCalculation')!);
+    expect(ordinal('sendEscrowShare')).toBeGreaterThan(ordinal('setClaimed')!);
+  });
+
   it('marks ternary and short-circuit effect domains as unsupported flow', () => {
     const artifact = compileString(`
       interface ISink { function put(int value) external; }
@@ -228,7 +263,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
     });
   });
 
-  it('leaves an index the compiler cannot describe as an induction variable on the unproven fallback', () => {
+  it('preserves a computed loop index as an occurrence-dependent expression', () => {
     const artifact = compileString(`
       interface ISink { function put(int value) external; }
       contract Caller(address sink) {
@@ -240,10 +275,14 @@ describe('inferred message-bus batching for repeated external callees', () => {
     `);
     const run = artifact.abi.find((fn) => fn.name === 'run');
     expect(run?.externalCalls).toHaveLength(1);
-    // No step is published, so a consumer must read the source as array-order expansion of the first group
-    // rather than as an index it has been told how to advance.
     expect(run?.externalCalls?.[0]?.argSources?.[0])
-      .toEqual({ kind: 'arrayElement', paramIndex: 0, indexValue: 0 });
+      .toMatchObject({ kind: 'expression', expression: {
+        kind: 'arrayAccess',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        right: { kind: 'binary', operator: '+',
+          left: { kind: 'source', source: { kind: 'loopIndex', initialValue: '0', stepValue: '1' } },
+          right: { kind: 'literal', value: '1' } },
+      } });
   });
 
   it('collapses the supported repeated-owner shape by default', () => {
@@ -455,6 +494,54 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(() => compileStringMulti(SOURCE, { forceStateful: true, messageBus: false }))
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
     expect(() => compileStringSplit(SOURCE, { forceStateful: true, messageBus: false }))
+      .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
+  });
+
+  it('does not require message bus for an unreachable library call pair', () => {
+    const source = `pragma solidity ^0.8.0;
+      interface ICounter { function add(int amount) external; }
+      library Dormant {
+        function twice(ICounter target, int amount) internal {
+          target.add(amount);
+          target.add(amount);
+        }
+      }
+      contract Caller {
+        int value;
+        function set(int next) public { value = next; require(next >= 0); }
+      }`;
+    const direct = compileString(source, {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+    });
+    expect(direct.compiler.options?.messageBus).toBe(false);
+    expect(direct.messageBus).toBeUndefined();
+
+    const reached = source.replace('function set(int next) public { value = next;',
+      'function set(int next, ICounter target) public { Dormant.twice(target, next); value = next;');
+    expect(() => compileString(reached, {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+    })).toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
+  });
+
+  it('does not require message bus for an unreachable internal call pair', () => {
+    const source = `interface ICounter { function add(int amount) external; }
+      contract Caller(address counter) {
+        int value;
+        function dormant(int amount) internal {
+          ICounter(counter).add(amount);
+          ICounter(counter).add(amount);
+        }
+        function set(int next) public { value = next; require(next >= 0); }
+      }`;
+    const direct = compileString(source, { messageBus: false, suppressWarnings: true });
+    expect(direct.compiler.options?.messageBus).toBe(false);
+    expect(direct.messageBus).toBeUndefined();
+    const automatic = compileString(source, { suppressWarnings: true });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const reached = source.replace('value = next;', 'dormant(next); value = next;');
+    expect(() => compileString(reached, { messageBus: false, suppressWarnings: true }))
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
   });
 

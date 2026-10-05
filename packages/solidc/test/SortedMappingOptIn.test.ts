@@ -253,6 +253,47 @@ describe('sorted mapping array push leading-value param', () => {
     }
   });
 
+  it('publishes unconditional block-timestamp updates by parameter and struct field', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      contract C {
+        struct Notice { uint8 kind; bytes payload; uint32 recordedAt; }
+        mapping(uint256 => Notice[]) notices;
+        function record(uint256 key, Notice memory notice) public {
+          notice.recordedAt = uint32(block.timestamp);
+          notices[key].push(notice);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'record')?.argumentFieldUpdates)
+      .toEqual([{
+        parameter: 'notice',
+        fieldPath: ['recordedAt'],
+        source: 'blockTimestamp',
+      }]);
+  });
+
+  it('does not publish a conditional or multiply-written parameter field as an unconditional update', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      contract C {
+        struct Notice { uint32 recordedAt; }
+        mapping(uint256 => Notice[]) notices;
+        function conditional(uint256 key, Notice memory notice, bool enabled) public {
+          if (enabled) notice.recordedAt = uint32(block.timestamp);
+          notices[key].push(notice);
+        }
+        function overwritten(uint256 key, Notice memory notice) public {
+          notice.recordedAt = uint32(block.timestamp);
+          notice.recordedAt = 7;
+          notices[key].push(notice);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'conditional')?.argumentFieldUpdates)
+      .toBeUndefined();
+    expect(artifact.abi.find((candidate) => candidate.name === 'overwritten')?.argumentFieldUpdates)
+      .toBeUndefined();
+  });
+
   it('does not inject leadingPushValue on a read-only vmap getter', () => {
     const artifact = compileString(`
       contract C() {

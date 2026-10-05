@@ -75,6 +75,7 @@ export function resolveCreateBuilderEntryAbi(
         entryArtifact = ci.contract.inner.artifact;
         entryCompilerRoute = ci.compilerRoute;
         if (entryCompilerRoute) {
+          const compilerRoute = entryCompilerRoute;
           // Compiler routes retain a compact visible-only argument frame. Entry planning indexes arguments by
           // the complete route ABI, so expand that frame by name before resolving collection keys/values.
           // Treating the compact vector as ABI-positioned makes every witness after the first hidden input
@@ -82,9 +83,9 @@ export function resolveCreateBuilderEntryAbi(
           let visibleIndex = 0;
           entryArgs = implFn.inputs.map((input) => {
             if (input.name.startsWith('__internal__')) {
-              return entryCompilerRoute!.internalArgs?.[input.name];
+              return compilerRoute.internalArgs?.[input.name];
             }
-            const value = entryCompilerRoute!.args[visibleIndex];
+            const value = compilerRoute.args[visibleIndex];
             visibleIndex += 1;
             return value;
           }) as FunctionArgument[];

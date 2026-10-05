@@ -11,6 +11,7 @@ import {
   type ExternalCallUtxoGroup,
   type TokenContainerInfo,
 } from './external-call-utxo-group.js';
+import { identityAnchorPlacement } from './stb-build-inputs.js';
 
 export interface AssembleConstructorInputsHost {
   readonly stateLayout: StateLayout;
@@ -22,7 +23,7 @@ export interface AssembleConstructorInputsHost {
   readonly satoshiContainerUtxo?: UnlockableUtxo;
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
-  readonly pendingJobEventsPredecessors: readonly UnlockableUtxo[];
+  readonly pendingValueChunkPredecessors: readonly UnlockableUtxo[];
   readonly blockLayout?: FunctionBlockLayout;
   readonly preserveBlockLayoutWidth: boolean;
   readonly compilerRouteDelegateBlock: boolean;
@@ -37,7 +38,7 @@ export interface AssembleConstructorInputsHost {
     lowLevelCallInputs: UnlockableUtxo[],
   ): UnlockableUtxo[];
   swapMintingOffValueChunkBand(): void;
-  placeJobEventsPredecessorInputs(extras: readonly UnlockableUtxo[]): void;
+  placeValueChunkPredecessorInputs(extras: readonly UnlockableUtxo[]): void;
 }
 
 /**
@@ -76,6 +77,7 @@ export function assembleConstructorInputs(
       externalCallInputs.push(group.masterUtxo as UnlockableUtxo);
       externalCallInputs.push(...group.dataNftUtxos);
     }
+    externalCallInputs.push(...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo));
   }
 
   // Flatten low-level call inputs (stateful groups + raw UTXOs). Prefer the full
@@ -138,11 +140,12 @@ export function assembleConstructorInputs(
   debugInputAssembly('constructed');
   host.swapMintingOffValueChunkBand();
   debugInputAssembly('minting-band-relocated');
-  host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
+  host.placeValueChunkPredecessorInputs(host.pendingValueChunkPredecessors);
   debugInputAssembly('predecessors-placed');
-  // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
-  // identity from the LAST input, so that tail position must stay the caller's.
-  host.allInputs.push(...host.externalIdentityAnchorUtxos);
-  if (host.logicalIdentityUtxo) host.allInputs.push(host.logicalIdentityUtxo);
+  // Published identity slots are already populated by buildInputs. Only legacy/unrepresented anchors remain
+  // in the post-block tail, with the caller's logical identity last.
+  host.allInputs.push(...identityAnchorPlacement(
+    host.blockLayout, host.externalIdentityAnchorUtxos, host.logicalIdentityUtxo,
+  ).trailing);
   debugInputAssembly('identity-anchors-appended');
 }

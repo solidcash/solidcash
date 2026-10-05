@@ -1,9 +1,10 @@
 /**
- * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 1 post-evaluate value-witness refresh + data-NFT apply.
+ * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 1
+ * post-evaluate value-witness refresh + data-NFT apply.
  */
 
 import {
-  binToHex, hexToBin, type AuthenticationProgramStateCommon,
+  binToHex, type AuthenticationProgramStateCommon,
 } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
 import { sha256 as sha256Sync } from '@solidcash/utils';

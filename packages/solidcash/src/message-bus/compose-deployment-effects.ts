@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — validate unique genesis outpoints and map deployments to slot effects.
+ * Compose phase-boundary extract: validate unique genesis outpoints
+ * and map deployments to slot effects.
  */
 
 import { binToHex } from '@bitauth/libauth';

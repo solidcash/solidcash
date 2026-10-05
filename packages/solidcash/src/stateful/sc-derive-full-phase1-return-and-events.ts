@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 1 return-event blob + event discovery/progress.
  */
 
-import { binToHex, hexToBin, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
 import {
   Op,
@@ -16,8 +16,11 @@ import { isCompilerDescribedRouteEventCommitment } from './compiler-described-ro
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   extractEvmScalarReturnCommitment,
+  isCanonicalEvmReturnVector,
+  selectEvmScalarReturnCommitment,
 } from './external-return-encoding.js';
 import {
+  evaluateBoundedProbeCandidates,
   evaluateFaithfulOrDebugTrace,
   evaluateProbeTrace,
 } from './faithful-probe-trace.js';
@@ -54,6 +57,10 @@ export function deriveFullPhase1ReturnAndEvents(
   bMasterIdx: number,
 ): void {
   const ec = { hasReturnValues };
+  const routeReturnDebugEnabled = (): boolean => {
+    const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    return env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
+  };
   // Return event blob: extract from the dedicated return-event section, whose index is fixed at the
   // tx end and therefore order-independent. The inline data-NFT range only coincides with the return
   // event when the returning call is the LAST external call; a call following it shifts the return
@@ -111,6 +118,11 @@ export function deriveFullPhase1ReturnAndEvents(
     }
     let evmScalar = calleeReturnEncoding === 'evm-abi-v1'
       ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes, false) : undefined;
+    if (!returnCommitments?.length && !evmScalar && calleeReturnEncoding === 'evm-abi-v1') {
+      evmScalar = selectEvmScalarReturnCommitment(
+        evaluateBoundedProbeCandidates(host.inner.provider, returnProgram), calleeReturnTypes, false,
+      );
+    }
     if (!returnCommitments?.length && !evmScalar) {
       fullTraceRet = evaluateFaithfulOrDebugTrace(host.inner.provider, returnProgram);
       returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
@@ -136,6 +148,29 @@ export function deriveFullPhase1ReturnAndEvents(
         || returnCommitments.every((commitment) => /^0+$/.test(commitment)))) {
         returnCommitments = [expectedCommitment];
       }
+      // A long ABI return cannot fit in an NFT commitment. The generated covenant compares the
+      // SHA256 of its raw return against this output instead. At the dedicated output read, the
+      // adjacent stack word is that expected digest; recover its exact preimage from the same
+      // trace only when the digest and declared ABI shape both match. The completed transaction
+      // still has to pass the covenant VM proof with the resulting output.
+      if (calleeReturnEncoding === 'evm-abi-v1' && calleeReturnTypes.length === 1) {
+        const expectedDigests = new Set(fullTraceRet.flatMap((state) => {
+          if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
+            || state.stack.length < 2
+            || Number(decodeScriptNumber(state.stack.at(-1)!)) !== inBlockIdx) return [];
+          const candidate = state.stack.at(-2)!;
+          return candidate.length === 32 ? [binToHex(candidate)] : [];
+        }));
+        if (expectedDigests.size > 0) {
+          const rawReturn = fullTraceRet.flatMap((state) => state.stack).find((candidate) =>
+            candidate.length > 128
+            && isCanonicalEvmReturnVector(candidate, calleeReturnTypes,
+              calleeReturnArtifact.structs ?? calleeReturnArtifact.stateLayout?.structs,
+              calleeReturnArtifact.enums)
+            && expectedDigests.has(binToHex(sha256.hash(candidate))));
+          if (rawReturn) returnCommitments = [binToHex(rawReturn)];
+        }
+      }
     }
     // An exact return-output comparison binds the result to the compiler-assigned channel. A schema-shaped
     // stack value is only fallback evidence: mappings and state serialization can leave canonical pushdata
@@ -144,11 +179,6 @@ export function deriveFullPhase1ReturnAndEvents(
     if (evmScalar && !returnCommitments?.length
       && (!fullTraceRet.at(-1)?.error || !/^0+$/.test(evmScalar))) {
       const boolReturn = calleeReturnTypes.length === 1 && calleeReturnTypes[0] === 'bool';
-      const logicalName = group.logicalFunctionName ?? group.functionName;
-      const writerAbi = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-        .find((fn) => fn.name === logicalName)
-        ?? group.compilerRoute?.abiFunction;
-      const isView = writerAbi?.writesState !== true;
       const precomputedHex = group.precomputedReturnCommitment
         ? binToHex(group.precomputedReturnCommitment) : undefined;
       const scannedTrue = boolReturn && /^(00)+01$/.test(evmScalar);
@@ -175,6 +205,15 @@ export function deriveFullPhase1ReturnAndEvents(
     // Keep the provisional advancing value until the callee actually reads its dedicated output.
     if (fullTraceRet.at(-1)?.error && !reachedReturnCommitmentRead
       && returnCommitments?.every((commitment) => /^0+$/.test(commitment))) {
+      returnCommitments = undefined;
+    }
+    // A failed probe can leave a scalar `true` (0151) or a prior callee's result on the stack. Neither is an
+    // authenticated fixed-array return merely because it was the last complete push observed. Keep the typed
+    // provisional slot until the callee reaches its own return comparison.
+    if (returnCommitments?.length && calleeReturnEncoding === 'evm-abi-v1'
+      && !isCanonicalEvmReturnVector(hexToBin(returnCommitments[0]), calleeReturnTypes,
+        calleeReturnArtifact.structs ?? calleeReturnArtifact.stateLayout?.structs,
+        calleeReturnArtifact.enums)) {
       returnCommitments = undefined;
     }
     if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
@@ -240,7 +279,7 @@ export function deriveFullPhase1ReturnAndEvents(
         : bAbiFunc?.emits ?? [];
 
     if (bEmits.some((emit) => emit !== undefined)) {
-    // Delegate callees (MarketplaceData.publishJobEvent) emit at impl+offset.
+    // Delegate callees emit at their implementation-relative offset.
     // The proxy __forward layout is only master+data and has no event slot.
       const eventSlots: Array<{ kind: string; offset: number }> = (
         bAbiFunc?.blockLayout?.slots ?? group.blockLayout.slots
@@ -377,8 +416,7 @@ export function deriveFullPhase1ReturnAndEvents(
               eventOutputs[ei] = undefined;
             }
             group.eventOutputs = eventOutputs;
-            if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
-              (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+            if (routeReturnDebugEnabled()) {
               console.error('progressive-route-events', {
                 candidate: ei,
                 learned: eventOutputs.map((output, index) => output ? index : undefined)

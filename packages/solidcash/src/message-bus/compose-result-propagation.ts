@@ -12,6 +12,7 @@ import {
   type PreparedAtomicMessageBusCall,
 } from './compose-prepared-invocation.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
+import { AuthenticatedProducerResults } from './authenticated-producer-results.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 type PlannedInvocation = CompiledGraphPlan['invocations'][number];
@@ -35,11 +36,11 @@ export function hasResultDependentAncestor(
   return false;
 }
 
-export function propagateResultDependentArguments(
+export function decodeResultsByParent(
   ctx: ResultPropagationContext,
   results: Readonly<Record<number, string>>,
-): { propagated: boolean; calls: PreparedAtomicMessageBusCall[] } {
-  const resultsByParent = new Map<number, Map<number, FunctionArgument>>();
+): Map<number, AuthenticatedProducerResults> {
+  const resultsByParent = new Map<number, AuthenticatedProducerResults>();
   for (const invocation of ctx.returning) {
     if (invocation.parent === null || invocation.consumerCallsiteId === undefined) continue;
     const resultHex = results[invocation.index];
@@ -54,20 +55,54 @@ export function propagateResultDependentArguments(
       ? undefined
       : (decoded.length === 1 ? decoded[0] : decoded) as FunctionArgument;
     if (value === undefined) continue;
-    const siblings = resultsByParent.get(invocation.parent) ?? new Map<number, FunctionArgument>();
+    const siblings = resultsByParent.get(invocation.parent) ?? new AuthenticatedProducerResults(invocation.parent);
     if (siblings.has(invocation.consumerCallsiteId)) {
-      throw new Error(
-        `Atomic graph has duplicate authenticated producer lane ${invocation.parent}:${invocation.consumerCallsiteId}.`,
-      );
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1') {
+        console.error('atomic-repeated-producer-lane', JSON.stringify({
+          parent: invocation.parent,
+          callsite: invocation.consumerCallsiteId,
+          producers: ctx.returning.filter((candidate) => candidate.parent === invocation.parent
+            && candidate.consumerCallsiteId === invocation.consumerCallsiteId).slice(0, 24).map((candidate) => ({
+            index: candidate.index,
+            function: candidate.function,
+            callee: candidate.callee,
+            callsiteId: ctx.descriptors[candidate.index]?.callsiteId,
+            sourceCallsiteId: ctx.descriptors[candidate.index]?.sourceCallsiteId,
+            sourceLogicalIndex: ctx.descriptors[candidate.index]?.sourceLogicalIndex,
+            batchLogicalIndex: ctx.descriptors[candidate.index]?.batchLogicalIndex,
+            occurrenceIndex: candidate.occurrenceIndex,
+          })),
+        }));
+      }
     }
-    siblings.set(invocation.consumerCallsiteId, value);
+    siblings.add({
+      callsiteId: invocation.consumerCallsiteId,
+      sourceCallsiteId: invocation.sourceCallsiteId,
+      sourceLogicalIndex: invocation.sourceLogicalIndex,
+      occurrenceIndex: invocation.occurrenceIndex,
+    }, value);
     resultsByParent.set(invocation.parent, siblings);
   }
+  return resultsByParent;
+}
+
+export function propagateResultDependentArguments(
+  ctx: ResultPropagationContext,
+  results: Readonly<Record<number, string>>,
+): { propagated: boolean; calls: PreparedAtomicMessageBusCall[] } {
+  const resultsByParent = decodeResultsByParent(ctx, results);
   let propagated = false;
-  const resolvedArguments = ctx.descriptors.map((descriptor, index): readonly FunctionArgument[] => {
+  const resolvedArguments: Array<readonly FunctionArgument[]> = [];
+  ctx.descriptors.forEach((descriptor, index) => {
     const invocation = ctx.plan.invocations[index];
     const siblingResults = invocation.parent === null
       ? undefined : resultsByParent.get(invocation.parent);
+    // Descriptors are in depth-first source order. A changed producer argument must reach every
+    // descendant before rebuilding the graph, including void/raw calls with no returning siblings.
+    const parentArgs = invocation.parent === null ? undefined : resolvedArguments[invocation.parent];
+    const parentChanged = parentArgs !== undefined
+      && semanticJson(parentArgs) !== semanticJson(ctx.descriptors[invocation.parent!].args);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1') {
       console.error('atomic-result-descriptor', JSON.stringify({
@@ -84,7 +119,8 @@ export function propagateResultDependentArguments(
         siblingCallsites: siblingResults === undefined ? null : [...siblingResults.keys()],
       }));
     }
-    const resolved = siblingResults && descriptor.resolveArgsFromResults?.(siblingResults);
+    const resolved = siblingResults || parentChanged
+      ? descriptor.resolveArgsFromResults?.(siblingResults ?? new Map(), parentArgs) : undefined;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1' && siblingResults
       && descriptor.resolveArgsFromResults) {
@@ -97,18 +133,26 @@ export function propagateResultDependentArguments(
           && semanticJson(resolved) !== semanticJson(descriptor.args),
       }));
     }
-    let args = descriptor.args;
     if (resolved && semanticJson(resolved) !== semanticJson(descriptor.args)) {
       propagated = true;
-      return resolved;
     }
-    return args;
+    resolvedArguments.push(resolved ?? descriptor.args);
   });
   // A changed row can alter a terminal collection value produced by a later sibling even when that later
   // sibling's own public arguments are unchanged. Refresh all capable rows against the now-complete shared
   // producer-path argument epoch, in source order, after argument propagation has been decided.
-  const calls = ctx.descriptors.map((descriptor, index) => rebuildPreparedInvocation(
-    descriptor, resolvedArguments[index], results[index], { refreshValueProductions: propagated },
-  ));
+  const refreshValueProductions = propagated;
+  const calls = ctx.descriptors.map((descriptor, index) => {
+    const call = rebuildPreparedInvocation(
+      descriptor, resolvedArguments[index], results[index], { refreshValueProductions },
+    );
+    const childResults = resultsByParent.get(index);
+    if (childResults && descriptor.resolveValueChunkProductionsFromResults) {
+      const productions = descriptor.resolveValueChunkProductionsFromResults(resolvedArguments[index], childResults);
+      if (semanticJson(productions) !== semanticJson(descriptor.valueChunkProductions ?? [])) propagated = true;
+      call.valueChunkProductions = productions;
+    }
+    return call;
+  });
   return { propagated, calls };
 }

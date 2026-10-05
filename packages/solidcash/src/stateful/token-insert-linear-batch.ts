@@ -5,22 +5,13 @@
 
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import type { FunctionBlockLayout } from '@solidcash/utils';
-import { isEmptyValueEntryCommitment, encodeEntryCommitment } from './SortedList.js';
+import { encodeEntryCommitment } from './SortedList.js';
 import {
   SLOT_HEX,
   isSortedEntryHeadCommitment,
   isSortedEntryNodeCommitment,
   synthesizePredNewCommitment,
 } from './sorted-entry-commitment.js';
-import {
-  commitmentHexOf,
-  cloneToken,
-  outputMatchesLock,
-} from './stb-output-utils.js';
-import {
-  isDisposableAlignmentPad,
-  isViewReturnTailOutput,
-} from './value-chunk-band-helpers.js';
 import type { CompilerTokenWriterGroup } from './value-chunk-geometry.js';
 
 /** Same-index mutable jobEvents entry UTXOs. View tails must not replace these. */
@@ -42,10 +33,13 @@ export function jobEventsEntryOneToOneIndices(
   return indices;
 }
 
+/** Same-index mutable collection entry UTXOs. View tails must not replace these. */
+export const collectionEntryOneToOneIndices = jobEventsEntryOneToOneIndices;
+
 /**
  * Recreate a nested minting master at its input index. Inserting would shift
- * assigned view tails and the jobs suffix; drop one later alignment pad so
- * those absolute indices stay put (MD minting at 15, tails 38-40, jobs 45-46).
+ * assigned view tails and the value-chunk suffix; drop one later alignment pad so
+ * those absolute indices stay put.
  */
 /**
  * Minting uniqueness: one minting output per minting input. Extra same-category

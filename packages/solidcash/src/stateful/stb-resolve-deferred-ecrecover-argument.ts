@@ -27,6 +27,43 @@ export interface ResolveDeferredEcrecoverArgumentHost {
   refreshInputs(): void;
 }
 
+/** Bind one exact (hash,v,r,s) argument blob to its A/B pair without a VM discovery trace. */
+export function applyDeferredEcrecoverArgument(
+  host: ResolveDeferredEcrecoverArgumentHost,
+  callIndex: number,
+  argBlob: Uint8Array,
+): boolean {
+  const deferred = host.deferredEcrecoverCompute;
+  if (!deferred || !Number.isSafeInteger(callIndex) || callIndex < 0
+    || callIndex >= deferred.argBlobs.length || argBlob.length !== 97) return false;
+  const previous = deferred.argBlobs[callIndex];
+  if (previous !== null) {
+    if (binToHex(previous) !== binToHex(argBlob)) {
+      throw new Error(`messageBus: recovery recipe disagrees with resolved call ${callIndex}`);
+    }
+    return false;
+  }
+  const sidecarA = host.ecrecoverComputeCoSpendUtxos[2 * callIndex];
+  const sidecarB = host.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1];
+  if (!sidecarA || !sidecarB) return false;
+  const witness = computeEcrecoverWitness(
+    argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
+  );
+  const chunkA = probeEcrecoverSplit(witness, deferred.salt, sidecarA, sidecarB);
+  const rebuilt = buildEcrecoverComputeSidecars(witness, chunkA, deferred.salt, sidecarA, sidecarB);
+  host.ecrecoverComputeCoSpendUtxos[2 * callIndex] = { ...sidecarA, unlocker: rebuilt.unlockerA };
+  host.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1] = { ...sidecarB, unlocker: rebuilt.unlockerB };
+  host.ecrecoverComputeRecreates[2 * callIndex] = rebuilt.recreateA;
+  host.ecrecoverComputeRecreates[2 * callIndex + 1] = rebuilt.recreateB;
+  deferred.argBlobs[callIndex] = Uint8Array.from(argBlob);
+  const evmPreimageIndex = deferred.evmKeccakPreimageIndices[callIndex] ?? -1;
+  if (evmPreimageIndex >= 0) {
+    host.rebuildDeferredKeccakPreimage(evmPreimageIndex, witness.uncompressedPubkey);
+  }
+  host.refreshInputs();
+  return true;
+}
+
 /**
  * Learn deferred ecrecover argument blobs from OP_INPUTBYTECODE stack traces and rebuild the
  * corresponding compute sidecars. One pass can resolve several unresolved A inputs.
@@ -99,25 +136,8 @@ export function resolveDeferredEcrecoverArgument(
   let learnedAny = false;
   for (const candidate of learnedCandidates) {
     const { callIndex, argBlob } = candidate;
-    const sidecarA = host.ecrecoverComputeCoSpendUtxos[2 * callIndex];
-    const sidecarB = host.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1];
-    if (!sidecarA || !sidecarB) continue;
     try {
-      const witness = computeEcrecoverWitness(
-        argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
-      );
-      const chunkA = probeEcrecoverSplit(witness, deferred.salt, sidecarA, sidecarB);
-      const rebuilt = buildEcrecoverComputeSidecars(witness, chunkA, deferred.salt, sidecarA, sidecarB);
-      host.ecrecoverComputeCoSpendUtxos[2 * callIndex] = { ...sidecarA, unlocker: rebuilt.unlockerA };
-      host.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1] = { ...sidecarB, unlocker: rebuilt.unlockerB };
-      host.ecrecoverComputeRecreates[2 * callIndex] = rebuilt.recreateA;
-      host.ecrecoverComputeRecreates[2 * callIndex + 1] = rebuilt.recreateB;
-      deferred.argBlobs[callIndex] = argBlob;
-      const evmPreimageIndex = deferred.evmKeccakPreimageIndices[callIndex] ?? -1;
-      if (evmPreimageIndex >= 0) {
-        host.rebuildDeferredKeccakPreimage(evmPreimageIndex, witness.uncompressedPubkey);
-      }
-      host.refreshInputs();
+      if (!applyDeferredEcrecoverArgument(host, callIndex, argBlob)) continue;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process
         ?.env?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
         console.error('deferred-ecrecover-learned', {

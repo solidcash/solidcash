@@ -3,7 +3,7 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { binToHex, hexToBin, bigIntToVmNumber, utf8ToBin } from '@bitauth/libauth';
+import { binsAreEqual, binToHex, hexToBin, bigIntToVmNumber, utf8ToBin } from '@bitauth/libauth';
 import {
   hash160 as hash160Sync,
   hash256 as hash256Sync,
@@ -117,6 +117,14 @@ export function evalComputedKey(
     }
     m = s.match(/^cast:[a-z0-9]+\((.*)\)$/i);
     if (m) return evalValue(m[1]); // a bytes/bytesN cast is identity on the underlying value
+    m = s.match(/^unop:!\((.*)\)$/);
+    if (m) {
+      const value = evalValue(m[1]);
+      if (typeof value === 'boolean') return !value;
+      if (typeof value === 'bigint') return value === 0n;
+      if (typeof value === 'number') return value === 0;
+      return undefined;
+    }
     m = s.match(/^arridx\((.*)\)$/);
     if (m) {
       const pair = splitTopLevel(m[1]);
@@ -150,30 +158,45 @@ export function evalComputedKey(
       if (!Array.isArray(values) || !Number.isSafeInteger(n) || n < 0 || n >= values.length) {
         return undefined;
       }
-      const element = values[n];
-      if (element instanceof Uint8Array) return element;
-      if (typeof element === 'bigint') return bigIntToVmNumber(element);
-      if (typeof element === 'boolean') return bigIntToVmNumber(element ? 1n : 0n);
-      if (typeof element === 'string' && element.includes(':')) return addressToLockScript(element);
-      // A struct element is handed on whole for a `field:` around this access to read (`items[i].parts.owner`);
-      // as a key by itself it still encodes to nothing.
-      if (element !== null && typeof element === 'object') return element;
-      return undefined;
+      // Keep a decoded element in its native type for a surrounding arithmetic/conditional expression; a struct
+      // element is handed on whole for a `field:` around this access to read (`items[i].parts.owner`).
+      // Only the final key is VM-encoded by `encode` below.
+      return values[n];
     }
     m = s.match(/^binop:([^()]+)\((.*)\)$/);
     if (m) {
       const pair = splitTopLevel(m[2]);
       if (!pair) return undefined;
       const left = evalValue(pair[0]);
+      if (m[1] === '&&' || m[1] === '||') {
+        const asBoolean = (value: unknown): boolean | undefined => typeof value === 'boolean' ? value
+          : typeof value === 'bigint' ? value !== 0n
+            : typeof value === 'number' ? value !== 0 : undefined;
+        const leftValue = asBoolean(left);
+        if (leftValue === undefined) return undefined;
+        if (m[1] === '&&' && !leftValue) return false;
+        if (m[1] === '||' && leftValue) return true;
+        return asBoolean(evalValue(pair[1]));
+      }
       const right = evalValue(pair[1]);
+      if (left === undefined || right === undefined) return undefined;
       // A comparison decides a ternary's arm: a local array element read after its write is published as
       // `ternary(binop:==(<read index>,<written index>),<written value>,<default>)`.
-      const compared = comparedValues(m[1], left, right);
-      if (compared !== undefined) return compared;
+      if (m[1] === '==' || m[1] === '!=') {
+        const equal = left instanceof Uint8Array && right instanceof Uint8Array
+          ? binsAreEqual(left, right)
+          : typeof left === typeof right && ['bigint', 'number', 'boolean', 'string'].includes(typeof left)
+            ? left === right : undefined;
+        return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
+      }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;
       if (m[1] === '-') return left - right;
       if (m[1] === '*') return left * right;
+      if (m[1] === '<') return left < right;
+      if (m[1] === '<=') return left <= right;
+      if (m[1] === '>') return left > right;
+      if (m[1] === '>=') return left >= right;
       return undefined;
     }
     m = s.match(/^ternary\((.*)\)$/);
@@ -182,7 +205,9 @@ export function evalComputedKey(
       const rest = head ? splitTopLevel(head[1]) : undefined;
       if (!head || !rest) return undefined;
       const cond = evalValue(head[0]);
-      const taken = cond === true || cond === 1n || cond === 1;
+      const taken = typeof cond === 'boolean' ? cond
+        : typeof cond === 'bigint' ? cond !== 0n : typeof cond === 'number' ? cond !== 0 : undefined;
+      if (taken === undefined) return undefined;
       return evalValue(taken ? rest[0] : rest[1]);
     }
     m = s.match(/^call:(\w+)\((.*)\)$/);
@@ -196,28 +221,6 @@ export function evalComputedKey(
     return undefined;
   };
   return encode(evalValue(label));
-}
-
-/**
- * The truth of a comparison label's operator over its two evaluated operands, or `undefined` when the operator is
- * not a comparison or the operands are not of one kind it orders: equality over two numbers, two byte strings or two
- * booleans, and order over two numbers.
- */
-function comparedValues(operator: string, left: unknown, right: unknown): boolean | undefined {
-  if (operator === '==' || operator === '!=') {
-    let equal: boolean | undefined;
-    if (typeof left === 'bigint' && typeof right === 'bigint') equal = left === right;
-    else if (typeof left === 'boolean' && typeof right === 'boolean') equal = left === right;
-    else if (left instanceof Uint8Array && right instanceof Uint8Array) equal = binToHex(left) === binToHex(right);
-    if (equal === undefined) return undefined;
-    return operator === '==' ? equal : !equal;
-  }
-  if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
-  if (operator === '<') return left < right;
-  if (operator === '<=') return left <= right;
-  if (operator === '>') return left > right;
-  if (operator === '>=') return left >= right;
-  return undefined;
 }
 
 const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),schema=\[([^\]]*)\]\}$/;
@@ -320,6 +323,33 @@ export function selectVisibleCallArguments<T>(
     ? logicalArguments : fallbackArguments;
 }
 
+/** Choose arguments for the ABI actually executed by a physical participant. */
+export function argumentsForPhysicalAbiFrame<T>(parts: {
+  abiFunction?: { name: string; inputs: readonly { name: string }[] };
+  physicalFunctionArgs: readonly T[];
+  logicalFunctionName?: string;
+  logicalFunctionArgs?: readonly T[];
+  compilerRoute?: {
+    abiFunction: { name: string; inputs: readonly { name: string }[] };
+    args: readonly T[];
+  };
+}): readonly T[] {
+  const visibleInputCount = parts.abiFunction?.inputs.filter(
+    (input) => !input.name.startsWith('__internal__'),
+  ).length;
+  const logicalArgs = parts.logicalFunctionArgs;
+  if (parts.abiFunction && logicalArgs !== undefined
+    && parts.logicalFunctionName === parts.abiFunction.name
+    && logicalArgs.length === visibleInputCount) {
+    return logicalArgs;
+  }
+  if (parts.abiFunction && parts.compilerRoute
+    && parts.compilerRoute.abiFunction === parts.abiFunction) {
+    return parts.compilerRoute.args;
+  }
+  return parts.physicalFunctionArgs;
+}
+
 export interface DirectMappingReadPlan {
   collection: string;
   keyArgumentIndices: readonly number[];
@@ -329,8 +359,11 @@ export interface DirectMappingReadPlan {
 const canonicalIntegerAbiType = (type: string): string | undefined => {
   if (type === 'uint') return 'uint256';
   if (type === 'int') return 'int256';
-  return /^(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|bigint)$/.test(type)
-    ? type : undefined;
+  if (type === 'bigint') return type;
+  const numeric = /^u?int([1-9][0-9]*)$/.exec(type);
+  if (!numeric) return undefined;
+  const width = Number(numeric[1]);
+  return width >= 8 && width <= 256 && width % 8 === 0 ? type : undefined;
 };
 
 /** Resolve a direct mapping-return shortcut from compiler proof, never source names. */

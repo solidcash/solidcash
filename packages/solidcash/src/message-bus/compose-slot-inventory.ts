@@ -1,11 +1,14 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — inventory fixed/runtime event + resource/value/token/sidecar slots.
+ * Compose phase-boundary extract: inventory fixed/runtime event and
+ * resource/value/token/sidecar slots.
  */
 
+import { hexToBin } from '@bitauth/libauth';
 import type { ExecutionContextEffectPlan } from './execution-context.js';
 import type { AtomicSidecarSlotEffect } from './graph.js';
 import { findMessageBusHandlerForInvocation } from './graph-handler-join.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
+import { decodeSelectedHandlerArguments, selectedSatoshiContainerRequired } from './selected-satoshi-container.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 
@@ -28,8 +31,11 @@ export interface ComposeSlotInventory {
 /**
  * Collect compiler-published block-layout slots used by assemble / semantic-claim orchestration.
  */
-export function inventoryComposeSlots(plan: CompiledGraphPlan): ComposeSlotInventory {
-  const fixedEventSlots = plan.participants.flatMap((participant) =>
+export function inventoryComposeSlots(
+  plan: CompiledGraphPlan,
+  selectedContainers: ReadonlyMap<number, boolean | undefined> = new Map(),
+): ComposeSlotInventory {
+  const fixedEventSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots.filter((slot) => slot.kind === 'event').map((slot) => ({
       participant: participant.participant, offset: slot.offset,
     })));
@@ -49,23 +55,31 @@ export function inventoryComposeSlots(plan: CompiledGraphPlan): ComposeSlotInven
       return (handler?.runtimeLoopEvents?.length ?? 0) > 0;
     },
   ));
-  const resourceSlots = plan.participants.flatMap((participant) =>
+  const resourceSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots
       .filter((slot) => [
         'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing', 'lowLevelCall',
       ].includes(slot.kind))
+      // A slot reserved for an unselected BCH-transfer handler is a balanced placeholder, not a claim that
+      // the real container is co-spent. Keep its fixed offset, but do not authenticate it as a container.
+      .filter((slot) => slot.kind !== 'satoshiContainer'
+        || (selectedContainers.get(participant.participant) ?? selectedSatoshiContainerRequired(participant.artifact,
+          participant.invocations.map((index) => plan.invocations[index].selectorHex),
+          participant.invocations.map((index) => decodeSelectedHandlerArguments(
+            participant.artifact, plan.invocations[index].selectorHex, hexToBin(plan.invocations[index].argsHex),
+          )))) !== false)
       .map((slot) => ({
         participant: participant.participant, offset: slot.offset, kind: slot.kind,
       })));
-  const valueSlots = plan.participants.flatMap((participant) =>
+  const valueSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots.filter((slot) => slot.kind === 'transfer').map((slot) => ({
       participant: participant.participant, offset: slot.offset,
     })));
-  const tokenSlots = plan.participants.flatMap((participant) =>
+  const tokenSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots.filter((slot) => slot.kind === 'tcTransfer').map((slot) => ({
       participant: participant.participant, offset: slot.offset,
     })));
-  const sidecarSlots = plan.participants.flatMap((participant) =>
+  const sidecarSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots
       .filter((slot) => ['blockhashOracle', 'keccakSideCar', 'ecrecoverSideCar'].includes(slot.kind))
       .map((slot) => ({
@@ -87,6 +101,30 @@ export function inventoryComposeSlots(plan: CompiledGraphPlan): ComposeSlotInven
   };
 }
 
+function effectsByParticipant(plans: readonly ExecutionContextEffectPlan[]): Map<number, {
+  activeWrites: number[];
+  activeEvents: number[];
+  activeTransfers: number[];
+  journalKeys: string[];
+}> {
+  const grouped = new Map<number, {
+    activeWrites: number[]; activeEvents: number[]; activeTransfers: number[]; journalKeys: string[];
+  }>();
+  for (const plan of plans) {
+    const participant = plan.participantIndex ?? 0;
+    const effects = grouped.get(participant) ?? {
+      activeWrites: [], activeEvents: [], activeTransfers: [], journalKeys: [],
+    };
+    // Ordinals are row-local. Two rows executing the same event require two slots.
+    effects.activeWrites.push(...plan.activeWrites);
+    effects.activeEvents.push(...plan.activeEvents);
+    effects.activeTransfers.push(...plan.activeTransfers);
+    effects.journalKeys.push(plan.journalKey);
+    grouped.set(participant, effects);
+  }
+  return grouped;
+}
+
 /**
  * settle-time ExecutionContext: consume ExecutionContext effect plans against compose slot inventory.
  * Fail closed when a participant's active events/transfers exceed published slot capacity.
@@ -97,20 +135,19 @@ export function assertComposeSlotsCoverEffectPlans(
 ): void {
   if (plans.length === 0) return;
   const eventSlots = inventory.eventSlots();
-  for (const plan of plans) {
-    const participant = plan.participantIndex ?? 0;
+  for (const [participant, plan] of effectsByParticipant(plans)) {
     const events = eventSlots.filter((slot) => slot.participant === participant);
     if (plan.activeEvents.length > events.length) {
       throw new Error(
         `execution-context: participant ${participant} activeEvents=${plan.activeEvents.length} `
-        + `exceed event slots=${events.length} (journalKey=${plan.journalKey})`,
+        + `exceed event slots=${events.length} (journalKeys=${plan.journalKeys.join(',')})`,
       );
     }
     const transfers = inventory.valueSlots.filter((slot) => slot.participant === participant);
     if (plan.activeTransfers.length > transfers.length) {
       throw new Error(
         `execution-context: participant ${participant} activeTransfers=${plan.activeTransfers.length} `
-        + `exceed transfer slots=${transfers.length} (journalKey=${plan.journalKey})`,
+        + `exceed transfer slots=${transfers.length} (journalKeys=${plan.journalKeys.join(',')})`,
       );
     }
   }
@@ -125,10 +162,7 @@ export function pruneComposeSlotInventoryByEffectPlans(
   plans: readonly ExecutionContextEffectPlan[],
 ): ComposeSlotInventory {
   if (plans.length === 0) return inventory;
-  const byParticipant = new Map<number, ExecutionContextEffectPlan>();
-  for (const plan of plans) {
-    byParticipant.set(plan.participantIndex ?? 0, plan);
-  }
+  const byParticipant = effectsByParticipant(plans);
   const fixedEventSlots = inventory.fixedEventSlots.filter((slot) => {
     const plan = byParticipant.get(slot.participant);
     if (plan === undefined) return true;
@@ -146,7 +180,8 @@ export function pruneComposeSlotInventoryByEffectPlans(
     if (plan.activeWrites.length > 0) return true;
     return slot.kind !== 'dataNft' && slot.kind !== 'entry' && slot.kind !== 'readOnlyDataNft';
   });
-  // settle-time ExecutionContext: prune tcTransfer token slots with transfers; prune sidecars when participant is fully inactive.
+  // Settle-time ExecutionContext: prune token slots with transfers;
+  // prune sidecars when the participant is fully inactive.
   const tokenSlots = inventory.tokenSlots.filter((slot) => {
     const plan = byParticipant.get(slot.participant);
     if (plan === undefined) return true;
@@ -180,22 +215,18 @@ export function pruneComposeSlotInventoryByEffectPlans(
     });
     if (kept.length > 0) runtimeEventSlots.set(key, kept);
   }
-  const eventSlots = (): ReturnType<ComposeSlotInventory['eventSlots']> => [
-    ...fixedEventSlots,
-    ...[...runtimeEventSlots.values()].flat(),
-  ];
   // settle-time ExecutionContext: plan-driven width/offset remap — dense offsets per participant after prune.
   const remapDense = <T extends { participant: number; offset: number }>(
     slots: readonly T[],
   ): T[] => {
-    const byParticipant = new Map<number, T[]>();
+    const slotsByParticipant = new Map<number, T[]>();
     for (const slot of slots) {
-      const list = byParticipant.get(slot.participant) ?? [];
+      const list = slotsByParticipant.get(slot.participant) ?? [];
       list.push(slot);
-      byParticipant.set(slot.participant, list);
+      slotsByParticipant.set(slot.participant, list);
     }
     const remapped: T[] = [];
-    for (const [participant, list] of [...byParticipant.entries()].sort((a, b) => a[0] - b[0])) {
+    for (const [participant, list] of [...slotsByParticipant.entries()].sort((a, b) => a[0] - b[0])) {
       const ordered = [...list].sort((left, right) => left.offset - right.offset);
       ordered.forEach((slot, index) => {
         remapped.push({ ...slot, participant, offset: index });

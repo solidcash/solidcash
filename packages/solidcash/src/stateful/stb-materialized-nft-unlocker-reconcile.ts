@@ -11,8 +11,10 @@ import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
   createRelocatedDataNftUnlocker,
+  createSatoshiContainerUnlocker,
 } from './covenant-helpers.js';
 import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { sameOutpoint } from './external-call-utxo-group.js';
 
 export interface MaterializedNftUnlockerReconcileHost {
   readonly allInputs: UnlockableUtxo[];
@@ -27,6 +29,11 @@ export interface MaterializedNftUnlockerReconcileHost {
     carriers: ReadonlySet<ExternalCallUtxoGroup>,
   ): void;
 }
+
+// Manually assembled transaction builders can carry a Contract directly; SDK-composed groups carry its
+// StatefulContract wrapper. Both identify the same covenant, but only the latter has an `inner` property.
+const groupContract = (group: ExternalCallUtxoGroup): any =>
+  group.externalContract?.inner ?? group.externalContract;
 
 /**
  * Rebind write-path entry NFT unlockers of `categoryId` to `masterInputIndex`.
@@ -59,7 +66,7 @@ export function reconcileMaterializedDataNftUnlockers(
   host: MaterializedNftUnlockerReconcileHost,
   builder: TransactionBuilder,
 ): boolean {
-  let changed = false;
+  const status = { changed: false };
   const groups = [
     ...host.externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined),
     ...host.lowLevelCallUtxoGroups,
@@ -83,11 +90,15 @@ export function reconcileMaterializedDataNftUnlockers(
       const outputIndexParam = copy.unlocker.abiFunction.inputs
         .findIndex((input) => input.name === 'outputIndex');
       const outputIndex = outputIndexParam < 0 ? undefined : copy.unlocker.params[outputIndexParam];
+      const contract = groupContract(group);
+      if (!contract?.addressType) {
+        throw new Error(`Cannot rebind data NFT for participant ${group.categoryId} without its contract`);
+      }
       const unlocker = flag === 3n && typeof outputIndex === 'bigint'
         ? createRelocatedDataNftUnlocker(
-          group.externalContract.inner, masterInputIndex, Number(outputIndex), group.categoryId,
+          contract, masterInputIndex, Number(outputIndex), group.categoryId,
         )
-        : createDataNftUnlocker(group.externalContract.inner, masterInputIndex, group.categoryId);
+        : createDataNftUnlocker(contract, masterInputIndex, group.categoryId);
       return { ...copy, unlocker } as UnlockableUtxo;
     };
     let groupChanged = false;
@@ -118,9 +129,9 @@ export function reconcileMaterializedDataNftUnlockers(
       }
       return dataNft;
     });
-    if (groupChanged) changed = true;
+    if (groupChanged) status.changed = true;
   }
-  return changed;
+  return status.changed;
 }
 
 /** Rebind write-path entry covenants to their state owner's final physical minting-master input. */
@@ -128,7 +139,7 @@ export function reconcileMaterializedEntryNftUnlockers(
   host: MaterializedNftUnlockerReconcileHost,
   builder: TransactionBuilder,
 ): boolean {
-  let changed = false;
+  const status = { changed: false };
   const groups = [
     ...host.externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined),
     ...host.lowLevelCallUtxoGroups,
@@ -141,8 +152,8 @@ export function reconcileMaterializedEntryNftUnlockers(
       if (group.categoryId !== categoryId) return [];
       const delegateGroup = group.delegateCallGroupIndex === undefined
         ? undefined : host.lowLevelCallUtxoGroups[group.delegateCallGroupIndex];
-      const entryContract = delegateGroup?.externalContract ?? group.externalContract;
-      if (!entryContract?.inner) return [];
+      const entryContract = delegateGroup ? groupContract(delegateGroup) : groupContract(group);
+      if (!entryContract?.addressType) return [];
       return (group.stateLayout?.collections ?? []).flatMap((collection) => (
         typeof collection.signature === 'string'
           ? [{ entryContract, signature: collection.signature }]
@@ -160,16 +171,53 @@ export function reconcileMaterializedEntryNftUnlockers(
       const lockingBytecode = input.unlocker.generateLockingBytecode();
       for (const { entryContract, signature } of descriptors) {
         const candidate = createEntryNftUnlocker(
-          entryContract.inner, masterInputIndex, categoryId, signature,
+          entryContract, masterInputIndex, categoryId, signature,
         );
         if (!binsAreEqual(candidate.generateLockingBytecode(), lockingBytecode)) continue;
-        changed = true;
+        status.changed = true;
         return candidate;
       }
       return undefined;
     });
   }
-  if (changed) host.syncBuilderUnlockers(builder);
+  if (status.changed) host.syncBuilderUnlockers(builder);
+  return status.changed;
+}
+
+/** Rebind real container spends, leaving inactive funding pads at their original locks. */
+export function reconcileMaterializedSatoshiContainerUnlockers(
+  host: MaterializedNftUnlockerReconcileHost,
+  builder: TransactionBuilder,
+): boolean {
+  let changed = false;
+  for (const group of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
+    if (group.sharedGroupIndex !== undefined) continue;
+    const masterIndex = host.findMintingInputIndex(group.categoryId);
+    if (masterIndex < 0) continue;
+    for (const slot of group.blockLayout?.slots ?? []) {
+      if (slot.kind !== 'satoshiContainer') continue;
+      const input = group.blockInputs?.[slot.offset];
+      if (!input || input.token || !isContractUnlocker(input.unlocker)) continue;
+      const params = input.unlocker.abiFunction.inputs;
+      const flag = params.findIndex((param) => param.name === 'flag');
+      const master = params.findIndex((param) => param.name === 'masterInputIndex');
+      if (flag < 0 || master < 0 || input.unlocker.params[flag] !== 1n
+        || input.unlocker.params[master] === BigInt(masterIndex)) continue;
+      const contract = groupContract(group);
+      if (!contract?.addressType) {
+        throw new Error(`Cannot rebind satoshi container for participant ${group.categoryId} without its contract`);
+      }
+      const unlocker = createSatoshiContainerUnlocker(contract, masterIndex, group.categoryId);
+      if (!binsAreEqual(unlocker.generateLockingBytecode(), input.unlocker.generateLockingBytecode())) continue;
+      const rebound = { ...input, unlocker };
+      group.blockInputs![slot.offset] = rebound;
+      const flatIndex = host.allInputs.findIndex((candidate) => sameOutpoint(candidate, input));
+      if (flatIndex >= 0) host.allInputs[flatIndex] = rebound;
+      const builtIndex = builder.inputs.findIndex((candidate) => sameOutpoint(candidate, input));
+      if (builtIndex >= 0) builder.inputs[builtIndex] = rebound;
+      changed = true;
+    }
+  }
   return changed;
 }
 
@@ -180,6 +228,7 @@ export function reconcileMaterializedInputWitnesses(
 ): boolean {
   const dataNftsChanged = reconcileMaterializedDataNftUnlockers(host, builder);
   const entryNftsChanged = reconcileMaterializedEntryNftUnlockers(host, builder);
+  const containersChanged = reconcileMaterializedSatoshiContainerUnlockers(host, builder);
   const changedCarriers = new Set<ExternalCallUtxoGroup>();
   for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
     if (!carrier.mintingInputWitnessCategories || !carrier.refreshInternalArgs) continue;
@@ -194,7 +243,7 @@ export function reconcileMaterializedInputWitnesses(
     carrier.internalArgs = { ...carrier.internalArgs, ...updates };
     changedCarriers.add(carrier);
   }
-  if (changedCarriers.size === 0) return dataNftsChanged || entryNftsChanged;
+  if (changedCarriers.size === 0) return dataNftsChanged || entryNftsChanged || containersChanged;
   host.syncRefreshedCarrierMasters(builder, changedCarriers);
   return true;
 }

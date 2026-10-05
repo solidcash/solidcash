@@ -109,8 +109,7 @@ export default class DesugarDynamicArrayCopyCast extends AstTraversal {
       if (desugared) {
         if (desugared.some((statement) => statement instanceof WhileNode)) this.didSynthesizeLoop = true;
         out.push(...desugared);
-      }
-      else out.push(visited);
+      } else out.push(visited);
     }
     node.statements = out;
     return node;

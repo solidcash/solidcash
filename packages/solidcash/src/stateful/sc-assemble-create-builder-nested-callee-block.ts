@@ -2,9 +2,14 @@
  * phase-boundary extract: SC _createBuilder extract — assemble nested callee B-block inputs (slot switch).
  */
 
-import { binToHex, bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
   parseEntryCommitment,
+  joinValueChunks,
+  parseValueChunkCommitment,
+  sha256 as sha256Sync,
+  VALUE_CHUNK_SIZE,
+  VALUE_HEAD_SIZE,
   type AbiFunction,
   type StateLayout,
 } from '@solidcash/utils';
@@ -16,11 +21,14 @@ import {
   createSatoshiContainerUnlocker,
   createTokenContainerUnlocker,
   getEntryNftAddress,
+  getValueChunkAddress,
   getSatoshiContainerAddress,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
 import { evalComputedKey } from './route-expression-key.js';
-import { SortedList, keyToSlotMulti, decodeEntryCommitment } from './SortedList.js';
+import {
+  SortedList, bytesToSlotValue, keyToSlotMulti, decodeEntryCommitment,
+} from './SortedList.js';
 import { isMsgSenderKeySource } from './soft-state-overlays.js';
 
 export interface AssembleCreateBuilderNestedCalleeBlockHost {
@@ -73,7 +81,7 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   externalCategoryId: string;
   slotIndex: number;
   loopIdxRanges: readonly { start: number; count: number }[];
-  publicSelfAddress: Uint8Array | undefined;
+  publicSelfIdentity: { categoryId: string; lockingBytecode: string };
 }
 
 /**
@@ -101,7 +109,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     externalCategoryId,
     slotIndex,
     loopIdxRanges,
-    publicSelfAddress,
+    publicSelfIdentity,
   } = ctx;
 
   if (bBlockLayout) {
@@ -224,13 +232,13 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             const entryDiagnostic: Record<string, unknown> | undefined = (globalThis as {
               process?: { env?: Record<string, string> };
             }).process?.env?.SOLIDC_DEBUG_EXTERNAL_ENTRY === '1' ? {
-              callee: callInfo.externalContract?.inner.artifact.contractName,
-              frame: compilerRoute ? 'route' : 'concrete',
-              calleeFunction: callInfo.functionName,
-              blockSlot: slot.offset,
-              slotIndex: slot.slotIndex,
-              accesses: (bEntryAccesses ?? []).map((access) => `${access.slotIndex}:${access.collection}`),
-            } : undefined;
+                callee: callInfo.externalContract?.inner.artifact.contractName,
+                frame: compilerRoute ? 'route' : 'concrete',
+                calleeFunction: callInfo.functionName,
+                blockSlot: slot.offset,
+                slotIndex: slot.slotIndex,
+                accesses: (bEntryAccesses ?? []).map((access) => `${access.slotIndex}:${access.collection}`),
+              } : undefined;
             if (bEntryAccess && bSc) {
               const bCollection = bSc.inner.stateLayout?.collections?.find(
                 (c: { name: string; signature: string }) => c.name === bEntryAccess.collection
@@ -245,16 +253,18 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
               // Convert FunctionArgument to primitive for key matching. CashAddress strings must
               // become locking bytecode so they hash to the same slot as `msg.sender` inserts.
               const keyValue = tryCashAddressToLockScript(rawKeyValue)
+                ?? (typeof rawKeyValue === 'string' && (bCollection?.keyTypes?.[0] ?? bCollection?.keyType) === 'string'
+                  ? utf8ToBin(rawKeyValue) : undefined)
                 ?? (rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
                   || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined);
-              // msg.sender key (cross-contract): B's `bal[msg.sender]` where msg.sender = US (the caller). Resolve
-              // the key to OUR category-pinned locking bytecode - the covenant keys the entry by keyToSlot(caller
-              // LBC) too (emitSortedKeyHash visits msg.sender -> emitMsgSenderMintingVerification -> caller LBC).
+              // The callee reconstructs msg.sender from the authenticated caller identity anchor. Its entry
+              // witness must use that same locking bytecode, even when the caller executes at another lock.
+              const callerAddress = hexToBin(publicSelfIdentity.lockingBytecode);
               const isSenderKey = (
                 source: NonNullable<typeof bEntryAccess.keySources>[number] | undefined,
               ): boolean => isMsgSenderKeySource(source);
               const effKeyValue = isSenderKey(bEntryAccess.keySources?.[0])
-                ? publicSelfAddress
+                ? callerAddress
                 : keyValue;
               let matchUtxo: Utxo | undefined;
               if (bCollection?.sorted && effKeyValue !== undefined) {
@@ -267,10 +277,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                 );
                 const encodedKeys: Uint8Array[] = bEntryAccess.keyParams.map((name, keyIndex) => {
                   if (isSenderKey(bEntryAccess.keySources?.[keyIndex])) {
-                    if (!publicSelfAddress) {
-                      throw new Error(`External message-bus batch cannot resolve msg.sender key '${name}'`);
-                    }
-                    return publicSelfAddress;
+                    return callerAddress;
                   }
                   const source = bEntryAccess.keySources?.[keyIndex];
                   if (source?.kind === 'expression') {
@@ -281,12 +288,16 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   const value = index >= 0 ? bRouteArgs[index] : undefined;
                   const addressKey = tryCashAddressToLockScript(value);
                   if (addressKey) return addressKey;
+                  if (typeof value === 'string'
+                    && (bCollection.keyTypes?.[keyIndex] ?? bCollection.keyType) === 'string') {
+                    return utf8ToBin(value);
+                  }
                   if (value instanceof Uint8Array) return value;
                   if (typeof value === 'bigint') return bigIntToVmNumber(value);
                   if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
                   throw new Error(`External message-bus batch cannot resolve entry key '${name}'`);
                 });
-                const bSlot = keyToSlotMulti(encodedKeys);
+                const bSlot = keyToSlotMulti(encodedKeys, bCollection);
                 if (entryDiagnostic) {
                   entryDiagnostic.sorted = true;
                   entryDiagnostic.collection = bEntryAccess.collection;
@@ -427,6 +438,47 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                 console.error('external-entry-match', JSON.stringify(entryDiagnostic));
               }
               if (matchUtxo) {
+                const witnessName = `__internal__valueWitness_${slot.slotIndex ?? 0}`;
+                if (bCollection?.chunkableValue && bAbiFunc?.inputs.some((input) => input.name === witnessName)) {
+                  // The proof entry may be the target or its predecessor. The covenant authenticates its
+                  // stored value before checking membership, so both cases need that exact old value.
+                  const commitment = matchUtxo.token?.nft?.commitment;
+                  if (!commitment) throw new Error(`Missing ${bEntryAccess.collection} value proof`);
+                  const proof = decodeEntryCommitment(hexToBin(commitment));
+                  const tail = proof.value;
+                  let witness: Uint8Array = new Uint8Array();
+                  if (tail.length > 0) {
+                    if (tail.length < 4) throw new Error(`Invalid ${bEntryAccess.collection} value proof`);
+                    const length = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+                    if (length <= 60) {
+                      if (tail.length < 4 + length) throw new Error(`Invalid ${bEntryAccess.collection} inline value`);
+                      witness = tail.slice(4);
+                    } else {
+                      if (tail.length < 4 + 32 + VALUE_HEAD_SIZE) {
+                        throw new Error(`Invalid ${bEntryAccess.collection} chunked value head`);
+                      }
+                      const root = tail.slice(4, 36);
+                      const chunkAddress = getValueChunkAddress(
+                        bSc.inner, externalCategoryId, bEntryAccess.collection, proof.slot, root,
+                      );
+                      const expected = Math.ceil((length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
+                      const chunks = (await host.getUtxos(chunkAddress))
+                        .filter((utxo) => utxo.token?.category === externalCategoryId
+                          && utxo.token.nft?.capability === 'mutable' && !!utxo.token.nft.commitment)
+                        .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
+                        .sort((left, right) => left.chunkIndex - right.chunkIndex);
+                      if (chunks.length !== expected
+                        || chunks.some((chunk, index) => chunk.chunkIndex !== index)) {
+                        throw new Error(`Incomplete ${bEntryAccess.collection} value chunks`);
+                      }
+                      witness = joinValueChunks(tail.slice(36), chunks, length);
+                      if (binToHex(sha256Sync(witness)) !== binToHex(root)) {
+                        throw new Error(`${bEntryAccess.collection} value chunks do not match the authenticated root`);
+                      }
+                    }
+                  }
+                  ctx.bCompilerInternalArgs[witnessName] = witness;
+                }
                 const unlocker = createEntryNftUnlocker(
                   bSc.inner, ctx.bBlockInputs.length, externalCategoryId, bEntryAccess.collection,
                 );
@@ -549,8 +601,57 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           }
         }
       }
+      // Cold keys that share one authenticated predecessor form a sorted NEW
+      // chain. Only the lowest key recreates P'; the independent per-slot
+      // insert seeds above cannot express this shared-proof topology.
+      for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {
+        if (!batch.linear || batch.slotIndices.length < 2) continue;
+        const byProof = new Map<bigint, Array<{
+          slotIndex: number; key: Uint8Array; planned?: NestedCalleePlannedEntryInsert;
+        }>>();
+        for (const routeSlotIndex of batch.slotIndices) {
+          const proof = ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${routeSlotIndex}`];
+          const key = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${routeSlotIndex}`];
+          const predOut = ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${routeSlotIndex}`];
+          const planned = ctx.bPlannedEntryInserts.find((candidate) => candidate.slotIndex === routeSlotIndex);
+          if (typeof proof !== 'bigint' || proof < 0n || predOut === -2n
+            || !(key instanceof Uint8Array)) continue;
+          const rows = byProof.get(proof) ?? [];
+          rows.push({ slotIndex: routeSlotIndex, key, planned });
+          byProof.set(proof, rows);
+        }
+        for (const rows of byProof.values()) {
+          if (rows.length < 2 || !rows.some((row) => row.planned)) continue;
+          rows.sort((left, right) => (bytesToSlotValue(left.key) < bytesToSlotValue(right.key) ? -1 : 1));
+          if (rows.some((row, index) => index > 0
+            && bytesToSlotValue(row.key) === bytesToSlotValue(rows[index - 1]!.key))) continue;
+          // An exact updated row can itself be the predecessor. It must lead the
+          // chain, and no second exact row may share that physical proof.
+          if (rows.some((row, index) => !row.planned && index !== 0)) continue;
+          if (!rows[0]!.planned && rows.some((row, index) => index > 0 && !row.planned)) continue;
+          for (let index = 0; index < rows.length; index++) {
+            const row = rows[index]!;
+            const successor = rows[index + 1];
+            if (successor) {
+              if (row.planned) {
+                row.planned.newCommitment = `${row.planned.newCommitment.slice(0, 64)}`
+                  + `${binToHex(successor.key)}${row.planned.newCommitment.slice(128)}`;
+              }
+              ctx.bCompilerInternalArgs[`__internal__vmapBatchNext_${row.slotIndex}`] = successor.key;
+            }
+            if (!row.planned || (index === 0 && rows[0]!.planned)) continue;
+            const predOut = `__internal__vmapBatchPredOut_${row.slotIndex}`;
+            ctx.bCompilerInternalArgs[predOut] = -1n;
+            ctx.bRelativeOutputInternalArgs.delete(predOut);
+          }
+        }
+      }
       if (ctx.bBlockInputs) {
         for (const planned of ctx.bPlannedEntryInserts) {
+          if (ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${planned.slotIndex}`] === -1n) {
+            planned.outputBlockSlot = -1;
+            continue;
+          }
           planned.outputBlockSlot = Math.max(ctx.bBlockInputs.length, bBlockLayout?.blockSize ?? 0);
           ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${planned.slotIndex}`] =
             BigInt(planned.outputBlockSlot);
@@ -562,6 +663,28 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         for (let index = 0; index < bValueChunkOutputCount; index += 1) {
           ctx.bBlockInputs.push(await makeFunder());
         }
+      }
+      // Direct callees use this block's sorted-entry proofs, but unlike composed/transitive callees
+      // they do not pass through the nested batch planner. Publish the same ordered row vector and
+      // per-slot ranks from the authenticated target/next witnesses assembled above.
+      for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {
+        if (!batch.linear || batch.slotIndices.some((index) =>
+          ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${index}`] === -2n)) continue;
+        const rows = batch.slotIndices.map((index) => {
+          const slot = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${index}`];
+          const next = ctx.bCompilerInternalArgs[`__internal__vmapBatchNext_${index}`];
+          if (!(slot instanceof Uint8Array) || slot.length !== 32
+            || !(next instanceof Uint8Array) || next.length !== 32) {
+            throw new Error(`External sorted batch '${batch.collection}' has no row witness for slot ${index}`);
+          }
+          return { index, slot, next };
+        }).sort((left, right) => (bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1));
+        rows.forEach((row, rank) => {
+          ctx.bCompilerInternalArgs[`__internal__vmapBatchRank_${row.index}`] = BigInt(rank);
+        });
+        ctx.bCompilerInternalArgs[`__internal__vmapBatchRows_${batch.collection}`] = Uint8Array.from(
+          rows.flatMap((row) => [...row.slot, ...row.next]),
+        );
       }
     }
   }

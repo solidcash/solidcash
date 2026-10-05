@@ -63,14 +63,17 @@ describe('delegated dual runtime mapping-set streams', () => {
     ]);
     expect(delegate.messageBus!.route.inputs
       .filter((input) => input.name.startsWith('__message_bus_key_')).map((input) => input.name))
-      .toEqual(['__message_bus_key_membership_0', '__message_bus_key_membership_1']);
+      .toEqual([
+        '__message_bus_key_membership_0', '__message_bus_key_membership_1',
+        '__message_bus_key_membership_0_alt', '__message_bus_key_membership_1_alt',
+      ]);
     expect(delegate.messageBus?.route.blockLayout).toMatchObject({
-      blockSize: 133,
-      trailingBase: 3,
+      blockSize: 389,
+      trailingBase: 259,
       trailingCapacity: 130,
     });
     // The physical executor and logical identity follow the complete compiler-owned route frame.
-    expect(delegate.messageBus!.route.blockLayout!.blockSize + 2).toBe(135);
+    expect(delegate.messageBus!.route.blockLayout!.blockSize + 2).toBe(391);
     const routeAsm = bytecodeToAsm(hexToBin(delegate.functionBodies![delegate.messageBus!.route.selector]));
     expect(routeAsm).toContain('OP_INVOKE');
 

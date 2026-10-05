@@ -6,7 +6,7 @@ import { hexToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
 import {
-  findDeploymentByAddress,
+  findDeploymentByAddressValue,
 } from './deployment-registry.js';
 import { logicalIdentityAddressVariants } from './logical-identity.js';
 
@@ -39,7 +39,7 @@ export function addressMappingKeyCandidates(
       add(variant);
       try { add(addressToLockScript(variant)); } catch { /* */ }
     }
-    const deployment = findDeploymentByAddress(host.provider, addressValue);
+    const deployment = findDeploymentByAddressValue(host.provider, addressValue);
     const deployed = deployment?.contract as {
       _logicalAddress?: string;
       address?: string;

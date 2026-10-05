@@ -68,12 +68,22 @@ describe('multi-result graph observable parity', () => {
       { callsiteId: 1, functionName: 'accept', returnTypes: undefined },
     ]);
     expect(kernelApply.externalCalls?.[1].argSources).toEqual([
-      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 } },
-      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 1 } },
+      { kind: 'expression', expression: {
+        kind: 'producerResult', callsiteId: 0, sourceCallsiteId: 0, resultIndex: 0,
+      } },
+      { kind: 'expression', expression: {
+        kind: 'producerResult', callsiteId: 0, sourceCallsiteId: 0, resultIndex: 1,
+      } },
     ]);
     expect(kernelApply.resultConsumers).toEqual([
-      { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 },
-      { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 1 },
+      {
+        consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0,
+        producerSourceCallsiteId: 0, resultIndex: 0,
+      },
+      {
+        consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0,
+        producerSourceCallsiteId: 0, resultIndex: 1,
+      },
     ]);
     const graphHandler = kernelCoordinator.invocationAnalysis?.functions.find((fn) =>
       fn.name === '__message_bus_handler_apply');

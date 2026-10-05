@@ -71,6 +71,40 @@ export const isEvmExternalResultTypeDecodable = (type: Type): boolean => {
 export const isEvmExternalResultSchemaDecodable = (types: readonly Type[]): boolean =>
   types.every(isEvmExternalResultTypeDecodable);
 
+/** Exact encoded width for a static, decodable EVM result; dynamic layouts have no fixed width. */
+export const evmStaticResultBytes = (types: readonly Type[]): number | undefined => {
+  const width = (type: Type): number | undefined => {
+    if (isEvmAbiWordType(type)) return 32;
+    if (type instanceof ArrayType && type.bound !== undefined) {
+      const element = width(type.elementType);
+      return element === undefined ? undefined : type.bound * element;
+    }
+    if (type instanceof StructType) {
+      let total = 0;
+      for (const field of type.fields) {
+        const member = width(field.type);
+        if (member === undefined) return undefined;
+        total += member;
+      }
+      return total;
+    }
+    return undefined;
+  };
+  let total = 0;
+  for (const type of types) {
+    const item = width(type);
+    if (item === undefined) return undefined;
+    total += item;
+  }
+  return total;
+};
+
+/** A dynamic ABI result can cross the NFT commitment limit at runtime. */
+export const evmResultMayNeedPreimage = (types: readonly Type[]): boolean => {
+  const staticBytes = evmStaticResultBytes(types);
+  return staticBytes === undefined || staticBytes > 128;
+};
+
 /** Tuple-wide wire representation emitted and expected by this exact compiler boundary. */
 export const externalResultEncoding = (
   types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat' | 'solidityImportCompat'>,

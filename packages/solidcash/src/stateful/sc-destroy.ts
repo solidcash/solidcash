@@ -3,7 +3,7 @@
  */
 
 import {
-  binToHex, hash256, hexToBin, decodeTransaction, decodeTransactionUnsafe,
+  binToHex, hexToBin, decodeTransactionUnsafe,
 } from '@bitauth/libauth';
 import type { FunctionArgument } from '../Argument.js';
 import type { TransactionDetails, Utxo } from '../interfaces.js';

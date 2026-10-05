@@ -80,7 +80,8 @@ const arrayKeyComponents = (write: MappingAssignNode, arrayName: string): number
 
 const producerWriteFor = (loop: WhileNode, arrayName: string, allocationSize: string): ArrayAssignNode | undefined => {
   if (!(loop.condition instanceof BinaryOpNode) || loop.condition.operator !== BinaryOperator.LT
-    || identifierName(loop.condition.left) === undefined || identifierName(loop.condition.right) !== allocationSize) return undefined;
+    || identifierName(loop.condition.left) === undefined
+    || identifierName(loop.condition.right) !== allocationSize) return undefined;
   const counter = identifierName(loop.condition.left)!;
   const statements = loop.block.statements ?? [];
   const write = statements[0];
@@ -131,7 +132,8 @@ export function planKernelJournalStreams(fn: FunctionDefinitionNode): void {
     const consumerLoop = coordinates.get(consumer.loop);
     const consumerWrite = coordinates.get(consumer.write);
     if (!allocationCoordinate || !producerLoop || !producerWrite || !consumerLoop || !consumerWrite
-      || !(allocationCoordinate.preorder < producerWrite.preorder && producerWrite.preorder < consumerWrite.preorder)) continue;
+      || !(allocationCoordinate.preorder < producerWrite.preorder
+        && producerWrite.preorder < consumerWrite.preorder)) continue;
     edges.push({
       allocationOrdinal: allocation.ordinal,
       allocation: allocationCoordinate,

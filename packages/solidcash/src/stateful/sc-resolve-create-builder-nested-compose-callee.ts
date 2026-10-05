@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose callee target + argument resolution.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import type {
   AbiFunction,
   ArgSource,
@@ -10,20 +10,21 @@ import type {
   ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { tryCashAddressToLockScript } from '../utils.js';
 import {
-  findDeploymentByAddress,
-  findDeploymentByLockingBytecode,
+  connectedContractMatchesExactAddress,
+  exactAddressLockingBytecodeHex,
+  findDeploymentByAddressValue,
   findDeploymentByName,
+  registeredAddressValueLockingBytecode,
 } from './deployment-registry.js';
 import {
   adaptLegacyNestedJobEventArguments,
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
-import { legacyPersistedValueChunkWidth } from './early-value-chunk-helpers.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
-import { isPersistedJobEventsReady } from './value-chunk-persist.js';
+import { readyPersistedCompatibilityValueChunkWidth } from './value-chunk-persist.js';
 
 export type ResolveCreateBuilderNestedComposeCalleeHost = {
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
@@ -135,31 +136,30 @@ export async function resolveCreateBuilderNestedComposeCallee(
     // Backward compatibility for artifacts which predate addressSource: addressStateVar names the
     // authenticated caller-state field, not a deployment-registry hint. Prefer it over interface-name
     // lookup so two different interfaces cannot accidentally collapse onto the same fallback callee.
-    : nested.addressStateVar
+    : nested.addressStateVar !== undefined
       ? onChainState.state[nested.addressStateVar] as FunctionArgument | undefined
-      : undefined;
+      : nested.addressLiteral;
   const addressParamIndex = nested.addressParam
-    ? delegateFn!.inputs.findIndex((input) => input.name === nested.addressParam)
+    ? delegateFn?.inputs.findIndex((input) => input.name === nested.addressParam) ?? -1
     : -1;
-  const addressValue = resolvedAddress
-    ?? (addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined);
-  const resolvedTargetLockingBytecode = tryCashAddressToLockScript(addressValue);
-  let deploymentAtAddress: unknown;
-  if (typeof addressValue === 'string') {
-    deploymentAtAddress = (
-      findDeploymentByAddress(host.provider, addressValue)
-      ?? findDeploymentByLockingBytecode(host.provider, addressValue)
-    )?.contract;
-  } else if (addressValue instanceof Uint8Array) {
-    deploymentAtAddress = findDeploymentByLockingBytecode(
-      host.provider, binToHex(addressValue),
-    )?.contract;
-  }
+  const hasPublishedTarget = nested.addressSource !== undefined
+    || nested.addressStateVar !== undefined || nested.addressLiteral !== undefined
+    || nested.addressParam !== undefined;
+  const addressValue = nested.addressSource !== undefined || nested.addressStateVar !== undefined
+    || nested.addressLiteral !== undefined
+    ? resolvedAddress : addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined;
+  const typedAddress = typeof addressValue === 'string' || addressValue instanceof Uint8Array
+    ? addressValue : undefined;
+  const exactLockHex = typedAddress === undefined ? undefined : exactAddressLockingBytecodeHex(typedAddress);
+  const resolvedTargetLockingBytecode = typedAddress === undefined ? undefined
+    : registeredAddressValueLockingBytecode(host.provider, typedAddress)
+      ?? (exactLockHex ? hexToBin(exactLockHex) : undefined);
+  const deploymentAtAddress = typedAddress === undefined ? undefined
+    : findDeploymentByAddressValue(host.provider, typedAddress)?.contract;
   // Hardhat-style factories connect externals on the public proxy
   // instance. A manually assembled delegate may instead connect them
-  // directly on the implementation. When the source supplies an address, that authenticated value
-  // identifies the instance; an interface-name registration is only a fallback. Otherwise a stale
-  // same-interface binding can silently redirect a state-pinned call to a different deployment.
+  // directly on the implementation. A published address selects the instance; a connect-time binding
+  // is eligible only when its known identity matches that address exactly.
   const rawCandidates = nested.interfaceName === '__raw__'
     ? [...new Set([
       ...host.calleeRegistryValues(callInfoContract),
@@ -172,18 +172,26 @@ export async function resolveCreateBuilderNestedComposeCallee(
         .some((fn) => (nested.rawFunctionName !== undefined && fn.name === nested.rawFunctionName)
           || (nested.rawSelector !== undefined && fn.selector === nested.rawSelector));
     }) : [];
-  if (rawCandidates.length > 1 && deploymentAtAddress === undefined) {
+  const addressMatches = (candidate: unknown): boolean => typedAddress !== undefined
+    && connectedContractMatchesExactAddress(candidate, typedAddress);
+  const eligibleRawCandidates = hasPublishedTarget
+    ? rawCandidates.filter(addressMatches) : rawCandidates;
+  if (eligibleRawCandidates.length > 1 && deploymentAtAddress === undefined) {
     throw new Error(
       `Delegate raw call '${nested.rawFunctionName}' matches more than one connected contract; `
       + 'pin its target address in the caller state or arguments.',
     );
   }
+  const namedCandidates = [
+    host.calleeRegistryGet(callInfoContract, nested.interfaceName),
+    host.callerRegistryGet(nested.interfaceName),
+    findDeploymentByName(host.provider, nested.interfaceName)?.contract,
+  ];
   const registeredCallee = (
     deploymentAtAddress
-    ?? rawCandidates[0]
-    ?? host.calleeRegistryGet(callInfoContract, nested.interfaceName)
-    ?? host.callerRegistryGet(nested.interfaceName)
-    ?? findDeploymentByName(host.provider, nested.interfaceName)?.contract
+    ?? eligibleRawCandidates[0]
+    ?? namedCandidates.find((candidate) => candidate !== undefined
+      && (!hasPublishedTarget || addressMatches(candidate)))
   ) as any | undefined;
   const proxyCallee = registeredCallee && 'proxy' in registeredCallee
     ? registeredCallee : undefined;
@@ -212,10 +220,15 @@ export async function resolveCreateBuilderNestedComposeCallee(
     void host.nestedIdentity(callee._logicalAddress ?? callee.target!);
   }
 
-  const needsExpressionReturns = nestedSources?.some((source) => containsReturningExpression(source)) === true;
+  const domainSources: ArgSource[] = nested.iterationDomain
+    ? [nested.iterationDomain.initialValue, nested.iterationDomain.stepValue,
+      nested.iterationDomain.continueCondition].map((expression) => ({ kind: 'expression', expression }))
+    : [];
+  const returnSources = [...(nestedSources ?? []), ...domainSources];
+  const needsExpressionReturns = returnSources.some((source) => containsReturningExpression(source));
   const nestedExpressionReturns = needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
-      nestedSources, delegateVisibleArgs, callInfoContract, onChainState.state,
+      returnSources, delegateVisibleArgs, callInfoContract, onChainState.state,
       delegateVisibleInputs,
       delegateSelfAddress,
       publishedNestedExternalCalls,
@@ -259,9 +272,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
     const tip = Number(
       (host.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
     );
-    const appending = isPersistedJobEventsReady()
-      && (legacyPersistedValueChunkWidth(callee.categoryId) > 0
-        || legacyPersistedValueChunkWidth() > 0);
+    const appending = readyPersistedCompatibilityValueChunkWidth(callee.categoryId) > 0;
     const locktime = appending
       ? providerUnixLocktime(host.provider as { getBlockTime?: () => number })
       : undefined;
@@ -274,7 +285,12 @@ export async function resolveCreateBuilderNestedComposeCallee(
   }
   const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
-      nestedSources, delegateVisibleArgs, callInfoContract, onChainState.state,
+      returnSources,
+      projectMessageBusHandlerArguments(
+        callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
+        delegateVisibleArgs,
+      ),
+      callInfoContract, onChainState.state,
       delegateVisibleInputs, delegateSelfAddress,
       publishedNestedExternalCalls,
       true,
@@ -283,7 +299,10 @@ export async function resolveCreateBuilderNestedComposeCallee(
     : nestedExpressionReturns;
   const graphNestedArgs = preparedAtomicNodes
     ? host.resolveExternalArgs(
-      nestedSources, delegateVisibleArgs, callInfoContract.inner.artifact, onChainState.state,
+      nestedSources, projectMessageBusHandlerArguments(
+        callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
+        delegateVisibleArgs,
+      ), callInfoContract.inner.artifact, onChainState.state,
       delegateVisibleInputs, graphExpressionReturns, 0, false, delegateSelfAddress,
     ) ?? nestedArgs
     : nestedArgs;

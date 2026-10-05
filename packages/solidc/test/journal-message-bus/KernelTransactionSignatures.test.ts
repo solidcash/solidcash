@@ -133,8 +133,8 @@ describe('kernel transaction-signature boundaries', () => {
   });
 
   it.each([
-    ['an alias', `sig result = sig(value); return result;`, ''],
-    ['return branches', `if (choose) return sig(left); return sig(right);`,
+    ['an alias', 'sig result = sig(value); return result;', ''],
+    ['return branches', 'if (choose) return sig(left); return sig(right);',
       ', bool choose, bytes left, bytes right'],
     ['a pure helper', 'return convert(value);',
       ' function convert(bytes input) internal pure returns (sig) { return sig(input); }'],
@@ -152,9 +152,9 @@ describe('kernel transaction-signature boundaries', () => {
   });
 
   it.each([
-    ['an aliased signature parameter', `sig result = witness; return result;`, ''],
+    ['an aliased signature parameter', 'sig result = witness; return result;', ''],
     ['a signature-dependent branch',
-      `if (bytes(witness).length > 0) return sig(left); return sig(right);`,
+      'if (bytes(witness).length > 0) return sig(left); return sig(right);',
       ', bytes left, bytes right'],
     ['a pure identity helper', 'return identity(witness);',
       ' function identity(sig value) internal pure returns (sig) { return value; }'],

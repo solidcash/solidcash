@@ -23,12 +23,12 @@ export interface ReassertBuildConservationRepairsHost {
   reassertTokenInsertNewLocks(builder: TransactionBuilder): void;
   scidReservedIndices(outputCount: number): Set<number>;
   isPersistedChunkableValueWriteReady(): boolean;
-  packJobsSuffix(builder: TransactionBuilder): void;
+  packReverseIndexedValueChunkSuffix(builder: TransactionBuilder): void;
 }
 
 /**
  * After primary output materialization, reassert SCID/none-cap/minting/events/fixed-state and
- * optionally pack the persisted jobs suffix.
+ * optionally pack the persisted value-chunk suffix.
  */
 export function reassertBuildConservationRepairs(
   host: ReassertBuildConservationRepairsHost,
@@ -54,5 +54,5 @@ export function reassertBuildConservationRepairs(
   );
   host.reassertNestedEmitEvents(builder);
   host.reassertDelegateImplEvents(builder);
-  if (host.isPersistedChunkableValueWriteReady()) host.packJobsSuffix(builder);
+  if (host.isPersistedChunkableValueWriteReady()) host.packReverseIndexedValueChunkSuffix(builder);
 }

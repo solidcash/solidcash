@@ -1,5 +1,5 @@
 /**
- * legacy JobEvent helper facade/legacy JobEvent naming retirement: JobEvent helper API routes through the legacy adapter facade.
+ * The legacy JobEvent helper API routes through the adapter facade.
  * legacy JobEvent naming retirement: JobEvent-branded public aliases deleted; only neutral legacy* exports remain.
  */
 import { describe, expect, it } from 'vitest';
@@ -13,6 +13,9 @@ import {
 } from '../../src/stateful/legacy-job-event-helpers.js';
 import {
   CompositionSettlementSession,
+  legacyRememberValueChunkValue,
+  markPersistedCompatibilityValueChunkReady,
+  readyPersistedCompatibilityValueChunkWidth,
   runWithCompositionSettlementSession,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
@@ -29,6 +32,22 @@ describe('legacy JobEvent helper facade/legacy JobEvent naming retirement JobEve
     const session = new CompositionSettlementSession();
     expect(runWithCompositionSettlementSession(session, () => legacyPersistedValueChunkWidth('missing')))
       .toBe(0);
+  });
+
+  it('uses only the selected category for legacy append width', () => {
+    const session = new CompositionSettlementSession();
+    const selected = 'aa'.repeat(32);
+    const other = 'bb'.repeat(32);
+    runWithCompositionSettlementSession(session, () => {
+      legacyRememberValueChunkValue(other, new Uint8Array(80));
+      markPersistedCompatibilityValueChunkReady(other);
+      expect(readyPersistedCompatibilityValueChunkWidth(selected)).toBe(0);
+      expect(readyPersistedCompatibilityValueChunkWidth()).toBe(0);
+      legacyRememberValueChunkValue(selected, new Uint8Array(80));
+      expect(readyPersistedCompatibilityValueChunkWidth(selected)).toBe(0);
+      markPersistedCompatibilityValueChunkReady(selected);
+      expect(readyPersistedCompatibilityValueChunkWidth(selected)).toBe(1);
+    });
   });
 
   it('legacy JobEvent naming retirement: JobEvent-branded aliases are deleted from STB / adapter / index', () => {

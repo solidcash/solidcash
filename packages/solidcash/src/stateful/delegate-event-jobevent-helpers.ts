@@ -12,20 +12,10 @@ import {
   computeCollectionSignature,
   encodeInt,
   encodePushdataValue,
-  getDefaultStateValue,
 } from '@solidcash/utils';
 import { scriptToLockingBytecode } from '../utils.js';
-import {
-  commitmentHexOf,
-  cloneToken,
-  outputMatchesLock,
-} from './stb-output-utils.js';
-import {
-  isDisposableAlignmentPad,
-  isViewReturnTailOutput,
-} from './value-chunk-band-helpers.js';
+import { commitmentHexOf } from './stb-output-utils.js';
 import { isJobEventEmitCommitment } from './same-index-twin-emit.js';
-import { isOpReturnLockingBytecode } from './mutable-output-reassert.js';
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
 
 /** SCID identity commitment ASCII prefix ("SCID"). */
@@ -94,7 +84,7 @@ export function demoteUnclaimedDelegateEventClones<T extends {
   }
   let demoted = 0;
   for (const [index, output] of outputs.entries()) {
-    if (output.token?.nft?.capability !== 'none' || !output.token.category) continue;
+    if (output?.token?.nft?.capability !== 'none' || !output.token.category) continue;
     const identity = `${output.token.category}:${lockingHexOf(output)}:${commitmentHex(output.token.nft.commitment)}`;
     const destinations = destinationsByIdentity.get(identity);
     if (!destinations || destinations.has(index)) continue;
@@ -212,12 +202,10 @@ export function isWithdrawShapedJobEvent(event: unknown): boolean {
 export function shouldRematerializePersistUpdate(parts: {
   persistReady: boolean;
   initialWrite?: boolean;
-  /** @deprecated Use `initialWrite`. */
-  publishJobPost?: boolean;
   event?: unknown;
   plannedInserts?: number;
 }): boolean {
-  if (!parts.persistReady || (parts.initialWrite ?? parts.publishJobPost ?? false)) return false;
+  if (!parts.persistReady || parts.initialWrite === true) return false;
   if ((parts.plannedInserts ?? 0) > 0) return false;
   return isWithdrawShapedJobEvent(parts.event);
 }

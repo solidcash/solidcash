@@ -1,14 +1,18 @@
 import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
-  sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
-  type Artifact, type EntryAccessAbi,
+  computeCollectionHash, sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
+  type Artifact, type CollectionInfo, type EntryAccessAbi, type StateLayout,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
+import type { Output } from '../../src/interfaces.js';
 import {
   adaptLegacyNestedJobEventArguments,
   vmapBatchWitnessFallback,
 } from '../../src/stateful/StatefulContract.js';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
+import { resolveMaterializedPredOutUpdates } from '../../src/stateful/stb-materialized-predout-reconcile.js';
+import { reassertNestedEmitEvents } from '../../src/stateful/stb-nested-emit-events.js';
+import { writerBatchPlanMatchesPhysicalCarrier } from '../../src/stateful/writer-event-delegate-layout.js';
 import {
   assignPhysicalReturnIndices,
   assignedTailEnd,
@@ -116,7 +120,7 @@ import {
   legacyFillValueChunkBandHoles,
   writerBlockOccupancyEnd,
   relocateChangeAfterOccupancy,
-  packJobsAgainstOpReturn,
+  packMutableValueChunkRunAgainstSeparator,
   moveLateOutputsBeforeReverseSuffix,
   valueChunkIndexFromCommitment,
   isPersistValueChunkCommitment,
@@ -201,9 +205,12 @@ import {
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
+import { reassertRoutedReadOnlyDynamicChunkTwins } from '../../src/stateful/mutable-output-reassert.js';
 import {
   describeValueChunkWrites, resolveChunkableEntryCollection,
 } from '../../src/stateful/StatefulContract.js';
+import { resolveChunkableEntryCollection as resolveRuntimeChunkableEntryCollection }
+  from '../../src/stateful/kernel-value-chunk-lanes.js';
 
 describe('delegate-only physical slot projection', () => {
   const layout = {
@@ -232,7 +239,9 @@ describe('external event probe input', () => {
 });
 
 describe('materialized low-level-call block identity', () => {
-  const makeGroup = (functionName: string, txid: string, vout = 0) => ({
+  const makeGroup = (
+    functionName: string, txid: string, vout = 0,
+  ): import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup => ({
     categoryId: 'ab'.repeat(32),
     functionName,
     masterUtxo: { txid, vout },
@@ -536,7 +545,14 @@ describe('generic persisted value-chunk write identity', () => {
   });
 
   it('recovers an alpha-renamed legacy writer from exact planned continuation geometry', () => {
-    const structuralLegacy = (functionName: string, collectionName: string) => {
+    const structuralLegacy = (functionName: string, collectionName: string): {
+      functionName: string;
+      stateLayout: StateLayout & { collections: CollectionInfo[] };
+      logicalArtifact: Artifact;
+      valueChunkOutputBase: number;
+      valueChunkOutputCount?: number;
+      externalContract?: { inner: { artifact: Artifact } };
+    } => {
       const collection = {
         name: collectionName,
         signature: `${collectionName}:mapping(int => Notice[])`,
@@ -557,9 +573,12 @@ describe('generic persisted value-chunk write identity', () => {
           ],
         },
       };
+      // This legacy artifact predates the required modern layout metadata; keep its sparse runtime shape.
+      const stateLayout = { variables: [], collections: [collection] } as unknown as StateLayout
+      & { collections: CollectionInfo[] };
       return {
         functionName,
-        stateLayout: { variables: [], collections: [collection] },
+        stateLayout,
         logicalArtifact: {
           abi: [handler],
           stateLayout: { variables: [], collections: [collection] },
@@ -679,6 +698,7 @@ describe('generic persisted value-chunk write identity', () => {
   });
 
   it('resolves chunkable entry ownership from exact metadata and fails closed for kernel ambiguity', () => {
+    expect(resolveChunkableEntryCollection).toBe(resolveRuntimeChunkableEntryCollection);
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(resolveChunkableEntryCollection({
       writes: [renamed],
@@ -706,6 +726,13 @@ describe('generic persisted value-chunk write identity', () => {
       convention: 'kernel-row-loop',
       legacyFallback: 'historical',
     })).toThrow(/requires one exact compiler-published collection identity/);
+    expect(() => resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: ['records', 'audit'],
+      convention: 'legacy-unroll',
+      legacyFallback: 'historical',
+    })).toThrow(/ambiguous compiler-published collections/);
     expect(resolveChunkableEntryCollection({
       writes: [],
       categoryId,
@@ -824,7 +851,9 @@ describe('generic persisted value-chunk write identity', () => {
 
   it('fails closed when independent participants both claim token-band repair ownership', () => {
     const otherCategory = 'cd'.repeat(32);
-    const participant = (id: string, name: string) => ({
+    const participant = (
+      id: string, name: string,
+    ): import('../../src/stateful/StatefulTransactionBuilder.js').PhysicalReturnGroup => ({
       categoryId: id, functionName: name, blockLayout: {
         blockSize: 5, slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1 }],
       },
@@ -1012,8 +1041,14 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectProtectedLoopEntryCollections([planned])).toMatchObject({
       status: 'exact', collections: ['notices'],
     });
+    expect(selectProtectedLoopEntryCollections([makeGroup('appendNotice')])).toEqual({
+      status: 'exact', collections: ['notices'],
+    });
     expect(selectProtectedLoopEntryCollections([])).toEqual({
-      status: 'absent', collections: ['jobEvents'],
+      status: 'absent', collections: [],
+    });
+    expect(selectProtectedLoopEntryCollections([{ functionName: 'unrelated' }])).toEqual({
+      status: 'absent', collections: [],
     });
     const kernelArtifact = {
       messageBus: { convention: 'kernel-row-loop' },
@@ -1361,10 +1396,11 @@ describe('assignPhysicalReturnIndices', () => {
       group({
         categoryId: 'ft',
         functionName: 'balanceOf',
+        logicalFunctionName: 'approve',
         returnEventInBlock: true,
         fusedReturnGroupIndex: 1,
         blockLayout: tokenLayout,
-        externalContract: { inner: { artifact: { abi: [viewAbi] } } },
+        externalContract: { inner: { artifact: { abi: [viewAbi, { name: 'approve', writesState: true }] } } },
       }),
       group({
         categoryId: 'ft',
@@ -1376,6 +1412,7 @@ describe('assignPhysicalReturnIndices', () => {
     ];
     expect(groupOwnsInBlockReturnEvent(viewing, 0)).toBe(false);
     expect(groupOwnsInBlockReturnEvent(viewing, 1)).toBe(true);
+    expect(logicalReturnGroupIndex(viewing, 0)).toBe(0);
   });
 
   it('materializes rolled loop returns even when pending return events were cleared', () => {
@@ -1604,7 +1641,10 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('rebinds stale return witnesses from final output content without moving valid witnesses', () => {
-    const tail = (category: string, commitment: string) => ({
+    const tail = (category: string, commitment: string): {
+      to: Uint8Array;
+      token: { category: string; nft: { capability: 'none'; commitment: string } };
+    } => ({
       to: Uint8Array.of(0x51),
       token: { category, nft: { capability: 'none' as const, commitment } },
     });
@@ -1719,7 +1759,9 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('gathers serialized tail funders next to a colliding block without adding inputs', () => {
-    const input = (txid: string, token = false) => ({
+    const input = (txid: string, token = false): {
+      txid: string; vout: number; token?: Record<string, never>;
+    } => ({
       txid, vout: 0, ...(token ? { token: {} } : {}),
     });
     const inputs = [
@@ -1737,7 +1779,10 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('does not use a token-free P2SH covenant input as output-only block funding', () => {
-    const input = (txid: string, lock: Uint8Array, token = false) => ({
+    const input = (txid: string, lock: Uint8Array, token = false): {
+      txid: string; vout: number; token?: Record<string, never>;
+      unlocker: { generateLockingBytecode: () => Uint8Array };
+    } => ({
       txid,
       vout: 0,
       ...(token ? { token: {} } : {}),
@@ -2117,6 +2162,29 @@ describe('assignPhysicalReturnIndices', () => {
     }, 0)).toBe(6);
   });
 
+  it('rebinds a materialized PredOut by authenticated predecessor content', () => {
+    const lock = hexToBin(`aa20${'86'.repeat(32)}87`);
+    const target = hexToBin('42'.repeat(32));
+    const predecessor = `${'00'.repeat(32)}${'00'.repeat(32)}${'19'.repeat(8)}`;
+    const expected = `${'00'.repeat(32)}${'42'.repeat(32)}${'19'.repeat(8)}`;
+    const inputs = Array.from({ length: 10 }, () => ({}));
+    inputs[6] = {
+      token: { nft: { commitment: predecessor } },
+      unlocker: { generateLockingBytecode: () => lock },
+    };
+    const outputs = Array.from({ length: 26 }, () => ({
+      to: Uint8Array.of(0x51), token: undefined,
+    }));
+    // Same-address NEW/output noise must not be mistaken for the recreated predecessor.
+    outputs[17] = { to: lock, token: { nft: { commitment: `${'42'.repeat(32)}${'00'.repeat(32)}` } } };
+    outputs[25] = { to: lock, token: { nft: { commitment: expected } } };
+    expect(resolveMaterializedPredOutUpdates({
+      __internal__vmapBatchProof_0: 6n,
+      __internal__vmapBatchSlot_0: target,
+      __internal__vmapBatchPredOut_0: 17n,
+    }, { inputs, outputs }, 3)).toEqual({ __internal__vmapBatchPredOut_0: 25n });
+  });
+
   it('strips extra own-category none-cap tails outside event and return slots', () => {
     const outputs = [
       { token: { category: 'ft', nft: { capability: 'minting', commitment: '' } } },
@@ -2291,12 +2359,15 @@ describe('assignPhysicalReturnIndices', () => {
     expect(skipCompilerOwnedInBlockCollectionStrip({
       preserveBlockLayoutWidth: true, pinnedEntryCount: 0,
     })).toBe(false);
+    expect(skipCompilerOwnedInBlockCollectionStrip({
+      preserveBlockLayoutWidth: true, pinnedEntryCount: 0, requiredEntryCount: 8,
+    })).toBe(true);
   });
 
   it('falls back to nested-callee sentinels for a vmap-batch slot with no planned batch', () => {
     expect(vmapBatchWitnessFallback('__internal__vmapBatchTrailingCount')).toBe(0n);
     expect(vmapBatchWitnessFallback('__internal__vmapBatchProof_0')).toBe(-1n);
-    expect(vmapBatchWitnessFallback('__internal__vmapBatchPredOut_0')).toBe(-1n);
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchPredOut_0')).toBe(-2n);
     expect(vmapBatchWitnessFallback('__internal__vmapBatchRank_0')).toBe(0n);
     expect(vmapBatchWitnessFallback('__internal__vmapBatchSlot_0')).toEqual(new Uint8Array(32));
     expect(vmapBatchWitnessFallback('__internal__vmapBatchNext_0')).toEqual(new Uint8Array(32));
@@ -2416,6 +2487,51 @@ describe('assignPhysicalReturnIndices', () => {
     expect(() => inheritWriterBatchPlan(carrier, writer)).toThrow(/conflicting sorted-batch/);
   });
 
+  it('excludes a different non-routed shared handler from the physical writer plan', () => {
+    const physical = { functionName: 'transferFrom' };
+
+    expect(writerBatchPlanMatchesPhysicalCarrier(physical, {
+      functionName: 'approve',
+      sharedGroupIndex: 1,
+    })).toBe(false);
+    expect(writerBatchPlanMatchesPhysicalCarrier(physical, {
+      functionName: 'transferFrom',
+      sharedGroupIndex: 1,
+    })).toBe(true);
+    expect(writerBatchPlanMatchesPhysicalCarrier({
+      ...physical,
+      compilerRoute: {},
+    }, {
+      functionName: 'approve',
+      sharedGroupIndex: 1,
+    })).toBe(true);
+  });
+
+  it('rebases a fused writer trailing predecessor onto the physical carrier trailing band', () => {
+    const carrier = {
+      blockLayout: { blockSize: 8 },
+      internalArgs: { __internal__vmapBatchPredOut_0: -1n },
+      batchPredecessorOutputs: [] as Array<{ outputBlockSlot: number; collection: string }>,
+    };
+    const writer = {
+      blockLayout: { blockSize: 4 },
+      internalArgs: {
+        __internal__vmapBatchPredOut_0: 4n,
+        __internal__vmapBatchTrailingCount: 1n,
+      },
+      batchPredecessorOutputs: [{ outputBlockSlot: 4, collection: 'allowances' }],
+    };
+
+    expect(inheritWriterBatchPlan(carrier, writer)).toBe(true);
+    expect(carrier.batchPredecessorOutputs).toEqual([
+      { outputBlockSlot: 8, collection: 'allowances' },
+    ]);
+    expect(carrier.internalArgs).toMatchObject({
+      __internal__vmapBatchPredOut_0: 8n,
+      __internal__vmapBatchTrailingCount: 1n,
+    });
+  });
+
   it('relocates only the planned INSERT PredOut and keeps leftover UPDATE sentinels', () => {
     expect(remapInsertPredOuts([
       { name: '__internal__vmapBatchPredOut_0', value: 8n },
@@ -2515,6 +2631,22 @@ describe('assignPhysicalReturnIndices', () => {
         nft: { capability: 'mutable', commitment: 'abcd' },
       },
     });
+  });
+
+  it('does not consume a token-free structural funder as the predecessor value', () => {
+    const lock = hexToBin(`aa20${'71'.repeat(32)}87`);
+    const outputs: Output[] = Array.from({ length: 5 }, () => ({
+      to: Uint8Array.of(0x51), amount: 1000n,
+    }));
+    outputs[4] = { to: Uint8Array.of(0x51), amount: 10000n };
+
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 2, 'bank', [{
+      outputBlockSlot: 2,
+      lockingBytecode: lock,
+      commitment: 'ab'.repeat(64),
+    }])).toBe(1);
+    expect(outputs[4].amount).toBe(1000n);
+    expect(outputs[4].token?.nft?.commitment).toBe('ab'.repeat(64));
   });
 
   it('does not overwrite an unrelated mutable output at a predecessor coordinate', () => {
@@ -3198,7 +3330,7 @@ describe('assignPhysicalReturnIndices', () => {
       { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '01bb' } } },
       { to: Uint8Array.of(0x6a), amount: 0n },
     ];
-    expect(packJobsAgainstOpReturn(suffix, jobsLock, 0)).toBe(2);
+    expect(packMutableValueChunkRunAgainstSeparator(suffix, jobsLock, 0)).toBe(2);
     expect(suffix[1]?.token?.nft?.commitment).toBe('00aa');
     expect(suffix[2]?.token?.nft?.commitment).toBe('01bb');
     expect(suffix[3]?.to).toEqual(Uint8Array.of(0x6a));
@@ -3299,7 +3431,7 @@ describe('assignPhysicalReturnIndices', () => {
     })).toEqual({ start: 20, end: 24, nNew: 5 });
     expect(legacyPersistedValueChunkWidth('missing')).toBe(0);
     expect(legacyComputePublishValueChunkBand({
-      implIndex: 15, blockSize: 5, jobEventsCount: 4,
+      implIndex: 15, blockSize: 5, entryChunkCount: 4,
     })).toEqual({ start: 20, end: 23, nNew: 4 });
     const viewTail = {
       to: Uint8Array.of(0x51),
@@ -3353,15 +3485,56 @@ describe('assignPhysicalReturnIndices', () => {
     sessionLock[0] = 0xaa; sessionLock[1] = 0x20; sessionLock[34] = 0x87;
     sessionLock[2] = 0xeb;
     legacyRememberValueChunkLock('ee643a16', persistLock);
-    expect(binToHex(persistUpdateRedeemLock('ee643a16', sessionLock)!)).toBe(binToHex(sessionLock));
-    expect(binToHex(persistUpdateRedeemLock('ee643a16')!)).toBe(binToHex(persistLock));
+    expect(binToHex(persistUpdateRedeemLock('ee643a16', sessionLock, undefined, true)!))
+      .toBe(binToHex(sessionLock));
+    expect(binToHex(persistUpdateRedeemLock('ee643a16', undefined, undefined, true)!))
+      .toBe(binToHex(persistLock));
     const stamped = applyRedeemLockToChunks(
       [{ lockingBytecode: p2sh32LockFromValueRoot(sha256Sync(new Uint8Array(80).fill(0x43))) }],
-      persistUpdateRedeemLock('ee643a16', sessionLock)!,
+      persistUpdateRedeemLock('ee643a16', sessionLock, undefined, true)!,
     );
     expect(binToHex(stamped[0].lockingBytecode)).toBe(binToHex(sessionLock));
     expect(binToHex(legacyPersistedValueChunkLock('ee643a16')!)).toBe(binToHex(persistLock));
     StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
+  it('does not reuse a legacy persisted UPDATE lock without explicit legacy authority', () => {
+    const categoryId = 'e7'.repeat(32);
+    const legacyLock = new Uint8Array(35);
+    legacyLock[0] = 0xaa; legacyLock[1] = 0x20; legacyLock[34] = 0x87;
+    legacyLock[2] = 0x57;
+    legacyRememberValueChunkLock(categoryId, legacyLock);
+
+    expect(persistUpdateRedeemLock(categoryId, legacyLock)).toBeUndefined();
+    expect(persistUpdateRedeemLock(categoryId)).toBeUndefined();
+    expect(persistUpdateRedeemLock(categoryId, legacyLock, undefined, true)).toEqual(legacyLock);
+    StatefulTransactionBuilder.clearPersistedJobEvents(categoryId);
+  });
+
+  it('does not seed a kernel persist band from an unowned legacy lock', () => {
+    const categoryId = 'e8'.repeat(32);
+    const legacyLock = new Uint8Array(35);
+    legacyLock[0] = 0xaa; legacyLock[1] = 0x20; legacyLock[34] = 0x87;
+    legacyRememberValueChunkLock(categoryId, legacyLock);
+
+    for (const sessionLock of [legacyLock, undefined]) {
+      let placed = 0;
+      const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype) as object, {
+        valueChunkRedeemLock: sessionLock,
+        _shouldRematerializePersistUpdate: () => true,
+        getChunkableValueWriteBand: () => ({ start: 4, end: 4, nNew: 1 }),
+        _chunkableValueWriteCategory: () => categoryId,
+        _persistedValueChunkValue: () => new Uint8Array(80).fill(0x43),
+        _persistedValueChunkWrite: () => undefined,
+        _hasChunkableValueWriteMetadata: () => false,
+        _permitsLegacyNamedValueChunkFallback: () => false,
+        bumpChunkableValueWriteWidth: () => false,
+        setDerivedChunkOutput: () => { placed += 1; return true; },
+      }) as unknown as StatefulTransactionBuilder;
+      expect(builder.seedPersistedJobEventsBand()).toBe(0);
+      expect(placed).toBe(0);
+    }
+    StatefulTransactionBuilder.clearPersistedJobEvents(categoryId);
   });
 
   it('rematerializes persist UPDATE only for empty-address dest, not Created or Whitelisted', () => {
@@ -3544,7 +3717,7 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('quarantines nested timestamp adaptation to the exact legacy ABI schema', () => {
-    const artifact = (convention: 'legacy-unroll' | 'kernel-row-loop', renamed = false) => ({
+    const artifact = (convention: 'legacy-unroll' | 'kernel-row-loop', renamed = false): Artifact => ({
       contractName: 'Archive',
       abi: [{
         name: 'appendNotice',
@@ -3665,6 +3838,11 @@ describe('assignPhysicalReturnIndices', () => {
     // One authenticated output and its terminal anchor occupy [23, 25).
     expect(continuationOutputBaseBeforeSuffix(25, 1)).toBe(23);
     expect(continuationOutputBaseBeforeSuffix(25, 6)).toBe(18);
+    expect(continuationOutputBaseBeforeSuffix(25, 8, 18)).toBe(18);
+    expect(continuationOutputBaseBeforeSuffix(25, 8, 19)).toBe(19);
+    // A 17-wide fixed block followed by one authenticated batch predecessor owns [0, 18). The probe output
+    // belongs immediately before the reverse-indexed suffix, not at index 17 where it would shift predOut.
+    expect(continuationOutputBaseBeforeSuffix(35, 17, 18)).toBe(18);
   });
 
   it('reuses a planner-owned value-chunk band before allocating an append-only run', () => {
@@ -3947,6 +4125,56 @@ describe('assignPhysicalReturnIndices', () => {
     expect(siblingOutputs[1]?.token?.nft?.commitment).toBe(legacyShapedCommitment);
   });
 
+  it('does not detach JobEvent-shaped receipts from an exact generic writer event', () => {
+    const ownerCategory = 'ab'.repeat(32);
+    const signature = 'notices:mapping(int => Notice[])';
+    const eventSignature = 'NoticeAppended(int,bytes)';
+    const eventLock = hexToBin(`aa20${'11'.repeat(32)}87`);
+    const legacyShapedCommitment = '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000';
+    const layout = {
+      blockSize: 3,
+      slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1, slotIndex: 0 },
+        { kind: 'event', offset: 2, slotIndex: 0 }],
+    };
+    const abiFunction = { name: 'appendNotice', inputs: [], outputs: [], blockLayout: layout };
+    const writer = {
+      categoryId: ownerCategory,
+      functionName: 'appendNotice',
+      blockLayout: layout,
+      compilerRoute: { abiFunction, eventSignaturesBySlot: [eventSignature] },
+      eventOutputs: [{ eventSignature, commitment: '01aa', lockingBytecode: eventLock }],
+      valueChunkWrites: [{
+        categoryId: ownerCategory, collection: 'notices', collectionSignature: signature,
+        collectionHash: binToHex(computeCollectionHash(signature)), keySlot: '07'.repeat(32),
+        entryAccessSlot: 0, routeSlot: 0, operation: 'insert', outputBase: 3, outputCount: 1,
+      }],
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+    const detachedEventReceipts: Array<{ eventSignature: string; commitment: string }> = [];
+    const host = {
+      externalCallUtxoGroups: [writer], lowLevelCallUtxoGroups: [],
+      messageBusConvention: 'kernel-row-loop', composedParticipant: true,
+      allInputs: [], detachedEventReceipts, builderOptions: { provider: {} },
+      getExternalCallMasterInputIndex: () => 0, getLowLevelCallMasterInputIndex: () => -1,
+      findMintingInputIndex: () => -1, ensureDistinctJobEventNfts: () => {},
+    } as unknown as Parameters<typeof reassertNestedEmitEvents>[0];
+    const outputs = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: eventLock, amount: 1200n, token: {
+        category: ownerCategory, amount: 0n,
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      } },
+    ];
+    const builder = { outputs } as unknown as Parameters<typeof reassertNestedEmitEvents>[1];
+
+    reassertNestedEmitEvents(host, builder);
+
+    expect(builder.outputs[2]?.token?.nft?.commitment).toBe('01aa');
+    expect(builder.outputs[3]?.token?.nft?.commitment).toBe(legacyShapedCommitment);
+    expect(detachedEventReceipts).toEqual([]);
+  });
+
   it('ranks return observations by authentication, not commitment byte length', () => {
     expect(shouldReplaceReturnEventCommitment(true, false)).toBe(true);
     expect(shouldReplaceReturnEventCommitment(false, true)).toBe(false);
@@ -4055,6 +4283,44 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[0]).toBe(output);
   });
 
+  it('restores selected read-only chunks ahead of a displaced mapping entry', () => {
+    const chunkLock = Uint8Array.of(0xaa, 0x20, 0x05, 0x87);
+    const entryLock = Uint8Array.of(0xaa, 0x20, 0x16, 0x87);
+    const chunk = (id: string, commitment: string, flag: bigint) => ({
+      txid: id.repeat(64), vout: 0, satoshis: 1200n,
+      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment } },
+      unlocker: {
+        generateLockingBytecode: () => chunkLock,
+        contract: { artifact: { contractName: 'ChunkNft_owner' } },
+        abiFunction: { inputs: [{ name: 'flag' }] },
+        params: [flag],
+      },
+    });
+    const first = chunk('1', '00aa', 1n);
+    const second = chunk('2', '01bb', 1n);
+    const entry = {
+      txid: '3'.repeat(64), vout: 0, satoshis: 1200n,
+      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment: 'entry' } },
+      unlocker: {
+        generateLockingBytecode: () => entryLock,
+        contract: { artifact: { contractName: 'EntryNft_owner' } },
+        abiFunction: { inputs: [{ name: 'flag' }] },
+        params: [1n],
+      },
+    };
+    const outputs: Output[] = [
+      { to: entryLock, amount: 1200n, token: entry.token },
+      { to: chunkLock, amount: 1200n, token: first.token },
+      { to: chunkLock, amount: 1200n, token: second.token },
+    ];
+
+    expect(reassertRoutedReadOnlyDynamicChunkTwins(outputs, [first, second, entry] as never, [])).toBe(0);
+    expect(reassertRoutedReadOnlyDynamicChunkTwins(
+      outputs, [first, second, entry] as never, [chunkLock],
+    )).toBe(2);
+    expect(outputs.map((output) => output.token?.nft?.commitment)).toEqual(['00aa', '01bb', 'entry']);
+  });
+
   it('places the extraTransfer return at the post-rotate minting master', () => {
     expect(tokenWriterReturnIndex(27, {
       blockSize: 8,
@@ -4118,7 +4384,9 @@ describe('assignPhysicalReturnIndices', () => {
     const write = (collection: string): EntryAccessAbi => ({
       collection, keyParams: ['key'], operations: ['read', 'write'],
     });
-    const described = (name: string, writes: number) => ({
+    const described = (
+      name: string, writes: number,
+    ): import('../../src/stateful/value-chunk-geometry.js').CompilerTokenWriterGroup => ({
       functionName: name,
       compilerRoute: { abiFunction: {
         name,
@@ -4246,6 +4514,17 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs).toHaveLength(3);
   });
 
+  it('ignores an unmaterialized output before the minting master', () => {
+    const minting = { category: 'ft', nft: { capability: 'minting' as const } };
+    const outputs = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      undefined,
+      { to: Uint8Array.of(0x51), amount: 1200n, token: minting },
+    ] as unknown as Parameters<typeof stripSurplusMintingOutputs>[0];
+    expect(stripSurplusMintingOutputs(outputs, [{}, {}, { token: minting }], 'ft', 2)).toBe(0);
+    expect(outputs[2]?.token).toBe(minting);
+  });
+
   it('refreshes satoshis and token amount on an existing same-category minting occupant', () => {
     const lock = new Uint8Array(35);
     lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
@@ -4329,7 +4608,9 @@ describe('assignPhysicalReturnIndices', () => {
   it('keeps a linear sorted-batch of in-block nodes when planned count includes every key', () => {
     const lock = new Uint8Array(35);
     lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
-    const node = (commitment: string) => ({
+    const node = (commitment: string): {
+      to: Uint8Array; token: { nft: { capability: 'mutable'; commitment: string } };
+    } => ({
       to: lock, token: { nft: { capability: 'mutable' as const, commitment } },
     });
     const outputs = [

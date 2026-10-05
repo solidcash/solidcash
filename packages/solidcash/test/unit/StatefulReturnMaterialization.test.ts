@@ -1,5 +1,9 @@
+import type { AbiFunction } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { materializeInternalFunctionArgument } from '../../src/stateful/StatefulContract.js';
+import { sortedLoopSurplusFunderCount } from '../../src/stateful/sc-allocate-create-builder-funders-accounting.js';
+import { materializeCreateBuilderSyntheticArgs } from '../../src/stateful/sc-materialize-create-builder-synthetic-args.js';
+import { orderPostBlockTrailingAndReadInputs } from '../../src/stateful/stb-build-inputs.js';
 
 describe('stateful return argument materialization', () => {
   it('replaces a provisional return index without shifting later internal witnesses', () => {
@@ -50,5 +54,46 @@ describe('stateful return argument materialization', () => {
       '__internal__msgSenderAnchorIdx',
       -1n,
     )).toEqual([new Uint8Array(20), 5n, category, -1n, slot, 9n]);
+  });
+
+  it('balances a direct sorted-loop output before a return probe caller band', () => {
+    expect(sortedLoopSurplusFunderCount(1, 0, false)).toBe(1);
+    expect(sortedLoopSurplusFunderCount(2, 1, false)).toBe(1);
+    expect(sortedLoopSurplusFunderCount(1, 0, true)).toBe(0);
+    expect(orderPostBlockTrailingAndReadInputs(['new-entry-pad'], ['caller-identity']))
+      .toEqual(['new-entry-pad', 'caller-identity']);
+  });
+
+  it('fills internal holes before a later resolved value witness without replacing that witness', () => {
+    const complete = Uint8Array.of(1, 2, 3);
+    const sparse = [7n] as unknown[];
+    sparse[3] = complete;
+    const abiFunction = {
+      name: 'seed',
+      inputs: [
+        { name: 'key', type: 'int' },
+        { name: '__internal__leadingPushValue_2', type: 'bytes' },
+        { name: '__internal__valueChunkOutputBase', type: 'bigint' },
+        { name: '__internal__completePushValue_2', type: 'bytes' },
+      ],
+    } as AbiFunction;
+    const { finalArgs } = materializeCreateBuilderSyntheticArgs(
+      { selectActiveRootDelegateGroup: () => undefined },
+      {
+        abiFunction,
+        finalArgs: sparse as Parameters<typeof materializeCreateBuilderSyntheticArgs>[1]['finalArgs'],
+        activeDelegateGroupIndex: undefined,
+        lowLevelCallUtxoGroups: [],
+        lowLevelCallInputBase: 0,
+        overrides: undefined,
+        returnEmitOutputIndex: -1,
+        functionName: 'seed',
+        requiredNftIndices: [],
+        externalReadUtxos: [],
+        outStateInputCount: 0,
+        iterationEntryInputs: [],
+      },
+    );
+    expect(finalArgs).toEqual([7n, new Uint8Array(), 0n, complete]);
   });
 });

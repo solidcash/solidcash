@@ -49,7 +49,7 @@ export async function runSendPhase4ThroughSubmit(
     sendTiming,
   );
 
-  const { decodeTransactionUnsafe, hash256 } = await import('@bitauth/libauth');
+  const { decodeTransactionUnsafe } = await import('@bitauth/libauth');
   const decodedTx = finalizedTransaction;
   validateSendFeeCapsAndBytes(
     host.validateSendFeeCapsAndBytesHost(),

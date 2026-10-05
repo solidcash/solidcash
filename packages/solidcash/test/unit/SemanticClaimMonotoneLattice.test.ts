@@ -41,7 +41,9 @@ describe('constraint fixpoint semantic claim monotone lattice', () => {
       'utf8',
     );
     expect(src).toMatch(/new MonotoneCell<string>\(\)/);
-    expect(src).toMatch(/recordSemanticClaimPass\(claimLattice,\s*seenClaimStates,\s*claimState\)/);
+    expect(src).toMatch(
+      /recordSemanticClaimPass\(claimLattice,\s*seenClaimStates,\s*claimState,\s*runtime.constraintFixpoint\)/,
+    );
     expect(src).toMatch(/finalizeSemanticClaimLattice\(claimLattice,\s*latestClaimState\)/);
   });
 });

@@ -3,18 +3,21 @@
  */
 
 import { binToHex } from '@bitauth/libauth';
-import type { FunctionBlockLayout } from '@solidcash/utils';
+import { parseChunkCommitment, type FunctionBlockLayout } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { calculateDust } from '../utils.js';
+import { addressToLockScript, calculateDust } from '../utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { claimedFixedContinuationCoverage } from './stb-claimed-fixed-continuations.js';
 
 export interface MaterializeValueAndDynamicChunksHost {
   readonly categoryId: string;
   readonly valueChunkOutputs: readonly Output[];
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly dynamicChunkVars: ReadonlyArray<{ name: string; lockingBytecode: Uint8Array }>;
+  readonly dynamicChunkInputs: readonly UnlockableUtxo[];
+  readonly allInputs: readonly UnlockableUtxo[];
   readonly chunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly blockLayout?: FunctionBlockLayout;
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -25,7 +28,7 @@ export interface MaterializeValueAndDynamicChunksHost {
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
   readonly delegateDynamicChunksAtSuffix: boolean;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   getValueChunkVars(): Array<{ id: string; lockingBytecode: Uint8Array }>;
   valueChunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   padOutputsToIndex(builder: TransactionBuilder, outputIndex: number): void;
@@ -40,7 +43,13 @@ export function appendValueChunks(
   host: MaterializeValueAndDynamicChunksHost,
   builder: TransactionBuilder,
 ): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
+  const claimed = claimedFixedContinuationCoverage({
+    staged: host.valueChunkOutputs,
+    derived: host.derivedChunkOutputs,
+    groups: [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups],
+    blockLayout: host.blockLayout,
+  });
   const fixedBandPins = band
     ? [...host.derivedChunkOutputs.entries()].filter(([index, chunk]) => (
       chunk.fixedIndex === true
@@ -51,11 +60,23 @@ export function appendValueChunks(
       && chunk.commitment !== '00'
     ))
     : [];
-  // Append-at-current-width is wrong only when the builder is still shorter than the
-  // trailing band (chunks land on publishJobEvent dataNft slots, e.g. out14). A
-  // full-width layout must keep legacy append so post-job-with-whitelist stays green.
+  const isFixedContinuation = (lockingBytecode: Uint8Array, category: string, commitment: string): boolean => (
+    claimed.tuples.has(JSON.stringify([category.toLowerCase(), binToHex(lockingBytecode), commitment.toLowerCase()]))
+    || fixedBandPins.some(([, chunk]) => (chunk.categoryId ?? host.categoryId).toLowerCase() === category.toLowerCase()
+      && binToHex(chunk.lockingBytecode) === binToHex(lockingBytecode) && chunk.commitment === commitment)
+  );
+  const unpinnedOutputs = host.valueChunkOutputs.filter((output, index) => !claimed.stagedIndices.has(index) && !(
+    output.token?.nft?.capability === 'mutable'
+      && isFixedContinuation(
+        output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to),
+        output.token.category, output.token.nft.commitment,
+      )
+  ));
+  // Only place a staged run into an unoccupied selected band. A fixed pin can own a different
+  // resource: suppress its exact duplicate, not every other staged or trace-derived continuation.
   const wouldAppendBeforeBand = !!band
-    && host.valueChunkOutputs.length > 0
+    && fixedBandPins.length === 0
+    && unpinnedOutputs.length > 0
     && builder.outputs.length < band.start;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && host.valueChunkOutputs.length > 0) {
@@ -71,12 +92,8 @@ export function appendValueChunks(
       }),
     }));
   }
-  if (fixedBandPins.length > 0) {
-    // Absolute fixedIndex pins are applied by _applyDerivedValueChunks.
-    // Do not also append staged/raw copies — surplus same-lock NFTs make
-    // matches>nNew and break OUTPUTTOKENCOMMITMENT at the band indices.
-  } else if (wouldAppendBeforeBand && band) {
-    for (const [offset, vco] of host.valueChunkOutputs.entries()) {
+  if (wouldAppendBeforeBand && band) {
+    for (const [offset, vco] of unpinnedOutputs.entries()) {
       if (offset >= band.nNew) break;
       const outputIndex = band.start + offset;
       host.padOutputsToIndex(builder, outputIndex);
@@ -86,15 +103,15 @@ export function appendValueChunks(
       else builder.outputs[outputIndex] = chunkOutput;
     }
   } else {
-    for (const vco of host.valueChunkOutputs) {
+    for (const vco of unpinnedOutputs) {
       const chunkOutput = { ...vco };
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
       builder.addOutput(chunkOutput);
     }
   }
-  if (fixedBandPins.length === 0) {
-    for (const { id, lockingBytecode } of host.getValueChunkVars()) {
-      for (const commitment of host.valueChunkRawCommitments.get(id) ?? []) {
+  for (const { id, lockingBytecode } of host.getValueChunkVars()) {
+    for (const commitment of host.valueChunkRawCommitments.get(id) ?? []) {
+      if (!isFixedContinuation(lockingBytecode, host.categoryId, commitment)) {
         const chunkOutput = {
           to: lockingBytecode, amount: 1200n,
           token: { amount: 0n, category: host.categoryId,
@@ -135,6 +152,40 @@ export function appendDynamicChunks(
   }
   for (const dv of host.dynamicChunkVars) {
     const commitments = host.chunkRawCommitments.get(dv.name) ?? [];
+    const chunkLock = binToHex(dv.lockingBytecode);
+    const oldChunks = host.dynamicChunkInputs.filter((input) => (
+      input.token?.category === host.categoryId
+      && binToHex(input.unlocker.generateLockingBytecode()) === chunkLock
+    ));
+    // A read-modify-write can co-spend its old chunks before an external callee. Its published dynamic base
+    // points to those inputs. Replace the old prefix there; growth uses balanced pads immediately after it.
+    // Appending the entire new run after the callee leaves stale chunks at the authenticated output base.
+    const inPlaceIndices = oldChunks.map((input) => host.allInputs.findIndex((candidate) => (
+      candidate.txid === input.txid && candidate.vout === input.vout
+    )));
+    const base = inPlaceIndices[0] ?? -1;
+    const hasCanonicalIndex = (commitment: string, index: number): boolean => {
+      try { return parseChunkCommitment(commitment).chunkIndex === index; } catch { return false; }
+    };
+    const inPlace = oldChunks.length > 0
+      && commitments.every(hasCanonicalIndex)
+      && oldChunks.every((input, index) => hasCanonicalIndex(input.token?.nft?.commitment ?? '', index))
+      && inPlaceIndices.every((index, ordinal) => index === base + ordinal
+        && index < builder.outputs.length
+        && builder.outputs[index]?.token?.category === host.categoryId
+        && binToHex(builder.outputs[index]!.to instanceof Uint8Array
+          ? builder.outputs[index]!.to as Uint8Array : addressToLockScript(builder.outputs[index]!.to as string))
+          === chunkLock)
+      && commitments.slice(oldChunks.length).every((_, offset) => {
+        const index = base + oldChunks.length + offset;
+        const occupant = builder.outputs[index];
+        const neutralInput = host.allInputs[index];
+        const occupantLock = occupant?.to instanceof Uint8Array ? occupant.to
+          : occupant?.to !== undefined ? addressToLockScript(occupant.to) : undefined;
+        return occupant?.token === undefined && neutralInput?.token === undefined
+          && occupantLock !== undefined
+          && binToHex(occupantLock) === binToHex(neutralInput.unlocker.generateLockingBytecode());
+      });
     const debugChunkLayout = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_CHUNK_LAYOUT === '1';
     const computedBase = host.getChunkOutputBase();
@@ -171,7 +222,7 @@ export function appendDynamicChunks(
         count: commitments.length,
       });
     }
-    for (const commitment of commitments) {
+    for (const [chunkIndex, commitment] of commitments.entries()) {
       const chunkOutput = {
         to: dv.lockingBytecode,
         amount: 1200n,
@@ -182,7 +233,18 @@ export function appendDynamicChunks(
         },
       };
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-      builder.addOutput(chunkOutput);
+      if (inPlace) builder.outputs[base + chunkIndex] = chunkOutput;
+      else builder.addOutput(chunkOutput);
+    }
+    if (inPlace) {
+      // A shrinking write consumes every old chunk, but only the new prefix may remain at this
+      // collection address. Keep the balanced output coordinates for later participants while
+      // removing the retired NFTs from the chunk namespace.
+      for (let chunkIndex = commitments.length; chunkIndex < oldChunks.length; chunkIndex++) {
+        builder.outputs[base + chunkIndex] = {
+          to: Uint8Array.of(0x51), amount: oldChunks[chunkIndex].satoshis,
+        };
+      }
     }
   }
 }

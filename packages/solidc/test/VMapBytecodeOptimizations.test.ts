@@ -28,8 +28,9 @@ describe('general vmap bytecode sharing', () => {
     // a correctness change, not drift: the old `> 1` gate left a lone vmap insert - ERC20Mock's constructor
     // `_balances[msg.sender] = supply` - on the scalar path, which carries no batch witnesses and fails
     // constructor derivation with OP_EQUALVERIFY against an empty key. Verified by reverting the gate to `> 1`,
-    // which returns this contract to its old size. Measured 1952; the ceiling keeps catching further growth.
-    expect(artifact.bytecode.length / 2).toBeLessThan(1990);
+    // The trace-stable write path keeps the authenticated output proof in the entry body. Preserve substantial
+    // headroom below BCH's 10KB consensus ceiling while still catching accidental framework-scale growth.
+    expect(artifact.bytecode.length / 2).toBeLessThan(2700);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {

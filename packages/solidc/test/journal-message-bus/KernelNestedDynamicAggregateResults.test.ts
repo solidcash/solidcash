@@ -11,10 +11,27 @@ const OPTIONS = {
   suppressWarnings: true,
 } as const;
 
-const handler = (source: string, name: string) => compileString(source, OPTIONS)
+const handler = (source: string, name: string):
+NonNullable<ReturnType<typeof compileString>['messageBus']>['handlers'][number] | undefined => compileString(source, OPTIONS)
   .messageBus?.handlers.find((candidate) => candidate.name === name);
 
 describe('kernel nested dynamic aggregate results', () => {
+  it('publishes a raw preimage witness for a dynamically sized external struct result', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Record { uint256 value; string label; }
+      interface ISource { function read() external returns (Record memory); }
+      contract Consumer {
+        address source;
+        constructor(address source_) { source = source_; }
+        function consume() public {
+          Record memory record = ISource(source).read();
+          require(record.value == 7);
+        }
+      }`, OPTIONS);
+    const inputNames = artifact.abi.find((entry) => entry.name === 'consume')?.inputs.map((input) => input.name);
+    expect(inputNames).toContain('__internal__externalReturnPreimage');
+  });
+
   it('caps mixed top-level and nested runtime-sized results as one cumulative vector', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Envelope { string[] labels; }

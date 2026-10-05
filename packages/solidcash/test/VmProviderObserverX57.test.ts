@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, decodeTransactionUnsafe, encodeTransactionBch, hexToBin,
+  createVirtualMachineBch2026, decodeTransactionUnsafe, encodeTransactionBch, hash256, hexToBin,
 } from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import {
@@ -158,6 +158,32 @@ describe('X57 opcode observer survives providers without consensusLimits', () =>
       expect(actual.error).toEqual(expected.error);
       expect(actual.stack).toEqual(expected.stack);
     }
+  });
+
+  it('keeps stock P2SH semantics while sharing immutable argument bytes', () => {
+    const payload = Uint8Array.of(1, 2, 3);
+    const reversed = payload.slice().reverse();
+    const redeem = Uint8Array.of(
+      Op.OP_DUP,
+      Op.OP_REVERSEBYTES,
+      reversed.length, ...reversed,
+      Op.OP_EQUALVERIFY,
+      payload.length, ...payload,
+      Op.OP_EQUAL,
+    );
+    const unlocking = Uint8Array.of(
+      payload.length, ...payload,
+      redeem.length, ...redeem,
+    );
+    const locking = Uint8Array.of(Op.OP_HASH256, 32, ...hash256(redeem), Op.OP_EQUAL);
+    const program = buildProgram([{ unlocking, locking }]);
+    const expected = createVirtualMachineBch2026().evaluate(program) as { error?: string; stack: Uint8Array[] };
+    const actual = createVirtualMachineBch2026ForProvider(new MockNetworkProvider())
+      .evaluate(program) as { error?: string; stack: Uint8Array[] };
+
+    expect(actual.error).toEqual(expected.error);
+    expect(actual.stack).toEqual(expected.stack);
+    expect(payload).toEqual(Uint8Array.of(1, 2, 3));
   });
 
   it('keeps stock OP_INVOKE semantics when decoded function bodies are reused', () => {

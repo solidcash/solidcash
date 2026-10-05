@@ -153,6 +153,26 @@ describe('StatefulContract event listeners (ethers on / once / off)', () => {
     expect(await sc.listenerCount('Transfer')).toBe(0);
   });
 
+  it.each([false, true])('retains simultaneous subscriptions while initial queries are pending (once=%s)', async (once) => {
+    const { sc } = await deploy();
+    const first: EventLog[] = [];
+    const second: EventLog[] = [];
+    try {
+      await Promise.all([
+        sc.addListener('Transfer', (_from, _to, _amount, log: EventLog) => first.push(log)),
+        sc[once ? 'once' : 'addListener']('Transfer', (_from, _to, _amount, log: EventLog) => second.push(log)),
+      ]);
+      expect(await sc.listenerCount('Transfer')).toBe(2);
+      await sc.fire(7n, 8n, 300n).send();
+      await (sc as unknown as { _pollEvents(): Promise<void> })._pollEvents();
+      expect(first).toHaveLength(1);
+      expect(second).toEqual(first);
+      expect(await sc.listenerCount('Transfer')).toBe(once ? 1 : 2);
+    } finally {
+      await sc.removeAllListeners();
+    }
+  });
+
   it('off() / removeAllListeners() stop delivery', async () => {
     const { sc } = await deploy();
     const seen: EventLog[] = [];

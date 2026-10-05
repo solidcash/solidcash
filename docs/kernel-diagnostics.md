@@ -40,6 +40,11 @@ It also emits `kernel-value-chunk-resource-lanes` immediately before the kernel 
 continuation coordinate; that record lists the compiler-authenticated collection/key lanes and witness groups.
 Use it with one title to distinguish a missing value, an output-suffix collision, and a route that genuinely
 requires multiple resource coordinates. The switch only logs and does not relax the refusal.
+It also reports `transported-value-producer-mismatch` when a transported continuation claim disagrees with its
+routed terminal producer: both claims and at most 24 compiler rows with 24 access summaries each, without
+value bytes or stored-value expression trees. `terminal-value-production-unavailable` reports the expected
+terminal claim and at most 24 candidate claims when assembly cannot find the terminal value. These records
+distinguish stale producer selection from incomplete source paths while preserving the ownership gate.
 
 `SOLIDC_DEBUG_RETURN_CAPTURE=1` reports return-event installs and the producer probe that supplied each
 candidate, including the terminal error and internal indices. Use it only on one named title: the diagnostic
@@ -53,6 +58,13 @@ input: it can print argument shapes and stack summaries, is expensive, and is no
 or production bytecode. Verify any proposed identity fix again with the switch unset.
 
 `SOLIDC_DEBUG_ATOMIC_GRAPH=1` traces graph participant placement, argument transport, and published unlockers;
+it also reports `atomic-semantic-claims` with bounded per-domain counts/digests, pass number, local-repeat status,
+and changed observation indices (computed chunks, resources, values, tokens, sidecars). These records contain
+no claim value bytes and distinguish local claim cycles from a repeated active-session fingerprint.
+`SOLIDC_DEBUG_RESULT_PROPAGATION=1` reports result-dependent argument resolution and, on a repeated producer lane,
+`atomic-repeated-producer-lane` lists at most 24 matching producer indices and source/batch/occurrence coordinates, without
+argument or result bytes. Use one named title to distinguish repeated source callsites from duplicate graph rows;
+this observational probe does not alter validation or emitted bytecode.
 `SOLIDC_DEBUG_VMAP_PROOF=1` traces sorted-entry proof and predecessor-output rebinding;
 `SOLIDC_DEBUG_VALUE_WITNESS=1` traces chunked-entry witness selection across nested calls. These are opt-in
 reports, not alternate settlement modes. They can log large transaction or witness summaries, so use one named
@@ -77,6 +89,7 @@ the default no-progress report otherwise shows only the final candidate, which c
 For `SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE=1`, set `SOLIDC_TRACE_INPUT=<input index>` on large compositions;
 the opt-in VM probe snapshots that input's instruction pre-states and can report compared operands and a bounded
 `SOLIDC_DEBUG_FAILURE_POINT_TRACE_FROM`/`_TO` instruction window without retaining every participant's stacks.
+`SOLIDC_TRACE_INPUT` bounds snapshot capture only: preflight still validates every transaction input.
 Use `SOLIDC_DEBUG_FAILURE_POINT_STACK_FULL=1` only with a selected input when comparing deep frame slots;
 it reports each item's size plus bounded head/tail bytes, enough to distinguish a stale dynamic value from a
 pending update without dumping full commitments. Avoid `SOLIDC_DEBUG_FAILURE_TRACE=1` on large invoked routes:

@@ -93,12 +93,12 @@ describe('DEFINE frame emission (item 3 real path)', () => {
 
   it('Soft-__ residual is zero across common kernel shapes', () => {
     const sources: Array<[string, string]> = [
-      ['scalar', `pragma solidcash >=0.8.0; contract C() { int x; function set(int v) public { this.x = v; require(true); } }`],
-      ['view', `pragma solidcash >=0.8.0; contract C() { function read(int v) public pure returns (int) { return v + 1; } }`],
-      ['mapping', `pragma solidcash >=0.8.0; contract C() { mapping(int => int) data; function set(int k, int v) public { this.data[k] = v; require(true); } }`],
-      ['event', `pragma solidcash >=0.8.0; contract C() { int x; event E(int v); function set(int v) public { this.x = v; emit E(v); require(true); } }`],
-      ['bytes', `pragma solidcash >=0.8.0; contract C() { bytes payload; function set(bytes v) public { this.payload = v; require(true); } }`],
-      ['counterEmit', `pragma solidcash >=0.8.0; contract Acc() { int counter; event Ping(int v); function initialize() public { this.counter = 0; } function ping(int value) public { emit Ping(value); this.counter = this.counter + 1; require(true); } }`],
+      ['scalar', 'pragma solidcash >=0.8.0; contract C() { int x; function set(int v) public { this.x = v; require(true); } }'],
+      ['view', 'pragma solidcash >=0.8.0; contract C() { function read(int v) public pure returns (int) { return v + 1; } }'],
+      ['mapping', 'pragma solidcash >=0.8.0; contract C() { mapping(int => int) data; function set(int k, int v) public { this.data[k] = v; require(true); } }'],
+      ['event', 'pragma solidcash >=0.8.0; contract C() { int x; event E(int v); function set(int v) public { this.x = v; emit E(v); require(true); } }'],
+      ['bytes', 'pragma solidcash >=0.8.0; contract C() { bytes payload; function set(bytes v) public { this.payload = v; require(true); } }'],
+      ['counterEmit', 'pragma solidcash >=0.8.0; contract Acc() { int counter; event Ping(int v); function initialize() public { this.counter = 0; } function ping(int value) public { emit Ping(value); this.counter = this.counter + 1; require(true); } }'],
     ];
     for (const [, src] of sources) {
       clearDefineFrameValidations();

@@ -19,7 +19,8 @@ const KERNEL = {
 } as const;
 
 /**
- * path-effect activation/settle-time ExecutionContext: typed ExecutionContext binds handler-frame ABI to published pathEffectSchedule.
+ * Typed ExecutionContext binds handler-frame ABI to the published
+ * pathEffectSchedule at activation and settle time.
  */
 describe('path-effect activation/settle-time ExecutionContext ExecutionContext path programs', () => {
   const storeSource = `contract Store() {

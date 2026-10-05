@@ -38,6 +38,42 @@ describe('settle-time ExecutionContext compose slots cover effect plans', () => 
     expect(() => assertComposeSlotsCoverEffectPlans(inventory, [over])).toThrow(/activeEvents/);
   });
 
+  it.each(['event', 'transfer'] as const)('counts repeated row-local %s ordinals against shared capacity', (kind) => {
+    const plan: ExecutionContextEffectPlan = {
+      handlerId: 'h', participantIndex: 0, rowIndex: 0, journalKey: 's0:p0:r0:h',
+      activeWrites: [], activeEffects: [],
+      activeEvents: kind === 'event' ? [1_000_000] : [],
+      activeTransfers: kind === 'transfer' ? [2_000_000] : [],
+    };
+    const otherRow = { ...plan, rowIndex: 1, journalKey: 's0:p0:r1:h' };
+    expect(() => assertComposeSlotsCoverEffectPlans(inventory, [plan, otherRow]))
+      .toThrow(`exceed ${kind} slots=1`);
+    const otherParticipant = { ...otherRow, participantIndex: 1, journalKey: 's0:p1:r1:h' };
+    expect(() => assertComposeSlotsCoverEffectPlans(inventory, [plan, otherParticipant])).not.toThrow();
+  });
+
+  it('keeps slots needed by an earlier active row when the final row is inactive', () => {
+    const active: ExecutionContextEffectPlan = {
+      handlerId: 'h', participantIndex: 0, rowIndex: 0, journalKey: 's0:p0:r0:h',
+      activeWrites: [0], activeEvents: [1_000_000], activeTransfers: [2_000_000], activeEffects: [],
+    };
+    const inactive: ExecutionContextEffectPlan = {
+      ...active, rowIndex: 1, journalKey: 's0:p0:r1:h',
+      activeWrites: [], activeEvents: [], activeTransfers: [],
+    };
+    const withResources: ComposeSlotInventory = {
+      ...inventory,
+      resourceSlots: [{ participant: 0, offset: 5, kind: 'entry' }],
+    };
+    for (const plans of [[active, inactive], [inactive, active]]) {
+      const pruned = pruneComposeSlotInventoryByEffectPlans(withResources, plans);
+      expect(pruned.eventSlots().filter((slot) => slot.participant === 0)).toHaveLength(1);
+      expect(pruned.valueSlots.filter((slot) => slot.participant === 0)).toHaveLength(1);
+      expect(pruned.resourceSlots).toEqual(withResources.resourceSlots);
+      expect(() => assertComposeSlotsCoverEffectPlans(pruned, plans)).not.toThrow();
+    }
+  });
+
   it('prunes event/transfer slots when effect plans activate none of that kind', () => {
     const inactive: ExecutionContextEffectPlan = {
       handlerId: 'h',

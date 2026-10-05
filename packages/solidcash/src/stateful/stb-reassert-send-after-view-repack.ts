@@ -11,12 +11,12 @@ export interface ReassertSendAfterViewRepackHost {
   refreshInputs(): void;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
   applyDerivedValueChunks(builder: TransactionBuilder): void;
-  materializeJobEventsBand(builder: TransactionBuilder): void;
-  ensureLiveJobEventsBand(builder: TransactionBuilder): void;
+  materializeValueChunkBand(builder: TransactionBuilder): void;
+  ensureLiveValueChunkBand(builder: TransactionBuilder): void;
   placeTailReturnAfterSwappedTokenBlock(builder: TransactionBuilder): void;
   ensureAuthenticatedViewReturns(builder: TransactionBuilder): void;
   isPersistedChunkableValueWriteReady(): boolean;
-  reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void;
+  reassertPersistedValueChunkOneToOnes(builder: TransactionBuilder, emitDest: number): void;
   scaledEmitOutputIndex(outputCount: number): number | undefined;
   reassertDelegateImplEvents(builder: TransactionBuilder): void;
   reassertNestedEmitEvents(builder: TransactionBuilder): void;
@@ -42,14 +42,14 @@ export function reassertSendAfterViewRepack(
     host.syncBuilderUnlockers(finalBuilder);
   }
   if (reboundViews) host.applyDerivedValueChunks(finalBuilder);
-  host.materializeJobEventsBand(finalBuilder);
-  host.ensureLiveJobEventsBand(finalBuilder);
-  // Re-assert view tails after materialize so jobs/chunk bands cannot clobber
+  host.materializeValueChunkBand(finalBuilder);
+  host.ensureLiveValueChunkBand(finalBuilder);
+  // Re-assert view tails after materialization so value-chunk bands cannot clobber
   // authenticated none-cap returns (same ordering as build()).
   host.placeTailReturnAfterSwappedTokenBlock(finalBuilder);
   host.ensureAuthenticatedViewReturns(finalBuilder);
   if (host.isPersistedChunkableValueWriteReady()) {
-    host.reassertPersistedJobEventsOneToOnes(
+    host.reassertPersistedValueChunkOneToOnes(
       finalBuilder, host.scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
     );
   }
@@ -61,7 +61,7 @@ export function reassertSendAfterViewRepack(
   host.reassertDelegateImplEvents(finalBuilder);
   host.reassertFixedStateOutputs(finalBuilder);
   if (host.isPersistedChunkableValueWriteReady()) {
-    host.reassertPersistedJobEventsOneToOnes(
+    host.reassertPersistedValueChunkOneToOnes(
       finalBuilder, host.scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
     );
   }

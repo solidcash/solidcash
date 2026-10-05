@@ -17,7 +17,7 @@ pragma solidcash >=0.8.0;
 library UsdtFacet {
 
 
-    event Approval(address indexed tokenOwner, address indexed spender, int value);
+    event Approval(address indexed tokenOwner, address indexed spender, uint256 value);
     event Pause();
     event Unpause();
     event Deprecate(address newAddress);
@@ -33,7 +33,7 @@ library UsdtFacet {
     address owner;
     int totalSupply;
     mapping(address => int) balances;
-    mapping(address => mapping(address => int)) allowed;
+    mapping(address => mapping(address => uint256)) allowed;
     bool paused;
     mapping(address => bool) isBlackListed;
     bytes32 name;

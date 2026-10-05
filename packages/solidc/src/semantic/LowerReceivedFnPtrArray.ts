@@ -321,6 +321,7 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
           const cast = new FunctionCallNode(ifaceId, [elem]); cast.location = node.location;
           const mc = new MethodCallNode(cast, '__call', args); mc.location = node.location;
           mc.callOptions = node.callOptions;
+          mc.pointerTableBroadcast = true;
           mc.selectorArrayVar = this.selArrayName(name);
           if (this.graphMode) {
             const selectorArray = new IdentifierNode(this.selArrayName(name));

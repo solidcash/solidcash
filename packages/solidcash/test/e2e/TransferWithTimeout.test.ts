@@ -62,7 +62,7 @@ describe('TransferWithTimeout', () => {
       // then
       await expect(txPromise).rejects.toThrow(FailedRequireError);
       await expect(txPromise).rejects.toThrow('TransferWithTimeout.scash:13 Require statement failed at input 0 in contract TransferWithTimeout.scash at line 13.');
-      await expect(txPromise).rejects.toThrow('Failing statement: require(checkSig(senderSig, sender))');
+      await expect(txPromise).rejects.toThrow('Failing statement: checkSig(senderSig, sender)');
     });
 
     it('should fail when timeout is called before timeout block', async () => {

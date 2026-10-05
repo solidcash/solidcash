@@ -22,6 +22,7 @@ import {
   type AtomicValueSlotEffect,
 } from './graph.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
+import { discoverMessageBusComputedResourceOutputs } from './preflight.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 type PlanParticipant = CompiledGraphPlan['participants'][number];
@@ -38,6 +39,7 @@ export interface ComposeSemanticEffectClaims {
 
 export interface ObserveComposeSemanticEffectsContext {
   provisional: TransactionBuilder;
+  eventProbeProgram?: ReturnType<TransactionBuilder['buildLibauthProgram']>;
   finalized: FinalizedGraph;
   plan: CompiledGraphPlan;
   categories: readonly string[];
@@ -63,17 +65,61 @@ function internalTokenCategory(token: TokenDetails): string {
   return `${category}${capability}`;
 }
 
+/** Refresh resource claims discovered only after event relocation lets the implementation body execute. */
+function refreshDiscoveredMutableResourceEffects(
+  ctx: ObserveComposeSemanticEffectsContext,
+  effects: AtomicResourceSlotEffect[],
+  proposals: ReadonlyMap<number, Uint8Array>,
+): void {
+  const resourceOrder = new Map(ctx.resourceSlots.map((slot, index) => (
+    [`${slot.participant}:${slot.offset}`, index] as const
+  )));
+  for (const [absolute, proposedCommitment] of proposals) {
+    const slot = ctx.resourceSlots.find((candidate) => (
+      ctx.finalized.layout.participantInputs[candidate.participant] + candidate.offset === absolute
+    ));
+    if (slot === undefined) continue;
+    const input = ctx.provisional.inputs[absolute];
+    const output = ctx.provisional.outputs[absolute];
+    const inputMutable = input?.token?.nft?.capability === 'mutable';
+    const outputMutable = output?.token?.nft?.capability === 'mutable';
+    if (!input || !output || (!inputMutable && !outputMutable)) continue;
+    const inputLockingBytecode = input.unlocker.generateLockingBytecode();
+    const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+    const lockingBytecodeChanges = inputMutable && outputMutable
+      && binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode);
+    const mode = inputMutable ? (outputMutable ? (lockingBytecodeChanges ? 5 : 0) : 2) : 1;
+    const activeToken = inputMutable ? input.token! : output.token!;
+    const refreshed: AtomicResourceSlotEffect = {
+      participant: slot.participant,
+      offset: slot.offset,
+      mode,
+      lockingBytecodeHex: binToHex(inputMutable ? inputLockingBytecode : outputLockingBytecode),
+      ...(mode === 5 && { outputLockingBytecodeHex: binToHex(outputLockingBytecode) }),
+      tokenCategoryHex: `${binToHex(hexToBin(activeToken.category).reverse())}01`,
+      inputCommitmentHex: inputMutable ? input.token!.nft!.commitment : '',
+      outputCommitmentHex: outputMutable ? binToHex(proposedCommitment) : '',
+    };
+    const prior = effects.findIndex((effect) => effect.participant === slot.participant
+      && effect.offset === slot.offset);
+    if (prior < 0) effects.push(refreshed);
+    else effects[prior] = refreshed;
+  }
+  effects.sort((left, right) => (resourceOrder.get(`${left.participant}:${left.offset}`) ?? Number.MAX_SAFE_INTEGER)
+    - (resourceOrder.get(`${right.participant}:${right.offset}`) ?? Number.MAX_SAFE_INTEGER));
+}
+
 export function observeComposeSemanticEffects(
   ctx: ObserveComposeSemanticEffectsContext,
   claims: ComposeSemanticEffectClaims,
 ): {
-  semanticObservations: SemanticClaimObservation[];
-  derivedEventEffects: AtomicEventSlotEffect[];
-  derivedResourceEffects: AtomicResourceSlotEffect[];
-  derivedValueEffects: AtomicValueSlotEffect[];
-  derivedTokenEffects: AtomicTokenSlotEffect[];
-  derivedSidecarEffects: AtomicSidecarSlotEffect[];
-} {
+    semanticObservations: SemanticClaimObservation[];
+    derivedEventEffects: AtomicEventSlotEffect[];
+    derivedResourceEffects: AtomicResourceSlotEffect[];
+    derivedValueEffects: AtomicValueSlotEffect[];
+    derivedTokenEffects: AtomicTokenSlotEffect[];
+    derivedSidecarEffects: AtomicSidecarSlotEffect[];
+  } {
   // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,
   // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
   // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.
@@ -186,6 +232,9 @@ export function observeComposeSemanticEffects(
     const lockingBytecodeChanges = inputMutable && outputMutable
       && binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode);
     const mode = inputMutable ? (outputMutable ? (lockingBytecodeChanges ? 5 : 0) : 2) : 1;
+    if (mode === 2 && outputToken !== undefined) {
+      throw new Error(`messageBus: DELETE resource slot ${slot.participant}:${slot.offset} must be token-free`);
+    }
     const retirementConsume = mode === 2
       && (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft')
       && (ctx.selfdestructByParticipant.has(slot.participant)
@@ -326,10 +375,23 @@ export function observeComposeSemanticEffects(
     apply: (observed) => { claims.sidecarEffects = observed as AtomicSidecarSlotEffect[]; },
   });
   const derivedEventEffects: AtomicEventSlotEffect[] = [];
-  const eventProgram = ctx.provisional.buildLibauthProgram();
+  const eventProgram = ctx.eventProbeProgram ?? ctx.provisional.buildLibauthProgram();
+  const eventSlots = ctx.eventSlots();
+  const eventSlotsByParticipant = new Map<number, typeof eventSlots[number][]>();
+  for (const slot of eventSlots) {
+    const owned = eventSlotsByParticipant.get(slot.participant) ?? [];
+    owned.push(slot);
+    eventSlotsByParticipant.set(slot.participant, owned);
+  }
   const discoveredEvents = new Map<number, { commitment: string; lockingBytecode?: string }>();
   for (const participant of ctx.plan.participants) {
-    const ownedSlots = ctx.eventSlots().filter((slot) => slot.participant === participant.participant);
+    const selectedOffsets = selectedGraphEventOffsets(ctx.plan, participant);
+    // The compiler-published frame can reserve hundreds of inactive sites. Probing those sites makes the
+    // event trace report impossible missing commitments and triggers an unnecessary full VM fallback.
+    // Runtime-row slots and routes without a provable selected frame still require the complete probe.
+    const ownedSlots = (eventSlotsByParticipant.get(participant.participant) ?? [])
+      .filter((slot) => slot.runtimeRow !== undefined
+        || selectedOffsets === undefined || selectedOffsets.has(slot.offset));
     const participantBase = ctx.finalized.layout.participantInputs[participant.participant];
     const eventIndices = ownedSlots.map((slot) => participantBase + slot.offset);
     if (eventIndices.length === 0) continue;
@@ -342,13 +404,14 @@ export function observeComposeSemanticEffects(
   }
   // The route's unrolled dispatcher owns the physical event site. A compact local probe initially places
   // reached events by logical row, but those coordinates can differ when several selector arms share the
-  // route. The complete trace above is the compiler's authority: relocate the SDK's artifact-derived event
+  // route. The selected-site trace above is the compiler's authority: relocate the SDK's artifact-derived event
   // templates onto the exact event slots introspected by the covenant, and return every other reserved slot
   // to its canonical balanced-output shape. No contract-specific handler or event names participate.
+  let eventFrameRelocated = false;
   for (const participant of ctx.plan.participants) {
     const participantBase = ctx.finalized.layout.participantInputs[participant.participant];
     const selectedEventOffsets = selectedGraphEventOffsets(ctx.plan, participant);
-    const indices = ctx.eventSlots().filter((slot) => slot.participant === participant.participant)
+    const indices = (eventSlotsByParticipant.get(participant.participant) ?? [])
       .map((slot) => participantBase + slot.offset);
     if (indices.length === 0) continue;
     const eventLocks = ctx.eventLockingBytecodes(participant);
@@ -413,6 +476,7 @@ export function observeComposeSemanticEffects(
       throw new Error('messageBus: inactive event frame has no canonical empty output');
     }
     if (targets.length === 0 && active.length === 0) continue;
+    eventFrameRelocated = true;
     const template = inactive ?? ctx.provisional.outputs[targets[0]];
     if (!template) throw new Error('messageBus: active event frame has no output template');
     const targetTemplates = new Map(targets.map((target) => [target, ctx.provisional.outputs[target]]));
@@ -446,9 +510,21 @@ export function observeComposeSemanticEffects(
         },
       };
     });
+  }
+  // Relocation never probes or reads the fee tail between participants. Size and balance the complete final
+  // event frame once; reserializing the multi-thousand-input transaction after each owner is redundant.
+  if (eventFrameRelocated) {
     ctx.rebalanceFeeTail(ctx.provisional, 'relocated compiler-authenticated event outputs');
   }
-  for (const slot of ctx.eventSlots()) {
+  // Event slots are semantic prerequisites for implementations which both emit an event and update a mutable
+  // entry. The first resource probe can stop at the event-slot lookup before it reaches the entry covenant;
+  // relocation above makes that path executable without changing the already-stable event claim. Re-run the
+  // structurally bounded resource observation now and refresh precisely the claims it discovers, so the current
+  // semantic pass cannot admit a stale entry placeholder. Discovery is deliberately non-mutating: the next
+  // graph pass applies this compiler-authenticated semantic claim as a recipe, and the VM remains validation-only.
+  const postEventResourceProposals = discoverMessageBusComputedResourceOutputs(ctx.provisional);
+  refreshDiscoveredMutableResourceEffects(ctx, derivedResourceEffects, postEventResourceProposals);
+  for (const slot of eventSlots) {
     const outputIndex = ctx.finalized.layout.participantInputs[slot.participant] + slot.offset;
     const output = ctx.provisional.outputs[outputIndex];
     if (!output) throw new Error(`messageBus: event slot ${slot.participant}:${slot.offset} has no output`);

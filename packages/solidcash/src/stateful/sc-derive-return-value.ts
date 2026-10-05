@@ -4,12 +4,13 @@
 
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
-  attachDecodedAccessors,
+  childStateLayoutDigest,
   decodePushdataValue,
   encodePushdataValue,
   getDefaultStateValue,
   type AbiFunction,
   type Artifact,
+  type StateLayout,
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -17,8 +18,9 @@ import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { getNetworkPrefix } from '../utils.js';
 import {
+  connectedContractMatchesExactAddress,
   findDeploymentByAddress,
-  findDeploymentByLockingBytecode,
+  findDeploymentByAddressValue,
   findDeploymentByName,
 } from './deployment-registry.js';
 import {
@@ -33,7 +35,9 @@ import {
   normalizeJobEventAddresses,
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
+import { resolveLogicalIdentityByCategory } from './logical-identity.js';
 import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
+import { decorateFunctionResult } from './public-result.js';
 import {
   selectReturnAbiPlan,
   type ReturnAbiCandidate,
@@ -57,6 +61,25 @@ type LogicalReturnContext = {
   call: StatefulCall;
   args: readonly FunctionArgument[];
 };
+
+function sameStatePrefixThroughField(
+  owner: StateLayout, implementation: StateLayout, nftIndex: number, fieldIndex: number,
+): boolean {
+  // The commitment codec prefixes every data NFT with an index only in multi-NFT layouts.
+  // A 1-to-2 NFT extension therefore changes the wire format even at NFT 0, field 0.
+  if ((owner.dataNftCount > 1) !== (implementation.dataNftCount > 1)) return false;
+  const wireNftCount = owner.dataNftCount > 1 ? 2 : 1;
+  const prefixDigest = (layout: StateLayout): string => childStateLayoutDigest({
+    variables: layout.variables.filter((variable) => variable.nftIndex < nftIndex
+      || (variable.nftIndex === nftIndex && variable.fieldIndex <= fieldIndex)),
+    dataNftCount: wireNftCount,
+    commitmentLimit: layout.commitmentLimit,
+    structs: layout.structs,
+    // Collection entries are separate NFTs and cannot change scalar field offsets.
+    collections: [],
+  });
+  return prefixDigest(owner) === prefixDigest(implementation);
+}
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
@@ -110,29 +133,29 @@ export interface DeriveReturnValueHost {
  * ethers-style array (tuple). Typechain `.toObject()`/`.toArray()` accessors are attached at this boundary.
  */
 export async function deriveReturnValue(
-host: DeriveReturnValueHost,
-functionName: string,
-args: FunctionArgument[],
-calls?: CallInfo[],
-exactAbiFunction?: AbiFunction,
-calleeCalls?: ExternalCallInfo[],
-/**
+  host: DeriveReturnValueHost,
+  functionName: string,
+  args: FunctionArgument[],
+  calls?: CallInfo[],
+  exactAbiFunction?: AbiFunction,
+  calleeCalls?: ExternalCallInfo[],
+  /**
  * Locking bytecode of the contract that calls this callee. The probe materializes the callee frame the final
  * composition reuses - including which entry UTXO each `msg.sender`-keyed mapping slot co-spends - so the
  * caller identity has to reach it here; the signer is only the caller of a top-level EOA call.
  */
-callerLockingBytecode?: Uint8Array,
-/**
+  callerLockingBytecode?: Uint8Array,
+  /**
  * Category of the contract that calls this callee. The compiler resolves the frame's `msg.sender` address by
  * matching this category against the co-spent inputs, so a probe that leaves it unset makes every
  * `msg.sender`-derived comparison read a sentinel instead of the caller.
  */
-callerCategoryId?: string,
-/**
+  callerCategoryId?: string,
+  /**
  * The contract that calls this callee. Its master UTXO is co-spent into the probe so the compiled frame can
  * resolve `msg.sender` exactly as it will in the composed transaction.
  */
-callerContract?: StatefulContract<Artifact>,
+  callerContract?: StatefulContract<Artifact>,
 ): Promise<StateValue> {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
@@ -164,7 +187,7 @@ callerContract?: StatefulContract<Artifact>,
   const directMappingRead = directMappingReadPlan(host.inner.artifact, functionName);
   if (directMappingRead) {
     const keyCandidates = directMappingRead.keyArgumentIndices.reduce<
-      Array<Array<string | bigint | boolean | Uint8Array>>
+    Array<Array<string | bigint | boolean | Uint8Array>>
     >(
       (rows, argumentIndex, keyIndex) => rows.flatMap((row) => {
         const argument = args[argumentIndex];
@@ -185,23 +208,29 @@ callerContract?: StatefulContract<Artifact>,
     }
     const entries = await host.getEntries(directMappingRead.collection);
     for (const candidate of keyCandidates) {
-      const match = selectMappingEntryByKeys(entries, candidate, directMappingRead.keyTypes);
-      if (match) return attachDecodedAccessors(match.value) as StateValue;
+      const collection = host.inner.artifact.stateLayout?.collections?.find((entry) => (
+        entry.name === directMappingRead.collection || entry.signature === directMappingRead.collection
+      ));
+      const match = selectMappingEntryByKeys(entries, candidate, directMappingRead.keyTypes, collection);
+      if (match) return decorateFunctionResult(
+        match.value, exactAbiFunction ?? host.resolveCallAbi(functionName, args), host.inner.artifact,
+      );
     }
-    // An absent key reads as its value type's zero value: a struct's carries the decoded accessors a present one does.
+    // An absent key reads as its value type's zero value, decorated as a present entry's value is (a struct's
+    // carries the decoded accessors a present one does). The declared return type stands in for a collection the
+    // layout does not describe.
+    const returnFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
     const stateLayout = host.inner.artifact.stateLayout;
-    const valueType = stateLayout?.collections?.find((candidate) =>
-      candidate.name === directMappingRead.collection)?.valueType;
-    return valueType === undefined ? 0n
-      : attachDecodedAccessors(getDefaultStateValue(valueType, stateLayout?.structs)) as StateValue;
+    const valueType = stateLayout?.collections?.find((entry) => (
+      entry.name === directMappingRead.collection || entry.signature === directMappingRead.collection
+    ))?.valueType ?? returnFunction?.outputs?.[0]?.type;
+    if (!valueType) throw new Error(`Direct mapping read '${functionName}' has no declared return type`);
+    return decorateFunctionResult(
+      getDefaultStateValue(valueType, stateLayout?.structs ?? host.inner.artifact.structs),
+      returnFunction, host.inner.artifact,
+    );
   }
   const abiFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
-  type StatefulCall = Extract<CallInfo, { type: 'stateful' }>;
-  type LogicalReturnContext = {
-    artifact: Artifact;
-    call: StatefulCall;
-    args: readonly FunctionArgument[];
-  };
   // A compiler route is the physical carrier, not the logical result schema: its aggregate `bytes` output and
   // hidden route name cannot decode a selected handler's uint/struct result. Preserve every selected row's
   // stable handler identity and fail closed if one static read would expose multiple logical return values.
@@ -237,7 +266,7 @@ callerContract?: StatefulContract<Artifact>,
   if (!physicalReturnSlot) {
     throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
   }
-  // A facade view that consists solely of one returning external call has the callee's exact return value.
+  // Only an exact compiler-proven external return has the callee's unchanged return value.
   // Read the authenticated callee directly rather than synthesizing a parent+delegate+callee transaction:
   // inserting the parent's own return channel into that synthetic balanced frame would shift the callee's
   // output coordinates away from its input coordinates. The callee still executes its covenant VM probe.
@@ -245,6 +274,9 @@ callerContract?: StatefulContract<Artifact>,
   const passthrough = resultFunction?.externalCalls?.length === 1
     ? resultFunction.externalCalls[0] : undefined;
   const passthroughOnly = passthrough?.hasReturnValues === true
+    && resultFunction?.directExternalReturn !== undefined
+    && resultFunction?.directExternalReturn?.callsiteId === passthrough.callsiteId
+    && passthrough.addressStateVar !== undefined
     && (passthrough.returnTypes ?? []).length === outputs.length
     && (passthrough.returnTypes ?? []).every((type, index) => type === outputs[index]?.type)
     && (resultFunction?.emits?.length ?? 0) === 0
@@ -255,7 +287,11 @@ callerContract?: StatefulContract<Artifact>,
     console.error('static-return-passthrough', {
       functionName, resultFunction: resultFunction?.name, delegated: delegatedCall?.functionName,
       passthrough: passthrough?.functionName, passthroughOnly,
-      delegateRegistry: delegatedCall && [...(delegatedCall.contract as unknown as { _externalRegistry: Map<string, StatefulContract> })._externalRegistry.keys()],
+      delegateRegistry: delegatedCall && [
+        ...(delegatedCall.contract as unknown as {
+          _externalRegistry: Map<string, StatefulContract>;
+        })._externalRegistry.keys(),
+      ],
       rootRegistry: [...host.externalRegistry.keys()],
     });
   }
@@ -264,36 +300,64 @@ callerContract?: StatefulContract<Artifact>,
       ?? (/^I[A-Z]/.test(passthrough.interfaceName)
         ? findDeploymentByName(host.inner.provider, passthrough.interfaceName.slice(1))?.contract
         : undefined);
-    // A facade view which forwards to a stored-address target can have empty connect-time
-    // externals. Resolve the callee from the deployment registry by interface name, then by
-    // the compiler-described address state variable when present.
+    // The compiler-described stored address is authoritative for this forwarded read. A stale interface
+    // binding may only supply the handle if it identifies the same target.
     let byAddress: unknown;
+    let storedTarget: string | Uint8Array | undefined;
     const addressStateVar = passthrough.addressStateVar;
-    if (addressStateVar) {
+    if (addressStateVar !== undefined) {
       try {
         const facadeHost = delegatedCall.contract as StatefulContract & {
           implementation?: StatefulContract;
         };
-        const facadeState = await (facadeHost.implementation ?? facadeHost).getState();
-        const stored = facadeState[addressStateVar];
+        const delegateLayout = delegatedCall.contract.inner.artifact.stateLayout;
+        const ownerLayout = host.inner.artifact.stateLayout;
+        const delegateSlot = delegateLayout?.variables.find((variable) => (
+          variable.name === addressStateVar
+        ));
+        const ownerSlot = ownerLayout?.variables.find((variable) => (
+          variable.name === addressStateVar
+        ));
+        const isDelegatedFacade = (abiFunction?.lowLevelCalls?.length ?? 0) === 1
+          && abiFunction?.lowLevelCalls?.[0]?.callMode === 'delegatecall'
+          && (calls?.filter((call) => call.type === 'stateful').length ?? 0) === 1;
+        // A delegate implementation reads the proxy's state category, not its own unused deployment state.
+        // Identical coordinates alone are insufficient: earlier fields with different widths can shift the
+        // target's encoded byte offset. Compare the physical prefix through the target before using proxy state.
+        const ownerHoldsSlot = isDelegatedFacade && delegateLayout !== undefined
+          && ownerLayout !== undefined && delegateSlot !== undefined && ownerSlot !== undefined
+          && delegateSlot.nftIndex === ownerSlot.nftIndex
+          && delegateSlot.fieldIndex === ownerSlot.fieldIndex
+          && delegateSlot.type === ownerSlot.type
+          && sameStatePrefixThroughField(
+            ownerLayout, delegateLayout, ownerSlot.nftIndex, ownerSlot.fieldIndex,
+          );
+        const facadeState = isDelegatedFacade
+          ? (ownerHoldsSlot ? await host.getState() : undefined)
+          : await (facadeHost.implementation ?? facadeHost).getState();
+        const stored = facadeState?.[addressStateVar];
         if (typeof stored === 'string' || stored instanceof Uint8Array) {
-          const asHex = typeof stored === 'string' ? stored.replace(/^0x/i, '') : binToHex(stored);
-          byAddress = findDeploymentByLockingBytecode(host.inner.provider, asHex)?.contract
-            ?? (typeof stored === 'string'
-              ? findDeploymentByAddress(host.inner.provider, stored)?.contract
-              : undefined);
+          storedTarget = stored;
+          byAddress = findDeploymentByAddressValue(host.inner.provider, stored)?.contract;
         }
       } catch {
-        // Keep registry/name resolution only.
+        // Without the authenticated stored target, the passthrough cannot choose a callee by name.
       }
     }
-    // Prefer the address-linked deployment over a same-named registry entry: upgrade
-    // registers the proxy handle under the impl name, and a stale/empty-state twin can
-    // win findDeploymentByName while the facade's stored marketplace address is authoritative.
-    const registered = ((delegatedCall.contract as unknown as { _externalRegistry: Map<string, StatefulContract> })._externalRegistry.get(passthrough.interfaceName)
-      ?? host.externalRegistry.get(passthrough.interfaceName)
-      ?? byAddress
-      ?? byName) as unknown;
+    const delegatedRegistry = (delegatedCall.contract as unknown as {
+      _externalRegistry: Map<string, StatefulContract>;
+    })._externalRegistry;
+    const connectedCandidates = [
+      delegatedRegistry.get(passthrough.interfaceName),
+      host.externalRegistry.get(passthrough.interfaceName),
+      byName,
+    ];
+    const authenticatedTarget = storedTarget;
+    const registered = addressStateVar !== undefined
+      ? byAddress ?? (authenticatedTarget === undefined ? undefined : connectedCandidates.find((candidate) => (
+        connectedContractMatchesExactAddress(candidate, authenticatedTarget)
+      )))
+      : connectedCandidates.find((candidate) => candidate !== undefined);
     const facadeDeployment = findDeploymentByAddress(host.inner.provider, host.target);
     const facadeSelfAddress = hexToBin(
       String(facadeDeployment?.lockingBytecode ?? host.inner.lockingBytecode),
@@ -333,7 +397,7 @@ callerContract?: StatefulContract<Artifact>,
       if ('proxy' in callee) {
         const publicMethod = (callee as unknown as Record<string, unknown>)[passthrough.functionName];
         if (typeof publicMethod === 'function') {
-          return await (publicMethod as (...values: FunctionArgument[]) => Promise<StateValue>)(...resolvedArgs);
+          return (publicMethod as (...values: FunctionArgument[]) => Promise<StateValue>)(...resolvedArgs);
         }
       }
       // A registered proxy handle must execute reads through the same forwarding boundary as writes. Calling
@@ -376,6 +440,19 @@ callerContract?: StatefulContract<Artifact>,
           generateUnlockingBytecode: () => new Uint8Array(),
         },
       }];
+      // Resolve the caller's immutable identity by category. A handle can expose a
+      // physical execution address after a state transition, while msg.sender
+      // still uses the logical CREATE identity anchored by this category.
+      const callerIdentity = await resolveLogicalIdentityByCategory(
+        callerContract.inner.provider, callerContract.categoryId, [callerContract.target],
+      );
+      if (callerIdentity !== undefined
+        && callerIdentity.categoryId.toLowerCase() === callerContract.categoryId.toLowerCase()) {
+        callerIdentityUtxos.push({
+          ...callerIdentity.anchor,
+          unlocker: callerIdentity.unlocker,
+        });
+      }
     }
   }
   const builder = await host.createBuilder(
@@ -549,6 +626,8 @@ callerContract?: StatefulContract<Artifact>,
       // the already-built transaction through the normal debugger to recover the source-mapped require.
       if ((builder as unknown as { __vmErrored?: boolean }).__vmErrored) {
         const derivationError = (builder as unknown as { __derivationError?: Error }).__derivationError;
+        if (derivationError && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN === '1') console.error('static-return-derivation-error', derivationError.message);
         if (derivationError) throw derivationError;
       }
       throw decodeError;
@@ -573,7 +652,7 @@ callerContract?: StatefulContract<Artifact>,
         decoded,
       });
     }
-    return attachDecodedAccessors(decoded);
+    return decorateFunctionResult(decoded, resultFunction, returnArtifact);
   }
   // Multi-value (tuple) returns use a packed return-event encoding that is not a plain concatenation of each
   // value's pushdata; decoding it needs the tuple-return convention (viewReturn machinery). Fail closed rather

@@ -660,6 +660,11 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // Seven live sites, one per gated path. A new entry here is a new broadcast path that must be gated
     // before this list is updated.
     expect(callSites, callSites.join(' | ')).toHaveLength(7);
-    expect(callSites.filter((site) => /^stateful\/(StatefulContract\.ts|sc-)/.test(site))).toHaveLength(4);
+    expect(callSites.map((site) => site.split(':')[0]).sort()).toEqual([
+      'TransactionBuilder.ts', 'message-bus/preflight.ts',
+      'stateful/sc-destroy.ts', 'stateful/sc-send-raw-builder.ts',
+      'stateful/sc-split-merge.ts', 'stateful/sc-split-merge.ts',
+      'stateful/stb-submit-final-transaction.ts',
+    ].sort());
   });
 });

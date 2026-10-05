@@ -142,6 +142,27 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     expect(bump.libraryDelegateCalls).toEqual([{ library: 'Counter', functionName: 'increment' }]);
   });
 
+  it('keeps event-emitting collection handlers in the co-spent delegate library', () => {
+    const ledgerLibrary = 'library Ledger { mapping(address => int) balances; '
+      + 'event Changed(address indexed who, int value); '
+      + 'function change(address who, int value) public { '
+      + 'if (value > 0) { this.balances[who] = value; emit Changed(who, value); } } }';
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('ledger') ? { source: ledgerLibrary, id: 'ledger' } : undefined);
+    const consumer = 'import { Ledger } from "./ledger.scash"; '
+      + 'contract C() { mapping(address => int) balances; '
+      + 'function forward(address who, int value) { Ledger.change(who, value); } }';
+    const artifact = compileString(consumer, { importResolver: resolver, messageBus: false });
+    const forward = artifact.abi.find((entry) => entry.name === 'forward')!;
+
+    expect(forward.libraryDelegateCalls).toEqual([{
+      library: 'Ledger', functionName: 'change', args: [{ param: 'who' }, { param: 'value' }],
+    }]);
+    expect(forward.lowLevelCalls?.[0]?.callMode).toBe('delegatecall');
+    expect(forward.entryAccesses ?? []).toHaveLength(0);
+    expect(forward.emits ?? []).toHaveLength(0);
+  });
+
   // 3b layout-compat (compile-time): a consumer of a delegate library must declare a matching state layout,
   // else the library writes the wrong field of the caller's state. Here `count` is at the wrong slot.
   it('rejects a consumer whose state layout does not match the imported library', () => {

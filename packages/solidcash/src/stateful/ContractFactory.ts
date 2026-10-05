@@ -11,7 +11,7 @@ import {
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
-import { registerDeployment, registeredPhysicalLockingBytecode } from './deployment-registry.js';
+import { registerDeployment, registeredValueAddressLockingBytecode } from './deployment-registry.js';
 import { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';
 import { resolveMasterPoolSize, poolGenesisSatoshis } from '../per-call/deploy/pool.js';
 
@@ -66,7 +66,7 @@ function normalizeRegisteredAddressArguments<T>(
   return args.map((arg, index) => {
     const type = inputs[index]?.type;
     if ((type !== 'address' && type !== 'address payable') || typeof arg !== 'string') return arg;
-    return (registeredPhysicalLockingBytecode(provider, arg) ?? arg) as T;
+    return (registeredValueAddressLockingBytecode(provider, arg) ?? arg) as T;
   });
 }
 

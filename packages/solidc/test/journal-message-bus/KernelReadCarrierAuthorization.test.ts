@@ -399,7 +399,7 @@ describe('kernel read-carrier two-pass authorization', () => {
       expect(deriveKernelJournalDispositionHandlerScope(serialized)).toEqual(eager);
 
       const accesses = completed.sortedUpsertLoopInfo!;
-      const withAccesses = (sortedUpsertLoopInfo: readonly SortedUpsertLoopAbi[]) => ({
+      const withAccesses = (sortedUpsertLoopInfo: readonly SortedUpsertLoopAbi[]): typeof completed => ({
         ...completed, sortedUpsertLoopInfo,
       });
       expect(deriveKernelJournalDispositionHandlerScope(withAccesses(accesses.slice(0, -1)), carrierScope))

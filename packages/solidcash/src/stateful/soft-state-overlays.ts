@@ -124,7 +124,9 @@ export function takeSoftStateSnapshot(): SoftStateSnapshot {
   };
 }
 
-export function softCreditUserShares(token: unknown, user: unknown, amount: bigint, opts?: { setUserIndex?: boolean }): void {
+export function softCreditUserShares(
+  token: unknown, user: unknown, amount: bigint, opts?: { setUserIndex?: boolean },
+): void {
   const k = softBentoKey(token, user);
   softBentoUserShares.set(k, (softBentoUserShares.get(k) ?? 0n) + amount);
   if (opts?.setUserIndex === false) return;

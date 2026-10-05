@@ -19,12 +19,12 @@ import {
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import {
   isDisposableAlignmentPad,
-  fillJobEventsBandHoles,
+  fillValueChunkBandHoles,
   isP2sh32LockScript,
 } from './value-chunk-band-helpers.js';
 import { persistUpdatePredecessorDests } from './persist-predecessor-layout.js';
 import {
-  liveJobEventsBandWidth,
+  liveChunkableValueBandWidth,
   valueChunkBandWidth,
 } from './value-chunk-geometry.js';
 import {
@@ -33,7 +33,7 @@ import {
   isPersistedJobEventsReady,
   legacyJobEventsPersistValueChunkLock,
   persistValueChunkLock,
-  persistedJobEventsLock,
+  persistedCompatibilityValueChunkLock,
   persistedJobEventsUnlockRecipe,
   persistedJobEventsValue,
   persistedJobEventsWidth,
@@ -46,19 +46,19 @@ import {
 
 /** legacy JobEvent naming retirement: neutral legacy* wrappers for JobEvents/value-chunk helpers (fixtures tip). */
 export function legacyLiveValueChunkBandWidth(
-  ...args: Parameters<typeof liveJobEventsBandWidth>
-): ReturnType<typeof liveJobEventsBandWidth> {
-  return liveJobEventsBandWidth(...args);
+  ...args: Parameters<typeof liveChunkableValueBandWidth>
+): ReturnType<typeof liveChunkableValueBandWidth> {
+  return liveChunkableValueBandWidth(...args);
 }
 export function legacyComputePublishValueChunkBand(
-  ...args: Parameters<typeof computePublishJobEventsBand>
-): ReturnType<typeof computePublishJobEventsBand> {
-  return computePublishJobEventsBand(...args);
+  ...args: Parameters<typeof computeChunkableValueWriteBand>
+): ReturnType<typeof computeChunkableValueWriteBand> {
+  return computeChunkableValueWriteBand(...args);
 }
 export function legacyFillValueChunkBandHoles(
-  ...args: Parameters<typeof fillJobEventsBandHoles>
-): ReturnType<typeof fillJobEventsBandHoles> {
-  return fillJobEventsBandHoles(...args);
+  ...args: Parameters<typeof fillValueChunkBandHoles>
+): ReturnType<typeof fillValueChunkBandHoles> {
+  return fillValueChunkBandHoles(...args);
 }
 export function legacyPersistedValueChunkWidth(
   ...args: Parameters<typeof persistedJobEventsWidth>
@@ -71,9 +71,9 @@ export function legacyPersistedValueChunkValue(
   return persistedJobEventsValue(...args);
 }
 export function legacyPersistedValueChunkLock(
-  ...args: Parameters<typeof persistedJobEventsLock>
-): ReturnType<typeof persistedJobEventsLock> {
-  return persistedJobEventsLock(...args);
+  ...args: Parameters<typeof persistedCompatibilityValueChunkLock>
+): ReturnType<typeof persistedCompatibilityValueChunkLock> {
+  return persistedCompatibilityValueChunkLock(...args);
 }
 export function legacyPersistedValueChunkUnlockRecipe(
   ...args: Parameters<typeof persistedJobEventsUnlockRecipe>
@@ -151,7 +151,7 @@ export function tokenWriterOccupiedDests(parts: {
   }
   // Identity SCIDs land on the in-block return dest (master+7) before the
   // return NFT is placed. Reserve that dest and the next three so extraTransfer
-  // EQUALVERIFYs dest 35, not dest 31's SCID. First publishJobPost still
+  // EQUALVERIFYs the later destination, not the earlier SCID. The first write still
   // EQUALVERIFYs dest 31 even if initialize persist left persistDests nonempty.
   if (parts.reserveIdentityDests && parts.tokenMaster !== undefined && parts.tokenMaster >= 0) {
     const identityStart = parts.tokenMaster + 7;
@@ -224,17 +224,17 @@ export function findDisposableValueChunkOutputBase(
 }
 
 /**
- * Exclusive output range where publishJobEvent value chunks are verified
- * (`INPUTINDEX + blockSize` for `nNew` slots). View tails, FakeToken, and
- * identity pads must not occupy this range.
+ * Exclusive output range where the selected writer's value chunks are verified
+ * (`INPUTINDEX + blockSize` for `nNew` slots). View tails, other participants,
+ * and identity pads must not occupy this range.
  */
 
-export function computePublishJobEventsBand(parts: {
+export function computeChunkableValueWriteBand(parts: {
   implIndex?: number;
   blockSize?: number;
   start?: number;
   plannedWidth?: number;
-  jobEventsCount?: number;
+  entryChunkCount?: number;
   derivedIndices?: readonly number[];
   liveWidth?: number;
   /** Absent-key INSERT places chunks after the NEW node (master+blockSize+1). */
@@ -258,7 +258,7 @@ export function computePublishJobEventsBand(parts: {
       planned: derivedInBand.length > 0
         ? Math.min(parts.plannedWidth ?? Number.POSITIVE_INFINITY, derivedInBand.length)
         : (parts.plannedWidth ?? 0),
-      jobEventsCount: parts.jobEventsCount,
+      entryChunkCount: parts.entryChunkCount,
       derivedEnd: derivedInBand.length === 0 ? undefined : Math.max(...derivedInBand),
       chunkBase: start,
     });
@@ -636,7 +636,7 @@ export function chunksFromJobEventsValue(
   if (value.length <= VALUE_HEAD_SIZE) return [];
   const lock = lockingBytecode
     ?? legacyJobEventsPersistValueChunkLock(categoryId, value)
-    ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined)
+    ?? (categoryId ? persistedCompatibilityValueChunkLock(categoryId) : undefined)
     ?? p2sh32LockFromValueRoot(sha256Sync(value));
   return chunksFromValue(value, { lockingBytecode: lock, categoryId });
 }

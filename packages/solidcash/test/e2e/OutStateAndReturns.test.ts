@@ -612,7 +612,7 @@ contract Reader(bytes32 counterCategory) {
   });
 
   describe('dynamic outState reconstruction', () => {
-    it('reads the callee final multi-chunk value and rejects no honest chunks', async () => {
+    it.each([1, 60, 120, 121, 241])('reads the callee final %i-byte value with exact chunks', async (length) => {
       const provider = createTestProvider();
       const targetArtifact = compileString(DYNAMIC_OUTSTATE_TARGET_CONTRACT);
       const targetBase = new Contract(targetArtifact, [], { provider });
@@ -631,7 +631,7 @@ contract Reader(bytes32 counterCategory) {
       );
       const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
       const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
-      const next = 'x'.repeat(241);
+      const next = 'x'.repeat(length);
 
       await expect(
         caller.updateAndCheck(next).withExternalCall(targetStateful, 'set', [next]).send(),
@@ -639,6 +639,17 @@ contract Reader(bytes32 counterCategory) {
       await expect(targetStateful.getState()).resolves.toEqual(
         expect.objectContaining({ message: next }),
       );
+      if (length === 241) {
+        const replacement = 'y'.repeat(121);
+        await expect(
+          caller.updateAndCheck(replacement)
+            .withExternalCall(targetStateful, 'set', [replacement])
+            .send(),
+        ).resolves.toBeDefined();
+        await expect(targetStateful.getState()).resolves.toEqual(
+          expect.objectContaining({ message: replacement }),
+        );
+      }
     });
 
     it('reads final multi-chunk bytes and rejects one forged chunk byte at caller input 0', async () => {
@@ -807,7 +818,7 @@ contract Reader(bytes32 counterCategory) {
       const predecessor = builder.outputs.find((output) =>
         output.token?.category === targetSetup.categoryId
         && output.token.nft?.capability === 'mutable'
-        && output.token.nft.commitment?.startsWith('00'.repeat(32)));
+        && output.token.nft.commitment?.endsWith('00'.repeat(32)));
       expect(predecessor?.token?.nft?.commitment).toBeDefined();
       predecessor!.token = {
         ...predecessor!.token!,

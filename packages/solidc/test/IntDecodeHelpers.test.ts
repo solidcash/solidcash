@@ -192,6 +192,34 @@ describe('shared integer helpers', () => {
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
   });
 
+  it('keeps authenticated collection-journal bodies trace-stable under the compilation-speed hint', () => {
+    const traceSource = `
+      contract TraceStable() {
+        int[] public items;
+        mapping(bytes20 => int) public weights;
+        function append(bytes20 key, int value) public {
+          require(this.weights[key] >= 0);
+          this.items.push(value);
+        }
+      }
+    `;
+    const options = {
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      commitmentLimit: 128,
+    } as const;
+    const fast = compileString(traceSource, { ...options, optimizeForCompilationSpeed: true });
+    const selector = fast.abi.find((fn) => fn.name === 'append')?.selector;
+    expect(selector).toBeDefined();
+    expect(fast.abi.find((fn) => fn.name === 'append')).toMatchObject({
+      dynamicWrites: ['items'],
+      entryAccesses: [expect.any(Object)],
+    });
+    expect(fast.functionBodies?.[selector!]).toBeTypeOf('string');
+    expect(Object.values(fast.debug?.invokeDebug ?? {})
+      .some((entry) => entry.name?.startsWith('outlined source span'))).toBe(false);
+  });
+
   it('still speed-hint outlines when statement prediction skips ATN for while-loops', () => {
     expectSpeedHintedOutline(compileString(`
       contract Store() {

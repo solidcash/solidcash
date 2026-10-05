@@ -16,7 +16,7 @@
     address owner;
     int totalSupply;
     mapping(address => int) balances;
-    mapping(address => mapping(address => int)) allowed;
+    mapping(address => mapping(address => uint256)) allowed;
     bool paused;
     mapping(address => bool) isBlackListed;
     bytes32 name;

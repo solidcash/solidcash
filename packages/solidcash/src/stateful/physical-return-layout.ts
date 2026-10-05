@@ -3,12 +3,10 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex } from '@bitauth/libauth';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import {
   clampViewTailPlacement,
   groupOwnsInBlockReturnEvent,
-  logicalReturnGroupIndex,
   physicalParticipantWidth,
   tokenWriterReturnIndex,
   type PhysicalReturnGroup,
@@ -27,7 +25,7 @@ import {
 export function chooseMintingSwapShift(availableFunders: number, minShift: number): number {
   if (minShift <= 0 || availableFunders < minShift) return 0;
   // Prefer the historical 4-wide rotate when the band is narrower so
-  // transferFrom publishJobPost stays off jobEvents. Never go below minShift.
+  // the nested token transfer stays off the value-chunk band. Never go below minShift.
   const preferred = Math.max(minShift, 4);
   return availableFunders >= preferred ? preferred : minShift;
 }
@@ -78,8 +76,9 @@ export function gatherContiguousPlainFunders<T extends {
     available += 1;
   }
   while (available < required) {
+    const minimumIndex = insertionIndex + available;
     const source = inputs.findLastIndex((candidate, index) => (
-      index >= insertionIndex + available
+      index >= minimumIndex
       && !candidate.token
       && funderOutpoints.has(`${candidate.txid}:${candidate.vout}`)
     ));
@@ -94,7 +93,7 @@ export function gatherContiguousPlainFunders<T extends {
 /**
  * Last mutable p2sh32 writer that sits on a planned view-tail index, extended
  * through the contiguous collection band (jobEvents). Token-free pads and the
- * trailing jobs suffix (separated by a pad or OP_RETURN) are not included.
+ * trailing value-chunk suffix (separated by a pad or OP_RETURN) are not included.
  */
 export function lastCollidingMutableWriterIndex(
   outputs: ReadonlyArray<{
@@ -123,7 +122,7 @@ export function lastCollidingMutableWriterIndex(
 
 /**
  * Slots that can host OP_TRUE none-cap view tails without stealing jobEvents,
- * jobs suffix chunks, or SCID identity. Prefers existing view tails and
+ * reverse-indexed suffix chunks, or SCID identity. Prefers existing view tails and
  * token-free OP_TRUE / P2PKH alignment pads.
  */
 export function findViewTailDestinations(
@@ -161,7 +160,7 @@ export function assignPhysicalReturnIndices(
 ): Map<number, number> {
   const assigned = new Map<number, number>();
   let occupied = extraOccupied;
-  for (const [groupIdx, group] of groups.entries()) {
+  for (const group of groups) {
     if (group.sharedGroupIndex !== undefined) continue;
     const master = findMintingInputIndex(group.categoryId);
     if (master < 0) continue;

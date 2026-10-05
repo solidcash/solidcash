@@ -25,9 +25,9 @@ const p2pkh = new Contract(
 // Returns the deploy result plus the genesis funding txid. On mocknet the funding UTXO keeps the given seed
 // txid; on regtest addUtxo mutates it to the real one - either way the derived category equals that txid.
 async function deploy(artifact: ReturnType<typeof compileString>, constructorArgs: unknown[],
-  seed: string, initialState: Record<string, bigint>, initArgs?: unknown[]):
+  seed: string, initialState: Record<string, bigint>, initArgs?: unknown[], fundingSatoshis = 300_000n):
   Promise<{ result: Awaited<ReturnType<typeof StatefulContract.deploy>>; categoryId: string }> {
-  const fundingUtxo: Utxo = { txid: seed.repeat(16), vout: 0, satoshis: 300000n };
+  const fundingUtxo: Utxo = { txid: seed.repeat(16), vout: 0, satoshis: fundingSatoshis };
   await provider.addUtxo(p2pkh.address, fundingUtxo);
   const result = await StatefulContract.deploy(artifact, constructorArgs as never, {
     provider,
@@ -51,6 +51,56 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     `);
     const { result, categoryId } = await deploy(artifact, [], 'a1b2', { count: 1n });
     expect(result.categoryId).toBe(categoryId);
+  });
+
+  it('deploys literal empty dynamic values without phantom chunk outputs', async () => {
+    const artifact = compileString(`
+      contract C() {
+          string label;
+          string symbol;
+          constructor() { this.label = ""; this.symbol = ""; }
+          function read() view returns (string) { return this.label; }
+      }
+    `);
+    // Covers the conservative 5,000-sat fee and fixed NFTs, but not phantom reservations for empty chunks.
+    const { result } = await deploy(artifact, [], 'e0f1', {}, undefined, 9_000n);
+    expect(await result.contract.getState()).toMatchObject({ label: '', symbol: '' });
+    expect(result.tx.outputs.filter((output) => output.token?.nft?.capability === 'mutable'))
+      .toHaveLength(artifact.stateLayout!.dataNftCount);
+  });
+
+  it('retains a conditional dynamic write after an initial empty literal', async () => {
+    const artifact = compileString(`
+      contract C() {
+          string label;
+          constructor(bool replace) {
+              this.label = "";
+              if (replace) { this.label = "nonempty"; }
+          }
+          function read() view returns (string) { return this.label; }
+      }
+    `);
+    const { result: empty } = await deploy(artifact, [], 'e1f2', {}, [false]);
+    expect((await empty.contract.getState()).label).toBe('');
+    const { result: replaced } = await deploy(artifact, [], 'e2f3', {}, [true]);
+    expect((await replaced.contract.getState()).label).toBe('nonempty');
+  });
+
+  it('deploys the final dynamic value after repeated conditional writes', async () => {
+    const artifact = compileString(`
+      contract C() {
+          string label;
+          constructor(bool choose, string left, string right) {
+              if (choose) { this.label = left; } else { this.label = right; }
+              if (choose) { this.label = right; } else { this.label = left; }
+          }
+          function read() view returns (string) { return this.label; }
+      }
+    `);
+    const { result: trueBranch } = await deploy(artifact, [], 'e3f4', {}, [true, 'left', 'right']);
+    expect((await trueBranch.contract.getState()).label).toBe('right');
+    const { result: falseBranch } = await deploy(artifact, [], 'e4f5', {}, [false, 'left', 'right']);
+    expect((await falseBranch.contract.getState()).label).toBe('left');
   });
 
   it('progressively derives multiple NFTs from one fixed constructor pre-state', async () => {
@@ -145,7 +195,7 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
       scalar: 2n, selected: long, memo: largeMemo,
     });
 
-    const mutableOutputs = (result: typeof shortResult) => result.tx.outputs
+    const mutableOutputs = (result: typeof shortResult): number => result.tx.outputs
       .filter((output) => output.token?.nft?.capability === 'mutable').length;
     expect(mutableOutputs(longResult)).toBeGreaterThan(mutableOutputs(shortResult));
   });

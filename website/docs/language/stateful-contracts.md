@@ -199,7 +199,10 @@ transaction inputs, and the covenant verifies that the list is complete and corr
 
 ## Dynamic Arrays
 
-State arrays support push, pop, index access, and deletion.
+Unbounded state arrays whose elements are chunk-packable are dense, length-tracked values backed by a data-NFT
+length header and chunk NFTs. This is the default for bounded integers, fixed bytes, strings, bytes, addresses,
+fixed- or variable-width structs, and supported nested arrays. They support push, pop, index access, iteration,
+and swap-with-last deletion.
 
 ```solidity
 contract TodoList() {
@@ -225,20 +228,26 @@ contract TodoList() {
 
 ### Packed Arrays
 
-For fixed-width element types, the `packed` modifier stores the entire array as a single blob for better space efficiency:
+The `packed` modifier stores the entire array as one inline data-NFT blob:
 
 ```solidity
 int[] packed public scores;
 ```
 
-:::note
-Packed arrays are only supported for types with a known fixed byte width (e.g., `int8`, `uint32`, `bytes20`). Variable-width types like `string` or `bytes` cannot be packed.
+:::caution
+An inline packed array must fit the data NFT's 128-byte commitment budget together with its framing and any sibling
+fields. Prefer the default chunk-packed `T[]` for a collection that must grow beyond that bound.
 :::
+
+Native bounded non-packed arrays, and any form ineligible for the dense backend, are represented as entry-NFT
+collections. They are sparse, mapping-like collections rather than length-tracked blobs. Backend selection and
+operation support are described in [Arrays](./arrays.md); both physical chunk formats are described in
+[State Storage & Data Encoding](./storage-model.md#dense-array-backends).
 
 ## Token Containers
 
-Token containers manage CashToken fungible tokens (FTs) and NFTs held by the contract. They are only
-available on stateful contracts, so the contract needs at least one state variable.
+Token containers manage native CashToken fungible tokens (FTs) and NFTs held by a stateful contract. Each held
+category gets a deterministic covenant address bound to the contract's category.
 
 ```solidity
 contract Vault() {
@@ -261,24 +270,10 @@ contract Vault() {
 }
 ```
 
-### Token Container Properties
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `.tokenAmount` | `int` | Fungible token balance |
-| `.tokenCategory` | `bytes32` | Token category ID |
-| `.nftCommitment` | `bytes` | NFT commitment data |
-
-### Token Container Methods
-
-| Method | Description |
-|--------|-------------|
-| `.transfer(lockingBytecode, amount)` | Send fungible tokens to a recipient |
-| `.transferNft(lockingBytecode, commitment, capability)` | Send an NFT to a recipient. `capability` is `0` (none), `1` (mutable) or `2` (minting) |
-
-:::note
-Token container keys (`bytes32 tokenCategory`) must be function parameters, not arbitrary expressions. This ensures the covenant can verify the category at compile time.
-:::
+Fields also include `.nftCount`; output aggregates are available through
+`this.outState.tokens[category].tokenAmount` and `.nftCount`. Category-key rules, covenant preservation,
+deposits, SDK access, auto-derived outputs, and the current multiple-UTXO limitation are covered in the
+dedicated [Token Containers](./token-containers.md) reference.
 
 ## Satoshi Container
 
@@ -299,10 +294,17 @@ contract Treasury(pubkey admin) {
 Deploy with an initial balance using the SDK:
 
 ```typescript
-const { contract } = await StatefulContract.deploy({
-    // ...
-    initialBalance: 50_000n,  // 50,000 satoshis in satoshi container
-});
+const { contract } = await StatefulContract.deploy(
+    artifact,
+    constructorArgs,
+    {
+        provider,
+        fundingUtxo,
+        funder,
+        changeAddress,
+        initialBalance: 50_000n,  // 50,000 satoshis in satoshi container
+    },
+);
 ```
 
 ## Partial Struct Field Updates
@@ -334,8 +336,10 @@ Under the hood, stateful contracts use CashToken NFTs to store state:
 | **Master NFT** | Contract identity and control | `minting` |
 | **Data NFTs** | State variable values (128 bytes each) | `mutable` |
 | **Entry NFTs** | Verified mapping nodes: key slot, next link, and value (one per key) | `mutable` |
-| **Event NFTs** | Emitted event records | `mutable` |
-| **Token Container NFTs** | FT/NFT balances per category | `mutable` |
+| **Chunk NFTs** | Dynamic strings, bytes, arrays, and large mapping values | `mutable` |
+| **Event NFTs** | Emitted event records | `none` |
+| **Return-event NFTs** | Authenticated cross-contract return values | `none` |
+| **Token containers** | Native FT/NFT custody per held category | Depends on the held token; an NFT is optional |
 | **Satoshi Container** | BCH balance (plain UTXO) | N/A |
 
 Every state-modifying transaction consumes these NFTs as inputs and produces updated versions as outputs. The contract bytecode verifies that output commitments match the expected new state - this is the **covenant** mechanism that makes stateful contracts trustless.
@@ -343,3 +347,6 @@ Every state-modifying transaction consumes these NFTs as inputs and produces upd
 :::tip
 The SDK handles all NFT management automatically via **auto-derivation**: it runs the contract bytecode in a local VM, discovers which state changes are needed, and constructs the full transaction including all covenant outputs.
 :::
+
+For the exact commitment codec, vmap absence proofs, chunk layouts, and UTXO lifetimes, see
+[State Storage & Data Encoding](./storage-model.md).

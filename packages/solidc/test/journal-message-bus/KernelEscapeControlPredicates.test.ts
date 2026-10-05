@@ -8,7 +8,10 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-const handler = (source: string, name = 'write') => {
+const handler = (source: string, name = 'write'): {
+  admission: NonNullable<ReturnType<typeof compileString>['messageBus']>['handlers'][number] | undefined;
+  stream: NonNullable<ReturnType<typeof compileString>['abi'][number]['sortedUpsertLoopInfo']>[number] | undefined;
+} => {
   const artifact = compileString(source, KERNEL);
   return {
     admission: artifact.messageBus?.handlers.find((candidate) => candidate.name === name),
@@ -16,7 +19,7 @@ const handler = (source: string, name = 'write') => {
   };
 };
 
-const contract = (body: string, helpers = '') => `contract EscapeControl() {
+const contract = (body: string, helpers = ''): string => `contract EscapeControl() {
   mapping(int => int) values;
   bool gate;
   ${helpers}
@@ -198,7 +201,7 @@ describe('Fence #7 escape control beside effects', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'work'))
       .toMatchObject({
         eligible: false,
         rejectionReason: 'KERNEL_LAYOUT',
@@ -219,7 +222,7 @@ describe('Fence #7 escape control beside effects', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'work'))
       .toMatchObject({
         eligible: false,
         rejectionReason: 'KERNEL_LAYOUT',
@@ -241,7 +244,7 @@ describe('Fence #7 escape control beside effects', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'work'))
       .toMatchObject({
         eligible: false,
         rejectionReason: 'KERNEL_LAYOUT',

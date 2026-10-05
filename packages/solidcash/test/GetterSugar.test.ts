@@ -21,8 +21,9 @@ const SRC = `pragma solidcash >=0.8.0;
 contract Bank() {
   bigint counter;
   bytes20 owner;
-  mapping(bytes20 => bigint) balances;
-  mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
+  mapping(bytes20 => bigint) public balances;
+  mapping(bytes20 => mapping(bytes20 => bigint)) public allowances;
+  mapping(address => bool) public members;
   function poke(pubkey pk, sig s) { require(checkSig(s, pk)); this.counter = this.counter + 1; }
 }`;
 
@@ -70,9 +71,17 @@ describe('Solidity-getter sugar (sc.<name>() / sc.<mapping>(key))', () => {
     const allowEntry = binToHex(encodeEntryCommitment(
       keyToSlotMulti([alicePkh, bobPkh]), zero, bigIntToVmNumber(500n),
     ));
+    const aliceLock = Uint8Array.from([0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac]);
+    const memberEntry = binToHex(encodeEntryCommitment(
+      keyToSlot(aliceLock), zero, bigIntToVmNumber(1n),
+    ));
     const categoryId = await setupWithEntries(
       provider, contract, stateLayout, { counter: 7n, owner: alicePkh },
-      [{ collection: 'balances', commitment: balEntry }, { collection: 'allowances', commitment: allowEntry }],
+      [
+        { collection: 'balances', commitment: balEntry },
+        { collection: 'allowances', commitment: allowEntry },
+        { collection: 'members', commitment: memberEntry },
+      ],
     );
     return StatefulContract.withCategory(contract, categoryId) as any;
   }
@@ -105,6 +114,12 @@ describe('Solidity-getter sugar (sc.<name>() / sc.<mapping>(key))', () => {
     // Absent-or-zero, for the reason given on the missing-key row above.
     const missingPair = await sc.allowances(bobPkh, alicePkh);
     expect(missingPair === undefined || BigInt(missingPair) === 0n).toBe(true);
+  });
+
+  it('matches a 20-byte EVM-compatible address to its persisted P2PKH mapping key', async () => {
+    const sc = await deploy();
+    expect(await sc.members(`0x${binToHex(alicePkh)}`)).toBe(true);
+    expect(await sc.members(`0x${binToHex(bobPkh)}`)).toBe(false);
   });
 
   it('is equivalent to the explicit sc.state.<name> accessor', async () => {

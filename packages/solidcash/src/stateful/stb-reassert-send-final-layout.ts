@@ -20,10 +20,12 @@ export interface ReassertSendFinalLayoutHost {
   stripSurplusLinearBatchEntryClones(builder: TransactionBuilder): void;
   ensureDistinctJobEventNfts(builder: TransactionBuilder): void;
   applyDerivedEntryOutputs(builder: TransactionBuilder): void;
-  finalizeReverseSuffixJobsLayout(builder: TransactionBuilder): void;
+  finalizeReverseSuffixValueChunkLayout(builder: TransactionBuilder): void;
   enforceDeclaredCollectionOutputCardinality(builder: TransactionBuilder): void;
+  learnFinalizedDelegateEvents(builder: TransactionBuilder): boolean;
   relocateCollidingDerivedValueChunkRuns(builder: TransactionBuilder): void;
   bindMaterializedValueChunkWitnesses(builder: TransactionBuilder): void;
+  rebalanceFunderSurplus(): void;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
 }
 
@@ -50,10 +52,12 @@ export function reassertSendFinalLayout(
   debugBal12('layout-start');
   host.reconcileMaterializedValueChunkWitnesses(finalBuilder);
   host.reconcileMaterializedInputWitnesses(finalBuilder);
-  host.reconcileMaterializedPredOutWitnesses(finalBuilder);
-  debugBal12('after-predOut-witnesses');
   host.reassertMaterializedBatchPredecessorOutputs(finalBuilder);
   debugBal12('after-materialized-pred');
+  // Materialize the declared P' before content-rebinding PredOut. A provisional P' can still sit at the
+  // fixed NEW slot; binding first would preserve that stale coordinate and the subsequent move would invalidate it.
+  host.reconcileMaterializedPredOutWitnesses(finalBuilder);
+  debugBal12('after-predOut-witnesses');
   host.reassertFinalConservation();
   debugBal12('after-conservation');
   host.reconcileMaterializedReturnWitnesses(finalBuilder);
@@ -74,14 +78,22 @@ export function reassertSendFinalLayout(
   // Last write: byIndex absolute pins (P' at co-spend, NEW at trailing) win.
   host.applyDerivedEntryOutputs(finalBuilder);
   debugBal12('after-applyDerived');
-  // After entry/event materializers: late chunks / distinct NFTs can sit after jobs or
-  // grow TXOUTPUTCOUNT. Pin reverse-suffix jobs as the last layout write in this pass.
-  host.finalizeReverseSuffixJobsLayout(finalBuilder);
+  // After entry/event materializers: late chunks or distinct NFTs can follow the suffix or
+  // grow TXOUTPUTCOUNT. Pin reverse-indexed chunks as the last layout write in this pass.
+  host.finalizeReverseSuffixValueChunkLayout(finalBuilder);
   host.enforceDeclaredCollectionOutputCardinality(finalBuilder);
+  // Delegate event values can only be observed after collection cardinality and all absolute coordinates have
+  // settled. Discovery is compiler-metadata-gated and replaces the existing fixed-value event placeholder in
+  // place, so it must not replay earlier broad ownership passes over these now-authenticated coordinates.
+  host.learnFinalizedDelegateEvents(finalBuilder);
   host.relocateCollidingDerivedValueChunkRuns(finalBuilder);
   // Bind only after every final materializer has settled physical coordinates. Kernel ownership is selected
   // by compiler resource identity; the provisional base is not allowed to override an authenticated run.
   host.bindMaterializedValueChunkWitnesses(finalBuilder);
+  // Derived chunks and learned delegate events can replace funder pass-through or change cells
+  // after the earlier conservation pass. Return that newly exposed value to a funder before
+  // serializing, rather than accepting it as an accidental transaction fee.
+  host.rebalanceFunderSurplus();
   debugBal12('after-reverseSuffix');
   host.syncBuilderUnlockers(finalBuilder);
 }

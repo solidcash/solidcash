@@ -5,6 +5,14 @@
 import type { TransactionDetails } from '../interfaces.js';
 import type { StatefulContract } from './StatefulContract.js';
 
+const LEGACY_SOFT_FAILURE_PATTERNS = [
+  /OP_VERIFY|invalid transaction output index|OP_SPLIT|keccak256 preimage|side-car/i,
+  /Incorrect number of arguments|vmap batch|missing a target slot|Expected \d+ data NFT/i,
+  /Duplicate stateful input|could not be auto-derived|state commitments/i,
+  /Satoshi container UTXO not found|encodePushdataValue|vmap upsert|cannot debit key/i,
+  /Invalid swapper|can't call|expected bigint|got object|Found type 'object'|where type 'uint/i,
+] as const;
+
 export interface SoftApplyNoopReceiptHost {
   parentContract?: StatefulContract;
   functionName?: string;
@@ -22,7 +30,7 @@ export function softApplyNoopReceipt(
   err: unknown,
 ): TransactionDetails | undefined {
   const msg = err instanceof Error ? err.message : String(err);
-  if (!/OP_VERIFY|invalid transaction output index|OP_SPLIT|keccak256 preimage|side-car|Incorrect number of arguments|vmap batch|missing a target slot|Expected \d+ data NFT|Duplicate stateful input|could not be auto-derived|state commitments|Satoshi container UTXO not found|encodePushdataValue|vmap upsert|cannot debit key|Invalid swapper|can't call|expected bigint|got object|Found type 'object'|where type 'uint/i.test(msg)) {
+  if (!LEGACY_SOFT_FAILURE_PATTERNS.some((pattern) => pattern.test(msg))) {
     return undefined;
   }
   const sc = host.parentContract;

@@ -3,9 +3,8 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
-import type { Output, UnlockableUtxo } from '../interfaces.js';
-import { isScidIdentityCommitment } from './logical-identity.js';
+import { binToHex } from '@bitauth/libauth';
+import { isContractUnlocker, type Output, type UnlockableUtxo } from '../interfaces.js';
 import {
   cloneToken,
   commitmentHexOf,
@@ -15,10 +14,6 @@ import {
   isDisposableAlignmentPad,
   isViewReturnTailOutput,
 } from './value-chunk-band-helpers.js';
-import {
-  assignedTailEnd,
-  findViewTailDestinations,
-} from './physical-return-layout.js';
 
 /**
  * Synthetic OP_TRUE outputs (view/loop tails, empty placeholders) are never a
@@ -112,7 +107,10 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
 
     const replacement = source >= 0 ? outputs[source] : {
       to: predecessor.lockingBytecode,
-      amount: occupant?.amount && occupant.amount > 0n ? occupant.amount : 1000n,
+      // A token-free structural funder is value backing, not a 1:1 predecessor recreation. Taking its entire
+      // amount for P' can leave zero fee even though the transaction has ample funding; conservation returns
+      // the remaining sats as change after this balanced 1000-sat output is installed.
+      amount: occupant?.token && occupant.amount && occupant.amount > 0n ? occupant.amount : 1000n,
       token: {
         amount: 0n,
         category: categoryId,
@@ -148,7 +146,7 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
   return changed;
 }
 
-/** True when `to` is a bare OP_RETURN (jobs-suffix separator). */
+/** True when `to` is a bare OP_RETURN (reverse-indexed suffix separator). */
 export function isOpReturnLockingBytecode(to?: Uint8Array | string): boolean {
   if (to instanceof Uint8Array) return to.length === 1 && to[0] === 0x6a;
   if (typeof to === 'string') {
@@ -159,13 +157,13 @@ export function isOpReturnLockingBytecode(to?: Uint8Array | string): boolean {
 }
 
 /**
- * Packer ranks can land a view return on the jobs OP_RETURN separator slot
+ * Packer ranks can land a view return on the value-chunk OP_RETURN separator slot
  * (current 0x6a, or the reserved suffixStart index before materialize writes
  * 0x6a). Prefer an already-unlocked view/disposable pad (planned, then current,
  * then the pad immediately before the separator). Never host after OP_RETURN:
- * reverse-indexed jobs chunks require the separator to be the unique trailer
+ * reverse-indexed value chunks require the separator to be the unique trailer
  * (`TXOUTPUTCOUNT - 1 - nNew`). Returns undefined when no safe host exists —
- * caller may insert one before the jobs suffix.
+ * caller may insert one before the value-chunk suffix.
  */
 export function redirectViewTailOffOpReturn(parts: {
   placedIndex: number;
@@ -199,35 +197,35 @@ export function redirectViewTailOffOpReturn(parts: {
 }
 
 /**
- * Move every output after the jobs OP_RETURN in front of the jobs chunk run so
+ * Move every output after OP_RETURN in front of the mutable value-chunk run so
  * the separator is the unique trailer for `TXOUTPUTCOUNT - 1 - nNew`.
  *
- * Only contiguous outputs that match `jobsLock` immediately before the separator
- * count as the jobs run. A planned count without matching locks would splice
+ * Only contiguous outputs that match `suffixLock` immediately before the separator
+ * count as the run. A planned count without matching locks would splice
  * pads into the contract block (e.g. output 6) and strip their tokens.
  */
-export function movePostOpReturnBeforeJobsSuffix<T extends {
+export function moveTrailingOutputsBeforeValueChunkSuffix<T extends {
   to?: Uint8Array | string;
   token?: { nft?: { capability?: string } };
-}>(outputs: T[], jobsLock?: Uint8Array): number {
+}>(outputs: T[], suffixLock?: Uint8Array): number {
   const opReturn = outputs.findIndex((output) => isOpReturnLockingBytecode(output?.to));
   if (opReturn < 0 || opReturn === outputs.length - 1) return 0;
-  const wanted = jobsLock && jobsLock.length === 35 && jobsLock[0] === 0xaa
-    ? binToHex(jobsLock) : undefined;
-  let jobsBefore = 0;
+  const wanted = suffixLock && suffixLock.length === 35 && suffixLock[0] === 0xaa
+    ? binToHex(suffixLock) : undefined;
+  let chunksBefore = 0;
   if (wanted) {
     for (let index = opReturn - 1; index >= 0; index -= 1) {
       const lock = outputs[index]?.to instanceof Uint8Array
         ? outputs[index]!.to as Uint8Array : undefined;
       if (!lock || lock.length !== 35 || binToHex(lock) !== wanted
         || outputs[index]?.token?.nft?.capability !== 'mutable') break;
-      jobsBefore += 1;
+      chunksBefore += 1;
     }
   }
   const trailing = outputs.splice(opReturn + 1);
   if (trailing.length === 0) return 0;
-  // No matched jobs yet: park pads immediately before OP_RETURN (not deep in the block).
-  const insertAt = Math.max(0, opReturn - jobsBefore);
+  // No matched chunks yet: park pads immediately before OP_RETURN (not deep in the block).
+  const insertAt = Math.max(0, opReturn - chunksBefore);
   outputs.splice(insertAt, 0, ...trailing);
   return trailing.length;
 }
@@ -236,7 +234,7 @@ export function movePostOpReturnBeforeJobsSuffix<T extends {
  * Final-layout repair: build() may append a reverse-indexed resource run, then late
  * derived outputs, then OP_RETURN — so TXOUTPUTCOUNT-1-nNew lands on the late outputs.
  * Lift the early resource run to sit immediately before the trailer.
- * Probe builds must not call this (late-before-jobs during derivation hung).
+ * Probe builds must not call this (late-before-suffix during derivation hung).
  */
 export function moveLateOutputsBeforeReverseSuffix<T extends {
   to?: Uint8Array | string;
@@ -249,7 +247,7 @@ export function moveLateOutputsBeforeReverseSuffix<T extends {
   if (suffixCount <= 0 || suffixLock.length !== 35 || suffixLock[0] !== 0xaa) return 0;
   if (outputs.length < suffixCount + 2) return 0;
   const trailer = outputs.length - 1;
-  // Reverse-index math needs a dedicated trailer; OP_RETURN is the marketplace separator.
+  // Reverse-index math needs a dedicated OP_RETURN trailer.
   if (!isOpReturnLockingBytecode(outputs[trailer]?.to)) return 0;
   const wanted = binToHex(suffixLock);
   const windowStart = trailer - suffixCount;
@@ -259,7 +257,7 @@ export function moveLateOutputsBeforeReverseSuffix<T extends {
     return !!lock && lock.length === 35 && binToHex(lock) === wanted
       && output?.token?.nft?.capability === 'mutable';
   };
-  // Already correct: reverse window is contiguous jobs.
+  // Already correct: the reverse-indexed chunk window is contiguous.
   if (Array.from({ length: suffixCount }, (_, offset) => isSuffixResource(outputs[windowStart + offset]))
     .every(Boolean)) {
     return 0;
@@ -474,6 +472,26 @@ export function reassertReadOnlyMutableOneToOnes(
     restored += 1;
   }
   return restored;
+}
+
+/**
+ * A routed delegate may relocate a selected read-only dynamic chunk input into its owner's trailing band after
+ * the nested builder has laid out outputs. The route union can still supply a write-mode chunk unlocker, so
+ * selected handler metadata supplies the exact read-only locks. Only unchanged authenticated output twins move;
+ * the displaced mapping-entry output keeps its own token.
+ */
+export function reassertRoutedReadOnlyDynamicChunkTwins(
+  outputs: Output[], inputs: readonly UnlockableUtxo[], readonlyChunkLocks: readonly Uint8Array[],
+): number {
+  if (readonlyChunkLocks.length === 0) return 0;
+  const locks = new Set(readonlyChunkLocks.map((lock) => binToHex(lock)));
+  const chunks = inputs.filter((input) => {
+    const unlocker = input.unlocker;
+    return isContractUnlocker(unlocker)
+      && unlocker.contract.artifact.contractName?.startsWith('ChunkNft_') === true
+      && locks.has(binToHex(unlocker.generateLockingBytecode()));
+  });
+  return reassertReadOnlyMutableOneToOnes(outputs, inputs, chunks);
 }
 
 /**

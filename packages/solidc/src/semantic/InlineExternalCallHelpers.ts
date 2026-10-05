@@ -13,6 +13,7 @@ import {
   FieldAccessNode,
   AbiEncodeCallNode,
   MethodCallNode,
+  InstantiationNode,
   CastNode,
   TupleAssignmentNode,
   BranchNode,
@@ -27,14 +28,17 @@ import {
   LowLevelCallNode,
   LowLevelCallStatementNode,
   TernaryOpNode,
+  BinaryOpNode,
   ExpressionNode,
 } from '../ast/AST.js';
+import { BinaryOperator } from '../ast/Operator.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError, UnsupportedReturnError } from '../Errors.js';
 import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
-import EarlyReturnTransformation, { holdsAssemblyReturn } from './EarlyReturnTransformation.js';
+import { holdsAssemblyReturn, normalizeVoidInlineReturns } from './EarlyReturnTransformation.js';
+import { visibleFreeFunctionsForContract } from '../analysis/InvocationAnalysis.js';
 
 /**
  * Inlines internal calls to VOID helper functions that make external calls. An external call is a co-spend
@@ -87,7 +91,9 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
-    const all = [...node.functions, ...this.freeFns];
+    // Contract members shadow same-signature free functions. Excluding those hidden declarations also keeps the
+    // name/arity inliner from mistaking the legal shadow for an ambiguous overload or choosing the free body.
+    const all = [...visibleFreeFunctionsForContract(node.functions, this.freeFns), ...node.functions];
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys(all);
     this.funcByName = new Map();
     for (const fn of all) this.funcByName.set(fn.name, fn);
@@ -104,9 +110,11 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       // frame is what makes each reached edge authoritative. Flattening one into __message_bus1 erases that
       // context and turns its external calls into inert ordinary-call nodes. Compiler-owned route clones are
       // the same, and so are public entry points inside the kernel row loop: inlining one there makes
-      // SymbolTableTraversal rewrite `token.transfer` against an unbound `__internal__loopTargets`. An imported
-      // delegate-library entry runs in its own co-spent input; inlining it would erase the call before
-      // SynthesizeLibraryDelegateCalls lowers it to a delegatecall.
+      // SymbolTableTraversal rewrite `token.transfer` against an unbound `__internal__loopTargets` (an entry point
+      // is inlined only where an ordinary, non-kernel function calls it, below). An imported delegate-library
+      // entry runs in its own co-spent input; inlining it would erase the call before
+      // SynthesizeLibraryDelegateCalls lowers it to a delegatecall, duplicating the facet's state covenant in the
+      // consumer and bypassing the intended split boundary.
       if (!fn.modifiers.includes(FunctionModifier.DELEGATE)
         && !fn.graphEmissionHandler && !fn.name.startsWith('__message_bus_')
         && fn.body && this.canDiscardCallResult(fn)
@@ -240,10 +248,12 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       }
       if (n instanceof MethodCallNode) {
         if (n.object instanceof IdentifierNode && this.isInterfaceTyped(env.get(n.object.name))) { found = true; return; }
+        if (n.object instanceof InstantiationNode
+          && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
+        if (n.object instanceof FunctionCallNode
+          && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
         if (this.earlyRootFilter && n.object instanceof CastNode
           && this.isInterfaceTyped(n.object.type)) { found = true; return; }
-        if (this.earlyRootFilter && n.object instanceof FunctionCallNode
-          && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
         if (InlineExternalCallHelpers.isLowLevel(n.methodName)) found = true;
       }
     });
@@ -427,6 +437,14 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       ], seen);
       return;
     }
+    if (value instanceof BinaryOpNode
+      && (value.operator === BinaryOperator.AND || value.operator === BinaryOperator.OR)) {
+      this.stampLowLevelCalls(value.left, conditions, seen);
+      this.stampLowLevelCalls(value.right, [
+        ...conditions, { expression: value.left, negated: value.operator === BinaryOperator.OR },
+      ], seen);
+      return;
+    }
     for (const [key, child] of Object.entries(value)) {
       if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
         'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
@@ -486,21 +504,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     // frame of its own it ends that frame, so it exits the helper like the others.
     const normalized = cloneNode(helper) as FunctionDefinitionNode;
     this.prependCallActivations(normalized.body, conditions);
-    normalized.accept(new EarlyReturnTransformation());
-    const stripReturns = (block: BlockNode): void => {
-      const kept: StatementNode[] = [];
-      for (const statement of block.statements ?? []) {
-        if (statement instanceof ReturnNode && (frame || !statement.isYulReturn)) continue;
-        if (statement instanceof BranchNode) {
-          stripReturns(statement.ifBlock);
-          if (statement.elseBlock) stripReturns(statement.elseBlock);
-        } else if (statement instanceof BlockNode) stripReturns(statement);
-        else if (statement instanceof UncheckedNode) stripReturns(statement.block);
-        kept.push(statement);
-      }
-      block.statements = kept;
-    };
-    stripReturns(normalized.body);
+    normalizeVoidInlineReturns(normalized, !frame);
     const body = normalized.body;
     this.walk(body, (node) => {
       if (node instanceof VariableDefinitionNode && !map.has(node.name)) {

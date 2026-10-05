@@ -9,7 +9,7 @@ import { Contract, StatefulContract, encodeFunctionArgument } from '../../../src
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { getEntryNftAddress } from '../../../src/stateful/covenant-helpers.js';
 import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
-import { bytesToSlotValue, keyToSlot } from '../../../src/stateful/SortedList.js';
+import { SortedList, bytesToSlotValue, keyToSlot } from '../../../src/stateful/SortedList.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusSemanticTestProvider } from './message-bus-semantic-profile.js';
@@ -36,6 +36,15 @@ contract DefaultScalarRows() {
     for (int i = 0; i < keys.length; i = i + 1) { this.values[keys[i]] = value; }
     require(true);
   }
+  function clearMany(int[] keys) public {
+    for (int i = 0; i < keys.length; i = i + 1) { delete this.values[keys[i]]; }
+    require(true);
+  }
+}`;
+
+const ABSENT_DELETE_SOURCE = `pragma solidcash ^0.13.0;
+contract AbsentDeleteRows() {
+  mapping(int => int) values;
   function clearMany(int[] keys) public {
     for (int i = 0; i < keys.length; i = i + 1) { delete this.values[keys[i]]; }
     require(true);
@@ -131,11 +140,51 @@ describe('kernel pending fixed-width scalar rows', () => {
       })).toBe(value);
     }
 
-    // An absent delete is observably different from inserting a zero node because mappings are enumerable. It
-    // remains fail-closed until the kernel route can authenticate and omit the no-op access.
+    // An absent delete must not create an enumerable zero-valued node. Its predecessor is authenticated and
+    // reproduced exactly, so the mapping remains byte-for-byte unchanged.
     await expect(StatefulContract.withCategory(inner, categoryId)
-      .batch([{ function: 'clearMany', args: [[absentKey]] }]).build())
-      .rejects.toThrow(/cannot delete key 0 - it has no entry/);
+      .batch([{ function: 'clearMany', args: [[absentKey]] }]).send()).resolves.toBeDefined();
+    const afterAbsentDelete = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+    expect(afterAbsentDelete.map((entry) => entry.token!.nft!.commitment).sort())
+      .toEqual(entries.map((entry) => entry.token!.nft!.commitment).sort());
+  }, 180_000);
+
+  it('omits an absent-key delete without creating an enumerable node', async () => {
+    const provider = createMessageBusSemanticTestProvider();
+    const artifact = compileString(ABSENT_DELETE_SOURCE, KERNEL);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'clearMany', args: [[9n]] }]);
+    const builder = await call.build();
+    const routeInput = builder.inputs.find((input) => 'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus?.route.name);
+    expect(routeInput).toBeDefined();
+    if (!routeInput || !('params' in routeInput.unlocker)) throw new Error('kernel route has no parameters');
+    const journalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === '__internal__kernelJournalAccessStreams');
+    expect(journalIndex).toBeGreaterThanOrEqual(0);
+    const rowStreams = routeInput.unlocker.params[journalIndex] as Uint8Array[][];
+    expect(rowStreams.flatMap((streams) => streams.flatMap(decodeKernelEntryJournalAccesses)))
+      .toEqual([expect.objectContaining({
+        presentBefore: false,
+        presentAfter: false,
+        mutates: true,
+        authenticatesPredecessor: true,
+      })]);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toBeDefined();
+    const entryAddress = getEntryNftAddress(inner, categoryId, 'values');
+    expect(SortedList.fromUtxos(await provider.getUtxos(entryAddress)).all
+      .map((entry) => bytesToSlotValue(entry.slot))).toEqual([0n]);
   }, 180_000);
 
   it('settles an inserted node before a later row updates its dirty predecessor', async () => {

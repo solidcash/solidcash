@@ -17,17 +17,18 @@ import {
 } from './StatefulContract.js';
 import Signer from '../Signer.js';
 import SignatureTemplate from '../SignatureTemplate.js';
-import { FunctionArgument } from '../Argument.js';
+import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
 import {
-  findDeploymentByAddress, findDeploymentByAddressValue, findDeploymentBySolidityAddressPayload,
-  registerDeployment, registeredPhysicalLockingBytecode,
+  findDeploymentByAddressValue, findDeploymentBySolidityAddressPayload, registerDeployment,
+  registeredValueAddressLockingBytecode,
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
+import { decorateFunctionResult, decorateStateAccessorResult } from './public-result.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -81,6 +82,9 @@ export interface DeployProxyOptions {
   // OZ-style initializer. Default auto-detects an `initialize` delegate function and runs it with the init args
   // through the proxy; `false` seeds state at genesis instead; a string names a different initializer.
   initializer?: string | false;
+  // Constructor arguments for the separately deployed implementation. Its own state is not proxy state,
+  // but a source contract with a required constructor must still be deployed with valid arguments.
+  implementationConstructorArgs?: readonly ConstructorArgument[];
   // A custom proxy contract artifact. Omit to use the built-in layout-independent `SolidCashProxy` (recommended).
   proxy?: Artifact;
   // Runner (Signer or NetworkProvider) to deploy + sign with. Defaults to the implementation factory's runner.
@@ -118,16 +122,36 @@ function toInitialState(initialState: ProxyInitialState | undefined, impl: Artif
   return out;
 }
 
+/** Resolve registered contract references in typed proxy state before encoding the genesis commitment. */
+function normalizeInitialStateAddresses(
+  initialState: Record<string, unknown> | undefined, impl: Artifact, provider: NetworkProvider,
+): Record<string, unknown> | undefined {
+  if (!initialState) return undefined;
+  const normalized = { ...initialState };
+  for (const variable of impl.stateLayout?.variables ?? []) {
+    const value = normalized[variable.name];
+    if ((variable.type === 'address' || variable.type === 'address payable') && typeof value === 'string') {
+      normalized[variable.name] = registeredValueAddressLockingBytecode(provider, value) ?? value;
+    }
+  }
+  return normalized;
+}
+
 // Executing an entire very-large delegate artifact merely to apply a conventional OZ initializer can overwhelm
 // a JavaScript VM even when a private mock network intentionally relaxes BCH's script limits. For that test-only
 // case, derive the initializer's direct assignments from its ABI names and seed well-known OZ bookkeeping slots.
 // Contracts with non-trivial initialization continue through the normal delegate path.
-function deriveLargeMockInitializerState(
+export function deriveLargeMockInitializerState(
   initialState: ProxyInitialState | undefined,
   initializer: string | undefined,
   impl: Artifact,
   runner: ContractRunner,
 ): Record<string, unknown> | undefined {
+  // Kernel state comes from executing the initializer over the authenticated proxy pre-state. Crossing a
+  // bytecode-size threshold must not replace that execution with name-based state and event guesses.
+  if (impl.compiler?.options?.messageBusKernel === true || impl.messageBus?.convention === 'kernel-row-loop') {
+    return undefined;
+  }
   if (!initializer || !Array.isArray(initialState)) return undefined;
   const provider = runner instanceof Signer ? runner.provider : runner;
   if ((provider.consensusLimits?.maximumInputBytes ?? 10_000) <= 10_000) return undefined;
@@ -162,7 +186,7 @@ function deriveLargeMockInitializerState(
     if (variable && index < initialState.length) {
       const value = initialState[index];
       seeded[stateName] = variable.type === 'address' && typeof value === 'string'
-        ? (registeredPhysicalLockingBytecode(provider, value)
+        ? (registeredValueAddressLockingBytecode(provider, value)
           ?? (value.includes(':') ? addressToLockScript(value) : hexToBin(value.replace(/^0x/, ''))))
         : value;
     }
@@ -338,11 +362,9 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       .find((f) => f.name === implFunction);
     if (!abiFn) throw new Error(`Implementation '${this.implementation.inner.artifact.contractName}' has no function '${implFunction}'.`);
     const implSc = this.implementation as unknown as StatefulContract;
-    // Solidity-facing proxy handles expose their stable CREATE-style logical address, while BCH covenants call
-    // the physical state-holder locking bytecode. For an address-typed argument naming a deployment registered
-    // on this provider, pass that authenticated physical target into the covenant. This makes address.code and
-    // the external-call target pin describe the same co-spent script; ordinary wallet/zero addresses are left
-    // untouched. The compatibility surface still reports the logical address from getAddress().
+    // Compiler-marked external-call targets register their concrete participant and preserve a CREATE identity
+    // when its SCID is authenticated by the call planner. Ordinary address values use the registry's published
+    // value identity, matching genesis seeding and direct calls.
     const visibleInputs = abiFn.inputs.filter((input) => !input.name.startsWith('__internal__'));
     const physicalTargetParams = new Set((abiFn.externalCalls ?? []).flatMap((call) => {
       if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
@@ -354,7 +376,7 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
     }));
     const covenantArgs = implArgs.map((arg, index): FunctionArgument => {
       if (visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') return arg;
-      const deployment = findDeploymentByAddress(this.proxy.inner.provider, arg);
+      const deployment = findDeploymentByAddressValue(this.proxy.inner.provider, arg);
       if (!deployment) return arg;
       const registered = deployment.contract as {
         _logicalAddress?: string;
@@ -370,11 +392,11 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
           }
         }
         // An external call to a CREATE-style deployment authenticates its immutable logical-identity anchor.
-        // Preserve that address only for the compiler-marked target parameter; ordinary address values use the
-        // physical locking bytecode, matching address(this), msg.sender, and on-chain address comparisons.
+        // Preserve that address for the compiler-marked target parameter. Ordinary values follow the registry's
+        // physical-or-authenticated-logical address policy below.
         if (registered._logicalAddress || registered.proxy?._logicalAddress) return arg;
       }
-      return registeredPhysicalLockingBytecode(this.proxy.inner.provider, arg) ?? arg;
+      return registeredValueAddressLockingBytecode(this.proxy.inner.provider, arg) ?? arg;
     });
     if (debugForward) console.error('proxy-forward-args', { implFunction });
     // Connect the proxy to the runner so the forwarded call carries the signer. Its native P2PKH input funds the
@@ -467,6 +489,9 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               if (publicKey !== undefined) Object.assign(value as object, { publicKey });
               attachDecodedAccessors(value as any);
             }
+            const result = decorateStateAccessorResult(
+              value as import('@solidcash/utils').StateValue | undefined, storageName, args.length, implArtifact,
+            );
             const getter = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
             if (getter?.outputs?.[0]?.type === 'address' && value instanceof Uint8Array) {
               const cashaddr = lockingBytecodeToCashAddress({
@@ -476,7 +501,7 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               });
               return typeof cashaddr === 'string' ? `0x${binToHex(value)}` : cashaddr.address;
             }
-            return value;
+            return result;
           };
         }
         // Public state variables also have generated ABI getter entries. State sugar must win that collision;
@@ -491,10 +516,12 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               return index < 0 ? undefined : args[index];
             });
             const stateAccessor = (target.proxy.state as unknown as Record<
-              string, ((...values: FunctionArgument[]) => Promise<unknown>) | undefined
+            string, ((...values: FunctionArgument[]) => Promise<unknown>) | undefined
             >)[directRead.collection];
             if (keyArgs.every((value) => value !== undefined) && stateAccessor) {
-              return stateAccessor(...keyArgs as FunctionArgument[]);
+              return stateAccessor(...keyArgs as FunctionArgument[]).then((value) => (
+                decorateFunctionResult(value as import('@solidcash/utils').StateValue, fn, implArtifact)
+              ));
             }
           }
           const call = target.forward(prop, args);
@@ -956,9 +983,10 @@ export async function deployProxy<TImpl extends Artifact>(
     // A mapping-writing initializer must execute against its genuine zero pre-state (not an already-initialized
     // scalar seed). Its known scalar post-state is applied to the call builder below while the initializer itself
     // atomically materializes the entry-NFT transition.
-    const seededState = initializer
+    const seededState = normalizeInitialStateAddresses(initializer
       ? (mockInitializerHasEntries ? undefined : mockInitializerState)
-      : toInitialState(initialState, implArtifact);
+      : toInitialState(initialState, implArtifact), implArtifact,
+    runner instanceof Signer ? runner.provider : runner);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PROXY_STATE === '1') {
       console.error('proxy-seeded-state', {
@@ -971,7 +999,7 @@ export async function deployProxy<TImpl extends Artifact>(
     }
 
     // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
-    const implementation = await delegateFactory.deploy({
+    const implementation = await delegateFactory.deploy(...(options.implementationConstructorArgs ?? []), {
       ...(options.implementationOverrides ?? {}), logicalNonce: false,
     }) as DeployedContract<TImpl>;
 
@@ -1068,20 +1096,48 @@ export interface UpgradeProxyOptions {
 }
 
 /**
- * Assert proxy-held state layout stays append-only when retargeting to a new implementation (OZ storage
- * layout discipline adapted to NFT commitment fields).
+ * Assert the new implementation can decode the proxy's existing data-NFT commitments unchanged.
+ * Retargeting does not migrate commitments, so even an appended field in an existing NFT is unsafe.
  */
-function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
+export function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
   const prevLayout = previous.stateLayout;
   const nextLayout = next.stateLayout;
   if (!prevLayout || !nextLayout) return;
+  // upgradeProxy retargets the implementation without migrating the proxy's existing data NFTs.
+  // Even a 1 -> 2 increase changes NFT 0's commitment: multi-NFT layouts prefix every NFT with an
+  // index tag. A newly added NFT would also have no live UTXO to read or spend.
+  if (nextLayout.dataNftCount !== prevLayout.dataNftCount) {
+    throw new Error(
+      'Upgrade layout incompatibility: data NFT count changed '
+      + `(old: ${prevLayout.dataNftCount}, new: ${nextLayout.dataNftCount}). `
+      + 'Retargeting does not migrate existing proxy commitments or create data NFTs.',
+    );
+  }
+  const oldStructs = prevLayout.structs ?? [];
+  const newStructs = nextLayout.structs ?? [];
+  const checkedStructs = new Set<string>();
+  const assertStructShape = (type: string): void => {
+    const oldStruct = oldStructs.find((item) => type === item.name || type.startsWith(`${item.name}[`));
+    const newStruct = newStructs.find((item) => type === item.name || type.startsWith(`${item.name}[`));
+    if (!oldStruct && !newStruct) return;
+    const name = oldStruct?.name ?? newStruct!.name;
+    if (checkedStructs.has(name)) return;
+    checkedStructs.add(name);
+    if (!oldStruct || !newStruct
+      || JSON.stringify(oldStruct.fields) !== JSON.stringify(newStruct.fields)) {
+      throw new Error(
+        `Upgrade layout incompatibility: struct '${name}' changed. `
+        + 'Existing state fields must retain their complete encoded struct shape.',
+      );
+    }
+    for (const field of oldStruct.fields) assertStructShape(field.type);
+  };
   for (const oldVar of prevLayout.variables) {
     const newVar = nextLayout.variables.find((variable) => variable.name === oldVar.name);
     if (!newVar) {
       throw new Error(
         `Upgrade layout incompatibility: state variable '${oldVar.name}' exists in the old contract `
-        + 'but is missing in the new contract. State layouts must be append-only - '
-        + 'existing variables cannot be removed.',
+        + 'but is missing in the new contract. Existing encoded fields cannot be removed.',
       );
     }
     if (newVar.nftIndex !== oldVar.nftIndex || newVar.fieldIndex !== oldVar.fieldIndex) {
@@ -1089,7 +1145,7 @@ function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
         `Upgrade layout incompatibility: state variable '${oldVar.name}' changed position `
         + `(old: nft=${oldVar.nftIndex}/field=${oldVar.fieldIndex}, `
         + `new: nft=${newVar.nftIndex}/field=${newVar.fieldIndex}). `
-        + 'State layouts must be append-only - existing variables cannot be reordered.',
+        + 'Existing encoded fields cannot be reordered.',
       );
     }
     if (newVar.type !== oldVar.type) {
@@ -1097,6 +1153,22 @@ function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
         `Upgrade layout incompatibility: state variable '${oldVar.name}' changed type `
         + `(old: ${oldVar.type}, new: ${newVar.type}). `
         + 'State variable types cannot change during upgrade.',
+      );
+    }
+    if ((newVar.dynamic === true) !== (oldVar.dynamic === true)
+      || (newVar.packed === true) !== (oldVar.packed === true)) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${oldVar.name}' changed its wire encoding. `
+        + 'Existing state fields cannot change dynamic or packed storage mode.',
+      );
+    }
+    assertStructShape(oldVar.type);
+  }
+  for (const newVar of nextLayout.variables) {
+    if (!prevLayout.variables.some((variable) => variable.name === newVar.name)) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${newVar.name}' adds an encoded field `
+        + `to data NFT ${newVar.nftIndex}. Retargeting requires commitment migration for new fields.`,
       );
     }
   }
@@ -1161,7 +1233,7 @@ export async function upgradeProxy<TImpl extends Artifact>(
   );
   if (proxy.forwardShape.mode !== 'param') {
     throw new Error(
-      `upgrades.upgradeProxy only supports param-mode proxies (forwarder takes address impl). `
+      'upgrades.upgradeProxy only supports param-mode proxies (forwarder takes address impl). '
       + `This proxy uses '${proxy.forwardShape.mode}' mode with a constructor-baked implementation pin; `
       + 'deploy a new proxy and migrate state, or use a custom param-mode proxy.',
     );
@@ -1178,8 +1250,8 @@ export async function upgradeProxy<TImpl extends Artifact>(
     );
   }
 
-  // Param-mode keeps the proxy's own state layout (not grafted). Compare new impl fields against the
-  // live proxy holder so append-only discipline still applies to shared commitment slots.
+  // Param-mode keeps the proxy's own state layout (not grafted). Both the live proxy holder and the
+  // previous implementation must accept the new implementation's unchanged physical commitment layout.
   assertAppendOnlyProxyLayout(proxy.proxy.inner.artifact, implArtifact);
   assertAppendOnlyProxyLayout(proxy.implementation.inner.artifact, implArtifact);
 

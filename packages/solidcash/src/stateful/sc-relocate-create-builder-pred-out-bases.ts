@@ -18,6 +18,7 @@ import {
   inheritWriterBatchPlan,
   isWriterBatchWitnessName,
   materializedPredOutBase,
+  writerBatchPlanMatchesPhysicalCarrier,
 } from './writer-event-delegate-layout.js';
 import {
   chunkableWriterGroupIndex,
@@ -101,7 +102,7 @@ export function relocateCreateBuilderPredOutBases(params: {
           ...externalCallUtxoGroups.map((candidate) => candidate.valueChunkOutputCount ?? 0),
           ...lowLevelCallUtxoGroups.map((candidate) => candidate.valueChunkOutputCount ?? 0),
         );
-        // Match getPublishJobEventsBand / liveJobEventsBandWidth: plannedWidth 2 must stay
+        // Match getChunkableValueWriteBand / liveChunkableValueBandWidth: plannedWidth 2 must stay
         // nNew 2. valueChunkBandWidth's default minimum 3 made whitelist publish report
         // plannedWidth 2 / nNew 3 while the live band was only 2 wide.
         const liveWidth = legacyLiveValueChunkBandWidth({ plannedWidth });
@@ -155,7 +156,10 @@ export function relocateCreateBuilderPredOutBases(params: {
           || (candidate.plannedEntryInserts?.length ?? 0) > 0
           || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
             .some(([name]) => isWriterBatchWitnessName(name))));
-      for (const writer of writers) inheritWriterBatchPlan(group, writer);
+      for (const writer of writers) {
+        if (!writerBatchPlanMatchesPhysicalCarrier(group, writer)) continue;
+        inheritWriterBatchPlan(group, writer);
+      }
       if ((group?.batchPredecessorOutputs?.length ?? 0) === 0) continue;
       const postMaster = nestedMasterIndices[groupIdx];
       if (postMaster === undefined) continue;

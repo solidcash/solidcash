@@ -56,6 +56,25 @@ describe('kernel execution plan (items 5–6, 12)', () => {
     expect(() => assertWithinKernelBudgets(plan, { maximumRows: 2, maximumBlobBytes: 100 }))
       .not.toThrow();
   });
+
+  it('rejects malformed published limits and non-finite or negative usage', () => {
+    const plan = createKernelExecutionPlan({
+      handlerId: 'h-numeric', budgets: { maximumRows: 2 },
+    });
+    for (const used of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => assertWithinKernelBudgets(plan, { maximumRows: used }))
+        .toThrow(/maximumRows.*non-negative safe integer/);
+    }
+    for (const limit of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const malformed = createKernelExecutionPlan({
+        handlerId: 'h-numeric', budgets: { maximumRows: limit },
+      });
+      expect(() => assertKernelPlanComplete(malformed))
+        .toThrow(/maximumRows.*non-negative safe integer/);
+      expect(() => digestKernelExecutionPlan(malformed))
+        .toThrow(/maximumRows.*non-negative safe integer/);
+    }
+  });
 });
 
 describe('layout sentinels (item 8)', () => {

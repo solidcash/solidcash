@@ -96,7 +96,7 @@ export function synthesizeTransferFromEventCommitments(
       : undefined;
   if (from === undefined || to === undefined || amount === undefined) return undefined;
 
-  // Approval spender is msg.sender. For Marketplace, getAddress()/address(this) can differ from the
+  // Approval spender is msg.sender. A caller's address can differ from the
   // minting-UTXO lock used as transferFrom's `to`. Recover spender by matching the allowance slot.
   const fromBin = from instanceof Uint8Array ? from
     : typeof from === 'string' ? hexToBin(from.replace(/^0x/i, ''))

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   Contract, SignatureTemplate, StatefulContract,
 } from '../../../src/index.js';
+import type { FunctionArgument } from '../../../src/Argument.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import {
@@ -45,14 +46,15 @@ describe('kernel composite transaction-signature witnesses', () => {
     );
     // Struct arguments also accept their canonical positional ABI-tuple representation. Use that form all the
     // way down so signature extraction is proven against tuple indices, not only object field names.
-    const proof = (owner: Uint8Array, privateKey: Uint8Array) => [
+    const proof = (owner: Uint8Array, privateKey: Uint8Array): [SignatureTemplate, Uint8Array] => [
       new SignatureTemplate(privateKey), owner,
     ];
-    const envelope = (nonce: bigint) => [
+    // FunctionArgument cannot express a positional struct tuple mixing signatures and byte fields.
+    const envelope = (nonce: bigint): FunctionArgument => ([
       [proof(alicePub, alicePriv), proof(bobPub, bobPriv)],
       [[proof(alicePub, alicePriv)]],
       nonce,
-    ];
+    ] as unknown as FunctionArgument);
     const contract = StatefulContract.withCategory(inner, categoryId);
     const call = contract.batch([{ function: 'apply', args: [envelope(1n)] }]);
     const fee = await createBareP2pkhFeeFunder(provider);

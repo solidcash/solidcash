@@ -380,13 +380,12 @@
       "sourceSha256": "57d93a5bdf0edff5dfd74d5cda445f9b8653fc29ee10ba8b3e482b2be925bd72",
       "sourceClosureSha256": "e0a1f481c9c49ed096035fddf25afc0bda1bec73cccf391f204e9630317e4749",
       "evidenceKind": "compile-compatibility-only",
-      "deployability": {
+      "routeSizeScreen": {
         "version": 1,
-        "status": "over-budget",
         "p2shBytecodeLimit": 10000,
-        "measuredBytecodeBytes": 12102,
-        "withinP2shLimit": false,
-        "note": "F37: concrete over-budget certificate (kernel routeBytes); Marketplace greening remains fenced"
+        "measuredRouteBytes": 12102,
+        "routeAloneExceedsLimit": true,
+        "note": "A route-only lower bound, not a deployability certificate; Marketplace greening remains fenced"
       },
       "modes": {
         "legacy": {
@@ -416,13 +415,12 @@
       "sourceSha256": "7881e9d98e6239931e92a3ee07d364180d87789719c50917aa117901457fd3db",
       "sourceClosureSha256": "e31d24048163d88b62040380b046ad93ef2c359017ea41811a8a110aedc13461",
       "evidenceKind": "compile-compatibility-only",
-      "deployability": {
+      "routeSizeScreen": {
         "version": 1,
-        "status": "asserted",
         "p2shBytecodeLimit": 10000,
-        "measuredBytecodeBytes": 2918,
-        "withinP2shLimit": true,
-        "note": "F37: unicrow-claim kernel route within P2SH limit (routeBytes)"
+        "measuredRouteBytes": 2918,
+        "routeAloneExceedsLimit": false,
+        "note": "Route fits alone; full-contract deployability requires the compiler certificate"
       },
       "modes": {
         "kernel": {

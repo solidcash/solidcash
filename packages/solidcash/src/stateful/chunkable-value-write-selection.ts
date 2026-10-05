@@ -86,7 +86,7 @@ export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGr
   const route = group.compilerRoute;
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
-  const direct = artifact?.abi.find((candidate) => candidate.name === directName);
+  const direct = artifact?.abi?.find((candidate) => candidate.name === directName);
   const activeFunctions = route?.rowArguments?.length
     ? route.rowArguments.map((row) => row.handler)
     : route?.abiFunction ? [route.abiFunction] : direct ? [direct] : [];
@@ -312,9 +312,9 @@ export function selectChunkableValueWriteExecution(
   candidates: ReadonlyArray<{ group: ChunkableValueWriteGroup; inputIndex: number }>,
   options?: { allowCompilerDescribed?: boolean },
 ): {
-  inputIndex: number; abiFunction: AbiFunction; collection: string;
-  resourceIdentity?: string; resourceOwnerIdentity?: string;
-} | undefined {
+    inputIndex: number; abiFunction: AbiFunction; collection: string;
+    resourceIdentity?: string; resourceOwnerIdentity?: string;
+  } | undefined {
   const executions = new Map<string, {
     inputIndex: number; abiFunction: AbiFunction; collection: string;
     resourceIdentity?: string; resourceOwnerIdentity?: string;

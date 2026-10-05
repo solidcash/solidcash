@@ -6,23 +6,29 @@ import type { AbiFunction } from '@solidcash/utils';
 import { peekBuildId } from './buildSequence.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { UnlockableUtxo } from '../interfaces.js';
-import { legacyIsPublishJobEventName } from './legacy-planning-heuristics.js';
 import {
-  computePublishJobEventsBand,
+  legacyIsPublishJobEventName,
+  legacyNamedJobEventCollectionFallback,
+} from './legacy-planning-heuristics.js';
+import {
+  computeChunkableValueWriteBand,
   shouldKeepPersistAtLayoutBase,
 } from './early-value-chunk-helpers.js';
 import { persistValueChunkBase } from './persist-predecessor-layout.js';
 import {
   isCompilerDescribedMintingBandWriter,
   liveChunkWidthForGroup,
-  liveJobEventsBandWidth,
+  liveChunkableValueBandWidth,
 } from './value-chunk-geometry.js';
 import {
   isEmptyValueChunkCommitment,
   persistedJobEventsWidth,
   type DerivedChunkOutputObservation,
 } from './value-chunk-persist.js';
-import { groupChunkableValueWriteCollection } from './chunkable-value-write-selection.js';
+import {
+  groupChunkableValueWriteCollections,
+  permitsLegacyNamedValueChunkFallback,
+} from './chunkable-value-write-selection.js';
 import type {
   ChunkableValueWriteExecution,
   ChunkableValueWriteGroups,
@@ -35,14 +41,14 @@ export interface GetChunkableValueWriteBandHost {
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly allInputs: readonly UnlockableUtxo[];
   readonly composedParticipant: boolean;
-  readonly forcedJobEventsBandStart?: number;
+  readonly forcedChunkableValueWriteBandStart?: number;
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
   chunkableValueWriteExecution(): ChunkableValueWriteExecution | undefined;
   chunkableValueWriteGroups(): ChunkableValueWriteGroups;
   getLowLevelCallMasterInputIndex(index: number): number;
   findMintingInputIndex(categoryId: string): number;
   getLoopEntryCommitments(collection: string): readonly string[];
-  jobEventsPublishCategory(): string | undefined;
+  chunkableValueWriteCategory(): string | undefined;
   persistedChunkableValueWriteState(): { width?: number } | undefined;
   isPersistedChunkableValueWriteReady(): boolean;
   isInitialChunkableValueWrite(): boolean;
@@ -50,10 +56,7 @@ export interface GetChunkableValueWriteBandHost {
   entryScaledPreserveRange(): { start: number; endExclusive: number } | undefined;
 }
 
-/**
- * Live publishJobEvent value-chunk band (`impl + blockSize` for `nNew` slots).
- * Occupancy, view tails, and FakeToken rotation all share this range.
- */
+/** Live chunkable-value continuation band (`impl + blockSize` for `nNew` slots). */
 export function getChunkableValueWriteBand(
   host: GetChunkableValueWriteBandHost,
 ): { start: number; end: number; nNew: number } | undefined {
@@ -108,16 +111,26 @@ export function getChunkableValueWriteBand(
       ? [host.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
       : []),
   );
-  const activeCollection = structural?.collection ?? groupChunkableValueWriteCollection(
-    publishLlcIndex >= 0
-      ? host.lowLevelCallUtxoGroups[publishLlcIndex]
-      : publishExternal as ExternalCallUtxoGroup,
-  ) ?? 'jobEvents';
-  const jobEventsCount = [...new Set(
+  const selectedGroups = [
+    ...(publishLlcIndex >= 0 ? [host.lowLevelCallUtxoGroups[publishLlcIndex]] : []),
+    ...(publishExternal ? [publishExternal] : []),
+  ];
+  const publishedCollections = [...new Set(selectedGroups.flatMap(groupChunkableValueWriteCollections))];
+  if (!structural && publishedCollections.length > 1) {
+    throw new Error('Ambiguous compiler-published chunkable-value band collections');
+  }
+  const activeCollection = structural?.collection ?? publishedCollections[0]
+    ?? legacyNamedJobEventCollectionFallback(
+      selectedGroups,
+      permitsLegacyNamedValueChunkFallback([
+        ...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups,
+      ], host.messageBusConvention),
+    );
+  const valueChunkEntryCount = activeCollection === undefined ? 0 : new Set(
     host.getLoopEntryCommitments(activeCollection)
       .filter((commitment) => !isEmptyValueChunkCommitment(commitment)),
-  )].length;
-  const publishCategory = host.jobEventsPublishCategory();
+  ).size;
+  const publishCategory = host.chunkableValueWriteCategory();
   const exactPersisted = host.persistedChunkableValueWriteState();
   const persistWidth = host.isPersistedChunkableValueWriteReady() && !host.isInitialChunkableValueWrite()
     ? exactPersisted?.width ?? persistedJobEventsWidth(publishCategory) : 0;
@@ -130,10 +143,10 @@ export function getChunkableValueWriteBand(
       : []),
   );
   const insertShift = persistWidth > 0 ? 0
-    : (plannedInserts > 0 || jobEventsCount === 0 ? 1 : 0);
-  // Persist dest is INPUTINDEX+event.offset of the executing publishJobEvent.
-  // The value-chunk band is impl+blockSize. If those disagree, dest can land
-  // on a persist predecessor (output 20/21) and mutable conservation fails.
+    : (plannedInserts > 0 || valueChunkEntryCount === 0 ? 1 : 0);
+  // The selected writer's event output is executor+event.offset. The value-chunk band is
+  // executor+blockSize; keep both coordinates in the layout so it cannot land on a
+  // persisted predecessor and violate mutable-token conservation.
   if (persistWidth > 0) {
     const emitImpl = host.chunkableValueWriteInputIndex();
     const emitOffset = (publishFn as AbiFunction | undefined)?.blockLayout?.slots
@@ -141,7 +154,7 @@ export function getChunkableValueWriteBand(
     if (emitImpl >= 0) bases.push(emitImpl + emitOffset + 1);
   }
   const layoutStart = bases.length > 0 ? Math.max(...bases) + insertShift : undefined;
-  const forcedStart = host.forcedJobEventsBandStart;
+  const forcedStart = host.forcedChunkableValueWriteBandStart;
   const publishImpl = host.chunkableValueWriteInputIndex();
   const tokenWriter = host.externalCallUtxoGroups.find((group) =>
     isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention));
@@ -189,7 +202,7 @@ export function getChunkableValueWriteBand(
     ? composedTrailing[Math.max(0, composedTrailing.length - composedContinuationWidth)]
     : undefined;
   let start = composedBase ?? forcedLayoutStart ?? layoutStart;
-  // Never park the jobEvents band on another participant's minting master (FakeToken).
+  // Never park the selected writer's continuation band on another participant's minting master.
   // View-tail packing and surplus strips key off band.end and would rewrite that block.
   const publishCategoryLower = publishCategory?.toLowerCase();
   if (start !== undefined && start >= 0) {
@@ -210,12 +223,12 @@ export function getChunkableValueWriteBand(
   }
   const probeShift = Number((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_CHUNK_SHIFT ?? '0');
-  const band = computePublishJobEventsBand({
+  const band = computeChunkableValueWriteBand({
     start: start === undefined ? undefined : start + (Number.isFinite(probeShift) ? probeShift : 0),
     preserveEndExclusive: Math.max(preserveEndExclusive, forcedStart ?? -1),
     plannedWidth,
-    jobEventsCount,
-    liveWidth: liveJobEventsBandWidth({ plannedWidth, persistWidth, derivedWidth }),
+    entryChunkCount: valueChunkEntryCount,
+    liveWidth: liveChunkableValueBandWidth({ plannedWidth, persistWidth, derivedWidth }),
   });
   if (probeShift !== 0 && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {

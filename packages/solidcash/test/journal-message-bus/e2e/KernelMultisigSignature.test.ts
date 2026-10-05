@@ -144,7 +144,9 @@ describe('kernel transaction-bound multisignature arrays', () => {
       rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
     );
     const authorities = [alicePub, bobPub];
-    const build = async (kind: 'forward' | 'construct' | 'fixed', hashType?: HashType) => {
+    const build = async (
+      kind: 'forward' | 'construct' | 'fixed', hashType?: HashType,
+    ): Promise<TransactionBuilder> => {
       const proofs = [ecdsa(alicePriv, hashType), ecdsa(bobPriv, hashType)];
       const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
       const rootCall = kind === 'forward'

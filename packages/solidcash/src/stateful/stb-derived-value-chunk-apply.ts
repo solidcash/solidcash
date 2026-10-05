@@ -31,7 +31,7 @@ export interface DerivedValueChunkApplyHost {
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   findMintingInputIndex(categoryId: string): number;
   getExternalCallMasterInputIndex(groupIndex: number): number;
   getLowLevelCallMasterInputIndex(llcIndex: number): number;
@@ -46,7 +46,7 @@ export function applyDerivedValueChunks(
   host: DerivedValueChunkApplyHost,
   builder: TransactionBuilder,
 ): boolean {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   const repairOwner = selectTokenBandRepairOwner(
     host.externalCallUtxoGroups,
     (categoryId) => host.findMintingInputIndex(categoryId),
@@ -109,6 +109,11 @@ export function applyDerivedValueChunks(
     }
     const existing = builder.outputs[outputIndex];
     if (existing) {
+      // A provisional empty entry witness cannot replace a populated NEW
+      // commitment later learned from an authenticated fixed output read.
+      if (chunk.semanticKind === 'entryPin' && chunk.commitment === '00'
+        && existing.token?.nft?.commitment
+        && existing.token.nft.commitment !== '00') continue;
       // A minting 1:1 recreation is not an old value-chunk digest. Every
       // P2SH32 used to match `existingIsChunkAddress`, so a participant minting
       // lock could be replaced by a value chunk.
@@ -156,7 +161,18 @@ export function applyDerivedValueChunks(
         nft: { capability: 'mutable' as const, commitment: chunk.commitment },
       },
     };
-    next.amount = BigInt(Math.max(1200, calculateDust(next)));
+    // A derived continuation may replace an incoming value chunk at the same
+    // balanced coordinate. Its covenant requires the satoshi value to be
+    // preserved even when the digest changes its locking bytecode.
+    const predecessor = host.allInputs[outputIndex];
+    const predecessorIsValueChunk = chunk.semanticKind !== 'entryPin'
+      && derivedValueChunkIndex !== undefined
+      && predecessor?.token?.nft?.capability === 'mutable'
+      && predecessor.token.category.toLowerCase() === next.token.category.toLowerCase()
+      && valueChunkIndexFromCommitment(predecessor.token.nft.commitment) !== undefined;
+    next.amount = predecessorIsValueChunk
+      ? predecessor.satoshis
+      : BigInt(Math.max(1200, calculateDust(next)));
     const existingLock = existing?.to instanceof Uint8Array
       ? existing.to
       : existing?.to !== undefined ? addressToLockScript(existing.to) : undefined;
@@ -273,6 +289,43 @@ export function stripSurplusDerivedValueChunkLocks(
   host: DerivedValueChunkApplyHost,
   builder: TransactionBuilder,
 ): number {
+  // A converged write may be observed first at a provisional coordinate and later at its physical band.
+  // One compiler-described resource part owns one output. Reconcile identical duplicate observations before
+  // counting redeem locks; conflicting bytes or an occupied predecessor coordinate remain hard failures.
+  const parts = new Map<string, { index: number; chunk: DerivedChunkOutputObservation }>();
+  let stripped = 0;
+  for (const [index, chunk] of [...host.derivedChunkOutputs].sort(([left], [right]) => left - right)) {
+    if (chunk.semanticKind !== 'valueChunk' || !chunk.resourceIdentity || !chunk.resourcePart) continue;
+    const key = JSON.stringify([chunk.resourceIdentity, chunk.resourcePart]);
+    const prior = parts.get(key);
+    if (!prior) {
+      parts.set(key, { index, chunk });
+      continue;
+    }
+    if (binToHex(prior.chunk.lockingBytecode) !== binToHex(chunk.lockingBytecode)
+      || prior.chunk.commitment !== chunk.commitment
+      || (prior.chunk.categoryId ?? host.categoryId) !== (chunk.categoryId ?? host.categoryId)) {
+      throw new Error(`Conflicting derived value-chunk resource part '${key}'.`);
+    }
+    if (prior.chunk.fixedIndex === true || chunk.fixedIndex === true) {
+      throw new Error(`Duplicate fixed value-chunk resource part '${key}'.`);
+    }
+    const spent = host.allInputs[index];
+    if (spent?.token?.nft?.capability === 'mutable' || spent?.token?.nft?.capability === 'minting') {
+      throw new Error(`Duplicate value-chunk resource part occupies a token predecessor at output ${index}.`);
+    }
+    const output = builder.outputs[index];
+    const lock = output?.to instanceof Uint8Array ? output.to
+      : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
+    if (!output || !lock || binToHex(lock) !== binToHex(chunk.lockingBytecode)
+      || output.token?.category !== (chunk.categoryId ?? host.categoryId)
+      || output.token?.nft?.commitment !== chunk.commitment) {
+      throw new Error(`Duplicate value-chunk resource part has a conflicting output at ${index}.`);
+    }
+    host.derivedChunkOutputs.delete(index);
+    builder.outputs[index] = { to: Uint8Array.of(0x51), amount: output.amount };
+    stripped += 1;
+  }
   const runs = new Map<string, { lockingBytecode: Uint8Array; indices: number[] }>();
   for (const [outputIndex, chunk] of host.derivedChunkOutputs) {
     if (!isP2sh32LockScript(chunk.lockingBytecode)
@@ -282,7 +335,6 @@ export function stripSurplusDerivedValueChunkLocks(
     run.indices.push(outputIndex);
     runs.set(lockHex, run);
   }
-  let stripped = 0;
   for (const run of runs.values()) {
     run.indices.sort((left, right) => left - right);
     const start = run.indices[0];

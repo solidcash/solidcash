@@ -1,6 +1,6 @@
 /**
  * phase-boundary extract: STB class-body extract — view-tail write after writer occupancy + vacate
- * JobEvents-band view tails.
+ * chunkable-value-band view tails.
  */
 
 import { binToHex } from '@bitauth/libauth';
@@ -41,7 +41,7 @@ export interface ViewTailOccupancyHost {
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly derivedChunkOutputs: ReadonlyMap<number, unknown>;
   readonly builtReturnEventOutputIndices: Map<string, number>;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   findMintingInputIndex(categoryId: string): number;
   dynamicChunkOutputCount(): number;
   tailReturnEventOutputs(): readonly ViewTailReturnEvent[];
@@ -53,22 +53,22 @@ export interface ViewTailOccupancyHost {
 
 /**
  * View tails are OP_TRUE + none-cap return NFTs. Token-swap placement already
- * parks them after FakeToken; without a swap, jobEvents mutables still occupy
+ * parks them after a token writer; without a swap, mutable value chunks can still occupy
  * the first planned tail slots. Write the pending views after that writer band
- * and leave collection/jobs coordinates unmoved.
+ * and leave collection/value-chunk coordinates unmoved.
  */
 export function writeViewTailsAfterWriterOccupancy(
-host: ViewTailOccupancyHost,
-builder: TransactionBuilder,
-returnOutputRefs?: Map<string, Output>,
+  host: ViewTailOccupancyHost,
+  builder: TransactionBuilder,
+  returnOutputRefs?: Map<string, Output>,
 ): void {
   const tailReturns = host.tailReturnEventOutputs();
   if (tailReturns.length === 0) return;
-  const jobsCountForPack = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixChunkCountForPack = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const packOptions: ViewTailPackOptions = {
-    band: host.getPublishJobEventsBand(),
-    suffixStart: jobsCountForPack > 0
-      ? builder.outputs.length - jobsCountForPack - 1
+    band: host.getChunkableValueWriteBand(),
+    suffixStart: suffixChunkCountForPack > 0
+      ? builder.outputs.length - suffixChunkCountForPack - 1
       : Math.max(0, host.allInputs.length - 1),
     tokenWriterPresent: host.externalCallUtxoGroups.some((group) =>
       isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)),
@@ -90,9 +90,9 @@ returnOutputRefs?: Map<string, Output>,
     lastCollidingMutableWriterIndex(builder.outputs, plannedIndices),
     derivedEnd,
   );
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = jobsCount > 0
-    ? builder.outputs.length - jobsCount - 1
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = suffixChunkCount > 0
+    ? builder.outputs.length - suffixChunkCount - 1
     : builder.outputs.length;
   const reserved = new Set<number>();
   for (const [index, input] of host.allInputs.entries()) {
@@ -187,11 +187,11 @@ returnOutputRefs?: Map<string, Output>,
       outputs: builder.outputs,
     });
     if (redirected === undefined) {
-      const host = (typeof separator === 'number' ? separator : outputIndex) + 1;
-      while (host >= builder.outputs.length) {
+      const nextIndex = (typeof separator === 'number' ? separator : outputIndex) + 1;
+      while (nextIndex >= builder.outputs.length) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
       }
-      redirected = host;
+      redirected = nextIndex;
     }
     outputIndex = redirected;
     const rawCommitment = binToHex(event.commitment);
@@ -212,11 +212,11 @@ returnOutputRefs?: Map<string, Output>,
           ? builder.outputs[outputIndex]!.to as string
           : undefined,
     )) {
-      const host = outputIndex + 1;
-      while (host >= builder.outputs.length) {
+      const nextIndex = outputIndex + 1;
+      while (nextIndex >= builder.outputs.length) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
       }
-      outputIndex = host;
+      outputIndex = nextIndex;
     }
     builder.outputs[outputIndex] = output;
     returnOutputRefs?.set(event.identity, output);
@@ -226,16 +226,17 @@ returnOutputRefs?: Map<string, Output>,
       group.returnOutputIndex = outputIndex;
     }
   }
-  vacateViewTailsFromJobEventsBand(host, builder);
+  vacateViewTailsFromValueChunkBand(host, builder);
   host.restoreDeclaredMutableEntrySlots(builder);
   host.reassertInBlockWriterReturns(builder);
 }
 
-export function vacateViewTailsFromJobEventsBand(
+/** Restore predecessor/padding outputs before derived value chunks reoccupy the selected band. */
+export function vacateViewTailsFromValueChunkBand(
   host: ViewTailOccupancyHost,
   builder: TransactionBuilder,
 ): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (!band) return;
   let vacated = false;
   for (let index = band.start; index <= band.end; index++) {
@@ -258,3 +259,6 @@ export function vacateViewTailsFromJobEventsBand(
   }
   if (vacated) host.applyDerivedValueChunks(builder);
 }
+
+/** Pre-generic SDK call sites retain this name until their host surface can be migrated together. */
+export const vacateViewTailsFromJobEventsBand = vacateViewTailsFromValueChunkBand;

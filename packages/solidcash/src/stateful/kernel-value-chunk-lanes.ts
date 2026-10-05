@@ -80,6 +80,9 @@ export function resolveChunkableEntryCollection(parts: {
       'Kernel chunkable-value entry placement requires one exact compiler-published collection identity.',
     );
   }
+  if (selection.status === 'absent' && published.length > 1) {
+    throw new Error('Legacy chunkable-value entry placement has ambiguous compiler-published collections.');
+  }
   return selection.status === 'absent' ? parts.legacyFallback : undefined;
 }
 

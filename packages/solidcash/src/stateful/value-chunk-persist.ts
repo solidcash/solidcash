@@ -222,12 +222,14 @@ export type AuthenticatedValueChunk = {
 /**
  * composition settlement session: per-composition settlement state (persisted job-events / observed chunks / recipes).
  * Two sessions do not share mutable maps unless they deliberately share one instance.
- * path-effect activation/settle-time ExecutionContext: also owns settle-time ExecutionContextLifecycle (register → assert → settle).
+ * Also owns the settle-time ExecutionContextLifecycle
+ * (register → assert → settle).
  */
 export class CompositionSettlementSession {
   readonly persistedJobEventsByCategory = new Map<string, Array<{
     commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
   }>>();
+
   readonly observedValueChunksByCollection = new Map<string, AuthenticatedValueChunk[]>();
   readonly persistedJobEventsValues = new Map<string, Uint8Array>();
   readonly persistedJobEventsLocks = new Map<string, Uint8Array>();
@@ -238,27 +240,36 @@ export class CompositionSettlementSession {
     token: NonNullable<Utxo['token']>;
     lockingBytecode: Uint8Array;
   }>>();
+
   readonly persistedJobEventsRecipes = new Map<string, {
     slot: Uint8Array;
     root: Uint8Array;
     collection: string;
     categoryId: string;
   }>();
+
   readonly persistedValueChunkWrites = new Map<string, {
     value: Uint8Array; lockingBytecode: Uint8Array; width: number;
     recipe: { slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string };
   }>();
+
   readonly valueChunkWriteStaging = new ValueChunkWriteStagingSession();
   readonly readyValueChunkWrites = new Set<string>();
   readonly persistedValueChunkSpends = new Map<string, Array<{
     txid: string; vout: number; satoshis: bigint;
     token: NonNullable<Utxo['token']>; lockingBytecode: Uint8Array;
   }>>();
+
   readonly observedValueChunkStatesByCategory = new Map<string, Map<string, ObservedValueChunkState>>();
   readonly stagedJobEventsValues = new Map<string, Uint8Array>();
   readonly createdDigestLocks = new Set<string>();
   readonly persistedCreatedValues = new Map<string, Uint8Array>();
-  persistedJobEventsSendReady = false;
+  readonly readyPersistedCompatibilityValueChunks = new Set<string>();
+  /** Historical aggregate view; new consumers should supply a category to the neutral readiness helper. */
+  get persistedJobEventsSendReady(): boolean {
+    return this.readyPersistedCompatibilityValueChunks.size > 0;
+  }
+
   /** Settle-time ExecutionContext lifecycle (isolated per composition session). */
   readonly executionContexts = createExecutionContextLifecycle();
   /** constraint fixpoint: multi-domain monotone fixpoint session (isolated per composition). */
@@ -290,6 +301,7 @@ export class CompositionSettlementSession {
       this.stagedJobEventsValues.delete(categoryId);
       this.createdDigestLocks.delete(categoryId);
       this.persistedCreatedValues.delete(categoryId);
+      this.readyPersistedCompatibilityValueChunks.delete(categoryId.toLowerCase());
       const prefix = `${categoryId.toLowerCase()}:`;
       for (const key of this.observedValueChunksByCollection.keys()) {
         if (key.startsWith(prefix)) this.observedValueChunksByCollection.delete(key);
@@ -308,12 +320,12 @@ export class CompositionSettlementSession {
       this.stagedJobEventsValues.clear();
       this.createdDigestLocks.clear();
       this.persistedCreatedValues.clear();
+      this.readyPersistedCompatibilityValueChunks.clear();
       this.observedValueChunksByCollection.clear();
       this.executionContexts.clear();
       this.constraintFixpoint.clear();
       this.executionEffectPlans = [];
     }
-    this.persistedJobEventsSendReady = false;
   }
 }
 
@@ -344,22 +356,23 @@ export function runWithCompositionSettlementSession<T>(
 
 /** Active settlement maps for this composition (default session unless runWith…). */
 /**
- * constraint fixpoint: record one live converge fingerprint onto the active settlement's
- * ConstraintFixpointSession (no-op when the session is already finalized).
+ * Record a converge fingerprint on the explicitly owned composition tracker. Legacy standalone
+ * callers fall back to the active settlement tracker (no-op when already finalized).
  */
 export function recordActiveConstraintPass(
   domain: string,
   stateKey: string,
   cycleMessage: string,
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
 ): void {
-  const session = settlement().constraintFixpoint;
   if (session.getPhase() === 'finalized') return;
   session.recordDomainPass(domain, stateKey, cycleMessage);
 }
 
 /** constraint fixpoint: resolve every domain recorded during admit-time converges. */
-export function finalizeActiveConstraintFixpoint(): string {
-  const session = settlement().constraintFixpoint;
+export function finalizeActiveConstraintFixpoint(
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
+): string {
   if (session.getPhase() === 'finalized') return session.jointStateKey();
   return session.finalize();
 }
@@ -370,8 +383,8 @@ export function finalizeActiveConstraintFixpoint(): string {
  */
 export function runActiveConstraintSpeculative<T>(
   body: (session: ConstraintFixpointSession) => T,
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
 ): T {
-  const session = settlement().constraintFixpoint;
   if (session.getPhase() === 'finalized') return body(session);
   return session.runSpeculative(body);
 }
@@ -384,8 +397,8 @@ export function tryRecordActiveConstraintPass(
   domain: string,
   stateKey: string,
   cycleMessage: string,
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
 ): boolean {
-  const session = settlement().constraintFixpoint;
   if (session.getPhase() === 'finalized') return false;
   try {
     session.runSpeculative((fixpoint) => {
@@ -405,10 +418,11 @@ export function selectActiveConstraintCandidate(
   domain: string,
   candidates: readonly string[],
   cycleMessage: string,
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
 ): { stateKey: string; index: number } | undefined {
   for (let index = 0; index < candidates.length; index += 1) {
     const stateKey = candidates[index]!;
-    if (tryRecordActiveConstraintPass(domain, stateKey, cycleMessage)) {
+    if (tryRecordActiveConstraintPass(domain, stateKey, cycleMessage, session)) {
       return { stateKey, index };
     }
   }
@@ -563,32 +577,21 @@ function jobEventsSlotCandidates(): Uint8Array[] {
 
 /** Recover slot+root so the next UPDATE can spend persist chunks with a real unlocker. */
 export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
-  const pairs: Array<{ value: Uint8Array; lock: Uint8Array }> = [];
-  const localValue = settlement().persistedJobEventsValues.get(categoryId);
-  const localLock = settlement().persistedJobEventsLocks.get(categoryId);
-  if (localValue && localLock) pairs.push({ value: localValue, lock: localLock });
-  for (const value of settlement().persistedJobEventsValues.values()) {
-    for (const lock of settlement().persistedJobEventsLocks.values()) {
-      if (localValue && localLock && value === localValue && lock === localLock) continue;
-      pairs.push({ value, lock });
-    }
-  }
-  for (const { value, lock } of pairs) {
-    const root = sha256Sync(value);
-    for (const slot of jobEventsSlotCandidates()) {
-      for (const cat of new Set([categoryId, ...settlement().persistedJobEventsLocks.keys(), ...settlement().persistedJobEventsValues.keys()])) {
-        for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
-          try {
-            const expected = getValueChunkLockingBytecode(cat, collection, slot, root);
-            if (binToHex(expected) === binToHex(lock)) {
-              const recipe = { slot, root, collection, categoryId: cat };
-              settlement().persistedJobEventsRecipes.set(categoryId, recipe);
-              settlement().persistedJobEventsRecipes.set(cat, recipe);
-              return true;
-            }
-          } catch { /* category, collection, or slot rejected */ }
+  const value = settlement().persistedJobEventsValues.get(categoryId);
+  const lock = settlement().persistedJobEventsLocks.get(categoryId);
+  if (!value || !lock) return false;
+  const root = sha256Sync(value);
+  for (const slot of jobEventsSlotCandidates()) {
+    for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
+      try {
+        const expected = getValueChunkLockingBytecode(categoryId, collection, slot, root);
+        if (binToHex(expected) === binToHex(lock)) {
+          settlement().persistedJobEventsRecipes.set(categoryId, {
+            slot, root, collection, categoryId,
+          });
+          return true;
         }
-      }
+      } catch { /* category, collection, or slot rejected */ }
     }
   }
   return false;
@@ -597,7 +600,25 @@ export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
 export function persistedJobEventsUnlockRecipe(categoryId: string): {
   slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string;
 } | undefined {
-  return latestPersisted(settlement().persistedJobEventsRecipes, categoryId);
+  // The caller selected a concrete persist owner. A recipe learned for another category is not its authority.
+  return settlement().persistedJobEventsRecipes.get(categoryId);
+}
+
+/** Restore only the selected compatibility category's value, lock, and already authenticated outpoints. */
+export function persistedCompatibilityContinuation(categoryId: string): {
+  lockingBytecode?: Uint8Array;
+  value?: Uint8Array;
+  spends: ReadonlyArray<{
+    txid: string; vout: number; satoshis: bigint;
+    token: NonNullable<Utxo['token']>; lockingBytecode: Uint8Array;
+  }>;
+} {
+  const session = settlement();
+  return {
+    lockingBytecode: session.persistedJobEventsLocks.get(categoryId),
+    value: session.persistedJobEventsValues.get(categoryId),
+    spends: session.persistedJobEventsSpends.get(categoryId) ?? [],
+  };
 }
 
 /**
@@ -717,12 +738,13 @@ export function rememberJobEventsLock(
 ): void {
   const apply = (): void => {
     if (lock.length !== 35 || lock[0] !== 0xaa || lock[1] !== 0x20 || lock[34] !== 0x87) return;
-    // Created digest (first publishJobPost persist) is the UPDATE dest-18 pin.
+    // The created digest of the first persist is the UPDATE destination pin.
     // Later persist-v rematerialize must not replace it.
     if (settlement().createdDigestLocks.has(categoryId)) return;
     settlement().persistedJobEventsLocks.set(categoryId, lock);
-    const value = settlement().persistedJobEventsValues.get(categoryId)
-      ?? latestPersisted(settlement().persistedJobEventsValues, categoryId);
+    // A lock for one category is not evidence that another category's most recently observed value belongs to
+    // it. Keep the lock until its own value arrives; only then may this pair seed observed state/Created metadata.
+    const value = settlement().persistedJobEventsValues.get(categoryId);
     rememberObservedValueChunkState(categoryId, value, lock);
     const hex = value ? binToHex(value) : '';
     if (hex.includes('4372656174') || hex.includes('00004cb4')) {
@@ -735,7 +757,7 @@ export function rememberJobEventsLock(
 }
 
 
-export function persistedJobEventsLock(
+export function persistedCompatibilityValueChunkLock(
   categoryId: string,
   session?: CompositionSettlementSession,
 ): Uint8Array | undefined {
@@ -843,7 +865,7 @@ export function isInitialValueChunkWrite(
 
 /**
  * Scope persisted continuation readiness to the active compiler-described resource.
- * Process-global readiness is retained only for descriptor-free pre-kernel plans.
+ * Descriptor-free pre-kernel plans supply their selected category's compatibility readiness.
  */
 export function persistedValueChunkReadiness(parts: {
   selection: ValueChunkWriteCategorySelection;
@@ -991,6 +1013,7 @@ export function persistUpdateRedeemLock(
   categoryId: string | undefined,
   sessionLock?: Uint8Array,
   write?: ValueChunkWriteDescriptor | null,
+  allowLegacyFallback = false,
 ): Uint8Array | undefined {
   if (write === null) return undefined;
   if (write) {
@@ -1000,25 +1023,42 @@ export function persistUpdateRedeemLock(
       && binToHex(sessionLock) === binToHex(exact)) return sessionLock;
     return exact;
   }
+  // Missing compiler metadata is not authority to borrow a category-wide historical recipe. Only a caller
+  // which has already established the descriptor-free legacy convention may opt into that transport.
+  if (!allowLegacyFallback) return undefined;
   if (sessionLock && sessionLock.length === 35 && sessionLock[0] === 0xaa && sessionLock[34] === 0x87) {
     return sessionLock;
   }
   if (!categoryId) return undefined;
-  // Compatibility only: callers which have not attached an exact value-chunk descriptor retain the legacy
-  // category/name recipe. New transaction geometry must pass `write` and cannot enter this fallback.
+  // Compatibility only: descriptor-free legacy plans retain the historical category/name recipe.
   const recipe = persistedJobEventsUnlockRecipe(categoryId);
-  if (recipe) {
+  if (recipe?.categoryId.toLowerCase() === categoryId.toLowerCase()) {
     try {
       return getValueChunkLockingBytecode(categoryId, recipe.collection, recipe.slot, recipe.root);
     } catch { /* invalid recipe */ }
-    try {
-      return getValueChunkLockingBytecode(recipe.categoryId, recipe.collection, recipe.slot, recipe.root);
-    } catch { /* invalid recipe */ }
   }
-  return persistedJobEventsLock(categoryId);
+  return persistedCompatibilityValueChunkLock(categoryId);
 }
 
-/** True only after a successful publishJobEvent send, not compose/extract. */
-export function isPersistedJobEventsReady(): boolean {
+/** Mark one descriptor-free compatibility value ready only after its transaction was sent. */
+export function markPersistedCompatibilityValueChunkReady(categoryId: string): void {
+  if (!/^[0-9a-f]{64}$/i.test(categoryId)) return;
+  settlement().readyPersistedCompatibilityValueChunks.add(categoryId.toLowerCase());
+}
+
+/** True only after a successful compatibility-value send, not compose/extract. */
+export function isPersistedCompatibilityValueChunkReady(categoryId?: string): boolean {
+  if (categoryId !== undefined) {
+    return settlement().readyPersistedCompatibilityValueChunks.has(categoryId.toLowerCase());
+  }
   return settlement().persistedJobEventsSendReady;
 }
+
+/** A descriptor-free append may reuse only the selected category's committed continuation. */
+export function readyPersistedCompatibilityValueChunkWidth(categoryId?: string): number {
+  return categoryId !== undefined && isPersistedCompatibilityValueChunkReady(categoryId)
+    ? persistedJobEventsWidth(categoryId) : 0;
+}
+
+/** @deprecated Historical name retained for the legacy adapter. */
+export const isPersistedJobEventsReady = isPersistedCompatibilityValueChunkReady;

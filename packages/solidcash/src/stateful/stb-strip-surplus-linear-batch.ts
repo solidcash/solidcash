@@ -46,7 +46,7 @@ export function stripSurplusLinearBatchEntryClones(
     const blockEnd = master + (group.blockLayout?.blockSize ?? 8);
     // INSERT cardinality strip lives in `_reassertTokenInsertNewLocks` (sameLockUpdates
     // plannedCount). Running it again here while master/output-base still drift caused
-    // strip↔materialize thrash on post two jobs (5GB hang). Pure UPDATE only below.
+    // strip/materialize thrash during multi-entry growth. Pure UPDATE only below.
     if (trailingCount !== 0) continue;
     const abiFn = group.compilerRoute?.abiFunction
       ?? (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)

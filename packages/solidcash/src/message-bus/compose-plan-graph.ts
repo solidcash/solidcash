@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — owner-local route witnesses + compiled graph plan from prepared calls.
+ * Compose phase-boundary extract: owner-local route witnesses
+ * and compiled graph plan from prepared calls.
  */
 
 import { binToHex } from '@bitauth/libauth';
@@ -17,6 +18,7 @@ import {
   type CallDescriptor,
 } from './compose-prepared-invocation.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
+import { canonicalValueChunkProducerPathContext } from '../stateful/ValueChunkProducerIdentity.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 
@@ -83,6 +85,7 @@ export function deriveComposeInvocationPlan(
     for (const binding of handler?.batchKeyWitnesses ?? []) {
       activeRouteKeys.add(binding.perRow ? `${binding.routeInput}_r${row}` : binding.routeInput);
       if (binding.alternateRouteInput) activeRouteKeys.add(binding.alternateRouteInput);
+      for (const lane of binding.keyPool ?? []) activeRouteKeys.add(lane);
     }
     ownerActiveRouteKeys.set(owner, activeRouteKeys);
     for (const binding of handler?.batchKeyWitnesses?.filter((candidate) =>
@@ -151,6 +154,29 @@ export function deriveComposeInvocationPlan(
   ));
 
   let next = 1;
+  const preparedChildIndices = (parentInvocation: number): number[] => {
+    const contiguous = (): number[] => descriptors.slice(next).map((_descriptor, offset) => next + offset);
+    const parentPath = descriptors[parentInvocation]?.producerPath;
+    if (parentPath?.status !== 'complete') return contiguous();
+    const parentKey = canonicalValueChunkProducerPathContext(parentPath.context);
+    if (parentKey === undefined) return contiguous();
+    const depth = parentPath.context.sourcePath.length;
+    const children: number[] = [];
+    for (let cursor = next; cursor < descriptors.length; cursor += 1) {
+      const path = descriptors[cursor].producerPath;
+      // Legacy/manual descriptors have no source path. Preserve their structural matching;
+      // transported paths are independently checked against the completed compiler graph below.
+      if (path?.status !== 'complete') return contiguous();
+      if (path.context.sourcePath.length <= depth) break;
+      const prefix = canonicalValueChunkProducerPathContext({
+        version: 1, sourcePath: path.context.sourcePath.slice(0, depth),
+      });
+      if (prefix !== parentKey) break;
+      // Descriptors are depth-first: a sibling's descendants are not additional occurrences of this edge.
+      if (path.context.sourcePath.length === depth + 1) children.push(cursor);
+    }
+    return children;
+  };
   const plan = deriveCompiledGraphPlan({
     root: workParticipants[0],
     function: descriptors[0].functionName,
@@ -158,18 +184,35 @@ export function deriveComposeInvocationPlan(
     args: descriptors[0].args,
     rootCaller,
     targets: {},
-    target: ({ callsiteId, batchLogicalIndex, occurrence }) => {
+    target: (context) => {
+      const { callsiteId, batchLogicalIndex, occurrence } = context;
       const descriptor = descriptors[next];
-      if (!descriptor) return undefined;
-      if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return undefined;
+      const unresolved = (): undefined => {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1') {
+          console.error('atomic-prepared-target-mismatch', JSON.stringify({
+            owner: context.participant.artifact.contractName, function: context.function,
+            invocation: context.invocation, callsiteId, batchLogicalIndex, occurrence, next,
+            remaining: descriptors.length - next,
+            candidates: descriptors.slice(next, next + 3).map((candidate) => ({
+              owner: candidate.artifact.contractName, function: candidate.functionName,
+              callsiteId: candidate.callsiteId, sourceLogicalIndex: candidate.sourceLogicalIndex,
+              occurrenceIndex: candidate.occurrenceIndex, producerPath: candidate.producerPath,
+            })),
+          }));
+        }
+        return undefined;
+      };
+      if (!descriptor) return unresolved();
+      if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return unresolved();
       const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
       const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
       if (batchLogicalIndex !== undefined
         && descriptorLogical !== undefined
-        && descriptorLogical !== batchLogicalIndex) return undefined;
+        && descriptorLogical !== batchLogicalIndex) return unresolved();
       if (batchLogicalIndex !== undefined
         && descriptorOccurrence !== undefined
-        && descriptorOccurrence !== occurrence) return undefined;
+        && descriptorOccurrence !== occurrence) return unresolved();
       next += 1;
       return {
         participant: workParticipants[next - 1],
@@ -179,9 +222,20 @@ export function deriveComposeInvocationPlan(
         }),
       };
     },
-    batchOccurrences: ({ callsiteId, batchLogicalIndex }) => {
+    orderedOccurrences: ({ invocation }) => {
+      if (!requirePreparedIdentity) return undefined;
+      const children = preparedChildIndices(invocation).map((index) => descriptors[index]);
+      if (children.length < 2) return undefined;
+      if (children.some((child) => child.topologySourceScheduleComplete !== true
+        || child.sourceEffectOrdinal === undefined
+        || child.callsiteId === undefined || child.occurrenceIndex === undefined)) return undefined;
+      return children.map((child) => ({
+        callsiteId: child.callsiteId!, occurrence: child.occurrenceIndex!,
+      }));
+    },
+    batchOccurrences: ({ invocation, callsiteId, batchLogicalIndex }) => {
       const reached: number[] = [];
-      for (let cursor = next; cursor < descriptors.length; cursor += 1) {
+      for (const cursor of preparedChildIndices(invocation)) {
         const descriptor = descriptors[cursor];
         const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
         const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
@@ -202,7 +256,7 @@ export function deriveComposeInvocationPlan(
       }
       return reached.length > 0 || hasPreparedCalls ? reached : undefined;
     },
-    occurrence: ({ participant, function: ownerFunction, selector, callsiteId, kind }) => {
+    occurrence: ({ participant, function: ownerFunction, selector, invocation, callsiteId, kind }) => {
       const abiFunction = resolveMessageBusAbiFunction(participant.artifact, ownerFunction, selector);
       const callsite = abiFunction?.externalCalls?.find((candidate) => candidate.callsiteId === callsiteId);
       if (!callsite) {
@@ -212,25 +266,54 @@ export function deriveComposeInvocationPlan(
       // Compiler-authored raw edges retain `functionName: __raw__` and publish the decoded concrete selector
       // separately. Prepared calls use that concrete function name, so occurrence matching must do the same.
       let count = 0;
-      while (count < maximum) {
-        const reached = descriptors[next + count];
-        if (!reached) break;
+      for (const cursor of preparedChildIndices(invocation)) {
+        if (count >= maximum) break;
+        const reached = descriptors[cursor];
         // Several conditional branches may call the same target method. Method/selector matching alone makes
         // an untaken sibling indistinguishable from the reached branch. Transparent promotion preserves the
         // compiler's parent-local identity, so it is authoritative when present; manually composed calls retain
         // the legacy structural matching below.
         if (reached.callsiteId !== undefined && reached.callsiteId !== callsiteId) break;
-        const matches = callsite.rawFunctionName
-          ? reached.functionName === callsite.rawFunctionName
-          : callsite.rawSelector
-            ? resolveMessageBusAbiFunction(
-              reached.artifact, reached.functionName, reached.selector,
-            )?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase()
-            : reached.functionName === callsite.functionName;
+        // A function pointer has no statically named callee method: the compiler calls it
+        // `__call`, while the prepared child names the concrete runtime method. Its source
+        // callsite ID is the only structural occurrence identity here; dynamicCall and the
+        // participant covenant validate the selected method/address after this count.
+        let matches: boolean;
+        if (callsite.fnPtrCall) matches = reached.callsiteId === callsiteId;
+        else if (callsite.rawFunctionName) matches = reached.functionName === callsite.rawFunctionName;
+        else if (callsite.rawSelector) {
+          matches = resolveMessageBusAbiFunction(
+            reached.artifact, reached.functionName, reached.selector,
+          )?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase();
+        } else matches = reached.functionName === callsite.functionName;
         if (!matches) break;
         count += 1;
       }
       return count;
+    },
+    sourceIteration: ({ participant, function: ownerFunction, selector, callsiteId, occurrence,
+      counterName }) => {
+      if (!requirePreparedIdentity || counterName === undefined) return undefined;
+      const descriptor = descriptors[next - 1];
+      if (descriptor?.callsiteId !== callsiteId || descriptor.occurrenceIndex !== occurrence) return undefined;
+      const abi = resolveMessageBusAbiFunction(participant.artifact, ownerFunction, selector);
+      const callsite = abi?.externalCalls?.find((candidate) => candidate.callsiteId === callsiteId);
+      const outer = callsite?.iterationDomain ?? callsite?.nestedIterationDomains?.[0];
+      if (outer?.counterName === counterName
+        && descriptor.topologyOuterDomainKey === semanticJson(outer)
+        && Number.isSafeInteger(descriptor.topologyOuterIteration)
+        && descriptor.topologyOuterIteration! >= 0
+        && descriptor.topologyOuterIteration! < outer.maximumIterations) {
+        return descriptor.topologyOuterIteration;
+      }
+      const inner = callsite?.nestedIterationDomains?.[1];
+      if (inner?.counterName === counterName
+        && Number.isSafeInteger(descriptor.topologyInnerIteration)
+        && descriptor.topologyInnerIteration! >= 0
+        && descriptor.topologyInnerIteration! < inner.maximumIterations) {
+        return descriptor.topologyInnerIteration;
+      }
+      return undefined;
     },
     expressionArgument: ({ callsiteId, argument }) => {
       const reached = descriptors[next - 1];
@@ -243,14 +326,20 @@ export function deriveComposeInvocationPlan(
       return value;
     },
     dynamicCall: ({ callsiteId, kind }) => {
-      if (kind !== 'low-level') {
+      if (kind !== 'low-level' && kind !== 'function-pointer') {
         throw new Error(`messageBus: atomic composer does not yet resolve ${kind} calls`);
       }
       const descriptor = descriptors[next];
-      if (!descriptor) throw new Error('messageBus: prepared calls omit a low-level target');
-      if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) {
+      if (!descriptor) throw new Error(`messageBus: prepared calls omit a ${kind} target`);
+      // A function-pointer method and owner are chosen by runtime state/arguments. There is no
+      // safe positional guess for which prepared child they name; require compiler callsite
+      // identity and let the participant's graph-emission covenant authenticate the concrete
+      // address and selector. Low-level legacy descriptors retain their positional fallback.
+      if ((kind === 'function-pointer' && descriptor.callsiteId !== callsiteId)
+        || (kind === 'low-level' && descriptor.callsiteId !== undefined
+          && descriptor.callsiteId !== callsiteId)) {
         throw new Error(
-          `messageBus: prepared low-level callsite ${descriptor.callsiteId} cannot satisfy callsite ${callsiteId}`,
+          `messageBus: prepared ${kind} callsite ${descriptor.callsiteId} cannot satisfy callsite ${callsiteId}`,
         );
       }
       next += 1;

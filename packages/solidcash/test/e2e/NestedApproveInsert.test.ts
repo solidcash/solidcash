@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { getContractFactory, upgrades } from '../../src/index.js';
 import { createTestProvider, getSigners } from '../test-util.js';
+import { addressToLockScript } from '../../src/utils.js';
 
 const TOKEN = `
 pragma solidity ^0.8.0;
@@ -54,9 +55,16 @@ describe('nested approve insert', () => {
 
     expect(tx.txid).toBeDefined();
     expect((await caller.proxy.getState()).completed).toBe(1n);
+    // A proxy's Solidity-visible identity is its authenticated CREATE address, not its replaceable master
+    // locking bytecode. Both msg.sender at MiniToken and address(this) in the delegate use that identity.
+    const logicalCaller = addressToLockScript(await caller.getAddress());
+    expect(await token.state.allowance(
+      logicalCaller,
+      logicalCaller,
+    )).toBe((1n << 256n) - 1n);
     expect(await token.state.allowance(
       caller.proxy.inner.lockingBytecode,
       caller.proxy.inner.lockingBytecode,
-    )).toBe((1n << 256n) - 1n);
+    )).toBe(0n);
   }, 180_000);
 });

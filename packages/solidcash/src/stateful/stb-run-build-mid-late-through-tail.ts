@@ -17,7 +17,7 @@ import {
   type FinalizeBuildDerivedSuffixHost,
 } from './stb-finalize-build-derived-suffix.js';
 import { finalizeBuildTail } from './stb-finalize-build-tail.js';
-import type { FinalizeBuildJobsBandAndViewsHost } from './stb-finalize-build-jobs-band-and-views.js';
+import type { FinalizeBuildValueChunkBandAndViewsHost } from './stb-finalize-build-value-chunk-band-and-views.js';
 import type { FinalizeBuildStampHost } from './stb-finalize-build-stamp.js';
 import type { ReassertBuildConservationRepairsHost } from './stb-reassert-build-conservation-repairs.js';
 import type { BuildEarlyFrontContext } from './stb-run-build-early-front.js';
@@ -29,7 +29,7 @@ export interface RunBuildMidLateThroughTailHost {
   lateChunkFrameHost(): MaterializeLateBuildChunkFrameHost;
   finalizeBuildDerivedSuffixHost(): FinalizeBuildDerivedSuffixHost;
   reassertBuildConservationRepairsHost(): ReassertBuildConservationRepairsHost;
-  finalizeBuildJobsBandAndViewsHost(): FinalizeBuildJobsBandAndViewsHost;
+  finalizeBuildValueChunkBandAndViewsHost(): FinalizeBuildValueChunkBandAndViewsHost;
   finalizeBuildStampHost(): FinalizeBuildStampHost;
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
 }
@@ -89,7 +89,7 @@ export function runBuildMidLateThroughTail(
     relocatedDelegateOutputBases,
     host.lowLevelCallUtxoGroups,
     host.reassertBuildConservationRepairsHost(),
-    host.finalizeBuildJobsBandAndViewsHost(),
+    host.finalizeBuildValueChunkBandAndViewsHost(),
     host.finalizeBuildStampHost(),
     returnOutputRefs,
     debugAtomicOutputStage,

@@ -16,6 +16,7 @@ import {
 export function mappingKeySlotCandidates(
   keys: Array<bigint | boolean | Uint8Array | string>,
   keyTypes?: readonly string[],
+  collection?: Parameters<typeof keyToSlotMulti>[1],
 ): Uint8Array[] {
   const options = keys.map((arg, index): Uint8Array[] => {
     const keyType = keyTypes?.[index];
@@ -42,7 +43,7 @@ export function mappingKeySlotCandidates(
   );
   const seen = new Set<string>();
   return encodings.flatMap((encoding) => {
-    const slot = keyToSlotMulti(encoding);
+    const slot = keyToSlotMulti(encoding, collection);
     const hex = binToHex(slot);
     if (seen.has(hex)) return [];
     seen.add(hex);
@@ -77,8 +78,9 @@ export function selectMappingEntryByKeys<T extends MappingEntryLookup>(
   entries: readonly T[],
   keys: Array<bigint | boolean | Uint8Array | string>,
   keyTypes?: readonly string[],
+  collection?: Parameters<typeof keyToSlotMulti>[1],
 ): T | undefined {
-  const [exactSlot, ...aliasSlots] = mappingKeySlotCandidates(keys, keyTypes);
+  const [exactSlot, ...aliasSlots] = mappingKeySlotCandidates(keys, keyTypes, collection);
   const exactMatches = entries.filter((entry) => entry.slot
     ? exactSlot !== undefined && binsAreEqual(entry.slot, exactSlot)
     : mappingEntryMatchesLegacyKeys(entry, keys));

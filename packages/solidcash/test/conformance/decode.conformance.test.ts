@@ -178,6 +178,51 @@ describe('abi.decode (evmCompat): fixed-size arrays T[N] (inline, static)', () =
   it('int256[3] mixed sign', () => fx('int256', 3, [-1n, 5n, -100n]));
   it('uint128[4]', () => fx('uint128', 4, [1n, 2n, 3n, 4n]));
   it('bool[2]', () => fx('bool', 2, [true, false]));
+  it('uint256[2][2] nested fixed rows', () => assertBchDecode({
+    scash: 'contract Conf() { function f(bytes blob) {'
+      + ' uint256[2][2] x = abi.decode(blob, (uint256[2][2]));'
+      + ' require(x[0][0] == 1); require(x[0][1] == 2);'
+      + ' require(x[1][0] == 3); require(x[1][1] == 4); } }',
+    args: [ethersAbiEncode(['uint256[2][2]'], [[[1n, 2n], [3n, 4n]]])],
+    label: 'decode<uint256[2][2]>',
+  }));
+  it('static struct[2] elements', () => assertBchDecode({
+    scash: 'contract Conf() { struct P { uint256 a; uint256 b; } function f(bytes blob) {'
+      + ' P[2] x = abi.decode(blob, (P[2]));'
+      + ' require(x[0].a == 1); require(x[0].b == 2);'
+      + ' require(x[1].a == 3); require(x[1].b == 4); } }',
+    args: [ethersAbiEncode(['tuple(uint256,uint256)[2]'], [[[1n, 2n], [3n, 4n]]])],
+    label: 'decode<tuple(uint256,uint256)[2]>',
+  }));
+});
+
+describe('abi.decode (evmCompat): fixed-size arrays with dynamic elements', () => {
+  it('bytes[2] follows both element offsets', () => assertBchDecode({
+    scash: 'contract Conf() { function f(bytes blob) {'
+      + ' bytes[2] x = abi.decode(blob, (bytes[2]));'
+      + ' require(x[0] == hex"cafe"); require(x[1] == hex"deadbeef"); } }',
+    args: [ethersAbiEncode(['bytes[2]'], [[hbb('0xcafe'), hbb('0xdeadbeef')]])],
+    label: 'decode<bytes[2]>',
+  }));
+});
+
+describe('abi.decode (evmCompat): dynamic arrays of static composite elements', () => {
+  it('uint256[2][] preserves row boundaries', () => assertBchDecode({
+    scash: 'contract Conf() { function f(bytes blob) {'
+      + ' uint256[2][] x = abi.decode(blob, (uint256[2][]));'
+      + ' require(x.length == 2); require(x[0][0] == 1); require(x[0][1] == 2);'
+      + ' require(x[1][0] == 3); require(x[1][1] == 4); } }',
+    args: [ethersAbiEncode(['uint256[2][]'], [[[1n, 2n], [3n, 4n]]])],
+    label: 'decode<uint256[2][]>',
+  }));
+  it('static struct[] preserves element framing', () => assertBchDecode({
+    scash: 'contract Conf() { struct P { uint256 a; uint256 b; } function f(bytes blob) {'
+      + ' P[] x = abi.decode(blob, (P[]));'
+      + ' require(x.length == 2); require(x[0].a == 1); require(x[0].b == 2);'
+      + ' require(x[1].a == 3); require(x[1].b == 4); } }',
+    args: [ethersAbiEncode(['tuple(uint256,uint256)[]'], [[[1n, 2n], [3n, 4n]]])],
+    label: 'decode<tuple(uint256,uint256)[]>',
+  }));
 });
 
 describe('abi.decode (evmCompat): multiple dynamic arrays (offset-following)', () => {

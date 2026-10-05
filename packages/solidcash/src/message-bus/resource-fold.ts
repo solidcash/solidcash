@@ -800,7 +800,7 @@ export function applyResourceFoldStep(
   if (step.kind === 'update') {
     if (env.updateElement === undefined) {
       throw new Error(
-        `resource-fold: update step requires updateElement applicator `
+        'resource-fold: update step requires updateElement applicator '
           + `(selector=${step.rowSelector ?? '?'})`,
       );
     }

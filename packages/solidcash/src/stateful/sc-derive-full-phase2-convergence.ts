@@ -12,7 +12,7 @@ import { computeConvergenceKey } from './trace-verified-value-helpers.js';
 const MAX_SPECULATIVE_CHUNK_OUTPUTS = 32;
 
 export type DeriveFullPhase2DynamicChunkVar = ReturnType<
-  StatefulTransactionBuilder['getDynamicChunkVars']
+StatefulTransactionBuilder['getDynamicChunkVars']
 >[number];
 
 export type DeriveFullPhase2ConvergenceResult = {
@@ -110,7 +110,7 @@ export function deriveFullPhase2Convergence(
       maximumRegionWidth: MAX_SPECULATIVE_CHUNK_OUTPUTS,
       allCommitmentsArePlaceholders: regions.every((region) =>
         region.every((commitment) => commitment === '00')),
-      // Proxy publishJobPost: jobs use TXOUTPUTCOUNT-1-nNew. Growing nNew here
+      // A proxy's reverse-indexed value chunks use TXOUTPUTCOUNT-1-nNew. Growing nNew here
       // parks chunk 0 on empty pads and never reveals A$len.
       reverseIndexedChunkSuffix: chunkVars.some((variable) => variable.delegateSuffix === true),
     })) {
@@ -181,7 +181,7 @@ export function deriveFullPhase2Convergence(
       commitment: chunk.commitment.slice(0, 12),
       lockingBytecode: binToHex(chunk.lockingBytecode.slice(0, 8)),
     })),
-    sharedChunkBand: stb.getPublishJobEventsBand(),
+    sharedChunkBand: stb.getChunkableValueWriteBand(),
     valueChunkCarriers: stb.getExternalCallUtxoGroups().flatMap((group, groupIndex) => {
       const witness = valueChunkOutputWitnessCarrier(stb, group);
       return witness ? [{

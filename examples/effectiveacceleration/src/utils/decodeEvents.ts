@@ -1,5 +1,5 @@
-import { BytesLike, getBytes, hexlify, toUtf8String, toBigInt, getAddress } from "ethers";
-import { decodeString, decodeBytes32, decodeBool, decodeStringArray, decodeAddress, decodeUint256, decodeUint32, decodeUint16, decodeBytes } from "./decodeData";
+import { BytesLike, getBytes, hexlify, toBigInt, getAddress, toUtf8String } from "ethers";
+import { decodeString, decodeBytes32, decodeBool, decodeStringArray, decodeAddress, decodePackedUint160Address, decodeUint256, decodeUint32, decodeUint16, decodeBytes } from "./decodeData";
 import { decryptBinaryData, decryptUtf8Data } from "./encryption";
 import { JobCreatedEvent, JobUpdatedEvent, JobSignedEvent, JobRatedEvent, JobDisputedEvent, JobArbitratedEvent, JobMessageEvent, JobEventType, CustomJobEvent } from "../interfaces";
 
@@ -12,7 +12,9 @@ export const decodeJobCreatedEvent = (rawData: BytesLike): JobCreatedEvent => {
   result.contentHash = decodeBytes32(ptr);
   result.multipleApplicants = decodeBool(ptr);
   result.tags = decodeStringArray(ptr);
-  result.token = decodeAddress(ptr);
+  // Created stores `abi.encodePacked(uint160(token_))`: this field is exactly 20 bytes.
+  // Byte-prefix sniffing would misread a valid identity if the following amount resembled a native lock.
+  result.token = decodePackedUint160Address(ptr);
   result.amount = decodeUint256(ptr);
   result.maxTime = decodeUint16(ptr);
   result.deliveryMethod = decodeString(ptr);

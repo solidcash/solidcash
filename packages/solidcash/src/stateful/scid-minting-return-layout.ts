@@ -6,17 +6,12 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { addressToLockScript } from '../utils.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
-import {
-  commitmentHexOf,
-  cloneToken,
-  outputMatchesLock,
-} from './stb-output-utils.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
+import { commitmentHexOf } from './stb-output-utils.js';
 import {
   isDisposableAlignmentPad,
-  isP2sh32LockScript,
   isViewReturnTailOutput,
 } from './value-chunk-band-helpers.js';
-import { isEmptyValueChunkCommitment } from './value-chunk-persist.js';
 
 /**
  * The covenant counts outputs at the value-chunk redeem lock and EQUALVERIFYs
@@ -63,7 +58,7 @@ export function stripSurplusValueChunkLocks(
  * token-free disposable output (not a view tail). Never skip: dropping the NFT
  * makes the next non-zero msg.sender call unsatisfiable. Do not overwrite
  * minting/mutable occupants, reserved occupancy (impl trailing / jobEvents /
- * writer returns), or append past an OP_RETURN jobs suffix. */
+ * writer returns), or append past an OP_RETURN value-chunk suffix. */
 export function reassertScidIdentityOutputs(
   outputs: Array<{
     to?: Uint8Array | string;
@@ -86,8 +81,14 @@ export function reassertScidIdentityOutputs(
     const lock = output.to instanceof Uint8Array ? output.to : undefined;
     return !!lock && lock.length === 1 && lock[0] === 0x51 && output.token?.nft?.capability === 'none';
   };
+  const isReservedInputIndex = (index: number): boolean => reservedIndices.has(index)
+    || inputs[index]?.token?.nft?.capability === 'mutable'
+    || inputs[index]?.token?.nft?.capability === 'minting';
   const isReserved = (output: (typeof outputs)[number] | undefined, index?: number): boolean => {
-    if (index !== undefined && reservedIndices.has(index)) return true;
+    // A token-free output can still be the consumed side of a mutable resource.
+    // Placing an identity here turns its authenticated DELETE into a tokenful
+    // output, which the message-bus verifier correctly refuses.
+    if (index !== undefined && isReservedInputIndex(index)) return true;
     if (!output) return false;
     if (isViewTail(output)) return true;
     // Identity restoration may only claim token-free pads. In particular, an
@@ -105,7 +106,11 @@ export function reassertScidIdentityOutputs(
     const lock = input.unlocker?.generateLockingBytecode();
     if (!lock) continue;
     const wanted = binToHex(lock);
-    const already = outputs.some((output) => output?.token?.nft?.capability === 'none'
+    // A matching replica in a compiler-owned suffix is not preserved: the later chunk/event materializer will
+    // overwrite that coordinate. Relocate it now to an unreserved pad instead of treating mere presence as proof
+    // of a durable 1:1 identity output.
+    const already = outputs.some((output, outputIndex) => !isReservedInputIndex(outputIndex)
+      && output?.token?.nft?.capability === 'none'
       && output.token.category === category
       && output.token.nft.commitment === commitment
       && lockHex(output.to) === wanted);
@@ -129,6 +134,7 @@ export function reassertScidIdentityOutputs(
     for (let outputIndex = outputs.length - 1; outputIndex >= 0; outputIndex--) {
       const output = outputs[outputIndex];
       if (lockHex(output?.to) !== wanted) continue;
+      if (isReservedInputIndex(outputIndex)) continue;
       const outputToken = output?.token;
       const replaceableIdentityPad = outputToken !== undefined
         && outputToken.category === category
@@ -188,7 +194,7 @@ export function stripSurplusMintingOutputs(
   for (let index = 0; index < outputs.length; index++) {
     if (index === masterIndex) continue;
     const output = outputs[index];
-    if (output.token?.nft?.capability !== 'minting' || output.token.category !== mintingCategory) {
+    if (output?.token?.nft?.capability !== 'minting' || output.token.category !== mintingCategory) {
       continue;
     }
     const input = inputs[index];
@@ -279,7 +285,9 @@ export function matchMaterializedReturnOutputs(
     const output = outputs[index];
     if (!isViewReturnTailOutput(output)) return false;
     if (output.token?.category?.toLowerCase() !== expected.categoryId.toLowerCase()) return false;
-    const wanted = commitmentHexOf(expected.commitment).toLowerCase() || '0101';
+    const raw = typeof expected.commitment === 'string'
+      ? hexToBin(commitmentHexOf(expected.commitment)) : expected.commitment;
+    const wanted = raw.length === 0 ? '0101' : returnEventNftCommitment(raw);
     return commitmentHexOf(output.token.nft?.commitment).toLowerCase() === wanted;
   };
 

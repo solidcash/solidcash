@@ -102,8 +102,18 @@ export function materializeOwnerEventNftOutputs(
     };
   }
 
-  const reservedEventSlots = host.blockLayout?.slots.filter((slot) => slot.kind === 'event').length
-    ?? eventOutputEntries.length;
+  const eventSlots = host.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
+  const reservedEventSlots = host.blockLayout ? eventSlots.length : eventOutputEntries.length;
+  // A graph route can reserve hundreds of event sites. Index its published offsets once, preserving the
+  // first matching ordinal and the historical offset-order fallback for layouts without slot indices.
+  const indexedOffsets = new Map<number, number>();
+  for (const slot of eventSlots) {
+    if (slot.slotIndex !== undefined && !indexedOffsets.has(slot.slotIndex)) {
+      indexedOffsets.set(slot.slotIndex, slot.offset);
+    }
+  }
+  const orderedSlots = eventSlots.every((slot) => slot.slotIndex === undefined)
+    ? [...eventSlots].sort((left, right) => left.offset - right.offset) : [];
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_EVENT_STAGE === '1') {
     // Event placeholders are the only authority for how many event outputs this build must carry, so report the
@@ -117,7 +127,7 @@ export function materializeOwnerEventNftOutputs(
         entry === undefined ? undefined : `${index}:${entry.eventSignature}:${entry.commitment.length}`)),
       reservedEventSlots,
       cursor: builder.outputs.length,
-      eventSlots: host.blockLayout?.slots.filter((slot) => slot.kind === 'event'),
+      eventSlots,
     }));
   }
   for (let eventSlot = 0; eventSlot < reservedEventSlots; eventSlot += 1) {
@@ -127,13 +137,9 @@ export function materializeOwnerEventNftOutputs(
     // block, a funding pad or a derived chunk in front of the band leaves the cursor past the offset, and simply
     // appending then puts the NFT where the covenant will never look (the slot keeps its neutral pad, whose empty
     // commitment fails the event check).
-    const eventSlots = (host.blockLayout?.slots ?? []).filter((candidate) => candidate.kind === 'event');
     // A published event slot names the emit ordinal in `slotIndex`; a layout predating that field is read in
     // offset order. Mixing the two would let an unindexed slot answer for an ordinal it does not own.
-    const indexedSlot = eventSlots.find((candidate) => candidate.slotIndex === eventSlot);
-    const orderedSlot = eventSlots.every((candidate) => candidate.slotIndex === undefined)
-      ? eventSlots.slice().sort((left, right) => left.offset - right.offset)[eventSlot] : undefined;
-    const slotOffset = indexedSlot?.offset ?? orderedSlot?.offset;
+    const slotOffset = indexedOffsets.get(eventSlot) ?? orderedSlots[eventSlot]?.offset;
     const placeEventOutput = (output: Output): void => {
       if (slotOffset === undefined) {
         builder.addOutput(output);

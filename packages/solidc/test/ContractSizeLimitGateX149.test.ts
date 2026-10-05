@@ -169,4 +169,60 @@ describe('X149: the size gate measures the script, not its listing', () => {
     const codes = (artifact.diagnostics ?? []).map((entry) => entry.code).sort();
     expect(codes).toEqual(['contract-size-limit', 'message-bus-route-not-synthesized']);
   }, 120_000);
+
+  it('MEASURED: post-stamp kernel bytes drive the certificate and configured size diagnostic', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const limit = MAX_INPUT_BYTESIZE;
+    // Keep this a genuinely over-limit kernel even after inactive event frames become a compact loop.
+    const distinctChecks = Array.from({ length: 180 }, (_, index) =>
+      `require(seed != 0x${(index + 1).toString(16).padStart(64, '0')});`).join('\n');
+    const artifact = compileString(`contract Stamped() {
+      event Changed(uint key);
+      uint count;
+      function one(uint key, bytes32 seed) public {
+        ${distinctChecks}
+        this.count = this.count + 1;
+        emit Changed(key);
+        require(this.count > 0);
+      }
+      function two() public returns (uint) { return this.count; }
+    }`, { forceStateful: true, messageBus: true });
+    const scriptBytes = asmToBytecode(artifact.bytecode).length;
+
+    expect(artifact.messageBus?.kernelExecutionPlans?.plans).toHaveLength(2);
+    expect(scriptBytes).toBeGreaterThan(limit);
+    expect(artifact.messageBus?.deployability?.measuredBytecodeBytes).toBe(scriptBytes);
+    const found = sizeDiagnostics(artifact);
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain(`${scriptBytes} bytes`);
+    expect(found[0].message).toContain(`limit by ${scriptBytes - limit}`);
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toContain(`${scriptBytes} bytes`);
+  }, 120_000);
+
+  it('keeps a 255-site event and return kernel redeem script within the P2SH limit', () => {
+    const artifact = compileString(`contract RoutedEvent() {
+      event Appended(uint256 key);
+      mapping(uint256 => bigint[]) items;
+      function itemsLength(uint256 key) public returns (uint256) {
+        return this.items[key].length;
+      }
+      function append(uint256 key) public {
+        this.items[key].push(bigint(4) << 160);
+        emit Appended(key);
+        require(this.items[key].length > 0);
+      }
+    }`, {
+      forceStateful: true, messageBus: true, messageBusGraphContext: true,
+    });
+    const scriptBytes = asmToBytecode(artifact.bytecode).length;
+
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.maximumRows).toBe(255);
+    expect(artifact.messageBus?.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['itemsLength', 'append']);
+    expect(artifact.messageBus?.deployability?.status).toBe('asserted');
+    expect(artifact.messageBus?.deployability?.measuredBytecodeBytes).toBe(scriptBytes);
+    expect(scriptBytes).toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
+    expect(sizeDiagnostics(artifact)).toHaveLength(0);
+  }, 120_000);
 });

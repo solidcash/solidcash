@@ -17,7 +17,7 @@ const KERNEL = {
  * Non-proxy counter+emit under recipe compose (Caller→Acc and Acc-root×Probe).
  *
  * Proxy+executionArtifact counter+emit green settle is `KernelSelfToProxyEventCompose`
- * (compose sticky leftover +1 before aggregate publish). Event-only proxy funder remains
+ * (complete-graph discovery of the exact scalar write). Event-only proxy funder remains
  * covered by `KernelProxyEventFunderCompose`.
  */
 describe('kernel counter+emit under composition', () => {

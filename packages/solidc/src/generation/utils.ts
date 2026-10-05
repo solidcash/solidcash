@@ -20,7 +20,7 @@ const extractAddressHash = (offset: bigint): Script => [
   encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
 ];
 
-/** Convert a native variable-width BCH address into the SDK's canonical 20-byte Solidity ABI identity. */
+/** Convert a native BCH address or a Solidity ABI address word into the canonical 20-byte identity. */
 export function compileAddressToEvmIdentity(): Script {
   return [
     Op.OP_SIZE, encodeInt(0n), Op.OP_EQUAL,
@@ -30,6 +30,12 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_SIZE, encodeInt(20n), Op.OP_EQUAL,
     Op.OP_IF,
     // Raw 20-byte address: already narrowed.
+    Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(32n), Op.OP_EQUAL,
+    Op.OP_IF,
+    // Graph arguments and constructed address arrays can retain the right-aligned Solidity ABI word.
+    // This is an address conversion, not bytes32-to-bytes20 truncation: discard the 12-byte left padding.
+    encodeInt(12n), Op.OP_SPLIT, Op.OP_NIP,
     Op.OP_ELSE,
     Op.OP_SIZE, encodeInt(23n), Op.OP_EQUAL,
     Op.OP_IF,
@@ -43,6 +49,17 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
+    Op.OP_ENDIF,
+    Op.OP_ENDIF,
+  ];
+}
+
+/** Strip Solidity ABI-word framing while preserving native locks for callers requiring that representation. */
+export function compilePackedAddressAsInteger(): Script {
+  return [
+    Op.OP_SIZE, encodeInt(32n), Op.OP_EQUAL,
+    Op.OP_IF,
+    encodeInt(12n), Op.OP_SPLIT, Op.OP_NIP,
     Op.OP_ENDIF,
   ];
 }
@@ -202,11 +219,14 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     return compileAddressToEvmIdentity();
   }
   if (from instanceof AddressType && to instanceof IntType) {
-    // OP_BIN2NUM reads a sign-magnitude little-endian number; for unsigned targets append a 0x00 sign byte so
-    // the hash is a non-negative value (otherwise ~half of hashes fail the uint's >= 0 bounds check).
+    // OP_BIN2NUM reads a sign-magnitude little-endian number. Solidity's uint160(address) interprets the
+    // 20-byte identity in big-endian order, so reverse it first in compatibility mode. Native SolidCash keeps
+    // its historical little-endian numeric cast. For unsigned targets append a 0x00 sign byte so hashes whose
+    // high bit is set remain non-negative before the caller's bounds check.
+    const endian = solidityCompat ? [Op.OP_REVERSEBYTES] : [];
     return to.signed
-      ? [...compileAddressToEvmIdentity(), Op.OP_BIN2NUM]
-      : [...compileAddressToEvmIdentity(), new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
+      ? [...compileAddressToEvmIdentity(), ...endian, Op.OP_BIN2NUM]
+      : [...compileAddressToEvmIdentity(), ...endian, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
   }
 
   // address casts are no-ops (stack value unchanged)

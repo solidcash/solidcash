@@ -11,6 +11,7 @@ import {
   MethodCallNode,
   MethodCallStatementNode,
   ExternalFunctionCallNode,
+  ExternalCallSlot,
   EmitStatementNode,
   TokenContainerMethodStatementNode,
   StateAssignNode,
@@ -90,6 +91,15 @@ export function isStaticallyZeroCallValue(
 /** A statically-zero `{value:}` is transactionally identical to omitting the value option. */
 export function hasEffectiveCallValue(value: ExpressionNode | undefined): value is ExpressionNode {
   return value !== undefined && !isStaticallyZeroCallValue(value);
+}
+
+/** Shared by graph emission and ABI publication, including cloned/grouped source rows. */
+export function hasExternalCallValueEffect(
+  slot: Pick<ExternalCallSlot, 'callValueEffect' | 'sourceCallNode'>,
+): boolean {
+  return slot.callValueEffect === true
+    || hasEffectiveCallValue(slot.sourceCallNode?.callOptions?.value)
+    || (slot.sourceCallNode?.valueTransferIndex ?? -1) >= 0;
 }
 
 export function countBranchOps(block: BlockNode): OpCounts {

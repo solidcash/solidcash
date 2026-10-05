@@ -4,7 +4,7 @@
 
 import { binToHex, binsAreEqual } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import type { Output, UnlockableUtxo } from '../interfaces.js';
+import type { Output } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   isOpReturnLockingBytecode,
@@ -12,6 +12,7 @@ import {
   redirectViewTailOffOpReturn,
 } from './mutable-output-reassert.js';
 import { packTailReturnPlacements } from './physical-return-layout.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { isViewReturnTailOutput } from './value-chunk-band-helpers.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -23,6 +24,7 @@ import {
 import {
   inheritWriterBatchPlan,
   isWriterBatchWitnessName,
+  writerBatchPlanMatchesPhysicalCarrier,
 } from './writer-event-delegate-layout.js';
 
 export type PlaceTailReturnEvent = {
@@ -45,7 +47,7 @@ export interface PlaceTailReturnHost {
     token?: Output['token'];
   }>;
   findMintingInputIndex(categoryId: string): number;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   dynamicChunkOutputCount(): number;
   tailReturnEventOutputs(): readonly PlaceTailReturnEvent[];
   viewTailPackOptions(suffixStart?: number): ViewTailPackOptions;
@@ -85,20 +87,21 @@ export function placeTailReturnAfterSwappedTokenBlock(
         && (sibling.plannedEntryInserts?.length ?? 0) === 0
         && !Object.entries({ ...sibling.compilerRoute?.internalArgs, ...sibling.internalArgs })
           .some(([name]) => isWriterBatchWitnessName(name))) continue;
+      if (!writerBatchPlanMatchesPhysicalCarrier(tokenGroup, sibling)) continue;
       inheritWriterBatchPlan(tokenGroup, sibling);
     }
   }
   const after = master + (tokenGroup?.blockLayout?.blockSize ?? 8);
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const tailReturns = host.tailReturnEventOutputs();
   const placements = packTailReturnPlacements(
     host.externalCallUtxoGroups,
     (categoryId) => host.findMintingInputIndex(categoryId),
     tailReturns,
     swapCategoryId,
-    host.getPublishJobEventsBand()?.end ?? -1,
-    host.viewTailPackOptions(jobsCount > 0
-      ? builder.outputs.length - jobsCount - 1
+    host.getChunkableValueWriteBand()?.end ?? -1,
+    host.viewTailPackOptions(suffixChunkCount > 0
+      ? builder.outputs.length - suffixChunkCount - 1
       : builder.outputs.length),
   );
   const writerSlots = new Set<number>();
@@ -166,19 +169,19 @@ export function placeTailReturnAfterSwappedTokenBlock(
       const groupIdx = coordinate?.groupIndex ?? -1;
       const group = groupIdx >= 0 ? host.externalCallUtxoGroups[groupIdx] : undefined;
       // OP_RETURN is never a data carrier. Prefer the live separator index;
-      // fall back to the reserved jobs-suffix slot when it is not materialized yet.
+      // fall back to the reserved value-chunk suffix slot when it is not materialized yet.
       const liveOpReturn = builder.outputs.findIndex((out) => (
         isOpReturnLockingBytecode(
           out?.to instanceof Uint8Array ? out.to
             : typeof out?.to === 'string' ? out.to : undefined,
         )
       ));
-      const jobsCountForSuffix = host.delegateDynamicChunksAtSuffix
+      const fallbackSuffixChunkCount = host.delegateDynamicChunksAtSuffix
         ? host.dynamicChunkOutputCount() : 0;
       const suffixStart = liveOpReturn >= 0
         ? liveOpReturn
-        : (jobsCountForSuffix > 0
-          ? builder.outputs.length - jobsCountForSuffix - 1
+        : (fallbackSuffixChunkCount > 0
+          ? builder.outputs.length - fallbackSuffixChunkCount - 1
           : undefined);
       let redirected = redirectViewTailOffOpReturn({
         placedIndex,
@@ -188,11 +191,11 @@ export function placeTailReturnAfterSwappedTokenBlock(
         outputs: builder.outputs,
       });
       if (redirected === undefined) {
-        const host = (suffixStart ?? placedIndex) + 1;
-        while (host >= builder.outputs.length) {
+        const nextIndex = (suffixStart ?? placedIndex) + 1;
+        while (nextIndex >= builder.outputs.length) {
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
         }
-        redirected = host;
+        redirected = nextIndex;
       }
       placedIndex = redirected;
       // Hard refuse: never write authenticated view data onto OP_RETURN.
@@ -203,14 +206,14 @@ export function placeTailReturnAfterSwappedTokenBlock(
             ? builder.outputs[placedIndex]!.to as string
             : undefined,
       )) {
-        const host = placedIndex + 1;
-        while (host >= builder.outputs.length) {
+        const nextIndex = placedIndex + 1;
+        while (nextIndex >= builder.outputs.length) {
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
         }
-        placedIndex = host;
+        placedIndex = nextIndex;
       }
       const rawCommitment = binToHex(event.commitment);
-      const commitment = rawCommitment === '' ? '0101' : rawCommitment;
+      const commitment = rawCommitment === '' ? '0101' : returnEventNftCommitment(event.commitment);
       const output: Output = {
         to: Uint8Array.of(0x51),
         amount: 800n,

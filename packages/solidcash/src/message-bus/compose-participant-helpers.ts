@@ -3,97 +3,17 @@
  * (phase-boundary extract from compose.ts).
  */
 
-import { bigIntToVmNumber, binToHex, binToUtf8, hexToBin, sha1, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
-import {
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
-  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, ripemd160, hash160, hash256, buildEventNftCovenantScript,
-  buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
-  buildEntryCommitment, buildInitialStateCommitments, buildPushdataCommitment, bytecodeToScript, scriptToAsm,
-  AddressType, BytesType, FixedType, IntType,
-  parsePushdataCommitment, parseTypeStrict, PrimitiveType,
-  childStateLayoutDigest,
-  validateChildDeploymentGenesisState,
-  getDefaultStateValue,
-} from '@solidcash/utils';
-import type {
-  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateLayout, StateValue,
-  StructDefinitionInfo,
-} from '@solidcash/utils';
-import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
-import type {
-  ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
-} from '../interfaces.js';
-import { isContractUnlocker } from '../interfaces.js';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { encodePushdataValue, getDefaultStateValue, parseArrayTypeString } from '@solidcash/utils';
+import type { Artifact, StateValue, StructDefinitionInfo } from '@solidcash/utils';
+import type { FunctionArgument } from '../Argument.js';
+import type { UnlockableUtxo } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { Contract } from '../Contract.js';
-import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
-import {
-  decodeAuthenticatedProducerResultVector, evalComputedKey, isCanonicalEvmScalarReturnVector,
-  StatefulContract, StatefulFunctionCall,
-} from '../stateful/StatefulContract.js';
-import {
-  chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment,
-  valueChunkWriteResourceIdentity, type ValueChunkWriteDescriptor,
-} from '../stateful/StatefulTransactionBuilder.js';
-import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
-import type NetworkProvider from '../network/NetworkProvider.js';
-import {
-  resolveLogicalIdentity, type ResolvedLogicalIdentity,
-} from '../stateful/logical-identity.js';
-import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
-import { tryParseEventCommitment } from '../stateful/StateReader.js';
-import {
-  createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker, getDataNftAddress,
-  getEntryNftLockingBytecode, getMessageBusVerifierLockingBytecodeForArtifact,
-} from '../stateful/covenant-helpers.js';
-import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
-import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
-import { assertAtomicParticipantCapacity } from './capacity.js';
-import {
-  finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, selectedGraphEventOffsets,
-  type AtomicDeploymentSlotEffect, type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
-  type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
-  type PlannedGraphInvocation,
-} from './graph.js';
-import {
-  encodeMessageBatch, preparedCallMatchesPlanInvocation,
-  resolveMessageBusAbiFunction, resolveMessageBusHandler,
-} from './message-bus.js';
-import {
-  convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
-} from './preflight.js';
-import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
-import {
-  convergeMessageBusComputedDynamicChunkOutputs,
-  dynamicChunkPlaceholdersRemain,
-} from './computed-dynamic-chunks.js';
-import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
-import {
-  applyParticipantAbsoluteWitnesses,
-  resolveComposeTransactionLayoutAuthority,
-  trailingCapacityExcludingFixedSuffix,
-  type ComposeParticipantLayoutClaims,
-  type SymbolicParticipantLayout,
-} from './layout-resolver.js';
-import {
-  authorizeComposeParticipantLayout,
-  clearComposeKernelAuthorityResults,
-} from './compose-kernel-authority.js';
-import {
-  findMessageBusHandlerForInvocation,
-} from './graph-handler-join.js';
-import { layoutInvariantError } from './diagnostics.js';
-import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
-import { allowsDeferredComputeVmDiscovery } from './materialization-mode.js';
-import {
-  buildTransportedContinuationResourceClaim,
-  canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
-  canonicalValueChunkProducerResourceClaim,
-  canonicalValueChunkProducerResourceIdentity, canonicalValueChunkStateOwner,
-  orderTransportedContinuationResourceClaims,
-  type TransportedContinuationResourceClaim,
-  type ValueChunkProducerPathDisposition, type ValueChunkProducerResourceClaim,
-} from '../stateful/ValueChunkProducerIdentity.js';
+import { addressToLockScript } from '../utils.js';
+import { finalizeAtomicInvocationGraph } from './graph.js';
+import { resolveMessageBusAbiFunction } from './message-bus.js';
+import type { WorklistParticipant } from './worklist.js';
+import { type AtomicMessageBusFunder, type CallDescriptor, semanticJson } from './compose-prepared-invocation.js';
 
 
 export {
@@ -106,33 +26,8 @@ export {
   provisionalInvocationResult,
   evmInvocationResultLength,
   minimumActualSizeForComputedValueChunkClaims,
-  stickyKernelLeftoverScalarWrites,
 } from './compose-recipes.js';
 export type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
-import {
-  canSeedComputedValueChunkClaim,
-  canOwnTransportedContinuationSlot,
-  evaluateChildDeploymentRecipe,
-  materializeFixedBchTransfer,
-  materializeChildDeploymentEntryScalar,
-  materializeChildDeploymentEntryValue,
-  provisionalInvocationResult,
-  stickyKernelLeftoverScalarWrites,
-  minimumActualSizeForComputedValueChunkClaims,
-  evmInvocationResultLength,
-  // Internal helpers still used by AtomicMessageBusComposition orchestration:
-  fixedVmNumber,
-  concatBytes,
-  canonicalNativeResultField,
-  preparedInvocationResult,
-} from './compose-recipes.js';
-import type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
-
-import {
-  type AtomicMessageBusFunder,
-  type CallDescriptor,
-  semanticJson,
-} from './compose-prepared-invocation.js';
 
 /** Exact authority predicate for replacing a balanced dummy with a computed continuation output. */
 
@@ -276,7 +171,13 @@ export const participantOf = (
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
   outputLockingBytecode?: string,
 ): WorklistParticipant => {
-  const logicalLockingBytecode = binToHex(addressToLockScript(descriptor.contract.target));
+  // A prepared direct edge records the address actually evaluated by the caller. A contract wrapper's
+  // SCID public target can differ from the physical script being co-spent even when the caller explicitly
+  // holds the latter. Only the source-evaluated target may stand in for a direct participant identity.
+  const logicalLockingBytecode = descriptor.artifact.messageBus === undefined
+    && descriptor.targetLockingBytecode !== undefined
+    ? descriptor.targetLockingBytecode.toLowerCase()
+    : binToHex(addressToLockScript(descriptor.contract.target));
   const representedLogicalIdentity = [
     descriptor.contract.inner.lockingBytecode,
     descriptor.executor?.inner.lockingBytecode,
@@ -284,8 +185,20 @@ export const participantOf = (
   const identityAnchorCount = descriptor.contract._logicalAddress && !representedLogicalIdentity ? 1 : 0;
   const effectiveArtifact = descriptor.executor
     ? delegateParticipantArtifact(descriptor.artifact, identityAnchorCount)
-    : ownerParticipantArtifact(descriptor.artifact, identityAnchorCount);
-  const effectiveLayout = effectiveArtifact.messageBus?.route?.blockLayout;
+    : descriptor.artifact.messageBus
+      ? ownerParticipantArtifact(descriptor.artifact, identityAnchorCount)
+      : descriptor.artifact;
+  const direct = effectiveArtifact.messageBus === undefined;
+  const directAbi = direct ? resolveMessageBusAbiFunction(
+    effectiveArtifact, descriptor.functionName, descriptor.selector,
+  ) : undefined;
+  if (direct && (effectiveArtifact.compiler?.options?.messageBusDirectParticipant !== true
+    || descriptor.targetLockingBytecode === undefined
+    || descriptor.executor !== undefined || identityAnchorCount !== 0
+    || logicalLockingBytecode !== descriptor.contract.inner.lockingBytecode)) {
+    throw new Error(`messageBus: direct participant '${effectiveArtifact.contractName}' lacks V5 authority`);
+  }
+  const effectiveLayout = direct ? directAbi?.blockLayout : effectiveArtifact.messageBus?.route?.blockLayout;
   if (!effectiveLayout) {
     throw new Error(
       `messageBus: participant '${descriptor.artifact.contractName}' function '${descriptor.functionName}' has no compiled route`,
@@ -316,6 +229,7 @@ export const participantOf = (
   }
   return {
     artifact: effectiveArtifact,
+    ...(direct && { authority: 'direct' as const }),
     lockingBytecode: descriptor.contract.inner.lockingBytecode,
     ...(outputLockingBytecode !== undefined && { outputLockingBytecode }),
     ...(logicalLockingBytecode !== descriptor.contract.inner.lockingBytecode && {
@@ -422,6 +336,11 @@ export const appendOnlyStateSuffix = (
 
 export interface DeferredComputeController {
   hasUnresolved(): boolean;
+  /** Bind compiler-published logical call recipes, never values learned from an incomplete VM trace. */
+  resolveRecipes?(
+    keccakPreimages: readonly (Uint8Array | null)[],
+    ecrecoverArguments: readonly (Uint8Array | null)[],
+  ): boolean;
   /** Pending compute work, for naming what a stalled resolution could not learn. */
   remaining?(): {
     keccakUnresolved: number; keccakTotal: number;
@@ -457,6 +376,15 @@ export const graphRouteContext = (
   upgradeStateSuffixes: ReadonlyMap<string, Uint8Array> = new Map(),
 ): Readonly<Record<string, FunctionArgument>> => {
   const execution = finalized.plan.participants[participant];
+  if (execution.authority === 'direct') {
+    throw new Error(`messageBus: direct participant ${participant} has no graph route context`);
+  }
+  const routedOrdinal = finalized.plan.participants.slice(0, participant)
+    .filter((candidate) => candidate.authority !== 'direct').length;
+  const activeVerifierIndex = finalized.layout.verifierInputs[routedOrdinal];
+  if (activeVerifierIndex === undefined) {
+    throw new Error(`messageBus: routed participant ${participant} has no verifier coordinate`);
+  }
   const rows = finalized.callManifest.rows;
   const emissions = rows.map((row, invocation) => ({ row, invocation }))
     .filter(({ row }) => row.kind === 0 && row.parent !== 0xffff && row.owner === participant)
@@ -519,7 +447,7 @@ export const graphRouteContext = (
   const blockhashSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
   const blockhashParameter = execution.artifact.messageBus?.route.graphBlockhashOracle?.inputBaseParameter;
   return Object.freeze({
-    __internal__activeVerifierIndex: BigInt(finalized.layout.verifierInputs[participant]),
+    __internal__activeVerifierIndex: BigInt(activeVerifierIndex),
     __internal__graphFixedSize: BigInt(finalized.callManifest.participants[participant].fixedSize),
     __internal__returnOutputIdx: BigInt(
       finalized.callManifest.participants[participant].returnOffset === 0xffff
@@ -527,6 +455,11 @@ export const graphRouteContext = (
           + finalized.callManifest.participants[participant].returnOffset,
     ),
     __internal__graphBlockSize: BigInt(finalized.callManifest.participants[participant].maximumSize),
+    __internal__graphSelfIdentityInput: BigInt(
+      execution.logicalIdentityOffset !== undefined
+        && execution.logicalIdentityOffset > 0
+        ? finalized.layout.participantInputs[participant] + execution.logicalIdentityOffset : -1,
+    ),
     __internal__graphEmissions: concat(...emissions),
     __internal__graphCallers: concat(...callers),
     __internal__graphSettlementBoundary: BigInt(execution.settlementBoundary),

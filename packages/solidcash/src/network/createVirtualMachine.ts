@@ -108,7 +108,7 @@ function installStepTrace(instructionSet: ReturnType<typeof createInstructionSet
   }
 }
 const observerlessVmByProvider = new WeakMap<
-  NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
+NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
 >();
 
 function observerlessVmCacheKey(provider: NetworkProvider, standard: boolean): string {
@@ -319,6 +319,7 @@ function installCachedInvokeEvaluator(
   const debugInvokeReturnId = debugEnv?.SOLIDC_DEBUG_INVOKE_RETURN_ID;
   const debugEqualVerifyInput = debugEnv?.SOLIDC_DEBUG_EQUALVERIFY_INPUT;
   invokeTraceEnabled = debugEnv?.SOLIDC_DEBUG_SPLIT_FAILURE !== undefined;
+  const logInvokeReturn = (details: unknown): void => { console.error('invoke-return', JSON.stringify(details)); };
   instructionSet.operations[OpcodesBch2026.OP_INVOKE] = conditionallyEvaluate((state: State) => {
     const functionIdentifier = state.stack.pop();
     if (functionIdentifier === undefined) {
@@ -380,19 +381,22 @@ function installCachedInvokeEvaluator(
   // Only a configured return probe can register one, so without it no opcode needs the per-step lookup.
   if (debugInvokeReturnId === undefined) return;
   for (let opcode = 0; opcode < 256; opcode += 1) {
-    const operation = instructionSet.operations[opcode]!;
+    const operation = instructionSet.operations[opcode];
+    // Unknown opcodes are dispatched through instructionSet.undefined. Leave those slots empty so a diagnostic
+    // observer still receives libauth's consensus error instead of a TypeError from this return probe.
+    if (operation === undefined) continue;
     instructionSet.operations[opcode] = ((state: State) => {
       const probe = returnProbes.get(state as object);
       if (probe !== undefined && state.controlStack.length < probe.frameDepth) {
         const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
         if (debugEqualVerifyInput === undefined || inputIndex === Number(debugEqualVerifyInput)) {
-          console.error('invoke-return', JSON.stringify({
+          logInvokeReturn({
             inputIndex,
             functionTableKey: probe.functionTableKey,
             opcode,
             stackLength: state.stack.length,
             tail: state.stack.slice(-32).map((item) => `${item.length}:${binToHex(item.slice(0, 160))}`),
-          }));
+          });
         }
         returnProbes.delete(state as object);
       }
@@ -864,6 +868,35 @@ type ProviderVmObserver = {
   onPhaseComplete?: (state: unknown) => void;
 };
 
+/** Keep libauth's boundary checks and errors while avoiding layered callbacks on in-budget instructions. */
+export function installFastBch2026Every(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+  consensus: typeof ConsensusBch2026,
+  standard: boolean,
+): void {
+  const originalEvery = instructionSet.every;
+  if (originalEvery === undefined) return;
+  const hashIterationCost = standard
+    ? consensus.hashDigestIterationCostStandard : consensus.hashDigestIterationCostConsensus;
+  instructionSet.every = (state) => {
+    const { metrics } = state;
+    metrics.operationCost = metrics.evaluatedInstructionCount * consensus.baseInstructionCost
+      + metrics.signatureCheckCount * consensus.signatureCheckCost
+      + metrics.hashDigestIterations * hashIterationCost
+      + metrics.arithmeticCost + metrics.stackPushedBytes;
+    const stackSlots = state.stack.length + state.alternateStack.length;
+    if (metrics.operationCost > metrics.maximumOperationCost
+      || metrics.hashDigestIterations > metrics.maximumHashDigestIterations
+      || stackSlots > consensus.maximumStackDepth
+      || state.controlStack.length > consensus.maximumControlStackDepth
+      || (standard && metrics.signatureCheckCount > metrics.maximumSignatureCheckCount)
+      || stackSlots + state.functionCount > consensus.maximumMemorySlots) {
+      return originalEvery(state);
+    }
+    return state;
+  };
+}
+
 /** Every opcode of the BCH-2026 instruction set: the faithful tracer observes the whole execution, not a subset. */
 const ALL_OPCODES: ReadonlySet<number> = new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode));
 
@@ -952,6 +985,9 @@ function buildVirtualMachineBch2026ForProvider(
   let runPhases: NonNullable<typeof instructionSet.evaluate> | undefined;
   let closes: { last: FailedClose | undefined } | undefined;
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
+    // The kernel lane's fast `every` goes first; the per-call operation-limit check installed below replaces it with
+    // the same libauth-equivalent check, and this one stays in effect wherever that check declines to install.
+    installFastBch2026Every(instructionSet, consensus, standard);
     runPhases = installCachedP2shEvaluator(
       instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
     );
@@ -983,10 +1019,10 @@ function buildVirtualMachineBch2026ForProvider(
       }) as typeof originalDrop;
     }
 
-  // Diagnostic: log the value-chunk domain preimage the covenant hashes (its last 64 hex characters are the stored
-  // value's root), so a probe's staged value can be compared against the covenant's own expectation.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_VALUE_ROOT === '1') {
+    // Diagnostic: log the value-chunk domain preimage the covenant hashes (its last 64 hex characters are the stored
+    // value's root), so a probe's staged value can be compared against the covenant's own expectation.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_VALUE_ROOT === '1') {
     type DomainState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const hash256Opcode = (OpcodesBch2026 as unknown as { OP_HASH256?: number }).OP_HASH256 ?? 0xaa;
     const originalHash = instructionSet.operations[hash256Opcode];
@@ -1010,12 +1046,12 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalHash as (inner: DomainState) => unknown)(state);
     }) as typeof originalHash;
-  }
+    }
 
-  // Companion diagnostic: the covenant's value is the PREIMAGE of a sha256 whose digest is the value root, so log
-  // every sha256 preimage of a plausible struct length; its bytes can be compared with the SDK's staged value.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_VALUE_PREIMAGE === '1') {
+    // Companion diagnostic: the covenant's value is the PREIMAGE of a sha256 whose digest is the value root, so log
+    // every sha256 preimage of a plausible struct length; its bytes can be compared with the SDK's staged value.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_VALUE_PREIMAGE === '1') {
     type ShaState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const sha256Opcode = 0xa8;
     const originalSha = instructionSet.operations[sha256Opcode];
@@ -1027,12 +1063,12 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalSha as (inner: ShaState) => unknown)(state);
     }) as typeof originalSha;
-  }
+    }
 
-  // Companion diagnostic: the chunked-value tail is `len4 || sha256(value) || value[0..28]` (64 bytes). Logging it
-  // exposes the covenant's own value HEAD, which can be compared member-by-member with the SDK's staged value.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_VALUE_TAIL === '1') {
+    // Companion diagnostic: the chunked-value tail is `len4 || sha256(value) || value[0..28]` (64 bytes). Logging it
+    // exposes the covenant's own value HEAD, which can be compared member-by-member with the SDK's staged value.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_VALUE_TAIL === '1') {
     type CatState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const catOpcode = 0x7e;
     const originalCat = instructionSet.operations[catOpcode];
@@ -1045,13 +1081,13 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return evaluated;
     }) as typeof originalCat;
-  }
+    }
 
-  // Diagnostic: report every failed `OP_EQUALVERIFY` with the operands it compared and the shape of the program
-  // that ran it. A covenant's identity/commitment checks all end here, and the trace recorders can be sparse (or
-  // run on a different VM instance), so this hooks the operation itself.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_EQUALVERIFY_FAIL === '1') {
+    // Diagnostic: report every failed `OP_EQUALVERIFY` with the operands it compared and the shape of the program
+    // that ran it. A covenant's identity/commitment checks all end here, and the trace recorders can be sparse (or
+    // run on a different VM instance), so this hooks the operation itself.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_EQUALVERIFY_FAIL === '1') {
     type EqState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const equalVerifyOpcode = 0x88;
     const originalEqualVerify = instructionSet.operations[equalVerifyOpcode];
@@ -1091,9 +1127,9 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalEqualVerify as (inner: EqState) => unknown)(state);
     }) as typeof originalEqualVerify;
-  }
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_STACK_IP !== undefined) {
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_STACK_IP !== undefined) {
     type DebugState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const equalOpcode = 0x87;
     const originalEqual = instructionSet.operations[equalOpcode];
@@ -1122,7 +1158,7 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalEqual as (inner: DebugState) => unknown)(state);
     }) as typeof originalEqual;
-  }
+    }
     if (observer !== undefined && observer.recordInactiveBranches !== true) {
       installSparseProbeBranchSkips(instructionSet);
     }

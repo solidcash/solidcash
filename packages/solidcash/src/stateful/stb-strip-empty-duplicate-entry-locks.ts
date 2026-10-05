@@ -57,9 +57,11 @@ export function stripEmptyDuplicateEntryLocks(
     for (const index of indices) {
       if (learned.includes(index)) continue;
       const commitment = String(builder.outputs[index]?.token?.nft?.commitment ?? '').toLowerCase();
+      // HEAD/P' legitimately starts with a zero slot and may have a nonzero
+      // successor (and value). Only an actually blank seed can be filled.
       const empty = commitment.length === 0
         || commitment === '00'
-        || commitment.startsWith('0'.repeat(64));
+        || /^0+$/.test(commitment);
       if (!empty) continue;
       // Copy the learned NEW commitment onto empty siblings. Demoting them to
       // OP_TRUE leaves the covenant's introspected index (often the lower one)

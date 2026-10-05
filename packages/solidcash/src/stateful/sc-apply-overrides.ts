@@ -13,6 +13,7 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
+import { loadFixedEffectEntries } from '../message-bus/fixed-effect-entries.js';
 import { addressToLockScript } from '../utils.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { autoWireLowLevelCalls, type AutoWireLowLevelCallsHost } from './sc-auto-wire-low-level-calls.js';
@@ -28,6 +29,7 @@ type StateValueType = StateValue;
 export interface ApplyOverridesHost {
   builderPromise?: Promise<StatefulTransactionBuilder>;
   readonly builderFactory?: () => Promise<StatefulTransactionBuilder>;
+  forceBuilderRebuild?: boolean;
   signerUtxosPromise?: Promise<Utxo[]>;
   parentContract?: StatefulContract;
   callerLockingBytecode?: Uint8Array;
@@ -142,7 +144,9 @@ export async function applyOverrides(
   const validatePreparedFrames = (): void => {
     if (host.parentContract && host.functionArgs) {
       const selected = host.compilerRoute?.abiFunction ?? host.selectedAbiFunction();
-      if (selected) host.parentContract._validateAbiFrame(selected, host.functionArgs);
+      if (selected) host.parentContract._validateAbiFrame(selected, host.functionArgs, {
+        implicitMsgSenderCategory: host.compilerRoute?.abiFunction.name === '__message_bus1',
+      });
     }
     for (const call of host.callInfos) {
       if (call.type !== 'stateful') continue;
@@ -163,7 +167,7 @@ export async function applyOverrides(
   await autoWireLowLevelCalls(host as unknown as AutoWireLowLevelCallsHost);
   // Auto-wiring can append library calls after the first pass. Validate those frames before any builder work.
   validatePreparedFrames();
-  const needsRebuild = (host.externalCallInfos.length > 0 || host.callInfos.length > 0
+  const needsRebuild = (host.forceBuilderRebuild || host.externalCallInfos.length > 0 || host.callInfos.length > 0
     || host.entryKeyOverrides.size > 0 || host.externalEntryKeyOverrides.size > 0 || host.emitReturnFlag
     // A declared caller identity is itself a reason to rebuild: the initial build (the namespace factory) never
     // receives it, so without this the annotation silently does nothing for a plain call - measured: the
@@ -260,26 +264,30 @@ export async function applyOverrides(
       const handlerAbi = plan.executionArtifact.abi.find((candidate) =>
         candidate.selector === plan.handler.selector || candidate.name === plan.handler.name);
       if (!handlerAbi) throw new Error(`Message-bus handler ABI '${plan.handler.name}' is missing`);
-      if (plan.transfer.condition !== undefined && !(await host.parentContract!._resolveCompilerEffectPredicate(
-        plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState,
-      ))) continue;
       // An owner-local route authenticates msg.sender as tx.origin. The ordinary builder guarantees that a
       // connected signer contributes that native P2PKH input; use the same identity for compiler-authored
       // fixed effects rather than accepting a caller supplied as an ABI value.
       const sender = host.parentContract!._signer ?? host.parentContract!._logicalNonceSigner;
       const logicalCaller = sender ? addressToLockScript(sender.getAddress()) : undefined;
-      materialized.push({
-        outputSlot: plan.outputSlot,
-        ...materializeFixedBchTransfer(
-          plan.transfer,
-          plan.args,
-          plan.handler.inputs.map((input) => input.type),
-          plan.executionArtifact,
-          host.parentContract!.inner.provider,
-          authenticatedState as Readonly<Record<string, FunctionArgument>>,
-          logicalCaller,
-        ),
-      });
+      const entries = await loadFixedEffectEntries([
+        plan.transfer.recipientRecipe, plan.transfer.amountRecipe, plan.transfer.condition?.fixedEffectRecipe,
+      ], plan.executionArtifact, host.parentContract!);
+      if (plan.transfer.condition !== undefined && !(await host.parentContract!._resolveCompilerEffectPredicate(
+        plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState, entries, logicalCaller,
+      ))) continue;
+      const transfer = materializeFixedBchTransfer(
+        plan.transfer,
+        plan.args,
+        plan.handler.inputs.map((input) => input.type),
+        plan.executionArtifact,
+        host.parentContract!.inner.provider,
+        authenticatedState as Readonly<Record<string, FunctionArgument>>,
+        logicalCaller,
+        entries,
+      );
+      // A zero-value fixed effect is an inactive conditional slot, not a positive BCH payment.
+      if (transfer.amount === 0n) continue;
+      materialized.push({ outputSlot: plan.outputSlot, ...transfer });
     }
     effectiveTransfers = materialized;
   }
@@ -337,6 +345,8 @@ export async function applyOverrides(
           emitReturn: host.compilerRoute.emitReturn,
           returnBlob: host.compilerRoute.returnBlob,
           omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
+          logicalIdentity: host.compilerRoute.logicalIdentity,
+          valueChunkProductions: host.compilerRoute.valueChunkProductions,
         }),
       },
     );
@@ -365,9 +375,9 @@ export async function applyOverrides(
           entryKeyOverrides: host.entryKeyOverrides.size > 0 ? host.entryKeyOverrides : undefined,
           externalEntryKeyOverrides: host.externalEntryKeyOverrides.size > 0 ? host.externalEntryKeyOverrides : undefined,
           drainSatoshiContainer: wasSatoshiDrained || undefined,
-        ...(host.callerLockingBytecode !== undefined
+          ...(host.callerLockingBytecode !== undefined
           && { callerLockingBytecode: host.callerLockingBytecode }),
-        ...(host.callerCategoryId !== undefined
+          ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
           drainTokenContainers: drainedTokenContainers,
           ...(host.compilerRoute && {
@@ -377,6 +387,8 @@ export async function applyOverrides(
             emitReturn: host.compilerRoute.emitReturn,
             returnBlob: host.compilerRoute.returnBlob,
             omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
+            logicalIdentity: host.compilerRoute.logicalIdentity,
+            valueChunkProductions: host.compilerRoute.valueChunkProductions,
           }),
         },
       );

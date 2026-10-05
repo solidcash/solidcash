@@ -174,7 +174,9 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(clear.calldataLength).toBe(0);
     expect(binToHex(messageBus.sliceMessageBatchRowCalldata(encoded.blob, clear))).toBe('');
 
-    const { calldataStart: _start, calldataLength: _length, ...missingBounds } = clear;
+    const missingBounds: Parameters<typeof messageBus.sliceMessageBatchRowCalldata>[1] = { ...clear };
+    delete missingBounds.calldataStart;
+    delete missingBounds.calldataLength;
     expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, missingBounds))
       .toThrow(/unframed: missing calldataStart\/Length/);
     expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, {
@@ -541,6 +543,46 @@ describe('messageBus.encodeMessageBatch', () => {
     ])).toThrow(/exceeds two physical entries/);
   });
 
+  it('binds three complete nested tuples and refuses a fourth distinct identity', () => {
+    const routed = compileString(FIXED_TUPLE_COLLECTION_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      messageBusEntryPoolCapacity: 3, solidityImportCompat: true,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+    });
+    const caller = new Uint8Array(25).fill(0x11);
+    const spender = new Uint8Array(25).fill(0x22);
+    const owner = new Uint8Array(25).fill(0x33);
+    const otherOwner = new Uint8Array(25).fill(0x44);
+    const encoded = messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 80n], logicalCaller: caller },
+      { function: 'consume', args: [owner, 30n], logicalCaller: caller },
+      { function: 'consume', args: [otherOwner, 10n], logicalCaller: caller },
+      { function: 'grant', args: [spender, 5n], logicalCaller: caller },
+    ]);
+    const visible = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (name: string): unknown => encoded.routeWitnesses[visible
+      .findIndex((input) => input.name === name)];
+    expect([
+      witness('__message_bus_key_credits_0'), witness('__message_bus_key_credits_1'),
+      witness('__message_bus_key_credits_0_alt'), witness('__message_bus_key_credits_1_alt'),
+      witness('__message_bus_key_credits_0_pool2'), witness('__message_bus_key_credits_1_pool2'),
+    ]).toEqual([caller, spender, owner, caller, otherOwner, caller]);
+    const only = messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 1n], logicalCaller: caller },
+    ]);
+    expect(only.routeWitnesses[visible.findIndex((input) =>
+      input.name === '__message_bus_key_credits_0_pool2')]).toEqual(caller);
+    expect(only.routeWitnesses[visible.findIndex((input) =>
+      input.name === '__message_bus_key_credits_1_pool2')]).toEqual(spender);
+    expect(() => messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 80n], logicalCaller: caller },
+      { function: 'consume', args: [owner, 30n], logicalCaller: caller },
+      { function: 'consume', args: [otherOwner, 10n], logicalCaller: caller },
+      { function: 'consume', args: [new Uint8Array(25).fill(0x55), 1n], logicalCaller: caller },
+    ])).toThrow(/exceeds 3 physical entries/);
+  });
+
   it('derives a literal witness when another handler owns the shared physical entry slot', () => {
     const shared = compileString(SHARED_LITERAL_COLLECTION_SOURCE, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
@@ -566,15 +608,15 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(() => messageBus.encodeMessageBatch(artifact, [{ function: 'missing' }])).toThrow(/Unknown/);
     expect(() => messageBus.encodeMessageBatch(artifact, [{ function: 'add' }])).toThrow(/number of arguments/);
 
-    const unsupported = {
+    const legacyShaped = {
       ...artifact,
       messageBus: { ...artifact.messageBus!, version: 2 },
     } as unknown as typeof artifact;
-    expect(() => messageBus.encodeMessageBatch(unsupported, [{ function: 'clear' }])).toThrow(
+    expect(() => messageBus.encodeMessageBatch(legacyShaped, [{ function: 'clear' }])).toThrow(
       expect.objectContaining({
-        code: 'L3_PROTOCOL_VERSION_UNSUPPORTED',
+        code: 'L3_PROTOCOL_METADATA_MALFORMED',
         context: expect.objectContaining({
-          metadataField: 'messageBus.version', actual: 2, expected: 1,
+          metadataField: 'messageBus',
           ownerIdentity: 'MessageBatchEncoding',
         }),
       }),
@@ -590,5 +632,25 @@ describe('messageBus.encodeMessageBatch', () => {
         context: expect.objectContaining({ metadataField: 'messageBus' }),
       }),
     );
+
+    for (const maximumBlobBytes of [9_999, 10_001]) {
+      const drifted = {
+        ...artifact,
+        messageBus: { ...artifact.messageBus!, maximumBlobBytes },
+      } as unknown as typeof artifact;
+      expect(() => messageBus.encodeMessageBatch(drifted, [{ function: 'clear' }])).toThrow(
+        expect.objectContaining({ code: 'L3_PROTOCOL_METADATA_MALFORMED' }),
+      );
+    }
+
+    for (const minimumRows of [0, Number.NaN, artifact.messageBus!.maximumRows + 1]) {
+      const drifted = {
+        ...artifact,
+        messageBus: { ...artifact.messageBus!, minimumRows },
+      } as unknown as typeof artifact;
+      expect(() => messageBus.encodeMessageBatch(drifted, [{ function: 'clear' }])).toThrow(
+        expect.objectContaining({ code: 'L3_PROTOCOL_METADATA_MALFORMED' }),
+      );
+    }
   });
 });

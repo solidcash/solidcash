@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract } from '../../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 
-const source = (kernel: boolean) => `contract FixedLoopResizeKeys() {
+const source = (kernel: boolean): string => `contract FixedLoopResizeKeys() {
   mapping(int => int) records;
   function fill(int[] memory keys, int base, int stop) internal pure {
     for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
@@ -28,7 +28,7 @@ const source = (kernel: boolean) => `contract FixedLoopResizeKeys() {
   function check(int key, int expected) public { require(this.records[key] == expected); }
 }`;
 
-const compile = (kernel: boolean) => {
+const compile = (kernel: boolean): ReturnType<typeof compileString> => {
   const failures: unknown[] = [];
   const artifact = compileString(source(kernel), {
     forceStateful: true,

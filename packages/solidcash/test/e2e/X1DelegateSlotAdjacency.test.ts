@@ -170,26 +170,28 @@ describe('X1 delegate implementation slot adjacency', () => {
   /**
    * HOSTILE, pinned to input 2 - the implementation's own input, the covenant that resolves both indices - AND
    * pinned to the REASON. The X56 relocation moved the two positions SEC-13's own-category immutable pin
-   * admits, so the pin has to still name exactly those two. `own` appends a third own-category immutable NFT
-   * and must be refused; `plain` appends an output of the same size and value carrying NO token and must be
-   * ACCEPTED. Without the second row the refusal could be a value, fee or output-count fault that has nothing
-   * to do with the pin, and would be evidence for nothing.
+   * admits, so the pin has to still name exactly those two. `own` appends a third NFT at the genuine event
+   * covenant lock and must be refused; `plain` appends a token-free output at that same lock and must be
+   * ACCEPTED. An OP_TRUE return carrier is deliberately not a readable event and is outside this pin.
    */
   it.each([
     ['a third own-category immutable NFT', 'own', 'REJECTED'],
-    ['a plain untokened output of the same size', 'plain', 'ACCEPTED'],
+    ['a plain untokened output at the event lock', 'plain', 'ACCEPTED'],
   ] as const)('appending %s beside the emitReturn pair: %s', async (_label, kind, expected) => {
     const { deployed, provider } = await deploySplit(EMITTING);
     const builder = await deployed.call.setXEmittingReturning(29n).emitReturn().build();
+    const eventOutput = builder.outputs[3];
+    expect(eventOutput.token?.nft?.capability).toBe('none');
+    expect(eventOutput.to).not.toEqual(new Uint8Array([0x51]));
     builder.addOutput(kind === 'own' ? {
-      to: new Uint8Array([0x51]),
+      to: eventOutput.to,
       amount: 800n,
       token: {
         amount: 0n,
         category: deployed.categoryId,
         nft: { capability: 'none', commitment: '0119' },
       },
-    } : { to: new Uint8Array([0x51]), amount: 800n });
+    } : { to: eventOutput.to, amount: 800n });
     const outcome = await provider
       .sendRawTransaction(binToHex(encodeTransaction(builder.buildLibauthTransaction())))
       .then(() => 'ACCEPTED')

@@ -3,12 +3,13 @@
  */
 
 import type { AbiFunction } from '@solidcash/utils';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { hasEquivalentMutableNftOutput } from './mutable-output-reassert.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import {
   relocateChangeAfterOccupancy,
   writerBlockOccupancyEnd,
@@ -36,7 +37,7 @@ export interface InBlockWriterReturnHost {
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly pendingReturnEventOutputs: readonly InBlockWriterPendingReturn[];
   findMintingInputIndex(categoryId: string): number;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   tokenWriterOccupancy(
     tokenMaster: number,
     outputs?: ReadonlyArray<{ token?: { nft?: { commitment?: string } } }>,
@@ -64,7 +65,7 @@ export function reassertInBlockWriterReturns(
     const master = host.findMintingInputIndex(physical.categoryId);
     const returnSlot = physical.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent');
     if (master < 0 || returnSlot === undefined) continue;
-    const band = host.getPublishJobEventsBand();
+    const band = host.getChunkableValueWriteBand();
     const outputIndex = tokenWriterReturnIndex(
       master, physical.blockLayout, band,
       host.tokenWriterOccupancy(master, builder.outputs),
@@ -86,14 +87,14 @@ export function reassertInBlockWriterReturns(
         writerAbi.outputs!.map((output) => output.type),
         `function '${writerAbi.name}' result`,
       ) === 'evm-abi-v1';
-    const commitment = canonicalWriterReturnCommitment({
+    const commitment = returnEventNftCommitment(hexToBin(canonicalWriterReturnCommitment({
       pendingHex: pending && pending.commitment.length > 0
         ? binToHex(pending.commitment)
         : String(occupant?.token?.nft?.commitment ?? ''),
       writesState: writerAbi?.writesState === true,
       evmBool,
       returnsBool: writerReturnsBool,
-    });
+    })));
     if (isViewReturnTailOutput({
       to: occupant?.to instanceof Uint8Array ? occupant.to : undefined,
       token: occupant?.token,

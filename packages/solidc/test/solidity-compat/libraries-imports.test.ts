@@ -635,7 +635,8 @@ describe('using-for external-call library method on an interface-typed struct FI
   };
   it('compiles safeTransfer on an interface-typed struct field', () => ok('pool.lpToken.safeTransfer(to, v);'));
   it('mixes a using-for external-call method and a genuine interface method on the same field', () => {
-    ok('pool.lpToken.safeTransfer(to, v); s = pool.lpToken.balanceOf(address(this));');
+    ok('Pool storage other = poolInfo[pid + 1]; pool.lpToken.safeTransfer(to, v);'
+      + ' s = other.lpToken.balanceOf(address(this));');
   });
 });
 

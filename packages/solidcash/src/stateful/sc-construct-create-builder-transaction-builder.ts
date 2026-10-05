@@ -8,9 +8,15 @@ import type { AbiFunction, FunctionBlockLayout, StateLayout } from '@solidcash/u
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { batchPredecessorCommitment, isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
+import { isDisposableAlignmentPad } from './value-chunk-band-helpers.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
-import { compilerRouteUsesPhysicalWrapper } from './message-bus-resource-routing.js';
+import {
+  compilerRouteUsesPhysicalWrapper,
+  selectedMessageBusResourceMetadata,
+} from './message-bus-resource-routing.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
@@ -103,7 +109,8 @@ export function constructCreateBuilderTransactionBuilder(
     dynamicReadChunkInputs: UnlockableUtxo[];
     topLevelDynamicChunkArgumentIndex: number;
     topLevelReturnWitnessGroups: number[];
-    refreshPhysicalDelegateInputIndex: ((builder: StatefulTransactionBuilder, materialized?: TransactionBuilder) => any) | undefined;
+    refreshPhysicalDelegateInputIndex:
+    ((builder: StatefulTransactionBuilder, materialized?: TransactionBuilder) => any) | undefined;
     buildStateInputUnlocker: () => any;
     allGroupEcSlots: any[];
     derivationMasterUtxo: Utxo | undefined;
@@ -264,6 +271,9 @@ export function constructCreateBuilderTransactionBuilder(
     ...(delegateEventSlots.some((slot: any) => slot.kind === 'entry') && { preserveBlockLayoutWidth: true }),
     ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0
       || runtimeLoopEventOutputs.length > 0 || runtimeLoopTransferOutputs.length > 0)
+      // A compiler-owned delegate block preserves its dynamic chunks at the published trailing base;
+      // sorted entry creations in that same block follow the chunks.
+      && !(compilerRouteDelegateLayout && dynamicChunkVars.length > 0)
       && { loopEntriesBeforeDynamicChunks: true }),
     ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
     ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
@@ -280,12 +290,10 @@ export function constructCreateBuilderTransactionBuilder(
     }),
   });
   const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
-  // The composed coordinate of the root dynamic chunk. A materialized frame that cannot address the relocated
-  // index is a participant-local frame (a derivation probe or the participant's own published block); the
-  // relocated value computed from it IS the composed coordinate, and it is the only place the published block's
-  // layout is visible. Remember it so a frame-free refresh (which sees the builder's pre-layout input list) does
-  // not report a coordinate derived from the wrong index space.
-  let composedDynamicChunkBase: bigint | undefined;
+  const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments;
+  const dynamicWriteActive = selectedRows === undefined
+    ? dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0
+    : selectedMessageBusResourceMetadata(selectedRows).dynamicWrites.length > 0;
   const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
     || compilerRouteUsesPhysicalWrapper(
       overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,
@@ -300,37 +308,66 @@ export function constructCreateBuilderTransactionBuilder(
       if (target !== undefined && localIndex < 0) {
         throw new Error('Selected root dynamic-storage chunk input is absent from the finalized transaction');
       }
-      // The block base relocates a participant-local index into the aggregate frame. A probe that evaluates the
-      // participant-LOCAL frame cannot address the relocated index at all (measured: 222 in an 88-input frame),
-      // so keep the frame-local value there; the aggregate build re-applies the relocated one.
-      const relocated = resolveDynamicChunkInputBase(localIndex, overrides?.blockBase ?? 0);
-      const frameLength = materialized?.inputs.length;
-      const unaddressable = localIndex >= 0 && frameLength !== undefined
-        && relocated >= BigInt(frameLength);
-      if (unaddressable) composedDynamicChunkBase = relocated;
-      finalArgs[topLevelDynamicChunkArgumentIndex] =
-        unaddressable ? BigInt(localIndex) : composedDynamicChunkBase ?? relocated;
+      // Published witnesses always use aggregate coordinates, including when the absolute index would happen
+      // to fit in this participant's local frame. buildParticipantProbeProgram performs the inverse conversion
+      // only in generated probe bytecode, without changing these shared final-transaction arguments.
+      finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(
+        localIndex, overrides?.blockBase ?? 0, dynamicWriteActive,
+      );
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
         console.error('dynamic-chunk-root-base', JSON.stringify({
           functionName,
           blockBase: overrides?.blockBase ?? 0,
           localIndex,
-          frameLength,
-          unaddressable,
-          composed: composedDynamicChunkBase === undefined ? undefined : String(composedDynamicChunkBase),
+          frameLength: materialized?.inputs.length,
           target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
           value: String(finalArgs[topLevelDynamicChunkArgumentIndex]),
           readChunks: dynamicReadChunkInputs.length,
           writeChunks: dynamicChunkInputs.length,
-          // Who materialized this frame. A participant-local frame can be either the block this build PUBLISHES
-          // or a derivation probe of it; only the caller distinguishes them, and the composed coordinate is
-          // correct for the published block while the local substitute is required for the probe.
+          // Identify the materialization boundary without changing its published coordinate convention.
           stack: new Error('dynamic-chunk-root-base').stack?.split('\n').slice(2, 5)
             .map((line) => line.trim().replace(/.*\/packages\//, 'packages/')),
         }));
       }
     };
+  const refreshTopLevelExternalCallInputIndices = (): boolean => {
+    if (!abiFunction || externalCallUtxoGroups.length === 0) return false;
+    const groupByCallsite = new Map<number, number>();
+    for (const [groupIndex, group] of externalCallUtxoGroups.entries()) {
+      if (group.sourceCallsiteId !== undefined && !groupByCallsite.has(group.sourceCallsiteId)) {
+        groupByCallsite.set(group.sourceCallsiteId, groupIndex);
+      }
+    }
+    let changed = false;
+    for (const [position, input] of abiFunction.inputs.entries()) {
+      if (position >= finalArgs.length) break;
+      const masterWitness = /^__internal__extcallMasterIdx(\d*)$/.exec(input.name);
+      if (masterWitness === null) continue;
+      const slot = masterWitness[1] === '' ? 0 : Number(masterWitness[1]);
+      const groupIndex = groupIndexForExternalCallSlot({
+        slot, externalCalls: abiFunction.externalCalls, groupByCallsite,
+        compactGroups: externalCallUtxoGroups.map((_, index) => index),
+      });
+      const group = groupIndex === undefined ? undefined : externalCallUtxoGroups[groupIndex];
+      if (group === undefined) continue;
+      const index = builder.findMaterializedMasterInput(group.sharedGroupIndex ?? groupIndex!);
+      if (index < 0 || finalArgs[position] === BigInt(index)) continue;
+      finalArgs[position] = BigInt(index);
+      changed = true;
+    }
+    const basePosition = abiFunction.inputs.findIndex((input) =>
+      input.name === '__internal__externalCallInputBase');
+    if (basePosition >= 0 && basePosition < finalArgs.length) {
+      const firstGroup = externalCallUtxoGroups[0];
+      const index = builder.findMaterializedMasterInput(firstGroup.sharedGroupIndex ?? 0);
+      if (index >= 0 && finalArgs[basePosition] !== BigInt(index)) {
+        finalArgs[basePosition] = BigInt(index);
+        changed = true;
+      }
+    }
+    return changed;
+  };
   // The compiled covenant reads a callee's return event at `__internal__externalReturnOutputIdxN`, so that witness
   // and the assembled transaction must name the same output. The planned coordinate is written before the builder
   // places its own outputs, and a callee's block (with the event's slot) can still move afterwards - a shared
@@ -347,10 +384,20 @@ export function constructCreateBuilderTransactionBuilder(
     void materialized;
     let changed = false;
     for (const [ordinal, groupIdx] of topLevelReturnWitnessGroups.entries()) {
+      if (groupIdx < 0) continue;
       const name = topLevelReturnWitnessNames[ordinal];
       if (name === undefined) break;
       const position = abiFunction!.inputs.findIndex((input) => input.name === name);
       if (position < 0 || position >= finalArgs.length) continue;
+      const preimageName = name.replace('externalReturnOutputIdx', 'externalReturnPreimage');
+      const preimagePosition = abiFunction!.inputs.findIndex((input) => input.name === preimageName);
+      const preimage = builder.getExternalCallReturnPreimage(groupIdx);
+      if (preimagePosition >= 0 && preimage && preimage.length > 128
+        && (!(finalArgs[preimagePosition] instanceof Uint8Array)
+          || binToHex(finalArgs[preimagePosition] as Uint8Array) !== binToHex(preimage))) {
+        finalArgs[preimagePosition] = preimage.slice();
+        changed = true;
+      }
       const built = builder.getBuiltExternalCallReturnEventOutputIndex(groupIdx);
       const authoritative = built >= 0 ? built : builder.getExternalCallReturnEventOutputIndex(groupIdx);
       if (authoritative < 0) continue;
@@ -429,13 +476,18 @@ export function constructCreateBuilderTransactionBuilder(
         return commitment === undefined ? undefined
           : typeof commitment === 'string' ? commitment : binToHex(commitment);
       })();
-      const expectedPredOut = targetSlot instanceof Uint8Array && targetSlot.length === 32
+      const expectedPredOut = predecessorCommitment === undefined ? undefined
+        : batchPredecessorCommitment(abiFunction, finalArgs, Number(slot), predecessorCommitment)
+        ?? (targetSlot instanceof Uint8Array && targetSlot.length === 32
         && predecessorCommitment !== undefined && predecessorCommitment.length >= 128
-        ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
-        : undefined;
-      const updatesExistingTarget = targetSlot instanceof Uint8Array && targetSlot.length === 32
-        && predecessorCommitment?.slice(0, 64).toLowerCase() === binToHex(targetSlot).toLowerCase();
-      if (current < 0n && updatesExistingTarget) continue;
+          ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
+          : undefined);
+      // A proof shared with another active target is recreated by that target's fixed output, not a separate P'.
+      // Preserve its sentinel even if the current target is absent; otherwise the structural fallback below
+      // invents an extra predecessor and the compiler's exact collection cardinality must reject the transaction.
+      if (current < 0n && !isPendingBatchPredecessor(
+        abiFunction, finalArgs, Number(slot), predecessorCommitment ?? '',
+      )) continue;
       if (current >= 0n && sameLock(outputLock(Number(current)), required)
         && (expectedPredOut === undefined
           || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase())) continue;
@@ -464,7 +516,37 @@ export function constructCreateBuilderTransactionBuilder(
       const ordinal = builder.getEntryOutputSlotOrder().indexOf(Number(slot));
       const entryOutputBase = builder.getEntryOutputBase();
       const structural = entryOutputBase >= 0 && ordinal >= 0 ? entryOutputBase + ordinal : -1;
-      if (structural < 0 || !sameLock(outputLock(structural), required)) continue;
+      if (structural < 0 || !sameLock(outputLock(structural), required)
+        || expectedPredOut === undefined
+        || commitmentOf(structural)?.toLowerCase() !== expectedPredOut.toLowerCase()) {
+        // A later continuation band can occupy the provisional P' coordinate. Restore the predecessor in a
+        // token-free alignment slot after the participant block, using the authenticated proof input's lock and
+        // exact slot/next/value commitment. The VM still proves that output against the input and target hash.
+        if (expectedPredOut === undefined || !/^[0-9a-f]{128,256}$/i.test(expectedPredOut)) continue;
+        const proofInput = materialized.inputs[masterIndex + Number(proofOffset)];
+        const category = proofInput?.token?.category;
+        if (proofInput?.token?.nft?.capability !== 'mutable'
+          || category === undefined || category !== materialized.inputs[masterIndex]?.token?.category) continue;
+        const free = materialized.outputs.findIndex((output, index) => (
+          index >= masterIndex + (effectiveBlockLayout?.blockSize ?? 1)
+          && isDisposableAlignmentPad(output)
+          && output.to instanceof Uint8Array && output.to.length === 1 && output.to[0] === 0x51
+          && materialized.inputs[index]?.token === undefined
+        ));
+        // If every balanced pad is already a co-spent token's output, add a distinct mint output only when the
+        // transaction has no reverse-indexed OP_RETURN suffix to shift. The final conservation pass funds it.
+        if (free < 0 && materialized.outputs.some((output) => output.to instanceof Uint8Array
+          && output.to.length === 1 && output.to[0] === 0x6a)) continue;
+        const destination = free >= 0 ? free : materialized.outputs.length;
+        materialized.outputs[destination] = {
+          to: required,
+          amount: free >= 0 ? materialized.outputs[free]!.amount : 1200n,
+          token: { category, amount: 0n, nft: { capability: 'mutable', commitment: expectedPredOut } },
+        };
+        finalArgs[position] = BigInt(destination);
+        changed = true;
+        continue;
+      }
       const replacement = structural;
       finalArgs[position] = BigInt(replacement);
       changed = true;
@@ -494,6 +576,7 @@ export function constructCreateBuilderTransactionBuilder(
     builder._setMasterUnlockerRefresher((materialized) => {
       if (refreshPhysicalDelegateInputIndex) refreshPhysicalDelegateInputIndex(builder, materialized);
       refreshTopLevelDynamicChunkInputBase?.(materialized);
+      refreshTopLevelExternalCallInputIndices();
       refreshTopLevelReturnWitnesses(materialized);
       refreshTopLevelPredOutWitnesses(materialized);
       return buildStateInputUnlocker();

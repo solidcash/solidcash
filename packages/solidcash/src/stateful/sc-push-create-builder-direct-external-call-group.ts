@@ -21,6 +21,7 @@ import { describeValueChunkWrites } from './writer-group-selection.js';
 
 export interface PushCreateBuilderDirectExternalCallGroupHost {
   deriveReturnValue(...args: any[]): Promise<unknown>;
+  resolveLoopArgs(occurrenceIndex: number): FunctionArgument[] | undefined;
   readonly callerCategoryId: string;
   readonly callerContract: unknown;
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -42,6 +43,8 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
   bReturnEventInBlock: boolean;
   bGraphBlockhashSelections: NonNullable<ExternalCallUtxoGroup['graphBlockhashSelections']> | [];
   bKeccak: { recreates: NonNullable<ExternalCallUtxoGroup['keccakRecreates']> };
+  bDynamicChunkInputs: NonNullable<ExternalCallUtxoGroup['ordinaryDynamicChunkInputs']>;
+  bDynamicChunkResources: NonNullable<ExternalCallUtxoGroup['dynamicChunkResources']>;
   bEntryLoopCommitments: string[] | undefined;
   bEntryLoopStart: number | undefined;
   bEntryLoopCollection: string | undefined;
@@ -83,6 +86,8 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     bReturnEventInBlock,
     bGraphBlockhashSelections,
     bKeccak,
+    bDynamicChunkInputs,
+    bDynamicChunkResources,
     bEntryLoopCommitments,
     bEntryLoopStart,
     bEntryLoopCollection,
@@ -153,11 +158,13 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     }
   }
   // A return probe evaluates ONLY the contract input, so a callee's covenant never executes and its return
-  // event would keep the neutral placeholder the builder seeds (`setReturnEventOutput`), which a caller
-  // decoding a `bool` success reads as failure and answers with its library's catch path. Fabricate the value
-  // the same way the nested-call path does, and only for a probe: a broadcast transaction executes its
-  // callees and must not precompute.
+  // event would keep the neutral placeholder the builder seeds (`setReturnEventOutput`). Derive the actual
+  // value where possible, but never infer `true` merely from a bool result: a read-only callee may genuinely
+  // return false, and `writesState` is only the negation of a read-only proof, not proof of a successful write.
+  // A broadcast transaction executes its callees and must not precompute.
   let directPrecomputedReturn: Uint8Array | undefined;
+  let resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
+  let resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   if (returnProbeOnly === true && bReturnEventInBlock) {
     const precomputeArtifact = callInfo.externalContract.inner.artifact as Artifact;
     const rawCall = ec as { rawFunctionName?: string; rawSelector?: string };
@@ -198,11 +205,25 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       } catch {
         directPrecomputedReturn = undefined;
       }
-      // A state-writing callee has no executed transaction to read a value from. The compiler's convention for
-      // such a call is that the integrity check IS the success condition (an opaque return publishes a literal
-      // `true`), so a probe fabricates the same for a single `bool` result.
-      if (directPrecomputedReturn === undefined && precomputeAbi.outputs[0].type === 'bool') {
-        directPrecomputedReturn = encode(true);
+      if (ec.occurrence === 'loop' && ec.resultArrayOutput !== undefined) {
+        resolveLoopReturnValue = async (occurrenceIndex: number): Promise<StateValue> => {
+          const occurrenceArgs = host.resolveLoopArgs(occurrenceIndex);
+          if (!occurrenceArgs) {
+            throw new Error(
+              `Could not resolve arguments for occurrence ${occurrenceIndex} of `
+              + `${ec.interfaceName}.${ec.functionName}`,
+            );
+          }
+          return host.deriveReturnValue(
+            precomputeName, occurrenceArgs, undefined, precomputeAbi, undefined,
+            publicSelfAddress, host.callerCategoryId, host.callerContract,
+          ) as Promise<StateValue>;
+        };
+        resolveLoopReturnCommitment = async (occurrenceIndex: number): Promise<Uint8Array> => (
+          occurrenceIndex === 0 && directPrecomputedReturn !== undefined
+            ? directPrecomputedReturn
+            : encode(await resolveLoopReturnValue!(occurrenceIndex))
+        );
       }
     }
   }
@@ -224,6 +245,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     requiredDataNftIndices: bRequiredNftIndices,
     functionName: callInfo.functionName,
     functionArgs: callInfo.args,
+    ...(ec.callsiteId !== undefined && { sourceCallsiteId: ec.callsiteId }),
     externalContract: callInfo.externalContract,
     callerIdentity: publicSelfIdentity,
     logicalFunctionName: callInfo.functionName,
@@ -248,6 +270,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(ec.callMode && { callMode: ec.callMode }),
     ...(bPlannedEntryInserts.length > 0 && { plannedEntryInserts: bPlannedEntryInserts }),
     ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
+    ...(bDynamicChunkResources.length > 0 && { dynamicChunkResources: bDynamicChunkResources }),
     ...(directSharedGroupIndex >= 0 && {
       sharedGroupIndex: directSharedGroupIndex,
       // An explicit empty block makes all input-count/layout reducers consume zero physical slots for
@@ -257,7 +280,14 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(bReturnEventInBlock && { returnEventInBlock: true }),
     ...(directPrecomputedReturn !== undefined
       && { precomputedReturnCommitment: directPrecomputedReturn }),
+    ...(resolveLoopReturnCommitment && {
+      loopResultArrayOutput: ec.resultArrayOutput,
+      ...(ec.maximumOccurrences !== undefined && { loopMaximumOccurrences: ec.maximumOccurrences }),
+      resolveLoopReturnCommitment,
+      resolveLoopReturnValue,
+    }),
     ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
+    ...(bDynamicChunkInputs.length > 0 && { ordinaryDynamicChunkInputs: bDynamicChunkInputs }),
     ...(bEntryLoopCommitments && {
       entryLoopCommitments: bEntryLoopCommitments,
       entryLoopStart: bEntryLoopStart,
@@ -270,9 +300,9 @@ export async function pushCreateBuilderDirectExternalCallGroup(
         const variable = bStatelayout.variables.find((candidate) => candidate.name === name);
         if (!variable) continue;
         const candidates = bAbiFunc!.inputs
-          .map((input, index) => ({ input, index }))
-          .filter(({ input }) => !input.name.startsWith('__internal__')
-            && input.type === variable.type);
+          .map((abiInput, index) => ({ abiInput, index }))
+          .filter(({ abiInput }) => !abiInput.name.startsWith('__internal__')
+            && abiInput.type === variable.type);
         if (candidates.length !== 1) continue;
         const value = callInfo.args[candidates[0].index];
         if (typeof value === 'string' || value instanceof Uint8Array) values[name] = value;

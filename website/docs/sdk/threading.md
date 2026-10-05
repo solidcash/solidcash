@@ -1,197 +1,252 @@
 ---
-title: Threading & State Management
+title: Threading and State Management
 ---
 
-Threading allows a single stateful contract to be split into multiple parallel instances, each operating independently. This enables concurrent transaction processing on a single contract.
+Stateful threads are several master minting NFTs for one contract category. Each master authorizes calls for a
+partition of the contract's data NFT indices, allowing transactions with disjoint inputs to proceed in parallel.
 
-## Overview
+Threads are **partitions, not replicas**. Genesis creates the state data once, not once per master. There is no
+automatic merge of divergent copies because there are no copied state registers.
 
-A stateful contract normally has one **master NFT** controlling all state. Threading creates multiple master NFTs, each with its own partition of state data NFTs. Transactions on different threads do not conflict, enabling parallel execution.
+See [Contract Concurrency](/docs/guides/concurrency) for protocol design and contention analysis. This page is the
+SDK reference.
 
-## Deploying with Threads
+## Deploying several masters
 
-```typescript
-const { contract } = await StatefulContract.deploy({
-    artifact,
-    constructorArgs: [adminPub],
-    provider,
-    fundingUtxo,
-    funder: signer.unlockP2PKH(),
-    changeAddress: adminAddress,
-    initialState: { counter: 0n },
-    threadCount: 3,  // create 3 parallel threads
+```ts
+import { ContractFactory, ThreadManager } from 'solidcash';
+
+const contract = await new ContractFactory(artifact, signer).deploy({
+  initialState: { west: 0n, east: 0n },
+  threadCount: 2,
 });
+
+const manager = new ThreadManager(contract);
+const threads = await manager.discover();
 ```
 
-## ThreadManager
+`threadCount` defaults to `1`. It creates that many master NFT outputs before the data NFT outputs in genesis.
+Every master has the contract category, minting capability, and an empty commitment.
 
-The `ThreadManager` class discovers and manages threads:
+The data layout must contain useful independent partitions. `external` state variables are isolated into dedicated
+data NFTs; ordinary fields may share one bin-packed NFT and therefore cannot be assigned to different threads.
 
-```typescript
-const threadManager = await contract.getThreadManager();
-await threadManager.load();
+## `ThreadManager`
 
-// Access individual threads
-const thread0 = threadManager.thread(0);
-const thread1 = threadManager.thread(1);
-const allThreads = threadManager.threads();
-```
+```ts
+const manager = new ThreadManager(contract);
+const threads = await manager.discover();
 
-### Calling Functions on a Thread
-
-```typescript
-const result = await thread0.call('increment', alicePub, aliceSig).send();
-
-// Refresh thread state after the call
-await thread0.refresh();
-```
-
-## Splitting (1 -> N)
-
-Split a single-threaded contract into multiple threads using a function with the `split` modifier:
-
-```solidity
-// In .scash file
-function fork(int n, sig s) split(n) {
-    require(n >= 1);
-    require(checkSig(s, admin));
+for (const thread of threads) {
+  console.log(thread.threadId, thread.masterUtxo, thread.dataNftIndices);
 }
 ```
 
-```typescript
-await StatefulContract.split({
-    contract: sc,
-    functionName: 'fork',
-    functionArgs: [3n, adminSig],
-    threadCount: 3,
-    fee: 1000n,
-    maxFee: 10000n,
-    fundingUtxo,
-    funder: signer.unlockP2PKH(),
-    changeAddress: adminAddress,
-});
+### `discover()`
+
+`discover(): Promise<ThreadHandle[]>` queries the root token address for all minting NFTs of the contract category,
+sorts them through `StateReader`, and assigns data NFT indices round-robin:
+
+```text
+2 masters, 5 data NFTs -> [0, 2, 4], [1, 3]
+3 masters, 5 data NFTs -> [0, 3], [1, 4], [2]
 ```
 
-Split creates new master NFTs. Each thread gets a round-robin partition of data NFTs.
+Discovery validates the ABI's `requiredNftIndices`. If no partition contains all indices required by a function,
+it throws instead of returning a thread set which makes that function impossible to call.
 
-## Merging (N -> 1)
+`getThreads()` returns a copy of the manager's last discovered or created handles. It does not query the network.
 
-Consolidate threads back to a single master using a function with the `merge` modifier:
+### `ThreadHandle.call()`
+
+```ts
+const [westThread, eastThread] = await manager.discover();
+
+await westThread.call('incrementWest').send();
+await eastThread.call('incrementEast').send();
+```
+
+`call(functionName, ...args)` checks that the function's required data NFT indices are a subset of the handle's
+partition, then builds a stateful call pinned to that handle's master UTXO. Mapping entries, chunks, containers,
+external contracts, and other auxiliary inputs are still discovered normally and may cause cross-thread
+contention.
+
+### `ThreadHandle.refresh()`
+
+```ts
+await westThread.refresh();
+```
+
+A successful call spends and recreates its master. `refresh()` re-queries the current master set and replaces the
+handle's outpoint. If the exact old outpoint no longer exists, it falls back to the current master at the handle's
+position.
+
+Master commitments do not carry persistent thread IDs or partition metadata. Round-robin discovery is therefore
+the recoverable default. Custom partitions passed to `ThreadManager.split()` exist in the returned handles only;
+if an application restarts, it must persist and reconstruct that partition assignment itself.
+
+## Lifecycle split
+
+Declare a compiler-verified `split` entry point:
 
 ```solidity
-function consolidate(int n, sig s) merge(n) {
-    require(n >= 1);
-    require(checkSig(s, admin));
+contract Parallel(pubkey admin) {
+    external int west;
+    external int east;
+
+    function fork(int additional, sig signature) split(additional) {
+        require(additional >= 1);
+        require(checkSig(signature, admin));
+    }
 }
 ```
 
-```typescript
-await StatefulContract.merge({
-    contract: sc,
-    functionName: 'consolidate',
-    functionArgs: [3n, adminSig],
-    fee: 1000n,
-    maxFee: 10000n,
+The current lifecycle shape preserves one existing master and creates `additional` new masters. Starting with one,
+`fork(2, ...)` leaves three masters.
+
+### Pending-call API
+
+```ts
+const tx = await contract.call.fork(2n, signature)
+  .withSplitFunding(
+    [fundingUtxo],
+    signer.unlockP2PKH(),
+    signer.getAddress(),
+  )
+  .withNewMintingAmount(1200n)
+  .withSplitFee(explicitFee) // optional; otherwise size-derived
+  .withMaxFee(20_000n)
+  .send();
+```
+
+The funding inputs pay for the new master outputs and fee. `withSplitFunding()` is required; binding a signer does
+not by itself select these lifecycle inputs.
+
+### Static API
+
+```ts
+const result = await StatefulContract.split({
+  provider,
+  contract,
+  splitFunctionName: 'fork',
+  splitFunctionArgs: [2n, signature],
+  fundingUtxos: [fundingUtxo],
+  funder: signer.unlockP2PKH(),
+  changeAddress: signer.getAddress(),
+  newMintingAmount: 1200n,
+  maxFee: 20_000n,
 });
 ```
 
-Merge burns the consumed master NFTs and reclaims their satoshis.
+The result contains `{ tx, categoryId }`. The new masters remain in the original category.
 
-## State Reading
+## Lifecycle merge
 
-### Read State from Chain
+`merge(n)` preserves one master and consumes/burns exactly `n` other master NFTs:
 
-```typescript
+```solidity
+function consolidate(int consumed, sig signature) merge(consumed) {
+    require(consumed >= 1);
+    require(checkSig(signature, admin));
+}
+```
+
+### Pending-call API
+
+```ts
+const all = await new ThreadManager(contract).discover();
+const consumed = all.slice(1).map((thread) => thread.masterUtxo);
+
+const tx = await contract.call.consolidate(BigInt(consumed.length), signature)
+  .withConsumedMasters(consumed, signer.getAddress())
+  .withMergeFunding([feeUtxo], signer.unlockP2PKH())
+  .withMergeFee(explicitFee) // optional
+  .withMaxFee(20_000n)
+  .send();
+```
+
+The consumed masters' satoshis, less the fee, are returned to the change address. `withMergeFunding()` can supply
+additional fee inputs.
+
+### Static API
+
+```ts
+const result = await StatefulContract.merge({
+  provider,
+  contract,
+  mergeFunctionName: 'consolidate',
+  mergeFunctionArgs: [BigInt(consumed.length), signature],
+  consumedMasterUtxos: consumed,
+  fundingUtxos: [feeUtxo],
+  funder: signer.unlockP2PKH(),
+  changeAddress: signer.getAddress(),
+  maxFee: 20_000n,
+});
+```
+
+The SDK validates the count, category, and minting capability of every consumed master and refuses to consume the
+selected survivor.
+
+## Lower-level gate split and merge
+
+`ThreadManager.split()` and `.merge()` predate the lifecycle transaction helpers and remain useful for an explicit
+authorization gate:
+
+```solidity
+function authorize(pubkey key, sig signature) unsafe {
+    require(checkSig(signature, key));
+}
+```
+
+```ts
+const manager = new ThreadManager(contract);
+
+const { threads } = await manager.split({
+  functionName: 'authorize',
+  args: [adminPublicKey, signature],
+  threadCount: 2,          // total outputs, not additional masters
+  partitions: [[0], [1]], // optional; round-robin by default
+  fee: 1_000n,
+  maxFee: 10_000n,
+});
+
+const { thread } = await manager.merge(threads, {
+  functionName: 'authorize',
+  args: [adminPublicKey, signature],
+  fee: 1_000n,
+  maxFee: 10_000n,
+});
+```
+
+This split consumes one master and divides that master's existing satoshis, minus the fee, across exactly
+`threadCount` replacements. A default 1200-satoshi master is generally too small for several relayable outputs;
+deploy with a deliberately larger `masterAmount` through the low-level deployment API if you plan to use this
+form. Its gate uses `unsafe`, so the gate's authorization is security-critical.
+
+## Reading state and masters
+
+```ts
 import { StateReader, getContractState } from 'solidcash';
 
-// Full state including UTXOs
-const onChainState = await getContractState(contract.inner, categoryId);
-// onChainState.state = { counter: 5n, label: ... }
-// onChainState.masterUtxo
-// onChainState.dataNftUtxos
-// onChainState.entryNftUtxos
+const onChain = await getContractState(contract.inner, contract.categoryId);
+console.log(onChain.state);
+console.log(onChain.masterUtxo);     // one selected master for compatibility
+console.log(onChain.dataNftUtxos);
+
+const reader = new StateReader(contract.inner.stateLayout!);
+const rootUtxos = await provider.getUtxos(contract.inner.tokenAddress);
+const masters = reader.findMasterUtxos(rootUtxos, contract.categoryId);
 ```
 
-### Read Individual Variables
+`getState()` reconstructs the global values from the data NFTs. To select a particular master for a write, use a
+`ThreadHandle`, not the compatibility `masterUtxo` returned by a general state read.
 
-```typescript
-const counter = await sc.state.counter();
-const allState = await sc.getState();
-```
+## Safety checklist
 
-## Reading Events
-
-```typescript
-import {
-    readEventsFromChain,
-    readAnonymousEventsFromChain,
-    getEventNftAddress,
-    getAnonymousEventNftAddress,
-} from 'solidcash';
-
-// Named events
-const eventAddr = getEventNftAddress(contract.inner, categoryId, 'Transfer');
-const transferDef = artifact.abi.find(e => e.name === 'Transfer');
-const events = await readEventsFromChain(provider, eventAddr, categoryId, transferDef);
-
-for (const evt of events) {
-    console.log(`${evt.values.from} -> ${evt.values.to}: ${evt.values.amount}`);
-}
-
-// Anonymous events
-const anonAddr = getAnonymousEventNftAddress(contract.inner, categoryId);
-const anonEvents = await readAnonymousEventsFromChain(
-    provider, anonAddr, categoryId, anonymousEventDefs
-);
-```
-
-### Event Object Shape
-
-```typescript
-interface ParsedEvent {
-    txid: string;                        // transaction that emitted the event
-    vout: number;                        // output index
-    values: Record<string, StateValue>;  // decoded parameters
-    eventName?: string;                  // for anonymous: matched event name
-}
-```
-
-## Covenant Address Helpers
-
-The SDK provides functions to compute the addresses of each covenant NFT type:
-
-```typescript
-import {
-    getDataNftAddress,
-    getEntryNftAddress,
-    getEventNftAddress,
-    getAnonymousEventNftAddress,
-    getTokenContainerAddress,
-    getSatoshiContainerAddress,
-} from 'solidcash';
-
-const dataNftAddr = getDataNftAddress(contract.inner, categoryId);
-const entryAddr = getEntryNftAddress(contract.inner, categoryId, 'balances');
-const eventAddr = getEventNftAddress(contract.inner, categoryId, 'Transfer');
-const anonEventAddr = getAnonymousEventNftAddress(contract.inner, categoryId);
-const tokenAddr = getTokenContainerAddress(contract.inner, categoryId, tokenCat);
-const satoshiAddr = getSatoshiContainerAddress(contract.inner, categoryId);
-```
-
-## Auto-Derivation Deep Dive
-
-When you call `sc.call.myFunc(args).send()`, the SDK performs iterative auto-derivation:
-
-1. **Phase 1 - External contracts**: If the function reads or calls external contracts, derive their state and return values first.
-2. **Phase 2 - This contract**: Iteratively derive state changes, entry modifications, event emissions, and transfers.
-3. **Convergence**: Each iteration re-runs the VM with updated state until the output matches the previous iteration (or max 20 iterations).
-4. **Oscillation detection**: If state oscillates between two values, the derivation fails with a descriptive error.
-
-The key safety property: **the VM script is the final arbiter**. If auto-derivation produces wrong state, the transaction will simply fail (script returns false), not produce a wrong transaction.
-
-:::tip
-Auto-derivation works automatically for most cases. Manual overrides (`.setState()`, `.withEntryKey()`, `.transfer()`) are needed when:
-- Mapping keys are computed from expressions (not direct parameters)
-- Multiple external contracts interact in complex ways
-- You want to override the auto-derived transfer amounts
-:::
+- Ensure every important ABI function fits at least one partition.
+- Treat `external` field placement and the resulting `stateLayout` as upgrade-critical ABI.
+- Remember that vmap, chunks, containers, or external callees can remain shared inputs.
+- Refresh or rediscover after every successful spend and rebuild after conflicts.
+- Cap split/merge fees and validate change/dust amounts.
+- Never expose an unauthenticated `unsafe` gate.
+- Test two supposedly parallel calls together and assert their input outpoint sets are disjoint.

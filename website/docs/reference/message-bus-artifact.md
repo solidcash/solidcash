@@ -12,9 +12,10 @@ after changing message-bus artifact fields or limits.
 | Artifact source | Value |
 | --- | ---: |
 | `ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS` | 8 |
-| `ATOMIC_MESSAGE_BUS_MAX_ROWS` | 24 |
-| `MAX_MESSAGE_BUS_BLOB_BYTES` | 223 bytes |
+| `ATOMIC_MESSAGE_BUS_MAX_ROWS` | 0xffff |
+| `MAX_MESSAGE_BUS_BLOB_BYTES` | 520 bytes |
 | `ATOMIC_MESSAGE_BUS_DOMAIN_HEX` | `4c33425553310000` |
+| `P2SH_BYTECODE_LIMIT` | 10_000 bytes |
 
 These are admission ceilings. Finalized transaction size and BCH-2026 VM preflight can impose a smaller limit for
 a resource-heavy graph.
@@ -25,10 +26,57 @@ a resource-heavy graph.
 | --- | --- |
 | `version` | `1` |
 | `selector` | `'53434231'` |
+| `routeInBytecode` | `boolean` |
+| `convention` | `'legacy-unroll' \| 'kernel-row-loop'` |
+| `available` | `boolean` |
+| `admittedHandlerIds` | `readonly string[]` |
+| `refusedHandlerIds` | `readonly string[]` |
+| `admissionSource` | `'attribution-spans' \| 'legacy-eligibility'` |
 | `minimumRows` | `number` |
 | `maximumRows` | `number` |
 | `maximumBlobBytes` | `number` |
+| `resourceBudgets` | `MessageBusResourceBudgets` |
+| `deployability` | `DeployabilityCertificate` |
+| `capabilitySchema` | `KernelCapabilitySchema` |
+| `tokenContainerCoLayout` | `TokenContainerCoLayoutProof` |
 
 The nested `atomicMessageBus` record publishes message-envelope placement and participant/row bounds. The
 `verifierProgram` record is deployment material for the artifact-specialized self-preserving verifier; it is not
 an execution controller.
+
+## Per-route ceilings
+
+`maximumRows` and `maximumBlobBytes` are the ceilings for this artifact's own route rather than the shared
+constants above. A kernel row loop publishes the BCH-2026 stack-item ceiling (10,000 bytes) and its one-byte row
+count (255 rows). A legacy unrolled route keeps the historical 520-byte envelope and eight rows, or two rows for
+a resource-shaped batch. A route fits the 10,000-byte P2SH limit only when its `deployability` certificate says
+it does.
+
+## Kernel-beta records
+
+`admittedHandlerIds`, `refusedHandlerIds`, and `admissionSource` are the **admission stamp**: which handlers
+analysis admitted and how the decision was produced, independent of the published `handlers[].eligible` flags.
+`admissionSource` is `attribution-spans` on the kernel path and `legacy-eligibility` on the legacy path; a
+kernel artifact whose admission analysis is missing fails closed instead of falling back.
+
+`resourceBudgets` publishes multi-axis worst-case budgets (rows, participants, blob bytes, dynamic chunks,
+value-continuation chunks, journal records, events, transfers, return carriers, external edges, and
+`maximumSemanticDerivationPasses`). `messageBus.compose()` prefers these over SDK constants and fails closed
+on the kernel path when the field is absent.
+
+`deployability` is a concrete certificate: `status` is `asserted` when `measuredBytecodeBytes` fits
+`P2SH_BYTECODE_LIMIT` and `over-budget` when it does not, alongside the measured size, the limit, and the
+mirrored budgets. Absence means a legacy artifact that carries no certificate. `utils.assertDeployabilityCertificate()`
+fails closed for both an over-budget and a missing certificate.
+
+`capabilitySchema` stamps one concrete status per optional capability (`asserted`, `legacy`,
+`unsupported`, `inactive`, `incomplete`) so consumers never read `undefined` as an implicit meaning.
+Resolve entries with `utils.resolveKernelCapability()` and `utils.assertKernelCapabilityStatus()` rather than
+testing the optional fields directly.
+
+`kernelExecutionPlans` commits one digest per admitted handler into the route bytecode; each `digest` appears as
+a unique push/drop marker in `artifact.bytecode`. Readers gate on `kernelPlanVersion` through
+`messageBus.assertReadableKernelExecutionPlans()`.
+
+`tokenContainerCoLayout` is a non-overlapping span proof for a route that reserves token-container slots beside
+trailing dynamic-value capacity.

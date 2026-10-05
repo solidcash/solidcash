@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { resolveDynamicChunkInputBase } from '../../../src/stateful/StatefulContract.js';
 import { resolveParticipantAbsoluteWitnesses } from '../../../src/message-bus/layout-resolver.js';
+import { decodeLayoutCoordinate } from '../../../src/message-bus/layout-sentinels.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
@@ -92,15 +93,9 @@ describe('kernel local probe witness rebase', () => {
       (input) => input.name === '__internal__dynamicChunkInputBase',
     );
     expect(dynamicBasePosition).toBeGreaterThanOrEqual(0);
-    const publishedAbsoluteDyn = Number(routeUnlocker.params[dynamicBasePosition] as bigint);
-    expect(publishedAbsoluteDyn).toBeGreaterThanOrEqual(0);
 
-    // Aggregate absolute base must equal publishedBase + localSlot for the participant-local zero slot.
-    expect(resolveDynamicChunkInputBase(0, publishedAbsoluteDyn)).toBe(BigInt(publishedAbsoluteDyn));
-    // A non-zero local slot rebases by addition onto the published participant span.
-    expect(resolveDynamicChunkInputBase(2, publishedAbsoluteDyn)).toBe(BigInt(publishedAbsoluteDyn + 2));
-
-    // transaction layout authority: filled unlocker dyn base matches one resolveParticipantAbsoluteWitnesses (compose path).
+    // The selected bump row preserves label's chunk without writing it. Its witness must carry the exact
+    // physical chunk coordinate tagged as inactive, not an active write coordinate.
     const trailingBase = storeArtifact.messageBus?.route?.blockLayout?.trailingBase;
     expect(typeof trailingBase).toBe('number');
     const expected = resolveParticipantAbsoluteWitnesses({
@@ -112,11 +107,16 @@ describe('kernel local probe witness rebase', () => {
       ),
       trailingBase: trailingBase as number,
       trailingCapacity: storeArtifact.messageBus?.route?.blockLayout?.trailingCapacity,
-      dynChunkCount: 0,
+      dynChunkCount: 1,
     });
     expect(expected.dynamicChunkInputBase).toBeDefined();
-    expect(BigInt(publishedAbsoluteDyn)).toBe(expected.dynamicChunkInputBase);
-    expect(routeUnlocker.params[dynamicBasePosition]).toBe(expected.dynamicChunkInputBase);
+    const publishedAbsoluteDyn = Number(expected.dynamicChunkInputBase);
+    expect(decodeLayoutCoordinate(routeUnlocker.params[dynamicBasePosition] as bigint)).toEqual({
+      kind: 'inactive', preservedIndex: publishedAbsoluteDyn,
+    });
+    expect(routeUnlocker.params[dynamicBasePosition]).toBe(
+      resolveDynamicChunkInputBase(0, publishedAbsoluteDyn, false),
+    );
 
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     expect(sourceOutputs[publishedAbsoluteDyn]?.token).toMatchObject({

@@ -6,8 +6,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  bindBuilderConstraintFixpoint,
+  builderConstraintFixpoint,
   createConstraintFixpointSession,
 } from '../../src/message-bus/constraint-fixpoint-session.js';
+import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import {
   createCompositionSettlementSession,
   finalizeActiveConstraintFixpoint,
@@ -22,6 +25,33 @@ import {
 const messageBusDir = join(dirname(fileURLToPath(import.meta.url)), '../../src/message-bus');
 
 describe('constraint fixpoint ConstraintFixpointSession', () => {
+  it('keeps provisional builders bound to one explicit composition owner', () => {
+    const first = {} as TransactionBuilder;
+    const next = {} as TransactionBuilder;
+    const other = {} as TransactionBuilder;
+    const session = createConstraintFixpointSession();
+    const independent = createConstraintFixpointSession();
+    bindBuilderConstraintFixpoint(first, session);
+    bindBuilderConstraintFixpoint(next, session);
+    bindBuilderConstraintFixpoint(other, independent);
+    expect(builderConstraintFixpoint(next)).toBe(session);
+    expect(builderConstraintFixpoint(other)).toBe(independent);
+    expect(() => bindBuilderConstraintFixpoint(first, independent)).toThrow(/composition owner/);
+    recordActiveConstraintPass('semantic-claim', 'initial', 'cycle', session);
+    expect(selectActiveConstraintCandidate('resource', ['r0'], 'cycle', builderConstraintFixpoint(next)))
+      .toEqual({ stateKey: 'r0', index: 0 });
+    expect(selectActiveConstraintCandidate('resource', ['r0'], 'cycle', builderConstraintFixpoint(other)))
+      .toEqual({ stateKey: 'r0', index: 0 });
+    expect(() => runActiveConstraintSpeculative((tracker) => {
+      tracker.recordDomainPass('value-chunk', 'v0');
+      throw new Error('refused');
+    }, session)).toThrow('refused');
+    expect(session.domainNames()).toEqual(['resource', 'semantic-claim']);
+    finalizeActiveConstraintFixpoint(session);
+    expect(independent.getPhase()).toBe('running');
+    expect(independent.domainNames()).toEqual(['resource']);
+  });
+
   it('records per-domain passes and finalizes joint state', () => {
     const session = createConstraintFixpointSession();
     expect(session.getPhase()).toBe('open');

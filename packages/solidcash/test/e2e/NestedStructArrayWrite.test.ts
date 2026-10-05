@@ -90,6 +90,30 @@ const SRC = `contract C {
   }
 }`;
 
+const BOOL_SRC = `contract C {
+  struct Roles { address creator; address arbitrator; address worker; }
+  struct Post {
+    bool whitelistWorkers;
+    Roles roles;
+    string title;
+    string[] tags;
+    bool multipleApplicants;
+    uint256 amount;
+  }
+  Post[] jobs;
+  function w(address a) public {
+    jobs.push();
+    jobs[0].multipleApplicants = true;
+    jobs[0].roles.arbitrator = a;
+    jobs[0].amount = 100;
+  }
+  function chk(address a) public view {
+    require(jobs[0].multipleApplicants);
+    require(jobs[0].roles.arbitrator == a);
+    require(jobs[0].amount == 100);
+  }
+}`;
+
 describe('nested struct-array element write (runtime, sibling preservation)', () => {
   const A = '0x1111111111111111111111111111111111111111';
   const B = '0x2222222222222222222222222222222222222222';
@@ -113,5 +137,10 @@ describe('nested struct-array element write (runtime, sibling preservation)', ()
     const sc = await mk(SRC);
     await expect(sc.wConditional(A, B).send()).resolves.toBeDefined();
     await expect(sc.chkConditional(A, B).send()).resolves.toBeDefined();
+  });
+  it('preserves a true boolean across later variable-width struct-array field writes', async () => {
+    const sc = await mk(BOOL_SRC);
+    await expect(sc.w(A).send()).resolves.toBeDefined();
+    await expect(sc.chk(A).send()).resolves.toBeDefined();
   });
 });

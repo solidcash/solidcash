@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex } from '@bitauth/libauth';
-import { compileStringSplit } from 'solidc';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { compileString, compileStringSplit } from 'solidc';
 import { messageBusVerifierCommitment, parsePushdataCommitment } from '@solidcash/utils';
-import { Signer, SplitContractBundle, deriveLogicalCreateAddress, upgrades } from '../../src/index.js';
+import {
+  Contract, Signer, SplitContract, SplitContractBundle, StatefulContract,
+  deriveLogicalCreateAddress, upgrades,
+} from '../../src/index.js';
 import { alicePub } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
 const SOURCE = `
 contract SplitCounter() {
@@ -50,7 +53,7 @@ function stateFromTx(tx: any, category: string, layout: any): Record<string, big
 }
 
 describe('split contract SDK', () => {
-  it('deploys branded master-only facets and routes calls into one shared root state', async () => {
+  it('deploys branded facets without application data NFTs and routes calls into one shared root state', async () => {
     const signer = await fundedSigner();
     const compiled = compileStringSplit(SOURCE, { forceSplit: true });
     const sdk = SplitContractBundle.from(compiled, signer);
@@ -164,5 +167,75 @@ describe('split contract SDK', () => {
       initialState: { __block_timestamp: 0n, __blockOracleOwner: alicePub },
     });
     expect((await deployed.root.getState()).value).toBe(7n);
+  });
+
+  it('settles a typed graph call through a verifier-bound split facet', async () => {
+    const signer = await fundedSigner();
+    const provider = signer.provider;
+    const peerArtifact = compileString(`contract Peer() {
+      int stored;
+      function ping(int next) { this.stored = next; require(next >= 0); }
+    }`);
+    const peerContract = new Contract(peerArtifact, [], { provider });
+    const { categoryId: peerCategory } = await setupStatefulUtxos(
+      provider, peerContract, peerArtifact.stateLayout!, { stored: 0n }, { saltContract: true },
+    );
+    const peer = StatefulContract.withCategory(peerContract, peerCategory);
+    const bundle = compileStringSplit(`interface IPeer { function ping(int value) external; }
+      contract GraphFacet {
+        int value;
+        function step(address target, int next) public {
+          IPeer(target).ping(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, {
+      solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      messageBusGraphContext: true, optimizeForCompilationSpeed: true,
+      suppressWarnings: true, forceSplit: true,
+    });
+    const deployed = await SplitContractBundle.from(bundle, signer).deploy([], {
+      initialState: { value: 0n },
+    });
+    const facetName = bundle.manifest.facets[0].name;
+    const facet = deployed.facets[facetName];
+    const connectedFacet = StatefulContract.withCategory(facet.inner, facet.categoryId, {
+      externals: { IPeer: peer },
+    }).connect(signer);
+    const routed = new SplitContract(bundle, deployed.root, {
+      ...deployed.facets, [facetName]: connectedFacet,
+    }, deployed.deploymentTransactions);
+    const target = peerContract.withCategory(hexToBin(peerCategory)).lockingBytecode;
+    const tx = await routed.call.step(target, 7n).send();
+    expect(stateFromTx(tx, deployed.categoryId, bundle.root.stateLayout).value).toBe(7n);
+    expect((await peer.getState()).stored).toBe(7n);
+  });
+
+  it('returns a complete fixed array through a split facet on-chain', async () => {
+    const signer = await fundedSigner();
+    const bundle = compileStringSplit(`pragma solidity ^0.8.7;
+      uint8 constant B=0; uint8 constant S=1; uint8 constant M=2;
+      uint8 constant P=3; uint8 constant A=4;
+      contract ReturnFacet {
+        uint256 total;
+        function calculate(uint256 amount) internal pure returns(uint256[5] memory) {
+          uint256[5] memory payments;
+          payments[B]=amount/10; payments[S]=amount/5; payments[M]=amount/5;
+          payments[A]=amount/10;
+          payments[P]=amount-payments[B]-payments[S]-payments[M]-payments[A];
+          return payments;
+        }
+        function claim(uint256 amount) external returns(uint256[5] memory) {
+          uint256[5] memory payments=calculate(amount);
+          this.total=amount; require(amount>0);
+          return [payments[B],payments[S],payments[M],payments[P],payments[A]];
+        }
+      }`, { solidityImportCompat: true, messageBus: false, forceSplit: true });
+    const deployed = await SplitContractBundle.from(bundle, signer).deploy([], {
+      initialState: { total: 0n },
+    });
+    expect(await deployed.call.claim(100n).staticCall()).toEqual([10n, 20n, 20n, 40n, 10n]);
+    const tx = await deployed.call.claim(100n).emitReturn().send();
+    expect(stateFromTx(tx, deployed.categoryId, bundle.root.stateLayout).total).toBe(100n);
   });
 });

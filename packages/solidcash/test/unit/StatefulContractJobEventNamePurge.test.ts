@@ -60,7 +60,7 @@ describe('legacy JobEvent name adapter StatefulContract JobEvent name purge', ()
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(join(here, '../../src/stateful/StatefulContract.ts'), 'utf8');
     expect(src).toContain('legacyIsPublishJobEventName');
-    // legacy JobEvent name adapter: planning-heuristics direct; legacy JobEvent helper facade: JobEvent helper facade re-exports the same helpers.
+    // The legacy JobEvent adapter re-exports the same planning helpers.
     expect(
       src.includes("from './legacy-planning-heuristics.js'")
       || src.includes("from './legacy-job-event-helpers.js'"),

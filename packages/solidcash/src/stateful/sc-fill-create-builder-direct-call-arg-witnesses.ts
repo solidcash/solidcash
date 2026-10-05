@@ -13,6 +13,8 @@ import { addressToLockScript } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { logicalIdentityBandKey, resolveLogicalIdentity } from './logical-identity.js';
 import { externalCallTargetSourceLockingBytecodeHex } from './mapping-key-lookup.js';
+import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { selectorParamSlot } from './physical-external-call.js';
 import type { CreateBuilderLoopIdxRange } from './sc-expand-resolve-create-builder-external-calls.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 
@@ -33,7 +35,8 @@ export interface FillCreateBuilderDirectCallArgWitnessesHost {
 
 export type CreateBuilderAnchorFillPosition = {
   argIndex: number;
-  band: number;
+  band?: number;
+  categoryId?: string;
   proxyRoute: boolean;
 };
 
@@ -81,6 +84,115 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     identityAnchorBandByAddress, externalCallAnchorIndices, topLevelAnchorFillPositions,
     topLevelReturnWitnessPlan, topLevelReturnWitnessGroups,
   } = params;
+
+  // Conditional callsites retain their ABI slot numbers when inactive, while the physical groups compact.
+  // Fill this topology by ABI name; appending one witness per physical group would put the later group's
+  // master index into an earlier omitted bytes4 selector slot.
+  const publishedCalls = abiFunction.externalCalls ?? [];
+  const slotByCallsite = new Map(publishedCalls.flatMap((call, slot) => call.callsiteId === undefined
+    ? [] : [[call.callsiteId, slot] as const]));
+  const physicalSlot = (groupIndex: number): number => {
+    const id = groupMetas[groupIndex]?.ecSlot.callsiteId;
+    return id === undefined ? groupIndex : slotByCallsite.get(id) ?? groupIndex;
+  };
+  const resolveAnchorBand = async (groupIndex: number, slot: number): Promise<number | undefined> => {
+    const anchorSlot = publishedCalls[slot] as {
+      addressParam?: string; addressLiteral?: string; addressIsMsgSender?: boolean;
+      addressSource?: unknown; addressStateVar?: string;
+    } | undefined;
+    if (!anchorSlot?.addressParam || anchorSlot.addressLiteral !== undefined
+      || anchorSlot.addressIsMsgSender) return undefined;
+    const group = externalCallUtxoGroups[groupIndex];
+    const callee = group?.externalContract as CreateBuilderCalleeContract | undefined;
+    const logicalAddress = callee?._logicalAddress ?? callee?.target ?? callee?.address;
+    if (!logicalAddress) return undefined;
+    const logicalLbc = binToHex(addressToLockScript(logicalAddress));
+    const spentUnlocker = group?.masterUtxo && 'unlocker' in group.masterUtxo
+      ? group.masterUtxo.unlocker : undefined;
+    const spentLock = spentUnlocker
+      ? binToHex(spentUnlocker.generateLockingBytecode()) : callee!.inner.lockingBytecode;
+    const call = abiFunction.externalCalls?.[slot];
+    const resolvedAddressSource = call?.addressSource
+      ? host.resolveExternalArgs(
+        [call.addressSource], args, host.inner.artifact,
+        callerStateSnapshot ?? onChainState.state, abiFunction.inputs,
+        undefined, 0, false, publicSelfAddress,
+      )?.[0]
+      : call?.addressStateVar
+        ? (callerStateSnapshot ?? onChainState.state)[call.addressStateVar] as FunctionArgument | undefined
+        : undefined;
+    if (externalCallTargetSourceLockingBytecodeHex(
+      abiFunction, slot, args, resolvedAddressSource,
+    ) === spentLock || logicalLbc === spentLock) return undefined;
+    const bandKey = logicalIdentityBandKey(logicalAddress);
+    let band = identityAnchorBandByAddress.get(bandKey);
+    if (band !== undefined) return band;
+    try {
+      const resolved = await resolveLogicalIdentity(host.inner.provider, logicalAddress);
+      band = identityAnchors.length;
+      identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
+      identityAnchorBandByAddress.set(bandKey, band);
+      return band;
+    } catch (error) {
+      if (!/missing or invalid/.test(error instanceof Error ? error.message : String(error))) throw error;
+      return undefined;
+    }
+  };
+  const sparse = (loopIdxRanges.length === 0 && directGroupCount < publishedCalls.length)
+    || Array.from({ length: directGroupCount }, (_, index) => physicalSlot(index))
+      .some((slot, index) => slot !== index);
+  if (sparse) {
+    if (loopIdxRanges.length > 0) {
+      throw new Error('Sparse direct-call witnesses cannot include an expanded loop slot');
+    }
+    const groupBySlot = new Map(Array.from({ length: directGroupCount }, (_, index) => (
+      [physicalSlot(index), index] as const
+    )));
+    const returningSlots = publishedCalls.flatMap((call, slot) => call.hasReturnValues ? [slot] : []);
+    for (const input of abiFunction.inputs) {
+      const selector = /^__internal__externalCallSelector(\d*)$/.exec(input.name);
+      const master = /^__internal__extcallMasterIdx(\d*)$/.exec(input.name);
+      const anchor = /^__internal__extcallAnchorIdx(\d*)$/.exec(input.name);
+      const returned = /^__internal__externalReturnOutputIdx(\d*)$/.exec(input.name);
+      if (!selector && !master && !anchor && !returned) continue;
+      const slot = returned ? returningSlots[Number(returned[1])]
+        : selector ? selectorParamSlot(input.name, publishedCalls)
+          : Number((master ?? anchor)![1]);
+      const groupIndex = slot === undefined ? undefined : groupBySlot.get(slot);
+      const group = groupIndex === undefined ? undefined : externalCallUtxoGroups[groupIndex];
+      let value: FunctionArgument = defaultInternalFunctionArg(input);
+      if (groupIndex !== undefined && group) {
+        if (selector) {
+          const selected = group.compilerRoute?.selector
+            ?? (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
+              .find((candidate) => candidate.name === group.functionName)?.selector;
+          if (selected === undefined) throw new Error(`No selector for direct callee '${group.functionName}'`);
+          value = typeof selected === 'string' ? hexToBin(selected) : selected;
+        } else if (master) value = BigInt(groupMasterIndices[groupIndex]);
+        else if (anchor) {
+          const band = await resolveAnchorBand(groupIndex, slot);
+          if (band !== undefined) {
+            topLevelAnchorFillPositions.push({
+              argIndex: abiFunction.inputs.findIndex((candidate) => candidate.name === input.name),
+              band,
+              proxyRoute: group.functionName === '__forward' || group.delegateCallGroupIndex !== undefined,
+            });
+          }
+          value = externalCallAnchorIndices.get(groupIndex) ?? -1n;
+        }
+        else if (returned) {
+          const outputIndex = returnEventIndexMap.get(groupIndex);
+          if (outputIndex !== undefined) value = BigInt(outputIndex);
+        }
+      } else if (master || anchor || returned) value = -1n;
+      finalArgs = materializeInternalFunctionArgument(finalArgs, abiFunction.inputs, input.name, value);
+      if (returned) {
+        topLevelReturnWitnessPlan.push(typeof value === 'bigint' ? value : -1n);
+        topLevelReturnWitnessGroups.push(groupIndex ?? -1);
+      }
+    }
+    return finalArgs;
+  }
 
   // Resolve 4-byte hash selector from B's ABI - only for A's DIRECT external calls.
   // Transitive call selectors are handled above as part of B's hidden params.
@@ -171,44 +283,7 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     if (!anchorSlot.addressParam || anchorSlot.addressLiteral !== undefined
       || anchorSlot.addressIsMsgSender) continue;
     const group = externalCallUtxoGroups[i];
-    const callee = group?.externalContract as CreateBuilderCalleeContract | undefined;
-    const logicalAddress = callee?._logicalAddress ?? callee?.target ?? callee?.address;
-    let band: number | undefined;
-    if (logicalAddress) {
-      const logicalLbc = binToHex(addressToLockScript(logicalAddress));
-      const spentUnlocker = group?.masterUtxo && 'unlocker' in group.masterUtxo
-        ? group.masterUtxo.unlocker : undefined;
-      const spentLock = spentUnlocker
-        ? binToHex(spentUnlocker.generateLockingBytecode())
-        : callee!.inner.lockingBytecode;
-      const call = abiFunction.externalCalls?.[i];
-      const resolvedAddressSource = call?.addressSource
-        ? host.resolveExternalArgs(
-          [call.addressSource], args, host.inner.artifact,
-          callerStateSnapshot ?? onChainState.state, abiFunction.inputs,
-          undefined, 0, false, publicSelfAddress,
-        )?.[0]
-        : call?.addressStateVar
-          ? (callerStateSnapshot ?? onChainState.state)[call.addressStateVar] as FunctionArgument | undefined
-          : undefined;
-      const directArgument = externalCallTargetSourceLockingBytecodeHex(
-        abiFunction, i, args, resolvedAddressSource,
-      ) === spentLock;
-      if (!directArgument && logicalLbc !== spentLock) {
-        const bandKey = logicalIdentityBandKey(logicalAddress);
-        band = identityAnchorBandByAddress.get(bandKey);
-        if (band === undefined) {
-          try {
-            const resolved = await resolveLogicalIdentity(host.inner.provider, logicalAddress);
-            band = identityAnchors.length;
-            identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
-            identityAnchorBandByAddress.set(bandKey, band);
-          } catch (error) {
-            if (!/missing or invalid/.test(error instanceof Error ? error.message : String(error))) throw error;
-          }
-        }
-      }
-    }
+    const band = await resolveAnchorBand(i, i);
     if (band === undefined) {
       // -2 selects the authenticated compiler-route selector witness while
       // retaining ordinary direct locking-bytecode identity. -1 is the

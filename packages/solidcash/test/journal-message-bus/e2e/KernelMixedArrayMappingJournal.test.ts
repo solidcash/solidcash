@@ -55,9 +55,16 @@ describe('kernel independently indexed dynamic-array and mapping journals', () =
     builder: TransactionBuilder;
   };
 
-  const build = async (): Promise<Setup> => {
+  const build = async (rows: Array<{ function: string; args: bigint[] }> = [
+    { function: 'revise', args: [2n, 5n, 70n] },
+    { function: 'revise', args: [0n, 5n, 40n] },
+    { function: 'revise', args: [1n, 5n, 60n] },
+  ], initializeBeforeBatch = true, entryPoolCapacity?: number): Promise<Setup> => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE, KERNEL);
+    const artifact = compileString(SOURCE, {
+      ...KERNEL,
+      ...(entryPoolCapacity !== undefined && { messageBusEntryPoolCapacity: entryPoolCapacity }),
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'revise'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
@@ -65,12 +72,8 @@ describe('kernel independently indexed dynamic-array and mapping journals', () =
       provider, inner, artifact.stateLayout!, { sequence: [], mirror: [] }, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    await contract.initialize().send();
-    const call = contract.batch([
-      { function: 'revise', args: [2n, 5n, 70n] },
-      { function: 'revise', args: [0n, 5n, 40n] },
-      { function: 'revise', args: [1n, 5n, 60n] },
-    ]);
+    if (initializeBeforeBatch) await contract.initialize().send();
+    const call = contract.batch(rows);
     const fee = await createBareP2pkhFeeFunder(provider);
     call.addInput(fee.utxo, fee.unlocker);
     const builder = await call.build();
@@ -95,6 +98,63 @@ describe('kernel independently indexed dynamic-array and mapping journals', () =
     await setup.contract.checkSequence(1n, 60n).send();
     await setup.contract.checkSequence(2n, 70n).send();
     await setup.contract.checkRecord(5n, 160n).send();
+    await setup.contract.checkMirror(0n, 1140n).send();
+    await setup.contract.checkMirror(1n, 1160n).send();
+    await setup.contract.checkMirror(2n, 1170n).send();
+  }, 180_000);
+
+  it('keeps two mapping keys separate across interleaved array writes', async () => {
+    const setup = await build([
+      { function: 'revise', args: [2n, 5n, 70n] },
+      { function: 'revise', args: [0n, 6n, 40n] },
+      { function: 'revise', args: [1n, 5n, 60n] },
+    ]);
+    expect(evaluate(setup).every((result) => result === true)).toBe(true);
+    await expect(setup.call.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await setup.contract.checkSequence(0n, 40n).send();
+    await setup.contract.checkSequence(1n, 60n).send();
+    await setup.contract.checkSequence(2n, 70n).send();
+    await setup.contract.checkRecord(5n, 160n).send();
+    await setup.contract.checkRecord(6n, 140n).send();
+    await setup.contract.checkMirror(0n, 1140n).send();
+    await setup.contract.checkMirror(1n, 1160n).send();
+    await setup.contract.checkMirror(2n, 1170n).send();
+  }, 180_000);
+
+  it('threads an initialization row into later array and mapping writes', async () => {
+    const setup = await build([
+      { function: 'initialize', args: [] },
+      { function: 'revise', args: [2n, 5n, 70n] },
+      { function: 'revise', args: [0n, 5n, 40n] },
+    ], false);
+    expect(evaluate(setup).every((result) => result === true)).toBe(true);
+    await expect(setup.call.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await setup.contract.checkSequence(0n, 40n).send();
+    await setup.contract.checkSequence(1n, 20n).send();
+    await setup.contract.checkSequence(2n, 70n).send();
+    await setup.contract.checkRecord(5n, 140n).send();
+    await setup.contract.checkMirror(0n, 1140n).send();
+    await setup.contract.checkMirror(1n, 2n).send();
+    await setup.contract.checkMirror(2n, 1170n).send();
+  }, 180_000);
+
+  it('settles three independent mapping keys beside array writes', async () => {
+    const setup = await build([
+      { function: 'revise', args: [2n, 5n, 70n] },
+      { function: 'revise', args: [0n, 6n, 40n] },
+      { function: 'revise', args: [1n, 7n, 60n] },
+    ], true, 3);
+    expect(evaluate(setup).every((result) => result === true)).toBe(true);
+    await expect(setup.call.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await setup.contract.checkRecord(5n, 170n).send();
+    await setup.contract.checkRecord(6n, 140n).send();
+    await setup.contract.checkRecord(7n, 160n).send();
     await setup.contract.checkMirror(0n, 1140n).send();
     await setup.contract.checkMirror(1n, 1160n).send();
     await setup.contract.checkMirror(2n, 1170n).send();

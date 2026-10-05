@@ -5,6 +5,7 @@ export * from './block-layout.js';
 export * from './bip68.js';
 export * from './bitauth-script.js';
 export * from './data.js';
+export * from './decoded-result.js';
 export * from './fingerprint.js';
 export * from './domain-separated-fingerprint.js';
 export * from './hash.js';

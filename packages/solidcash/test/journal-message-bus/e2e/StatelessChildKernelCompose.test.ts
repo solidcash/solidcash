@@ -80,6 +80,7 @@ describe('kernel stateless child construction', () => {
     });
     expect(await provider.getUtxos(containerAddress)).toHaveLength(1);
     const fundedHandler = artifacts.FundFactory.messageBus?.handlers.find((candidate) => candidate.name === 'fund');
+    expect(artifacts.FundFactory.messageBus?.maximumRows).toBe(255);
     const derived = fundedHandler?.transfers?.[0]?.derivedRecipient;
     expect(derived).toBeDefined();
     const derivedChild = (seed: bigint): Contract => new Contract({
@@ -108,5 +109,17 @@ describe('kernel stateless child construction', () => {
         inputIndex, sourceOutputs: fundedSourceOutputs, transaction: fundedTransaction,
       })), `funded input ${inputIndex}`).toBe(true);
     }
+    const masterToken = fundedTransaction.outputs[0]?.token;
+    expect(masterToken?.nft?.capability).toBe('minting');
+    const forgedMintTransaction = {
+      ...fundedTransaction,
+      outputs: [
+        ...fundedTransaction.outputs,
+        { ...fundedTransaction.outputs[0], valueSatoshis: 1_000n, token: masterToken },
+      ],
+    };
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: 0, sourceOutputs: fundedSourceOutputs, transaction: forgedMintTransaction,
+    }))).not.toBe(true);
   }, 180_000);
 });

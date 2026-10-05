@@ -3,95 +3,16 @@
  * (phase-boundary extract from compose.ts).
  */
 
-import { bigIntToVmNumber, binToHex, binToUtf8, hexToBin, sha1, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
-import {
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
-  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, ripemd160, hash160, hash256, buildEventNftCovenantScript,
-  buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
-  buildEntryCommitment, buildInitialStateCommitments, buildPushdataCommitment, bytecodeToScript, scriptToAsm,
-  AddressType, BytesType, FixedType, IntType,
-  parsePushdataCommitment, parseTypeStrict, PrimitiveType,
-  childStateLayoutDigest,
-  validateChildDeploymentGenesisState,
-  getDefaultStateValue,
-} from '@solidcash/utils';
-import type {
-  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateLayout, StateValue,
-  StructDefinitionInfo,
-} from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth';
+import type { Artifact, StateValue } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
-import type {
-  ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
-} from '../interfaces.js';
-import { isContractUnlocker } from '../interfaces.js';
-import { TransactionBuilder } from '../TransactionBuilder.js';
-import { Contract } from '../Contract.js';
-import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
+import type { UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
+import type { ValueChunkWriteDescriptor } from '../stateful/StatefulTransactionBuilder.js';
+import type { PlannedGraphInvocation } from './graph.js';
 import {
-  decodeAuthenticatedProducerResultVector, evalComputedKey, isCanonicalEvmScalarReturnVector,
-  StatefulContract, StatefulFunctionCall,
-} from '../stateful/StatefulContract.js';
-import {
-  chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment,
-  valueChunkWriteResourceIdentity, type ValueChunkWriteDescriptor,
-} from '../stateful/StatefulTransactionBuilder.js';
-import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
-import type NetworkProvider from '../network/NetworkProvider.js';
-import {
-  resolveLogicalIdentity, type ResolvedLogicalIdentity,
-} from '../stateful/logical-identity.js';
-import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
-import { tryParseEventCommitment } from '../stateful/StateReader.js';
-import {
-  createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker, getDataNftAddress,
-  getEntryNftLockingBytecode, getMessageBusVerifierLockingBytecodeForArtifact,
-} from '../stateful/covenant-helpers.js';
-import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
-import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
-import { assertAtomicParticipantCapacity } from './capacity.js';
-import {
-  finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, selectedGraphEventOffsets,
-  type AtomicDeploymentSlotEffect, type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
-  type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
-  type PlannedGraphInvocation,
-} from './graph.js';
-import {
-  encodeMessageBatch, preparedCallMatchesPlanInvocation,
-  resolveMessageBusAbiFunction, resolveMessageBusHandler,
-} from './message-bus.js';
-import {
-  convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
-} from './preflight.js';
-import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
-import {
-  convergeMessageBusComputedDynamicChunkOutputs,
-  dynamicChunkPlaceholdersRemain,
-} from './computed-dynamic-chunks.js';
-import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
-import {
-  applyParticipantAbsoluteWitnesses,
-  resolveComposeTransactionLayoutAuthority,
-  trailingCapacityExcludingFixedSuffix,
-  type ComposeParticipantLayoutClaims,
-  type SymbolicParticipantLayout,
-} from './layout-resolver.js';
-import {
-  authorizeComposeParticipantLayout,
-  clearComposeKernelAuthorityResults,
-} from './compose-kernel-authority.js';
-import {
-  findMessageBusHandlerForInvocation,
-} from './graph-handler-join.js';
-import { layoutInvariantError } from './diagnostics.js';
-import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
-import { allowsDeferredComputeVmDiscovery } from './materialization-mode.js';
-import {
-  buildTransportedContinuationResourceClaim,
-  canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
+  canonicalValueChunkProducerPathContext,
   canonicalValueChunkProducerResourceClaim,
-  canonicalValueChunkProducerResourceIdentity, canonicalValueChunkStateOwner,
-  orderTransportedContinuationResourceClaims,
-  type TransportedContinuationResourceClaim,
   type ValueChunkProducerPathDisposition, type ValueChunkProducerResourceClaim,
 } from '../stateful/ValueChunkProducerIdentity.js';
 
@@ -106,27 +27,8 @@ export {
   provisionalInvocationResult,
   evmInvocationResultLength,
   minimumActualSizeForComputedValueChunkClaims,
-  stickyKernelLeftoverScalarWrites,
 } from './compose-recipes.js';
 export type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
-import {
-  canSeedComputedValueChunkClaim,
-  canOwnTransportedContinuationSlot,
-  evaluateChildDeploymentRecipe,
-  materializeFixedBchTransfer,
-  materializeChildDeploymentEntryScalar,
-  materializeChildDeploymentEntryValue,
-  provisionalInvocationResult,
-  stickyKernelLeftoverScalarWrites,
-  minimumActualSizeForComputedValueChunkClaims,
-  evmInvocationResultLength,
-  // Internal helpers still used by AtomicMessageBusComposition orchestration:
-  fixedVmNumber,
-  concatBytes,
-  canonicalNativeResultField,
-  preparedInvocationResult,
-} from './compose-recipes.js';
-import type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
 
 export interface AtomicMessageBusFunder {
   utxo: Utxo;
@@ -185,6 +87,14 @@ export interface PreparedAtomicMessageBusCall {
   occurrenceIndex?: number;
   /** @internal Compiler-authored program point shared with entry mutations in the parent handler. */
   sourceEffectOrdinal?: number;
+  /** @internal Exact compiler outer-loop domain shared by callsites interleaved during graph discovery. */
+  topologyOuterDomainKey?: string;
+  /** @internal Reached outer induction iteration, before conditional calls are filtered. */
+  topologyOuterIteration?: number;
+  /** @internal Reached inner induction iteration for a compiler-published two-level call domain. */
+  topologyInnerIteration?: number;
+  /** @internal This parent's complete child order was reconstructed from compiler source-effect and loop IDs. */
+  topologySourceScheduleComplete?: boolean;
   /** @internal Independently derived root-to-invocation compiler source path. */
   producerPath?: ValueChunkProducerPathDisposition;
   /** @internal Exact terminal post-values authenticated while discovering this compiler call edge. */
@@ -197,6 +107,11 @@ export interface PreparedAtomicMessageBusCall {
   /** @internal Recompute terminal productions after authenticated sibling results change this call's arguments. */
   resolveValueChunkProductionsFromArgs?: (
     args: readonly FunctionArgument[],
+  ) => NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
+  /** @internal Refresh a write computed from this invocation's own authenticated child results. */
+  resolveValueChunkProductionsFromResults?: (
+    args: readonly FunctionArgument[],
+    results: ReadonlyMap<number, FunctionArgument>,
   ) => NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
   /** @internal Source-template identity for one runtime row of a collapsed repeated-call batch. */
   batchLogicalIndex?: number;
@@ -219,16 +134,17 @@ export interface PreparedAtomicMessageBusCall {
    * fixed-point seed: the composed transaction still has to expose the same result and pass every covenant.
    */
   provisionalResultCommitment?: Uint8Array;
-  /** @internal Rebuild complete arguments from authenticated sibling results, keyed by parent-local callsite. */
+  /** @internal Rebuild arguments from sibling results and the current parent frame, in graph source order. */
   resolveArgsFromResults?: (
     results: ReadonlyMap<number, FunctionArgument>,
+    parentArgs?: readonly FunctionArgument[],
   ) => readonly FunctionArgument[] | undefined;
 }
 
-// SDK-owned provenance for results the SDK learned itself, in graph discovery or a provisional composition pass.
-// Keep this symbol private: a caller-provided commitment must never be able to opt out of the strict prepared-result
-// comparison. It is enumerable only so internal descriptor spreads retain the mark across a result-dependent graph
-// rebuild; compose() snapshots caller objects via string-keyed entries and strips any caller-owned symbols.
+// SDK-owned provenance for results learned during a provisional composition pass. Keep this symbol private:
+// a caller-provided commitment must never be able to opt out of the strict prepared-result comparison. It is
+// enumerable only so internal descriptor spreads retain the mark across a result-dependent graph rebuild;
+// compose() snapshots caller objects via string-keyed entries and strips any caller-owned symbols.
 const transientConvergenceResultSeed = Symbol('transientConvergenceResultSeed');
 
 export function hasTransientConvergenceResultSeed(call: PreparedAtomicMessageBusCall): boolean {
@@ -237,9 +153,13 @@ export function hasTransientConvergenceResultSeed(call: PreparedAtomicMessageBus
   })[transientConvergenceResultSeed] === true;
 }
 
-/** Mark a result the SDK observed itself as a convergence seed rather than a caller-prepared commitment. */
-export function markTransientConvergenceResultSeed(call: PreparedAtomicMessageBusCall): void {
-  Object.defineProperty(call, transientConvergenceResultSeed, { value: true, enumerable: true });
+/** Preserve SDK-owned seed provenance when its discovered graph is defensively snapshotted. */
+export function copyTransientConvergenceResultSeed(
+  source: PreparedAtomicMessageBusCall, target: PreparedAtomicMessageBusCall,
+): void {
+  if (hasTransientConvergenceResultSeed(source)) {
+    Object.defineProperty(target, transientConvergenceResultSeed, { value: true, enumerable: true });
+  }
 }
 
 export interface CallDescriptor extends PreparedAtomicMessageBusCall {
@@ -266,7 +186,12 @@ export function assertPreparedInvocationIdentity(
     ? canonicalValueChunkProducerPathContext(plannedPath.context)
     : 'unavailable';
   if (preparedPathKey === undefined || preparedPathKey !== plannedPathKey) {
-    throw new Error(`messageBus: prepared invocation ${index} producer path disagrees with the compiled graph`);
+    throw new Error(`messageBus: prepared invocation ${index} producer path disagrees with the compiled graph`
+      + ` (${semanticJson({
+        function: descriptor.functionName,
+        prepared: descriptor.producerPath,
+        compiled: invocation.producerPath,
+      })})`);
   }
   // A transported selector authorizes a producer effect domain, so it must be the graph's own dispatch target.
   // The prepared side may legitimately withhold a selector (runtime-dispatched edges carry none), but a
@@ -365,7 +290,7 @@ export function rebuildPreparedInvocation(
   };
   if (!strictlyPrepared && (provisionalResultHex !== undefined
     || hasTransientConvergenceResultSeed(descriptor))) {
-    markTransientConvergenceResultSeed(rebuilt);
+    Object.defineProperty(rebuilt, transientConvergenceResultSeed, { value: true, enumerable: true });
   }
   return rebuilt;
 }

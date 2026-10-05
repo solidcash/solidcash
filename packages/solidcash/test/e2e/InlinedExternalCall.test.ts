@@ -21,7 +21,7 @@ interface ICounter { public bigint counter; function increment(pubkey owner, sig
 contract Reader() {
   ICounter counterRef;
   bigint bumps;
-  function _bumpHelper(ICounter c, pubkey pk, sig s) { c.increment(pk, s); require(checkSig(s, pk)); }
+  function _bumpHelper(ICounter c, pubkey pk, sig s) internal { c.increment(pk, s); require(checkSig(s, pk)); }
   function bump(pubkey pk, sig s) { require(checkSig(s, pk)); _bumpHelper(counterRef, pk, s); this.bumps = this.bumps + 1; }
 }`;
 

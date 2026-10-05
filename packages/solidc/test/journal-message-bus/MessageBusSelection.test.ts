@@ -17,6 +17,564 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(false);
   });
 
+  it('keeps fast default compilation direct and lean for a graph-free stateful contract', () => {
+    const options = { optimizeForCompilationSpeed: true };
+    const automatic = compileString(STATEFUL_LEAF, options);
+    const direct = compileString(STATEFUL_LEAF, { ...options, messageBus: false });
+    const optedIn = compileString(STATEFUL_LEAF, { ...options, messageBus: true });
+
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+    expect(automatic.bytecode.length).toBeLessThan(optedIn.bytecode.length);
+    expect(optedIn.messageBus).toBeDefined();
+  });
+
+  it('keeps a local helper call on the direct route', () => {
+    const artifact = compileString(`contract Local {
+      int value;
+      function next(int current) internal pure returns (int) { return current + 1; }
+      function advance() public { value = next(value); require(value > 0); }
+    }`, { optimizeForCompilationSpeed: true });
+    expect(artifact.messageBus).toBeUndefined();
+    expect(artifact.compiler.options?.messageBus).toBe(false);
+  });
+
+  it('keeps a namespaced library helper named call on the direct route', () => {
+    const source = `library Helpers {
+        function call(int value) internal pure returns (int) { return value + 1; }
+      }
+      contract LibraryCaller {
+        int value;
+        function set(int next) public {
+          value = Helpers.call(next);
+          require(value > 0);
+        }
+      }`;
+    const automatic = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    const direct = compileString(source, {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+    });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+  });
+
+  it('keeps a pure using-for extension named call on the direct route', () => {
+    const source = `library Helpers {
+        function call(uint value) internal pure returns (uint) { return value + 1; }
+      }
+      using Helpers for uint;
+      contract ExtensionCaller {
+        uint value;
+        function set(uint next) public {
+          value = next.call();
+          require(value > 0);
+        }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+  });
+
+  it('keeps a pure named using-for extension called call on the direct route', () => {
+    const source = `library Helpers {
+        function call(uint value) internal pure returns (uint) { return value + 1; }
+      }
+      using { Helpers.call } for uint;
+      contract ExtensionCaller {
+        uint value;
+        function set(uint next) public {
+          value = next.call();
+          require(value > 0);
+        }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+  });
+
+  it('admits a finite typed external call through a using-for helper by default', () => {
+    const source = `pragma solidity ^0.8.0;
+      interface ISink { function ping(uint value) external returns (bool); }
+      library Forward {
+        function forward(ISink sink, uint value) internal { require(sink.ping(value)); }
+      }
+      contract Caller {
+        ISink sink;
+        using Forward for ISink;
+        function invoke(uint value) public { sink.forward(value); }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const automatic = compileString(source, options);
+    const optedIn = compileString(source, { ...options, messageBus: true });
+    expect(automatic.compiler.options?.messageBus).toBe(true);
+    expect(automatic.abi.find((entry) => entry.name === 'invoke')?.externalCalls).toHaveLength(1);
+    expect(optedIn.messageBus?.handlers.find((handler) => handler.name === 'invoke')?.eligible).toBe(true);
+    expect(automatic.messageBus?.available).toBe(true);
+    expect(automatic.messageBus?.handlers.find((handler) => handler.name === 'invoke')?.eligible).toBe(true);
+  });
+
+  it('distinguishes out-of-scope library names from real low-level receivers', () => {
+    const source = `library Helpers {
+        function call(int value) internal pure returns (int) { return value + 1; }
+      }
+      contract LibraryCaller {
+        int value;
+        function set(int next) public {
+          value = Helpers.call(next);
+          if (next > 0) { int Helpers = 0; require(Helpers == 0); }
+          require(value > 0);
+        }
+        function unrelated() public { int Helpers = 0; require(Helpers == 0); }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const lowLevel = compileString(`contract LowLevel(address peer) {
+      int value;
+      function invoke(bytes payload) public {
+        (bool ok,) = peer.call(payload);
+        require(ok);
+      }
+    }`, { solidityImportCompat: true, suppressWarnings: true });
+    expect(lowLevel.compiler.options?.messageBus).toBe(true);
+  });
+
+  it('keeps an unreachable foreign-call helper off the default route', () => {
+    const source = `interface ISink { function ping(int amount) external; }
+      contract Simple(address target) {
+        int balance;
+        function set(int next) public { balance = next; require(next >= 0); }
+        function dormant(int next) internal { ISink(target).ping(next); }
+      }`;
+    const automatic = compileString(source, { suppressWarnings: true });
+    const direct = compileString(source, { messageBus: false, suppressWarnings: true });
+    const optedIn = compileString(source, { messageBus: true, suppressWarnings: true });
+
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+    expect(optedIn.messageBus?.available).toBe(true);
+    expect(optedIn.bytecode).not.toBe(direct.bytecode);
+  });
+
+  it('keeps compile-time-dead foreign calls off the default route', () => {
+    const source = `interface ISink { function ping(int value) external; }
+      contract DeadBranch(address target) {
+        int value;
+        function dormant(int next) internal { ISink(target).ping(next); }
+        function set(int next) public {
+          if (false) { ISink(target).ping(next); }
+          value = next;
+          require(next >= 0);
+        }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const helperOnly = source.replace('if (false) { ISink(target).ping(next); }',
+      'if (false) { dormant(next); }');
+    const helperAutomatic = compileString(helperOnly, options);
+    const helperDirect = compileString(helperOnly, { ...options, messageBus: false });
+    expect(helperAutomatic.compiler.options?.messageBus).toBe(false);
+    expect(helperAutomatic.bytecode).toBe(helperDirect.bytecode);
+
+    const deadElse = source.replace('if (false) { ISink(target).ping(next); }',
+      'if (true) { require(next >= 0); } else { ISink(target).ping(next); }');
+    expect(compileString(deadElse, options).compiler.options?.messageBus).toBe(false);
+
+    const repeatedDead = source.replace('if (false) { ISink(target).ping(next); }',
+      'if (false) { ISink(target).ping(next); ISink(target).ping(next); }');
+    const repeatedAutomatic = compileString(repeatedDead, options);
+    const repeatedDirect = compileString(repeatedDead, { ...options, messageBus: false });
+    expect(repeatedAutomatic.compiler.options?.messageBus).toBe(false);
+    expect(repeatedAutomatic.bytecode).toBe(repeatedDirect.bytecode);
+    const repeatedOptedIn = compileString(repeatedDead, { ...options, messageBus: true });
+    expect(repeatedOptedIn.messageBus?.available).toBe(true);
+    expect(repeatedOptedIn.abi.find((entry) => entry.name === 'set')?.externalCalls).toHaveLength(2);
+
+    const deadThenLive = source.replace('value = next;', 'ISink(target).ping(next); value = next;');
+    const liveDirect = compileString(deadThenLive, { ...options, messageBus: false });
+    expect(liveDirect.abi.find((entry) => entry.name === 'set')?.externalCalls).toHaveLength(1);
+
+    const reached = compileString(source.replace('if (false)', 'if (true)'), options);
+    expect(reached.compiler.options?.messageBus).toBe(true);
+    expect(reached.messageBus?.available).toBe(true);
+  });
+
+  it('keeps a zero-iteration foreign-call loop direct while admitting a do-while call', () => {
+    const source = `interface ISink { function ping(int value) external; }
+      contract DeadLoop(address target) {
+        int value;
+        function set(int next) public {
+          while (false) { ISink(target).ping(next); }
+          value = next;
+          require(next >= 0);
+        }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const repeated = source.replace('ISink(target).ping(next); }',
+      'ISink(target).ping(next); ISink(target).ping(next); }');
+    const repeatedAutomatic = compileString(repeated, options);
+    const repeatedDirect = compileString(repeated, { ...options, messageBus: false });
+    expect(repeatedAutomatic.compiler.options?.messageBus).toBe(false);
+    expect(repeatedAutomatic.bytecode).toBe(repeatedDirect.bytecode);
+    const optedIn = compileString(repeated, { ...options, messageBus: true });
+    expect(optedIn.messageBus?.available).toBe(true);
+
+    const doWhile = source.replace('while (false) { ISink(target).ping(next); }',
+      'do { ISink(target).ping(next); } while (false);');
+    expect(compileString(doWhile, options).compiler.options?.messageBus).toBe(true);
+  });
+
+  it('broadens unreachable helpers only when a function pointer is invoked', () => {
+    const source = `interface ISink { function ping(int amount) external; }
+      contract PointerLeaf(address target) {
+        int value;
+        function() internal unused;
+        function set(int next) public { value = next; require(next >= 0); }
+        function dormant(int next) internal { ISink(target).ping(next); }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const invoked = source.replace('function() internal unused;', 'function(int) internal unused;')
+      .replace('value = next; require(next >= 0);',
+        'value = next; unused(next); require(next >= 0);');
+    const routed = compileString(invoked, options);
+    expect(routed.compiler.options?.messageBus).toBe(true);
+    expect(routed.messageBus?.available).toBe(true);
+  });
+
+  it('keeps external function-pointer parameters aligned with generated message-bus handlers', () => {
+    const source = `contract PointerStore {
+      function(uint) external returns (uint) stored;
+      function save(function(uint) external returns (uint) next) public { stored = next; }
+      function run(uint value) public returns (uint) { return stored(value); }
+    }`;
+    const artifact = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    const save = artifact.abi.find((entry) => entry.name === 'save');
+    expect(save?.inputs.map((input) => input.type)).toEqual(['address', 'bytes4']);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'save')?.selector)
+      .toBe(save?.selector);
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.externalCalls).toEqual(
+      expect.arrayContaining([expect.objectContaining({ fnPtrCall: true })]),
+    );
+
+    // An unused pointer remains a single ABI value; its canonical `function()external`
+    // spelling must not leak into the generated SolidCash source type or decode schema.
+    const unlowered = compileString(`interface ISink { function ping() external; }
+      contract PointerLeaf(address target) {
+        int value;
+        function retain(function() external pointer) public { require(true); }
+        function callSink() public { ISink(target).ping(); value = value + 1; require(true); }
+      }`, { solidityImportCompat: true, suppressWarnings: true });
+    expect(unlowered.compiler.options?.messageBus).toBe(true);
+    expect(unlowered.messageBus?.available).toBe(true);
+    expect(unlowered.abi.find((entry) => entry.name === 'retain')?.inputs)
+      .toEqual([expect.objectContaining({ type: 'function()external' })]);
+  });
+
+  it('keeps an unreachable overloaded foreign-call helper off the default route', () => {
+    const source = `interface ISink { function ping(int amount) external; }
+      contract Simple(address target) {
+        int balance;
+        function next(int value) internal pure returns (int) { return value + 1; }
+        function next(int value, int extra) internal { ISink(target).ping(value + extra); }
+        function set(int value) public { balance = next(value); require(balance > 0); }
+      }`;
+    const options = { suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+  });
+
+  it('admits only reachable modifier call graphs by default', () => {
+    const prelude = 'interface ISink { function ping(int value) external; }';
+    const unused = `${prelude} contract Simple(address target) {
+      int balance;
+      modifier foreignCall() { ISink(target).ping(1); _; }
+      function set(int next) public { balance = next; require(next >= 0); }
+    }`;
+    const automatic = compileString(unused, { suppressWarnings: true });
+    const direct = compileString(unused, { messageBus: false, suppressWarnings: true });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const applied = unused.replace('public { balance', 'public foreignCall { balance');
+    expect(compileString(applied, { suppressWarnings: true }).compiler.options?.messageBus).toBe(true);
+
+    const dormantHelper = unused.replace('    }', `
+      function dormant(int next) internal foreignCall { balance = next; }
+    }`);
+    expect(compileString(dormantHelper, { suppressWarnings: true }).compiler.options?.messageBus)
+      .toBe(false);
+
+    const reachedHelper = dormantHelper.replace('balance = next; require(next >= 0);',
+      'dormant(next); require(next >= 0);');
+    expect(compileString(reachedHelper, { suppressWarnings: true }).compiler.options?.messageBus)
+      .toBe(true);
+
+    const typedReceiver = `${prelude} contract Typed(ISink sink) {
+      int balance;
+      modifier foreignCall() { sink.ping(1); _; }
+      function set(int next) public foreignCall { balance = next; require(next >= 0); }
+    }`;
+    expect(compileString(typedReceiver, { suppressWarnings: true }).compiler.options?.messageBus)
+      .toBe(true);
+  });
+
+  it('selects the graph route for an interface-typed state receiver', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract TypedEdge {
+        int value;
+        ISink sink;
+        function forward(int next) public {
+          sink.note(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus).toBeDefined();
+  });
+
+  it('selects the graph route for an interface-typed this.state receiver', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract TypedMember {
+        int value;
+        ISink sink;
+        function forward(int next) public {
+          this.sink.note(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+  });
+
+  it('selects the graph route for a low-level call through this.address state', () => {
+    for (const mode of ['call', 'staticcall'] as const) {
+      const artifact = compileString(`contract LowLevelState {
+          address peer;
+          function invoke(bytes payload) public {
+            (bool ok,) = this.peer.${mode}(payload);
+            require(ok);
+          }
+        }`, { solidityImportCompat: true, suppressWarnings: true });
+      expect(artifact.compiler.options?.messageBus).toBe(true);
+      expect(artifact.messageBus?.available).toBe(true);
+      expect(artifact.abi.find((entry) => entry.name === 'invoke')?.externalCalls).toHaveLength(1);
+    }
+  });
+
+  it('selects the graph route for a low-level call through an address cast', () => {
+    const source = `contract CastCall(address peer) {
+      function invoke(bytes payload) public {
+        (bool ok,) = address(peer).call(payload);
+        require(ok);
+      }
+    }`;
+    const automatic = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    const direct = compileString(source, {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+    });
+    expect(automatic.compiler.options?.messageBus).toBe(true);
+    expect(automatic.abi.find((entry) => entry.name === 'invoke')?.externalCalls).toHaveLength(1);
+    expect(direct.compiler.options?.messageBus).toBe(false);
+  });
+
+  it('selects the graph route for an interface-typed mapping value receiver', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract MappingReceiver {
+        mapping(uint => ISink) strategy;
+        function forward(uint id) public {
+          strategy[id].note(1);
+          require(true);
+        }
+      }`, { solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+  });
+
+  it('selects the graph route for an interface field in a stored struct entry', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      struct Holder { ISink target; }
+      contract StructReceiver {
+        mapping(uint => Holder) holders;
+        function forward(uint id) public {
+          holders[id].target.note(1);
+          require(true);
+        }
+      }`, { solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+  });
+
+  it('selects the graph route for an interface receiver returned by a reachable helper', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract HelperReceiver {
+        ISink sink;
+        function getSink() internal view returns (ISink) { return sink; }
+        function forward(int value) public {
+          getSink().note(value);
+          require(value >= 0);
+        }
+      }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+  });
+
+  it('selects the graph route for a literal-index interface array receiver', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract IndexedReceiver {
+        ISink[2] sinks;
+        function forward(int value) public {
+          sinks[0].note(value);
+          require(value >= 0);
+        }
+      }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+  });
+
+  it('selects a dynamic same-interface ternary receiver without pinning either target', () => {
+    const source = `interface ISink { function note(int value) external; }
+      contract ConditionalSink(ISink left, ISink right) {
+        int value;
+        function forward(bool choose, int next) public {
+          (choose ? left : right).note(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`;
+    const artifact = compileString(source, {
+      solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+    // The direct epilogue re-evaluates this choice. If an operand changes after the call, it must not
+    // authenticate a different co-spent owner from the one selected at the callsite.
+    expect(() => compileString(source.replace('value = next;', 'choose = !choose; value = next;'), {
+      solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
+    })).toThrow(/external call target address must be a constructor\/function parameter or self-pinned state value/);
+  });
+
+  it('admits a bounded low-level msg.sender call with automatic graph planning', () => {
+    const artifact = compileString(`contract SenderCaller {
+      int nonce;
+      function forward(bytes payload) public {
+        (bool ok, bytes result) = msg.sender.call(payload);
+        nonce = nonce + 1;
+        require(ok);
+      }
+    }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'forward'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('names the missing master for a stateless caller that requests graph planning', () => {
+    const artifact = compileString(`contract StatelessCaller {
+      function forward(bytes payload) public {
+        (bool ok, bytes result) = msg.sender.call(payload);
+        require(ok);
+      }
+    }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.routeInBytecode).toBe(false);
+    expect(artifact.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'message-bus-route-not-synthesized',
+        message: expect.stringContaining('no master NFT'),
+      }),
+    ]));
+  });
+
+  it('keeps a typed external call before an unrelated nested local shadow on the graph route', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract TypedShadow {
+        ISink sink;
+        int value;
+        function forward(int next) public {
+          sink.note(next);
+          if (next > 0) { int sink = 0; require(sink == 0); }
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus).toBeDefined();
+  });
+
+  it('selects a reachable free-function external call graph by default', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      function relay(address target, int next) { ISink(target).note(next); }
+      contract FreeRelay(address target) {
+        int value;
+        function forward(int next) public {
+          relay(target, next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus).toBeDefined();
+  });
+
+  it('keeps a shadowed free-function external edge off the default route', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      function relay(address target, int next) { ISink(target).note(next); }
+      contract LocalRelay(address target) {
+        int value;
+        function relay(address ignored, int next) internal pure { require(next >= 0); }
+        function forward(int next) public {
+          relay(target, next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(false);
+    expect(artifact.messageBus).toBeUndefined();
+  });
+
   it('treats explicit true as an opt-in that skips narrowing and builds a graph-free leaf participant', () => {
     const artifact = compileString(STATEFUL_LEAF, { messageBus: true });
     expect(artifact.messageBus).toBeDefined();
@@ -34,6 +592,17 @@ describe('message-bus compilation selection', () => {
       .toBe(true);
     expect(artifact.messageBus?.verifierProgram?.inputs
       .some((input) => input.name === 'suppliedCallers')).toBe(true);
+  });
+
+  it('honors an explicit graph context for a graph-free participant in both compile modes', () => {
+    for (const optimizeForCompilationSpeed of [false, true]) {
+      const artifact = compileString(STATEFUL_LEAF, {
+        messageBusGraphContext: true,
+        optimizeForCompilationSpeed,
+      });
+      expect(artifact.messageBus?.route.inputs.some((input) => input.name === '__internal__graphCallers'))
+        .toBe(true);
+    }
   });
 
   it('binds a lazy delegate participant route to its own verifier', () => {
@@ -108,10 +677,12 @@ describe('message-bus compilation selection', () => {
     expect(artifact.messageBus).toMatchObject({
       convention: 'kernel-row-loop',
       available: false,
+      routeInBytecode: false,
       handlers: [expect.objectContaining({
         name: 'check', eligible: false, rejectionReason: 'KERNEL_LAYOUT',
       })],
     });
+    expect(artifact.messageBus?.admittedHandlerIds).toBeUndefined();
   });
 
   it('keeps direct mapping keys visible beside dynamic-array reads in explicit graph mode', () => {
@@ -342,6 +913,85 @@ describe('message-bus compilation selection', () => {
         })],
       }),
     );
+  });
+
+  it('does not publish a computed key for an inactive helper collection write', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Refusal {
+        mapping(uint => mapping(address => bool)) whitelistWorkers;
+        function settle(uint id, bool removeWorker) internal {
+          if (removeWorker) { whitelistWorkers[id][removeWorker ? address(1) : address(0)] = false; }
+        }
+        function refund(uint id) public {
+          settle(id, true);
+          require(true);
+        }
+        function refuse(uint id) public {
+          settle(id, false);
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    const refund = artifact.messageBus?.handlers.find((handler) => handler.name === 'refund');
+    const refuse = artifact.messageBus?.handlers.find((handler) => handler.name === 'refuse');
+    expect(refund?.batchKeyWitnesses?.some((binding) => binding.source === 'expression'
+      && binding.expressionLabel)).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'refuse')?.entryAccesses).toBeUndefined();
+    expect(refuse?.batchKeyWitnesses).toContainEqual(expect.objectContaining({
+      routeInput: '__message_bus_key_whitelistWorkers_0',
+      source: 'argument',
+      inputIndex: 0,
+    }));
+    expect(refuse?.batchKeyWitnesses?.some((binding) => binding.source === 'expression')).toBe(false);
+  });
+
+  it('does not retain an inactive helper key when another collection remains active', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Refusal {
+        mapping(uint => mapping(address => bool)) whitelistWorkers;
+        mapping(uint => uint) jobs;
+        function settle(uint id, bool removeWorker) internal {
+          jobs[id] = 1;
+          if (removeWorker) { whitelistWorkers[id][removeWorker ? address(1) : address(0)] = false; }
+        }
+        function refund(uint id) public {
+          settle(id, true);
+          require(true);
+        }
+        function refuse(uint id) public {
+          settle(id, false);
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    const refuseAbi = artifact.abi.find((entry) => entry.name === 'refuse');
+    const refuse = artifact.messageBus?.handlers.find((handler) => handler.name === 'refuse');
+    const refund = artifact.messageBus?.handlers.find((handler) => handler.name === 'refund');
+    expect(refuseAbi?.entryAccesses).toEqual([
+      expect.objectContaining({ collection: 'jobs' }),
+    ]);
+    expect(refuse?.batchKeyWitnesses?.some((binding) => binding.source === 'expression'
+      && binding.routeInput.startsWith('__message_bus_key_whitelistWorkers_'))).toBe(false);
+    expect(refuse?.batchKeyWitnesses).toContainEqual(expect.objectContaining({
+      routeInput: '__message_bus_key_jobs_0', source: 'argument', inputIndex: 0,
+    }));
+    expect(refund?.batchKeyWitnesses).toContainEqual(expect.objectContaining({
+      routeInput: '__message_bus_key_whitelistWorkers_1', source: 'expression',
+    }));
   });
 
   it('does not taint a typed kernel getter with an unrelated low-level return consumer', () => {
@@ -627,8 +1277,9 @@ describe('message-bus compilation selection', () => {
     });
   });
 
-  it('automatically selects message-bus planning for an external call graph', () => {
-    const artifact = compileString(`
+  it('automatically selects message-bus planning for an external call graph in both compile modes', () => {
+    for (const optimizeForCompilationSpeed of [false, true]) {
+      const artifact = compileString(`
       interface ISink { function set(int value) external; }
       contract Caller(address sink) {
         int calls;
@@ -638,13 +1289,15 @@ describe('message-bus compilation selection', () => {
           require(value >= 0);
         }
       }
-    `);
-    expect(artifact.compiler.options?.messageBus).toBe(true);
-    expect(artifact.messageBus).toBeDefined();
+      `, { optimizeForCompilationSpeed });
+      expect(artifact.compiler.options?.messageBus).toBe(true);
+      expect(artifact.messageBus).toBeDefined();
+    }
   });
 
-  it('selects independently for each primary contract in a multi-artifact compile', () => {
-    const artifacts = compileStringMulti(`
+  it('selects independently for each primary contract in both multi-artifact compile modes', () => {
+    for (const optimizeForCompilationSpeed of [false, true]) {
+      const artifacts = compileStringMulti(`
       interface ISink { function set(int value) external; }
       contract Leaf { int value; function set(int next) public { value = next; require(next >= 0); } }
       contract Caller(address sink) {
@@ -655,9 +1308,10 @@ describe('message-bus compilation selection', () => {
           require(value >= 0);
         }
       }
-    `);
-    expect(artifacts.Leaf.messageBus).toBeUndefined();
-    expect(artifacts.Caller.messageBus).toBeDefined();
+      `, { optimizeForCompilationSpeed });
+      expect(artifacts.Leaf.messageBus).toBeUndefined();
+      expect(artifacts.Caller.messageBus).toBeDefined();
+    }
   });
 
   it('binds every multi-artifact message-bus route to its participant verifier', () => {

@@ -33,6 +33,10 @@ export interface TokenInsertNewLocksHost {
   findMintingInputIndex(categoryId: string): number;
 }
 
+function traceTokenInsertBalanceSnapshot(label: string, master: number, idxs: number[]): void {
+  console.error('token-insert-bal-snap', { label, master, idxs });
+}
+
 /** Reassert compiler-described sorted-batch INSERT and UPDATE entry geometry without shifting output tails. */
 export function reassertTokenInsertNewLocks(
   host: TokenInsertNewLocksHost,
@@ -41,6 +45,11 @@ export function reassertTokenInsertNewLocks(
   const repairedMasters = new Set<number>();
   const groups = [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups];
   for (const group of groups) {
+    // A delegatecall executes the implementation's code against its caller's state. Its own minting
+    // category identifies the code NFT, not the collection entries being written. Those entries are
+    // materialized by the state owner (root or proxy), so executor-local INSERT surgery would mint a
+    // duplicate node under the implementation category and can overwrite an unrelated output slot.
+    if (group.callMode === 'delegatecall') continue;
     // Shared logical views still need their described entry-lock repair; resolve them to the physical owner.
     const physical = ('sharedGroupIndex' in group && group.sharedGroupIndex !== undefined)
       ? groups[group.sharedGroupIndex] ?? group
@@ -129,7 +138,7 @@ export function reassertTokenInsertNewLocks(
                   ? [index] : []
               ));
               if (idxs.includes(12) || label === 'before-pred' || label === 'after-offsets') {
-                console.error('token-insert-bal-snap', { label, master, idxs });
+                traceTokenInsertBalanceSnapshot(label, master, idxs);
               }
             };
             snapBal('before-pred');

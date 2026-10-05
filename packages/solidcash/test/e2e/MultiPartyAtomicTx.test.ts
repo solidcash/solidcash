@@ -331,21 +331,14 @@ contract SingleCaller(bytes poolAddr) {
     };
 
     it('should build a StatefulTransactionBuilder with 2 external call groups', () => {
-      // Synthetic args: fee=5, amount=20,
-      // _externalReturnOutputIdx0=6, _externalReturnOutputIdx1=7
-      // No selectors needed: IPoolA and IPoolB each have only 1 callable function
-      const multiCallerMasterUnlocker = multiCallerContract.unlock.doMultiCall(
-        // fee, amount, _externalCallInputBase, _extcallMasterIdx0 (poolA @2), _extcallMasterIdx1 (poolB @4),
-        // _extcallAnchorIdx0, _extcallAnchorIdx1 (-1: the direct identity proof),
-        // _externalReturnOutputIdx0, _externalReturnOutputIdx1
-        5n, 20n, 2n, 2n, 4n, -1n, -1n, 6n, 7n,
-      );
+      // Internal call indices and return coordinates are compiler-managed, not public arguments.
+      const multiCallerMasterUnlocker = multiCallerContract.unlock.doMultiCall(5n, 20n);
       const multiCallerDataNftUnlocker = createDataNftUnlocker(
         multiCallerContract, 0, multiCallerCategoryId,
       );
-      const poolAMasterUnlocker = poolAContract.unlock.doAction(5n, 0n);
+      const poolAMasterUnlocker = poolAContract.unlock.doAction(5n);
       const poolADataNftUnlocker = createDataNftUnlocker(poolAContract, 2, poolACategoryId);
-      const poolBMasterUnlocker = poolBContract.unlock.swap(20n, 0n);
+      const poolBMasterUnlocker = poolBContract.unlock.swap(20n);
       const poolBDataNftUnlocker = createDataNftUnlocker(poolBContract, 4, poolBCategoryId);
 
       const externalCallGroupA: ExternalCallUtxoGroup = {
@@ -389,19 +382,13 @@ contract SingleCaller(bytes poolAddr) {
     });
 
     it('should calculate correct transfer output base for 2 external call groups', () => {
-      // No selectors needed: IPoolA and IPoolB each have only 1 callable function
-      const multiCallerMasterUnlocker = multiCallerContract.unlock.doMultiCall(
-        // fee, amount, _externalCallInputBase, _extcallMasterIdx0 (poolA @2), _extcallMasterIdx1 (poolB @4),
-        // _extcallAnchorIdx0, _extcallAnchorIdx1 (-1: the direct identity proof),
-        // _externalReturnOutputIdx0, _externalReturnOutputIdx1
-        5n, 20n, 2n, 2n, 4n, -1n, -1n, 6n, 7n,
-      );
+      const multiCallerMasterUnlocker = multiCallerContract.unlock.doMultiCall(5n, 20n);
       const multiCallerDataNftUnlocker = createDataNftUnlocker(
         multiCallerContract, 0, multiCallerCategoryId,
       );
-      const poolAMasterUnlocker = poolAContract.unlock.doAction(5n, 0n);
+      const poolAMasterUnlocker = poolAContract.unlock.doAction(5n);
       const poolADataNftUnlocker = createDataNftUnlocker(poolAContract, 2, poolACategoryId);
-      const poolBMasterUnlocker = poolBContract.unlock.swap(20n, 0n);
+      const poolBMasterUnlocker = poolBContract.unlock.swap(20n);
       const poolBDataNftUnlocker = createDataNftUnlocker(poolBContract, 4, poolBCategoryId);
 
       const stb = new StatefulTransactionBuilder({
@@ -418,7 +405,7 @@ contract SingleCaller(bytes poolAddr) {
             dataNftUtxos: [{ ...poolADataNftUtxo, unlocker: poolADataNftUnlocker }],
             requiredDataNftIndices: [0],
             functionName: 'doAction',
-            functionArgs: [],
+            functionArgs: [5n],
             externalContract: null,
           },
           {
@@ -428,7 +415,7 @@ contract SingleCaller(bytes poolAddr) {
             dataNftUtxos: [{ ...poolBDataNftUtxo, unlocker: poolBDataNftUnlocker }],
             requiredDataNftIndices: [0],
             functionName: 'swap',
-            functionArgs: [],
+            functionArgs: [20n],
             externalContract: null,
           },
         ],

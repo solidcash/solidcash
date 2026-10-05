@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — participant contract indexes, categories, identities, provisional results.
+ * Compose phase-boundary extract: participant contract indexes,
+ * categories, identities, and provisional results.
  */
 
 import { binToHex } from '@bitauth/libauth';
@@ -24,9 +25,6 @@ export interface ComposeParticipantIndexes {
   categories: string[];
   logicalIdentities: Map<number, ResolvedLogicalIdentity>;
   returning: CompiledGraphPlan['invocations'];
-  /** Every shape-checked descriptor result: caller-prepared commitments and SDK-learned seeds. */
-  seededResults: Record<number, string>;
-  /** Caller-prepared commitments only: the composed producer must return exactly these. */
   preparedResults: Record<number, string>;
   provisionalResults: Record<number, string>;
 }
@@ -89,9 +87,9 @@ export async function resolveComposeParticipantIndexes(
     );
     return seeded === undefined ? [] : [[invocation.index, seeded] as const];
   }));
-  // Values the SDK learned itself, in graph discovery or an earlier provisional pass, help convergence, but they
-  // are not caller-prepared commitments. Retain their shape-checked bytes as seeds without making them immutable
-  // expected results; the complete producer VM and final preflight remain authoritative.
+  // Values learned in an earlier provisional graph pass help convergence, but they are not caller-prepared
+  // commitments. Retain their shape-checked bytes as seeds without making them immutable expected results;
+  // the complete producer VM and final preflight remain authoritative.
   const preparedResults = Object.fromEntries(returning.flatMap((invocation) => {
     const descriptor = descriptors[invocation.index];
     return descriptor && !hasTransientConvergenceResultSeed(descriptor)
@@ -109,7 +107,6 @@ export async function resolveComposeParticipantIndexes(
     categories,
     logicalIdentities,
     returning,
-    seededResults,
     preparedResults,
     provisionalResults,
   };

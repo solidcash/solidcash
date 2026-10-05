@@ -10,7 +10,7 @@ const OPTIONS = {
   suppressWarnings: true,
 } as const;
 
-const compile = (body: string, parameters = 'int count, int base') => compileString(`contract C() {
+const compile = (body: string, parameters = 'int count, int base'): ReturnType<typeof compileString> => compileString(`contract C() {
   mapping(int => int) values;
   function write(${parameters}) public {
     ${body}
@@ -50,7 +50,7 @@ describe('fixed local array key vectors', () => {
   });
 
   it.each([
-    ['partial', `int[3] memory keys; keys[0] = base; keys[2] = base + 4;`],
+    ['partial', 'int[3] memory keys; keys[0] = base; keys[2] = base + 4;'],
     ['reassigned', `int[3] memory keys; keys[0] = base; keys[1] = base + 2;
       keys[2] = base + 4; keys[1] = base + 3;`],
     ['conditional', `int[3] memory keys; keys[0] = base;
@@ -91,11 +91,11 @@ describe('fixed local array key vectors', () => {
   });
 
   it.each([
-    ['partial source', `source[0] = base; source[2] = base + 4;`],
+    ['partial source', 'source[0] = base; source[2] = base + 4;'],
     ['source mutation after alias', `source[0] = base; source[1] = base + 2;
-      source[2] = base + 4;`, `source[1] = base + 3;`],
+      source[2] = base + 4;`, 'source[1] = base + 3;'],
     ['alias mutation', `source[0] = base; source[1] = base + 2;
-      source[2] = base + 4;`, `keys[1] = base + 3;`],
+      source[2] = base + 4;`, 'keys[1] = base + 3;'],
   ])('keeps an alias with %s fenced', (_name, definitions, mutation = '') => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
@@ -164,7 +164,7 @@ describe('fixed local array key vectors', () => {
   });
 
   it.each([
-    ['partial result', `result[0] = base; result[2] = base + 4;`],
+    ['partial result', 'result[0] = base; result[2] = base + 4;'],
     ['reassigned result', `result[0] = base; result[1] = base + 2;
       result[2] = base + 4; result[1] = base + 3;`],
     ['branched result', `result[0] = base; if (choose) { result[1] = base + 2; }
@@ -295,8 +295,8 @@ describe('fixed local array key vectors', () => {
   });
 
   it.each([
-    ['non-exhaustive arm', `if (choose) { keys[1] = base + 2; }`],
-    ['different arm indices', `if (choose) { keys[1] = base + 2; } else { keys[2] = base + 3; }`],
+    ['non-exhaustive arm', 'if (choose) { keys[1] = base + 2; }'],
+    ['different arm indices', 'if (choose) { keys[1] = base + 2; } else { keys[2] = base + 3; }'],
     ['mutation after join', `if (choose) { keys[1] = base + 2; } else { keys[1] = base + 3; }
       keys[1] = base + 5;`],
   ])('keeps a fixed conditional vector with a %s fenced', (_name, branch) => {
@@ -349,7 +349,7 @@ describe('fixed local array key vectors', () => {
   });
 
   it.each([
-    ['no default', `case 0: keys[1] = base + 2; break; case 1: keys[1] = base + 3; break;`],
+    ['no default', 'case 0: keys[1] = base + 2; break; case 1: keys[1] = base + 3; break;'],
     ['fallthrough', `case 0: keys[1] = base + 2; case 1: keys[1] = base + 3; break;
       default: keys[1] = base + 5;`],
     ['different index', `case 0: keys[1] = base + 2; break; case 1: keys[2] = base + 3; break;

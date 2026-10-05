@@ -34,6 +34,7 @@ import {
   TupleAssignmentNode,
   ReturnNode,
   FunctionCallNode,
+  ExternalFunctionCallNode,
   ConsoleStatementNode,
   EmitStatementNode,
   TokenContainerMethodStatementNode,
@@ -53,6 +54,7 @@ import {
 import { NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { StructType, MappingType, PrimitiveType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
+import { normalizeVoidInlineReturns } from './EarlyReturnTransformation.js';
 import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -339,6 +341,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // here: it runs from the library's own co-spent input, its calls lower to delegatecalls, and inlining it copies a
     // split facet into its master.
     for (const fn of this.freeFns) {
+      // A deployed delegate library has its own input and covenant frame. Its public functions are not
+      // storage-pointer helpers in the consumer: SynthesizeLibraryDelegateCalls must lower their calls to
+      // co-spent delegatecalls, including when their bodies emit events or touch collections.
       if (fn.modifiers.includes(FunctionModifier.DELEGATE)) continue;
       if (fn.body && fn.returnTypes.length === 0 && (this.hasStoragePointerParam(fn) || this.hasPhysicalEffects(fn)
         || this.holdsAssemblyReturn(fn) || checksSignature(fn))) {
@@ -683,7 +688,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           if (this.ambiguousInlineKeys.has(inlineKey(callee.name, args.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, callee.name, args.length);
           }
-          out.push(...this.inlineCall(callee, args, stack, stmt.call.fromThisCall === true));
+          out.push(...this.inlineCall(callee, args, stack, stmt.call.sourceActivationConditions ?? [],
+            stmt.call.fromThisCall === true));
           continue;
         }
       }
@@ -716,9 +722,19 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
   // Produce [value-param-binding decls..., renamed+substituted body...] for one inlined call site. A `this.f()` call
   // (`frame`) is a frame of its own: an assembly return in it ends only that frame.
-  private inlineCall(callee: FunctionDefinitionNode, args: Node[], stack: string[], frame = false): StatementNode[] {
+  private inlineCall(
+    callee: FunctionDefinitionNode,
+    args: Node[],
+    stack: string[],
+    callerConditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    frame = false,
+  ): StatementNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    // Outside per-call a void helper's early returns are nested away before splicing; an assembly return, which ends
+    // the whole call, stays unless the helper is a frame of its own. Per-call confines them with a flag instead
+    // (`confineHelperReturns`, which finds nothing left to confine after this normalization).
+    if (!this.keepSelfMessageCalls) normalizeVoidInlineReturns(cloned, !frame);
 
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();
@@ -812,6 +828,28 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // params with their (un-renamed) argument expressions.
     this.applyRename(cloned.body, rename);
     substituteInFunction(cloned, subs);
+    // The callee's source snapshots describe only branches inside its own body. Once it is spliced into the
+    // caller, every nested call also inherits the caller's lexical path. Keep that path on the call node before
+    // recursively inlining further helpers; otherwise artifact collection mistakes an untaken inner call for
+    // an unconditional graph emission. Stamp after the callee-local rename/substitution so identically named
+    // caller parameters cannot be rewritten as the callee's locals.
+    if (callerConditions.length > 0) this.walk(cloned.body, (node) => {
+      if (node instanceof FunctionCallNode || node instanceof MethodCallNode
+        || node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+        || node instanceof LowLevelCallStatementNode) {
+        // An undefined source snapshot means this call was synthesized after the source capture pass. Let
+        // artifact collection recover its whole lowered ancestry; manufacturing a partial snapshot here would
+        // truncate an inner branch predicate to the inherited caller depth.
+        if (node.sourceActivationConditions === undefined) return;
+        node.sourceActivationConditions = [
+          ...callerConditions,
+          ...(node.sourceActivationConditions ?? []),
+        ].map(({ expression, negated }) => ({
+          expression: cloneNode(expression) as ExpressionNode,
+          negated,
+        }));
+      }
+    });
     // An inherited helper's body may legitimately touch its own contract's PRIVATE state; tag the inlined
     // accesses with the defining contract (same mechanism as inlined modifier bodies).
     if (callee.inheritedFrom) tagModifierStateAccess([cloned.body], callee.inheritedFrom);
@@ -1153,7 +1191,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (us > 0 && map.has(name.slice(0, us))) return map.get(name.slice(0, us))! + name.slice(us);
       return map.get(name) ?? name;
     };
-    this.walk(root, (n) => {
+    const renameNode = (n: Node): void => {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
       } else if (n instanceof FieldAccessNode) {
@@ -1174,6 +1212,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);
       }
+    };
+    this.walk(root, (n) => {
+      renameNode(n);
+      // Source activation snapshots are plain-object metadata, so the executable-AST walker deliberately skips
+      // them. Rename their copied expressions with the same bindings as the inlined statements they describe.
+      const snapshots = (n as { sourceActivationConditions?: readonly { expression: ExpressionNode }[] })
+        .sourceActivationConditions;
+      for (const snapshot of snapshots ?? []) this.walk(snapshot.expression, renameNode);
     });
   }
 

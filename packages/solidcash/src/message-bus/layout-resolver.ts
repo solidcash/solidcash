@@ -107,8 +107,8 @@ export interface SymbolicParticipantLayout {
   contractName?: string;
   /** Compiler block layout when available (slots + trailingBase/Capacity). */
   blockLayout?: Pick<
-    FunctionBlockLayout,
-    'blockSize' | 'trailingBase' | 'trailingCapacity' | 'fixedSuffix' | 'slots'
+  FunctionBlockLayout,
+  'blockSize' | 'trailingBase' | 'trailingCapacity' | 'fixedSuffix' | 'slots'
   >;
   /** Ordered symbolic bands; when omitted, derived from blockLayout. */
   bands?: readonly SymbolicBand[];
@@ -126,6 +126,27 @@ export function trailingCapacityExcludingFixedSuffix(params: {
   const trailingBase = params.trailingBase ?? params.blockSize;
   const fixedSuffix = params.fixedSuffix ?? 0;
   return Math.max(0, params.blockSize - trailingBase - fixedSuffix);
+}
+
+/** First offset of a terminal, row-indexed return band that an atomic block may compact. */
+export function terminalConditionalReturnBase(
+  layout: Pick<FunctionBlockLayout, 'blockSize' | 'slots'>,
+): number | undefined {
+  let nextOffset = layout.blockSize - 1;
+  let index = layout.slots.length - 1;
+  while (index >= 0) {
+    const slot = layout.slots[index];
+    if (slot.kind !== 'returnEvent' || slot.conditional !== true
+      || slot.slotIndex === undefined || slot.offset !== nextOffset) break;
+    nextOffset -= 1;
+    index -= 1;
+  }
+  const base = nextOffset + 1;
+  // A source-level return is the fixed aggregate coordinate. The optional suffix is only its distinct
+  // per-row channel; never make the participant master or the aggregate result itself compactable.
+  return base < layout.blockSize && layout.slots.some((slot) =>
+    slot.kind === 'returnEvent' && slot.slotIndex === undefined && slot.offset < base)
+    ? base : undefined;
 }
 
 /** Active value-chunk / continuation claim used when assigning absolute chunk bases. */
@@ -612,24 +633,10 @@ export function assertResolvedClaimSlotExclusivity(layout: {
   for (const entry of layout.entryNews) {
     claim('output', entry.absoluteOutput, 1, `entryNEW:${entry.collection ?? ''}@p${entry.participant}`);
   }
-  // PredOut is a read of an existing output (often the entry NEW / predecessor), not a new exclusive produce.
-  const predOutNames = new Map<number, string>();
-  for (const pred of layout.predOuts) {
-    const prior = predOutNames.get(pred.absoluteOutput);
-    const label = `predOut:${pred.witnessName}@p${pred.participant}`;
-    if (prior !== undefined && prior !== label) {
-      throw new Error(
-        formatLayoutInvariant({
-          invariantId: 'claim-slot-collision',
-          resource: label,
-          expectedOutput: pred.absoluteOutput,
-          actualOutput: pred.absoluteOutput,
-          detail: `${prior} and ${label} both claim PredOut output ${pred.absoluteOutput}`,
-        }),
-      );
-    }
-    predOutNames.set(pred.absoluteOutput, label);
-  }
+  // PredOut is a reference to an existing output, not an exclusive producer claim. Multiple logical inserts in
+  // one sorted batch can share the same physical P' (P -> k1 -> k2 has one rewritten P and two NEW nodes), so
+  // aliases at one absolute output are valid. `predOutClaims` still validates every reference against its owning
+  // participant and the ownership checks above remain exclusive for the resources which produce that output.
 }
 
 /**
@@ -678,6 +685,8 @@ export function resolveTransactionLayout(input: LayoutResolverInput): ResolvedLa
     const brandedParticipant = asParticipantId(participant.participant);
     const brandedInputBase = asAbsoluteInputIndex(inputCursor);
     const brandedOutputBase = asAbsoluteOutputIndex(outputCursor);
+    const participantInputCursor = inputCursor;
+    const participantOutputCursor = outputCursor;
     participantInputs.push(brandedInputBase);
     participantOutputs.push(brandedOutputBase);
     resolvedParticipants.push({
@@ -690,8 +699,8 @@ export function resolveTransactionLayout(input: LayoutResolverInput): ResolvedLa
       trailingCapacity: participant.blockLayout?.trailingCapacity,
       bands: bands.map((band) => ({
         ...band,
-        absoluteBase: asAbsoluteInputIndex(inputCursor + band.localBase),
-        absoluteOutputBase: asAbsoluteOutputIndex(outputCursor + band.localBase),
+        absoluteBase: asAbsoluteInputIndex(participantInputCursor + band.localBase),
+        absoluteOutputBase: asAbsoluteOutputIndex(participantOutputCursor + band.localBase),
       })),
     });
     inputCursor += blockSize;
@@ -960,7 +969,7 @@ export function resolveTransactionLayout(input: LayoutResolverInput): ResolvedLa
 }
 
 /**
- * Skeptic-grade layout failure string (layout invariant attribution attribution) + structured plan-failure structured plan-failure trailer.
+ * Skeptic-grade layout failure string with a structured plan-failure trailer.
  * Production layout throws and compose `layoutInvariantError` both surface the same machine trailer.
  */
 export function formatLayoutInvariant(failure: LayoutInvariantFailure): string {
@@ -1190,12 +1199,14 @@ export function resolveParticipantAbsoluteWitnesses(params: {
   nonParticipantInputPrefix?: number;
   nonParticipantOutputPrefix?: number;
 }): {
-  layout: ResolvedLayout;
-  dynamicChunkInputBase?: bigint;
-  entryNewOutputBase?: bigint;
-  valueChunkOutputBase?: bigint;
-  predOuts: ReadonlyMap<string, bigint>;
-} {
+    layout: ResolvedLayout;
+    dynamicChunkInputBase?: bigint;
+    /** Reserved for an independently proven physical output run; never inferred from the old input band. */
+    dynamicChunkOutputBase?: bigint;
+    entryNewOutputBase?: bigint;
+    valueChunkOutputBase?: bigint;
+    predOuts: ReadonlyMap<string, bigint>;
+  } {
   const solo: SymbolicParticipantLayout = {
     participant: params.participant,
     contractName: params.contractName,
@@ -1339,6 +1350,12 @@ export interface ComposeParticipantLayoutClaims {
   valueChunkBandOffset?: number;
   valueChunkCollection?: string;
   valueChunkCount?: number;
+  /** Participant-local continuation ranges for distinct resources; scalar fields above remain band[0]. */
+  valueChunkBands?: readonly {
+    bandOffset: number;
+    chunkCount: number;
+    resourceIdentity?: string;
+  }[];
   predOuts?: readonly {
     witnessName: string;
     physicalLocalOffset: number;
@@ -1350,6 +1367,8 @@ export interface ComposeParticipantLayoutClaims {
 
 export type ComposeParticipantAbsoluteWitnesses = {
   dynamicChunkInputBase?: bigint;
+  /** The generic symbolic layout does not publish this without an exact materialized-output proof. */
+  dynamicChunkOutputBase?: bigint;
   entryNewOutputBase?: bigint;
   valueChunkOutputBase?: bigint;
   predOuts: ReadonlyMap<string, bigint>;
@@ -1366,9 +1385,9 @@ export function resolveComposeTransactionLayoutAuthority(params: {
   nonParticipantInputPrefix?: number;
   nonParticipantOutputPrefix?: number;
 }): {
-  layout: ResolvedLayout;
-  witnessesByParticipant: ReadonlyMap<number, ComposeParticipantAbsoluteWitnesses>;
-} {
+    layout: ResolvedLayout;
+    witnessesByParticipant: ReadonlyMap<number, ComposeParticipantAbsoluteWitnesses>;
+  } {
   if (params.participants.length === 0) {
     throw new Error('layout-resolver: resolveComposeTransactionLayoutAuthority requires ≥1 participant claim');
   }
@@ -1385,6 +1404,62 @@ export function resolveComposeTransactionLayoutAuthority(params: {
   const predOutClaims: ReturnType<typeof predOutClaimFromPhysicalRoute>[] = [];
 
   for (const claim of params.participants) {
+    const resourceBands = claim.valueChunkBands === undefined ? undefined
+      : [...claim.valueChunkBands].sort((left, right) => left.bandOffset - right.bandOffset);
+    if (resourceBands !== undefined) {
+      const totalChunks = resourceBands.reduce((total, band) => total + band.chunkCount, 0);
+      if ((claim.valueChunkCount !== undefined && claim.valueChunkCount !== totalChunks)
+        || (claim.valueChunkBandOffset !== undefined && claim.valueChunkBandOffset
+          !== (resourceBands[0]?.bandOffset ?? -1) - claim.trailingBase)) {
+        throw new Error(formatLayoutInvariant({
+          invariantId: 'value-chunk-band-scalar-mismatch',
+          participant: claim.participant,
+          detail: 'scalar continuation witness must describe the first resource band and total chunk count',
+        }));
+      }
+      for (const [index, band] of resourceBands.entries()) {
+        if (!Number.isSafeInteger(band.bandOffset) || !Number.isSafeInteger(band.chunkCount)
+          || band.chunkCount <= 0 || band.bandOffset < claim.trailingBase
+          || band.bandOffset + band.chunkCount > claim.blockSize
+          || (claim.trailingCapacity !== undefined
+            && band.bandOffset + band.chunkCount > claim.trailingBase + claim.trailingCapacity)
+          || (resourceBands.length > 1 && !band.resourceIdentity)) {
+          throw new Error(formatLayoutInvariant({
+            invariantId: 'value-chunk-band-invalid',
+            participant: claim.participant,
+            resource: band.resourceIdentity,
+            actualOutput: band.bandOffset,
+            detail: `chunkCount=${band.chunkCount} trailingBase=${claim.trailingBase}`,
+          }));
+        }
+        if (index > 0 && resourceBands[index - 1]!.bandOffset
+          + resourceBands[index - 1]!.chunkCount > band.bandOffset) {
+          throw new Error(formatLayoutInvariant({
+            invariantId: 'value-chunk-band-overlap',
+            participant: claim.participant,
+            resource: band.resourceIdentity,
+            actualOutput: band.bandOffset,
+            detail: 'distinct continuation resources cannot share a physical output slot',
+          }));
+        }
+      }
+      if (resourceBands.length > 1 && claim.ownership !== undefined) {
+        const valueOwners = claim.ownership.filter((owner) => owner.carrier === 'valueChunk');
+        const outputBase = claim.publishedBase
+          + (params.nonParticipantOutputPrefix ?? 0) - (params.nonParticipantInputPrefix ?? 0);
+        if (valueOwners.length !== resourceBands.length || resourceBands.some((band) => !valueOwners.some(
+          (owner) => owner.collection === band.resourceIdentity
+            && owner.roles.outputSlot === outputBase + band.bandOffset
+            && owner.rangeWidth === band.chunkCount,
+        ))) {
+          throw new Error(formatLayoutInvariant({
+            invariantId: 'value-chunk-band-ownership',
+            participant: claim.participant,
+            detail: 'each continuation resource must own exactly its physical band, without aggregate gaps',
+          }));
+        }
+      }
+    }
     if (claim.ownership !== undefined && claim.ownership.length > 0) {
       ownership.push(...claim.ownership);
     } else {
@@ -1396,7 +1471,17 @@ export function resolveComposeTransactionLayoutAuthority(params: {
           rangeWidth: claim.dynChunkCount,
         });
       }
-      if (claim.valueChunkBandOffset !== undefined) {
+      if (resourceBands !== undefined) {
+        for (const band of resourceBands) ownership.push({
+          participant: claim.participant,
+          carrier: 'valueChunk',
+          collection: resourceBands.length === 1
+            ? claim.valueChunkCollection ?? band.resourceIdentity ?? 'valueChunk'
+            : band.resourceIdentity,
+          roles: {},
+          rangeWidth: band.chunkCount,
+        });
+      } else if (claim.valueChunkBandOffset !== undefined) {
         ownership.push({
           participant: claim.participant,
           carrier: 'valueChunk',
@@ -1430,7 +1515,16 @@ export function resolveComposeTransactionLayoutAuthority(params: {
         entryIndex: entry.entryIndex,
       });
     }
-    if (claim.valueChunkBandOffset !== undefined) {
+    if (resourceBands !== undefined) {
+      for (const band of resourceBands) valueChunkClaims.push({
+        participant: claim.participant,
+        collection: resourceBands.length === 1
+          ? claim.valueChunkCollection ?? band.resourceIdentity ?? 'valueChunk'
+          : band.resourceIdentity!,
+        bandOffset: band.bandOffset - claim.trailingBase,
+        chunkCount: band.chunkCount,
+      });
+    } else if (claim.valueChunkBandOffset !== undefined) {
       valueChunkClaims.push({
         participant: claim.participant,
         collection: claim.valueChunkCollection ?? 'valueChunk',
@@ -1538,6 +1632,7 @@ export function resolveComposeParticipantLayoutAuthority(params: {
   return {
     layout,
     dynamicChunkInputBase: projected.dynamicChunkInputBase,
+    dynamicChunkOutputBase: projected.dynamicChunkOutputBase,
     entryNewOutputBase: projected.entryNewOutputBase,
     valueChunkOutputBase: projected.valueChunkOutputBase,
     predOuts: projected.predOuts,
@@ -1551,20 +1646,22 @@ export function resolveComposeParticipantLayoutAuthority(params: {
 export function resolveTransactionLayoutWitnesses(
   input: LayoutResolverInput,
 ): {
-  layout: ResolvedLayout;
-  witnessesByParticipant: ReadonlyMap<number, {
-    dynamicChunkInputBase?: bigint;
-    entryNewOutputBase?: bigint;
-    valueChunkOutputBase?: bigint;
-    predOuts: ReadonlyMap<string, bigint>;
-  }>;
-} {
+    layout: ResolvedLayout;
+    witnessesByParticipant: ReadonlyMap<number, {
+      dynamicChunkInputBase?: bigint;
+      dynamicChunkOutputBase?: bigint;
+      entryNewOutputBase?: bigint;
+      valueChunkOutputBase?: bigint;
+      predOuts: ReadonlyMap<string, bigint>;
+    }>;
+  } {
   const layout = resolveTransactionLayout(input);
   const encodeAbs = (absolute: number): bigint => encodeLayoutCoordinate({
     kind: 'coordinate', index: absolute,
   });
   const witnessesByParticipant = new Map<number, {
     dynamicChunkInputBase?: bigint;
+    dynamicChunkOutputBase?: bigint;
     entryNewOutputBase?: bigint;
     valueChunkOutputBase?: bigint;
     predOuts: ReadonlyMap<string, bigint>;
@@ -1604,15 +1701,15 @@ export function applyParticipantAbsoluteWitnesses(args: {
   /** Mutated in place after full validation. */
   params: unknown[];
   witnesses: Pick<
-    ParticipantAbsoluteWitnesses,
-    'dynamicChunkInputBase' | 'valueChunkOutputBase' | 'predOuts'
+  ParticipantAbsoluteWitnesses,
+  'dynamicChunkInputBase' | 'dynamicChunkOutputBase' | 'valueChunkOutputBase' | 'predOuts'
   >;
   participant?: number;
   /** Restrict an alias update to the witness slots it actually delegates to this resolve. */
   onlyIndices?: readonly number[];
 }): {
-  written: Array<{ name: string; index: number; from: string; to: string }>;
-} {
+    written: Array<{ name: string; index: number; from: string; to: string }>;
+  } {
   const isInactiveSentinel = (value: unknown): boolean => {
     if (typeof value !== 'bigint') return false;
     const decoded = decodeLayoutCoordinate(value);
@@ -1647,6 +1744,22 @@ export function applyParticipantAbsoluteWitnesses(args: {
           index, name: 'dynamicChunkInputBase', from: String(args.params[index]), to: next,
         });
       }
+      continue;
+    }
+    if (input.name === '__internal__dynamicChunkOutputBase') {
+      if (args.witnesses.dynamicChunkOutputBase === undefined) {
+        if (isInactiveSentinel(args.params[index])) continue;
+        throw new Error(formatLayoutInvariant({
+          invariantId: 'dynamic-chunk-output-base-unresolved',
+          participant: args.participant,
+          resource: 'dynamicChunkOutputBase',
+          detail: 'applyParticipantAbsoluteWitnesses: slot present but output witness missing',
+        }));
+      }
+      const next = args.witnesses.dynamicChunkOutputBase;
+      if (args.params[index] !== next) staged.push({
+        index, name: 'dynamicChunkOutputBase', from: String(args.params[index]), to: next,
+      });
       continue;
     }
     if (input.name === '__internal__valueChunkOutputBase') {

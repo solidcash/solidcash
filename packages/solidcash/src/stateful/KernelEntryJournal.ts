@@ -129,9 +129,10 @@ export type KernelEntryJournalAccess = JournaledMutationAccess & {
 
 /**
  * Value-independent operation classes used while assigning stable access ordinals. A SolidCash mapping `delete`
- * is a default-value write and therefore uses `write`; `remove` is reserved for an actual linked-list splice.
+ * nullifies a present value but preserves an absent target's non-membership; `remove` is reserved for an actual
+ * linked-list splice.
  */
-export type KernelEntryJournalTopologyOperation = 'read' | 'write' | 'remove';
+export type KernelEntryJournalTopologyOperation = 'read' | 'write' | 'nullify' | 'remove';
 
 export interface KernelEntryJournalAccessTopologyPlan {
   /** Number of first-touch records addressed by every stream in this plan. */
@@ -1204,7 +1205,6 @@ export function planKernelEntryJournalPhysicalSettlement(
     }
     inputReferences.push(firstAuthenticator);
     for (const duplicate of authenticators.slice(1)) {
-      const occurrence = occurrences[duplicate.occurrenceIndex]!;
       if (!duplicate.cleanCarrier) {
         throw new Error(`kernel physical settlement record ${recordOrdinal} has multiple non-clean authenticators`);
       }
@@ -1212,10 +1212,12 @@ export function planKernelEntryJournalPhysicalSettlement(
       // The public access representation uses optional literal `true` flags; omit the selected flag so the
       // compact encoder emits canonical zero rather than widening the type with a non-canonical `false`.
       if (duplicate.recordRole === 'target') {
-        const { authenticatesTarget: _target, ...withoutAuthentication } = current;
+        const withoutAuthentication = { ...current };
+        delete withoutAuthentication.authenticatesTarget;
         rewritten[duplicate.occurrenceIndex] = withoutAuthentication;
       } else {
-        const { authenticatesPredecessor: _predecessor, ...withoutAuthentication } = current;
+        const withoutAuthentication = { ...current };
+        delete withoutAuthentication.authenticatesPredecessor;
         rewritten[duplicate.occurrenceIndex] = withoutAuthentication;
       }
       rewrites.add(duplicate.occurrenceIndex);
@@ -1725,7 +1727,9 @@ export function planKernelEntryJournalAccessTopology(
   const mutationPlan = list.planJournaledMutations(
     streams.flat(),
     (current, operation) => operation === 'read' ? preserve(current)
-      : operation === 'remove' ? undefined : new Uint8Array(),
+      : operation === 'remove' ? undefined
+        : operation === 'nullify' && current === undefined
+          ? { value: undefined, dirty: true } : new Uint8Array(),
   );
   let accessOffset = 0;
   return {

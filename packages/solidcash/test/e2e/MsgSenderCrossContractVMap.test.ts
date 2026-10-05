@@ -56,6 +56,7 @@ describe('cross-contract msg.sender-keyed vmap mapping (callee bal[msg.sender], 
     expect(artCaller.messageBus).toBeUndefined();
     expect(artCallerExplicitBus.messageBus?.routeInBytecode).toBe(true);
     expect(artCallerExplicitBus.messageBus?.admittedHandlerIds).toEqual(['pay']);
+    expect(artCallerExplicitBus.debug?.bytecode).not.toBe(artCaller.debug?.bytecode);
     expect(artCallerExplicitBus.abi[0].externalCalls?.[0].batchInvocations)
       .toBeUndefined();
 

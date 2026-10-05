@@ -2,8 +2,8 @@
  * Legacy planning heuristics isolated from the kernel builder path.
  *
  * Kernel artifacts (`messageBus.convention === 'kernel-row-loop'` or typed value-chunk /
- * state-transition descriptors) must never take these branches. Old Marketplace-shaped plans
- * that lack descriptors may opt in explicitly via `permitsLegacyNamedValueChunkFallback`.
+ * state-transition descriptors) must never take these branches. Older plans without descriptors
+ * may opt in explicitly via `permitsLegacyNamedValueChunkFallback`.
  */
 
 export type LegacyScalarNameHints = {
@@ -41,6 +41,22 @@ export function legacyGroupLooksLikePublishJobEvent(group: {
     || legacyIsPublishJobEventName(group.compilerRoute?.abiFunction?.name);
 }
 
+/** Pre-descriptor plans did not publish a write operation. Use planned INSERTs when available. */
+type LegacyValueChunkWriteGroup = {
+  functionName?: string;
+  logicalFunctionName?: string;
+  plannedEntryInserts?: readonly unknown[];
+};
+
+export function legacyInitialValueChunkWrite(
+  lowLevelGroups: readonly LegacyValueChunkWriteGroup[],
+  externalGroups: readonly LegacyValueChunkWriteGroup[],
+): boolean {
+  return [...lowLevelGroups, ...externalGroups].some(
+    (group) => (group.plannedEntryInserts?.length ?? 0) > 0,
+  );
+}
+
 /** Historical jobEvents collection identity — legacy band packing only. */
 export function legacyIsJobEventsCollection(collection: string | undefined): boolean {
   if (collection === undefined) return false;
@@ -52,6 +68,15 @@ export const LEGACY_JOB_EVENTS_COLLECTION_ALIASES: readonly string[] = Object.fr
   'jobEvents:mapping(uint256 => JobEventData[])',
   'jobEvents:mapping(uint256=>JobEventData[])',
 ]);
+
+/** A descriptor-free collection fallback requires the historical publisher, not merely a legacy owner. */
+export function legacyNamedJobEventCollectionFallback(
+  groups: readonly Parameters<typeof legacyGroupLooksLikePublishJobEvent>[0][],
+  permitted: boolean,
+): string | undefined {
+  return permitted && groups.some(legacyGroupLooksLikePublishJobEvent)
+    ? LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0] : undefined;
+}
 
 /**
  * Whether leftover integer/bool fields may be seeded from function-name regexes.

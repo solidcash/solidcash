@@ -120,7 +120,9 @@ buffer, re-derive the offsets for little-endian order. See
 
 ### Storage model
 
-`sstore` and `sload` address a virtual slot table over the contract's state variables, for value-typed slots.
+`sstore` and `sload` address a compiler-resolved virtual slot model. Declared values follow EVM declaration and
+sub-word packing rules; recognized mapping, dynamic-array, `StorageSlot`, and ERC-7201 shapes are routed onto the
+same authenticated native state used by high-level code. Arbitrary word slots use a hidden vmap.
 
 ```solidity
 contract StorageDemo() {
@@ -135,10 +137,10 @@ contract StorageDemo() {
 }
 ```
 
-:::caution
-A bare `bytesN(uint)` cast used to compute a slot number goes through `OP_NUM2BIN` and is sign-unsound for
-values with the top bit set. Test slot arithmetic on the VM rather than assuming.
-:::
+This includes high-bit slot numbers and packed word read/write, but a BCH `address` cannot round-trip through an
+EVM `uint160` word because it is full locking bytecode. See
+[EVM Storage & ERC-7201 Compatibility](./evm-storage-compat.md) for the physical substrates, supported assembly
+patterns, dynamic values, OpenZeppelin factories, limitations, and security guidance.
 
 ## Native BCH assembly
 
@@ -167,4 +169,5 @@ compiler warning. Use it only when you fully understand the stack effects, and t
 
 - [Platform Differences](/docs/basics/platform-differences) - little-endian memory and sign-magnitude integers
 - [Data Locations](/docs/language/data-locations) - how `memory` and `storage` work outside assembly
+- [EVM Storage & ERC-7201 Compatibility](/docs/language/evm-storage-compat) - `sload`/`sstore`, mappings, arrays and namespaces
 - [Debugging](/docs/guides/debugging) - inspecting the emitted script and VM traces

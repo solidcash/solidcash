@@ -88,6 +88,13 @@ describe('layout ownership authority (item 2)', () => {
     expect(layout.valueChunkBands[0]?.absoluteBase).toBe(5);
   });
 
+  it('allows a reference-only PredOut claim beside the resource that produces its output', () => {
+    expect(() => assertUniqueOwnership([
+      baseClaim({ collection: 'dynamic-state', rangeWidth: 2, roles: { outputSlot: 10 } }),
+      baseClaim({ carrier: 'sortedBatch', collection: '__internal__vmapBatchPredOut_0', roles: {} }),
+    ])).not.toThrow();
+  });
+
   it('ownership alias normalize: normalizes this.collection aliases before ownership identity', () => {
     expect(normalizeOwnershipCollectionAlias('this.balances')).toBe('balances');
     expect(normalizeOwnershipCollectionAlias('balances')).toBe('balances');

@@ -2,6 +2,8 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose selectedLayout slot assembly + primary publish.
  */
 
+import { foldRouteStoredValues, type StoredValueMutationRow } from './fold-route-stored-values.js';
+import type { StoredValueIncomingEntry } from './sc-encode-stored-element-source.js';
 import {
   binToHex, hexToBin, encodeLockingBytecodeP2pkh,
 } from '@bitauth/libauth';
@@ -9,20 +11,18 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   computeCollectionHash,
   encodePushdataValue,
-  hash160 as hash160Sync,
   joinValueChunks,
   parseChunkCommitment,
   parseValueChunkCommitment,
   sha256 as sha256Sync,
-  splitValueIntoValueChunks,
   VALUE_CHUNK_SIZE,
   VALUE_HEAD_SIZE,
+  VALUE_INLINE_LIMIT,
   type AbiFunction,
   type Artifact,
   type ExternalCallAbi,
   type FunctionBlockLayout,
   type StateLayout,
-  type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
@@ -56,13 +56,13 @@ import {
   parseRowArgsDecodeLabel,
   resolvePreparedProducerEntry,
   resolveRouteRowExpressionKey,
-  type RouteExpressionKeyRow,
 } from './route-expression-key.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import {
   SortedList, getCachedSortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
 } from './SortedList.js';
 import { isMsgSenderKeySource, providerUnixLocktime } from './soft-state-overlays.js';
+import { externalReturnsForCallsites } from './external-returns-for-callsites.js';
 import type { OnChainState } from './StateReader.js';
 import {
   stageJobEventsValue,
@@ -86,6 +86,7 @@ export type AssembleCreateBuilderNestedComposeSlotsHost = {
   readonly signer: { getAddress(): string } | undefined;
   readonly logicalNonceSigner: { getAddress(): string } | undefined;
   encodeStoredElementSource: (...args: any[]) => any;
+  encodeStoredValueSource: (...args: any[]) => any;
   shiftSharedFunder: () => UnlockableUtxo | undefined;
   markSharedFunder: (utxo: UnlockableUtxo) => void;
   nextNestedFunderIndex: () => number;
@@ -115,7 +116,6 @@ export type AssembleCreateBuilderNestedComposeSlotsBags = {
   routeValueChunkProducerAliases: ExternalCallUtxoGroup[];
   routeValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
   routeValueChunkProducerEpoch: number | undefined;
-  latestRouteValueChunkProducerBinding: any;
   refreshChunkableRouteWitnesses: ((...args: any[]) => any) | undefined;
 };
 
@@ -161,16 +161,16 @@ export async function assembleCreateBuilderNestedComposeSlots(
     [key: string]: any;
   },
 ): Promise<{
-  bags: AssembleCreateBuilderNestedComposeSlotsBags;
-  childRelativeOutputInternalArgs: string[];
-}> {
+    bags: AssembleCreateBuilderNestedComposeSlotsBags;
+    childRelativeOutputInternalArgs: string[];
+  }> {
   const {
     nested, selectedLayout, sharedGroupIndex, childWritesState,
     preserveFirstConditionalWriter, proxyCallee, callee, childState, childData,
-    childRequired, childLayout, childCompilerRoute, childFunctionName, childFunctionArgs,
-    nestedArgs, routePlanningArgs, proxyImplementationState, delegateCallGroupIndex,
+    childRequired, childLayout, childCompilerRoute,
+    routePlanningArgs, proxyImplementationState, delegateCallGroupIndex,
     childExternalGroupIndex, externalCallUtxoGroups, lowLevelCallUtxoGroups, timingEnabled,
-    bags, publishRouteValueChunkProducerBinding, valueChunkProductionsForPath,
+    bags, publishRouteValueChunkProducerBinding,
     nestedSortedListCache, nestedAddressUtxos,
   } = params;
   // Outer nested-compose locals (passed through the index signature).
@@ -207,11 +207,15 @@ export async function assembleCreateBuilderNestedComposeSlots(
   let routeValueChunkProducerAliases = bags.routeValueChunkProducerAliases;
   let routeValueChunkProducerPhysicalGroup = bags.routeValueChunkProducerPhysicalGroup;
   let routeValueChunkProducerEpoch = bags.routeValueChunkProducerEpoch;
-  let latestRouteValueChunkProducerBinding = bags.latestRouteValueChunkProducerBinding;
   let refreshChunkableRouteWitnesses = bags.refreshChunkableRouteWitnesses;
 
   // Host aliases used by the body after host. → host. rewrite
   const markSharedFunder = host.markSharedFunder;
+  const routeDebugEnabled = (): boolean => {
+    const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    return env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
+      || env?.SOLIDC_DEBUG_COLLECTION_FETCH === '1';
+  };
 
   if ((sharedGroupIndex < 0 || childWritesState)
     && selectedLayout && selectedLayout.blockSize > 1) {
@@ -244,15 +248,15 @@ export async function assembleCreateBuilderNestedComposeSlots(
         // resolved Promise. Do not await it here: funder allocation is a hot synchronous loop, and
         // yielding once per positional slot causes repeated full-heap GC for large artifacts.
         void mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
-        const funder: UnlockableUtxo = {
+        const dummyFunder: UnlockableUtxo = {
           ...dummy,
           unlocker: {
             generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
             generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
           },
         };
-        markSharedFunder(funder);
-        return funder;
+        markSharedFunder(dummyFunder);
+        return dummyFunder;
       }
       throw new Error(
         `Insufficient funding UTXOs for nested call ${nested.interfaceName}.${nested.functionName}.`,
@@ -322,11 +326,11 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   isMsgSenderKeySource(candidateSource)));
               if (childCompilerRoute?.rowArguments && !selectedUsesSender
                 && !childCompilerRoute.rowArguments.some(
-                (row: any) => (row.handler.entryAccesses ?? []).some((candidate: any) =>
-                  candidate.collection === access.collection
+                  (row: any) => (row.handler.entryAccesses ?? []).some((candidate: any) =>
+                    candidate.collection === access.collection
                   && (candidate.keySources ?? []).some((candidateSource: any) =>
                     isMsgSenderKeySource(candidateSource))),
-              )) {
+                )) {
                 // Sorted-batch planning still needs a deterministic target for every reserved
                 // route slot. Use the same canonical inactive address carried by the route ABI;
                 // it avoids colliding with an active argument-keyed read of the caller itself.
@@ -429,8 +433,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-utxos-complete', {
               collection: access.collection, count: addressUtxos.length,
             });
-            if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_COLLECTION_FETCH'].some((name) =>
-              (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+            if (routeDebugEnabled()) {
               console.error('nested-entry-resolution', JSON.stringify({
                 collection: access.collection,
                 address,
@@ -439,7 +442,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 // 20-byte and a 25-byte (P2PKH) encoding, and two SDK paths disagreeing about which one
                 // is authoritative is indistinguishable from a wrong key when only the slot is printed.
                 keys: keys.map((key) => binToHex(key)),
-                keySlot: binToHex(keyToSlotMulti(keys)),
+                keySlot: binToHex(keyToSlotMulti(keys, collection)),
                 slots: addressUtxos.map((utxo) => ({
                   bytes: (utxo.token?.nft?.commitment?.length ?? 0) / 2,
                   commitment: utxo.token?.nft?.commitment,
@@ -452,7 +455,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-list-complete', {
               collection: access.collection,
             });
-            const keySlot = keyToSlotMulti(keys);
+            const keySlot = keyToSlotMulti(keys, collection);
             childBatchTargets.set(slot.slotIndex ?? 0, keySlot);
             childBatchLists.set(access.collection, list);
             // P5b: authenticate the value of the exact proof entry selected for this access. An
@@ -514,8 +517,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   childValueWitnesses.set(slot.slotIndex ?? 0, joined);
                   if (present) childStoredValues.set(slot.slotIndex ?? 0, joined);
                 }
-                if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_COLLECTION_FETCH'].some((name) =>
-                  (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+                if (routeDebugEnabled()) {
                   console.error('nested-value-witness', JSON.stringify({
                     collection: access.collection,
                     routeSlot: slot.slotIndex,
@@ -580,8 +582,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   newCommitment: binToHex(insertPlan.newNodeCommitment),
                 });
               }
-              if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_COLLECTION_FETCH'].some((name) =>
-                (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+              if (routeDebugEnabled()) {
                 console.error('nested-entry-pick', JSON.stringify({
                   collection: access.collection,
                   blockSlot: childBlockInputs.length,
@@ -746,15 +747,15 @@ export async function assembleCreateBuilderNestedComposeSlots(
               .find((candidate) => candidate.name === priorFunctionName);
           if (!priorHandler || !selectedFn) return undefined;
           return [{
-              args: priorFunctionArgs,
-              handler: priorHandler,
-              selector: sharedPriorAtomicNode?.selector ?? priorHandler.selector,
-              sourceCallsiteId: sharedPriorAtomicNode?.sourceCallsiteId,
-              sourceLogicalIndex: sharedPriorAtomicNode?.sourceLogicalIndex,
-              occurrenceIndex: sharedPriorAtomicNode?.occurrenceIndex,
-              sourceEffectOrdinal: sharedPriorAtomicNode?.sourceEffectOrdinal,
-              producerPath: sharedPriorAtomicNode?.producerPath,
-            }, ...directInvocationRows];
+            args: priorFunctionArgs,
+            handler: priorHandler,
+            selector: sharedPriorAtomicNode?.selector ?? priorHandler.selector,
+            sourceCallsiteId: sharedPriorAtomicNode?.sourceCallsiteId,
+            sourceLogicalIndex: sharedPriorAtomicNode?.sourceLogicalIndex,
+            occurrenceIndex: sharedPriorAtomicNode?.occurrenceIndex,
+            sourceEffectOrdinal: sharedPriorAtomicNode?.sourceEffectOrdinal,
+            producerPath: sharedPriorAtomicNode?.producerPath,
+          }, ...directInvocationRows];
         })() : undefined;
       // A direct nested handler is still one authenticated graph row even when no repeated-owner
       // compiler batch was needed. Keep that exact callsite row available to terminal producer
@@ -762,23 +763,43 @@ export async function assembleCreateBuilderNestedComposeSlots(
       // exists. The selector resolver and producer path both fail closed for overloaded or
       // incompletely-coordinated edges, so this cannot turn a name-derived SDK guess into authority.
       const discoveredProducerRows = sequentialRows ?? directInvocationRows;
+      const valueResultsByPath = new Map<string, ReadonlyMap<number, FunctionArgument>>();
       refreshChunkableRouteWitnesses = (
         rowArguments, finalVisibleArgs,
         refreshStagingSession = new ValueChunkWriteStagingSession(),
+        resultUpdate?: { producerPath: ValueChunkProducerPathDisposition; results: ReadonlyMap<number, FunctionArgument> },
       ) => {
+        if (resultUpdate?.producerPath.status === 'complete') {
+          const key = canonicalValueChunkProducerPathContext(resultUpdate.producerPath.context);
+          if (key) valueResultsByPath.set(key, resultUpdate.results);
+        }
         const internalArgs: Record<string, FunctionArgument> = {};
         const producerClaims: ValueChunkProducerResourceClaim[] = [];
         const productions: Array<NonNullable<
-          PreparedAtomicMessageBusCall['valueChunkProductions']
+        PreparedAtomicMessageBusCall['valueChunkProductions']
         >[number]> = [];
         let producerStateOwner: { categoryId: string; lockingBytecode: string } | undefined;
         const effectiveRowArguments = rowArguments ?? discoveredProducerRows?.map((row, index, rows) => (
           index === rows.length - 1 ? { ...row, args: finalVisibleArgs } : row
         ));
-        const fallbackPayloadBytes = visibleInputs.reduce((largest, input, index) => {
-          const encoded = encodeFunctionArgument(finalVisibleArgs[index], input.type, structs);
-          return encoded instanceof Uint8Array ? Math.max(largest, encoded.length) : largest;
-        }, 0);
+        // A whole-route refresh supplies handler arguments, not the physical route's packed
+        // argument vector. Estimate each reached row in its own ABI frame.
+        const payloadRows: Array<{
+          inputs: readonly { type: string }[];
+          args: readonly FunctionArgument[];
+        }> = effectiveRowArguments?.length
+          ? effectiveRowArguments.map((row: { handler: AbiFunction; args: FunctionArgument[] }) => ({
+            inputs: row.handler.inputs.filter((input: { name: string }) =>
+              !input.name.startsWith('__internal__')),
+            args: row.args,
+          }))
+          : [{ inputs: visibleInputs, args: finalVisibleArgs }];
+        const fallbackPayloadBytes = payloadRows.reduce((largest, row) => row.inputs.reduce(
+          (rowLargest: number, input: { type: string }, index: number) => {
+            const encoded = encodeFunctionArgument(row.args[index], input.type, structs);
+            return encoded instanceof Uint8Array ? Math.max(rowLargest, encoded.length) : rowLargest;
+          }, largest,
+        ), 0);
         let encodedPayloadBytes = 0;
         for (const [routeSlot, access] of (selectedFn?.entryAccesses ?? []).entries()) {
           if (!access.operations.includes('write')) continue;
@@ -786,6 +807,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             candidate.name === access.collection || candidate.signature === access.collection);
           if (!collection?.chunkableValue) continue;
           let payloadBytes = fallbackPayloadBytes;
+          let nextValue: Uint8Array | undefined;
           if (collection.valueType.endsWith('[]')) {
             const legacyCompatibility = usesLegacyJobEventCompatibility(
               sharedLogicalArtifact, collection.valueType, structs,
@@ -862,7 +884,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               leadingMutation: leadingPush,
               currentElement,
             });
-            const nextValue = channels.postValue;
+            nextValue = channels.postValue;
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
               console.error('value-chunk-derive', JSON.stringify({
@@ -888,108 +910,166 @@ export async function assembleCreateBuilderNestedComposeSlots(
             payloadBytes = currentElement
               ? nextValue.length
               : nextValue.length + fallbackPayloadBytes + VALUE_CHUNK_SIZE;
-            // Keep the three authenticated channels distinct. The proof-entry
-            // fetch above owns `__internal__valueWitness_N` (pre-handler bytes),
-            // `leadingPushValue_N` carries prior selected-row mutations, and this
-            // derived `nextValue` owns only continuation output/persistence data.
-            if (nextValue.length > VALUE_HEAD_SIZE) {
-              const physicalRouteSlot = access.slotIndex ?? routeSlot;
-              const blockSlot = selectedLayout.slots.find((slot) =>
-                slot.kind === 'entry' && slot.slotIndex === physicalRouteSlot)?.offset;
-              const insert = blockSlot === undefined ? undefined
-                : childPlannedEntryInserts.find((planned) => planned.blockSlot === blockSlot);
-              const commitment = insert?.newCommitment
-                ?? (blockSlot === undefined ? undefined
-                  : childBlockInputs?.[blockSlot]?.token?.nft?.commitment);
-              const commitmentBytes = typeof commitment === 'string'
-                ? hexToBin(commitment) : commitment;
-              const exactWrite: ValueChunkWriteDescriptor | undefined = commitmentBytes
-                && commitmentBytes.length >= 32 ? {
-                  categoryId: callee.categoryId,
-                  collection: collection.name,
-                  collectionSignature: collection.signature,
-                  collectionHash: binToHex(computeCollectionHash(collection.signature)),
-                  keySlot: binToHex(decodeEntryCommitment(commitmentBytes).slot),
-                  entryAccessSlot: routeSlot,
-                  routeSlot: physicalRouteSlot,
-                  operation: insert ? 'insert' : 'update',
-                  outputBase: -1,
-                  outputCount: 0,
-              } : undefined;
-              if (exactWrite) {
-                const stateOwner = {
-                  categoryId: callee.categoryId,
-                  lockingBytecode: callee.inner.lockingBytecode,
-                };
-                const producerClaim = terminalValueChunkProducerClaim({
-                  rows: effectiveRowArguments ?? [],
-                  collectionIdentities: [
-                    access.collection, collection.name, collection.signature,
-                  ],
-                  fixedChunkableWriteSelectors: (proxyCallee?.implementation.inner.artifact
-                    ?? callee.inner.artifact).messageBus?.fixedChunkableWritePolicy?.selectors,
-                  executionLockingBytecode: proxyCallee?.implementation.inner.lockingBytecode
-                    ?? callee.inner.lockingBytecode,
-                  stateOwnerCategoryId: stateOwner.categoryId,
-                  stateOwnerLockingBytecode: stateOwner.lockingBytecode,
+          } else {
+            const writes = (effectiveRowArguments ?? []).flatMap((row: any) => (
+              (row.handler.entryAccesses ?? []).filter((candidate: any) => (
+                candidate.collection === access.collection && candidate.operations.includes('write')
+              )).map((candidate: any) => ({ row, access: candidate }))
+            ));
+            const incomingEntries = [...childStoredValues].flatMap(([slotIndex, value]) => {
+              const sourceAccess = selectedFn?.entryAccesses?.find((candidate, index) => (
+                (candidate.slotIndex ?? index) === slotIndex
+              ));
+              const sourceCollection = childLayout.collections?.find((candidate) => (
+                candidate.name === sourceAccess?.collection || candidate.signature === sourceAccess?.collection
+              ));
+              const slot = childBatchTargets.get(slotIndex);
+              return sourceCollection && slot ? [{ collection: sourceCollection.signature, slot, value }] : [];
+            });
+            const logRecipe = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' ? console.error.bind(console) : undefined;
+            const encodeRecipe = (
+              terminal: StoredValueMutationRow, entries: readonly StoredValueIncomingEntry[],
+            ): Uint8Array | undefined => {
+              const recipe = terminal.access.storedValueSource;
+              if (!recipe) return undefined;
+              const path = terminal.row.producerPath;
+              const key = path?.status === 'complete' ? canonicalValueChunkProducerPathContext(path.context) : undefined;
+              const externalReturns = externalReturnsForCallsites(
+                [{ kind: 'expression', expression: recipe.expression }],
+                key ? valueResultsByPath.get(key) ?? new Map() : new Map(),
+                terminal.row.handler.externalCalls ?? [],
+              );
+              const value = host.encodeStoredValueSource(
+                terminal.access, collection.valueType, [...terminal.row.args], terminal.row.handler,
+                sharedLogicalArtifact, childState.state, externalReturns,
+                entries,
+              );
+              if (logRecipe) {
+                logRecipe('value-chunk-whole-recipe', JSON.stringify({
+                  collection: collection.name, handler: terminal.row.handler.name,
+                  mutationEffectOrdinal: recipe.mutationEffectOrdinal,
+                  resultCount: externalReturns.size, valueBytes: value?.length,
+                  hasProducerPath: key !== undefined,
+                }));
+              }
+              return value;
+            };
+            const targetSlot = childBatchTargets.get(access.slotIndex ?? routeSlot);
+            nextValue = writes.length === 1 ? encodeRecipe(writes[0], incomingEntries)
+              : targetSlot ? foldRouteStoredValues({
+                writes, collection, targetSlot, incomingEntries, artifact: sharedLogicalArtifact,
+                state: childState.state, encode: encodeRecipe,
+              }) : undefined;
+            if (nextValue) payloadBytes = nextValue.length;
+          }
+          // Keep the three authenticated channels distinct. The proof-entry
+          // fetch above owns `__internal__valueWitness_N` (pre-handler bytes),
+          // `leadingPushValue_N` carries prior selected-row mutations, and this
+          // derived `nextValue` owns only continuation output/persistence data.
+          if (nextValue && nextValue.length > VALUE_INLINE_LIMIT) {
+            const physicalRouteSlot = access.slotIndex ?? routeSlot;
+            const blockSlot = selectedLayout.slots.find((slot) =>
+              slot.kind === 'entry' && slot.slotIndex === physicalRouteSlot)?.offset;
+            const insert = blockSlot === undefined ? undefined
+              : childPlannedEntryInserts.find((planned) => planned.blockSlot === blockSlot);
+            const commitment = insert?.newCommitment
+              ?? (blockSlot === undefined ? undefined
+                : childBlockInputs?.[blockSlot]?.token?.nft?.commitment);
+            const commitmentBytes = typeof commitment === 'string'
+              ? hexToBin(commitment) : commitment;
+            // A missing entry's input is its predecessor, not the target key. Fixed route geometry
+            // may already have consumed the insertion plan; retain the authenticated key selection.
+            const targetKey = childBatchTargets.get(physicalRouteSlot)
+              ?? (commitmentBytes && commitmentBytes.length >= 32
+                ? decodeEntryCommitment(commitmentBytes).slot : undefined);
+            const inserting = targetKey && childBatchLists.get(access.collection)
+              ? !childBatchLists.get(access.collection)!.has(targetKey) : insert !== undefined;
+            const exactWrite: ValueChunkWriteDescriptor | undefined = targetKey ? {
+              categoryId: callee.categoryId,
+              collection: collection.name,
+              collectionSignature: collection.signature,
+              collectionHash: binToHex(computeCollectionHash(collection.signature)),
+              keySlot: binToHex(targetKey),
+              entryAccessSlot: routeSlot,
+              routeSlot: physicalRouteSlot,
+              operation: inserting ? 'insert' : 'update',
+              outputBase: -1,
+              outputCount: 0,
+            } : undefined;
+            if (exactWrite) {
+              const stateOwner = {
+                categoryId: callee.categoryId,
+                lockingBytecode: callee.inner.lockingBytecode,
+              };
+              const producerClaim = terminalValueChunkProducerClaim({
+                rows: effectiveRowArguments ?? [],
+                collectionIdentities: [
+                  access.collection, collection.name, collection.signature,
+                ],
+                fixedChunkableWriteSelectors: (proxyCallee?.implementation.inner.artifact
+                  ?? callee.inner.artifact).messageBus?.fixedChunkableWritePolicy?.selectors,
+                executionLockingBytecode: proxyCallee?.implementation.inner.lockingBytecode
+                  ?? callee.inner.lockingBytecode,
+                stateOwnerCategoryId: stateOwner.categoryId,
+                stateOwnerLockingBytecode: stateOwner.lockingBytecode,
+                resourceIdentity: valueChunkWriteResourceIdentity(exactWrite),
+              });
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
+                console.error('value-chunk-producer-stage', JSON.stringify({
                   resourceIdentity: valueChunkWriteResourceIdentity(exactWrite),
-                });
+                  valueBytes: nextValue.length,
+                  claim: producerClaim?.producer,
+                  rows: (effectiveRowArguments ?? []).map((row: any) => ({
+                    selector: row.selector ?? row.handler.selector,
+                    sourceEffectOrder: row.handler.sourceEffectOrder,
+                    mutationEffectOrdinals: row.handler.entryAccesses?.flatMap(
+                      (candidate: any) => candidate.mutationEffectOrdinals ?? [],
+                    ),
+                    producerPath: row.producerPath,
+                  })),
+                }));
+              }
+              if (producerClaim) {
+                const stagedOwned = refreshStagingSession.stageOwned(
+                  exactWrite, producerClaim, stateOwner, nextValue,
+                  { supersedeUnowned: true },
+                );
                 if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                   ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-                  console.error('value-chunk-producer-stage', JSON.stringify({
+                  console.error('value-chunk-producer-stage-result', JSON.stringify({
                     resourceIdentity: valueChunkWriteResourceIdentity(exactWrite),
                     valueBytes: nextValue.length,
-                    claim: producerClaim?.producer,
-                    rows: (effectiveRowArguments ?? []).map((row: any) => ({
-                      selector: row.selector ?? row.handler.selector,
-                      sourceEffectOrder: row.handler.sourceEffectOrder,
-                      mutationEffectOrdinals: row.handler.entryAccesses?.flatMap(
-                        (candidate: any) => candidate.mutationEffectOrdinals ?? [],
-                      ),
-                      producerPath: row.producerPath,
-                    })),
+                    stagedOwned,
                   }));
                 }
-                if (producerClaim) {
-                  const stagedOwned = refreshStagingSession.stageOwned(
-                    exactWrite, producerClaim, stateOwner, nextValue,
-                    { supersedeUnowned: true },
-                  );
-                  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                    ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-                    console.error('value-chunk-producer-stage-result', JSON.stringify({
-                      resourceIdentity: valueChunkWriteResourceIdentity(exactWrite),
-                      valueBytes: nextValue.length,
-                      stagedOwned,
-                    }));
-                  }
-                  if (!stagedOwned) {
-                    throw new Error(
-                      'Compiler-authenticated value production conflicts with its staged resource.',
-                    );
-                  }
-                  producerClaims.push(producerClaim);
-                  producerStateOwner = stateOwner;
-                  productions.push({
-                    write: exactWrite,
-                    claim: producerClaim,
-                    stateOwner,
-                    value: nextValue.slice(),
-                  });
-                } else {
-                  stageValueChunkWrite(
-                    exactWrite, nextValue, refreshStagingSession,
+                if (!stagedOwned) {
+                  throw new Error(
+                    'Compiler-authenticated value production conflicts with its staged resource.',
                   );
                 }
-              } else if (permitsLegacyNamedValueChunkFallback(
-                [{
-                  logicalArtifact: sharedLogicalArtifact,
-                  externalContract: { inner: { artifact: sharedLogicalArtifact } },
-                }],
-                (selectedFn as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
-              )) {
-                stageJobEventsValue(callee.categoryId, nextValue);
+                producerClaims.push(producerClaim);
+                producerStateOwner = stateOwner;
+                productions.push({
+                  write: exactWrite,
+                  claim: producerClaim,
+                  stateOwner,
+                  value: nextValue.slice(),
+                });
+              } else {
+                stageValueChunkWrite(
+                  exactWrite, nextValue, refreshStagingSession,
+                );
               }
+            } else if (permitsLegacyNamedValueChunkFallback(
+              [{
+                logicalArtifact: sharedLogicalArtifact,
+                externalContract: { inner: { artifact: sharedLogicalArtifact } },
+              }],
+              (selectedFn as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+            )) {
+              stageJobEventsValue(callee.categoryId, nextValue);
             }
           }
           encodedPayloadBytes = Math.max(encodedPayloadBytes, payloadBytes);
@@ -1369,7 +1449,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
   bags.routeValueChunkProducerAliases = routeValueChunkProducerAliases;
   bags.routeValueChunkProducerPhysicalGroup = routeValueChunkProducerPhysicalGroup;
   bags.routeValueChunkProducerEpoch = routeValueChunkProducerEpoch;
-  bags.latestRouteValueChunkProducerBinding = latestRouteValueChunkProducerBinding;
   bags.refreshChunkableRouteWitnesses = refreshChunkableRouteWitnesses;
 
   return { bags, childRelativeOutputInternalArgs };

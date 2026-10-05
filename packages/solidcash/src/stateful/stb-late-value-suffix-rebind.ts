@@ -46,6 +46,21 @@ export function rebindLateValueSuffixAfterInsertion(
   builder: TransactionBuilder,
   insertAt: number,
 ): void {
+  // Inserting inside a claimed multi-chunk run would split its on-chain index order. Reject before shifting
+  // any cache or carrier metadata; a gap between distinct resource bands is the only safe interior insertion.
+  for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
+    const currentBase = carrier.valueChunkOutputBase;
+    const firstClaim = carrier.continuationResourceClaims?.[0];
+    const claimOrigin = currentBase === undefined || firstClaim === undefined
+      ? undefined : currentBase - firstClaim.bandOffset;
+    for (const claim of carrier.continuationResourceClaims ?? []) {
+      if (claimOrigin === undefined) break;
+      const start = claimOrigin + claim.bandOffset;
+      if (insertAt > start && insertAt < start + claim.chunkCount) {
+        throw new Error('Cannot insert an output inside an authenticated continuation band.');
+      }
+    }
+  }
   const debugChangeRebind = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_CHANGE_REBIND === '1';
   if (debugChangeRebind) {
@@ -88,10 +103,10 @@ export function rebindLateValueSuffixAfterInsertion(
   const changedCarriers = new Set<ExternalCallUtxoGroup>();
   for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
     const currentBase = carrier.valueChunkOutputBase;
-    if (currentBase === undefined || currentBase < insertAt) continue;
+    if (currentBase === undefined) continue;
     if (!ownsCapturedValueChunkOutputBase(carrier)) continue;
-    const nextBase = currentBase + 1;
-    carrier.valueChunkOutputBase = nextBase;
+    const firstClaim = carrier.continuationResourceClaims?.[0];
+    const claimOrigin = firstClaim === undefined ? undefined : currentBase - firstClaim.bandOffset;
     if (carrier.valueChunkWrites?.length) {
       carrier.valueChunkWrites = carrier.valueChunkWrites.map((write) => (
         write.outputBase >= insertAt ? { ...write, outputBase: write.outputBase + 1 } : write
@@ -101,10 +116,14 @@ export function rebindLateValueSuffixAfterInsertion(
       carrier.continuationResourceClaims = Object.freeze(
         carrier.continuationResourceClaims.map((claim) => Object.freeze({
           ...claim,
-          bandOffset: claim.bandOffset + 1,
+          bandOffset: claimOrigin !== undefined && claimOrigin + claim.bandOffset >= insertAt
+            ? claim.bandOffset + 1 : claim.bandOffset,
         })),
       );
     }
+    if (currentBase < insertAt) continue;
+    const nextBase = currentBase + 1;
+    carrier.valueChunkOutputBase = nextBase;
     carrier.internalArgs = {
       ...carrier.internalArgs,
       __internal__valueChunkOutputBase: BigInt(nextBase),

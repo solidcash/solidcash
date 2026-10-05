@@ -1,14 +1,17 @@
 /**
  * phase-boundary extract: STB class-body extract — staged value-chunk reassert + reverse-suffix
- * jobs finalize / pin helpers.
+ * value-chunk finalization / pin helpers.
  */
 
 import { binToHex } from '@bitauth/libauth';
+import type { FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
+import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { moveLateOutputsBeforeReverseSuffix } from './mutable-output-reassert.js';
+import { claimedFixedContinuationCoverage } from './stb-claimed-fixed-continuations.js';
 import { cloneToken } from './stb-output-utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
 
@@ -32,7 +35,10 @@ export interface ReverseSuffixValueChunkHost {
   readonly dynamicChunkVars: readonly DynamicChunkVar[];
   readonly chunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  readonly externalCallUtxoGroups?: readonly ExternalCallUtxoGroup[];
+  readonly lowLevelCallUtxoGroups?: readonly ExternalCallUtxoGroup[];
+  readonly blockLayout?: FunctionBlockLayout;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   setChunkRawCommitments(name: string, commitments: string[]): void;
   dynamicChunkOutputCount(): number;
   padOutputsToIndex(builder: TransactionBuilder, index: number): void;
@@ -43,6 +49,14 @@ export function reassertStagedValueChunkOutputs(
   builder: TransactionBuilder,
 ): number {
   if (host.valueChunkOutputs.length === 0) return 0;
+  const claimed = claimedFixedContinuationCoverage({
+    staged: host.valueChunkOutputs,
+    derived: host.derivedChunkOutputs,
+    groups: [...(host.externalCallUtxoGroups ?? []), ...(host.lowLevelCallUtxoGroups ?? [])],
+    blockLayout: host.blockLayout,
+  });
+  const stagedOutputs = host.valueChunkOutputs.filter((_, index) => !claimed.stagedIndices.has(index));
+  if (stagedOutputs.length === 0) return 0;
   const lockHex = (to: string | Uint8Array | undefined): string | undefined => {
     if (to instanceof Uint8Array) return binToHex(to);
     if (typeof to === 'string') {
@@ -50,11 +64,11 @@ export function reassertStagedValueChunkOutputs(
     }
     return undefined;
   };
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   // Only relocate when a prior append parked staged chunk locks before the band
-  // (publishJobEvent dataNft slots). Do not rewrite a healthy full-width layout.
+  // (compiler-owned data NFT slots). Do not rewrite a healthy full-width layout.
   const stagedLocks = new Set(
-    host.valueChunkOutputs.map((staged) => lockHex(staged.to)).filter((hex): hex is string => !!hex),
+    stagedOutputs.map((staged) => lockHex(staged.to)).filter((hex): hex is string => !!hex),
   );
   const earlyFalseAppends: number[] = [];
   if (band) {
@@ -67,7 +81,7 @@ export function reassertStagedValueChunkOutputs(
   }
   if (band && earlyFalseAppends.length > 0) {
     let added = 0;
-    for (const [offset, staged] of host.valueChunkOutputs.entries()) {
+    for (const [offset, staged] of stagedOutputs.entries()) {
       if (offset >= band.nNew) break;
       const outputIndex = band.start + offset;
       host.padOutputsToIndex(builder, outputIndex);
@@ -93,7 +107,7 @@ export function reassertStagedValueChunkOutputs(
         mode: 'relocate-early-appends',
         bandStart: band.start,
         earlyFalseAppends,
-        staged: host.valueChunkOutputs.length,
+        staged: stagedOutputs.length,
         added,
         outputCount: builder.outputs.length,
       }));
@@ -107,7 +121,7 @@ export function reassertStagedValueChunkOutputs(
     present.set(hex, (present.get(hex) ?? 0) + 1);
   }
   const needed = new Map<string, Array<typeof host.valueChunkOutputs[number]>>();
-  for (const staged of host.valueChunkOutputs) {
+  for (const staged of stagedOutputs) {
     const hex = lockHex(staged.to);
     if (!hex) continue;
     const group = needed.get(hex) ?? [];
@@ -134,7 +148,7 @@ export function reassertStagedValueChunkOutputs(
       after.set(hex, (after.get(hex) ?? 0) + 1);
     }
     console.error('reassert-staged-value-chunks', JSON.stringify({
-      staged: host.valueChunkOutputs.length,
+      staged: stagedOutputs.length,
       added,
       outputCount: builder.outputs.length,
       needed: [...needed.entries()].map(([hex, group]) => ({
@@ -148,17 +162,17 @@ export function reassertStagedValueChunkOutputs(
   return added;
 }
 /**
- * Final send() only: repair reverse-suffix jobs after late value-chunk appends.
+ * Final send() only: repair reverse-indexed value chunks after late appends.
  * Probe builds keep the append-time order so derivation does not thrash.
  */
-export function finalizeReverseSuffixJobsLayout(
+export function finalizeReverseSuffixValueChunkLayout(
   host: ReverseSuffixValueChunkHost,
   builder: TransactionBuilder,
 ): number {
   if (!host.delegateDynamicChunksAtSuffix) return 0;
   // Probe-derived commitments can be absent on the final builder while
-  // derivedChunkOutputs / spent chunk inputs still know the jobs run width
-  // (second publishJobPost growth). Seed raw commitments before counting.
+  // derivedChunkOutputs / spent chunk inputs still know the run width.
+  // Seed raw commitments before counting.
   for (const dv of host.dynamicChunkVars) {
     const existing = host.chunkRawCommitments.get(dv.name) ?? [];
     if (existing.some((commitment) => commitment.length > 0 && commitment !== '00')) continue;
@@ -173,11 +187,11 @@ export function finalizeReverseSuffixJobsLayout(
       host.setChunkRawCommitments(dv.name, fromDerived);
     }
   }
-  const jobsCount = host.dynamicChunkOutputCount();
+  const suffixChunkCount = host.dynamicChunkOutputCount();
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_CHUNK_LAYOUT === '1') {
-    console.error('finalize-reverse-suffix-jobs', {
-      jobsCount,
+    console.error('finalize-reverse-suffix-value-chunks', {
+      suffixChunkCount,
       outputCount: builder.outputs.length,
       vars: host.dynamicChunkVars.map((dv) => ({
         name: dv.name,
@@ -197,23 +211,32 @@ export function finalizeReverseSuffixJobsLayout(
       })),
     });
   }
-  if (jobsCount <= 0) return 0;
+  if (suffixChunkCount <= 0) return 0;
   const suffixVar = host.dynamicChunkVars.find((variable) => variable.delegateSuffix === true)
     ?? host.dynamicChunkVars[host.dynamicChunkVars.length - 1];
   if (!suffixVar) return 0;
-  let changed = moveLateOutputsBeforeReverseSuffix(
-    builder.outputs, suffixVar.lockingBytecode, jobsCount,
+  // Once the authoritative commitments are known, the pin below can write the
+  // reverse-indexed suffix in place. Moving an earlier run with splice() shifts
+  // absolute output coordinates owned by other participants (e.g. a proxy
+  // master), even though those coordinates have nothing to do with chunks.
+  // Keep the move only for a run whose commitments cannot yet be materialized.
+  const materializedWidth = host.dynamicChunkVars.reduce(
+    (sum, variable) => sum + (host.chunkRawCommitments.get(variable.name) ?? [])
+      .filter((commitment) => commitment.length > 0).length, 0,
+  );
+  let changed = materializedWidth >= suffixChunkCount ? 0 : moveLateOutputsBeforeReverseSuffix(
+    builder.outputs, suffixVar.lockingBytecode, suffixChunkCount,
   );
   changed += reassertReverseSuffixDynamicChunks(host, builder, { stripSurplus: true });
   return changed;
 }
 /**
- * Pin reverse-suffix dynamic-array chunks (Marketplace.jobs) at TXOUTPUTCOUNT-1-nNew.
+ * Pin reverse-suffix dynamic-array chunks at TXOUTPUTCOUNT-1-nNew.
  * Empty-whitelist posts were leaving chunk0/chunk1 swapped or missing on that window after
  * late layout growth, so final preflight EQUALVERIFYd the wrong commitment then the wrong lock.
  *
  * When `stripSurplus` is set (final send layout only), demote earlier same-lock mutable copies
- * left behind by late value-chunk appends so TXOUTPUTCOUNT-1-nNew is the unique jobs window.
+ * left behind by late value-chunk appends so TXOUTPUTCOUNT-1-nNew is the unique chunk window.
  * Do not enable during probe builds — stripping there thrash-hangs derivation.
  */
 export function reassertReverseSuffixDynamicChunks(
@@ -267,7 +290,7 @@ export function reassertReverseSuffixDynamicChunks(
     cursor = base;
   }
   if (options?.stripSurplus === true && authoritative.size > 0) {
-    const jobsLocks = new Set(
+    const suffixLocks = new Set(
       host.dynamicChunkVars.map((dv) => binToHex(dv.lockingBytecode)),
     );
     for (let index = 0; index < builder.outputs.length; index += 1) {
@@ -277,10 +300,10 @@ export function reassertReverseSuffixDynamicChunks(
         ? output.to
         : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
       if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
-      if (!jobsLocks.has(binToHex(lock))) continue;
+      if (!suffixLocks.has(binToHex(lock))) continue;
       if (output?.token?.nft?.capability !== 'mutable') continue;
       if (output.token?.category !== host.categoryId) continue;
-      // Token-free OP_TRUE keeps TXOUTPUTCOUNT stable without a second jobs run.
+      // Token-free OP_TRUE keeps TXOUTPUTCOUNT stable without a second chunk run.
       builder.outputs[index] = { to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS };
       stripped += 1;
     }

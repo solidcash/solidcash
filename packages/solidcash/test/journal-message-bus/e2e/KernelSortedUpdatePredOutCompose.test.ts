@@ -39,6 +39,84 @@ const commitmentHex = (commitment: Uint8Array | string | undefined): string => {
 };
 
 describe('kernel sorted-update PredOut under composition', () => {
+  it('keeps a shared target predecessor inactive beside another collection insert', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Ledger {
+        mapping(uint256 => uint256) balances;
+        mapping(uint256 => uint256) records;
+        function seed(uint256 from, uint256 value) public {
+          balances[from] = value;
+          require(true);
+        }
+        function record(uint256 key, uint256 value) public {
+          records[key] = value;
+          require(true);
+        }
+        function move(uint256 from, uint256 to, uint256 value) public {
+          balances[from] = balances[from] - value;
+          balances[to] = balances[to] + value;
+          require(true);
+        }
+      }`, KERNEL);
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+    const ledger = StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    // In sorted-key order, the existing source is also the absent destination's predecessor.
+    const [from, to] = [2n, 9n].sort((left, right) => (
+      bytesToSlotValue(keyToSlot(bigIntToVmNumber(left))) < bytesToSlotValue(keyToSlot(bigIntToVmNumber(right)))
+        ? -1 : 1
+    ));
+    await ledger.call.seed(from, 100n).send();
+    const callerArtifact = compileString(`pragma solidity ^0.8.0;
+      interface ILedger {
+        function move(uint256 from, uint256 to, uint256 value) external;
+        function record(uint256 key, uint256 value) external;
+      }
+      contract Caller(address ledger) {
+        function run(uint256 from, uint256 to, uint256 value) public {
+          ILedger(ledger).record(to, value);
+          ILedger(ledger).move(from, to, value);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [ledger.inner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      calls: [caller.call.run(from, to, 7n), ledger.call.record(to, 7n), ledger.call.move(from, to, 7n)],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    const route = artifact.messageBus!.route;
+    const unlocker = builder.inputs.find((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.artifact.contractName === 'Ledger')!.unlocker;
+    if (!('params' in unlocker)) throw new Error('route input has no parameters');
+    const balanceLanes = route.entryAccesses!.filter((candidate) => candidate.collection === 'balances');
+    const predOuts = balanceLanes.map((entry) => {
+      const index = route.inputs.findIndex((input) => input.name === `__internal__vmapBatchPredOut_${entry.slotIndex}`);
+      return unlocker.params[index];
+    });
+    // Two reached writes update/chain through the existing proof. Compiler-published pooled sibling lanes
+    // are inactive in this envelope and must carry -2, not an invented predecessor-output coordinate.
+    expect(predOuts.slice(0, 2)).toEqual([-1n, -1n]);
+    expect(predOuts.length).toBeGreaterThan(2);
+    expect(predOuts.slice(2).every((value) => value === -2n)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const entries = await ledger.getEntries('balances');
+    expect(entries.find((entry) => binToHex(entry.slot) === binToHex(keyToSlot(bigIntToVmNumber(from))))?.value)
+      .toBe(93n);
+    expect(entries.find((entry) => binToHex(entry.slot) === binToHex(keyToSlot(bigIntToVmNumber(to))))?.value)
+      .toBe(7n);
+  }, 180_000);
+
   it('UPDATE: PredOut inactive; rewritten entry content-matches slot/next/value', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const registryArtifact = compileString(`pragma solidity ^0.8.0;

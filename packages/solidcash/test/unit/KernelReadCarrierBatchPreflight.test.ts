@@ -262,10 +262,10 @@ const dispositionArtifact = (): Artifact => {
     batchHandler('33333333'),
   ];
   const manifest = dispositionManifest();
-  const digest = kernelJournalDispositionManifestDigest(manifest);
+  const manifestDigest = kernelJournalDispositionManifestDigest(manifest);
   return {
     contractName: 'DispositionFixture', constructorInputs: [],
-    bytecode: kernelJournalDispositionCommitmentMarker(digest)!, source: '', abi: handlers,
+    bytecode: kernelJournalDispositionCommitmentMarker(manifestDigest)!, source: '', abi: handlers,
     messageBus: {
       version: 1, selector: '53434231', routeInBytecode: true, convention: 'kernel-row-loop', available: true,
       maximumRows: 3, maximumBlobBytes: 520, minimumRows: 1,

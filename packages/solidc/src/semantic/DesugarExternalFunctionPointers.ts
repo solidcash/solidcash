@@ -3,6 +3,9 @@ import {
   Node,
   SourceFileNode,
   ContractNode,
+  InterfaceNode,
+  InterfaceFunctionNode,
+  ParameterNode,
   BlockNode,
   StatementNode,
   FunctionDefinitionNode,
@@ -26,23 +29,33 @@ import { cloneNode } from '../ast/clone.js';
  * so `f(args)` is a cross-contract call. When f is a compile-time alias, desugar it to the external-call form:
  *
  *   FIXED method:           function() external f = IFoo(addr).method;         f(args) -> IFoo(addr).method(args)
- *   SAME-ADDRESS VARYING:   function() external f = cond ? IC(addr).a : IC(addr).b;
- *                           f(args) -> IC(addr).a(args) with a RUNTIME selector `cond ? IC.a.selector : IC.b.selector`
+ *   VARYING TARGET:         function() external f = cond ? IC(a).m : IC(b).n;
+ *                           f(args) -> __FnPtr_Local(cond ? a : b).__call(args) with a RUNTIME selector
+ *                           `cond ? IC.m.selector : IC.n.selector`
  *
  * The fixed case reduces to the tested external call (sound by reduction). The varying case is ONE co-spend of
- * the target, the covenant asserting the co-spent selector equals the runtime selector (bound to cond) -
- * avoiding the two-slot duplicate co-spend of an if-conversion.
+ * the selected target, the covenant asserting both its address and selector equal the selected expressions.
+ * A varying receiver is rewritten only when its condition and both addresses are stable values: evaluating the
+ * condition once for the address and again for the selector must not repeat an effect or change the choice.
  *
  * Self pointers (`this.f`) are handled earlier as internal OP_INVOKE. A pointer that is reassigned, stored, or
  * passed is left untouched.
  */
 export default class DesugarExternalFunctionPointers extends AstTraversal {
   private aliases = new Map<string, ExpressionNode>();
+  private aliasTypes = new Map<string, FunctionType>();
+  private synthIfaces: InterfaceNode[] = [];
+  private usedInterfaceNames = new Set<string>();
+  private synthCounter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.synthIfaces = [];
+    this.usedInterfaceNames = new Set(node.interfaceDefinitions.map((iface) => iface.name));
+    this.synthCounter = 0;
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
+    node.interfaceDefinitions.push(...this.synthIfaces);
     return node;
   }
 
@@ -54,7 +67,9 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const saved = this.aliases;
+    const savedTypes = this.aliasTypes;
     this.aliases = new Map();
+    this.aliasTypes = new Map();
     if (node.body) {
       this.collectAliases(node.body);
       // This pass runs once before branch normalization and again after pointer-specific lowerings. Preserve
@@ -67,6 +82,7 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
       node.body = this.visit(node.body) as BlockNode;
     }
     this.aliases = saved;
+    this.aliasTypes = savedTypes;
     return node;
   }
 
@@ -77,7 +93,11 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
       if (n instanceof VariableDefinitionNode && n.type instanceof FunctionType && n.type.isExternal
           && n.expression && this.isRewritableAlias(n.expression)) {
         if (seen.has(n.name)) this.aliases.delete(n.name);
-        else { this.aliases.set(n.name, n.expression); seen.add(n.name); }
+        else {
+          this.aliases.set(n.name, n.expression);
+          this.aliasTypes.set(n.name, n.type);
+          seen.add(n.name);
+        }
       }
       for (const key of Object.keys(n)) {
         const val = (n as unknown as Record<string, unknown>)[key];
@@ -89,16 +109,27 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
   }
 
   // A rewritable alias RHS is a foreign interface member `IFoo(addr).method` (FIXED), or a ternary of two
-  // members on the SAME interface-cast receiver `cond ? IC(addr).a : IC(addr).b` (SAME-ADDRESS VARYING).
+  // members on the same interface. Different receivers require stable branch/condition values because the
+  // selected address and selector are evaluated independently by the external-call verifier.
   private isRewritableAlias(expr: ExpressionNode): boolean {
     if (expr instanceof FieldAccessNode) return true;
     if (expr instanceof TernaryOpNode
         && expr.ifTrue instanceof FieldAccessNode && expr.ifFalse instanceof FieldAccessNode) {
       const recv = this.castInterfaceName(expr.ifTrue.expression);
-      return recv !== undefined && recv === this.castInterfaceName(expr.ifFalse.expression)
-        && this.sameReceiver(expr.ifTrue.expression, expr.ifFalse.expression);
+      if (recv === undefined || recv !== this.castInterfaceName(expr.ifFalse.expression)) return false;
+      if (this.sameReceiver(expr.ifTrue.expression, expr.ifFalse.expression)) return true;
+      const trueCast = expr.ifTrue.expression as FunctionCallNode;
+      const falseCast = expr.ifFalse.expression as FunctionCallNode;
+      return trueCast.parameters.length === 1 && falseCast.parameters.length === 1
+        && this.isStableValue(expr.condition)
+        && this.isStableValue(trueCast.parameters[0])
+        && this.isStableValue(falseCast.parameters[0]);
     }
     return false;
+  }
+
+  private isStableValue(expr: ExpressionNode): boolean {
+    return expr instanceof IdentifierNode;
   }
 
   // The interface name of an `IFace(addr)` cast receiver, or undefined if not a plain interface cast.
@@ -161,6 +192,17 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
       if (member) {
         const cast = member.expression;
         if (node.name === 'address' && cast instanceof FunctionCallNode && cast.parameters.length === 1) {
+          if (rhs instanceof TernaryOpNode && rhs.ifFalse instanceof FieldAccessNode
+            && !this.sameReceiver(cast, rhs.ifFalse.expression)) {
+            const falseCast = rhs.ifFalse.expression as FunctionCallNode;
+            const selectedAddress = new TernaryOpNode(
+              cloneNode(rhs.condition) as ExpressionNode,
+              cloneNode(cast.parameters[0]) as ExpressionNode,
+              cloneNode(falseCast.parameters[0]) as ExpressionNode,
+            );
+            selectedAddress.location = node.location;
+            return selectedAddress;
+          }
           return cloneNode(cast.parameters[0]) as ExpressionNode; // IFace(a) -> a
         }
         if (node.name === 'selector') {
@@ -194,12 +236,36 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
       mc.location = node.location;
       return mc;
     }
-    // SAME-ADDRESS VARYING: one call on the shared receiver + a runtime selector `cond ? m1.sel : m2.sel`.
+    // One call on the selected receiver + a runtime selector `cond ? m1.sel : m2.sel`.
     const t = rhs as TernaryOpNode;
     const mTrue = t.ifTrue as FieldAccessNode;
     const mFalse = t.ifFalse as FieldAccessNode;
     const iface = this.castInterfaceName(mTrue.expression)!;
-    const mc = new MethodCallNode(cloneNode(mTrue.expression) as ExpressionNode, mTrue.name, args);
+    const sameReceiver = this.sameReceiver(mTrue.expression, mFalse.expression);
+    let receiver: ExpressionNode;
+    let method: string;
+    if (sameReceiver) {
+      receiver = cloneNode(mTrue.expression) as ExpressionNode;
+      method = mTrue.name;
+    } else {
+      const trueCast = mTrue.expression as FunctionCallNode;
+      const falseCast = mFalse.expression as FunctionCallNode;
+      const selectedAddress = new TernaryOpNode(
+        cloneNode(t.condition) as ExpressionNode,
+        cloneNode(trueCast.parameters[0]) as ExpressionNode,
+        cloneNode(falseCast.parameters[0]) as ExpressionNode,
+      );
+      selectedAddress.location = node.location;
+      const pointerType = this.aliasTypes.get(node.identifier.name);
+      if (!pointerType) throw new Error('Varying external pointer has no declared function type');
+      const pointerIface = this.synthInterface(pointerType);
+      const pointerId = new IdentifierNode(pointerIface);
+      pointerId.location = node.location;
+      receiver = new FunctionCallNode(pointerId, [selectedAddress]);
+      receiver.location = node.location;
+      method = '__call';
+    }
+    const mc = new MethodCallNode(receiver, method, args);
     mc.callOptions = node.callOptions;
     mc.runtimeSelector = new TernaryOpNode(
       cloneNode(t.condition) as ExpressionNode,
@@ -209,6 +275,18 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     mc.runtimeSelector.location = node.location;
     mc.location = node.location;
     return mc;
+  }
+
+  private synthInterface(type: FunctionType): string {
+    let name: string;
+    do {
+      name = `__FnPtr_Local${this.synthCounter++}`;
+    } while (this.usedInterfaceNames.has(name));
+    this.usedInterfaceNames.add(name);
+    const parameters = type.parameterTypes.map((parameter, index) => new ParameterNode(parameter, `p${index}`));
+    const method = new InterfaceFunctionNode('__call', parameters, type.returnTypes, type.stateMutability);
+    this.synthIfaces.push(new InterfaceNode(name, [], [], [method]));
+    return name;
   }
 
   // `IFace.method.selector` (a bytes4 that folds to the method's compile-time selector).

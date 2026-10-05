@@ -71,7 +71,7 @@ export interface RepairNestedCalleeOutputsHost {
   chunkableValueWriteInputIndex(): number;
   shouldRematerializePersistUpdate(): boolean;
   getExternalCallEntryOutput(categoryId: string, blockSlot: number): string | undefined;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   applyDerivedValueChunks(builder: TransactionBuilder): void;
 }
 
@@ -93,7 +93,7 @@ export function repairNestedCalleeOutputs(
       token: anchor.token,
     });
   }
-  // Nested callee mapping INSERTs (MarketplaceData publishJobEvent) are not the
+  // Nested callee mapping INSERTs are not the
   // implementation's own delegated loop and must not sit in the impl trailing
   // band. Emit them after callee identity so the callee proxy's mutable-NFT
   // conservation sees P'/NEW (input EntryNft otherwise has no matching output).
@@ -141,15 +141,21 @@ export function repairNestedCalleeOutputs(
   }
   debugAtomicOutputStage('identity-anchors');
 
-  // Nested callee entry NFTs can sit outside that callee's published block (MarketplaceData
-  // publishJobEvent predecessor at input 20 while the MD group occupies 14-17). Recreate any
+  // Nested callee entry NFTs can sit outside that callee's published input block.
+  // Recreate any
   // still-unmatched nested-category mutable input at its input index so the callee proxy's
   // mutable-NFT conservation and the entry covenant both see a same-index twin.
   const nestedCategories = new Set(
     host.externalCallUtxoGroups.map((group) => group.categoryId).filter((id): id is string => !!id),
   );
+  const consumedDynamicChunks = new Set(host.externalCallUtxoGroups.flatMap((group) => (
+    group.ordinaryDynamicChunkInputs ?? []
+  ).map((chunk) => `${chunk.utxo.txid.toLowerCase()}:${chunk.utxo.vout}`)));
   for (let index = 0; index < host.allInputs.length; index++) {
     const input = host.allInputs[index];
+    // Dynamic writes consume the old chunk run and replace it with a potentially shorter new run. Mirroring
+    // an unmatched old chunk here creates an unauthenticated extra output at the same collection address.
+    if (consumedDynamicChunks.has(`${input.txid.toLowerCase()}:${input.vout}`)) continue;
     const category = input.token?.category;
     if (!category || input.token?.nft?.capability !== 'mutable' || !nestedCategories.has(category)) continue;
     const existing = builder.outputs[index];
@@ -402,7 +408,7 @@ export function repairNestedCalleeOutputs(
     const blockSize = fn?.blockLayout?.blockSize ?? 1;
     // Executing impl verifies chunks at INPUTINDEX+trailingBase (15+5=20).
     // min(impl, proxy)+blockSize is 17 and overwrites meceTags.
-    const chunkBase = host.getPublishJobEventsBand()?.start
+    const chunkBase = host.getChunkableValueWriteBand()?.start
       ?? Math.max(implIndex + blockSize, masterIndex + blockSize);
     const derivedIndexes = [...host.derivedChunkOutputs.keys()]
       .filter((outputIndex) => {
@@ -428,7 +434,6 @@ export function repairNestedCalleeOutputs(
         && (!existingIsChunkAddress || binToHex(existingLock!) === binToHex(chunk.lockingBytecode))) {
         continue;
       }
-      const chunkCategory = chunk.categoryId ?? host.categoryId;
       // Trailing slots at impl+blockSize are this write's value chunks. A long UPDATE
       // changes sha256(value) and therefore the chunk P2SH32; the previous digest's
       // chunks must be replaced rather than preserved as same-category mutables.
@@ -476,8 +481,6 @@ export function repairNestedCalleeOutputs(
     if (!commitment) return new Uint8Array();
     return typeof commitment === 'string' ? hexToBin(commitment) : commitment;
   };
-  const isEmptyPubkeyDefault = (bytes: Uint8Array): boolean => bytes.length === 35
-    && bytes[1] === 0x21 && bytes.slice(2).every((byte) => byte === 0);
   // Rebuild of an immutable-only data NFT is not an identity. Restore the
   // co-spent input commitment so the callee's UTXO==OUTPUT pin succeeds.
   for (const group of host.externalCallUtxoGroups) {

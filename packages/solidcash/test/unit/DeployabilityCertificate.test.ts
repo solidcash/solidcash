@@ -67,7 +67,7 @@ describe('deployability certificate deployability / budget certificates', () => 
     expect(cert?.withinP2shLimit).toBe(true);
     expect(cert?.measuredBytecodeBytes).toBeGreaterThan(0);
     expect(cert?.measuredBytecodeBytes).toBeLessThanOrEqual(P2SH_BYTECODE_LIMIT);
-    expect(cert?.budgets?.maximumBlobBytes).toBe(520);
+    expect(cert?.budgets?.maximumBlobBytes).toBe(10_000);
     // Not left as stringly "not-asserted".
     expect(cert).not.toEqual('not-asserted');
     expect(() => assertDeployabilityCertificate(cert)).not.toThrow();

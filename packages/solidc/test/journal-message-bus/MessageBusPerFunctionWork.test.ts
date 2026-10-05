@@ -56,7 +56,9 @@ describe('message-bus heavy work is per function', () => {
         ${handlers}
       }
     `;
-    const compile = (maximumInputBytes: number, optimizeForCompilationSpeed = true) => compileString(source, {
+    const compile = (
+      maximumInputBytes: number, optimizeForCompilationSpeed = true,
+    ): ReturnType<typeof compileString> => compileString(source, {
       messageBus: true,
       messageBusKernel: true,
       optimizeForCompilationSpeed,

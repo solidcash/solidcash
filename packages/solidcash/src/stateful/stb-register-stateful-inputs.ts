@@ -46,90 +46,90 @@ export function registerStatefulInputs(
   host: RegisterStatefulInputsHost,
   builder: TransactionBuilder,
 ): void {
-if (host.locktimeOverride !== undefined) builder.locktime = host.locktimeOverride;
-const seenInputs = new Map<string, number>();
-for (let index = 0; index < host.allInputs.length; index++) {
-  const input = host.allInputs[index];
-  const id = `${input.txid.toLowerCase()}:${input.vout}`;
-  const first = seenInputs.get(id);
-  if (first !== undefined) {
-    const roles = (candidate: UnlockableUtxo): string[] => {
-      const out: string[] = [];
-      const matches = (utxo: Utxo | undefined): boolean => !!utxo
+  if (host.locktimeOverride !== undefined) builder.locktime = host.locktimeOverride;
+  const seenInputs = new Map<string, number>();
+  for (let index = 0; index < host.allInputs.length; index++) {
+    const input = host.allInputs[index];
+    const id = `${input.txid.toLowerCase()}:${input.vout}`;
+    const first = seenInputs.get(id);
+    if (first !== undefined) {
+      const roles = (candidate: UnlockableUtxo): string[] => {
+        const out: string[] = [];
+        const matches = (utxo: Utxo | undefined): boolean => !!utxo
         && utxo.txid.toLowerCase() === candidate.txid.toLowerCase() && utxo.vout === candidate.vout;
-      if (matches(host.masterUtxo)) out.push('master');
-      host.dataNftUtxos.forEach((utxo, i) => { if (matches(utxo)) out.push(`dataNft:${i}`); });
-      host.readOnlyDataNftUtxos.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`readOnlyDataNft:${i}`);
-      });
-      host.blockhashCoSpendUtxos.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`blockhash:${i}`);
-      });
-      host.keccakComputeCoSpendUtxos.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`keccak:${i}`);
-      });
-      host.keccakLoopSideCars.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`keccakLoop:${i}`);
-      });
-      host.ecrecoverComputeCoSpendUtxos.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`ecrecover:${i}`);
-      });
-      host.iterationEntryInputs.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`iterationEntry:${i}`);
-      });
-      host.insertLoopPredecessorInputs.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`insertPredecessor:${i}`);
-      });
-      host.dynamicChunkInputs.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`dynamicChunk:${i}`);
-      });
-      host.trailingDisposalInputs.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`trailingDisposal:${i}`);
-      });
-      host.externalOutStateUtxoGroups.forEach((group, groupIndex) => {
-        if (matches(group.masterUtxo)) out.push(`outState:${groupIndex}:master`);
-        group.dataNftUtxos.forEach((utxo, nftIndex) => {
-          if (matches(utxo)) out.push(`outState:${groupIndex}:dataNft:${nftIndex}`);
+        if (matches(host.masterUtxo)) out.push('master');
+        host.dataNftUtxos.forEach((utxo, i) => { if (matches(utxo)) out.push(`dataNft:${i}`); });
+        host.readOnlyDataNftUtxos.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`readOnlyDataNft:${i}`);
         });
-        group.blockInputs?.forEach((utxo, slot) => {
-          if (matches(utxo)) out.push(`outState:${groupIndex}:block:${slot}`);
+        host.blockhashCoSpendUtxos.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`blockhash:${i}`);
         });
-      });
-      host.externalCallUtxoGroups.forEach((group, groupIndex) => {
-        if (matches(group.masterUtxo)) out.push(`external:${groupIndex}:master`);
-        group.dataNftUtxos.forEach((utxo, nftIndex) => {
-          if (matches(utxo)) out.push(`external:${groupIndex}:dataNft:${nftIndex}`);
+        host.keccakComputeCoSpendUtxos.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`keccak:${i}`);
         });
-        group.blockInputs?.forEach((utxo, slot) => {
-          if (matches(utxo)) out.push(`external:${groupIndex}:block:${slot}`);
+        host.keccakLoopSideCars.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`keccakLoop:${i}`);
         });
-      });
-      host.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
-        if (matches(group.masterUtxo)) out.push(`lowLevel:${groupIndex}:master`);
-        group.dataNftUtxos.forEach((utxo, nftIndex) => {
-          if (matches(utxo)) out.push(`lowLevel:${groupIndex}:dataNft:${nftIndex}`);
+        host.ecrecoverComputeCoSpendUtxos.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`ecrecover:${i}`);
         });
-        group.blockInputs?.forEach((utxo, slot) => {
-          if (matches(utxo)) out.push(`lowLevel:${groupIndex}:block:${slot}`);
+        host.iterationEntryInputs.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`iterationEntry:${i}`);
         });
-      });
-      host.lowLevelCallRawInputs.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`lowLevelRaw:${i}`);
-      });
-      host.funderUtxos.forEach((utxo, i) => { if (matches(utxo)) out.push(`funder:${i}`); });
-      host.entryNfts.forEach((entry, i) => { if (matches(entry.utxo)) out.push(`entry:${i}`); });
-      host.tokenContainers.forEach((container, i) => {
-        if (matches(container.utxo)) out.push(`tokenContainer:${i}`);
-      });
-      if (matches(host.satoshiContainerUtxo)) out.push('satoshiContainer');
-      host.externalIdentityAnchorUtxos.forEach((utxo, i) => {
-        if (matches(utxo)) out.push(`externalIdentityAnchor:${i}`);
-      });
-      if (matches(host.logicalIdentityUtxo)) out.push('logicalIdentityAnchor');
-      return out;
-    };
-    throw new Error(
-      `Duplicate stateful input ${id} at ${first}/${index}; roles `
+        host.insertLoopPredecessorInputs.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`insertPredecessor:${i}`);
+        });
+        host.dynamicChunkInputs.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`dynamicChunk:${i}`);
+        });
+        host.trailingDisposalInputs.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`trailingDisposal:${i}`);
+        });
+        host.externalOutStateUtxoGroups.forEach((group, groupIndex) => {
+          if (matches(group.masterUtxo)) out.push(`outState:${groupIndex}:master`);
+          group.dataNftUtxos.forEach((utxo, nftIndex) => {
+            if (matches(utxo)) out.push(`outState:${groupIndex}:dataNft:${nftIndex}`);
+          });
+          group.blockInputs?.forEach((utxo, slot) => {
+            if (matches(utxo)) out.push(`outState:${groupIndex}:block:${slot}`);
+          });
+        });
+        host.externalCallUtxoGroups.forEach((group, groupIndex) => {
+          if (matches(group.masterUtxo)) out.push(`external:${groupIndex}:master`);
+          group.dataNftUtxos.forEach((utxo, nftIndex) => {
+            if (matches(utxo)) out.push(`external:${groupIndex}:dataNft:${nftIndex}`);
+          });
+          group.blockInputs?.forEach((utxo, slot) => {
+            if (matches(utxo)) out.push(`external:${groupIndex}:block:${slot}`);
+          });
+        });
+        host.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
+          if (matches(group.masterUtxo)) out.push(`lowLevel:${groupIndex}:master`);
+          group.dataNftUtxos.forEach((utxo, nftIndex) => {
+            if (matches(utxo)) out.push(`lowLevel:${groupIndex}:dataNft:${nftIndex}`);
+          });
+          group.blockInputs?.forEach((utxo, slot) => {
+            if (matches(utxo)) out.push(`lowLevel:${groupIndex}:block:${slot}`);
+          });
+        });
+        host.lowLevelCallRawInputs.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`lowLevelRaw:${i}`);
+        });
+        host.funderUtxos.forEach((utxo, i) => { if (matches(utxo)) out.push(`funder:${i}`); });
+        host.entryNfts.forEach((entry, i) => { if (matches(entry.utxo)) out.push(`entry:${i}`); });
+        host.tokenContainers.forEach((container, i) => {
+          if (matches(container.utxo)) out.push(`tokenContainer:${i}`);
+        });
+        if (matches(host.satoshiContainerUtxo)) out.push('satoshiContainer');
+        host.externalIdentityAnchorUtxos.forEach((utxo, i) => {
+          if (matches(utxo)) out.push(`externalIdentityAnchor:${i}`);
+        });
+        if (matches(host.logicalIdentityUtxo)) out.push('logicalIdentityAnchor');
+        return out;
+      };
+      throw new Error(
+        `Duplicate stateful input ${id} at ${first}/${index}; roles `
       + `${roles(host.allInputs[first]).join(',') || 'other'} / ${roles(input).join(',') || 'other'}`
       + (() => {
         const matchingEntries = host.entryNfts.filter((entry) => entry.utxo
@@ -143,47 +143,47 @@ for (let index = 0; index < host.allInputs.length; index++) {
         }));
         return matchingEntries.length === 0 ? '' : `; entries ${JSON.stringify(matchingEntries)}`;
       })(),
-    );
+      );
+    }
+    seenInputs.set(id, index);
   }
-  seenInputs.set(id, index);
-}
-if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-  ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
-  const missingUnlockers = host.allInputs.map((input, index) => ({ input, index }))
-    .filter(({ input }) => !('unlocker' in input) || input.unlocker === undefined);
-  if (missingUnlockers.length > 0) {
-    console.error('stateful-inputs-missing-unlockers', missingUnlockers.map(({ input, index }) => {
-      const same = (candidate: Utxo | undefined): boolean => candidate?.txid === input.txid
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    const missingUnlockers = host.allInputs.map((input, index) => ({ input, index }))
+      .filter(({ input }) => !('unlocker' in input) || input.unlocker === undefined);
+    if (missingUnlockers.length > 0) {
+      console.error('stateful-inputs-missing-unlockers', missingUnlockers.map(({ input, index }) => {
+        const same = (candidate: Utxo | undefined): boolean => candidate?.txid === input.txid
         && candidate.vout === input.vout;
-      const roles: string[] = [];
-      host.externalCallUtxoGroups.forEach((group, groupIndex) => {
-        if (same(group.masterUtxo)) roles.push(`external:${groupIndex}:master`);
-        group.blockInputs?.forEach((candidate, slot) => {
-          if (same(candidate)) roles.push(`external:${groupIndex}:block:${slot}`);
+        const roles: string[] = [];
+        host.externalCallUtxoGroups.forEach((group, groupIndex) => {
+          if (same(group.masterUtxo)) roles.push(`external:${groupIndex}:master`);
+          group.blockInputs?.forEach((candidate, slot) => {
+            if (same(candidate)) roles.push(`external:${groupIndex}:block:${slot}`);
+          });
         });
-      });
-      host.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
-        if (same(group.masterUtxo)) roles.push(`lowLevel:${groupIndex}:master`);
-      });
-      return {
-        index, outpoint: `${input.txid}:${input.vout}`, category: input.token?.category, roles,
-      };
-    }));
+        host.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
+          if (same(group.masterUtxo)) roles.push(`lowLevel:${groupIndex}:master`);
+        });
+        return {
+          index, outpoint: `${input.txid}:${input.vout}`, category: input.token?.category, roles,
+        };
+      }));
+    }
   }
-}
-const missingUnlockers = host.allInputs
-  .map((input, index) => ({ input, index }))
-  .filter(({ input }) => !input || !('unlocker' in input) || input.unlocker === undefined);
-if (missingUnlockers.length > 0) {
-  throw new Error(
-    'Stateful input(s) missing unlocker at '
+  const missingUnlockers = host.allInputs
+    .map((input, index) => ({ input, index }))
+    .filter(({ input }) => !input || !('unlocker' in input) || input.unlocker === undefined);
+  if (missingUnlockers.length > 0) {
+    throw new Error(
+      'Stateful input(s) missing unlocker at '
     + missingUnlockers.map(({ input, index }) => (
       `${index}:${input?.token?.category ?? 'plain'}:${input?.txid?.slice(0, 8) ?? '?'}`
     )).join(', '),
-  );
-}
-builder.addInputs([...host.allInputs]);
-// Co-spend the external-library side-car as the LAST input (the covenant's library loader reads it via
-// OP_INPUTBYTECODE of the last input). Present in derivation probes and the final tx alike.
-if (host.sidecarUtxo) builder.addInputs([host.sidecarUtxo]);
+    );
+  }
+  builder.addInputs([...host.allInputs]);
+  // Co-spend the external-library side-car as the LAST input (the covenant's library loader reads it via
+  // OP_INPUTBYTECODE of the last input). Present in derivation probes and the final tx alike.
+  if (host.sidecarUtxo) builder.addInputs([host.sidecarUtxo]);
 }

@@ -3,13 +3,26 @@
  */
 
 import {
+  decodePushdataValue,
+  encodePushdataValue,
+  isFixedWidthType,
   type AbiFunction,
   type Artifact,
   type EntryAccessAbi,
   type ExternalCallExpression,
+  type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
+import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
+
+/** Complete incoming bytes, selected by an authenticated collection proof and key slot. */
+export type StoredValueIncomingEntry = {
+  collection: string;
+  slot: Uint8Array;
+  value: Uint8Array;
+};
 
 export interface EncodeStoredElementSourceHost {
   evaluateExternalExpression(
@@ -37,7 +50,39 @@ export function encodeStoredElementSource(
   artifact: Artifact,
   state?: Record<string, unknown>,
 ): Uint8Array | undefined {
-  const recipe = access.storedElementSource;
+  return encodeStoredSource(host, access, elementType, functionArgs, handler, artifact, state);
+}
+
+/** Evaluate one exact whole-value write, using only supplied authenticated producer results. */
+export function encodeStoredValueSource(
+  host: EncodeStoredElementSourceHost,
+  access: EntryAccessAbi,
+  valueType: string,
+  functionArgs: FunctionArgument[],
+  handler: AbiFunction,
+  artifact: Artifact,
+  state?: Record<string, unknown>,
+  externalReturns?: ReadonlyMap<string, FunctionArgument>,
+  incomingEntries?: readonly StoredValueIncomingEntry[],
+): Uint8Array | undefined {
+  return encodeStoredSource(
+    host, access, valueType, functionArgs, handler, artifact, state, true, externalReturns, incomingEntries,
+  );
+}
+
+function encodeStoredSource(
+  host: EncodeStoredElementSourceHost,
+  access: EntryAccessAbi,
+  storedType: string,
+  functionArgs: FunctionArgument[],
+  handler: AbiFunction,
+  artifact: Artifact,
+  state?: Record<string, unknown>,
+  wholeValue = false,
+  externalReturns?: ReadonlyMap<string, FunctionArgument>,
+  incomingEntries?: readonly StoredValueIncomingEntry[],
+): Uint8Array | undefined {
+  const recipe = wholeValue ? access.storedValueSource : access.storedElementSource;
   const visibleInputs = visibleHandlerInputs(handler.inputs);
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const normalizeType = (type: string | undefined): string | undefined => (
@@ -49,18 +94,37 @@ export function encodeStoredElementSource(
   const numericType = (type: string | undefined): boolean => (
     type === 'bigint' || /^(?:u?int(?:\d+)?|u?fixed(?:\d+x\d+)?)$/u.test(type ?? '')
   );
+  const integerLiteralFits = (value: unknown, type: string | undefined): boolean => {
+    if (typeof value !== 'string' || !/^-?\d+$/u.test(value)) return false;
+    const match = type?.match(/^(u?)int(\d+)?$/u);
+    if (!match) return false;
+    const bits = match[2] === undefined ? 256 : Number(match[2]);
+    if (!Number.isSafeInteger(bits) || bits < 8 || bits > 256 || bits % 8 !== 0) return false;
+    const literal = BigInt(value);
+    const magnitude = 1n << BigInt(match[1] === 'u' ? bits : bits - 1);
+    return match[1] === 'u'
+      ? literal >= 0n && literal < magnitude
+      : literal >= -magnitude && literal < magnitude;
+  };
   const validate = (expression: ExternalCallExpression, expectedType?: string): boolean => {
     const comparison = ['==', '!=', '<', '<=', '>', '>=', '&&', '||'].includes(expression.operator ?? '');
     const inferredExpressionType = expression.type ?? (expression.kind === 'binary'
       ? comparison ? 'bool' : expression.left?.type : undefined);
-    if (expression.kind !== 'field' && !typeMatches(inferredExpressionType, expectedType)) return false;
+    if (expression.kind !== 'field' && !typeMatches(inferredExpressionType, expectedType)
+      && !(expression.kind === 'literal'
+        && /^(?:u?int(?:\d+)?)$/u.test(expression.type ?? '')
+        && integerLiteralFits(expression.value, expectedType))) return false;
     if (expression.kind === 'source') {
       const index = expression.source?.paramIndex;
       return expression.source?.kind === 'forward' && Number.isSafeInteger(index)
         && index! >= 0 && index! < visibleInputs.length
+        && (!wholeValue || functionArgs[index!] !== undefined)
         && typeMatches(expression.type, visibleInputs[index!].type);
     }
     if (expression.kind === 'literal') {
+      if (/^(?:u?int(?:\d+)?)$/u.test(expression.type ?? '')) {
+        return integerLiteralFits(expression.value, expectedType ?? expression.type);
+      }
       if (numericType(expression.type)) {
         return typeof expression.value === 'string' && /^-?\d+$/u.test(expression.value);
       }
@@ -72,7 +136,31 @@ export function encodeStoredElementSource(
       return false;
     }
     if (expression.kind === 'state') {
-      return expression.name === '__block_timestamp' && numericType(expression.type);
+      if (expression.name === '__block_timestamp') return numericType(expression.type);
+      const variable = wholeValue && artifact.stateLayout?.variables
+        .find((candidate) => candidate.name === expression.name);
+      return !!variable && typeMatches(expression.type, variable.type);
+    }
+    if (wholeValue && expression.kind === 'entryPreValue') {
+      const collection = artifact.stateLayout?.collections?.find((candidate) => (
+        candidate.name === expression.name && candidate.name === access.collection
+      ));
+      const keyTypes = collection && (collection.keyTypes ?? [collection.keyType]);
+      return !!collection && !!keyTypes && typeMatches(expression.type, collection.valueType)
+        && expression.args?.length === keyTypes.length
+        && expression.args.every((key, index) => validate(key, keyTypes[index]));
+    }
+    if (wholeValue && expression.kind === 'producerResult') {
+      const producers = handler.externalCalls?.filter((call) => call.callsiteId === expression.callsiteId);
+      const resultIndex = expression.resultIndex;
+      return producers?.length === 1 && Number.isSafeInteger(resultIndex) && resultIndex! >= 0
+        && resultIndex! < (producers[0].returnTypes?.length ?? 0)
+        && (expression.sourceCallsiteId === undefined || expression.sourceCallsiteId === expression.callsiteId)
+        && typeMatches(expression.type, producers[0].returnTypes![resultIndex!]);
+    }
+    if (wholeValue && expression.kind === 'unary') {
+      return ['-', '!', '~'].includes(expression.operator ?? '')
+        && expression.expression !== undefined && validate(expression.expression);
     }
     if (expression.kind === 'cast') {
       return expression.expression !== undefined && expression.type !== undefined
@@ -87,8 +175,12 @@ export function encodeStoredElementSource(
         && typeMatches(field.type, expectedType);
     }
     if (expression.kind === 'binary') {
-      return ['+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '<=', '>', '>=', '&&', '||']
+      const supported = ['+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '<=', '>', '>=', '&&', '||']
         .includes(expression.operator ?? '')
+        || (expression.operator === '<<' && expression.type === 'bigint'
+          && expression.left?.type === 'bigint'
+          && /^(?:bigint|u?int(?:\d+)?)$/u.test(expression.right?.type ?? ''));
+      return supported
         && expression.left !== undefined && expression.right !== undefined
         && validate(expression.left) && validate(expression.right);
     }
@@ -117,19 +209,74 @@ export function encodeStoredElementSource(
     }
     return false;
   };
-  if (access.arrayMutation !== 'push' || recipe?.version !== 1 || recipe.elementType !== elementType
-    || recipe.expression.type !== elementType
+  const validShape = wholeValue
+    ? !access.arrayMutation && access.operations.includes('write')
+      && access.storedValueSource?.execution === 'unconditional-once'
+      && access.storedValueSource.valueType === storedType
+    : access.arrayMutation === 'push' && access.storedElementSource?.elementType === storedType;
+  if (!validShape || recipe?.version !== 1 || recipe.expression.type !== storedType
     || access.mutationEffectOrdinals?.length !== 1
     || recipe.mutationEffectOrdinal !== access.mutationEffectOrdinals[0]
-    || !validate(recipe.expression, recipe.elementType)) return undefined;
-  const value = host.evaluateExternalExpression(
-    recipe.expression, functionArgs, artifact, state, visibleInputs,
-    undefined, 0, false, undefined, undefined, undefined, true,
+    || !validate(recipe.expression, storedType)) return undefined;
+  // Recipes execute in the decoded handler's value domain, not the SDK's public argument domain.
+  // In Solidity-compatible kernel rows, nested value addresses are ABI words while call targets stay native.
+  const executionArgs = wholeValue
+    ? projectMessageBusHandlerArguments(artifact, handler.name, handler.selector, functionArgs) : functionArgs;
+  // Only this entry-aware boundary may bind entryPreValue. The general expression evaluator must
+  // leave it unknown: scalar state objects and pending SDK overlays are not authenticated entries.
+  const bindings = new Map<string, FunctionArgument>();
+  const evaluate = (expression: ExternalCallExpression): FunctionArgument | undefined => host.evaluateExternalExpression(
+    expression, executionArgs, artifact, state, visibleInputs,
+    externalReturns, 0, false, undefined, bindings, undefined, true,
   );
+  const bindEntries = (expression: ExternalCallExpression): ExternalCallExpression | undefined => {
+    const bound = { ...expression };
+    for (const key of ['expression', 'left', 'right', 'condition', 'ifTrue', 'ifFalse'] as const) {
+      if (expression[key]) {
+        bound[key] = bindEntries(expression[key]!);
+        if (!bound[key]) return undefined;
+      }
+    }
+    if (expression.args) {
+      const args = expression.args.map(bindEntries);
+      if (!args.every((arg): arg is ExternalCallExpression => arg !== undefined)) return undefined;
+      bound.args = args;
+    }
+    if (bound.kind !== 'entryPreValue') return bound;
+    const collection = artifact.stateLayout!.collections!.find((candidate) => candidate.name === bound.name)!;
+    const keys = (bound.args ?? []).map(evaluate);
+    if (!keys.every((key): key is bigint | boolean | string | Uint8Array => (
+      typeof key === 'bigint' || typeof key === 'boolean' || typeof key === 'string' || key instanceof Uint8Array
+    ))) return undefined;
+    const entry = selectMappingEntryByKeys(
+      (incomingEntries ?? []).filter((candidate) => candidate.collection === collection.signature),
+      keys, collection.keyTypes ?? [collection.keyType], collection,
+    );
+    if (!entry) return undefined;
+    try {
+      const decoded = decodePushdataValue(entry.value, 0, collection.valueType, structs);
+      if (decoded.bytesConsumed !== entry.value.length) return undefined;
+      const name = `entry:${bindings.size}`;
+      bindings.set(name, decoded.value as FunctionArgument);
+      return { kind: 'identifier', name, type: bound.type };
+    } catch {
+      return undefined;
+    }
+  };
+  const expression = bindEntries(recipe.expression);
+  if (!expression) return undefined;
+  const value = evaluate(expression);
   if (value === undefined) return undefined;
   try {
-    const encoded = encodeFunctionArgument(value, elementType, structs);
-    return encoded instanceof Uint8Array ? encoded : undefined;
+    const encoded = encodeFunctionArgument(value, storedType, structs);
+    if (!(encoded instanceof Uint8Array)) return undefined;
+    // A handler argument is an unframed stack item. A variable-width array element is persisted with its
+    // pushdata header, including bigint's numeric OP_1..OP_16 shortcuts; the compiler applies
+    // emitPushdataEncode before appending it to the array.
+    if (!wholeValue && !isFixedWidthType(storedType)) {
+      return encodePushdataValue(value as StateValue, storedType, structs);
+    }
+    return encoded;
   } catch {
     return undefined;
   }

@@ -102,6 +102,21 @@ const PREFIX = '__rh';
 const isSourceReturn = (statement: StatementNode | undefined): statement is ReturnNode =>
   statement instanceof ReturnNode && !statement.isYulReturn;
 
+/** A source branch can guard later statements only when its taken arm cannot fall through. */
+const definitelyReturns = (statement: StatementNode): boolean => {
+  if (statement instanceof ReturnNode) return true;
+  if (statement instanceof BlockNode) {
+    const last = statement.statements?.at(-1);
+    return last !== undefined && definitelyReturns(last);
+  }
+  if (statement instanceof BranchNode) {
+    return statement.elseBlock !== undefined
+      && definitelyReturns(statement.ifBlock)
+      && definitelyReturns(statement.elseBlock);
+  }
+  return false;
+};
+
 const captureCallsiteActivationInNode = (
   value: Node,
   conditions: readonly { expression: ExpressionNode; negated: boolean }[],
@@ -117,6 +132,21 @@ const captureCallsiteActivationInNode = (
         negated,
       }));
     }
+  }
+  if (value instanceof BlockNode) {
+    let fallthroughConditions = conditions;
+    for (const statement of value.statements ?? []) {
+      captureCallsiteActivationInNode(statement, fallthroughConditions, seen);
+      if (definitelyReturns(statement)) break;
+      if (statement instanceof BranchNode && !statement.elseBlock
+        && definitelyReturns(statement.ifBlock)) {
+        fallthroughConditions = [
+          ...fallthroughConditions,
+          { expression: statement.condition, negated: true },
+        ];
+      }
+    }
+    return;
   }
   if (value instanceof BranchNode) {
     captureCallsiteActivationInNode(value.condition, conditions, seen);
@@ -135,6 +165,14 @@ const captureCallsiteActivationInNode = (
     ], seen);
     captureCallsiteActivationInNode(value.ifFalse, [
       ...conditions, { expression: value.condition, negated: true },
+    ], seen);
+    return;
+  }
+  if (value instanceof BinaryOpNode
+    && (value.operator === BinaryOperator.AND || value.operator === BinaryOperator.OR)) {
+    captureCallsiteActivationInNode(value.left, conditions, seen);
+    captureCallsiteActivationInNode(value.right, [
+      ...conditions, { expression: value.left, negated: value.operator === BinaryOperator.OR },
     ], seen);
     return;
   }
@@ -464,7 +502,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
-        && (this.readsEntry(fn) || this.writesSortedEntry(fn) || this.touchesScalarState(fn)
+        && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
           || this.transitivelyContainsEvent(fn) || (calledByName.has(fn.name) && this.checksSignature(fn)))) {
@@ -506,7 +544,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // The fallback is internally callable via the self low-level-call lowering; a state-touching returning
     // fallback must inline at those call sites (its definition always stays - it is a dispatched entry point).
     if (node.fallbackDef && this.eligibleShape(node.fallbackDef)
-      && (this.readsEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef))) {
+      && (this.entryAccessed(node.fallbackDef) || this.touchesScalarState(node.fallbackDef))) {
       this.funcByName.set(node.fallbackDef.name, node.fallbackDef);
       this.funcByKey.set(inlineKey(node.fallbackDef.name, node.fallbackDef.parameters.length), node.fallbackDef);
       this.inlinedFns.add(node.fallbackDef.name);
@@ -696,7 +734,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (fn.collectionJournal) return false;
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
-    return this.readsEntry(fn) || this.writesSortedEntry(fn) || this.touchesScalarState(fn)
+    return this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
       || this.containsLowLevelCall(fn) || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
       || this.transitivelyContainsEvent(fn) || this.checksSignature(fn);
   }
@@ -884,7 +922,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   ): boolean {
     const key = inlineKey(fn.name, fn.parameters.length);
     if (seen.has(key) || !this.transitivelyContainsEvent(fn)
-      || this.touchesScalarState(fn) || this.readsEntry(fn)
+      || this.touchesScalarState(fn) || this.entryAccessed(fn)
       || this.containsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) return false;
     const next = new Set(seen).add(key);
     const pureGlobals = new Set<string>([
@@ -1064,13 +1102,36 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return returns === 1;
   }
 
-  // Reads a mapping/collection element (incl. the read half of a compound write) - the access that needs an
-  // entry-access input slot from the entry-point block layout.
+  // The entry access that makes a helper the inliner's. Under the per-call composition (`keepSelfMessageCalls`)
+  // that is an entry it reads, or a sorted entry it writes (`writesSortedEntry`); elsewhere any entry it touches.
+  private touchesOwnEntry(fn: FunctionDefinitionNode): boolean {
+    return this.keepSelfMessageCalls ? this.readsEntry(fn) || this.writesSortedEntry(fn) : this.touchesEntry(fn);
+  }
+
+  // The same split for the fallback and event-only checks: per-call reads an entry, elsewhere touches one.
+  private entryAccessed(fn: FunctionDefinitionNode): boolean {
+    return this.keepSelfMessageCalls ? this.readsEntry(fn) : this.touchesEntry(fn);
+  }
+
   private readsEntry(fn: FunctionDefinitionNode): boolean {
     for (const n of this.nodesOf(fn)) {
       if (n instanceof MappingAccessNode && this.collectionNames.has(n.name)) return true;
       else if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode
         && this.collectionNames.has(n.array.name)) return true;
+    }
+    return false;
+  }
+
+  // A collection read OR write needs the entry point's physical block layout. In particular, a returning
+  // helper that only writes a mapping has no read node, but cannot execute as a standalone OP_INVOKE body.
+  private touchesEntry(fn: FunctionDefinitionNode): boolean {
+    for (const n of this.nodesOf(fn)) {
+      if (n instanceof MappingAccessNode && this.collectionNames.has(n.name)) return true;
+      else if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode
+        && this.collectionNames.has(n.array.name)) return true;
+      else if ((n instanceof MappingAssignNode || n instanceof MappingFieldAssignNode
+        || n instanceof MappingDeleteNode || n instanceof ArrayAssignNode || n instanceof ArrayDeleteNode
+        || n instanceof ArrayPushNode || n instanceof ArrayPopNode) && this.collectionNames.has(n.name)) return true;
     }
     return false;
   }

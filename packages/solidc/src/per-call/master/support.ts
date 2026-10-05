@@ -250,6 +250,10 @@ function isExternalCallParameter(name: string): boolean {
     // `retval`, and the body takes the call's result from its own witness record, so the operand is neither
     // supplied nor read and is stripped from the published interface like the others.
     || /^__internal__externalReturnOutputIdx\d*$/.test(name)
+    // The direct path authenticates a result longer than a return event holds through this operand, the preimage
+    // of the digest the event commits, one per returning slot. A per-call body takes the result from its own
+    // witness record, so the operand is neither supplied nor read either.
+    || /^__internal__externalReturnPreimage\d*$/.test(name)
     // The direct path checks the co-spent callee's selector through this operand. A site checks its record's
     // selector against the compile-time value it folds, so a composed body neither supplies nor reads it.
     || /^__internal__externalCallSelector\d*$/.test(name);

@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { compileFile, compileFileSplit } from 'solidc';
-import { asmToScript, scriptToBytecode } from '@solidcash/utils';
+import { compileFile, compileFileSplit, compileString } from 'solidc';
+import { hexToBin } from '@bitauth/libauth';
+import {
+  asmToScript, bytecodeToScript, decodeInt, Op, scriptToBytecode,
+} from '@solidcash/utils';
 import {
   Contract, MockNetworkProvider, SignatureTemplate, Signer, StatefulContract,
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
-import { bobPriv } from '../fixture/vars.js';
+import { alicePriv, bobPriv } from '../fixture/vars.js';
 
 const source = new URL('../../contracts/examples/MinimalNativeToken.scash', import.meta.url);
 
@@ -87,5 +90,60 @@ describe('MinimalNativeToken bytecode budget', () => {
       .filter((utxo) => utxo.token?.category === setup.categoryId)
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
     expect(bearerBalance).toBe(5n);
+  });
+
+  it('shares integer mapping reads without changing allowance spends', async () => {
+    const artifact = compileFile(source, { messageBus: false });
+    expect(artifact.debug.invokeDebug?.['-18']?.name).toBe('compiler helper -18');
+    const transferFrom = artifact.abi.find((entry) => entry.name === 'transferFrom')!;
+    const body = bytecodeToScript(hexToBin(artifact.functionBodies![transferFrom.selector]));
+    const readInvokes = body.filter((opcode, index) => opcode === Op.OP_INVOKE
+      && body[index - 1] instanceof Uint8Array && decodeInt(body[index - 1] as Uint8Array) === -18n);
+    expect(readInvokes.length).toBeGreaterThanOrEqual(1);
+    const delegate = compileString(
+      'library ReadFacet { mapping(bytes20=>uint256) balances;'
+      + ' function f(bytes20 a, bytes20 b, bytes20 c) public {'
+      + ' require(this.balances[a] == this.balances[b] || this.balances[c] == 0); } }',
+      { brandLibrary: true, messageBus: false },
+    );
+    expect(delegate.debug.invokeDebug?.['-18']?.name).not.toBe('compiler helper -18');
+
+    const provider = createTestProvider();
+    const alice = new Signer(alicePriv, provider);
+    const bob = new Signer(bobPriv, provider);
+    const inner = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
+      _totalSupply: 0n,
+    }, {
+      saltContract: true,
+      extraOutputs: (category) => [{
+        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+      }, {
+        address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
+      }],
+    });
+    const token = StatefulContract.withCategory(inner, setup.categoryId);
+    let nonce = 0xe4;
+    const fund = async (signer: Signer): Promise<void> => {
+      nonce += 1;
+      await provider.addUtxo(signer.getAddress(), {
+        txid: nonce.toString(16).padStart(64, 'e'), vout: 0, satoshis: 500_000n,
+      });
+    };
+    await fund(bob);
+    await token.connect(bob).call.wrap(5n)
+      .addInput(setup.extraUtxos![1], new SignatureTemplate(bobPriv).unlockP2PKH())
+      .tokenContainerDeposit(setup.categoryId, 5n)
+      .send();
+
+    const aliceLedger = addressToLockScript(alice.getAddress());
+    const bobLedger = addressToLockScript(bob.getAddress());
+    await fund(bob);
+    await token.connect(bob).call.approve(aliceLedger, 2n).send();
+    await fund(alice);
+    await token.connect(alice).call.transferFrom(bobLedger, aliceLedger, 2n).send();
+    expect(await token.state._allowances(bobLedger, aliceLedger)).toBe(0n);
+    expect(await token.state._balances(bobLedger)).toBe(3n);
+    expect(await token.state._balances(aliceLedger)).toBe(2n);
   });
 });

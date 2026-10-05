@@ -144,7 +144,8 @@ export function replayConstructedKeyVectorV1(
   if (values.some((entry) => entry === undefined)) throw new Error('constructed key vector producer does not cover allocation');
   const fixed = descriptor.consumer.fixedComponents;
   const components = new Set([descriptor.consumer.vectorElementComponent, ...fixed.map((item) => item.component)]);
-  if (components.size !== fixed.length + 1 || [...components].some((component) => !Number.isSafeInteger(component) || component < 0)) {
+  if (components.size !== fixed.length + 1
+    || [...components].some((component) => !Number.isSafeInteger(component) || component < 0)) {
     throw new Error('constructed key vector consumer component relation is invalid');
   }
   const keyWidth = descriptor.consumer.keyComponentCount;

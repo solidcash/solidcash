@@ -111,11 +111,11 @@ export function materializeCreateBuilderSyntheticArgs(
     }
   }
 
-  // Fill compiler-owned trailing ABI parameters. An unresolved internal slot is
-  // given its type-safe sentinel; paths which actually execute an absent call
-  // still fail their covenant rather than failing SDK argument construction.
-  if (abiFunction && finalArgs.length < abiFunction.inputs.length) {
-    for (let i = finalArgs.length; i < abiFunction.inputs.length; i++) {
+  // Filling a later named witness can extend the array across earlier internal slots, leaving sparse holes.
+  // Fill those holes as well as the trailing suffix; an active path still has to satisfy its covenant.
+  if (abiFunction) {
+    for (let i = 0; i < abiFunction.inputs.length; i++) {
+      if (finalArgs[i] !== undefined) continue;
       const input = abiFunction.inputs[i];
       if (!input.name.startsWith('__internal__')) {
         throw new Error(
@@ -124,18 +124,15 @@ export function materializeCreateBuilderSyntheticArgs(
           + `(missing user arg '${input.name}'). This likely indicates a compiler/SDK version mismatch.`,
         );
       }
-      finalArgs = [
-        ...finalArgs,
-        callInputIndexByName.get(input.name) ?? (overrides?.returnProbeOnly
+      finalArgs[i] = callInputIndexByName.get(input.name) ?? (overrides?.returnProbeOnly
           && input.name.startsWith('__internal__externalReturnOutputIdx')
           // A read-only probe materializes no child blocks, so a child's return-event coordinate has no real
           // value to expose. The -1 sentinel makes the probe's own covenant abort before it can reach the
           // callee's return band, which is the only thing the probe exists to read; a neutral in-range index
           // keeps the trace running. Probe builds are never broadcast, so the sentinel keeps its fail-closed
           // meaning for every real build.
-          ? 0n
-          : defaultInternalFunctionArg(input)),
-      ];
+        ? 0n
+        : defaultInternalFunctionArg(input));
     }
   }
 

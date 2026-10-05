@@ -3,7 +3,7 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { binToHex, binToUtf8, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToUtf8, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import type { AbiFunction, Artifact } from '@solidcash/utils';
 import { decodePushdataValue, encodePushdataValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';

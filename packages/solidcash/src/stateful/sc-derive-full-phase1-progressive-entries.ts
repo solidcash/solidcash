@@ -175,6 +175,14 @@ export function deriveFullPhase1ProgressiveEntries(
       for (const [outputIndex, commitment] of revealed) {
         const previous = bEntryMap.get(outputIndex);
         if (hexToBin(commitment).length < 64 || /^0+$/.test(commitment)) continue;
+        // A provisional PredOut witness can still point at the fixed NEW slot. Its later P' comparison then
+        // exposes the predecessor commitment at that same output index, even though the compiler plan places
+        // P' in the trailing slot. Do not let that second observation erase the already learned NEW node.
+        if (group.plannedEntryInserts?.some((planned) => (
+          planned.outputBlockSlot !== planned.blockSlot
+          && outputIndex === bOutputBase + planned.blockSlot
+          && planned.commitment?.toLowerCase() === commitment.toLowerCase()
+        ))) continue;
         // bEntryMap records what an authenticated probe observed; it does not prove the current builder
         // has materialized those bytes. In particular, the initial trace can reveal a complete NEW node
         // which an earlier relative-slot seed records while physical compaction still leaves P' at that
@@ -360,7 +368,9 @@ export function deriveFullPhase1ProgressiveEntries(
             ? Number(trailingCountRaw)
             : -1;
       const abiFn = group.compilerRoute?.abiFunction
-        ?? (group.externalContract?.inner?.artifact?.abi as { name?: string; sortedBatchInfo?: Array<{ linear?: boolean }> }[] | undefined)
+        ?? (group.externalContract?.inner?.artifact?.abi as {
+          name?: string; sortedBatchInfo?: Array<{ linear?: boolean }>;
+        }[] | undefined)
           ?.find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
       const linearInBlock = (abiFn?.sortedBatchInfo?.some((batch) => batch.linear === true) ?? false)
         && trailingCount === 0;
@@ -392,9 +402,14 @@ export function deriveFullPhase1ProgressiveEntries(
         transaction: pb2.buildLibauthTransaction(),
       }) as AuthenticationProgramStateCommon[]);
       for (const { handle, newIdx, planned } of insertHandles) {
+        // A planned insert handle owns the predecessor rewrite P', already computed from the
+        // authenticated sorted-list predecessor. The trace can also expose the fixed NEW node's
+        // 64-byte link at this coordinate before it reaches the P' comparison; treating that
+        // intermediate value as the handle commitment swaps the two nodes and blocks later emits.
+        if (planned) continue;
         const newCommit = map2.get(newIdx);
         if (newCommit !== undefined) stb.setExternalCallEntryInsertCommitment(handle, newCommit);
-        else if (!planned) stb.removeExternalCallEntryInsert(handle);
+        else stb.removeExternalCallEntryInsert(handle);
       }
     }
   }

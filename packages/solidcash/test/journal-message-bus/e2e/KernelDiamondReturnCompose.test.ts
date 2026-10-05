@@ -30,7 +30,11 @@ describe('kernel diamond return compose', () => {
   it('materializes non-empty returns on Root fan-in of Left+Right view callees', async () => {
     const provider = createMessageBusCapstoneTestProvider();
 
-    const mkPure = async (name: string, addend: number) => {
+    const mkPure = async (name: string, addend: number): Promise<{
+      artifact: ReturnType<typeof compileString>;
+      contract: StatefulContract;
+      setup: Awaited<ReturnType<typeof setupStatefulUtxos>>;
+    }> => {
       const artifact = compileString(`pragma solidity ^0.8.0;
         contract ${name} {
           function read(uint256 value) public pure returns (uint256) { return value + ${addend}; }

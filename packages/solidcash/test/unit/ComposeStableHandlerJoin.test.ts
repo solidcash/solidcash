@@ -1,5 +1,5 @@
 /**
- * compose selector-first handler join: compose handler joins use the same selector-first helper as graph (selector-first graph handler join).
+ * Compose handler joins use the same selector-first helper as graph handler joins.
  * Name is diagnostic only under kernel-row-loop.
  */
 import { describe, expect, it } from 'vitest';

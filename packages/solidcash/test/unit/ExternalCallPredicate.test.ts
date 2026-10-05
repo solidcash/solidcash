@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { hash160 } from '@solidcash/utils';
 import type {
-  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, FunctionArgument,
+  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression,
 } from '@solidcash/utils';
+import type { FunctionArgument } from '../../src/Argument.js';
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
 import {
@@ -20,7 +21,12 @@ import {
   createGraphPlanningProducerResultContext,
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import {
+  expandResolveCreateBuilderExternalCalls,
+  type ExpandResolveCreateBuilderExternalCallsHost,
+} from '../../src/stateful/sc-expand-resolve-create-builder-external-calls.js';
+import { fillCreateBuilderDirectCallArgWitnesses } from '../../src/stateful/sc-fill-create-builder-direct-call-arg-witnesses.js';
 
 type PredicateEvaluator = {
   _evaluateExternalExpression: (
@@ -251,6 +257,25 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(evaluate(`0x${'01'.repeat(20)}`)).toBe(true);
   });
 
+  it('evaluates address.code.length from a runtime CashAddress', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'addressCodeLength', type: 'bigint', expression: source(0),
+    };
+    const codeAddress = lockingBytecodeToCashAddress({
+      bytecode: hexToBin(`aa20${'01'.repeat(32)}87`), prefix: 'bchtest',
+    });
+    const keyAddress = lockingBytecodeToCashAddress({
+      bytecode: hexToBin(`76a914${'02'.repeat(20)}88ac`), prefix: 'bchtest',
+    });
+    if (typeof codeAddress === 'string' || typeof keyAddress === 'string') throw new Error('invalid fixture');
+    expect(evaluator._evaluateExternalExpression(
+      expression, [codeAddress.address], artifact, undefined, [{ type: 'address' }],
+    )).toBe(1n);
+    expect(evaluator._evaluateExternalExpression(
+      expression, [keyAddress.address], artifact, undefined, [{ type: 'address' }],
+    )).toBe(0n);
+  });
+
   it('compares separately allocated byte arrays by contents', () => {
     const expression: ExternalCallExpression = {
       kind: 'binary', operator: '==', left: source(0), right: source(1),
@@ -297,6 +322,27 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(evaluator._evaluateExternalExpression(
       expression, [`0x${'ab'.repeat(60)}`], artifact, undefined, [{ type: 'bytes' }],
     )).toEqual(Uint8Array.of(60, ...new Uint8Array(60).fill(0xab)));
+  });
+
+  it('measures hex-encoded bytes by their decoded length in a pure packed helper', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'call', name: 'prefixBytes', args: [source(0)], parameters: ['value'],
+      statements: [{
+        kind: 'return',
+        expression: {
+          kind: 'abiEncodePacked', fields: ['uint8', ''], args: [{
+            kind: 'cast', type: 'uint8', expression: {
+              kind: 'unary', operator: '.length', expression: {
+                kind: 'identifier', name: 'value', type: 'bytes',
+              },
+            },
+          }, { kind: 'identifier', name: 'value', type: 'bytes' }],
+        },
+      }],
+    };
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${'00'.repeat(32)}`], artifact, undefined, [{ type: 'bytes' }],
+    )).toEqual(Uint8Array.of(32, ...new Uint8Array(32)));
   });
 
   it('uses the compiler address narrowing rule for Solidity P2SH32 values', () => {
@@ -443,6 +489,30 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(Uint8Array.of(0x00, 0x02, 0xff, 0xfe));
   });
 
+  it('packs a zero Solidity address cast to uint160 as twenty bytes', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
+    };
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${'00'.repeat(20)}`], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(new Uint8Array(20));
+  });
+
+  it('counts hex encoded bytes arguments by bytes while preserving string lengths', () => {
+    const length: ExternalCallExpression = {
+      kind: 'unary', operator: '.length', expression: source(0),
+    };
+    const hexArgument = `0x${'ab'.repeat(72)}`;
+
+    expect(evaluator._evaluateExternalExpression(
+      length, [hexArgument], artifact, undefined, [{ type: 'bytes' }],
+    )).toBe(72n);
+    expect(evaluator._evaluateExternalExpression(
+      length, [hexArgument], artifact, undefined, [{ type: 'string' }],
+    )).toBe(146n);
+  });
+
   it('evaluates compiler-published pure helper programs without helper-name knowledge', () => {
     const helperArtifact = compileString(`
       pragma solidity >=0.8.0;
@@ -472,6 +542,42 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(helperEvaluator._evaluateExternalExpression(
       expression!, [['DV']], helperArtifact, undefined, [{ type: 'string[]' }],
     )).toEqual(Uint8Array.of(1, 2, 0x44, 0x56));
+  });
+
+  it('evaluates guarded pure-library arguments and rejects a failed guard', () => {
+    const helperArtifact = compileString(`pragma solidity >=0.8.0;
+      library Checked {
+        function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+          require(b <= a);
+          return a - b;
+        }
+        function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+          if (a == 0) return 0;
+          uint256 product = a * b;
+          require(product / a == b);
+          return product;
+        }
+      }
+      interface ISink { function publish(uint256 value) external; }
+      contract GuardedArgument(address sink) {
+        using Checked for uint256;
+        function run(uint256 a, uint256 b) public {
+          ISink(sink).publish(a.sub(b).mul(2));
+          require(true);
+        }
+      }`, { solidityImportCompat: true, forceStateful: true });
+    const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
+      ?.externalCalls?.[0].argSources?.[0].expression;
+    expect(expression).toBeDefined();
+    const helperEvaluator = new StatefulContract(
+      '00'.repeat(32), helperArtifact, createTestProvider(), { constructorArgs: [new Uint8Array()] },
+    ) as unknown as PredicateEvaluator;
+    expect(helperEvaluator._evaluateExternalExpression(
+      expression!, [10n, 3n], helperArtifact, undefined, [{ type: 'uint256' }, { type: 'uint256' }],
+    )).toBe(14n);
+    expect(helperEvaluator._evaluateExternalExpression(
+      expression!, [3n, 10n], helperArtifact, undefined, [{ type: 'uint256' }, { type: 'uint256' }],
+    )).toBeUndefined();
   });
 
   it('evaluates fixed-array element assignments in a compiler-published pure helper', () => {
@@ -613,14 +719,55 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(JSON.stringify(sources)).not.toContain('"name":"Record"');
   });
 
-  it('packs a zero address cast to uint160 as the compiler zero value', () => {
+  it('packs a zero address cast to uint160 at its declared Solidity width', () => {
     const expression: ExternalCallExpression = {
       kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
     };
 
     expect(evaluator._evaluateExternalExpression(
       expression, [`0x${'00'.repeat(20)}`], artifact, undefined, [{ type: 'address' }],
-    )).toEqual(new Uint8Array());
+    )).toEqual(new Uint8Array(20));
+  });
+
+  it.each([0, 0x47])('strips ABI framing from a packed uint160 address word (byte %s)', (byte) => {
+    const identity = new Uint8Array(20).fill(byte);
+    const word = Uint8Array.of(...new Uint8Array(12), ...identity);
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160', 'bool'],
+      args: [source(0), { kind: 'literal', type: 'bool', value: true }],
+    };
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [word], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(Uint8Array.of(...identity, 1));
+  });
+
+  it('narrows Solidity-compatible BCH locks in packed uint160 expressions', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x53), 0x87);
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
+    };
+    expect(evaluator._evaluateExternalExpression(
+      expression, [lock], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(hash160(lock));
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${binToHex(lock)}`], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(hash160(lock));
+  });
+
+  it('narrows a typed address cast before Solidity-compatible packed encoding', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x64), 0x87);
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160'], args: [{
+        kind: 'cast', type: 'uint160', expression: source(0),
+      }],
+    };
+    expect(evaluator._evaluateExternalExpression(
+      expression, [lock], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(hash160(lock));
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${binToHex(lock)}`], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(hash160(lock));
   });
 });
 
@@ -641,6 +788,402 @@ describe('conditional external-call topology', () => {
 
     expect(externalCallTargetSourceLockingBytecodeHex(owner, 0, [], resolved))
       .toBe(binToHex(physicalLock));
+  });
+
+  it('auto-resolves a state-pinned callee without an interface-name registration', async () => {
+    const physicalLock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x58), 0x87);
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        interfaceName: 'IData', functionName: 'ping', requiredDataNftIndices: [], argSources: [],
+        addressSource: { kind: 'expression', expression: { kind: 'state', name: 'target' } },
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => undefined,
+      getExternalDeploymentByAddressValue: (value) =>
+        value instanceof Uint8Array && binToHex(value) === binToHex(physicalLock) ? callee : undefined,
+      getFullState: async () => ({ state: { target: physicalLock } }),
+      resolveExternalArgs: (...args) => (
+        evaluator._resolveExternalArgs as (...values: any[]) => FunctionArgument[] | undefined
+      )(...args),
+      evaluateExternalExpression: (...args) => (
+        evaluator._evaluateExternalExpression as (...values: any[]) => FunctionArgument | undefined
+      )(...args),
+    }, fn, [], artifact, undefined, undefined);
+    expect(resolved.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'ping', args: [],
+    }]);
+  });
+
+  it('does not auto-bind a different interface contract for a published callee address', async () => {
+    const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x58), 0x87);
+    const other = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x59), 0x87);
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        interfaceName: 'IData', functionName: 'ping', requiredDataNftIndices: [], argSources: [],
+        addressSource: { kind: 'expression', expression: { kind: 'state', name: 'target' } },
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolve = (connected: unknown, state: Record<string, unknown>) =>
+      expandResolveCreateBuilderExternalCalls({
+        getExternalTargetEntriesByInterface: () => [],
+        getExternalRegistryEntry: () => connected,
+        getExternalDeploymentByAddressValue: () => undefined,
+        getFullState: async () => ({ state }),
+        resolveExternalArgs: (...values: any[]) => (
+          evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+        )(...values),
+        evaluateExternalExpression: (...values: any[]) => (
+          evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+        )(...values),
+      }, fn, [], artifact, undefined, undefined);
+
+    const wrong = { inner: { lockingBytecode: binToHex(other) } };
+    expect((await resolve(wrong, { target })).resolvedExternalCalls).toBeUndefined();
+    expect((await resolve(wrong, {})).resolvedExternalCalls).toBeUndefined();
+    const exact = { inner: { lockingBytecode: binToHex(target) } };
+    expect((await resolve(exact, { target })).resolvedExternalCalls).toEqual([{
+      externalContract: exact, functionName: 'ping', args: [],
+    }]);
+  });
+
+  it('retains earlier callees when a later require proves its unresolved call unreachable', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const guard: ExternalCallExpression = {
+      kind: 'binary', operator: '&&',
+      left: { kind: 'binary', operator: '>', left: {
+        kind: 'addressCodeLength', expression: source(0),
+      }, right: { kind: 'literal', type: 'bigint', value: '0' } },
+      right: { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'bool' },
+    };
+    const fn = {
+      name: 'run', inputs: [{ name: 'target', type: 'address' }], externalCalls: [
+        { interfaceName: 'IReached', functionName: 'read', requiredDataNftIndices: [], argSources: [] },
+        { interfaceName: 'IUnregistered', functionName: 'write', requiredDataNftIndices: [],
+          argSources: [], preCallRequires: [guard] },
+      ],
+    } as unknown as Artifact['abi'][number];
+    const host = {
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: (name: string) => name === 'IReached' ? callee : undefined,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    };
+    const zero = await expandResolveCreateBuilderExternalCalls(
+      host, fn, [new Uint8Array()], artifact, undefined, undefined,
+    );
+    expect(zero.externalCalls?.map((call) => call.functionName)).toEqual(['read']);
+    expect(zero.resolvedExternalCalls).toEqual([{ externalContract: callee, functionName: 'read', args: [] }]);
+
+    const live = await expandResolveCreateBuilderExternalCalls(
+      host, fn, [Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32), 0x87)],
+      artifact, undefined, undefined,
+    );
+    expect(live.externalCalls?.map((call) => call.functionName)).toEqual(['read', 'write']);
+    expect(live.resolvedExternalCalls).toBeUndefined();
+  });
+
+  it('omits an empty loop without dropping a sibling loop that reaches its callee', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const loop = (paramIndex: number): ExternalCallAbi => ({
+      interfaceName: paramIndex === 0 ? 'IReached' : 'IUnregistered',
+      functionName: 'record', requiredDataNftIndices: [], occurrence: 'loop',
+      argSources: [{ kind: 'arrayElement', paramIndex, indexValue: 0, indexStepValue: 1 }],
+      iterationDomain: {
+        counterName: 'i', initialValue: { kind: 'literal', type: 'bigint', value: '0' },
+        stepValue: { kind: 'literal', type: 'bigint', value: '1' },
+        continueCondition: {
+          kind: 'binary', operator: '<', left: { kind: 'identifier', name: 'i' },
+          right: { kind: 'unary', operator: '.length', expression: source(paramIndex) },
+        },
+        maximumIterations: 10,
+      },
+    } as ExternalCallAbi);
+    const fn = {
+      name: 'run', inputs: [{ name: 'reached', type: 'string[]' }, { name: 'empty', type: 'string[]' }],
+      externalCalls: [loop(0), loop(1)],
+    } as unknown as Artifact['abi'][number];
+    const result = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: (name: string) => name === 'IReached' ? callee : undefined,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    }, fn, [['worker'], []], artifact, undefined, undefined);
+    expect(result.externalCalls?.map((call) => call.interfaceName)).toEqual(['IReached']);
+    expect(result.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'record', args: ['worker'],
+    }]);
+  });
+
+  it('hydrates mapping-backed arguments before resolving a direct callee', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        interfaceName: 'IToken', functionName: 'pay', requiredDataNftIndices: [],
+        argSources: [{ kind: 'expression', expression: {
+          kind: 'field', name: 'amount', expression: { kind: 'stateAccess', name: 'users', args: [
+            { kind: 'literal', type: 'bigint', value: '0' },
+          ] },
+        } }],
+      }],
+    } as unknown as Artifact['abi'][number];
+    let hydrated = false;
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => callee,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+      hydrateExternalPredicateState: async () => {
+        hydrated = true;
+        return { users: { 0: { amount: 7n } } };
+      },
+    }, fn, [], artifact, undefined, undefined);
+    expect(hydrated).toBe(true);
+    expect(resolved.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'pay', args: [7n],
+    }]);
+  });
+
+  it('resolves later call arguments from the exact published producer result', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const producerResult: ExternalCallExpression = {
+      kind: 'producerResult', callsiteId: 4, resultIndex: 0, type: 'Escrow',
+    };
+    const fn = {
+      name: 'arbitrate', inputs: [{ name: 'escrowId', type: 'uint256' }],
+      externalCalls: [
+        { callsiteId: 4, interfaceName: 'IEscrow', functionName: 'getEscrow',
+          requiredDataNftIndices: [], returnTypes: ['Escrow'],
+          argSources: [{ kind: 'forward', paramIndex: 0 }] },
+        { callsiteId: 7, interfaceName: 'IEscrow', functionName: 'settle',
+          requiredDataNftIndices: [], argSources: [
+            { kind: 'forward', paramIndex: 0 },
+            { kind: 'expression', expression: { kind: 'field', name: 'split', expression: producerResult } },
+            { kind: 'expression', expression: { kind: 'field', name: 'consensus', expression: producerResult } },
+          ] },
+      ],
+    } as unknown as Artifact['abi'][number];
+    const makeHost = (exact: boolean): ExpandResolveCreateBuilderExternalCallsHost => ({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => callee,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+      resolveExternalExpressionReturns: async (
+        sources: readonly ArgSource[], _args: FunctionArgument[], _state: Record<string, unknown>,
+        _inputs: readonly { type: string }[] | undefined, _self: FunctionArgument | undefined,
+        producers: readonly ExternalCallAbi[],
+      ) => {
+        expect(sources).toEqual(fn.externalCalls![1].argSources);
+        expect(producers.map((call) => call.callsiteId)).toEqual([4, 7]);
+        return exact ? new Map([[JSON.stringify(producerResult), {
+          split: [2500n, 7500n], consensus: [1n, 0n],
+        }]]) : new Map();
+      },
+    });
+    const resolved = await expandResolveCreateBuilderExternalCalls(
+      makeHost(true), fn, [3n], artifact, undefined, undefined,
+    );
+    expect(resolved.resolvedExternalCalls).toEqual([
+      { externalContract: callee, functionName: 'getEscrow', args: [3n] },
+      { externalContract: callee, functionName: 'settle', args: [3n, [2500n, 7500n], [1n, 0n]] },
+    ]);
+    await expect(expandResolveCreateBuilderExternalCalls(
+      makeHost(false), fn, [3n], artifact, undefined, undefined,
+    )).rejects.toThrow('expression-based argSources that cannot be auto-resolved');
+  });
+
+  it('omits a false mapping-backed call without renumbering a later required callsite', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        callsiteId: 4, occurrence: 'conditional', interfaceName: 'IAbsent',
+        functionName: 'optional', requiredDataNftIndices: [],
+        condition: { kind: 'binary', operator: '>', left: {
+          kind: 'field', name: 'amount', expression: { kind: 'stateAccess', name: 'users', args: [
+            { kind: 'literal', type: 'bigint', value: '0' },
+          ] },
+        }, right: { kind: 'literal', type: 'bigint', value: '0' } },
+        argSources: [{ kind: 'expression', expression: { kind: 'identifier', name: 'unreached' } }],
+      }, {
+        callsiteId: 7, occurrence: 'once', interfaceName: 'IRequired',
+        functionName: 'pay', requiredDataNftIndices: [], argSources: [],
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: (name) => name === 'IRequired' ? callee : undefined,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+      hydrateExternalPredicateState: async () => ({ users: { 0: { amount: 0n } } }),
+    }, fn, [], artifact, undefined, undefined);
+    expect(resolved.externalCalls?.map((call) => call.callsiteId)).toEqual([7]);
+    expect(resolved.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'pay', args: [],
+    }]);
+  });
+
+  it('binds a pinned raw call by its published selector and decoded argument sources', async () => {
+    const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x61), 0x87);
+    const callee = { inner: { artifact: { abi: [{ name: 'transferFrom', selector: '4b6685e7' }] } } };
+    const fn = {
+      name: 'run', inputs: [{ name: 'amount', type: 'uint256' }], externalCalls: [{
+        callsiteId: 7, occurrence: 'once', interfaceName: '__raw__', functionName: '__raw__',
+        rawSelector: '4b6685e7', requiredDataNftIndices: [],
+        addressSource: { kind: 'expression', expression: { kind: 'state', name: 'target' } },
+        argSources: [{ kind: 'expression', expression: { kind: 'unsupported', name: 'AbiEncodeWithSelectorNode' } }],
+        rawArgSources: [{ kind: 'forward', paramIndex: 0 }],
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => undefined,
+      getExternalDeploymentByAddressValue: (value) => value === target ? callee : undefined,
+      getFullState: async () => ({ state: { target } }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    }, fn, [17n], artifact, undefined, undefined);
+    expect(resolved.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'transferFrom', args: [17n],
+    }]);
+  });
+
+  it('keeps sparse direct-call witnesses in their original ABI slots', async () => {
+    const calls = [{ callsiteId: 4, occurrence: 'conditional', hasReturnValues: true },
+      { callsiteId: 7, occurrence: 'once', hasReturnValues: true }];
+    const inputs = [
+      { name: '__internal__externalCallSelector0', type: 'bytes4' },
+      { name: '__internal__extcallMasterIdx0', type: 'bigint' },
+      { name: '__internal__extcallMasterIdx1', type: 'bigint' },
+      { name: '__internal__extcallAnchorIdx0', type: 'bigint' },
+      { name: '__internal__extcallAnchorIdx1', type: 'bigint' },
+      { name: '__internal__externalReturnOutputIdx0', type: 'bigint' },
+      { name: '__internal__externalReturnOutputIdx1', type: 'bigint' },
+    ];
+    const returnGroups: number[] = [];
+    const finalArgs = await fillCreateBuilderDirectCallArgWitnesses({
+      inner: { provider: createTestProvider(), artifact },
+      resolveExternalArgs: () => undefined,
+    }, {
+      abiFunction: { inputs, externalCalls: calls } as unknown as Artifact['abi'][number],
+      args: [], finalArgs: [],
+      externalCallUtxoGroups: [{
+        functionName: 'transferFrom', externalContract: {
+          inner: { artifact: { abi: [{ name: 'transferFrom', selector: '4b6685e7' }] } },
+        },
+      }] as any,
+      groupMetas: [{ ecSlot: calls[1], callerCategoryId: 'ab'.repeat(32), parentGroupIndex: -1 }] as any,
+      directGroupCount: 1, loopIdxRanges: [], groupMasterIndices: [8],
+      externalCalls: [calls[1]] as any, returnEventOutputBase: 12,
+      returnEventIndexMap: new Map([[0, 12]]), callerStateSnapshot: undefined,
+      onChainState: { state: {} }, publicSelfAddress: new Uint8Array(),
+      identityAnchors: [], identityAnchorBandByAddress: new Map(),
+      externalCallAnchorIndices: new Map(), topLevelAnchorFillPositions: [],
+      topLevelReturnWitnessPlan: [], topLevelReturnWitnessGroups: returnGroups,
+    });
+    expect(finalArgs).toEqual([new Uint8Array(4), -1n, 8n, -1n, -1n, -1n, 12n]);
+    expect(returnGroups).toEqual([-1, 0]);
+  });
+
+  it('fills a trailing omitted callsite with ABI-valid direct-call witnesses', async () => {
+    const calls = [
+      { callsiteId: 4, occurrence: 'loop', needsSelectorVerification: true },
+      { callsiteId: 7, occurrence: 'loop', needsSelectorVerification: true },
+    ];
+    const inputs = [
+      { name: '__internal__externalCallSelector0', type: 'bytes4' },
+      { name: '__internal__externalCallSelector1', type: 'bytes4' },
+      { name: '__internal__extcallMasterIdx0', type: 'bigint' },
+      { name: '__internal__extcallMasterIdx1', type: 'bigint' },
+    ];
+    const finalArgs = await fillCreateBuilderDirectCallArgWitnesses({
+      inner: { provider: createTestProvider(), artifact },
+      resolveExternalArgs: () => undefined,
+    }, {
+      abiFunction: { inputs, externalCalls: calls } as unknown as Artifact['abi'][number],
+      args: [], finalArgs: [],
+      externalCallUtxoGroups: [{
+        functionName: 'record', externalContract: {
+          inner: { artifact: { abi: [{ name: 'record', selector: '4b6685e7' }] } },
+        },
+      }] as any,
+      groupMetas: [{ ecSlot: calls[0], callerCategoryId: 'ab'.repeat(32), parentGroupIndex: -1 }] as any,
+      directGroupCount: 1, loopIdxRanges: [], groupMasterIndices: [8],
+      externalCalls: [calls[0]] as any, returnEventOutputBase: 0,
+      returnEventIndexMap: new Map(), callerStateSnapshot: undefined,
+      onChainState: { state: {} }, publicSelfAddress: new Uint8Array(),
+      identityAnchors: [], identityAnchorBandByAddress: new Map(),
+      externalCallAnchorIndices: new Map(), topLevelAnchorFillPositions: [],
+      topLevelReturnWitnessPlan: [], topLevelReturnWitnessGroups: [],
+    });
+    expect(finalArgs).toEqual([hexToBin('4b6685e7'), new Uint8Array(4), 8n, -1n]);
+  });
+
+  it('omits direct callees when every published affine loop has zero iterations', async () => {
+    const domain = {
+      counterName: 'i', maximumIterations: 65_535,
+      initialValue: { kind: 'literal', type: 'bigint', value: '0' },
+      stepValue: { kind: 'literal', type: 'bigint', value: '1' },
+      continueCondition: {
+        kind: 'binary', operator: '<',
+        left: { kind: 'identifier', name: 'i' },
+        right: { kind: 'unary', operator: '.length', expression: { kind: 'state', name: 'items' } },
+      },
+    } as const;
+    const fn = {
+      name: 'run', inputs: [], externalCalls: ['balanceOf', 'mint'].map((functionName, callsiteId) => ({
+        callsiteId, interfaceName: 'IToken', functionName, occurrence: 'loop',
+        requiredDataNftIndices: [], iterationDomain: domain,
+        argSources: [{ kind: 'expression', expression: { kind: 'identifier', name: 'unreached' } }],
+      })),
+    } as unknown as Artifact['abi'][number];
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => { throw new Error('unreached callee lookup'); },
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: { items: [] } }),
+      resolveExternalArgs: () => { throw new Error('unreached arguments'); },
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    }, fn, [], artifact, undefined, undefined);
+    expect(resolved.externalCalls).toEqual([]);
+    expect(resolved.resolvedExternalCalls).toEqual([]);
   });
 
   it('uses ABI-valid placeholders for inactive fixed route bands', () => {

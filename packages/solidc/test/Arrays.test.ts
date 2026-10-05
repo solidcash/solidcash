@@ -82,6 +82,56 @@ describe('local array-element delete (int[] d; delete d[i])', () => {
   });
 });
 
+describe('local array-element assignment', () => {
+  it('reuses the decoded length when rebuilding a fixed array', () => {
+    const artifact = compileString('contract C { function f(uint256 x) public returns(uint256) {'
+      + ' uint256[5] memory p; p[0]=x; p[1]=x+1; p[2]=x+2; p[3]=x+3; p[4]=x+4;'
+      + ' return p[4]; } }', { solidityImportCompat: true, messageBus: false });
+    expect(artifact.debug.bytecode.length / 2).toBeLessThan(1200);
+  });
+
+  it('coalesces ordered writes into a fresh fixed array before a dependent write', () => {
+    const artifact = compileString('uint8 constant WHO_BUYER=0; uint8 constant WHO_SELLER=1;'
+      + ' uint8 constant WHO_MARKETPLACE=2; uint8 constant WHO_PROTOCOL=3;'
+      + ' uint8 constant WHO_ARBITRATOR=4;'
+      + ' contract C { function f(uint256 amount, uint256[5] memory split)'
+      + ' public returns(uint256[5] memory) { uint256[5] memory p;'
+      + ' p[WHO_BUYER]=split[WHO_BUYER]*amount; p[WHO_SELLER]=split[WHO_SELLER]*amount;'
+      + ' p[WHO_MARKETPLACE]=split[WHO_MARKETPLACE]*amount;'
+      + ' p[WHO_ARBITRATOR]=split[WHO_ARBITRATOR]*amount;'
+      + ' p[WHO_PROTOCOL]=amount-p[WHO_BUYER]-p[WHO_SELLER]-p[WHO_MARKETPLACE]-p[WHO_ARBITRATOR];'
+      + ' return p; } }', { solidityImportCompat: true });
+    expect(artifact.debug.bytecode.length / 2).toBeLessThan(700);
+  });
+
+  it('forwards a complete fixed-array projection at an external return boundary', () => {
+    const prefix = 'uint8 constant B=0; uint8 constant S=1; uint8 constant M=2;'
+      + ' uint8 constant P=3; uint8 constant A=4; contract C {'
+      + ' function calculate(uint256 amount) internal pure returns(uint256[5] memory) {'
+      + ' uint256[5] memory payments; payments[B]=amount/10; payments[S]=amount/5;'
+      + ' payments[M]=amount/5; payments[A]=amount/10;'
+      + ' payments[P]=amount-payments[B]-payments[S]-payments[M]-payments[A];'
+      + ' return payments; }'
+      + ' function claim(uint256 amount) external pure returns(uint256[5] memory) {'
+      + ' uint256[5] memory payments=calculate(amount);';
+    const projected = compileString(`${prefix}return [payments[B],payments[S],payments[M],`
+      + 'payments[P],payments[A]];}}', { solidityImportCompat: true });
+    const forwarded = compileString(`${prefix}return payments;}}`, { solidityImportCompat: true });
+    expect(projected.bytecode).toBe(forwarded.bytecode);
+
+    const reordered = compileString(`${prefix}return [payments[S],payments[B],payments[M],`
+      + 'payments[P],payments[A]];}}', { solidityImportCompat: true });
+    expect(reordered.bytecode).not.toBe(forwarded.bytecode);
+
+    const parameterPrefix = 'contract C { function claim(uint256[5] memory payments)'
+      + ' external pure returns(uint256[5] memory) {';
+    const parameterProjection = compileString(`${parameterPrefix}return [payments[0],payments[1],`
+      + 'payments[2],payments[3],payments[4]];}}', { solidityImportCompat: true });
+    const parameterForward = compileString(`${parameterPrefix}return payments;}}`, { solidityImportCompat: true });
+    expect(parameterProjection.bytecode).not.toBe(parameterForward.bytecode);
+  });
+});
+
 describe('Tuple forwarding and whole fixed-array assignment', () => {
   it('forwards a tuple-returning call directly in a return statement', () => {
     // `return g()` where g returns (int, int) forwards the tuple's components (Solidity tuple forwarding),

@@ -66,7 +66,7 @@ export function publishCreateBuilderNestedComposeGroup(
     childRelativeOutputInternalArgs, childBlockInputs, childPlannedEntryInserts,
     childBatchPredecessorOutputs, childBatchEntryLockingBytecodes,
     childBatchEntryCommitments, childDynamicChunkResources, selectedLayout,
-    sharedGroupIndex, delegateCallGroupIndex, childExternalGroupIndex,
+    sharedGroupIndex, delegateCallGroupIndex,
     childValueChunkSlots, precomputedReturnCommitment, loopReturnCommitments,
     resolveLoopReturnCommitment, resolveLoopReturnValue, refreshChunkableRouteWitnesses,
     delegateCallerIdentity, externalCallUtxoGroups, lowLevelCallUtxoGroups,

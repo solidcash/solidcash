@@ -290,8 +290,8 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
     const sourceKeys = keysArr;
     const predicate = info.predicateArrayParam ? argOf(info.predicateArrayParam) as unknown[] : undefined;
     if (!Array.isArray(sourceKeys) || (info.predicateArrayParam && !Array.isArray(predicate))) {
-        return { skipped: true as const };
-      }
+      return { skipped: true as const };
+    }
     const selected: unknown[] = [];
     const asBigInt = (v: unknown): bigint => typeof v === 'bigint' ? v : BigInt(v as number | string);
     const decodeStaticWord = (blob: unknown, tupleIndex: number, typeName: string): unknown => {

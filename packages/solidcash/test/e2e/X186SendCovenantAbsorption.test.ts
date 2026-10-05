@@ -345,8 +345,8 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       // four routed sites inside `StatefulContract.ts`; the helper now lives in `message-bus/preflight.ts` and
       // `TransactionBuilder.send` is its second caller, so the count is per file and lives here.
       //
-      // A new broadcast path added later gets whichever gate its author copies from a neighbour. Every
-      // neighbour at a site with no covenant verdict ahead of it now calls the routed one.
+      // The four lifecycle-admin calls were extracted into three modules. A new broadcast path added later
+      // gets whichever gate its author copies from a neighbour, so pin each current routed site by module.
       const builder = read('TransactionBuilder.ts');
       expect(callsTo(builder, 'assertFinalizedBytesWithCovenant')).toHaveLength(1);
       expect(callsTo(builder, 'assertFinalizedTransactionBytes')).toHaveLength(0);
@@ -355,6 +355,15 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       const stateful = readFamily('StatefulContract.ts', /^sc-.*\.ts$/);
       expect(callsTo(stateful, 'assertFinalizedBytesWithCovenant')).toHaveLength(4);
       expect(callsTo(stateful, 'assertFinalizedTransactionBytes')).toHaveLength(0);
+      for (const [file, count] of [
+        ['stateful/sc-destroy.ts', 1],
+        ['stateful/sc-split-merge.ts', 2],
+        ['stateful/sc-send-raw-builder.ts', 1],
+      ] as const) {
+        const lines = read(file);
+        expect(callsTo(lines, 'assertFinalizedBytesWithCovenant'), file).toHaveLength(count);
+        expect(callsTo(lines, 'assertFinalizedTransactionBytes'), file).toHaveLength(0);
+      }
 
       // Inside `preflight.ts` the bare gate keeps three callers: the covenant-clean branch of the helper
       // itself, and the two message bus entry points that run `evaluateEveryInput` BEFORE it - a guaranteed

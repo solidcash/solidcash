@@ -25,6 +25,11 @@ export type MeasureAndFundCovenantFeeResult = {
   dustMinimum: bigint;
 };
 
+// A mock provider can fund several sends before their UTXOs are consumed by a composed transaction. Their
+// outpoints must be distinct just like real funding outputs; reusing one fixed fe:0 outpoint makes that later
+// transaction invalid even though each fee funder was individually provisioned.
+let mockFeeFunderNonce = 0n;
+
 /**
  * Measure the covenant-only transaction size, estimate fee overhead for one funder + change,
  * and when underfunded register a P2SH32 OP_TRUE dummy funder on mock providers.
@@ -93,7 +98,11 @@ export async function measureAndFundCovenantFee(
     // the deficit in addition to the fee and change dust.
     const outputDeficit = existingFee < 0n ? -existingFee : 0n;
     const funderSats = neededFee + DUST_MINIMUM + outputDeficit; // fee + change + deficit
-    const dummyTxid = '00'.repeat(31) + 'fe';
+    if (mockFeeFunderNonce >= 0xffff_ffff_ffff_ffffn) {
+      throw new Error('Mock fee-funder outpoint space exhausted');
+    }
+    mockFeeFunderNonce += 1n;
+    const dummyTxid = `${'00'.repeat(23)}fe${mockFeeFunderNonce.toString(16).padStart(16, '0')}`;
     const dummyUtxo = { txid: dummyTxid, vout: 0, satoshis: funderSats };
 
     // Register with mocknet provider

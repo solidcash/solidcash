@@ -137,7 +137,8 @@ bool checkMultiSig(sig[] sigs, pubkey[] pks)
 Performs a multi-signature check using a list of transaction signatures and public keys.
 
 :::note
-While this function can be used inside your smart contracts, it is not supported by the TypeScript SDK, so it is recommended not to use it. Instead a `checkMultiSig()` call can be simulated using multiple `checkSig()` calls.
+The TypeScript SDK supports multisig arguments. `checkMultiSig` requires ECDSA transaction signatures, so create
+each argument with `SignatureAlgorithm.ECDSA`; `SignatureTemplate` defaults to Schnorr for ordinary `checkSig`.
 :::
 
 ### checkDataSig()
@@ -174,6 +175,16 @@ int stringToInt(string value)
 ```
 
 Parses a decimal string into an integer.
+
+### erc7201()
+
+```solidity
+uint256 erc7201(string namespace)
+```
+
+Returns the specification-conformant ERC-7201 namespaced storage slot. A literal or constant-string namespace is
+folded with real Keccak at compile time; a runtime string lowers to the complete formula. See
+[EVM Storage & ERC-7201 Compatibility](/docs/language/evm-storage-compat#erc-7201-namespaced-storage).
 
 ## Signature recovery
 

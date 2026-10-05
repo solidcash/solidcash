@@ -15,15 +15,19 @@ import {
   type TokenContainerTransferSiteAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { encodeFunctionArgument } from '../Argument.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
+import {
+  bindSatoshiContainerSelection, decodeSelectedHandlerArguments, selectedSatoshiContainerRequired,
+} from '../message-bus/selected-satoshi-container.js';
 import { evaluateFixedEffectPredicate } from '../message-bus/message-bus.js';
 import {
   allowsWriteUnderExecutionContext,
   activeOrdinalsUnderContext,
   buildKernelExecutionContext,
-  executionContextJournalKey,
   registerExecutionContextOnSettlement,
+  type ExecutionContextLifecycle,
 } from '../message-bus/execution-context.js';
 import {
   filterEmitsUnderPathEffectSchedule,
@@ -31,7 +35,6 @@ import {
   pathEffectActivationEnvironmentFromArgs,
   type PublishedPathEffectSchedule,
 } from '../message-bus/path-effect-schedule.js';
-import { settlement } from './value-chunk-persist.js';
 import { peekBuildId } from './buildSequence.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
@@ -45,13 +48,16 @@ import {
   kernelEntryJournalReadCarrierCapabilityFromArtifact,
   kernelEntryJournalRecordSegmentIndex,
 } from './KernelEntryJournal.js';
-import { authenticateKernelReadCarrierRoute } from './kernel-read-carrier-route.js';
+import {
+  authenticateKernelReadCarrierRoute, bindKernelCarrierHandlerOverlay,
+} from './kernel-read-carrier-route.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import {
   entryAccessAt,
   visibleHandlerInputs,
   type RouteExpressionKeyRow,
 } from './route-expression-key.js';
+import { inactiveRouteEntrySlotsFromOperations } from './sorted-batch-activity.js';
 
 /** Apply route-published dynamic metadata to one callable row without aliasing selectorless handlers. */
 export function mergePublishedMessageBusHandlerMetadata(
@@ -114,8 +120,12 @@ export type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusActiveSortedBatchSlots?: ReadonlySet<number>;
   /** Collections written by the handlers selected in this concrete envelope. Runtime-only route narrowing. */
   messageBusActiveWriteCollections?: readonly string[];
+  /** Whether the selected handlers need the route's shared satoshi-container slot. */
+  messageBusActiveSatoshiContainer?: boolean;
   /** Typed rows selected in this concrete envelope. Runtime-only; used for exact computed-value planning. */
   messageBusRowArguments?: readonly RouteExpressionKeyRow[];
+  /** Direct keccak preimages decoded from selected rows of the canonical batch blob; null needs another recipe. */
+  messageBusKeccakPreimages?: readonly (Uint8Array | null)[];
   /** Fixed token effects selected by a concrete envelope, retaining sparse graph-frame coordinates. */
   messageBusTokenContainerTransferPlan?: readonly {
     args: readonly FunctionArgument[];
@@ -127,7 +137,6 @@ export type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusGraphExecution?: true;
 };
 
-const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
 const VMAP_COUNTER_PREFIX_COUNT_PREFIX = '__internal__vmapCounterPrefixCount_';
@@ -341,30 +350,41 @@ export interface BatchRawHost {
   }): BatchRawCall;
 }
 
+export interface BatchExecutionContextBinding {
+  lifecycle: ExecutionContextLifecycle;
+  participantIndex: number;
+}
+
 export function batchRaw(
-host: BatchRawHost,
-blob: Uint8Array,
-routeWitnesses: readonly FunctionArgument[] = [],
-internalRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
-blockBase = 0,
-emitReturn = false,
-returnBlob?: Uint8Array,
-omitLocalFeeTail = false,
-delegateExecution?: { artifact: Artifact; executor: unknown },
-rowArguments?: readonly RouteExpressionKeyRow[],
-logicalIdentity?: ResolvedLogicalIdentity,
-valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
-callerLockingBytecode?: Uint8Array,
+  host: BatchRawHost,
+  blob: Uint8Array,
+  routeWitnesses: readonly FunctionArgument[] = [],
+  internalRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
+  blockBase = 0,
+  emitReturn = false,
+  returnBlob?: Uint8Array,
+  omitLocalFeeTail = false,
+  delegateExecution?: { artifact: Artifact; executor: unknown },
+  rowArguments?: readonly RouteExpressionKeyRow[],
+  logicalIdentity?: ResolvedLogicalIdentity,
+  valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
+  callerLockingBytecode?: Uint8Array,
+  executionContextBinding?: BatchExecutionContextBinding,
 ): BatchRawCall {
   const executionArtifact = delegateExecution?.artifact ?? host.inner.artifact;
   const capability = executionArtifact.messageBus;
   if (!capability) throw new Error('This artifact does not advertise a message-bus route');
   const canonicalBlobLineage = hasCanonicalBatchBlobLineage(blob);
-  const effectiveRowArguments = rowArguments?.map((row) => ({
-    ...row,
-    args: [...row.args],
-    internalArgs: { ...(row.internalArgs ?? {}) },
-  }));
+  const effectiveRowArguments = rowArguments?.map((row) => {
+    const handler = mergePublishedMessageBusHandlerMetadata(row.handler, capability.handlers);
+    bindKernelCarrierHandlerOverlay(handler, row.handler);
+    return {
+      ...row,
+      handler,
+      args: [...row.args],
+      internalArgs: { ...(row.internalArgs ?? {}) },
+    };
+  });
   const runtimeEventMutationRows = (effectiveRowArguments ?? []).filter((row) =>
     (row.handler.runtimeLoopEvents?.length ?? 0) > 0
     && (row.handler.sortedUpsertLoopInfo ?? []).some((stream) => stream.op !== 'read'));
@@ -543,6 +563,7 @@ callerLockingBytecode?: Uint8Array,
       const value = resolvedCallerInternalWitnesses[input.name];
       if (value !== undefined) return value;
       if (input.name === '__internal__activeVerifierIndex') return -1n;
+      if (input.name === '__internal__graphSelfIdentityInput') return -1n;
       if (input.name === '__internal__messageBusOwnerBandInput') return BigInt(blockBase);
       // The aggregate route returns its concatenated result blob to graph consumers, but an ordinary local
       // `.batch()` does not materialize that route-level value as a return-event NFT. Semantic injection still
@@ -555,12 +576,14 @@ callerLockingBytecode?: Uint8Array,
       // Dynamic-storage inputs are likewise positioned only after the participant's complete physical block
       // is assembled. Nested and root builders replace this provisional sentinel by exact outpoint identity.
       if (input.name === '__internal__dynamicChunkInputBase') return -1n;
+      if (input.name === '__internal__dynamicChunkOutputBase') return -1n;
       if (input.name.startsWith('__internal__valueWitness_')
         || input.name.startsWith('__internal__leadingPushValue_')
         || input.name.startsWith('__internal__completePushValue_')
         || input.name.startsWith('__internal__vmapBatchRows_')) return new Uint8Array();
       if (/^__internal__vmapBatch(?:Slot|Next)_\d+$/.test(input.name)) return new Uint8Array(32);
-      if (/^__internal__vmapBatch(?:Proof|PredOut)_\d+$/.test(input.name)) return -1n;
+      if (/^__internal__vmapBatchProof_\d+$/.test(input.name)) return -1n;
+      if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) return -2n;
       if (/^__internal__vmapBatchRank_\d+$/.test(input.name)
         || input.name === '__internal__vmapBatchTrailingCount') return 0n;
       throw new Error(
@@ -581,6 +604,7 @@ callerLockingBytecode?: Uint8Array,
   // for rows that actually execute such a handler. Leaving the inactive suffix as 1-token probe placeholders
   // would silently debit the container even though the covenant correctly skipped those slots.
   const reachedHandlers: typeof capability.handlers = [];
+  const reachedArguments: Array<FunctionArgument[] | undefined> = [];
   let cursor = 7;
   // X199. Intersect with eligibility: the compiler's logical value mode is computed over the FINAL
   // survivors, so a published-but-refused payable handler must not size the admitted route's rows.
@@ -593,6 +617,12 @@ callerLockingBytecode?: Uint8Array,
     if (handler) reachedHandlers.push(handler);
     const argsLengthOffset = cursor + 10;
     const argsLength = blob[argsLengthOffset] | (blob[argsLengthOffset + 1] << 8);
+    if (handler) {
+      const argsEnd = cursor + header + argsLength;
+      reachedArguments.push(argsEnd <= blob.length ? decodeSelectedHandlerArguments(
+        executionArtifact, selector, blob.slice(cursor + header, argsEnd),
+      ) : undefined);
+    }
     cursor += header + argsLength;
   }
   // Choose carrier ownership from the selectors authenticated by the canonical batch blob, not from mutable
@@ -606,6 +636,14 @@ callerLockingBytecode?: Uint8Array,
   }
   const selectedHandlerAbis = reachedHandlers.map((handler) => executionArtifact.abi.find((candidate) =>
     candidate.selector === handler.selector));
+  // The fixed route reserves the union of all handler resources. A sibling's BCH transfer must not make a
+  // selected non-transfer row require a funded container. Narrow only with a complete, selector-exact direct
+  // layout for every row; incomplete/older metadata retains the conservative route-wide requirement.
+  const activeSatoshiContainer = reachedHandlers.length === rowCount
+    ? selectedSatoshiContainerRequired(
+      executionArtifact, reachedHandlers.map((handler) => handler.selector), reachedArguments,
+    )
+    : undefined;
   if (readCarrierCapability && selectedHandlerAbis.some((handler) => handler === undefined)) {
     throw new Error('Compiler internal-read-carrier capability selected a handler without exact ABI metadata.');
   }
@@ -622,6 +660,7 @@ callerLockingBytecode?: Uint8Array,
   reachedHandlers.forEach((handler, rowIndex) => {
     for (const binding of handler.batchKeyWitnesses ?? []) {
       activeRouteEntryKeys.add(binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput);
+      for (const lane of binding.keyPool ?? []) activeRouteEntryKeys.add(lane);
       if (binding.alternateRouteInput) activeRouteEntryKeys.add(binding.alternateRouteInput);
     }
   });
@@ -629,7 +668,10 @@ callerLockingBytecode?: Uint8Array,
     const bare = name.startsWith('id:') ? name.slice(3) : name;
     return bare.startsWith('__message_bus_ek_') ? bare.slice('__message_bus_ek_'.length) : bare;
   };
-  const inactiveRouteEntrySlots = (capability.route.entryAccesses ?? []).flatMap((access, denseIndex) => {
+  const routeWitnessByName = new Map(materializedRouteInputs.map((input, index) => [
+    routeKeyName(input.name), { input, value: routeArgs[index] },
+  ] as const));
+  let inactiveRouteEntrySlots = (capability.route.entryAccesses ?? []).flatMap((access, denseIndex) => {
     const keys = access.keyParams.map(routeKeyName);
     return keys.length > 0 && keys.every((key) => key.startsWith('__message_bus_key_'))
       && !keys.every((key) => activeRouteEntryKeys.has(key)) ? [access.slotIndex ?? denseIndex] : [];
@@ -648,78 +690,67 @@ callerLockingBytecode?: Uint8Array,
       inactive: inactiveRouteEntrySlots,
     }));
   }
+  // Bind current arguments once per row for this materialization pass. Row indices are local
+  // to a participant; neither another participant nor a previous build may supply its context.
+  const rowExecutionContexts = reachedHandlers.map((handler, rowIndex) => {
+    const args = effectiveRowArguments?.[rowIndex]?.args;
+    const pathEffectSchedule = handler.pathEffectSchedule as PublishedPathEffectSchedule | undefined;
+    if (args === undefined || pathEffectSchedule === undefined) return undefined;
+    const selected = executionArtifact.abi.find((candidate) =>
+      candidate.selector === handler.selector || candidate.name === handler.name);
+    const params = {
+      handlerId: handler.selector ?? handler.name,
+      handlerName: handler.name,
+      rowIndex,
+      participantIndex: executionContextBinding?.participantIndex,
+      inputs: selected?.inputs ?? handler.inputs ?? [],
+      args,
+      pathEffectSchedule,
+    };
+    return executionContextBinding === undefined
+      ? buildKernelExecutionContext(params)
+      : registerExecutionContextOnSettlement(executionContextBinding.lifecycle, params);
+  });
   // `route.entryAccesses` is the union of every admitted handler. Narrow each selected row back to the
   // operations of its direct handler using the compiler-published physical-slot correspondence. Per-row route
   // slots are copies of that canonical physical slot, so replace only the `_rN` coordinate and find the exact
   // copy rather than depending on route ordering or collection-specific conventions.
-  const fixedChunkableAccessActive = (
+  const fixedEntryAccessActive = (
     access: {
       activation?: ExternalCallExpression;
       mutationEffectOrdinals?: readonly number[];
     },
-    rowArgs: readonly FunctionArgument[] | undefined,
-    pathEffectSchedule: PublishedPathEffectSchedule | undefined,
-    handlerInputs: readonly { name: string; type: string }[],
-    handlerId: string,
-    handlerName: string | undefined,
-    participantIndex: number,
+    rowIndex: number,
   ): boolean => {
+    const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
     const fallbackActive = (): boolean => {
       if (access.activation === undefined) return true;
       if (rowArgs === undefined) {
-        throw new Error('messageBus: fixed-chunkable activation requires authenticated row arguments');
+        throw new Error('messageBus: fixed entry activation requires authenticated row arguments');
       }
       const active = evaluateFixedEffectPredicate(access.activation, rowArgs);
       if (typeof active !== 'boolean') {
-        throw new Error('messageBus: fixed-chunkable activation could not be evaluated');
+        throw new Error('messageBus: fixed entry activation could not be evaluated');
       }
       return active;
     };
-    // path-effect activation/settle-time ExecutionContext: typed ExecutionContext binds frame ABI + pathEffectSchedule for write selection.
-    // Multi-participant journals key by participantIndex (+ nested scope from the lifecycle).
-    if (pathEffectSchedule !== undefined && rowArgs !== undefined) {
-      const lifecycle = settlement().executionContexts;
-      const nestedScopeId = lifecycle.currentNestedScope() !== 0
-        ? lifecycle.currentNestedScope()
-        : undefined;
-      const params = {
-        handlerId,
-        handlerName,
-        participantIndex,
-        ...(nestedScopeId !== undefined && { nestedScopeId }),
-        inputs: handlerInputs,
-        args: rowArgs,
-        pathEffectSchedule,
-      };
-      const journalKey = executionContextJournalKey({
-        handlerId,
-        participantIndex,
-        nestedScopeId,
-      });
-      let context = buildKernelExecutionContext(params);
-      // Settle-time lifecycle: register once per journal key while the session is open/bound.
-      try {
-        if (lifecycle.getByJournalKey(journalKey) === undefined
-          && lifecycle.getPhase() !== 'settled') {
-          context = registerExecutionContextOnSettlement(lifecycle, params);
-        } else {
-          context = lifecycle.getByJournalKey(journalKey) ?? context;
-        }
-      } catch {
-        // Session already settled — keep ephemeral context for this check.
-      }
+    const context = rowExecutionContexts[rowIndex];
+    if (context?.pathEffectSchedule !== undefined) {
       const scheduled = (access.mutationEffectOrdinals ?? []).some((ordinal) => (
-        pathEffectSchedule.effects.some((effect) => (
+        context.pathEffectSchedule!.effects.some((effect) => (
           effect.kind === 'stateWrite' && effect.ordinal === ordinal
         ))
       ));
-      if (scheduled) return allowsWriteUnderExecutionContext(context, access.mutationEffectOrdinals);
+      if (scheduled && !allowsWriteUnderExecutionContext(context, access.mutationEffectOrdinals)) return false;
     }
     return fallbackActive();
   };
   const activeRouteEntryOperations = new Map<number, readonly string[]>();
   const activeRouteSortedBatchSlots = new Set<number>();
   const activeRouteSortedBatches = new Map<string, { slots: Set<number>; linear: boolean }>();
+  // A standalone batch owns its fixed entry proof. Graph composition supplies its own authenticated
+  // physical entry plan; projecting a skipped graph effect into a second read lane duplicates that proof.
+  const standaloneEntryProofs = Object.keys(internalRouteWitnesses).length === 0;
   const activeRouteEntryRecipes = new Map<number, Array<{
     rowIndex: number;
     access: EntryAccessAbi;
@@ -730,19 +761,21 @@ callerLockingBytecode?: Uint8Array,
     const selected = executionArtifact.abi.find((candidate) =>
       candidate.selector === handler.selector || candidate.name === handler.name);
     const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
-    const pathEffectSchedule = (handler as { pathEffectSchedule?: PublishedPathEffectSchedule })
-      .pathEffectSchedule
-      ?? (executionArtifact.messageBus?.handlers?.find((candidate) =>
-        candidate.selector === handler.selector || candidate.name === handler.name)
-        ?.pathEffectSchedule as PublishedPathEffectSchedule | undefined);
-    const handlerInputs = selected?.inputs
-      ?? (handler as { inputs?: readonly { name: string; type: string }[] }).inputs
-      ?? [];
     handler.physicalEntrySlots?.forEach((physicalSlot, directIndex) => {
       const directAccess = selected?.entryAccesses?.[directIndex];
       if (!directAccess) return;
+      const entryActive = fixedEntryAccessActive(directAccess, rowIndex);
+      const guardedRead = standaloneEntryProofs && !entryActive && directAccess.activation !== undefined;
+      const operations = entryActive
+        ? directAccess.operations
+        : [...new Set([
+          ...directAccess.operations.filter((operation) => operation !== 'write' && operation !== 'delete'),
+          ...(guardedRead ? ['read'] : []),
+        ])];
+      if (operations.length === 0) return;
       const physicalAlternatives = handler.physicalEntrySlotAlternatives?.[directIndex]
         ?? [physicalSlot];
+      let matchedConditionalLane = false;
       for (const alternativeSlot of physicalAlternatives) {
         const canonicalAccess = entryAccessAt(capability.route, alternativeSlot);
         if (!canonicalAccess) continue;
@@ -753,30 +786,55 @@ callerLockingBytecode?: Uint8Array,
           && candidate.keyParams.length === selectedKeys.length
           && candidate.keyParams.every((key, keyIndex) => routeKeyName(key) === selectedKeys[keyIndex]));
         if (!selectedAccess) continue;
+        if (directAccess.activation !== undefined && physicalAlternatives.length > 1
+          && rowArgs !== undefined) {
+          const keyMatches = selectedKeys.map((name, keyIndex) => {
+            const binding = handler.batchKeyWitnesses?.find((candidate) => (
+              candidate.source === 'argument'
+              && (candidate.keyPool ?? [candidate.routeInput, candidate.alternateRouteInput])
+                .includes(name)
+            ));
+            const witness = routeWitnessByName.get(name);
+            if (binding === undefined || witness === undefined || binding.inputIndex < 0) return undefined;
+            // A swappable shared/pool pair can use a physical lane whose witness was originally bound to the
+            // opposite source parameter. Match the authenticated lane against this direct effect's logical key.
+            const logicalName = directAccess.keyParams[keyIndex]?.replace(/^id:/, '');
+            const logicalIndex = selected?.inputs.findIndex((input) => input.name === logicalName) ?? -1;
+            const inputIndex = logicalIndex >= 0 ? logicalIndex : binding.inputIndex;
+            try {
+              const actual = encodeFunctionArgument(rowArgs[inputIndex], witness.input.type);
+              const selectedKey = encodeFunctionArgument(witness.value, witness.input.type);
+              return actual instanceof Uint8Array && selectedKey instanceof Uint8Array
+                ? binToHex(actual) === binToHex(selectedKey) : undefined;
+            } catch { return undefined; }
+          });
+          if (keyMatches.some((match) => match === undefined)) {
+            throw new Error('messageBus: conditional entry lane lacks an authenticated key witness');
+          }
+          if (keyMatches.some((match) => !match)) continue;
+          // Kernel dispatch tests pooled lanes in order and takes the first complete key match. Identical
+          // witnesses in multiple lanes must not turn one source write into several physical writes.
+          matchedConditionalLane = true;
+        }
         const selectedSlot = selectedAccess.slotIndex
           ?? capability.route.entryAccesses!.indexOf(selectedAccess);
         const directSlot = directAccess.slotIndex ?? directIndex;
         const selectedBatch = selected?.sortedBatchInfo?.find((batch) => batch.slotIndices.includes(directSlot));
-        if (directAccess.operations.includes('write') && selectedBatch !== undefined) {
-          activeRouteSortedBatchSlots.add(selectedSlot);
+        if (selectedBatch !== undefined
+          && (operations.includes('write') || operations.includes('delete') || guardedRead)) {
+          if (!guardedRead) activeRouteSortedBatchSlots.add(selectedSlot);
+          const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
+            batch.collection === selectedBatch.collection);
           const activeBatch = activeRouteSortedBatches.get(selectedBatch.collection)
-            ?? { slots: new Set<number>(), linear: selectedBatch.linear === true };
+            ?? { slots: new Set<number>(), linear: publishedBatch?.linear === true };
           activeBatch.slots.add(selectedSlot);
-          activeBatch.linear ||= selectedBatch.linear === true;
+          // Runtime narrowing may select a direct handler whose ordinary ABI uses linear rank/row witnesses.
+          // The physical kernel route is the authority for its own ABI: do not synthesize witness families the
+          // published route did not expose merely because the selected source handler has richer geometry.
+          activeBatch.linear ||= publishedBatch?.linear === true;
           activeRouteSortedBatches.set(selectedBatch.collection, activeBatch);
         }
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
-        const operations = fixedChunkableAccessActive(
-          directAccess,
-          rowArgs,
-          pathEffectSchedule,
-          handlerInputs,
-          handler.selector ?? handler.name,
-          handler.name,
-          rowIndex,
-        )
-          ? directAccess.operations
-          : directAccess.operations.filter((operation) => operation !== 'write');
         activeRouteEntryOperations.set(
           selectedSlot,
           [...new Set([...prior, ...operations])],
@@ -793,9 +851,25 @@ callerLockingBytecode?: Uint8Array,
           });
           activeRouteEntryRecipes.set(selectedSlot, recipes);
         }
+        if (directAccess.activation !== undefined && physicalAlternatives.length > 1) break;
+      }
+      if (directAccess.activation !== undefined
+        && (operations.includes('write') || operations.includes('delete'))
+        && physicalAlternatives.length > 1 && !matchedConditionalLane) {
+        throw new Error('messageBus: conditional entry has no matching authenticated lane');
       }
     });
   });
+  if (reachedHandlers.length === rowCount && selectedHandlerAbis.every((handler) => handler !== undefined)) {
+    // Key witnesses can be shared by alternate route lanes even when only one selected handler owns a read.
+    // A key's presence in the envelope therefore does not activate every union slot carrying that key.
+    // The selector-exact operation projection is authoritative for the concrete row; leave inactive slots
+    // balanced by funders before they can co-spend the same entry proof as an active lane.
+    inactiveRouteEntrySlots = [...new Set([
+      ...inactiveRouteEntrySlots,
+      ...inactiveRouteEntrySlotsFromOperations(capability.route.entryAccesses ?? [], activeRouteEntryOperations),
+    ])];
+  }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
     console.error('message-bus-active-entry-operations', JSON.stringify({
@@ -816,26 +890,9 @@ callerLockingBytecode?: Uint8Array,
   const activeRouteWriteCollections = [...new Set(reachedHandlers.flatMap((handler, rowIndex) => {
     const selected = executionArtifact.abi.find((candidate) =>
       candidate.selector === handler.selector || candidate.name === handler.name);
-    const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
-    const pathEffectSchedule = (handler as { pathEffectSchedule?: PublishedPathEffectSchedule })
-      .pathEffectSchedule
-      ?? (executionArtifact.messageBus?.handlers?.find((candidate) =>
-        candidate.selector === handler.selector || candidate.name === handler.name)
-        ?.pathEffectSchedule as PublishedPathEffectSchedule | undefined);
-    const handlerInputs = selected?.inputs
-      ?? (handler as { inputs?: readonly { name: string; type: string }[] }).inputs
-      ?? [];
     return (selected?.entryAccesses ?? [])
       .filter((access) => access.operations.includes('write')
-        && fixedChunkableAccessActive(
-          access,
-          rowArgs,
-          pathEffectSchedule,
-          handlerInputs,
-          handler.selector ?? handler.name,
-          handler.name,
-          rowIndex,
-        ))
+        && fixedEntryAccessActive(access, rowIndex))
       .map((access) => access.collection);
   }))];
   const reachedFtTransfers = reachedHandlers.reduce((sum, handler) =>
@@ -847,8 +904,7 @@ callerLockingBytecode?: Uint8Array,
   const routeEventSlots = capability.route.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
   const routeEventWidth = routeEventSlots.length === 0 ? 0
     : Math.floor(routeEventSlots.length / capability.maximumRows);
-  // path-effect activation/settle-time ExecutionContext: filter emits by published schedule activations, preferring a settle-time
-  // ExecutionContext when one is registered for this participant journal key.
+  // Filter emits under this row's current execution context.
   // Compiler event ordinals are PATH_EFFECT_EVENT_ORDINAL_BASE + local emitIndex (pre-row remap).
   const reachedEmits = reachedHandlers.flatMap((handler, rowIndex) => {
     const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
@@ -862,43 +918,11 @@ callerLockingBytecode?: Uint8Array,
     const handlerInputs = selected?.inputs
       ?? (handler as { inputs?: readonly { name: string; type: string }[] }).inputs
       ?? [];
-    const handlerId = handler.selector ?? handler.name;
-    let env = rowArgs === undefined
-      ? {}
-      : pathEffectActivationEnvironmentFromArgs(handlerInputs, rowArgs);
-    let activeEventOrdinals: readonly number[] | undefined;
-    if (pathEffectSchedule !== undefined && rowArgs !== undefined) {
-      const lifecycle = settlement().executionContexts;
-      const nestedScopeId = lifecycle.currentNestedScope() !== 0
-        ? lifecycle.currentNestedScope()
-        : undefined;
-      const journalKey = executionContextJournalKey({
-        handlerId,
-        participantIndex: rowIndex,
-        nestedScopeId,
-      });
-      try {
-        let context = lifecycle.getByJournalKey(journalKey);
-        if (context === undefined && lifecycle.getPhase() !== 'settled') {
-          context = registerExecutionContextOnSettlement(lifecycle, {
-            handlerId,
-            handlerName: handler.name,
-            participantIndex: rowIndex,
-            ...(nestedScopeId !== undefined && { nestedScopeId }),
-            inputs: handlerInputs,
-            args: rowArgs,
-            pathEffectSchedule,
-          });
-        }
-        if (context !== undefined) {
-          // settle-time ExecutionContext: prefer settle-time ExecutionContext activationEnv for emit gating.
-          env = context.activationEnv;
-          activeEventOrdinals = activeOrdinalsUnderContext(context, 'event');
-        }
-      } catch {
-        activeEventOrdinals = undefined;
-      }
-    }
+    const context = rowExecutionContexts[rowIndex];
+    const env = context?.activationEnv ?? (rowArgs === undefined
+      ? {} : pathEffectActivationEnvironmentFromArgs(handlerInputs, rowArgs));
+    const activeEventOrdinals = context === undefined
+      ? undefined : activeOrdinalsUnderContext(context, 'event');
     const activeEmits = filterEmitsUnderPathEffectSchedule(
       handler.emits ?? [],
       pathEffectSchedule,
@@ -936,6 +960,13 @@ callerLockingBytecode?: Uint8Array,
   // defer every preimage to the complete authenticated graph trace: even a syntactically simple expression
   // can depend on a nested return which the isolated participant probe only represents with a placeholder.
   const selectedKeccakCalls = reachedHandlers.flatMap((handler) => handler.keccakPreimageParams ?? []);
+  const selectedKeccakPreimages = reachedHandlers.flatMap((handler, rowIndex) =>
+    (handler.keccakPreimageParams ?? []).map((paramName) => {
+      if (paramName === null) return null;
+      const paramIndex = handler.inputs.findIndex((input) => input.name === paramName);
+      const value = paramIndex < 0 ? undefined : reachedArguments[rowIndex]?.[paramIndex];
+      return value instanceof Uint8Array ? value.slice() : null;
+    }));
   const publishedKeccakSlots = capability.route.blockLayout?.slots
     .filter((slot) => slot.kind === 'keccakSideCar').length ?? 0;
   if (Math.ceil(selectedKeccakCalls.length / 3) > publishedKeccakSlots) {
@@ -965,6 +996,9 @@ callerLockingBytecode?: Uint8Array,
   const effectiveRoute: AbiFunction = {
     ...capability.route,
     ...({ messageBusConvention: capability.convention } as Partial<MessageBusRuntimeAbiFunction>),
+    ...(activeSatoshiContainer !== undefined && {
+      messageBusActiveSatoshiContainer: activeSatoshiContainer,
+    } as Partial<MessageBusRuntimeAbiFunction>),
     // Runtime-only metadata: unreachable bounded rows keep their physical entry positions, but consume a
     // balanced funder placeholder rather than resolving an arbitrary absent key to the same collection proof.
     // The bytecode already gates these slots by row/selector; this only tells the SDK which fixed slots are
@@ -981,9 +1015,10 @@ callerLockingBytecode?: Uint8Array,
       // declares nor trusts.
       usesMsgSender: false,
     }),
-    ...(capability.route.transferCount !== undefined && {
-      transferCount: Math.min(capability.route.transferCount, rowCount),
-    }),
+    ...(activeSatoshiContainer === false ? { transferCount: 0 }
+      : capability.route.transferCount !== undefined && {
+        transferCount: Math.min(capability.route.transferCount, rowCount),
+      }),
     // The published route carries the union of every handler's effects. Runtime metadata must carry the
     // selected rows only; retaining the union when no selected row emits makes the builder materialize every
     // inactive event after the balanced block.
@@ -991,6 +1026,7 @@ callerLockingBytecode?: Uint8Array,
     ...(effectiveTokenAccesses && { tokenContainerAccesses: effectiveTokenAccesses }),
     ...(selectedKeccakCalls.length > 0 && {
       keccakPreimageParams: selectedKeccakCalls.map(() => null),
+      messageBusKeccakPreimages: selectedKeccakPreimages,
     }),
     ...(hasHandlerRecoveryMetadata && {
       ecrecoverCompute: selectedRecoveryHandlers.length > 0,
@@ -1042,6 +1078,11 @@ callerLockingBytecode?: Uint8Array,
       .graphEcrecoverCalls = graphEcrecoverCalls;
   }
   const routeSelector = hexToBin(capability.selector);
+  if (reachedHandlers.length === rowCount && cursor === blob.length) {
+    bindSatoshiContainerSelection(effectiveRoute, {
+      artifact: executionArtifact, selectors: reachedHandlers.map((handler) => handler.selector), args: reachedArguments,
+    });
+  }
   const attachCompilerTransfers = (call: BatchRawCall): BatchRawCall => {
     const transferSlots = capability.route.blockLayout?.slots
       .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined) ?? [];
@@ -1062,30 +1103,10 @@ callerLockingBytecode?: Uint8Array,
       const handlerInputs = selected?.inputs
         ?? (handler as { inputs?: readonly { name: string; type: string }[] }).inputs
         ?? [];
-      let env = pathEffectActivationEnvironmentFromArgs(handlerInputs, row.args);
-      let activeTransferOrdinals: readonly number[] | undefined;
-      if (pathEffectSchedule !== undefined) {
-        const lifecycle = settlement().executionContexts;
-        const nestedScopeId = lifecycle.currentNestedScope() !== 0
-          ? lifecycle.currentNestedScope()
-          : undefined;
-        const handlerId = handler.selector ?? handler.name;
-        const journalKey = executionContextJournalKey({
-          handlerId,
-          participantIndex: rowIndex,
-          nestedScopeId,
-        });
-        try {
-          const context = lifecycle.getByJournalKey(journalKey);
-          if (context !== undefined) {
-            // settle-time ExecutionContext: prefer settle-time ExecutionContext activationEnv for transfer gating.
-            env = context.activationEnv;
-            activeTransferOrdinals = activeOrdinalsUnderContext(context, 'transfer');
-          }
-        } catch {
-          activeTransferOrdinals = undefined;
-        }
-      }
+      const context = rowExecutionContexts[rowIndex];
+      const env = context?.activationEnv ?? pathEffectActivationEnvironmentFromArgs(handlerInputs, row.args);
+      const activeTransferOrdinals = context === undefined
+        ? undefined : activeOrdinalsUnderContext(context, 'transfer');
       const activeTransfers = filterTransfersUnderPathEffectSchedule(
         handler.transfers ?? [],
         pathEffectSchedule,

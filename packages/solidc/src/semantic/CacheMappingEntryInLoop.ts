@@ -6,9 +6,9 @@ import {
   StatementNode,
   BlockNode,
   BranchNode,
+  CollectionIterationNode,
   WhileNode,
   DoWhileNode,
-  CollectionIterationNode,
   UncheckedNode,
   SwitchNode,
   TryCatchNode,
@@ -27,6 +27,7 @@ import {
   NullaryOpNode,
   VariableDefinitionNode,
   AssignNode,
+  RequireNode,
   FieldAccessNode,
   FunctionCallNode,
   LiteralNode,
@@ -51,12 +52,16 @@ import {
   AddressSendExpressionNode,
   SelfdestructStatementNode,
   AssemblyStatementNode,
+  type ExternalCallExpression,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, StructType, Type, PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
+import {
+  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
+} from './KernelEntryActivation.js';
 
 const PREFIX = '__vmapcache_';
 /** Compiler-owned immutable locals which preserve a mapping key's value at a source-order boundary. */
@@ -185,6 +190,7 @@ const PURE_KEY_BUILTINS = new Set([
   'ripemd160', 'sha1', 'sha256', 'hash160', 'hash256',
   'toPaddedBytes', 'intToString', 'stringToInt',
 ]);
+const READ_ONLY_GUARD_BUILTINS = new Set(['checkSig', 'checkMultiSig', 'checkDataSig']);
 
 function literalCanon(k: LiteralNode): string {
   const value = k.value instanceof Uint8Array ? [...k.value].join(',') : String(k.value);
@@ -228,6 +234,10 @@ function expressionCanon(k: Node): string | undefined {
     const index = expressionCanon(k.index);
     return array && index ? `index(${array},${index})` : undefined;
   }
+  if (k instanceof TupleIndexOpNode) {
+    const tuple = expressionCanon(k.tuple);
+    return tuple ? `tidx(${tuple},${k.index})` : undefined;
+  }
   if (k instanceof FunctionCallNode) {
     const pure = PURE_KEY_BUILTINS.has(k.identifier.name)
       || k.resolvedFunction?.modifiers.includes(FunctionModifier.PURE) === true;
@@ -237,6 +247,159 @@ function expressionCanon(k: Node): string | undefined {
       ? `call:${k.identifier.name}(${args.join(',')})` : undefined;
   }
   return undefined;
+}
+
+function readOnlyGuardExpression(node: ExpressionNode, shadowedCalls: ReadonlySet<string>): boolean {
+  if (node instanceof FunctionCallNode) {
+    const knownBuiltin = node.resolvedFunction === undefined && !node.lexicalIndirectCall
+      && !shadowedCalls.has(node.identifier.name)
+      && (READ_ONLY_GUARD_BUILTINS.has(node.identifier.name)
+        || PURE_KEY_BUILTINS.has(node.identifier.name));
+    const safe = knownBuiltin
+      || node.resolvedFunction?.modifiers.includes(FunctionModifier.PURE) === true;
+    return safe && node.parameters.every((parameter) => readOnlyGuardExpression(parameter, shadowedCalls));
+  }
+  if (node instanceof BinaryOpNode) {
+    return readOnlyGuardExpression(node.left, shadowedCalls)
+      && readOnlyGuardExpression(node.right, shadowedCalls);
+  }
+  if (node instanceof TernaryOpNode) {
+    return readOnlyGuardExpression(node.condition, shadowedCalls)
+      && readOnlyGuardExpression(node.ifTrue, shadowedCalls)
+      && readOnlyGuardExpression(node.ifFalse, shadowedCalls);
+  }
+  if (node instanceof UnaryOpNode || node instanceof CastNode || node instanceof FieldAccessNode) {
+    return readOnlyGuardExpression(node.expression, shadowedCalls);
+  }
+  if (node instanceof ArrayAccessNode) {
+    return readOnlyGuardExpression(node.array, shadowedCalls)
+      && readOnlyGuardExpression(node.index, shadowedCalls);
+  }
+  if (node instanceof TupleIndexOpNode) return readOnlyGuardExpression(node.tuple, shadowedCalls);
+  if (node instanceof MappingAccessNode) {
+    return node.keys.every((key) => readOnlyGuardExpression(key, shadowedCalls));
+  }
+  return expressionCanon(node) !== undefined;
+}
+
+/** SDK key planning may substitute only a value that is already fixed by public arguments. */
+function argumentOnlyMappingValue(node: ExpressionNode, parameters: ReadonlySet<string>): boolean {
+  if (node instanceof LiteralNode) return true;
+  if (node instanceof IdentifierNode) return parameters.has(node.name);
+  if (node instanceof BinaryOpNode && ['+', '-', '*'].includes(node.operator)) {
+    return argumentOnlyMappingValue(node.left, parameters)
+      && argumentOnlyMappingValue(node.right, parameters);
+  }
+  return false;
+}
+
+class ProjectWrittenMappingRead extends AstTraversal {
+  replaced = false;
+
+  constructor(
+    private readonly mapping: string,
+    private readonly keyLabel: string,
+    private readonly value: ExpressionNode,
+  ) { super(); }
+
+  visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    if (node.tuple instanceof IdentifierNode && node.tuple.name === this.mapping
+      && expressionCanon(new IntLiteralNode(BigInt(node.index))) === this.keyLabel) {
+      this.replaced = true;
+      return cloneNode(this.value);
+    }
+    return super.visitTupleIndexOp(node);
+  }
+
+  visitArrayAccess(node: ArrayAccessNode): Node {
+    if (node.array instanceof IdentifierNode && node.array.name === this.mapping
+      && expressionCanon(node.index) === this.keyLabel) {
+      this.replaced = true;
+      return cloneNode(this.value);
+    }
+    return super.visitArrayAccess(node);
+  }
+
+  visitMappingAccess(node: MappingAccessNode): Node {
+    if (node.name === this.mapping && node.keys.length === 1
+      && expressionCanon(node.keys[0]) === this.keyLabel) {
+      this.replaced = true;
+      return cloneNode(this.value);
+    }
+    return super.visitMappingAccess(node);
+  }
+}
+
+class ProjectCapturedMappingRead extends AstTraversal {
+  replaced = false;
+
+  constructor(private readonly name: string, private readonly value: ExpressionNode) { super(); }
+
+  visitIdentifier(node: IdentifierNode): Node {
+    if (node.name === this.name) {
+      this.replaced = true;
+      return cloneNode(this.value);
+    }
+    return node;
+  }
+}
+
+class SourceMappingReadFinder extends AstTraversal {
+  found = false;
+
+  keys: ExpressionNode[] = [];
+
+  constructor(private readonly mapping: string) { super(); }
+
+  visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    if (node.tuple instanceof IdentifierNode && node.tuple.name === this.mapping) {
+      this.found = true;
+      this.keys.push(new IntLiteralNode(BigInt(node.index)));
+    }
+    return super.visitTupleIndexOp(node);
+  }
+
+  visitArrayAccess(node: ArrayAccessNode): Node {
+    if (node.array instanceof IdentifierNode && node.array.name === this.mapping
+      && expressionCanon(node.index) !== undefined) {
+      this.found = true;
+      this.keys.push(node.index);
+    }
+    return super.visitArrayAccess(node);
+  }
+
+  visitMappingAccess(node: MappingAccessNode): Node {
+    if (node.name === this.mapping && node.keys.every((key) => expressionCanon(key) !== undefined)) {
+      this.found = true;
+      if (node.keys.length === 1) this.keys.push(node.keys[0]!);
+    }
+    return super.visitMappingAccess(node);
+  }
+}
+
+/** Metadata projections run before semantic lowering turns source `m[k]` into a MappingAccessNode. */
+class NormalizeSourceMappingReads extends AstTraversal {
+  constructor(private readonly mappings: ReadonlySet<string>) { super(); }
+
+  visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    if (node.tuple instanceof IdentifierNode && this.mappings.has(node.tuple.name)) {
+      const key = new IntLiteralNode(BigInt(node.index));
+      key.location = node.location;
+      const access = new MappingAccessNode(node.tuple.name, [key]);
+      access.location = node.location;
+      return access;
+    }
+    return super.visitTupleIndexOp(node);
+  }
+
+  visitArrayAccess(node: ArrayAccessNode): Node {
+    if (node.array instanceof IdentifierNode && this.mappings.has(node.array.name)) {
+      const access = new MappingAccessNode(node.array.name, [this.visit(node.index) as ExpressionNode]);
+      access.location = node.location;
+      return access;
+    }
+    return super.visitArrayAccess(node);
+  }
 }
 
 function canonKeyOf(k: Node, allowExpression = false): { canon: string; key: KeyKind } | null {
@@ -354,7 +517,8 @@ type EntryInfo = {
 
 /** An entry the cache serves, as `collectCacheableEntries` selects it. */
 type CacheableEntry = {
-  mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string; anchorIndex?: number;
+  mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; mutationCount: number;
+  fromModifier?: string; anchorIndex?: number;
 };
 
 /**
@@ -398,17 +562,21 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private scalarMappings: Map<string, ScalarMappingInfo> = new Map();
   private structMappings: Map<string, StructType> = new Map();
   private stateVariableNames: ReadonlySet<string> = new Set();
+  private sourceFunctionNames: Set<string> = new Set();
+  private contractFunctionNames: Set<string> = new Set();
   private counter = 0;
 
   /** `callsCloseSegments` holds under the per-call composition, whose calls each close a segment. */
   constructor(private routeSnapshotKeysOnly = false, private callsCloseSegments = false) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.sourceFunctionNames = new Set(node.freeFunctions.map((fn) => fn.name));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
   visitContract(node: ContractNode): Node {
+    this.contractFunctionNames = new Set(node.functions.map((fn) => fn.name));
     this.arrayMappings = new Map();
     this.scalarMappings = new Map();
     this.structMappings = new Map();
@@ -437,6 +605,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private transformFunction(fn: FunctionDefinitionNode): void {
+    // The kernel's pre-write key recipes; a per-call body plans its keys from its own frame and takes none.
+    if (!this.callsCloseSegments) this.publishStraightLineMappingKeyValues(fn);
     const selected = this.collectCacheableEntries(fn.body).filter((e) => !(this.routeSnapshotKeysOnly
       && e.keys.length === 1
       && !e.keys.some((key) => key.kind === 'expression'
@@ -460,8 +630,17 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // becomes a dirty-marking block), so an anchored cache resolves its insertion point by statement position
     // afterwards instead of holding a node that is no longer in the body. An entry with a call between two of its
     // accesses gets a cache per run of statements (`straddleSpans`), each redirect rewriting its own run alone.
-    const prepared: { e: CacheableEntry; local: string; dirty: string; span?: CacheSpan }[] = [];
-    for (const e of selected) {
+    // Capture source guards before any redirect rewrites a mutation site. Multiple cached entries may share a
+    // branch, and a later guard scan must still see the complete source body. The guard plan feeds the kernel's
+    // replayable flush activation; a per-call body publishes its own write activation instead, so it takes none.
+    const selectedWithPlans = selected.map((e) => ({
+      e, guardPlan: this.callsCloseSegments ? undefined : this.replayableCacheActivation(fn, e),
+    }));
+    const prepared: {
+      e: CacheableEntry; local: string; dirty: string; span?: CacheSpan;
+      guardPlan: (typeof selectedWithPlans)[number]['guardPlan'];
+    }[] = [];
+    for (const { e, guardPlan } of selectedWithPlans) {
       const spans = calling.some(Boolean)
         ? this.straddleSpans(fn.body, e, calling, (node) => mayCall(node, variables)) : undefined;
       for (const span of spans ?? [undefined]) {
@@ -476,7 +655,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
             statements[index] = redirect.visit(statements[index]!) as StatementNode;
           }
         }
-        prepared.push({ e, local, dirty, ...(span === undefined ? {} : { span }) });
+        prepared.push({ e, local, dirty, guardPlan, ...(span === undefined ? {} : { span }) });
       }
     }
     // Resolve every anchor before any flush statement is inserted: an insertion shifts the statement list, and the
@@ -524,7 +703,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     const flushedAfter = new Map<StatementNode, StatementNode>();
     const anchoredDeclarations = new Map<StatementNode, StatementNode[]>();
     for (const item of prepared) {
-      const { e, local, dirty } = item;
+      const { e, local, dirty, guardPlan } = item;
       const cacheRead = new MappingAccessNode(
         e.mapping,
         e.keys.map((key) => buildKeyNode(key, fn.body.location) as ExpressionNode),
@@ -556,14 +735,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         }
         stmts = [
           ...body.slice(0, anchorAt),
-          ...this.insertFlushesBeforeReturns(body.slice(anchorAt, closeAt + 1), e.mapping, e.keys, local, dirty),
+          ...this.insertFlushesBeforeReturns(body.slice(anchorAt, closeAt + 1), e.mapping, e.keys, local, dirty,
+            guardPlan),
         ];
         if (closing !== undefined) {
-          const flush = this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier);
+          const flush = this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier, guardPlan);
           flushedAfter.set(closing, flush);
           stmts = [...stmts, flush, ...body.slice(closeAt + 1)];
         } else if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
-          stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
+          stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier,
+            guardPlan)];
         }
       }
       const declarations = writes ? [cache, dirtyLocal] : [cache];
@@ -657,6 +838,327 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     end();
     for (const span of spans) span.closes = span.lastWrite >= 0 && calling.slice(span.lastWrite + 1).some(Boolean);
     return spans;
+  }
+
+  /** Preserve source-order key recipes before the cache pass moves writers to epilogue flushes. */
+  private publishStraightLineMappingKeyValues(fn: FunctionDefinitionNode): void {
+    const statements = fn.body.statements ?? [];
+    const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
+    // This pass also runs before symbol resolution. A contract/free function or lexical pointer may
+    // shadow a global builtin, so a name alone cannot prove the call has no storage effects.
+    const shadowedCalls = new Set([
+      ...this.sourceFunctionNames, ...this.contractFunctionNames, ...parameters,
+      ...statements.filter((statement): statement is VariableDefinitionNode => statement instanceof VariableDefinitionNode)
+        .map((statement) => statement.name),
+    ]);
+    const readOnlyGuard = (statement: StatementNode): boolean => statement instanceof RequireNode
+      && readOnlyGuardExpression(statement.expression, shadowedCalls)
+      && statement.args.every((arg) => readOnlyGuardExpression(arg, shadowedCalls));
+    const transparentStatements: boolean[] = [];
+    const topLevelLocals = new Set<string>();
+    for (const statement of statements) {
+      transparentStatements.push(statement instanceof VariableDefinitionNode
+        ? !statement.expression || argumentOnlyMappingValue(statement.expression, parameters)
+        : readOnlyGuard(statement) || (statement instanceof AssignNode && !statement.isReferenceDataWrite
+          && topLevelLocals.has(statement.identifier.name)
+          && argumentOnlyMappingValue(statement.expression, parameters)));
+      if (statement instanceof VariableDefinitionNode) topLevelLocals.add(statement.name);
+    }
+    const previousEffectful: number[] = [];
+    let previous = -1;
+    for (let index = 0; index < statements.length; index += 1) {
+      previousEffectful[index] = previous;
+      if (!transparentStatements[index]) previous = index;
+    }
+    const scalarWrite = (statement: StatementNode): {
+      name: string; key: ExpressionNode; value: ExpressionNode;
+    } | undefined => statement instanceof ArrayAssignNode && this.scalarMappings.has(statement.name)
+      ? { name: statement.name, key: statement.index, value: statement.value }
+      : statement instanceof MappingAssignNode && statement.keys.length === 1
+        && this.scalarMappings.has(statement.name)
+        && !statement.arrayIndex && !statement.arrayPush && !statement.arrayPop
+        ? { name: statement.name, key: statement.keys[0], value: statement.expression } : undefined;
+    const knownWrites = new Map<string, { key: ExpressionNode; value: ExpressionNode }>();
+    const priorWriteKeys = new Map<string, ExpressionNode[]>();
+    const knownCaptures = new Map<string, ExpressionNode>();
+    const sourceCaptures = new Map<string, ExpressionNode>();
+    const capturePreWriteCollections = new Map<string, Set<string>>();
+    const declaredLocals = new Set<string>();
+    let sourcePrefixSafe = true;
+    const expandSourceCaptures = (source: ExpressionNode): ExpressionNode => {
+      let value = cloneNode(source) as ExpressionNode;
+      for (const [name, capture] of sourceCaptures) {
+        value = new ProjectCapturedMappingRead(name, capture).visit(value) as ExpressionNode;
+      }
+      return value;
+    };
+    const projectKnownValues = (source: ExpressionNode): { value: ExpressionNode; replaced: boolean } => {
+      let value = cloneNode(source) as ExpressionNode;
+      let replaced = false;
+      for (const [name, write] of knownWrites) {
+        const keyLabel = expressionCanon(write.key);
+        if (!keyLabel) continue;
+        const projector = new ProjectWrittenMappingRead(name, keyLabel, write.value);
+        value = projector.visit(value) as ExpressionNode;
+        replaced ||= projector.replaced;
+      }
+      for (const [name, capture] of knownCaptures) {
+        const projector = new ProjectCapturedMappingRead(name, capture);
+        value = projector.visit(value) as ExpressionNode;
+        replaced ||= projector.replaced;
+      }
+      return { value, replaced };
+    };
+    const recordCapture = (name: string, expression: ExpressionNode, allowMappingRead: boolean): void => {
+      const inheritedPreWrites = new Set<string>();
+      for (const [local, collections] of capturePreWriteCollections) {
+        const projector = new ProjectCapturedMappingRead(local, sourceCaptures.get(local)!);
+        projector.visit(cloneNode(expression));
+        if (projector.replaced) collections.forEach((collection) => inheritedPreWrites.add(collection));
+      }
+      const source = expandSourceCaptures(expression);
+      const capture = projectKnownValues(expression).value;
+      const readableMappingCapture = allowMappingRead && [...this.scalarMappings.keys()].some((mapping) => {
+        const finder = new SourceMappingReadFinder(mapping);
+        finder.visit(capture);
+        return finder.keys.length > 0 && finder.keys.every((key) => argumentOnlyMappingValue(key, parameters));
+      });
+      capturePreWriteCollections.set(name, inheritedPreWrites);
+      sourceCaptures.set(name, source);
+      if (argumentOnlyMappingValue(capture, parameters) || readableMappingCapture) {
+        knownCaptures.set(name, readableMappingCapture
+          ? new NormalizeSourceMappingReads(new Set(this.scalarMappings.keys()))
+            .visit(cloneNode(capture)) as ExpressionNode : capture);
+      } else {
+        knownCaptures.delete(name);
+      }
+    };
+    for (let index = 0; index < statements.length; index += 1) {
+      if (index > 0) {
+        const preceding = statements[index - 1];
+        const precedingWrite = scalarWrite(preceding);
+        if (precedingWrite && argumentOnlyMappingValue(precedingWrite.key, parameters)
+          && argumentOnlyMappingValue(precedingWrite.value, parameters)) {
+          // A write to another collection cannot invalidate this collection's known value.
+          if (!knownWrites.has(precedingWrite.name)) {
+            for (const [local, capture] of sourceCaptures) {
+              const finder = new SourceMappingReadFinder(precedingWrite.name);
+              finder.visit(capture);
+              if (finder.found) capturePreWriteCollections.get(local)?.add(precedingWrite.name);
+            }
+          }
+          knownWrites.set(precedingWrite.name, precedingWrite);
+          priorWriteKeys.set(precedingWrite.name, [
+            ...(priorWriteKeys.get(precedingWrite.name) ?? []), precedingWrite.key,
+          ]);
+        } else if (preceding instanceof VariableDefinitionNode
+          && (!preceding.expression || expressionCanon(preceding.expression) !== undefined)) {
+          declaredLocals.add(preceding.name);
+          if (preceding.expression) {
+            recordCapture(preceding.name, preceding.expression, false);
+          } else {
+            sourceCaptures.delete(preceding.name);
+            capturePreWriteCollections.delete(preceding.name);
+            knownCaptures.delete(preceding.name);
+          }
+        } else if (preceding instanceof AssignNode && !preceding.isReferenceDataWrite
+          && declaredLocals.has(preceding.identifier.name)
+          && expressionCanon(preceding.expression) !== undefined) {
+          // A top-level local rebind is a point-in-time capture, just like its declaration.
+          recordCapture(preceding.identifier.name, preceding.expression, true);
+        } else if (readOnlyGuard(preceding)) {
+          // Reaching the next statement proves the guard passed without changing collection state.
+        } else {
+          // Effectful calls, branches, unsupported guards, and writes end the straight-line proof.
+          knownWrites.clear();
+          priorWriteKeys.clear();
+          knownCaptures.clear();
+          sourceCaptures.clear();
+          capturePreWriteCollections.clear();
+          declaredLocals.clear();
+          sourcePrefixSafe = false;
+        }
+      }
+      const reader = statements[index];
+      if (!(reader instanceof ArrayAssignNode || reader instanceof MappingAssignNode)) continue;
+      const readerKeys = reader instanceof ArrayAssignNode && this.scalarMappings.has(reader.name)
+        ? [reader.index]
+        : reader instanceof MappingAssignNode && this.scalarMappings.has(reader.name)
+          ? reader.keys : undefined;
+      if (!readerKeys || readerKeys.length !== 1) continue;
+      const writerIndex = previousEffectful[index];
+      const write = writerIndex >= 0 ? scalarWrite(statements[writerIndex]) : undefined;
+      if (write && argumentOnlyMappingValue(write.value, parameters)) {
+        const keyLabel = expressionCanon(write.key);
+        if (keyLabel) {
+          const projector = new ProjectWrittenMappingRead(write.name, keyLabel, write.value);
+          const projected = projector.visit(cloneNode(readerKeys[0])) as ExpressionNode;
+          if (projector.replaced) reader.postWriteKeyExpressions = [projected];
+        }
+      }
+      const projected = projectKnownValues(reader.postWriteKeyExpressions?.[0] ?? readerKeys[0]);
+      if (projected.replaced) reader.postWriteKeyExpressions = [projected.value];
+      // A read still sees the authenticated input state if the straight-line prefix only wrote
+      // other collections. Expand captured locals at their declaration point, not after later writes.
+      if (!sourcePrefixSafe) continue;
+      const preWriteKey = expandSourceCaptures(readerKeys[0]);
+      const preWriteCollections: string[] = [];
+      // A prior write to a distinct literal key cannot change this source read. Keep every
+      // earlier key, not only the last write, so a same-key mutation cannot be hidden by a later one.
+      for (const [name, writtenKeys] of priorWriteKeys) {
+        const finder = new SourceMappingReadFinder(name);
+        finder.visit(preWriteKey);
+        if (finder.keys.length > 0 && finder.keys.every((readKey) => writtenKeys.every((writtenKey) =>
+          readKey instanceof IntLiteralNode && writtenKey instanceof IntLiteralNode
+          && readKey.value !== writtenKey.value))) preWriteCollections.push(name);
+      }
+      for (const [local, collections] of capturePreWriteCollections) {
+        const projector = new ProjectCapturedMappingRead(local, sourceCaptures.get(local)!);
+        projector.visit(cloneNode(readerKeys[0]));
+        if (projector.replaced) collections.forEach((name) => {
+          if (!preWriteCollections.includes(name)) preWriteCollections.push(name);
+        });
+      }
+      if (expressionCanon(preWriteKey) !== undefined) {
+        for (let laterIndex = index + 1; laterIndex < statements.length; laterIndex += 1) {
+          if (transparentStatements[laterIndex]) continue;
+          const laterWrite = scalarWrite(statements[laterIndex]);
+          if (!laterWrite || !argumentOnlyMappingValue(laterWrite.key, parameters)
+            || !argumentOnlyMappingValue(laterWrite.value, parameters)) break;
+          if (knownWrites.has(laterWrite.name) || preWriteCollections.includes(laterWrite.name)) continue;
+          const finder = new SourceMappingReadFinder(laterWrite.name);
+          finder.visit(preWriteKey);
+          if (finder.found) preWriteCollections.push(laterWrite.name);
+        }
+      }
+      if (preWriteCollections.length > 0) reader.preWriteMappingCollections = preWriteCollections;
+    }
+  }
+
+  /** Recover the exact source-argument condition for a scalar cache's final dirty-bit flush. */
+  private replayableCacheActivation(
+    fn: FunctionDefinitionNode,
+    entry: { mapping: string; keys: KeyKind[]; mutationCount: number; inLoop: boolean },
+  ): { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } } | undefined {
+    if (entry.inLoop || entry.mutationCount === 0 || !this.scalarMappings.has(entry.mapping)) return undefined;
+    const argumentIndices = stableKernelArgumentIndices(fn);
+    const booleanArguments = kernelBooleanArgumentIndices(fn);
+    const mutations: Array<{ guard: ExternalCallExpression; value?: ExpressionNode }> = [];
+    let mutationCount = 0;
+    let unsupported = false;
+    const matches = (name: string, keys: readonly Node[]): boolean => name === entry.mapping
+      && keys.length === entry.keys.length
+      && keys.every((key, index) => keyNodeMatches(key, entry.keys[index]!));
+    const combine = (outer: ExternalCallExpression | undefined, inner: ExternalCallExpression): ExternalCallExpression =>
+      outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
+    const scan = (node: Node, guard?: ExternalCallExpression, representable = true): void => {
+      if (node instanceof BranchNode) {
+        const condition = kernelArgumentConditionActivation(node.condition, argumentIndices, booleanArguments);
+        const supported = representable && condition !== undefined;
+        scan(node.ifBlock, supported ? combine(guard, condition!) : undefined, supported);
+        if (node.elseBlock) scan(node.elseBlock, supported ? combine(guard, {
+          kind: 'unary', operator: '!', expression: condition,
+        }) : undefined, supported);
+        return;
+      }
+      if (node instanceof ReturnNode) unsupported = true;
+      const mutation = node instanceof ArrayAssignNode || node instanceof StateArrayAssignNode
+        ? { name: node.name, keys: [node.index] }
+        : node instanceof MappingAssignNode || node instanceof MappingDeleteNode
+          ? { name: node.name, keys: node.keys } : undefined;
+      if (mutation && matches(mutation.name, mutation.keys)) {
+        mutationCount += 1;
+        if (!representable || guard === undefined) unsupported = true;
+        else mutations.push({ guard, value: node instanceof ArrayAssignNode
+          || node instanceof StateArrayAssignNode ? node.value
+          : node instanceof MappingAssignNode ? node.expression : undefined });
+      }
+      const childRepresentable = representable
+        && !(node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+          || node instanceof SwitchNode || node instanceof TryCatchNode);
+      for (const [field, value] of Object.entries(node)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+          'stateVariable', 'type'].includes(field)) continue;
+        if (value instanceof Node) scan(value, childRepresentable ? guard : undefined, childRepresentable);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+          scan(item, childRepresentable ? guard : undefined, childRepresentable);
+        }
+      }
+    };
+    scan(fn.body);
+    if (unsupported || mutationCount !== entry.mutationCount) return undefined;
+    let activation: ExternalCallExpression | undefined;
+    const seen = new Set<string>();
+    for (const { guard } of mutations) {
+      const key = JSON.stringify(guard);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      activation = activation === undefined ? guard
+        : { kind: 'binary', operator: '||', left: activation, right: guard };
+    }
+    if (activation === undefined) return undefined;
+    const final = mutations[mutations.length - 1];
+    const parameters = new Set<string>();
+    const serialize = (expression: ExpressionNode): string | undefined => {
+      if (expression instanceof IdentifierNode) {
+        const index = argumentIndices.get(expression.name);
+        if (index === undefined || fn.parameters[index]?.name !== expression.name) return undefined;
+        parameters.add(expression.name);
+        return `id:${expression.name}`;
+      }
+      if (expression instanceof IntLiteralNode) return `lit:${expression.value.toString()}`;
+      if (expression instanceof BinaryOpNode && ['+', '-', '*'].includes(expression.operator)) {
+        const left = serialize(expression.left);
+        const right = serialize(expression.right);
+        return left === undefined || right === undefined ? undefined
+          : `binop:${expression.operator}(${left},${right})`;
+      }
+      return undefined;
+    };
+    const serializeGuard = (guard: ExternalCallExpression): string | undefined => {
+      if (guard.kind === 'source' && guard.source?.kind === 'forward'
+        && guard.source.paramIndex !== undefined) {
+        const parameter = fn.parameters[guard.source.paramIndex];
+        if (parameter === undefined || parameter.name.startsWith('__internal__')) return undefined;
+        parameters.add(parameter.name);
+        return `id:${parameter.name}`;
+      }
+      if (guard.kind === 'literal' && (guard.value === true || guard.value === false
+        || (typeof guard.value === 'string' && /^-?[0-9]+$/.test(guard.value)))) {
+        return `lit:${String(guard.value)}`;
+      }
+      if (guard.kind === 'unary' && guard.operator === '!' && guard.expression !== undefined) {
+        const inner = serializeGuard(guard.expression);
+        return inner === undefined ? undefined : `unop:!(${inner})`;
+      }
+      if (guard.kind === 'binary' && ['&&', '||', '==', '!=', '<', '<=', '>', '>='].includes(guard.operator ?? '')
+        && guard.left !== undefined && guard.right !== undefined) {
+        const left = serializeGuard(guard.left);
+        const right = serializeGuard(guard.right);
+        return left === undefined || right === undefined ? undefined
+          : `binop:${guard.operator}(${left},${right})`;
+      }
+      return undefined;
+    };
+    let valueExpression: string | undefined;
+    if (final?.value && mutations.every((mutation) =>
+      JSON.stringify(mutation.guard) === JSON.stringify(final.guard))) {
+      valueExpression = serialize(final.value);
+    } else {
+      // The cache's final value is the last executed source write. Replay the pure argument guards in source
+      // order; the inactive fallback is immaterial because the separate activation leaves that arm unwritten.
+      let folded: string | undefined = 'lit:0';
+      for (const mutation of mutations) {
+        const guard = serializeGuard(mutation.guard);
+        const value = mutation.value === undefined ? undefined : serialize(mutation.value);
+        if (guard === undefined || value === undefined) { folded = undefined; break; }
+        folded = `ternary(${guard},${value},${folded})`;
+      }
+      valueExpression = folded;
+    }
+    return { activation, ...(valueExpression !== undefined && {
+      valueSource: { expression: valueExpression, parameters: [...parameters] },
+    }) };
   }
 
   // Entries m[k] written via array ops (element/push/pop) more than once OR inside a loop, with an INVARIANT key
@@ -866,7 +1368,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (mutatesExpressionDependency(body, dependencies)) continue;
       }
       out.push({
-        mapping: e.mapping, keys: e.keys, inLoop: e.inLoop,
+        mapping: e.mapping, keys: e.keys, inLoop: e.inLoop, mutationCount: e.count,
         valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)?.valueType
           ?? this.structMappings.get(e.mapping))!,
         fromModifier: e.fromModifier,
@@ -1029,6 +1531,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   private makeFlush(
     mapping: string, keys: KeyKind[], local: string, dirty: string, loc: Node['location'], fromModifier?: string,
+    guardPlan?: { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } },
   ): BranchNode {
     const rhs = new IdentifierNode(local);
     rhs.location = loc;
@@ -1036,6 +1539,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     const flush = new MappingAssignNode(mapping, keyNodes, rhs); // m[k1][k2] = local
     flush.fromModifier = fromModifier;
     flush.location = loc;
+    flush.kernelValueSource = guardPlan?.valueSource;
     const flushBlock = new BlockNode([flush]);
     flushBlock.location = loc;
     const condition = new IdentifierNode(dirty);
@@ -1045,6 +1549,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // The not-dirty arm is a physical no-op. If-converting it to a preserve write would still consume and recreate
     // chunk-backed resources, defeating the dirty bit and forcing outputs for paths which never changed the entry.
     branch.preserveConditionalEntryWrites = true;
+    branch.kernelEntryActivation = guardPlan?.activation;
     return branch;
   }
 
@@ -1052,13 +1557,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // returns were already rewritten to flag+break by DesugarReturnInLoop). Mirrors CacheDynamicArrayInLoop.
   private insertFlushesBeforeReturns(
     stmts: StatementNode[], mapping: string, keys: KeyKind[], local: string, dirty: string,
+    guardPlan?: { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } },
   ): StatementNode[] {
     const rec = (s: StatementNode[]): StatementNode[] =>
-      this.insertFlushesBeforeReturns(s ?? [], mapping, keys, local, dirty);
+      this.insertFlushesBeforeReturns(s ?? [], mapping, keys, local, dirty, guardPlan);
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
       if (stmt instanceof ReturnNode) {
-        out.push(this.makeFlush(mapping, keys, local, dirty, stmt.location));
+        out.push(this.makeFlush(mapping, keys, local, dirty, stmt.location, undefined, guardPlan));
         out.push(stmt);
         continue;
       }

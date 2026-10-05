@@ -179,6 +179,7 @@ describe('Release 1 scalar journal lowering', () => {
       expect.objectContaining({
         name: 'approve',
         eligible: true,
+        physicalEntrySlots: [0],
         outputs: [{ type: 'bool' }],
         emits: [expect.objectContaining({ eventName: 'Approval' })],
       }),
@@ -313,10 +314,9 @@ describe('Release 1 scalar journal lowering', () => {
       .filter((handler) => handler.eligible).map((handler) => handler.name) ?? [];
     expect(eligible(fast)).toEqual(eligible(normal));
     expect(eligible(fast)).toEqual(['balanceOf', 'approve']);
-    // Resource-shaped routes remain compact under production consensus, while an explicitly permissive input
-    // budget admits the full unrolled band needed by deeper application call DAGs.
-    expect(normal.messageBus?.maximumRows).toBe(8);
-    expect(fast.messageBus?.maximumRows).toBe(8);
+    // Both compilation profiles reserve the kernel's complete envelope-derived row band.
+    expect(normal.messageBus?.maximumRows).toBe(255);
+    expect(fast.messageBus?.maximumRows).toBe(255);
   });
 
   it('composes independent cross-row aliases for an ERC-20 approve and transferFrom route', () => {
@@ -348,15 +348,26 @@ describe('Release 1 scalar journal lowering', () => {
       suppressWarnings: true,
     });
 
-    expect(artifact.messageBus?.maximumRows).toBe(8);
+    expect(artifact.messageBus?.maximumRows).toBe(255);
     expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'approve', eligible: true }),
-      expect.objectContaining({ name: 'transferFrom', eligible: true }),
+      expect.objectContaining({ name: 'approve', eligible: true, physicalEntrySlots: [0] }),
+      expect.objectContaining({
+        name: 'transferFrom', eligible: true,
+        physicalEntrySlots: [3, 2, 0],
+        physicalEntrySlotAlternatives: [[3, 4, 5, 6, 7, 8, 9, 10], [2], [0, 1]],
+      }),
     ]));
+    // The allowance's alternate lane precedes both balance lanes. The destination balance additionally owns
+    // the eight-row key pool; every published physical slot must name an actual co-spent entry in that order.
+    expect(artifact.messageBus?.route.entryAccesses?.map(({ slotIndex, collection }) => [slotIndex, collection]))
+      .toEqual([
+        [0, 'allowances'], [1, 'allowances'],
+        ...Array.from({ length: 9 }, (_, index) => [index + 2, 'balances']),
+      ]);
     expect(artifact.messageBus?.route.entryAccesses?.map((access) => access.collection))
       .toEqual(expect.arrayContaining(['allowances', 'balances']));
     // Runtime cache selection must stay linear in independently aliasable entries. Expanding every alias choice
     // into a Cartesian dispatcher produced tens of megabytes for the corresponding production ERC-20 route.
     expect(artifact.debug.bytecode.length).toBeLessThan(2_000_000);
-  });
+  }, 120_000);
 });

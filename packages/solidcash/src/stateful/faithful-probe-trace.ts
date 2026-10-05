@@ -21,6 +21,7 @@ import {
   createVirtualMachineBch2026ForProvider,
 } from '../network/createVirtualMachine.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { captureProbeContinuations } from './probe-instruction-sequence.js';
 
 export function isP2sh32LockingBytecode(bytes: Uint8Array | undefined): boolean {
   return !!bytes && bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87;
@@ -65,6 +66,55 @@ interface CachedFaithfulTraceVm {
 const probeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
 const debugVmCache = new WeakMap<NetworkProvider, ReturnType<typeof createVirtualMachineBch2026ForProvider>>();
 const faithfulTraceVmCache = new WeakMap<NetworkProvider, CachedFaithfulTraceVm>();
+
+/** The scalar-return fallback inspects only the execution tail, never an unbounded VM debug trace. */
+export const MAX_BOUNDED_PROBE_STATES = 96;
+const MAX_BOUNDED_PROBE_CANDIDATE_BYTES = 64 * 1024;
+type ProbeProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0];
+type BoundedCandidateVm = {
+  vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
+  stacks: Uint8Array[][];
+  next: number;
+  count: number;
+};
+const boundedCandidateVmCache = new WeakMap<NetworkProvider, BoundedCandidateVm>();
+
+/** Collect at most four live stack values from each of the last 96 executed states. */
+export function evaluateBoundedProbeCandidates(
+  provider: NetworkProvider,
+  program: ProbeProgram,
+): Uint8Array[] {
+  let cached = boundedCandidateVmCache.get(provider);
+  if (!cached) {
+    cached = { vm: undefined as unknown as BoundedCandidateVm['vm'], stacks: [], next: 0, count: 0 };
+    const capture = (unknownState: unknown): void => {
+      const state = unknownState as AuthenticationProgramStateCommon;
+      cached!.stacks[cached!.next] = state.stack.slice(-4)
+        .filter((item) => item.length <= MAX_BOUNDED_PROBE_CANDIDATE_BYTES)
+        .map((item) => item.slice());
+      cached!.next = (cached!.next + 1) % MAX_BOUNDED_PROBE_STATES;
+      cached!.count = Math.min(cached!.count + 1, MAX_BOUNDED_PROBE_STATES);
+    };
+    cached.vm = createFaithfulTraceVmForProvider(provider, capture, capture);
+    boundedCandidateVmCache.set(provider, cached);
+  }
+  cached.stacks = [];
+  cached.next = 0;
+  cached.count = 0;
+  const finalState = cached.vm.evaluate(program) as AuthenticationProgramStateCommon;
+  // Include the final phase exit even when the ordinary-size VM has no phase hook.
+  cached.stacks[cached.next] = finalState.stack.slice(-4)
+    .filter((item) => item.length <= MAX_BOUNDED_PROBE_CANDIDATE_BYTES)
+    .map((item) => item.slice());
+  cached.next = (cached.next + 1) % MAX_BOUNDED_PROBE_STATES;
+  cached.count = Math.min(cached.count + 1, MAX_BOUNDED_PROBE_STATES);
+  const candidates: Uint8Array[] = [];
+  for (let age = 1; age <= cached.count; age += 1) {
+    const stack = cached.stacks[(cached.next - age + MAX_BOUNDED_PROBE_STATES) % MAX_BOUNDED_PROBE_STATES];
+    for (let index = stack.length - 1; index >= 0; index -= 1) candidates.push(stack[index]);
+  }
+  return candidates;
+}
 
 export function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
   const existing = debugVmCache.get(provider);
@@ -111,10 +161,12 @@ function cachedFaithfulTraceVm(provider: NetworkProvider): CachedFaithfulTraceVm
     const state = unknownState as AuthenticationProgramStateCommon;
     // Match `emitPreferLockingBytecode`'s exact body (`DUP SIZE NIP…` ending in `EQUALVERIFY`): other out-lined
     // subprograms share the same instruction count.
-    const opcodes = state.instructions.map((instruction) => instruction.opcode);
-    const guardShape = opcodes.length === 15 && opcodes[0] === 118 && opcodes[1] === 130 && opcodes[2] === 119
-      && opcodes[14] === 136;
-    if (Number.isFinite(spanInstructions) && state.instructions.length === spanInstructions && guardShape) {
+    // Never scan the whole program at every step for an optional diagnostic. A large route executes
+    // thousands of instructions, so even a disabled opcode projection otherwise makes tracing quadratic.
+    if (Number.isFinite(spanInstructions) && state.instructions.length === spanInstructions
+      && state.instructions.length === 15
+      && state.instructions[0].opcode === 118 && state.instructions[1].opcode === 130
+      && state.instructions[2].opcode === 119 && state.instructions[14].opcode === 136) {
       console.error('derive-span-faithful', JSON.stringify({
         ordinal: cached.trace.length - 1,
         inputIndex: state.program.inputIndex,
@@ -300,6 +352,9 @@ export class BoundedProbeTraceCollector {
   private lockDigestHexes = new Set<string>();
   private sameStackAuthenticated = new Set<string>();
   private digestCache = new WeakMap<Uint8Array, string>();
+  private hexCache = new WeakMap<Uint8Array, string>();
+  private scannedEvidenceItems = new WeakSet<Uint8Array>();
+  private longItemKeys = new WeakMap<Uint8Array, string>();
 
   reset(): void {
     this.awaitingVerification = false;
@@ -315,6 +370,9 @@ export class BoundedProbeTraceCollector {
     this.lockDigestHexes = new Set();
     this.sameStackAuthenticated = new Set();
     this.digestCache = new WeakMap();
+    this.hexCache = new WeakMap();
+    this.scannedEvidenceItems = new WeakSet();
+    this.longItemKeys = new WeakMap();
   }
 
   private digestOf(value: Uint8Array): string {
@@ -323,6 +381,14 @@ export class BoundedProbeTraceCollector {
     const digest = binToHex(sha256Sync(value));
     this.digestCache.set(value, digest);
     return digest;
+  }
+
+  private hexOf(value: Uint8Array): string {
+    const cached = this.hexCache.get(value);
+    if (cached !== undefined) return cached;
+    const hex = binToHex(value);
+    this.hexCache.set(value, hex);
+    return hex;
   }
 
   private retainEvidence(key: string, value: Uint8Array): void {
@@ -338,25 +404,49 @@ export class BoundedProbeTraceCollector {
   private scanEvidence(state: AuthenticationProgramStateCommon): void {
     const maximumCandidateBytes = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT;
     for (const stack of [state.stack, state.alternateStack ?? []]) {
-      const localDigests = new Set(stack.filter((item) => item.length === 32).map(binToHex));
+      // VM operations replace byte arrays rather than mutating existing stack items, as required by the
+      // shallow trace snapshots and digest cache above. Encode each authentication value once per probe,
+      // but recompute stack membership: a previously seen value can acquire its digest in a later state.
+      const localDigests = new Set<string>();
+      const pendingLongAuthentication: Array<{ key: string; digest: string }> = [];
       for (const item of stack) {
+        if (item.length === 32) localDigests.add(this.hexOf(item));
+        // VM frames contain many small numeric operands. None can be a long preimage, its digest, a value
+        // tail, or a P2SH32 lock; do not track their identities or revisit them on every observed opcode.
+        if (item.length !== 32 && item.length !== 35
+          && (item.length <= 60 || item.length > maximumCandidateBytes)) continue;
         if (item.length > 60 && item.length <= maximumCandidateBytes) {
           const digest = this.digestOf(item);
-          const key = `${item.length}:${digest}`;
-          this.retainEvidence(key, item);
-          this.longItems.set(key, item);
-          if (localDigests.has(digest)) this.sameStackAuthenticated.add(key);
+          let key = this.longItemKeys.get(item);
+          if (key === undefined) {
+            key = `${item.length}:${digest}`;
+            this.longItemKeys.set(item, key);
+          }
+          if (!this.sameStackAuthenticated.has(key)) pendingLongAuthentication.push({ key, digest });
+          if (!this.scannedEvidenceItems.has(item)) {
+            this.retainEvidence(key, item);
+            this.longItems.set(key, item);
+          }
         }
+        // Evidence membership and authentication markers depend only on immutable item bytes. The co-presence
+        // check above remains live because a later stack may authenticate an already-observed long value.
+        if (this.scannedEvidenceItems.has(item)) continue;
+        this.scannedEvidenceItems.add(item);
         if (item.length === 64) {
           const storedLength = item[0]! | (item[1]! << 8) | (item[2]! << 16) | (item[3]! << 24);
-          if (storedLength > 60) this.tailRootHexes.add(binToHex(item.subarray(4, 36)));
+          if (storedLength > 60) this.tailRootHexes.add(this.hexOf(item).slice(8, 72));
         }
-        if (isP2sh32LockingBytecode(item)) this.lockDigestHexes.add(binToHex(item.subarray(2, 34)));
-        if (item.length === 32 || item.length === 64 || isP2sh32LockingBytecode(item)) {
-          const key = `${item.length}:${binToHex(item)}`;
+        const isLock = isP2sh32LockingBytecode(item);
+        if (isLock) this.lockDigestHexes.add(this.hexOf(item).slice(4, 68));
+        if (item.length === 32 || item.length === 64 || isLock) {
+          const key = `${item.length}:${this.hexOf(item)}`;
           this.retainEvidence(key, item);
           this.authItems.set(key, item);
         }
+      }
+      // Check after the one pass over the stack: the authenticating digest can precede or follow its value.
+      for (const { key, digest } of pendingLongAuthentication) {
+        if (localDigests.has(digest)) this.sameStackAuthenticated.add(key);
       }
     }
   }
@@ -387,6 +477,7 @@ export class BoundedProbeTraceCollector {
     }
     return {
       ...state,
+      ...captureProbeContinuations(state),
       stack,
       alternateStack: [],
       // Object frames retain caller stacks. Instruction-array identity on each observation preserves the
@@ -409,6 +500,7 @@ export class BoundedProbeTraceCollector {
 
     const full = {
       ...state,
+      ...captureProbeContinuations(state),
       stack: state.stack.slice(),
       alternateStack: state.alternateStack.slice(),
       controlStack: state.controlStack.filter((frame) => typeof frame === 'boolean'),
@@ -481,19 +573,26 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       // OP_INVOKE and OP_UTXOBYTECODE are the two operations that decide a subprogram call: the first shows the
       // operands a caller hands down (the callee consumes them immediately), the second shows which input a
       // participant check resolved to. Both are absent from the production observer set.
-      ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
-        Op.OP_INVOKE, Op.OP_UTXOBYTECODE,
-        // `emitPickTrackedFromBottom` is `OP_DEPTH; n; OP_SUB; OP_PICK`, so observing these three names which frame
-        // slot (i.e. which hidden ABI witness) a participant check resolved its coordinate from.
-        Op.OP_PICK, Op.OP_DEPTH, Op.OP_INPUTINDEX])
-      : debugTraceOperationMode === 'project'
-        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
-      : PROBE_TRACE_OPCODES,
+        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
+          Op.OP_INVOKE, Op.OP_UTXOBYTECODE,
+          // `emitPickTrackedFromBottom` is `OP_DEPTH; n; OP_SUB; OP_PICK`, so observing these three names which frame
+          // slot (i.e. which hidden ABI witness) a participant check resolved its coordinate from.
+          Op.OP_PICK, Op.OP_DEPTH, Op.OP_INPUTINDEX])
+        : debugTraceOperationMode === 'project'
+          ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
+          : PROBE_TRACE_OPCODES,
     beforeOperation: (unknownState) => {
       const state = unknownState as AuthenticationProgramStateCommon;
-      const opcode = state.instructions[state.ip]?.opcode;
       const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } })
         .process?.env;
+      // The observer runs for every selected VM opcode. Keep ordinary probes clear of diagnostic range parsing;
+      // environment changes between evaluations still take effect when a diagnostic is enabled later.
+      if (!debugTraceOperations && debugEnv?.SOLIDC_DEBUG_SPAN_INSTRUCTIONS === undefined
+        && debugEnv?.SOLIDC_DEBUG_SPAN_CALLER_INSTRUCTIONS === undefined) {
+        cached.collector.observe(state);
+        return;
+      }
+      const opcode = state.instructions[state.ip]?.opcode;
       const debugFrom = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_FROM_IP ?? Number.NaN);
       const debugTo = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_TO_IP ?? Number.NaN);
       const debugInstructionCount = Number(
@@ -749,6 +848,7 @@ export function compactFaithfulProbeTrace(
   };
   const project = (state: AuthenticationProgramStateCommon, terminal = false): AuthenticationProgramStateCommon => ({
     ...state,
+    ...captureProbeContinuations(state),
     stack: projectStack(state, terminal),
     alternateStack: [],
     controlStack: state.controlStack.filter((frame) => typeof frame === 'boolean'),

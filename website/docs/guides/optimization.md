@@ -111,7 +111,9 @@ By using function NFTs you can use a modular contract design where the contract 
 
 If there is a lot of duplicate code across different functions in your contract, you could consider combining the functions into one, where the logic of the different functions are conditionally executed based on the function arguments, removing duplicate code.
 
-The difficulty with this approach is that SolidCash functions expect a fixed number of arguments for each function. So when trying to combine two functions into one it might prove very difficult due to the different arguments they each expect. There is no notion of optional arguments or function overloading in SolidCash currently.
+SolidCash supports function overloading, but each overload still has a fixed ABI shape and its own selector.
+Combining paths into one function can remove duplicated bytecode only when a compact discriminator and a shared
+fixed argument shape are cheaper than those separate selector branches. There is no optional-argument ABI.
 
 :::caution
 This optimization is considered advanced, as it steps away from the SolidCash abstraction for contract structure and often requires workarounds.

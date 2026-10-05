@@ -915,7 +915,7 @@ describe('kernel pending-entry journal codec', () => {
         [2, { reference: b0, basis: 'mutation-settlement' as const }],
       ]),
     };
-    const resolve = (reference: typeof a0) => (
+    const resolve = (reference: typeof a0): { collection: string; offset: number } => (
       reference.accessStreamIndex === 0
         ? { collection: 'alpha', offset: reference.recordOrdinal === 0 ? 0 : 1 }
         : { collection: 'beta', offset: 0 }

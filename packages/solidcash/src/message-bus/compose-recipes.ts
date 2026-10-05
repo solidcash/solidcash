@@ -1,7 +1,7 @@
 /**
  * phase-boundary extract: compose recipe / materialization helpers (phase-boundary extract from compose.ts).
  * Child-deployment recipes, fixed BCH transfer materialization, EVM/native provisional results,
- * computed value-chunk claim predicates, and sticky scalar leftover writes.
+ * computed value-chunk claim predicates.
  */
 
 import {
@@ -10,18 +10,17 @@ import {
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   decodePushdataValue, encodePushdataValue,
-  buildEntryCommitment, buildPushdataCommitment, bytecodeToScript, scriptToAsm,
+  bytecodeToScript, scriptToAsm,
   AddressType, BytesType, FixedType, IntType,
-  parseArrayTypeString, parsePushdataCommitment, parseTypeStrict, PrimitiveType,
+  parseArrayTypeString, parseTypeStrict, PrimitiveType,
   getDefaultStateValue, hash160, hash256, ripemd160, sha256,
 } from '@solidcash/utils';
 import type {
-  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateLayout, StateValue,
+  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateValue,
   StructDefinitionInfo,
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
-import { TransactionBuilder } from '../TransactionBuilder.js';
 import { Contract } from '../Contract.js';
 import { addressToLockScript } from '../utils.js';
 import {
@@ -33,6 +32,7 @@ import {
 import { isCanonicalEvmScalarReturnVector } from '../stateful/StatefulContract.js';
 import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import type { FixedEffectEntryResolver } from './fixed-effect-entries.js';
 
 /** Minimal claim shape for continuation seeding predicates (avoids compose orchestration types). */
 type ComputedValueChunkClaim = {
@@ -249,8 +249,12 @@ export const evaluateChildDeploymentRecipe = (
   solidityAbi: boolean,
   state: Readonly<Record<string, FunctionArgument>> = {},
   logicalCaller?: FunctionArgument,
+  entryResolver?: FixedEffectEntryResolver,
 ): FunctionArgument => {
   const resultType = recipeType(recipe, inputTypes);
+  const evaluate = (value: ChildDeploymentValueRecipe): FunctionArgument => evaluateChildDeploymentRecipe(
+    value, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,
+  );
   if (recipe.kind === 'handlerInput') {
     if (recipe.inputIndex < 0 || recipe.inputIndex >= args.length) {
       throw new Error(`messageBus: deployment recipe input ${recipe.inputIndex} is out of range`);
@@ -263,6 +267,10 @@ export const evaluateChildDeploymentRecipe = (
     }
     return state[recipe.name];
   }
+  if (recipe.kind === 'entry') {
+    if (!entryResolver) throw new Error('messageBus: authenticated entry recipe context is unavailable');
+    return entryResolver(recipe, recipe.keys.map(evaluate));
+  }
   if (recipe.kind === 'logicalCaller') {
     if (logicalCaller === undefined) {
       throw new Error('messageBus: authenticated logical caller recipe is unavailable');
@@ -270,8 +278,7 @@ export const evaluateChildDeploymentRecipe = (
     return logicalCaller;
   }
   if (recipe.kind === 'aggregate') {
-    return recipe.elements.map((element) =>
-      evaluateChildDeploymentRecipe(element, args, inputTypes, solidityAbi, state)) as ConstructorArgument[];
+    return recipe.elements.map(evaluate) as ConstructorArgument[];
   }
   if (recipe.kind === 'concat') {
     if (recipe.operands.length === 0) {
@@ -288,7 +295,7 @@ export const evaluateChildDeploymentRecipe = (
         throw new Error(`messageBus: deployment concat operand ${operandTypeName} is not concatenable`);
       }
       return byteRecipeValue(
-        evaluateChildDeploymentRecipe(operand, args, inputTypes, solidityAbi, state), operandTypeName, solidityAbi,
+        evaluate(operand), operandTypeName, solidityAbi,
       );
     });
     const joined = Uint8Array.from(values.flatMap((value) => [...value]));
@@ -305,7 +312,7 @@ export const evaluateChildDeploymentRecipe = (
       throw new Error(`messageBus: deployment ${recipe.algorithm} recipe cannot produce ${resultType}`);
     }
     const operand = byteRecipeValue(
-      evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state),
+      evaluate(recipe.operand),
       recipeType(recipe.operand, inputTypes),
       solidityAbi,
     );
@@ -324,11 +331,11 @@ export const evaluateChildDeploymentRecipe = (
     return coerceRecipeValue(hexToBin(recipe.value), `bytes${recipe.value.length / 2}`, resultType, solidityAbi);
   }
   if (recipe.kind === 'cast') {
-    const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state);
+    const operand = evaluate(recipe.operand);
     return coerceRecipeValue(operand, recipeType(recipe.operand, inputTypes), resultType, solidityAbi);
   }
   if (recipe.kind === 'unary') {
-    const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state);
+    const operand = evaluate(recipe.operand);
     const operandTypeName = recipeType(recipe.operand, inputTypes);
     const operandType = parseTypeStrict(operandTypeName);
     const result = parseTypeStrict(resultType);
@@ -356,12 +363,12 @@ export const evaluateChildDeploymentRecipe = (
       || recipeType(recipe.ifFalse, inputTypes) !== resultType) {
       throw new Error('messageBus: conditional recipe branches must match its declared type');
     }
-    const condition = evaluateChildDeploymentRecipe(recipe.condition, args, inputTypes, solidityAbi, state);
+    const condition = evaluate(recipe.condition);
     const selected = numericRecipeValue(condition, conditionType, solidityAbi) !== 0n
       ? recipe.ifTrue : recipe.ifFalse;
-    return evaluateChildDeploymentRecipe(selected, args, inputTypes, solidityAbi, state);
+    return evaluate(selected);
   }
-  const leftValue = evaluateChildDeploymentRecipe(recipe.left, args, inputTypes, solidityAbi, state);
+  const leftValue = evaluate(recipe.left);
   const leftType = recipeType(recipe.left, inputTypes);
   if (recipe.operator === '&&' || recipe.operator === '||') {
     const rightType = recipeType(recipe.right, inputTypes);
@@ -371,11 +378,11 @@ export const evaluateChildDeploymentRecipe = (
     const left = numericRecipeValue(leftValue, leftType, solidityAbi) !== 0n;
     if (recipe.operator === '&&' && !left) return false;
     if (recipe.operator === '||' && left) return true;
-    const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi, state);
+    const rightValue = evaluate(recipe.right);
     const right = numericRecipeValue(rightValue, rightType, solidityAbi) !== 0n;
     return recipe.operator === '&&' ? left && right : left || right;
   }
-  const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi, state);
+  const rightValue = evaluate(recipe.right);
   const rightType = recipeType(recipe.right, inputTypes);
   const leftParsedType = parseTypeStrict(leftType);
   const rightParsedType = parseTypeStrict(rightType);
@@ -435,6 +442,7 @@ export const materializeFixedBchTransfer = (
   provider: NetworkProvider,
   state: Readonly<Record<string, FunctionArgument>> = {},
   logicalCaller?: FunctionArgument,
+  entryResolver?: FixedEffectEntryResolver,
 ): { lockingBytecode: Uint8Array; amount: bigint } => {
   const solidityAbi = artifactUsesSolidityAbi(executionArtifact);
   const recipientValue = transfer.derivedRecipient
@@ -469,7 +477,9 @@ export const materializeFixedBchTransfer = (
       return hexToBin(child.lockingBytecode);
     })()
     : transfer.recipientRecipe
-      ? evaluateChildDeploymentRecipe(transfer.recipientRecipe, args, inputTypes, solidityAbi, state, logicalCaller)
+      ? evaluateChildDeploymentRecipe(
+        transfer.recipientRecipe, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,
+      )
       : transfer.recipient.kind === 'forward' && transfer.recipient.paramIndex !== undefined
         ? args[transfer.recipient.paramIndex] : undefined;
   let lockingBytecode = recipientValue;
@@ -477,8 +487,21 @@ export const materializeFixedBchTransfer = (
     lockingBytecode = lockingBytecode.includes(':') ? addressToLockScript(lockingBytecode)
       : hexToBin(lockingBytecode.startsWith('0x') ? lockingBytecode.slice(2) : lockingBytecode);
   }
+  if (solidityAbi && lockingBytecode instanceof Uint8Array) {
+    if (lockingBytecode.length === 32) {
+      if (lockingBytecode.slice(0, 12).some((byte) => byte !== 0)) {
+        throw new Error('messageBus: BCH transfer has a malformed Solidity address word');
+      }
+      lockingBytecode = lockingBytecode.slice(12);
+    }
+    if (lockingBytecode.length === 20) {
+      lockingBytecode = hexToBin(`76a914${binToHex(lockingBytecode)}88ac`);
+    }
+  }
   const amountValue = transfer.amountRecipe
-    ? evaluateChildDeploymentRecipe(transfer.amountRecipe, args, inputTypes, solidityAbi, state, logicalCaller)
+    ? evaluateChildDeploymentRecipe(
+      transfer.amountRecipe, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,
+    )
     : transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
       ? args[transfer.amount.paramIndex]
       : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
@@ -536,10 +559,17 @@ export const materializeChildDeploymentEntryValue = (
   return materializeChildDeploymentEntryScalar(value, typeName, solidityAbi);
 };
 
+const boundedNumericResultType = (type: string): boolean => {
+  const numeric = /^u?int([1-9][0-9]*)$/.exec(type)
+    ?? /^u?fixed([1-9][0-9]*)x\d+$/.exec(type);
+  if (!numeric) return false;
+  const width = Number(numeric[1]);
+  return width >= 8 && width <= 256 && width % 8 === 0;
+};
+
 const evmStaticResultType = (type: string): boolean => type === 'bool'
   || type === 'int' || type === 'uint' || type === 'bigint'
-  || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
-  || /^u?fixed(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)x\d+$/.test(type)
+  || boundedNumericResultType(type)
   || type === 'address' || type === 'address payable'
   || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type);
 
@@ -815,6 +845,55 @@ export interface ComputedValueChunkSpanClaim {
   resourcePart?: string;
 }
 
+/** Keep a local compiler claim unless the observation itself gives conflicting geometry. */
+export function mergeComputedValueChunkSpanClaims(
+  local: readonly ComputedValueChunkSpanClaim[],
+  observed: readonly ComputedValueChunkSpanClaim[],
+): ComputedValueChunkSpanClaim[] {
+  const keyOf = (claim: ComputedValueChunkSpanClaim): string | undefined => (
+    claim.resourceIdentity === undefined || claim.resourcePart === undefined
+      ? undefined : `${claim.resourceIdentity}\u0000${claim.resourcePart}`
+  );
+  const localKeys = new Set(local.map(keyOf).filter((key): key is string => key !== undefined));
+  const observations = new Map<string, ComputedValueChunkSpanClaim[]>();
+  const merged = [...local];
+  for (const claim of observed) {
+    const key = keyOf(claim);
+    if (key === undefined) {
+      merged.push(claim);
+      continue;
+    }
+    const claims = observations.get(key) ?? [];
+    claims.push(claim);
+    observations.set(key, claims);
+  }
+  for (const [key, claims] of observations) {
+    const distinctOffsets = new Set(claims.map((claim) => claim.offset));
+    if (distinctOffsets.size > 1) {
+      // Retain contradictory observations so the geometry validator rejects the move.
+      merged.push(...claims);
+    } else if (!localKeys.has(key)) {
+      merged.push(claims[0]);
+    }
+  }
+  return merged;
+}
+
+/** Count distinct physical predecessor outputs; sentinels and aliased lanes own none. */
+export function physicalVmapBatchTrailingCount(
+  inputs: readonly { name: string }[],
+  args: readonly unknown[],
+): bigint | undefined {
+  if (!inputs.some((input) => input.name === '__internal__vmapBatchTrailingCount')) return undefined;
+  const outputs = new Set<bigint>();
+  for (const [index, input] of inputs.entries()) {
+    if (!/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) continue;
+    const value = args[index];
+    if (typeof value === 'bigint' && value >= 0n) outputs.add(value);
+  }
+  return BigInt(outputs.size);
+}
+
 /**
  * Keep compiler-authenticated continuation slots inside their participant while compacting a published block.
  * Claim offsets are absolute transaction coordinates; the returned size is participant-relative and never
@@ -913,101 +992,4 @@ export function minimumActualSizeForComputedValueChunkClaims(
     }
   }
   return minimumSize;
-}
-
-const isOptimisticIntegerType = (type: string): boolean => (
-  type === 'int' || type === 'uint' || type === 'bigint' || /^u?int\d+$/.test(type)
-);
-
-type StickyWritingRow = {
-  handler: { name: string; writesState?: boolean; emits?: readonly unknown[]; inputs: readonly { name: string; type: string }[] };
-  args: readonly FunctionArgument[];
-};
-
-/**
- * ahead-of-time compose coverage/I4: when a message-bus shell left a single-int data NFT at its input commitment, apply the
- * recipe post-state before aggregate publish so converge does not need extract-from-failed-VM.
- *
- * - Writers with `emits` → leftover +1 (counter+emit; emit payload ints are not the write source).
- * - Writers without emits + one visible int arg → assign that arg (Mid.seen = next beside outState).
- */
-export function stickyKernelLeftoverScalarWrites(
-  local: TransactionBuilder,
-  artifact: Artifact,
-  blockLayout: { slots: readonly { kind: string; offset: number }[] },
-  writingRows: readonly StickyWritingRow[] = [],
-): boolean {
-  const layout = artifact.stateLayout as StateLayout | undefined;
-  if (!layout) return false;
-  // Ignore compiler-internal holds (`__messageBusHold`) — event-only proxies still carry one.
-  const intFields = layout.variables.filter((variable) => !variable.dynamic
-    && !variable.name.includes('$')
-    && !variable.name.startsWith('__')
-    && isOptimisticIntegerType(variable.type));
-  if (intFields.length !== 1) return false;
-  const stateWriters = writingRows.filter((row) => (
-    row.handler.writesState !== false
-    && row.handler.name !== 'initialize'
-    && row.handler.name !== 'constructor'
-    && row.handler.name !== '__forward'
-    && !row.handler.name.startsWith('__message_bus')
-  ));
-  const hasScalarWriter = stateWriters.length > 0 || artifact.abi.some((entry) => (
-    entry.writesState === true
-    && entry.name !== 'initialize'
-    && entry.name !== 'constructor'
-    && entry.name !== '__forward'
-    && !entry.name.startsWith('__message_bus')
-  ));
-  if (!hasScalarWriter) return false;
-  const field = intFields[0];
-  const nftIndex = field.nftIndex;
-  const primaryWriter = stateWriters.length === 1 ? stateWriters[0] : undefined;
-  const writerEmits = (primaryWriter?.handler.emits?.length ?? 0) > 0
-    || (primaryWriter === undefined && artifact.abi.some((entry) => (
-      entry.writesState === true
-      && (entry.emits?.length ?? 0) > 0
-      && entry.name !== 'initialize'
-      && entry.name !== 'constructor'
-      && entry.name !== '__forward'
-      && !entry.name.startsWith('__message_bus')
-    )));
-  let assignedValue: bigint | undefined;
-  if (primaryWriter && !writerEmits) {
-    const visible = primaryWriter.handler.inputs
-      .map((input, index) => ({ input, index }))
-      .filter(({ input }) => !input.name.startsWith('__internal__') && isOptimisticIntegerType(input.type));
-    if (visible.length === 1) {
-      const arg = primaryWriter.args[visible[0].index];
-      if (typeof arg === 'bigint') assignedValue = arg;
-    }
-  }
-  let wrote = false;
-  for (const slot of blockLayout.slots) {
-    if (slot.kind !== 'dataNft') continue;
-    const input = local.inputs[slot.offset];
-    const output = local.outputs[slot.offset];
-    if (input?.token?.nft?.capability !== 'mutable' || output?.token?.nft?.capability !== 'mutable') {
-      continue;
-    }
-    const inCommit = input.token.nft.commitment ?? '';
-    const outCommit = output.token.nft.commitment ?? '';
-    try {
-      const parsed = parsePushdataCommitment(inCommit, layout, nftIndex);
-      const current = parsed[field.name];
-      if (typeof current !== 'bigint') continue;
-      // Arg-assign (I4): replace a wrong leftover +1 / stale commitment with the invocation int.
-      // Leftover +1 (ahead-of-time compose coverage): only when the NFT still mirrors its input commitment.
-      if (assignedValue === undefined && outCommit !== inCommit) continue;
-      const nextValue = assignedValue !== undefined ? assignedValue : current + 1n;
-      const nextState: Record<string, StateValue> = { ...parsed, [field.name]: nextValue };
-      const nextCommit = buildPushdataCommitment(layout, nextState, nftIndex);
-      if (outCommit === nextCommit) continue;
-      output.token.nft.commitment = nextCommit;
-      wrote = true;
-    } catch {
-      // Malformed or non-scalar commitments stay untouched.
-    }
-  }
-  return wrote;
 }

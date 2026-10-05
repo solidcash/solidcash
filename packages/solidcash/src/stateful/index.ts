@@ -85,6 +85,18 @@ export {
   runWithCompositionSettlementSession,
 } from './value-chunk-persist.js';
 export {
+  clearCollectionValueRecords,
+  commitCollectionValue,
+  getCollectionValueRecord,
+  observeCollectionValueChunks,
+  stageCollectionValue,
+  type AuthenticatedValueChunk,
+  type CollectionValueIdentity,
+  type CollectionValueRecord,
+  type CollectionValueSpend,
+  type CollectionValueWrite,
+} from './ValueChunkPersistence.js';
+export {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerPathContext,
   createValueChunkProducerArgumentEpoch,

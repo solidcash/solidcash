@@ -10,6 +10,7 @@ import {
   finalizeMonotonePass,
   recordMonotonePass,
 } from './monotone-lattice.js';
+import type { TransactionBuilder } from '../TransactionBuilder.js';
 
 export type ConstraintFixpointPhase = 'open' | 'running' | 'finalized';
 
@@ -252,4 +253,23 @@ export function createConstraintFixpointSession(
   options?: { maximumPasses?: number },
 ): ConstraintFixpointSession {
   return new ConstraintFixpointSession(options);
+}
+
+// Every provisional builder of a composition shares its build's tracker. Explicit ownership
+// survives await boundaries without holding a process-global session across concurrent builds.
+const builderSessions = new WeakMap<TransactionBuilder, ConstraintFixpointSession>();
+
+export function bindBuilderConstraintFixpoint(
+  builder: TransactionBuilder,
+  session: ConstraintFixpointSession,
+): void {
+  const previous = builderSessions.get(builder);
+  if (previous !== undefined && previous !== session) {
+    throw new Error('constraint-fixpoint: cannot change a builder\'s composition owner');
+  }
+  builderSessions.set(builder, session);
+}
+
+export function builderConstraintFixpoint(builder: TransactionBuilder): ConstraintFixpointSession | undefined {
+  return builderSessions.get(builder);
 }

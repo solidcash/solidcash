@@ -17,6 +17,10 @@ import {
 import {
   decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
 } from '../../src/stateful/evm-abi-result.js';
+import {
+  discoveredReturnFollowsParticipantWrite,
+  selectPreparedAtomicReturnSeed,
+} from '../../src/stateful/sc-materialize-create-builder-return-emit.js';
 
 const structs: StructDefinitionInfo[] = [{
   name: 'Pair',
@@ -324,6 +328,84 @@ describe('selectMaterializedTailReturnEvents', () => {
     expect(events).toHaveLength(1);
     expect(events[0].identity).toBe('external-call:0:0');
     expect(events[0].commitment).toHaveLength(32);
+  });
+
+  it('keeps a logical read result when its physical carrier becomes a writer', () => {
+    const readResult = new Uint8Array(32);
+    readResult[31] = 7;
+    const writerResult = new Uint8Array(32);
+    writerResult[31] = 1;
+    const carrier = {
+      functionName: 'write', logicalFunctionName: 'write', precomputedReturnCommitment: readResult,
+    };
+    expect(selectPreparedAtomicReturnSeed(carrier, 'read', writerResult)).toEqual(readResult);
+    expect(selectPreparedAtomicReturnSeed(carrier, 'write', writerResult)).toEqual(writerResult);
+    expect(selectPreparedAtomicReturnSeed({ ...carrier, functionName: '__forward', logicalFunctionName: 'read' },
+      'read', writerResult)).toEqual(writerResult);
+    expect(selectPreparedAtomicReturnSeed({ ...carrier, precomputedReturnCommitment: undefined },
+      'read', writerResult)).toBeUndefined();
+  });
+
+  it('does not prepare an isolated read after an earlier mutation of its participant', () => {
+    const artifact = { abi: [
+      { name: 'balanceOf', writesState: false },
+      { name: 'transferFrom', writesState: true },
+    ] };
+    const contract = (categoryId: string): { categoryId: string; inner: { artifact: typeof artifact } } => (
+      { categoryId, inner: { artifact } }
+    );
+    const nodes = [
+      { contract: contract('token'), functionName: 'balanceOf' },
+      { contract: contract('other'), functionName: 'transferFrom' },
+      { contract: contract('token'), functionName: 'transferFrom' },
+      { contract: contract('token'), functionName: 'balanceOf' },
+    ] as never;
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 0)).toBe(false);
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 2)).toBe(false);
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
+  });
+
+  it('does not prepare a cross-contract result whose nested read follows an earlier write', () => {
+    const artifact = { abi: [
+      { name: 'root', writesState: true },
+      { name: 'release', writesState: true },
+      { name: 'claim', writesState: true },
+      { name: 'getEscrow', writesState: false },
+      { name: 'unrelatedRead', writesState: false },
+    ] };
+    const contract = (categoryId: string): { categoryId: string; inner: { artifact: typeof artifact } } => (
+      { categoryId, inner: { artifact } }
+    );
+    const nodes = [
+      { contract: contract('marketplace'), functionName: 'root', parent: null },
+      { contract: contract('escrow'), functionName: 'release', parent: 0 },
+      { contract: contract('claim'), functionName: 'claim', parent: 1 },
+      { contract: contract('escrow'), functionName: 'getEscrow', parent: 2 },
+      { contract: contract('unrelated'), functionName: 'unrelatedRead', parent: 0 },
+    ] as never;
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 2)).toBe(true);
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 4)).toBe(false);
+  });
+
+  it('does not treat missing interface effect metadata as a read-only proof', () => {
+    const interfaceArtifact = { abi: [{ name: 'release' }] };
+    const readArtifact = { abi: [{ name: 'claim', writesState: true }, { name: 'getEscrow', writesState: false }] };
+    const nodes = [
+      {
+        contract: { categoryId: 'escrow', inner: { artifact: interfaceArtifact } },
+        functionName: 'release', selector: '01020304', parent: null,
+      },
+      {
+        contract: { categoryId: 'claim', inner: { artifact: readArtifact } },
+        functionName: 'claim', parent: 0,
+      },
+      {
+        contract: { categoryId: 'escrow', inner: { artifact: readArtifact } },
+        functionName: 'getEscrow', parent: 1,
+      },
+    ] as never;
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 1)).toBe(true);
   });
 
   it('promotes an exact writer probe over its provisional seed', () => {

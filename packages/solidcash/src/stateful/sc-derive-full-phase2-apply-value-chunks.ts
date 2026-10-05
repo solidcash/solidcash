@@ -25,7 +25,7 @@ import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js
 import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
 
-/** Matches StatefulContract LOOP_ENTRY_MAX_ITERATIONS — speculative value-chunk scan width. */
+/** Speculative value-chunk scan width. */
 const VALUE_CHUNK_SCAN_MAX = 256;
 
 export type DeriveFullPhase2ValueChunksHost = {

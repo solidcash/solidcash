@@ -22,11 +22,11 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
     function updTwo(uint256 k, uint256 x, uint256 y, pubkey pk, sig s) {
       require(checkSig(s, pk)); m[k].a = x; m[k].b = y;
     }
-    function updAll(uint256 k, uint256 a, uint256 b, uint256 c, uint256 d, pubkey pk, sig s) {
-      require(checkSig(s, pk)); m[k].a = a; m[k].b = b; m[k].c = c; m[k].d = d;
-    }
     function updSelf(uint256 k, uint256 x, pubkey pk, sig s) {
       require(checkSig(s, pk)); m[k].a = x; m[k].b = m[k].a;
+    }
+    function updAll(uint256 k, uint256 a, uint256 b, uint256 c, uint256 d, pubkey pk, sig s) {
+      require(checkSig(s, pk)); m[k].a = a; m[k].b = b; m[k].c = c; m[k].d = d;
     }
     function chk(uint256 k, uint256 ea, uint256 eb, uint256 ec, uint256 ed, pubkey pk, sig s) {
       require(checkSig(s, pk));
@@ -105,6 +105,35 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
       .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
     await c.fund();
     await expect(c.chk(5n, 9n, 1n, 3n, 4n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
+  });
+
+  it('same-entry self-read observes the newly written field', async () => {
+    const c = await setup();
+    await c.fund(); await c.seed(9n, 1n, 2n, 3n, 4n, alicePub, sig).send();
+    await c.fund(); await c.updSelf(9n, 77n, alicePub, sig).send();
+    await c.fund();
+    expect(await c.chk(9n, 77n, 77n, 3n, 4n, alicePub, sig).send())
+      .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
+  });
+
+  // The coalescer now recognizes this exact sequential case: after `a = x`, reading `a` for `b` must use x,
+  // not the old stored a. Pin the two distinct value recipes instead of bytecode size (which also includes
+  // unrelated ABI-parameter and optimizer costs).
+  it('publishes a sequential self-read recipe distinct from an independent second parameter', () => {
+    const base = 'struct S { uint256 a; uint256 b; uint256 c; } mapping(uint256 => S) m;';
+    const accesses = (
+      src: string,
+    ): ReturnType<typeof compileString>['abi'][number]['entryAccesses'] => (
+      compileString(src).abi.find((fn) => fn.name === 'f')?.entryAccesses
+    );
+    const selfRead = accesses(`contract C() { ${base} function f(uint256 k, uint256 x) public { m[k].a = x; m[k].b = m[k].a; require(true); } }`);
+    const noSelf = accesses(`contract C() { ${base} function f(uint256 k, uint256 x, uint256 y) public { m[k].a = x; m[k].b = y; require(true); } }`);
+    expect(selfRead).toEqual([expect.objectContaining({
+      operations: ['read', 'write'], valueSource: 'call:S(id:x,id:x,field:c(map:m(id:k)))',
+    })]);
+    expect(noSelf).toEqual([expect.objectContaining({
+      operations: ['read', 'write'], valueSource: 'call:S(id:x,id:y,field:c(map:m(id:k)))',
+    })]);
   });
 
   it('rejects a wrong expected value (oracle is live)', async () => {

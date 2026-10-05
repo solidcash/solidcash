@@ -4,10 +4,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth';
-import {
-  isEmptyValueChunkCommitment,
-  valueChunkIndexFromCommitment,
-} from './value-chunk-persist.js';
+import { valueChunkIndexFromCommitment } from './value-chunk-persist.js';
 import {
   groupOwnsInBlockReturnEvent,
   type PhysicalReturnGroup,
@@ -164,42 +161,42 @@ export function writerBlockOccupancyEnd(
 
 /** Insert a relocated change output after the jobEvents band and reserved writer occupancy. */
 /**
- * Keep [jobs chunks][OP_RETURN] contiguous. SCIDs and token-free pads that
+ * Keep [mutable value chunks][OP_RETURN] contiguous. SCIDs and token-free pads that
  * landed inside that suffix are moved in front so TXOUTPUTCOUNT-1-nNew
- * still names the first jobs chunk.
+ * still names the first value chunk.
  */
-export function packJobsAgainstOpReturn<T extends {
+export function packMutableValueChunkRunAgainstSeparator<T extends {
   to?: Uint8Array | string;
   token?: { nft?: { capability?: string; commitment?: string } };
 }>(
   outputs: T[],
-  jobsLock: Uint8Array,
+  suffixLock: Uint8Array,
   tailStart: number,
 ): number {
-  if (jobsLock.length !== 35 || jobsLock[0] !== 0xaa) return 0;
-  const wanted = binToHex(jobsLock);
+  if (suffixLock.length !== 35 || suffixLock[0] !== 0xaa) return 0;
+  const wanted = binToHex(suffixLock);
   const opReturn = outputs.findIndex((output, index) => {
     if (index < tailStart) return false;
     const lock = output.to instanceof Uint8Array ? output.to : undefined;
     return !!lock && lock.length === 1 && lock[0] === 0x6a;
   });
   if (opReturn < 0 || opReturn <= tailStart) return 0;
-  const jobs: T[] = [];
+  const chunks: T[] = [];
   const displaced: T[] = [];
   for (let index = tailStart; index < opReturn; index++) {
     const output = outputs[index];
     const lock = output?.to instanceof Uint8Array ? output.to : undefined;
-    const isJob = !!lock && lock.length === 35 && binToHex(lock) === wanted
+    const isChunk = !!lock && lock.length === 35 && binToHex(lock) === wanted
       && output?.token?.nft?.capability === 'mutable';
-    if (isJob) jobs.push(output);
+    if (isChunk) chunks.push(output);
     else displaced.push(output);
   }
-  if (jobs.length === 0) return 0;
-  const packed = [...displaced, ...jobs];
+  if (chunks.length === 0) return 0;
+  const packed = [...displaced, ...chunks];
   for (let offset = 0; offset < packed.length; offset++) {
     outputs[tailStart + offset] = packed[offset];
   }
-  return jobs.length;
+  return chunks.length;
 }
 
 export function relocateChangeAfterOccupancy<T extends { token?: unknown }>(

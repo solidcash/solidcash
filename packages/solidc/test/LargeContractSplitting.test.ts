@@ -68,6 +68,36 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.routes.every((route) => route.target === 'root')).toBe(true);
   });
 
+  it('forwards complete external fixed-array projections before facet demotion', () => {
+    const source = (result: string): string => `pragma solidity ^0.8.7;
+      uint8 constant B=0; uint8 constant S=1; uint8 constant M=2;
+      uint8 constant P=3; uint8 constant A=4;
+      contract ReturnFacet {
+        uint256 total;
+        function calculate(uint256 amount) internal pure returns(uint256[5] memory) {
+          uint256[5] memory payments;
+          payments[B]=amount/10; payments[S]=amount/5; payments[M]=amount/5;
+          payments[A]=amount/10;
+          payments[P]=amount-payments[B]-payments[S]-payments[M]-payments[A];
+          return payments;
+        }
+        function claim(uint256 amount) external returns(uint256[5] memory) {
+          uint256[5] memory payments=calculate(amount);
+          this.total=amount; require(amount>0);
+          return ${result};
+        }
+      }`;
+    const options = { solidityImportCompat: true, messageBus: false, forceSplit: true };
+    const projected = compileStringSplit(source('[payments[B],payments[S],payments[M],payments[P],payments[A]]'), options);
+    const forwarded = compileStringSplit(source('payments'), options);
+    const projectedTarget = projected.manifest.routes.find((route) => route.function === 'claim')?.target;
+    const forwardedTarget = forwarded.manifest.routes.find((route) => route.function === 'claim')?.target;
+    expect(projectedTarget).toBeDefined();
+    expect(projectedTarget).not.toBe('root');
+    expect(forwardedTarget).toBe(projectedTarget);
+    expect(projected.facets[projectedTarget!].bytecode).toBe(forwarded.facets[forwardedTarget!].bytecode);
+  });
+
   it('prioritizes overlapping state access and packs disjoint groups when they fit', () => {
     const bundle = compileStringSplit(SOURCE, { forceSplit: true });
     const groups = bundle.manifest.facets.map((facet) => [...facet.functions].sort());
@@ -106,6 +136,55 @@ describe('large-contract state-local splitting', () => {
     expect(facet.abi.map((fn) => fn.name)).not.toEqual(expect.arrayContaining(['value', 'balances']));
     expect(bundle.manifest.routes.find((route) => route.function === 'value')?.target).toBe('root');
     expect(bundle.manifest.routes.find((route) => route.function === 'balances')?.target).toBe('root');
+  });
+
+  it('keeps cyclic-import getter probes from adding unauthenticated mapping reads to facets', () => {
+    const source = `pragma solidity ^0.8.7;
+      import "./Peer.sol";
+      contract Main {
+        struct Escrow { uint256 amount; }
+        mapping(uint256 => Escrow) escrows;
+        uint256 total;
+        function update(uint256 id, uint256 amount) external {
+          total = escrows[id].amount + amount;
+          require(amount > 0);
+        }
+      }`;
+    const resolver = (path: string): { source: string; id: string } | undefined => {
+      if (path === './Peer.sol') return {
+        source: 'pragma solidity ^0.8.7; import "./Main.sol"; contract Peer { }', id: '/Peer.sol',
+      };
+      if (path === './Main.sol') return { source, id: '/Main.sol' };
+      return undefined;
+    };
+    const bundle = compileStringSplit(source, {
+      solidityImportCompat: true, forceSplit: true, rootFileId: '/Main.sol', importResolver: resolver,
+    });
+    const facet = bundle.facets[bundle.manifest.facets[0].name];
+    expect(facet.abi.map((fn) => fn.name)).not.toContain('escrows');
+    expect(bundle.manifest.routes.find((route) => route.function === 'update')?.target).not.toBe('root');
+  });
+
+  it('binds a detached graph verifier into a split facet route', () => {
+    const bundle = compileStringSplit(`interface IPeer { function ping(int value) external; }
+      contract GraphFacet {
+        int value;
+        function step(address target, int next) public {
+          IPeer(target).ping(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, {
+      solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      messageBusGraphContext: true, optimizeForCompilationSpeed: true,
+      suppressWarnings: true, forceSplit: true,
+    });
+    const facet = bundle.facets[bundle.manifest.facets[0].name];
+    expect(facet.messageBus?.verifierProgram).toBeDefined();
+    expect(facet.messageBus?.route?.inputs?.map((input) => input.name))
+      .toContain('__internal__activeVerifierIndex');
+    // The same source emitted 8,710 bytes when the facet bypassed verifier binding.
+    expect(asmToBytecode(facet.bytecode).length).toBeLessThan(5_000);
   });
 
   it('does not expose a root-owned public view call closure as a facet selector', () => {
@@ -189,6 +268,11 @@ describe('large-contract state-local splitting', () => {
           callChain: ['addX'],
           measured: expect.any(Number),
           limit: 100,
+          overCapacityClosures: expect.arrayContaining([
+            expect.objectContaining({ handlers: ['addX'], measured: expect.any(Number) }),
+            expect.objectContaining({ handlers: ['setX'], measured: expect.any(Number) }),
+            expect.objectContaining({ handlers: ['setY'], measured: expect.any(Number) }),
+          ]),
         }),
       });
       expect((error as Error).message).toContain("Cannot split 'SplitCounter'");
@@ -229,6 +313,143 @@ describe('large-contract state-local splitting', () => {
               writesState: true, externalCalls: false, unknown: false,
             },
           ],
+        }),
+      });
+    }
+  });
+
+  it('classifies bare inherited state effects in split helper cut profiles', () => {
+    const source = `pragma solidity ^0.8.0;
+      contract BareStateBase {
+        int status;
+        function enter() internal { require(status == 0); status = 1; }
+        function resetState() internal { status = 0; }
+        function increment() internal { status = status + 1; }
+      }
+      contract BareStateCuts is BareStateBase {
+        function localOnly() internal { int status = 1; require(status > 0); }
+        function run() public { enter(); increment(); localOnly(); resetState(); require(true); }
+      }`;
+    try {
+      compileStringSplit(source, {
+        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true, suppressWarnings: true,
+      });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'SPLIT_CLOSURE_CAPACITY',
+        context: expect.objectContaining({
+          handlers: ['run'],
+          helperCuts: expect.arrayContaining([
+            expect.objectContaining({ name: 'enter()', readsLocalState: true, writesState: true }),
+            expect.objectContaining({ name: 'increment()', readsLocalState: true, writesState: true }),
+            expect.objectContaining({ name: 'resetState()', readsLocalState: false, writesState: true }),
+            expect.objectContaining({ name: 'localOnly()', readsLocalState: false, writesState: false }),
+          ]),
+        }),
+      });
+    }
+  });
+
+  it('keeps state effects before a later nested local shadow in split cut profiles', () => {
+    const source = `pragma solidity ^0.8.0;
+      contract ShadowedCuts {
+        int status;
+        function setBeforeShadow() internal {
+          status = 1;
+          { int status = 2; require(status > 0); }
+        }
+        function readBeforeShadow() internal view {
+          require(status >= 0);
+          { int status = 2; require(status > 0); }
+        }
+        function run() public {
+          setBeforeShadow();
+          readBeforeShadow();
+          require(true);
+        }
+      }`;
+    try {
+      compileStringSplit(source, {
+        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true, suppressWarnings: true,
+      });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'SPLIT_CLOSURE_CAPACITY',
+        context: expect.objectContaining({
+          handlers: ['run'],
+          helperCuts: expect.arrayContaining([
+            expect.objectContaining({
+              name: 'setBeforeShadow()', readsLocalState: false, writesState: true,
+            }),
+            expect.objectContaining({
+              name: 'readBeforeShadow()', readsLocalState: true, writesState: false,
+            }),
+          ]),
+        }),
+      });
+    }
+  });
+
+  it('reports typed external calls inside internal helper cut profiles', () => {
+    const source = `pragma solidity ^0.8.0;
+      interface IRemote { function value() external returns (int); }
+      contract TypedCuts {
+        IRemote remote;
+        int stored;
+        function fetchStored() internal returns (int) { return remote.value(); }
+        function fetchExplicit(address target) internal returns (int) {
+          return IRemote(target).value();
+        }
+        function run(address target) public {
+          stored = fetchStored() + fetchExplicit(target);
+          require(true);
+        }
+      }`;
+    try {
+      compileStringSplit(source, {
+        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true,
+      });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'SPLIT_CLOSURE_CAPACITY',
+        context: expect.objectContaining({
+          handlers: ['run'],
+          helperCuts: expect.arrayContaining([
+            expect.objectContaining({ name: 'fetchStored()', externalCalls: true }),
+            expect.objectContaining({ name: 'fetchExplicit(address)', externalCalls: true }),
+          ]),
+        }),
+      });
+    }
+  });
+
+  it('reports typed external calls inherited through an internal helper cut', () => {
+    const source = `pragma solidity ^0.8.0;
+      interface IRemote { function value() external returns (int); }
+      contract TransitiveCuts {
+        IRemote remote;
+        int stored;
+        function fetch() internal returns (int) { return remote.value(); }
+        function relay() internal returns (int) { return fetch(); }
+        function run() public { stored = relay(); require(true); }
+      }`;
+    try {
+      compileStringSplit(source, {
+        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true, suppressWarnings: true,
+      });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'SPLIT_CLOSURE_CAPACITY',
+        context: expect.objectContaining({
+          handlers: ['run'],
+          helperCuts: expect.arrayContaining([
+            expect.objectContaining({ name: 'fetch()', externalCalls: true }),
+            expect.objectContaining({ name: 'relay()', externalCalls: true }),
+          ]),
         }),
       });
     }

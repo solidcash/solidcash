@@ -49,7 +49,7 @@ describe('kernel runtime-sized constructed-key initialization', () => {
   });
 
   it('records a names-free pre-admission allocation-write-consumer execution edge without publishing it', () => {
-    const sourceFor = (vectorName: string) => parseCode(`contract Registry() {
+    const sourceFor = (vectorName: string): ReturnType<typeof parseCode> => parseCode(`contract Registry() {
       mapping(int => int) records;
       function apply(int count, int base) public {
         int[] memory ${vectorName} = new int[](count);

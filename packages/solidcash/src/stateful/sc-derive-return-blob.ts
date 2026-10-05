@@ -14,11 +14,13 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import {
   extractEvmReturnCommitment,
+  extractMixedReturnBlob,
   isCanonicalEvmReturnBlob,
   isConstrainedEvmResultVector,
   probeRequireStatement,
 } from './external-return-encoding.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
+import { extractHashedReturnCommitmentAtOutput } from './hashed-return-probe.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   decodeScriptNumber,
@@ -27,10 +29,18 @@ import {
   extractPendingReturnCommitmentAtOutput,
 } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
+import { extractGraphEventExpectations } from './graph-event-expectations.js';
 
 export interface DeriveReturnBlobHost {
   readonly inner: { provider: NetworkProvider; artifact: Artifact };
   lastReturnProbeFailure?: string;
+}
+
+/** A failed trace's missing pin or preservation of its provisional output cannot replace an independent seed. */
+export function failedProbeCannotReplaceTransientSeed(
+  traceFailed: boolean, observedPin: string | undefined, materialized: string | undefined,
+): boolean {
+  return traceFailed && (observedPin === undefined || observedPin === materialized);
 }
 
 export function deriveReturnBlob(
@@ -309,22 +319,25 @@ export function deriveReturnBlob(
     });
   }
   const pending = extractPendingReturnCommitmentAtOutput(trace, returnOutputIndex);
+  const hashed = extractHashedReturnCommitmentAtOutput(trace, returnOutputIndex);
+  if (hashed !== undefined) return hashed;
   const commitment = commitments?.[0] ?? pending;
   return commitment === undefined ? undefined : hexToBin(commitment);
 }
 
 /** @internal Extract a participant's message-bus return commitment from a complete bus transaction. */
 export function messageBusReturnBlobFromTransaction(
-host: DeriveReturnBlobHost,
-builder: TransactionBuilder,
-returnOutputIndex: number,
-inputIndex: number,
-program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
-resultSchema?: {
-  resultTypes: readonly string[];
-  resultTypeGroups: readonly (readonly string[])[];
-  resultEncodings: readonly ExternalResultEncoding[];
-},
+  host: DeriveReturnBlobHost,
+  builder: TransactionBuilder,
+  returnOutputIndex: number,
+  inputIndex: number,
+  program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
+  resultSchema?: {
+    resultTypes: readonly string[];
+    resultTypeGroups: readonly (readonly string[])[];
+    resultEncodings: readonly ExternalResultEncoding[];
+    protectTransientSeedOnFailedProbe?: boolean;
+  },
 ): Uint8Array | undefined {
   const { transaction, sourceOutputs } = program;
   const trace = evaluateProbeTrace(host.inner.provider, { inputIndex, sourceOutputs, transaction });
@@ -339,6 +352,12 @@ resultSchema?: {
   ) === true;
   const structs = host.inner.artifact.structs ?? host.inner.artifact.stateLayout?.structs;
   const enums = host.inner.artifact.enums;
+  // A long return is committed by SHA256(raw) and checked with the compiler's hash-or-raw pin,
+  // not the ordinary EQUALVERIFY pin. Recover its authenticated preimage before a failed probe's
+  // transient-seed guard: a zero-shaped seed must not hide a completed producer return vector.
+  const hashed = extractHashedReturnCommitmentAtOutput(trace, returnOutputIndex);
+  if (hashed !== undefined && (!allEvmResults
+    || isCanonicalEvmReturnBlob(hashed, resultSchema!.resultTypeGroups, structs, enums))) return hashed;
   if (commitment !== undefined && allEvmResults
     && !isCanonicalEvmReturnBlob(hexToBin(commitment), resultSchema.resultTypeGroups, structs, enums)) {
     commitment = undefined;
@@ -362,10 +381,11 @@ resultSchema?: {
       );
       return inner === undefined ? undefined : binToHex(scriptToBytecode([hexToBin(inner)]));
     }
-    // Mixed participant result vectors have independent per-row wire formats. Only the targeted return-output
-    // comparison is strong enough here until the trace selector can validate and split every row by its own
-    // encoding; do not reinterpret a coincidental live stack item using one artifact-wide mode.
-    if (!allCompactResults) return undefined;
+    // Mixed participants publish one compiler-framed vector, but each row uses its own encoding. Validate and
+    // split the whole frame before treating a live stack item as a convergence seed. The final VM still proves it.
+    if (!allCompactResults) return extractMixedReturnBlob(
+      candidateTrace, resultSchema.resultTypeGroups, resultSchema.resultEncodings, structs, enums,
+    );
     return extractPendingReturnCommitment(
       candidateTrace, resultSchema.resultTypes.length, resultSchema.resultTypes,
     );
@@ -378,6 +398,12 @@ resultSchema?: {
   // replace a rediscovered seed with the weaker schema scan; a differing output expectation remains authoritative.
   const schemaFallback = extractSchemaFallback(trace);
   const traceFailed = trace.at(-1)?.error !== undefined;
+  if (resultSchema?.protectTransientSeedOnFailedProbe === true
+    && failedProbeCannotReplaceTransientSeed(traceFailed, commitments?.[0], materializedReturnHex)) {
+    // A failed route's schema-shaped stack word can be a provisional zero rather than the producer's result.
+    // An early preservation pin merely reasserts the provisional output; only a different pin can advance it.
+    return undefined;
+  }
   if (schemaFallback !== undefined
     && (commitment === undefined || (traceFailed && commitment === materializedReturnHex))) {
     commitment = schemaFallback;
@@ -429,19 +455,19 @@ resultSchema?: {
       actual: transaction.outputs[returnOutputIndex]?.token?.nft?.commitment === undefined
         ? undefined : binToHex(transaction.outputs[returnOutputIndex].token!.nft!.commitment),
       selected: commitments?.[0], failure: trace.at(-1) && {
-          ip: trace.at(-1)!.ip,
-          opcode: trace.at(-1)!.instructions[trace.at(-1)!.ip]?.opcode,
-          instructionCount: trace.at(-1)!.instructions.length,
-          stack: trace.at(-1)!.stack.slice(-6).map(binToHex),
-          alternateStack: trace.at(-1)!.alternateStack.slice(-8).map(binToHex),
-          matchingParams,
-          instructions: trace.at(-1)!.instructions.slice(
-            Math.max(0, trace.at(-1)!.ip - 10), trace.at(-1)!.ip + 2,
-          ).map((instruction, offset) => ({
-            ip: Math.max(0, trace.at(-1)!.ip - 10) + offset,
-            opcode: instruction.opcode,
-            ...('data' in instruction && { data: binToHex(instruction.data) }),
-          })),
+        ip: trace.at(-1)!.ip,
+        opcode: trace.at(-1)!.instructions[trace.at(-1)!.ip]?.opcode,
+        instructionCount: trace.at(-1)!.instructions.length,
+        stack: trace.at(-1)!.stack.slice(-6).map(binToHex),
+        alternateStack: trace.at(-1)!.alternateStack.slice(-8).map(binToHex),
+        matchingParams,
+        instructions: trace.at(-1)!.instructions.slice(
+          Math.max(0, trace.at(-1)!.ip - 10), trace.at(-1)!.ip + 2,
+        ).map((instruction, offset) => ({
+          ip: Math.max(0, trace.at(-1)!.ip - 10) + offset,
+          opcode: instruction.opcode,
+          ...('data' in instruction && { data: binToHex(instruction.data) }),
+        })),
       }, observations,
     }));
   }
@@ -555,11 +581,11 @@ resultSchema?: {
  * suppresses verification, and the ordinary final preflight remains the authority for acceptance.
  */
 export function messageBusEventCommitmentsFromTransaction(
-host: DeriveReturnBlobHost,
-builder: TransactionBuilder,
-eventOutputIndices: readonly number[],
-inputIndex: number,
-program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
+  host: DeriveReturnBlobHost,
+  builder: TransactionBuilder,
+  eventOutputIndices: readonly number[],
+  inputIndex: number,
+  program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
 ): ReadonlyMap<number, { commitment: string; lockingBytecode?: string }> {
   if (eventOutputIndices.length === 0) return new Map();
   const { transaction, sourceOutputs } = program;
@@ -585,7 +611,7 @@ program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLi
       if (!requested.has(outputIndex)) continue;
       found.set(outputIndex, binToHex(state.stack[state.stack.length - 2]));
     }
-    return new Map([...found].map(([outputIndex, commitment]) => {
+    const expectations = new Map([...found].map(([outputIndex, commitment]) => {
       const lockingBytecode = extractVerifiedValuesFromTrace(
         trace, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
       )[0];
@@ -594,6 +620,10 @@ program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLi
         ...(lockingBytecode !== undefined && { lockingBytecode: binToHex(lockingBytecode) }),
       }];
     }));
+    for (const [outputIndex, expectation] of extractGraphEventExpectations(trace, requested, transaction.outputs)) {
+      expectations.set(outputIndex, expectation);
+    }
+    return expectations;
   };
   const trace = evaluateProbeTrace(host.inner.provider, { inputIndex, sourceOutputs, transaction });
   const found = extract(trace);

@@ -10,6 +10,8 @@ import {
   buildKernelExecutionContext,
   createExecutionContextLifecycle,
   executionContextJournalKey,
+  planEffectsUnderLifecycle,
+  registerExecutionContextOnSettlement,
 } from '../../src/message-bus/execution-context.js';
 import type { PublishedPathEffectSchedule } from '../../src/message-bus/path-effect-schedule.js';
 import {
@@ -25,7 +27,8 @@ const KERNEL = {
 } as const;
 
 /**
- * path-effect activation/settle-time ExecutionContext settle-time ExecutionContext lifecycle: register → assert → settle (freeze).
+ * Path-effect activation and settle-time ExecutionContext lifecycle:
+ * register → assert → settle (freeze).
  */
 describe('path-effect activation/settle-time ExecutionContext ExecutionContext settle-time lifecycle', () => {
   const storeSource = `contract Store() {
@@ -201,6 +204,41 @@ describe('path-effect activation/settle-time ExecutionContext ExecutionContext s
     ]);
     expect(lifecycle.journal().filter((event) => event.kind === 'register')
       .map((event) => event.journalKey)).toEqual([leftKey, rightKey]);
+  });
+
+  it('keeps repeated handler rows distinct and refreshes only the rematerialized row', () => {
+    const lifecycle = createExecutionContextLifecycle();
+    const params = {
+      handlerId: 'emitMaybe',
+      participantIndex: 3,
+      inputs: [{ name: 'emitIt', type: 'bool' }],
+      pathEffectSchedule: {
+        version: 1,
+        effects: [{
+          ordinal: 1_000_000,
+          kind: 'event',
+          resultType: 'bytes',
+          activation: { kind: 'handlerInput', inputIndex: 0 },
+        }],
+      } as PublishedPathEffectSchedule,
+    };
+    registerExecutionContextOnSettlement(lifecycle, { ...params, rowIndex: 0, args: [true] });
+    registerExecutionContextOnSettlement(lifecycle, { ...params, rowIndex: 1, args: [false] });
+    expect(planEffectsUnderLifecycle(lifecycle).map((plan) => ({
+      key: plan.journalKey, events: plan.activeEvents,
+    }))).toEqual([
+      { key: 's0:p3:r0:emitMaybe', events: [1_000_000] },
+      { key: 's0:p3:r1:emitMaybe', events: [] },
+    ]);
+    expect(lifecycle.get('emitMaybe')).toBeUndefined();
+    expect(lifecycle.assertAll().ok).toBe(true);
+
+    registerExecutionContextOnSettlement(lifecycle, { ...params, rowIndex: 0, args: [false] });
+    expect(lifecycle.getPhase()).toBe('bound');
+    expect(planEffectsUnderLifecycle(lifecycle).map((plan) => plan.activeEvents)).toEqual([[], []]);
+    expect(lifecycle.list()).toHaveLength(2);
+    assertAndSettleExecutionContexts(lifecycle);
+    expect(lifecycle.getPhase()).toBe('settled');
   });
 
   it('nested-compose scopes stamp nestedScopeId and journal push/pop', () => {

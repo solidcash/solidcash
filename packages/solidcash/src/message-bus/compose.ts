@@ -1,6 +1,5 @@
 import type { TransactionDetails } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import {
   clearComposeKernelAuthorityResults,
 } from './compose-kernel-authority.js';
@@ -15,7 +14,8 @@ export {
   provisionalInvocationResult,
   evmInvocationResultLength,
   minimumActualSizeForComputedValueChunkClaims,
-  stickyKernelLeftoverScalarWrites,
+  mergeComputedValueChunkSpanClaims,
+  physicalVmapBatchTrailingCount,
 } from './compose-recipes.js';
 export type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
 
@@ -31,7 +31,7 @@ export {
   applySemanticClaimObservationPass,
 } from './compose-prepared-invocation.js';
 import {
-  markTransientConvergenceResultSeed,
+  copyTransientConvergenceResultSeed,
   type ComposeAtomicMessageBusOptions,
   type PreparedAtomicMessageBusCall,
 } from './compose-prepared-invocation.js';
@@ -55,6 +55,7 @@ export {
 import {
   propagateResultDependentArguments as propagateComposeResultDependentArguments,
 } from './compose-result-propagation.js';
+import { propagateResultDependentCallTopology } from './compose-result-topology.js';
 import {
   runComposeSemanticClaimLoop,
 } from './compose-semantic-claim-loop.js';
@@ -118,27 +119,31 @@ export class AtomicMessageBusComposition {
       categories,
       logicalIdentities,
       returning,
-      seededResults,
       preparedResults,
       provisionalResults,
     } = await resolveComposeValidatedIndexes(
       plan, descriptors, descriptorWitnesses, rootCaller, upgradeOutputs, provider, this.options,
     );
-    const propagateResultDependentArguments = (
+    const propagateResultDependentArguments = async (
       results: Readonly<Record<number, string>>,
-    ): { propagated: boolean; calls: PreparedAtomicMessageBusCall[] } => (
-      propagateComposeResultDependentArguments(
+    ): Promise<{ propagated: boolean; calls: PreparedAtomicMessageBusCall[] }> => {
+      const argumentsResult = propagateComposeResultDependentArguments(
         { plan, descriptors, returning },
         results,
-      )
-    );
+      );
+      if (!this.options.requirePreparedIdentity) return argumentsResult;
+      const topology = await propagateResultDependentCallTopology(
+        { plan, descriptors, returning, rootCaller, stateOf }, argumentsResult.calls, results,
+      );
+      return { propagated: argumentsResult.propagated || topology.propagated, calls: topology.calls };
+    };
     // A graph-discovery seed is already semantically available on the first atomic pass. Rebuild expressions
     // which consume it before assembling the call manifest; waiting for the VM to discover a *different* result
     // leaves an unchanged seed permanently paired with the stale pre-discovery argument bytes.
     // Only explicit/precomputed results are available before the first VM discovery pass. Synthetic empty/true
     // seeds exist solely to let the route advance; feeding them into sibling arguments changes source semantics
     // before any covenant has authenticated the value.
-    const initialPropagation = propagateResultDependentArguments(seededResults);
+    const initialPropagation = await propagateResultDependentArguments(preparedResults);
     if (initialPropagation.propagated) {
       if (this.resultPropagationDepth >= descriptors.length) {
         throw new Error('messageBus: authenticated result arguments did not converge');
@@ -149,7 +154,7 @@ export class AtomicMessageBusComposition {
         recursiveCompositionToken,
       )._build();
     }
-    const settlement = createComposeSettlementContext({
+    const settlement = await createComposeSettlementContext({
       options: this.options,
       descriptors,
       descriptorWitnesses,
@@ -269,18 +274,16 @@ const snapshotCompositionValue = <T>(value: T): T => {
 };
 
 const snapshotPreparedCall = (
-  call: PreparedAtomicMessageBusCall, sdkResultSeed = false,
+  call: PreparedAtomicMessageBusCall, preserveSdkResultSeed = false,
 ): PreparedAtomicMessageBusCall => {
   const snapshot = Object.fromEntries(Object.entries(call).map(([key, value]) =>
     [key, snapshotCompositionValue(value)])) as PreparedAtomicMessageBusCall;
-  if (sdkResultSeed && snapshot.provisionalResultCommitment !== undefined) {
-    markTransientConvergenceResultSeed(snapshot);
-  }
+  if (preserveSdkResultSeed) copyTransientConvergenceResultSeed(call, snapshot);
   return Object.freeze(snapshot);
 };
 
 const snapshotExternalCompositionOptions = (
-  options: ComposeAtomicMessageBusOptions, sdkResultSeeds = false,
+  options: ComposeAtomicMessageBusOptions, preserveSdkResultSeeds = false,
 ): ComposeAtomicMessageBusOptions => {
   const { calls, preparedCalls, ...rest } = options;
   if (!calls && !preparedCalls) {
@@ -291,14 +294,12 @@ const snapshotExternalCompositionOptions = (
   return Object.freeze({
     ...snapshotCompositionValue(rest),
     requirePreparedIdentity: preparedCalls !== undefined,
-    preparedCalls: Object.freeze(snapshotCalls.map((call) => snapshotPreparedCall(call, sdkResultSeeds))),
+    preparedCalls: Object.freeze(snapshotCalls.map((call) =>
+      snapshotPreparedCall(call, preserveSdkResultSeeds))),
   });
 };
 
-/**
- * @internal Compose the graph the SDK discovered for one stateful send. Each result it carries is the SDK's own
- * isolated observation, a convergence seed rather than a caller-prepared commitment.
- */
+/** @internal Preserve discovery-only result seeds across the SDK's own atomic-promotion boundary. */
 export function composeDiscoveredGraph(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
   clearComposeKernelAuthorityResults();
   return new AtomicMessageBusComposition(

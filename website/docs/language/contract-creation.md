@@ -69,6 +69,57 @@ A deploy inside an `if` branch, a loop, or a bare block compiles: the compiler v
 the site and, where needed, threads a runtime deploy counter. Multiple deploy sites for the same child
 contract in one function are supported.
 
+The deploy sites in one function must use one child contract shape so their genesis groups have a derivable
+stride. A heterogeneous multi-site function fails closed with `ConditionalDeployError`. A conditional
+`new Child{value: amount}(...)` is supported; when a loop or multi-site value-deploy shape cannot be represented
+by the published layout, compilation likewise fails instead of emitting a partially checked covenant.
+
+### Deploy and configure in one transaction
+
+A newly created child is an output, so it cannot also be spent as an input in the same BCH transaction. SolidCash
+supports the common Solidity `new C(); c.initialize(...)` shape by **folding** a supported initializer into the
+child's genesis commitment:
+
+```solidity
+contract Child() {
+    int supply;
+    address owner;
+
+    function initialize(int amount, address initialOwner) external {
+        int doubled = amount * 2;
+        this.supply = doubled;
+        this.owner = initialOwner;
+    }
+}
+
+contract Factory(pubkey admin) {
+    int created;
+
+    function create(sig authorization, int amount, address owner) public {
+        require(checkSig(authorization, admin));
+        Child child = new Child();
+        child.initialize(amount, owner);
+        this.created += 1;
+    }
+}
+```
+
+The child is born directly in its post-`initialize` state. No child co-spend or intermediate default-state output
+exists. Straight-line local declarations, local reassignment, scalar state assignment, pure operators, casts,
+ternaries, array indexing, default/prior field reads, and an optional single return value are foldable. Multiple
+folded calls to the same child are applied in source order. The SDK derives the covenant-computed child commitment
+while building `deployFrom()`.
+
+Control flow, mapping writes, ordinary function calls, external calls, events, transaction/block introspection,
+and nested deployment are not foldable. The compiler fails with `DeployThenCallError`; deploy first and call the
+child in a later transaction.
+
+:::danger
+`require(...)` statements inside a folded child initializer are not executed. Put every authorization and input
+guard in the factory before `new`/the folded call, as in the example. The initializer's assignments are still
+verified by the factory covenant.
+:::
+
 ### Reading a child's bytecode
 
 `type(C).creationCode` returns the child contract's compiled redeem script, which lets a factory build a
@@ -110,6 +161,9 @@ contract TokenV1(pubkey admin) {
 ```
 
 The state layout may be **extended** in the new version by appending fields; existing values are preserved.
+The category remains stable while the physical contract address changes. See
+[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for the layout, funding, identity, and SDK
+rules.
 
 :::caution
 Whoever can satisfy the `upgrade` function controls the contract's future code. This is the same trust surface
@@ -137,13 +191,17 @@ contract Killable(pubkey admin) {
 }
 ```
 
-The expression form implies the modifier on the enclosing function.
+The expression form implies the modifier on the enclosing function. It also covenants the transaction to exactly
+one output at `to` and a fee below 2,000 satoshis. The modifier-only form has no equivalent recipient pin.
 
 :::caution
-Selfdestruct is irreversible: all state, entries and token containers are permanently lost. A `selfdestruct`
-function with no `require()` is a hard compile error, because it skips covenant codegen and would otherwise let
-anyone trigger the destruction.
+Selfdestruct is irreversible. State UTXOs are consumed; CashTokens are not automatically transferred and can be
+stranded or burned if the contract does not sweep them first. A `selfdestruct` function with no `require()` is a
+hard compile error, and caller-controlled destinations require recognizable non-caller-controlled authorization.
 :::
+
+Destination pins, the compiler's authorization heuristic, the single-transaction limit, event cleanup, and the
+SDK driver are covered in [Contract Destruction](./selfdestruct.md).
 
 ## Splitting and merging
 
@@ -197,9 +255,14 @@ For eligible state-mutating entry points, the compiler builds a **second artifac
 calling proxy's state and emits it as `artifact.delegateArtifact`. Reach it from the SDK via
 `contract.asDelegate()` or the proxy helpers.
 
+The recommended `upgrades.deployProxy()` helper deploys a pinned implementation and proxy together. Its built-in
+proxy does not expose a mutable implementation pointer; see
+[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) before choosing or designing a custom proxy.
+
 :::note
-`delegate` is not a source-level modifier. Like `deploy`, it is inferred. The inferred build is byte-identical
-to what an explicit modifier produced before it was removed.
+New code does not need a `delegate` modifier: delegate mode is inferred and published as a second artifact.
+The parser still accepts the legacy explicit modifier during migration, but ordinary `public`/`external`
+implementation functions are the supported forward-looking form.
 :::
 
 :::caution
@@ -233,4 +296,6 @@ All lifecycle modifiers require the contract to have state variables. Not all ca
 - [Function Modifiers](/docs/language/modifiers) - the full modifier reference
 - [Stateful Contracts](/docs/language/stateful-contracts) - the state UTXO model
 - [Deployment](/docs/guides/deployment) - deploying from the SDK
-- [Libraries & Using-For](/docs/language/libraries#deployed-libraries) - deployed delegate libraries
+- [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) - native migration and proxy security
+- [Contract Destruction](/docs/language/selfdestruct) - destination, fee, authorization, and batching rules
+- [Libraries & Using-For](/docs/language/libraries#deployed-delegate-libraries) - deployed delegate libraries

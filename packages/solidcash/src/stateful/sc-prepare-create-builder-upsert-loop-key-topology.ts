@@ -4,7 +4,6 @@
  * keyBinsFor/slotForKey, and counter-ordered keysArr rewrite.
  */
 
-import { binToHex } from '@bitauth/libauth';
 import type {
   AbiFunction,
   ExternalCallExpression,
@@ -74,10 +73,10 @@ export async function prepareCreateBuilderUpsertLoopKeyTopology(
 ): Promise<PrepareCreateBuilderUpsertLoopKeyTopologyResult> {
   let { keysArr, loopPredicateState } = params;
   const {
-    info, loopAbiFunction, entryArtifact, entryArgs, loopArgs, conditionArgs,
+    info, loopAbiFunction, entryArtifact, conditionArgs,
     visibleInputs, executionSelfAddress, keyExpressions, fixedBins, keyTypes,
-    encKey, fixedKeyIndices, varyingKeyIndexSet, collection, valueTraceDomain,
-    selectedSourceValues, sourceOccurrences, argOf, replaceLoopArgument,
+    encKey, varyingKeyIndexSet, collection, valueTraceDomain,
+    selectedSourceValues, replaceLoopArgument,
   } = params;
 
   // Bare counter keys (`m[i]`) deliberately omit `varyingKeyExpressions`; only derived/composite recipes need
@@ -274,7 +273,7 @@ export async function prepareCreateBuilderUpsertLoopKeyTopology(
       ? encKey(key, keyType)
       : fixedBins[fixedIndex++]);
   };
-  const slotForKey = (key: unknown): Uint8Array => keyToSlotMulti(keyBinsFor(key));
+  const slotForKey = (key: unknown): Uint8Array => keyToSlotMulti(keyBinsFor(key), collection);
   if (Array.isArray(keysArr) && info.varyingArrayParam.startsWith(VMAP_COUNTER_PERM_PREFIX)) {
     keysArr = [...keysArr].sort((left: any, right: any) => {
       const leftSlot = bytesToSlotValue(slotForKey(left));

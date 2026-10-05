@@ -7,13 +7,13 @@ import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import { createDataNftUnlocker } from './covenant-helpers.js';
+import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
-import { selectVisibleCallArguments } from './route-expression-key.js';
+import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
+import { resolveLogicalIdentity } from './logical-identity.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import { groupLayoutTrailingBase } from './writer-event-delegate-layout.js';
-import { logicalExternalCallFunction } from './writer-group-selection.js';
 
 export function selectorParamSlot(
   paramName: string,
@@ -38,6 +38,21 @@ export function selectorParamSlot(
 
 export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;
+  readonly physicalRootLockingBytecode: Uint8Array;
+  readonly rootLogicalAddress?: string;
+  readonly pendingAnchorFills: Array<{
+    group: {
+      masterUtxo?: unknown;
+      refreshInternalArgs?: (updates: Record<string, any>) => void;
+      externalContract: { inner: { unlock: Record<string, ((...args: never[]) => unknown) | undefined> } };
+    };
+    functionName: string;
+    encodedArgs: any[];
+    positions: Array<{
+      argIndex: number; name: string; band?: number; categoryId?: string;
+      proxyRoute: boolean; required?: boolean;
+    }>;
+  }>;
   selectorParamSlot: typeof selectorParamSlot;
   isComputedBlockhashKey(readKey: string): boolean;
   noteBhLocktime(locktime: number): void;
@@ -90,6 +105,12 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         group.externalContract.inner, masterInputIndex, group.categoryId,
       ),
     }));
+    group.ordinaryDynamicChunkInputs = group.ordinaryDynamicChunkInputs?.map((chunk) => ({
+      ...chunk,
+      utxo: { ...chunk.utxo, unlocker: createDynamicChunkUnlocker(
+        group.externalContract.inner, masterInputIndex, group.categoryId, chunk.name, chunk.type,
+      ) },
+    }));
     // A full block is what gets serialized, so its dataNft slots must carry the re-created unlockers too.
     if (group.blockInputs && group.blockLayout && group.returnEventInBlock === true) {
       let dataIdx = 0;
@@ -106,13 +127,27 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     const bAbiFunc = group.compilerRoute?.abiFunction
       ?? bAbiAll.find((f) => f.name === group.functionName);
     const bAbiInputs = bAbiFunc?.inputs ?? [];
-    const logicalAbiInputs = logicalExternalCallFunction(group)?.inputs ?? bAbiInputs;
-    const routeArgs = selectVisibleCallArguments(
-      logicalAbiInputs,
-      group.logicalFunctionArgs,
-      group.compilerRoute ? group.compilerRoute.args : group.functionArgs,
-    );
+    const routeArgs = argumentsForPhysicalAbiFrame({
+      abiFunction: bAbiFunc,
+      physicalFunctionArgs: group.functionArgs,
+      logicalFunctionName: group.logicalFunctionName ?? group.functionName,
+      logicalFunctionArgs: group.logicalFunctionArgs,
+      compilerRoute: group.compilerRoute,
+    });
     const userArgCount = routeArgs.length;
+    const callerLock = group.callerIdentity?.lockingBytecode.toLowerCase();
+    const rootPhysicalLock = binToHex(host.physicalRootLockingBytecode).toLowerCase();
+    const needsRootCallerAnchor = meta.parentGroupIndex < 0
+      && callerLock !== undefined && callerLock !== rootPhysicalLock
+      && bAbiInputs.some((input) => input.name === '__internal__msgSenderAnchorIdx');
+    if (needsRootCallerAnchor) {
+      if (!host.rootLogicalAddress) throw new Error('A logical nested caller requires its CREATE address.');
+      const identity = await resolveLogicalIdentity(host.provider, host.rootLogicalAddress);
+      if (identity.categoryId.toLowerCase() !== group.callerIdentity?.categoryId.toLowerCase()
+        || binToHex(identity.unlocker.generateLockingBytecode()).toLowerCase() !== callerLock) {
+        throw new Error('Nested caller CREATE identity does not match its authenticated call subject.');
+      }
+    }
 
     // Compiler routes may interleave hidden inputs with published witnesses (for example
     // __internal__msgSenderCategory immediately after batchBlob). Treating all visible args as an ABI prefix
@@ -159,13 +194,33 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         // Where this function's external call groups start in the input sequence: immediately after B's own
         // co-spent block, which is blockInputs wide when a full block was assembled (X13).
         const thisGroupEnd = currentInputBase
-          + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length);
+          + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
+          + (group.ordinaryDynamicChunkInputs?.length ?? 0);
         bFinalArgs.push(BigInt(thisGroupEnd));
       } else if (paramName.startsWith('__internal__extcallAnchorIdx')) {
         // Batch-route callees address their own callees physically; -1 selects the direct identity proof.
         bFinalArgs.push(-1n);
       } else if (paramName === '__internal__msgSenderCategory') {
         bFinalArgs.push(hexToBin(meta.callerCategoryId).reverse());
+      } else if (paramName === '__internal__msgSenderAnchorIdx') {
+        // A logical root caller is authenticated by its co-spent CREATE identity. Its absolute
+        // coordinate is filled after the builder assembles the input bands. Physical callers
+        // continue to use the directly authenticated master input.
+        bFinalArgs.push(-1n);
+        if (needsRootCallerAnchor) {
+          host.pendingAnchorFills.push({
+            group,
+            functionName: group.functionName,
+            encodedArgs: bFinalArgs,
+            positions: [{
+              argIndex: bFinalArgs.length - 1,
+              name: paramName,
+              categoryId: group.callerIdentity!.categoryId,
+              proxyRoute: false,
+              required: true,
+            }],
+          });
+        }
       } else if (paramName === '__internal__blockhashInputIndex') {
         const firstOracleOffset = group.blockLayout?.slots.find(
           (slot) => slot.kind === 'blockhashOracle',
@@ -183,9 +238,13 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         // Composed computed values are relocated after the complete participant layout is materialized.
         bFinalArgs.push(-1n);
       } else if (paramName === '__internal__dynamicChunkInputBase') {
-        // The covenant takes any non-negative value as an absolute coordinate, so the generic zero default names
-        // the transaction's first output. The negative sentinel selects the coordinate right after the callee's
-        // own block.
+        // Old chunks follow this callee's fixed block. With none, the negative sentinel makes the covenant
+        // reconstruct its output base rather than treating input zero as an output coordinate.
+        bFinalArgs.push(group.ordinaryDynamicChunkInputs?.length
+          ? BigInt(masterInputIndex + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length))
+          : -1n);
+      } else if (paramName === '__internal__dynamicChunkOutputBase') {
+        // A nested route's final output coordinate is resolved by its physical layout authority.
         bFinalArgs.push(-1n);
       } else if (paramName.startsWith('__internal__externalReturnOutputIdx')) {
         // Find child groups with return values, in order
@@ -210,9 +269,9 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         const call = bAbiFunc?.externalCalls?.[slotIdx];
         const childGroup = children
           .map((idx) => externalCallUtxoGroups[idx])
-          .find((group) => group.functionName === call?.functionName
-            || group.logicalFunctionName === call?.functionName
-            || group.functionName === call?.rawFunctionName)
+          .find((candidateGroup) => candidateGroup.functionName === call?.functionName
+            || candidateGroup.logicalFunctionName === call?.functionName
+            || candidateGroup.functionName === call?.rawFunctionName)
           ?? (slotIdx < children.length ? externalCallUtxoGroups[children[slotIdx]] : undefined);
         if (childGroup) {
           const cAbi = childGroup.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[];
@@ -378,7 +437,8 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
 
     // Advance to next group. A full block occupies blockInputs.length slots (its output-only slots each
     // carry a paired funder), which is what the builder's input flattening emits.
-    currentInputBase += group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length;
+    currentInputBase += (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
+      + (group.ordinaryDynamicChunkInputs?.length ?? 0);
   }
   timing('nested-bases-complete');
   return { currentInputBase, groupMasterIndices };

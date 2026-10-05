@@ -5,7 +5,7 @@ import {
   Contract, StatefulContract, messageBus, getContractFactory, upgrades, Signer,
 } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
@@ -19,8 +19,8 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-const OWNER_CALLER_IDENTITY = {
-  version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0,
+const PUBLIC_CALLER_IDENTITY = {
+  version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff,
 } as const;
 
 const vmAccepts = (builder: TransactionBuilder): boolean => {
@@ -78,7 +78,7 @@ const deployCallee = async (
 };
 
 describe('kernel callsite caller identity under proxy / own-impl compose', () => {
-  it('proxy: nested callee sees msg.sender equal to the proxy participant lock', async () => {
+  it('proxy: nested callee sees msg.sender equal to the authenticated public proxy identity', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = await fundSigner(provider, 0x4d);
     const { callee } = await deployCallee(provider);
@@ -103,7 +103,7 @@ describe('kernel callsite caller identity under proxy / own-impl compose', () =>
       .toMatchObject({ eligible: true });
     const checkCall = delegate.abi.find((entry) => entry.name === 'fire')
       ?.externalCalls?.find((call) => call.functionName === 'check');
-    expect(checkCall?.callerIdentity).toEqual(OWNER_CALLER_IDENTITY);
+    expect(checkCall?.callerIdentity).toEqual(PUBLIC_CALLER_IDENTITY);
     expect(checkCall?.callsiteId).toBeDefined();
 
     const deployed = await upgrades.deployProxy(
@@ -112,8 +112,9 @@ describe('kernel callsite caller identity under proxy / own-impl compose', () =>
     );
     deployed.implementation._registerResolvedExternal('ICallerIdentityNestedCallee', callee);
 
-    const proxyLock = hexToBin(deployed.proxy.inner.lockingBytecode);
+    const proxyLock = addressToLockScript(await deployed.getAddress());
     const executorLock = hexToBin(deployed.implementation.inner.lockingBytecode);
+    expect(proxyLock).not.toEqual(hexToBin(deployed.proxy.inner.lockingBytecode));
     expect(proxyLock).not.toEqual(executorLock);
 
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
@@ -142,7 +143,7 @@ describe('kernel callsite caller identity under proxy / own-impl compose', () =>
     expect(await (deployed as any).counter()).toBe(1n);
   }, 300_000);
 
-  it('own-impl delegate: nested callee sees owner lock, not the executor; foreign stays refused', async () => {
+  it('own-impl delegate: nested callee sees public identity, not the executor; foreign stays refused', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = await fundSigner(provider, 0x4e);
     const { callee } = await deployCallee(provider);
@@ -168,8 +169,8 @@ describe('kernel callsite caller identity under proxy / own-impl compose', () =>
       .toMatchObject({ eligible: true });
     const checkCall = implArtifact.abi.find((entry) => entry.name === 'fire')
       ?.externalCalls?.find((call) => call.functionName === 'check');
-    // Compiler-published owner@0 — do not infer identity from executor geometry.
-    expect(checkCall?.callerIdentity).toEqual(OWNER_CALLER_IDENTITY);
+    // The compiler publishes the active caller policy; the SCID anchor authenticates its public identity.
+    expect(checkCall?.callerIdentity).toEqual(PUBLIC_CALLER_IDENTITY);
     expect(checkCall?.callsiteId).toBeDefined();
 
     const foreign = compileString(`pragma solidcash >=0.8.0;
@@ -190,8 +191,9 @@ describe('kernel callsite caller identity under proxy / own-impl compose', () =>
     );
     deployed.implementation._registerResolvedExternal('ICallerIdentityNestedCallee', callee);
 
-    const ownerLock = hexToBin(deployed.proxy.inner.lockingBytecode);
+    const ownerLock = addressToLockScript(await deployed.getAddress());
     const executorLock = hexToBin(deployed.implementation.inner.lockingBytecode);
+    expect(ownerLock).not.toEqual(hexToBin(deployed.proxy.inner.lockingBytecode));
     expect(ownerLock).not.toEqual(executorLock);
 
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
@@ -205,7 +207,7 @@ describe('kernel callsite caller identity under proxy / own-impl compose', () =>
       }, {
         contract: callee,
         functionName: 'check',
-        // Documented owner identity — never the foreign/own executor lock.
+        // Authenticated public proxy identity — never the foreign/own executor lock.
         args: [ownerLock],
         callsiteId: checkCall!.callsiteId!,
       }],

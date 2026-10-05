@@ -64,7 +64,8 @@ describe('loop-carried delta scalar-state event recurrences', () => {
     expect(receipt.events?.map((event) => event.args.value)).toEqual([0n, 2n, 2n, 7n, 7n, 15n]);
 
     const builder = await contract.accumulate(6n, 2n, 3n, alicePub, signature).build();
-    const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
+    // Fund the large forged-event transaction past relay fees so rejection proves the script covenant.
+    const { utxo, unlocker } = await createFeeFunder(provider, 100_000n);
     builder.addInput(utxo, unlocker);
     const eventOutput = builder.outputs.find((output) => output.token?.nft?.capability === 'none');
     expect(eventOutput).toBeDefined();

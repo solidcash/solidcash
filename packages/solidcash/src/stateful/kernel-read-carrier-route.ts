@@ -33,6 +33,13 @@ interface AuthenticatedKernelReadCarrierRouteSnapshot {
 }
 
 const authenticatedKernelReadCarrierRoutes = new WeakMap<object, AuthenticatedKernelReadCarrierRouteSnapshot>();
+// Runtime-selected dynamic metadata is overlaid on an artifact ABI handler. Keep its source identity out of
+// caller-editable route metadata so authentication can distinguish that SDK-created overlay from a forged row.
+const kernelCarrierHandlerSources = new WeakMap<AbiFunction, AbiFunction>();
+
+export function bindKernelCarrierHandlerOverlay(overlay: AbiFunction, source: AbiFunction): void {
+  if (overlay !== source) kernelCarrierHandlerSources.set(overlay, source);
+}
 
 /**
  * Bind physical journal ownership metadata to the authenticated route snapshot. Artifact JSON is not an
@@ -93,7 +100,8 @@ export function canonicalKernelCarrierEnvelopeRows(
     const handler = artifact.abi.find((candidate) => candidate.selector?.toLowerCase() === selector);
     const published = capability.handlers.find((candidate) => candidate.selector.toLowerCase() === selector);
     const row = rows[rowIndex];
-    if (!handler || !published?.eligible || row.handler !== handler
+    if (!handler || !published?.eligible
+      || (row.handler !== handler && kernelCarrierHandlerSources.get(row.handler) !== handler)
       || row.handler.selector?.toLowerCase() !== selector) {
       throw new Error('Compiler internal-read-carrier envelope has no exact compiler-authored row metadata.');
     }

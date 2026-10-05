@@ -47,7 +47,7 @@ function withdraw(int requested, int available) {
 
 Recompile the contract after adding a log statement. Logging information is stored in the artifact and the SDK prints it during local debug evaluation. A log statement emits no Bitcoin Script instructions, does not increase the deployed contract size, and has no effect during regular network execution.
 
-You can assert logged output in Vitest or Jest with the [`toLog` matcher](/docs/sdk/test-matchers#console-log-matcher):
+You can assert logged output in Vitest with the [`toLog` matcher](/docs/sdk/test-matchers#console-log-matcher):
 
 ```ts
 await expect(transaction).toLog(/requested: 10 available: 20/);

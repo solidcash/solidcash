@@ -52,8 +52,8 @@ UTXOs) and **collections** (sparse keyed, one entry NFT per key or element).
 | `string`, unbounded `bytes` | Dynamic storage: a length header plus chunk UTXOs | Grows and shrinks at runtime |
 | `T[]` (unbounded, chunk-packable element) | Dynamic storage: chunk-packed | Reuses the string/bytes machinery |
 | `T[N]` (bounded array) | Collection: one entry NFT per element | Override with `packed` for a single dense field |
-| `T[][]` (nested array) | Collection | |
-| `struct` | Chunk-packed (fixed-width inline, variable-width framed) | A single dense value, not sparse |
+| `T[][]` (nested array with supported leaves) | Dynamic storage: chunk-packed | Recursively framed as one dense outer value |
+| `struct` | Data-NFT field, or recursively flattened | A struct with mapping/dynamic-array fields is flattened so those fields can use their own backends |
 | `mapping(K => V)` | Collection: one entry NFT per key | |
 
 ## The location modifiers
@@ -168,7 +168,7 @@ For a truly bytecode-embedded constant, use a contract constructor argument or `
 
 | EVM | SolidCash |
 | --- | --- |
-| Not a location keyword. Solidity auto-packs small state variables into 32-byte slots. | An explicit state-layout choice: store a bounded array or struct as a single dense blob field in the data NFT, instead of the default sparse collection of one entry NFT per element. |
+| Not a location keyword. Solidity auto-packs small state variables into 32-byte slots. | An explicit array-layout choice: store an array as a single dense blob field in a data NFT instead of using chunk or entry NFTs. |
 
 ```solidity
 int[] packed public scores;
@@ -185,10 +185,11 @@ cannot be packed.
 - Writable shorthand for a deep collection entry? **`T storage p = this.m[k];`**
 - Write-once state? **`immutable`**. Compile-time constant with zero state cost? **`constant`**.
 - Scratch value that resets each spend (e.g. a ported re-entrancy guard)? **`transient`**.
-- Bounded array stored as one blob rather than per-element UTXOs? **`packed`**.
+- Small fixed-width array stored as one blob rather than chunk or per-index UTXOs? **`packed`**.
 
 ## See also
 
 - [Function Modifiers](/docs/language/modifiers) - visibility, mutability and covenant-control modifiers
 - [Stateful Contracts](/docs/language/stateful-contracts) - the state UTXO model in depth
+- [Arrays](/docs/language/arrays) - local operations and every persistent array backend
 - [Platform Differences](/docs/basics/platform-differences) - why there is no storage slot space

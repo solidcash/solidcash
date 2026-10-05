@@ -11,7 +11,6 @@ import type {
   ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
-import type { ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 
 export interface EntryNftInfo {
   slotIndex: number;
@@ -221,6 +220,8 @@ export interface ExternalCallUtxoGroup {
   requiredDataNftIndices: number[];
   functionName: string;
   functionArgs: any[];
+  /** Stable compiler callsite ID; physical group indices may compact past inactive conditional slots. */
+  sourceCallsiteId?: number;
   externalContract: any; // StatefulContract - kept as any to avoid circular import
   /** Exact authenticated identity of the input which made this CALL/staticcall. Both fields are one authority:
    * entry-key planning uses the bytecode and runtime msg.sender reconstruction uses the category. */
@@ -303,6 +304,8 @@ export interface ExternalCallUtxoGroup {
   internalArgNames?: readonly string[];
   /** Hidden return-output ABI witness -> logical external-call group supplying that return. */
   returnWitnessGroups?: Record<string, number>;
+  /** Hidden raw return-preimage ABI witness -> logical external-call group supplying that return. */
+  returnPreimageWitnessGroups?: Record<string, number>;
   /** Hidden minting-input ABI witness -> category whose final master coordinate it names. */
   mintingInputWitnessCategories?: Record<string, string>;
   /** Rebuild this group's master unlocker after probe-derived hidden witnesses become available. */
@@ -335,6 +338,8 @@ export interface ExternalCallUtxoGroup {
   }>;
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
+  /** Old dynamic-state chunks consumed by an ordinary direct callee after its master/data block. */
+  ordinaryDynamicChunkInputs?: Array<{ name: string; type: string; utxo: UnlockableUtxo }>;
   /** B's function block layout (for full block ordering) */
   blockLayout?: FunctionBlockLayout;
   /** X13: B's block carries a funding input at its published returnEvent offset, so B's return-event NFT is
@@ -361,8 +366,9 @@ export interface ExternalCallUtxoGroup {
   entryLoopStart?: number;
   /** B's collection signature for the loop entries (for the derive-time master-index unlocker patch). */
   entryLoopCollection?: string;
-  /** Sorted entry slots known at planning time to be inserts. Placeholder NEW
-   * outputs let the first derivation pass reach and reveal both commitments. */
+  /** Sorted entry slots known at planning time to be inserts. Compiler-owned sorted batches
+   * place NEW at the fixed entry slot and reserve outputBlockSlot for trailing P'; legacy
+   * 1:1 inserts may instead use outputBlockSlot for NEW. */
   plannedEntryInserts?: Array<{
     /** Collection slot this insert targets, when the planner recorded one. */
     slotIndex?: number;

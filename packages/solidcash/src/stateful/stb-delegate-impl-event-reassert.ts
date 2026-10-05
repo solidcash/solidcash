@@ -24,10 +24,11 @@ import { isScidIdentityCommitment } from './logical-identity.js';
 import { isJobEventEmitCommitment } from './same-index-twin-emit.js';
 import { permitsLegacyNamedValueChunkFallbackForGroups } from './stb-chunkable-write-planning.js';
 import {
-  isPersistedJobEventsReady,
+  isPersistedCompatibilityValueChunkReady,
   persistedJobEventsWidth,
 } from './value-chunk-persist.js';
 import { legacyGroupLooksLikePublishJobEvent } from './legacy-planning-heuristics.js';
+import { groupEventSignatures, lowLevelCallStateOwnerCategory } from './value-chunk-base-writer-select.js';
 
 export interface DelegateImplEventReassertHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -56,7 +57,7 @@ export function ensureDistinctJobEventNfts(
 ): void {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DISABLE_JOBEVENT_DETACH === '1') return;
-  // Marketplace multi-emit receipt detach is legacy-name discovery; kernel uses descriptor emits.
+  // Multi-emit receipt detach uses legacy-name discovery; kernel uses descriptor emits.
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return;
   const eventSignature = 'JobEvent(uint256,JobEventData)';
   const publishers = [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups].filter((group) => {
@@ -129,7 +130,8 @@ export function ensureDistinctJobEventNfts(
     (host.builderOptions.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
   );
   const unixThreshold = 500_000_000;
-  const appending = isPersistedJobEventsReady() && persistedJobEventsWidth() > 0;
+  const appending = isPersistedCompatibilityValueChunkReady(categoryId)
+    && persistedJobEventsWidth(categoryId) > 0;
   const locktime = appending && Number.isFinite(providerTime) && providerTime >= unixThreshold
     ? (providerTime > unixThreshold ? Math.trunc(providerTime) - 1 : Math.trunc(providerTime))
     : undefined;
@@ -176,23 +178,26 @@ export function reassertDelegateImplEvents(
       candidate.delegateCallGroupIndex === groupIndex
     ));
     const eventSlots = fn?.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
+    const eventSignatures = groupEventSignatures(group, fn);
     for (const [eventOrdinal, eventSlot] of eventSlots.entries()) {
-      const emitInfo = fn?.emits?.[eventOrdinal];
-      if (!emitInfo) continue;
+      const eventSignature = eventSignatures[eventOrdinal];
+      if (!eventSignature) continue;
       const dest = implIndex + eventSlot.offset;
       const existing = builder.outputs[dest];
       // Delegate bytecode executes against its associated proxy's storage/category. Output contents are not
       // ownership evidence: a none-cap OP_TRUE return witness can legitimately occupy another delegate's same
       // relative slot. Inferring the category from that occupant promotes the witness into a duplicate event,
       // which the implementation's event-uniqueness epilogue correctly rejects.
-      const executionCategory = proxyGroup?.categoryId;
+      const executionCategory = lowLevelCallStateOwnerCategory(
+        groupIndex, group, host.externalCallUtxoGroups, host.categoryId,
+      );
       // Top-level proxy calls already project their event frame through the builder's own block layout. This
       // repair is only for a nested execution category; otherwise reserved union slots could activate
       // inactive initialization ordinals.
-      if (!executionCategory || executionCategory === host.categoryId) continue;
+      if (!proxyGroup || executionCategory === host.categoryId) continue;
       const locking = scriptToLockingBytecode(
         buildEventNftCovenantScript(
-          hexToBin(executionCategory), computeEventNameHash(emitInfo.eventSignature),
+          hexToBin(executionCategory), computeEventNameHash(eventSignature),
         ),
         group.externalContract.inner.addressType,
       );

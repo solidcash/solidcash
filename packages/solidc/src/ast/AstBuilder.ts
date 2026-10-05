@@ -2486,6 +2486,11 @@ export default class AstBuilder
       }
       functionDefinition.modifiers.push(m.getText() as FunctionModifier);
     }
+    // Later delegate/split/external-call lowering may remove `view`/`pure` from the physical handler because
+    // it must execute with a covenant frame. Preserve the source declaration before those modifiers are
+    // rewritten: ABI/SDK read dispatch must still return a value rather than broadcasting a transaction.
+    functionDefinition.sourceReadOnly = functionDefinition.modifiers.includes(FunctionModifier.VIEW)
+      || functionDefinition.modifiers.includes(FunctionModifier.PURE);
     // Private functions are not inherited, so Solidity does not permit them to participate in virtual dispatch.
     // Check during declaration construction so abstract functions (which have no traversable body) are covered.
     if (functionDefinition.modifiers.includes(FunctionModifier.PRIVATE)
@@ -4257,6 +4262,11 @@ export default class AstBuilder
   visitParenthesizedFunctionCall(ctx: any): ExpressionNode {
     const callee = this.visit(ctx.expression()) as ExpressionNode;
     const args = this.buildCallArguments(ctx.expressionList());
+    if (callee instanceof IdentifierNode) {
+      const node = new FunctionCallNode(callee, args);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
     // Parentheses do not turn an ordinary member call into a function-pointer call: `((d.f))(args)` has the
     // same lookup and dispatch semantics as `d.f(args)`. Keep `super.f` on its established indirect/self
     // resolution path, where the inheritance pass has the context needed to select the base implementation.

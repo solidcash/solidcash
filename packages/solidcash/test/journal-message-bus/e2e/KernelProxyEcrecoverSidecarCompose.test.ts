@@ -132,81 +132,87 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
     });
   }, 300_000);
 
-  it('settles compose+executionArtifact×ecrecover with foreign Probe touch', async () => {
-    const provider = createMessageBusCapstoneTestProvider();
-    const signer = new Signer(new Uint8Array(32).fill(0x4b), provider);
-    for (let index = 0; index < 40; index += 1) {
-      await provider.addUtxo(signer.getAddress(), {
-        txid: (index + 1).toString(16).padStart(64, '0'),
-        vout: 0,
-        satoshis: 1_000_000n,
-      });
-    }
+  it.each(['inline', 'free helper'] as const)(
+    'settles compose+executionArtifact×ecrecover with foreign Probe touch (%s)', async (recoveryForm) => {
+      const provider = createMessageBusCapstoneTestProvider();
+      const signer = new Signer(new Uint8Array(32).fill(0x4b), provider);
+      for (let index = 0; index < 40; index += 1) {
+        await provider.addUtxo(signer.getAddress(), {
+          txid: (index + 1).toString(16).padStart(64, '0'),
+          vout: 0,
+          satoshis: 1_000_000n,
+        });
+      }
 
-    const wallet = new ethers.Wallet(`0x${'44'.repeat(32)}`);
-    const message = 'kernel-proxy-ecrecover-compose';
-    const signature = await wallet.signMessage(message);
-    const digestHex = ethers.hashMessage(message);
-    const parsed = ethers.Signature.from(signature);
-    const digest = littleEndian(digestHex);
-    const r = littleEndian(parsed.r);
-    const s = littleEndian(parsed.s);
+      const wallet = new ethers.Wallet(`0x${'44'.repeat(32)}`);
+      const message = 'kernel-proxy-ecrecover-compose';
+      const signature = await wallet.signMessage(message);
+      const digestHex = ethers.hashMessage(message);
+      const parsed = ethers.Signature.from(signature);
+      const digest = littleEndian(digestHex);
+      const r = littleEndian(parsed.r);
+      const s = littleEndian(parsed.s);
 
-    const probeArtifact = compileString(`pragma solidcash >=0.8.0;
+      const probeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Probe() { function touch() public { require(true); } }`, {
-      ...KERNEL, messageBusGraphContext: true,
-    });
-    const implArtifact = compileString(`pragma solidcash >=0.8.0;
+        ...KERNEL, messageBusGraphContext: true,
+      });
+      const implArtifact = compileString(`pragma solidcash >=0.8.0;
+      ${recoveryForm === 'free helper' ? `
+      function recoverForRoute(bytes32 h, int v, bytes32 r, bytes32 s) returns (pubkey) {
+        return ecrecoverPubKey(h, v, r, s);
+      }` : ''}
       interface IProbe { function touch() external; }
       contract Acc() {
         int counter;
         function initialize() public { this.counter = 0; }
         function recover(address probe, bytes32 h, int v, bytes32 r, bytes32 s) public {
-          pubkey value = ecrecoverPubKey(h, v, r, s);
+          pubkey value = ${recoveryForm === 'free helper'
+    ? 'recoverForRoute(h, v, r, s)' : 'ecrecoverPubKey(h, v, r, s)'};
           require(value.length == 33);
           this.counter = this.counter + 1;
           IProbe(probe).touch();
         }
       }`, KERNEL);
-    const delegate = implArtifact.delegateArtifact!;
+      const delegate = implArtifact.delegateArtifact!;
 
-    const probeBase = new Contract(probeArtifact, [], { provider });
-    const probeSetup = await setupStatefulUtxos(
-      provider, probeBase, probeArtifact.stateLayout!, {}, { saltContract: true },
-    );
-    const probe = StatefulContract.withCategory(
-      probeBase.withCategory(hexToBin(probeSetup.categoryId)), probeSetup.categoryId,
-    );
+      const probeBase = new Contract(probeArtifact, [], { provider });
+      const probeSetup = await setupStatefulUtxos(
+        provider, probeBase, probeArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const probe = StatefulContract.withCategory(
+        probeBase.withCategory(hexToBin(probeSetup.categoryId)), probeSetup.categoryId,
+      );
 
-    const deployed = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
-    deployed.implementation._registerResolvedExternal('IProbe', probe);
-    await fundEcrecoverSidecars(provider, String(deployed.proxy.categoryId));
+      const deployed = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
+      deployed.implementation._registerResolvedExternal('IProbe', probe);
+      await fundEcrecoverSidecars(provider, String(deployed.proxy.categoryId));
 
-    const callsite = delegate.abi.find((entry) => entry.name === 'recover')
-      ?.externalCalls?.find((call) => call.functionName === 'touch');
-    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
-    const composition = messageBus.compose({
-      preparedCalls: [{
-        contract: deployed.proxy,
-        functionName: 'recover',
-        args: [probe.inner.lockingBytecode, digest, BigInt(parsed.v), r, s],
-        executionArtifact: deployed.implementation.inner.artifact,
-        executor: deployed.implementation,
-      }, {
-        contract: probe,
-        functionName: 'touch',
-        args: [],
-        callsiteId: callsite!.callsiteId,
-      }],
-      funder: fee,
-      changeAddress: fee.unlocker.generateLockingBytecode(),
-    });
-    const builder = await composition.build();
-    expect(vmRejects(builder)).toBe(false);
-    expect(ecrecoverRecreates(builder.outputs, String(deployed.proxy.categoryId)).length)
-      .toBeGreaterThanOrEqual(2);
-    await expect(composition.send()).resolves.toMatchObject({
-      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
-    });
-  }, 300_000);
+      const callsite = delegate.abi.find((entry) => entry.name === 'recover')
+        ?.externalCalls?.find((call) => call.functionName === 'touch');
+      const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+      const composition = messageBus.compose({
+        preparedCalls: [{
+          contract: deployed.proxy,
+          functionName: 'recover',
+          args: [probe.inner.lockingBytecode, digest, BigInt(parsed.v), r, s],
+          executionArtifact: deployed.implementation.inner.artifact,
+          executor: deployed.implementation,
+        }, {
+          contract: probe,
+          functionName: 'touch',
+          args: [],
+          callsiteId: callsite!.callsiteId,
+        }],
+        funder: fee,
+        changeAddress: fee.unlocker.generateLockingBytecode(),
+      });
+      const builder = await composition.build();
+      expect(vmRejects(builder)).toBe(false);
+      expect(ecrecoverRecreates(builder.outputs, String(deployed.proxy.categoryId)).length)
+        .toBeGreaterThanOrEqual(2);
+      await expect(composition.send()).resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+    }, 300_000);
 });

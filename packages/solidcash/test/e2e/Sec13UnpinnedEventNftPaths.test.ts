@@ -409,8 +409,9 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
    * The forged log is no longer part of that residual. The proxy declares `Fired`, the signature the forged log
    * is read against, and a delegatecall proxy that declares an event carries the own-category immutable pin
    * itself, so it refuses the appended log at input 0 even with no implementation co-spent.
+   * Keep both controls: a green state rewrite does not imply that an addressable event forgery is still admitted.
    */
-  it('leaves a proxy that does not force its implementation co-spend open (C1, not a new class)', async () => {
+  it('leaves the C1 state rewrite open but rejects a forged event without an implementation co-spend', async () => {
     const control = await runDelegatecall(DELEGATE_IMPL, undefined, true, 987654321n);
     expect(control.outcome).toBe('ACCEPTED');
     expect(control.state).toBe(987654321n); // arbitrary state written with NO implementation co-spent

@@ -32,12 +32,12 @@ SolidCash introduces features that do not exist in CashScript and that close the
 - **Fixed-point decimals** - `fixed128x18` with full arithmetic (Solidity declared this type but never implemented it)
 - **Mapping iteration** - `for (key, value of mapping.entries)` - impossible in Solidity
 - **Switch statements, unchecked blocks, using-for, try-catch**
-- **Contract lifecycle** - `deploy`, `upgrade`, `selfdestruct`, `split`/`merge` modifiers
+- **Contract lifecycle** - inferred child deployment plus `upgrade`, `selfdestruct`, and `split`/`merge` modifiers
 - **Delegatecall & proxy patterns** - upgradeable contract architecture
 - **Cross-contract calls** - external state reads and function calls via interfaces
 - **ABI encoding** - `abi.encode`, `abi.decode`, `abi.encodeWithSelector`, `abi.encodeCall`
 - **Token containers** - native CashToken FT/NFT management within contracts
-- **Test matchers** - `toEmit`, `toBeReverted`, `toFailRequireWith` for Vitest/Jest
+- **Test matchers** - `toEmit`, `toBeReverted`, `toFailRequireWith`, and `toLog` for Vitest
 
 ### Our relationship with CashScript
 

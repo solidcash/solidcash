@@ -3,7 +3,9 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
+import { compileFileMulti } from 'solidc';
 import { resolveConfig } from '../src/config.js';
+import { compileSolidityProject } from '../src/project-compiler.js';
 import { generateTypechainTargets } from '../src/typegen.js';
 
 const temporary: string[] = [];
@@ -35,12 +37,84 @@ function writeFixture(root: string, value: Artifact): void {
   const artifacts = path.join(root, 'artifacts', 'solidcash', 'contracts', 'nested', 'Counter.scash');
   fs.mkdirSync(contracts, { recursive: true });
   fs.mkdirSync(artifacts, { recursive: true });
-  fs.writeFileSync(path.join(contracts, 'Counter.scash'), 'contract Counter(pubkey owner) {}');
+  fs.writeFileSync(path.join(contracts, 'Counter.scash'),
+    'enum Status { Pending, Done } contract Counter(pubkey owner) {}');
   fs.writeFileSync(path.join(artifacts, 'Counter.json'), JSON.stringify(value));
   fs.writeFileSync(path.join(artifacts, 'Counter.artifact.ts'), `export default ${JSON.stringify(value)} as const;\n`);
 }
 
 describe('TypeChain-compatible generation', () => {
+  it('generates imported error-interface factories from a real project compile', async () => {
+    const root = project();
+    const contractsDir = path.join(root, 'contracts');
+    const artifactsDir = path.join(root, 'artifacts');
+    fs.mkdirSync(contractsDir);
+    fs.mkdirSync(artifactsDir);
+    const source = path.join(contractsDir, 'Ledger.sol');
+    fs.writeFileSync(source, `pragma solidity ^0.8.20;
+      import { IReasons } from "./IReasons.sol";
+      contract Ledger { function check(uint amount) public { require(amount > 0); } }
+    `);
+    fs.writeFileSync(path.join(contractsDir, 'IReasons.sol'), `pragma solidity ^0.8.20;
+      interface IReasons { error Rejected(uint256 supplied, uint256 limit); }
+    `);
+    const result = await compileSolidityProject([source],
+      { solidityImportCompat: true, messageBus: false, suppressWarnings: true }, compileFileMulti);
+    expect(result.artifacts.IReasons.errors).toEqual([{
+      name: 'Rejected', signature: 'Rejected(uint256,uint256)',
+      parameters: [{ name: 'supplied', type: 'uint256' }, { name: 'limit', type: 'uint256' }],
+    }]);
+    for (const [name, value] of Object.entries(result.artifacts)) {
+      fs.writeFileSync(path.join(artifactsDir, `${name}.json`), JSON.stringify(value));
+      fs.writeFileSync(path.join(artifactsDir, `${name}.artifact.ts`), `export default ${JSON.stringify(value)} as const;\n`);
+    }
+    const outDir = path.join(root, 'bindings');
+    generateTypechainTargets({ artifactsDir, contractsDir, cacheDir: path.join(root, 'cache'),
+      targets: [{ target: 'ethers6', outDir }] });
+    expect(fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8')).toContain("export * from './contracts/IReasons.js';");
+    const generated = fs.readFileSync(path.join(outDir, 'contracts', 'IReasons.ts'), 'utf8');
+    expect(generated).toContain('export class IReasons__factory');
+    expect(generated).toContain('static createInterface()');
+    expect(generated).toContain('errors: metadata.errors ?? []');
+  });
+
+  it('omits unrelated imported enums from interface bindings', () => {
+    const root = project();
+    const contractsDir = path.join(root, 'contracts');
+    const artifactsDir = path.join(root, 'artifacts', 'solidcash');
+    fs.mkdirSync(contractsDir, { recursive: true });
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    fs.writeFileSync(path.join(contractsDir, 'IVendor.sol'), `pragma solidity ^0.8.20;
+      import { Referenced } from "./Enums.sol";
+      interface IVendor { function choose(Referenced value) external; }
+    `);
+    fs.writeFileSync(path.join(contractsDir, 'Enums.sol'), `pragma solidity ^0.8.20;
+      enum Referenced { First, Second }
+      enum ImportedOnly { Unused }
+    `);
+    const value: Artifact = {
+      ...artifact(), contractName: 'IVendor', constructorInputs: [], abi: [],
+      source: 'import "./IVendor.sol"; contract Root {}',
+      enums: [
+        { name: 'Referenced', members: [{ name: 'First', value: 0 }, { name: 'Second', value: 1 }] },
+        { name: 'ImportedOnly', members: [{ name: 'Unused', value: 0 }] },
+      ],
+    };
+    fs.writeFileSync(path.join(artifactsDir, 'IVendor.json'), JSON.stringify(value));
+    fs.writeFileSync(path.join(artifactsDir, 'IImportedOnly.json'), JSON.stringify({
+      ...value, contractName: 'IImportedOnly', source: 'contract Root {}',
+      enums: [{ name: 'ImportedOnly', members: [{ name: 'Unused', value: 0 }] }],
+    }));
+    const outDir = path.join(root, 'typechain-types');
+    generateTypechainTargets({ artifactsDir, contractsDir, cacheDir: path.join(root, 'cache'),
+      targets: [{ target: 'ethers6', outDir }] });
+    const generated = fs.readFileSync(path.join(outDir, 'contracts', 'IVendor.ts'), 'utf8');
+    expect(generated).toContain('export type Referenced = 0n | 1n;');
+    expect(generated).not.toContain('export type ImportedOnly');
+    const imported = fs.readFileSync(path.join(outDir, 'contracts', 'IImportedOnly.ts'), 'utf8');
+    expect(imported).not.toContain('export type ImportedOnly');
+  });
+
   it('resolves optional target defaults relative to the config directory', () => {
     const root = project();
     const config = resolveConfig({ typegen: { targets: [{ target: 'ethers6' }] } }, root);
@@ -94,6 +168,36 @@ describe('TypeChain-compatible generation', () => {
     expect(generated).toContain('export type Counter =');
     expect(generated).toContain('export type Helper =');
   });
+  it('aliases inherited non-upgradeable Ownable factories for matcher imports', () => {
+    const root = project();
+    writeFixture(root, {
+      ...artifact(),
+      errors: [{ name: 'OwnableUnauthorizedAccount', inputs: [{ name: 'account', type: 'address' }] }],
+    });
+    const outDir = path.join(root, 'typechain-types');
+    generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6', outDir }],
+    });
+    const barrel = fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8');
+    expect(barrel).toContain('Counter__factory as Ownable__factory');
+    expect(barrel).toContain('Counter__factory as OwnableUpgradeable__factory');
+  });
+  it('aliases a concrete ERC20 factory for IERC20Errors matcher imports', () => {
+    const root = project();
+    writeFixture(root, { ...artifact(), contractName: 'FakeToken' });
+    const outDir = path.join(root, 'typechain-types');
+    generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6', outDir }],
+    });
+    const barrel = fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8');
+    expect(barrel).toContain('FakeToken__factory as IERC20Errors__factory');
+  });
   it('reuses timestamp-only changes and atomically regenerates semantic changes', () => {
     const root = project();
     writeFixture(root, artifact());
@@ -114,6 +218,26 @@ describe('TypeChain-compatible generation', () => {
     expect(fs.existsSync(path.join(options.targets[0].outDir, 'stale.ts'))).toBe(false);
     expect(fs.readFileSync(path.join(options.targets[0].outDir, 'contracts', 'nested', 'Counter.ts'), 'utf8'))
       .toContain('Ethers 5-compatible layout');
+  });
+  it('regenerates cached bindings when an obsolete generated contract remains', () => {
+    const root = project();
+    writeFixture(root, artifact());
+    const outDir = path.join(root, 'typechain-types');
+    const options = {
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6' as const, outDir }],
+    };
+    expect(generateTypechainTargets(options)[0].skipped).toBe(false);
+    const stale = path.join(outDir, 'contracts', 'Removed.ts');
+    fs.writeFileSync(stale, "import RemovedArtifact from '../../artifacts/solidcash/Removed.artifact.js';\n");
+    fs.appendFileSync(path.join(outDir, 'index.ts'), "export * from './contracts/Removed.js';\n");
+
+    expect(generateTypechainTargets(options)[0].skipped).toBe(false);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8'))
+      .not.toContain("export * from './contracts/Removed.js';");
   });
   it('can preserve a compatibility source tree independently of compiled sources', () => {
     const root = project();

@@ -4,17 +4,7 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import type { Output } from '../interfaces.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
-import {
-  isDisposableAlignmentPad,
-  isP2sh32LockScript,
-  isViewReturnTailOutput,
-} from './value-chunk-band-helpers.js';
-import {
-  commitmentHexOf,
-  outputMatchesLock,
-} from './stb-output-utils.js';
 import {
   SLOT_HEX,
   isSortedEntryHeadCommitment,
@@ -32,7 +22,7 @@ import {
  */
 /**
  * True when `index` is outside a token writer's minting block and trailing PredOut slots.
- * Used to refuse 1:1 restore of FakeToken balances onto pre-block Marketplace pads.
+ * Used to refuse 1:1 restore of token balances onto pre-block participant pads.
  */
 export function isOutsideTokenWriterBlock(
   index: number,

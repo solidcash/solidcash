@@ -109,6 +109,10 @@ accepted and its version constraint is not enforced.
 Non-relative (npm-style) import paths resolve against the package tree, so
 `import "@openzeppelin/contracts/token/ERC20/IERC20.sol";` works the same way it does in a Solidity project.
 
+The flag also enables storage, public-getter, data-location, inheritance and proxy lowerings which can change an
+artifact. See [Solidity Import Compatibility](/docs/compiler/solidity-import-compat); it is not merely a file
+extension switch, and it is separate from EVM-compatible `abi.*` encoding.
+
 ## Interfaces
 
 An `interface` describes another contract: its externally readable state and its callable functions. Unlike
@@ -140,7 +144,7 @@ Interface state variables and collections must be `public` or `external`.
 
 ### Reading external state
 
-Given an interface and the target contract's category id, you can read its state directly:
+Given an interface and the target contract's self-pinned locking bytecode address, you can read its state directly:
 
 ```solidity
 pragma solidcash ^0.13.0;
@@ -150,7 +154,7 @@ interface IToken {
     public mapping(address => uint256) balances;
 }
 
-contract Reader(bytes32 target) {
+contract Reader(address target) {
     uint256 seen;
 
     function readTotal() public {
@@ -163,8 +167,9 @@ contract Reader(bytes32 target) {
 }
 ```
 
-The compiler emits a covenant that co-spends the target contract's state UTXOs and verifies their category, so
-the read is trustless. The SDK resolves and attaches the required inputs automatically.
+The compiler emits a covenant that co-spends the target contract's state UTXOs and pins their locking bytecode to
+the target address. The target and sub-NFT covenants self-pin their category and commitments, so the read is
+trustless. The SDK resolves and attaches the required inputs automatically.
 
 ### Calling external functions
 
@@ -175,7 +180,7 @@ interface ICounter {
     function increment();
 }
 
-contract Caller(bytes32 target) {
+contract Caller(address target) {
     int calls;
 
     function bump() public {
@@ -188,8 +193,8 @@ contract Caller(bytes32 target) {
 - `.call()` - a stateful call; the target may modify its own state.
 - `.staticcall()` - read-only; the target's state changes are not committed.
 
-See [Advanced Features](/docs/language/advanced-features#external-contract-interaction) for output-state reads
-and the low-level `.call` / `.delegatecall` forms.
+See [Cross-Contract Calls & Results](/docs/language/cross-contract-calls) for target binding, output-state reads,
+return-event NFTs, and the low-level `.call` / `.delegatecall` forms.
 
 ### Interface introspection
 

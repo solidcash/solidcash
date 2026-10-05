@@ -1,10 +1,12 @@
 /* eslint-disable max-len */
 import {
-  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
+  bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
+  encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
   vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output, type Transaction,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
+import { scriptToBytecode } from '@solidcash/utils';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { rememberPreparedCovenantValidation } from '../network/createPreparedTxVerifier.js';
@@ -15,6 +17,8 @@ import {
 import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/balancedBlocks.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { isContractUnlocker } from '../interfaces.js';
+import { getMessageBusEnvelopeTransport } from '../stateful/covenant-helpers.js';
 import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.js';
 import { ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES, decodeAtomicMessageEnvelope } from './atomic.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
@@ -33,6 +37,7 @@ import {
 } from './monotone-lattice.js';
 import { isVmValidationOnly } from './materialization-mode.js';
 import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
+import { builderConstraintFixpoint } from './constraint-fixpoint-session.js';
 
 /**
  * Measure each participant's ACTUAL runtime-resource run off the unsigned builder, and refuse a run the
@@ -291,10 +296,21 @@ const convergeMessageBusMutableResourceOutputs = (
   const observerEligibility = new Map<number, boolean>();
   let repairs = 0;
   const maximumRounds = candidateCount * 2 + 1;
+  const resourceDebugEnabled = (): boolean =>
+    (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RESOURCE_VALUES === '1';
+  const logResourceValue = (value: string): void => { console.error('message-bus-resource-value', value); };
   for (let round = 1; round <= maximumRounds; round += 1) {
-    const stateKey = [...ownedByBlock.values()].flatMap((owned) => [...owned].sort((a, b) => a - b))
+    const transaction = builder.buildLibauthTransaction();
+    // A resource covenant can be gated by another semantic output (most notably an event-slot scan). The owned
+    // commitments alone are therefore not a complete convergence state: after that prerequisite changes, the
+    // same `00` entry placeholder must be eligible for a new authenticated observation. Hashing the complete
+    // transaction keeps the shared fixpoint strict for truly repeated states while distinguishing that progress.
+    const transactionState = binToHex(hash256(encodeTransaction(transaction)));
+    const stateKey = `${transactionState}|${[...ownedByBlock.values()]
+      .flatMap((owned) => [...owned].sort((a, b) => a - b))
       .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
-      .join('|');
+      .join('|')}`;
     recordMonotonePass(
       commitmentLattice,
       seenStates,
@@ -302,19 +318,23 @@ const convergeMessageBusMutableResourceOutputs = (
       'messageBus: mutable resource output convergence entered a repeated state',
     );
     // constraint fixpoint: multi-candidate API — single progressing key here; soft-exit when joint cycles.
-    const picked = selectActiveConstraintCandidate(
-      'resource',
-      [stateKey],
-      'messageBus: mutable resource output convergence entered a repeated state',
-    );
-    if (picked === undefined) {
-      finalizeMonotonePass(commitmentLattice, stateKey);
-      return freezeGeometry({
-        repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b),
-      });
+    // Observation does not advance the mutable convergence session. It must remain repeatable after a
+    // prior build finalized that session, or a later build/send can silently lose exact state claims.
+    if (observedProposals === undefined) {
+      const picked = selectActiveConstraintCandidate(
+        'resource',
+        [stateKey],
+        'messageBus: mutable resource output convergence entered a repeated state',
+        builderConstraintFixpoint(builder),
+      );
+      if (picked === undefined) {
+        finalizeMonotonePass(commitmentLattice, stateKey);
+        return freezeGeometry({
+          repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b),
+        });
+      }
     }
 
-    const transaction = builder.buildLibauthTransaction();
     // constraint fixpoint: accumulate all OTC observations per output, then collapse with multi-way ranking.
     const proposalCandidates = new Map<number, Array<{
       commitment: Uint8Array; inputIndex: number; ip: number;
@@ -326,14 +346,13 @@ const convergeMessageBusMutableResourceOutputs = (
       opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
       beforeOperation: (unknownState) => {
         const state = unknownState as AuthenticationProgramStateCommon;
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_RESOURCE_VALUES === '1') {
+        if (resourceDebugEnabled()) {
           for (const item of state.stack) {
             if (item.length < 190 || item.length > 210) continue;
             const hex = binToHex(item);
             if (debugResourceValues.has(hex)) continue;
             debugResourceValues.add(hex);
-            console.error('message-bus-resource-value', JSON.stringify({ bytes: item.length, value: hex }));
+            logResourceValue(JSON.stringify({ bytes: item.length, value: hex }));
           }
         }
         if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
@@ -356,11 +375,18 @@ const convergeMessageBusMutableResourceOutputs = (
         });
       },
     });
-    for (const block of assembly.blocks) {
+    for (const [blockIndex, block] of assembly.blocks.entries()) {
       owned = ownedByBlock.get(block.participant)!;
       if (owned.size === 0) continue;
+      // A delegate participant's compiler-declared state block can be followed by authenticated logical-identity
+      // and executor inputs before the next participant begins. The executor is the input which actually runs the
+      // implementation covenant and exposes computed entry commitments; stopping at `blockLayout.blockSize`
+      // leaves those OTC witnesses invisible. Repair ownership remains restricted to `ownedByBlock` above, so
+      // widening only the observer span cannot authorize a suffix input to mutate an undeclared coordinate.
+      const observerEnd = assembly.blocks[blockIndex + 1]?.base
+        ?? Math.min(...assembly.verifierInputs, assembly.verifierInput);
       for (let inputIndex = block.base;
-        inputIndex < block.base + block.blockLayout.blockSize;
+        inputIndex < observerEnd;
         inputIndex += 1) {
         let eligible = observerEligibility.get(inputIndex);
         if (eligible === undefined) {
@@ -392,13 +418,16 @@ const convergeMessageBusMutableResourceOutputs = (
         continue;
       }
       const ranked = rankResourceOtcConflictCandidatesMany(candidates);
-      selectActiveConstraintCandidate(
-        'resource-otc-conflict',
-        ranked.map((candidate) => (
-          `${outputIndex}:${binToHex(candidate.commitment)}@${candidate.inputIndex}`
-        )),
-        'messageBus: OTC conflict fingerprint entered a repeated state',
-      );
+      if (observedProposals === undefined) {
+        selectActiveConstraintCandidate(
+          'resource-otc-conflict',
+          ranked.map((candidate) => (
+            `${outputIndex}:${binToHex(candidate.commitment)}@${candidate.inputIndex}`
+          )),
+          'messageBus: OTC conflict fingerprint entered a repeated state',
+          builderConstraintFixpoint(builder),
+        );
+      }
       if (isVmValidationOnly()) {
         proposals.set(outputIndex, ranked[0]!);
         continue;
@@ -429,7 +458,7 @@ const convergeMessageBusMutableResourceOutputs = (
     }
 
     // constraint fixpoint: multi-proposal + cross-output joint OTC ranking fingerprint.
-    if (proposals.size > 0) {
+    if (observedProposals === undefined && proposals.size > 0) {
       const proposalKeys = [...proposals.entries()]
         .map(([outputIndex, { commitment }]) => `${outputIndex}:${binToHex(commitment)}`)
         .sort();
@@ -443,11 +472,13 @@ const convergeMessageBusMutableResourceOutputs = (
         'resource-proposals',
         [proposalKeys.join('|'), jointCrossOutput, ...proposalKeys],
         'messageBus: resource proposal fingerprint entered a repeated state',
+        builderConstraintFixpoint(builder),
       );
       selectActiveConstraintCandidate(
         'resource-otc-cross-output',
         [jointCrossOutput, ...proposalKeys],
         'messageBus: cross-output OTC ranking entered a repeated state',
+        builderConstraintFixpoint(builder),
       );
     }
 
@@ -507,6 +538,7 @@ const convergeMessageBusMutableResourceOutputs = (
       proposals,
       fixedStateOutputs,
       maximumCommitmentBytes,
+      (repair) => provenSourceRevertIndependentOfRepair(builder, repair),
     );
     let changed = false;
     for (const [outputIndex, { commitment: proposed }] of proposals) {
@@ -530,7 +562,8 @@ const convergeMessageBusMutableResourceOutputs = (
       changed = true;
     }
     if (!changed) {
-      const finalKey = [...ownedByBlock.values()].flatMap((owned) => [...owned].sort((a, b) => a - b))
+      const finalKey = [...ownedByBlock.values()].flatMap((ownedOutputs) =>
+        [...ownedOutputs].sort((a, b) => a - b))
         .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
         .join('|');
       finalizeMonotonePass(commitmentLattice, finalKey);
@@ -567,7 +600,17 @@ export function countWouldApplyResourceRepairs(
   fixedStateOutputs: ReadonlySet<number>,
   maximumCommitmentBytes = 128,
 ): number {
-  let wouldApply = 0;
+  return wouldApplyResourceRepairOutputs(builder, proposals, fixedStateOutputs, maximumCommitmentBytes).length;
+}
+
+/** Outputs whose commitment a resource repair would rewrite. */
+export function wouldApplyResourceRepairOutputs(
+  builder: ResourceRepairBuilder,
+  proposals: ReadonlyMap<number, ResourceCommitmentProposal>,
+  fixedStateOutputs: ReadonlySet<number>,
+  maximumCommitmentBytes = 128,
+): number[] {
+  const wouldApply: number[] = [];
   for (const [outputIndex, { commitment: proposed }] of proposals) {
     const output = builder.outputs[outputIndex];
     if (!output?.token?.nft) continue;
@@ -582,7 +625,7 @@ export function countWouldApplyResourceRepairs(
       inputCommitmentHex: inputCommitment === undefined ? undefined
         : typeof inputCommitment === 'string' ? inputCommitment : binToHex(inputCommitment),
     });
-    if (action !== 'skip') wouldApply += 1;
+    if (action !== 'skip') wouldApply.push(outputIndex);
   }
   return wouldApply;
 }
@@ -629,10 +672,14 @@ export function gateWouldApplyResourceRepairsIfRecipe(
   proposals: ReadonlyMap<number, ResourceCommitmentProposal>,
   fixedStateOutputs: ReadonlySet<number>,
   maximumCommitmentBytes = 128,
+  provenRevert?: (repair: RefusedOutputRepair) => Error | undefined,
 ): number {
-  return gateWouldApplyRepairsIfRecipe(countWouldApplyResourceRepairs(
+  const commitments = wouldApplyResourceRepairOutputs(
     builder, proposals, fixedStateOutputs, maximumCommitmentBytes,
-  ));
+  );
+  return gateWouldApplyRepairsIfRecipe(
+    commitments.length, provenRevert && ((): Error | undefined => provenRevert({ commitments })),
+  );
 }
 
 /** Complete-graph convergence for fixed state and compiler-declared sorted-entry targets. */
@@ -654,10 +701,123 @@ export const convergeMessageBusFixedStateOutputs = (
   builder: TransactionBuilder,
 ): MessageBusComputedResourceConvergence => convergeMessageBusMutableResourceOutputs(builder, false);
 
-/** Enforce the physical encoding assumed by the generated final-verifier loader. */
+/** Enforce the physical carrier encoding selected by the artifact's generated verifier. */
 const assertCanonicalMessageEnvelopePush = (
-  transaction: Transaction, assembly: BalancedAssembly,
+  builder: TransactionBuilder, transaction: Transaction, assembly: BalancedAssembly,
 ): void => {
+  const rootUnlocker = builder.inputs[0]?.unlocker;
+  const rootEnvelopeLocation = rootUnlocker && isContractUnlocker(rootUnlocker)
+    ? rootUnlocker.contract.artifact.messageBus?.atomicMessageBus?.messageEnvelope : undefined;
+  const rootBlock = assembly.blocks[0];
+  const executorOffset = rootBlock?.blockLayout.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
+  const executorUnlocker = executorOffset === undefined ? undefined : builder.inputs[executorOffset]?.unlocker;
+  const executorEnvelopeLocation = executorUnlocker && isContractUnlocker(executorUnlocker)
+    ? executorUnlocker.contract.artifact.messageBus?.atomicMessageBus?.messageEnvelope : undefined;
+  if (executorEnvelopeLocation?.region === 'proxy-forward') {
+    if (!rootBlock || rootBlock.base !== 0 || executorOffset === undefined || executorOffset < 1
+      || !rootUnlocker || !isContractUnlocker(rootUnlocker)
+      || rootUnlocker.abiFunction?.name !== '__forward'
+      || !executorUnlocker || !isContractUnlocker(executorUnlocker)
+      || getMessageBusEnvelopeTransport(executorUnlocker.contract.artifact) !== 'proxy-forward') {
+      throw new Error('messageBus: V5 proxy-forward envelope has no authenticated root proxy/executor pair');
+    }
+    for (const block of assembly.blocks) {
+      if (block.authority === 'direct') continue;
+      const routeOffset = block.blockLayout.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset ?? 0;
+      const unlocker = builder.inputs[block.base + routeOffset]?.unlocker;
+      if (!unlocker || !isContractUnlocker(unlocker)
+        || getMessageBusEnvelopeTransport(unlocker.contract.artifact) !== 'proxy-forward') {
+        throw new Error('messageBus: V5 proxy-forward envelope cannot mix participant transports');
+      }
+    }
+    const root = transaction.inputs[0]?.unlockingBytecode ?? new Uint8Array();
+    const maximumInputBytes = builder.provider.consensusLimits?.maximumInputBytes ?? 10_000;
+    const indexPush = scriptToBytecode([bigIntToVmNumber(BigInt(executorOffset))]);
+    if (root.length > maximumInputBytes || root.length < indexPush.length + 4
+      || binToHex(root.slice(0, indexPush.length)) !== binToHex(indexPush)
+      || root[indexPush.length] !== 0x4d) {
+      throw new Error('messageBus: V5 proxy input 0 must pin its executor and a PUSHDATA2 forward payload');
+    }
+    const forward = readPush(root, indexPush.length);
+    const outerLength = root[indexPush.length + 1] | (root[indexPush.length + 2] << 8);
+    const payload = forward?.data;
+    if (!forward || !payload || outerLength !== payload.length || payload.length < 7
+      || binToHex(payload.slice(0, 4)) !== '53434231' || payload[4] !== 0x4d) {
+      throw new Error('messageBus: V5 proxy input 0 has no canonical SCB1 forward payload');
+    }
+    const envelopeLength = payload[5] | (payload[6] << 8);
+    const envelope = payload.slice(7);
+    if (envelopeLength !== envelope.length || envelope.length < ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES) {
+      throw new Error('messageBus: V5 proxy input 0 has no canonical L3C1 envelope');
+    }
+    decodeAtomicMessageEnvelope(envelope);
+    const redeem = readPush(root, forward.nextOffset);
+    if (!redeem || redeem.nextOffset !== root.length) {
+      throw new Error('messageBus: V5 proxy input 0 has a non-canonical __forward frame');
+    }
+    const executor = transaction.inputs[executorOffset]?.unlockingBytecode ?? new Uint8Array();
+    if (executor.length > maximumInputBytes || executor.length < payload.length + 1
+      || executor[0] !== 4 || binToHex(executor.slice(1, payload.length + 1)) !== binToHex(payload)) {
+      throw new Error('messageBus: V5 proxy forward payload does not match its SCB1 executor prefix');
+    }
+    const carrier = readPush(executor, 5);
+    const batch = carrier && readPush(executor, carrier.nextOffset);
+    if (!carrier || binToHex(carrier.data) !== binToHex(envelope)
+      || !batch || !isCanonicalCompilerRouteEnvelope(batch.data)
+      || !readPush(executor, batch.nextOffset)) {
+      throw new Error('messageBus: V5 proxy executor envelope must precede canonical batch and reserve');
+    }
+    for (const inputIndex of assembly.verifierInputs) {
+      const verifierUnlock = transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array();
+      const redundant = firstPush(verifierUnlock);
+      if (redundant && binToHex(redundant) === binToHex(envelope)) {
+        throw new Error(`messageBus: V5 verifier input ${inputIndex} redundantly carries the root envelope`);
+      }
+    }
+    return;
+  }
+  if (rootEnvelopeLocation?.region === 'root-route') {
+    if (!rootUnlocker || !isContractUnlocker(rootUnlocker)
+      || getMessageBusEnvelopeTransport(rootUnlocker.contract.artifact) !== 'root-route'
+      || assembly.blocks[0]?.base !== 0) {
+      throw new Error('messageBus: V5 root-route envelope has no authenticated input-0 participant');
+    }
+    for (const block of assembly.blocks) {
+      if (block.authority === 'direct') continue;
+      const unlocker = builder.inputs[block.base]?.unlocker;
+      if (!unlocker || !isContractUnlocker(unlocker)
+        || getMessageBusEnvelopeTransport(unlocker.contract.artifact) !== 'root-route') {
+        throw new Error('messageBus: V5 root-route envelope cannot mix participant transports');
+      }
+    }
+    const root = transaction.inputs[0]?.unlockingBytecode ?? new Uint8Array();
+    const maximumInputBytes = builder.provider.consensusLimits?.maximumInputBytes ?? 10_000;
+    if (root.length > maximumInputBytes || root.length < 8 || root[0] !== 4
+      || binToHex(root.slice(1, 5)) !== '53434231' || root[5] !== 0x4d) {
+      throw new Error('messageBus: V5 input 0 must begin with SCB1 and a bounded OP_PUSHDATA2 envelope');
+    }
+    const carrier = readPush(root, 5);
+    const declaredLength = root[6] | (root[7] << 8);
+    if (!carrier || declaredLength !== carrier.data.length
+      || carrier.nextOffset !== 8 + declaredLength
+      || carrier.data.length < ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES) {
+      throw new Error('messageBus: V5 input 0 has no canonical root-route envelope');
+    }
+    decodeAtomicMessageEnvelope(carrier.data);
+    const batch = readPush(root, carrier.nextOffset);
+    if (!batch || !isCanonicalCompilerRouteEnvelope(batch.data)
+      || !readPush(root, batch.nextOffset)) {
+      throw new Error('messageBus: V5 root-route envelope must precede the canonical batch and reserve');
+    }
+    for (const inputIndex of assembly.verifierInputs) {
+      const verifierUnlock = transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array();
+      const redundant = firstPush(verifierUnlock);
+      if (redundant && binToHex(redundant) === binToHex(carrier.data)) {
+        throw new Error(`messageBus: V5 verifier input ${inputIndex} redundantly carries the root envelope`);
+      }
+    }
+    return;
+  }
   const unlockingBytecode = transaction.inputs[assembly.verifierInput]?.unlockingBytecode ?? new Uint8Array();
   const messageEnvelope = firstPush(unlockingBytecode);
   if (unlockingBytecode[0] !== 0x4d || messageEnvelope === undefined
@@ -673,6 +833,48 @@ const assertCanonicalMessageEnvelopePush = (
 const assertNoDerivationProbeOutpoints = (builder: TransactionBuilder): void => {
   if (builder.inputs.some((input) => input.vout === 0xffffffff)) {
     throw new Error('messageBus: finalized transactions cannot contain the internal derivation-probe outpoint');
+  }
+};
+
+/** V5 direct owners have no detached verifier; bind their dormant nested-call witness before VM evaluation. */
+const assertDirectParticipantFrames = (
+  builder: TransactionBuilder, transaction: Transaction, assembly: BalancedAssembly,
+): void => {
+  for (const block of assembly.blocks) {
+    if (block.authority !== 'direct') continue;
+    const unlocker = builder.inputs[block.base]?.unlocker;
+    const encoded = transaction.inputs[block.base]?.unlockingBytecode ?? new Uint8Array();
+    if (!unlocker || !isContractUnlocker(unlocker)
+      || unlocker.contract.artifact.compiler?.options?.messageBusDirectParticipant !== true
+      || unlocker.contract.artifact.messageBus !== undefined
+      || unlocker.abiFunction.blockLayout?.blockSize !== block.blockLayout.blockSize) {
+      throw new Error(`messageBus: direct participant ${block.participant} has no V5 master authority`);
+    }
+    const indices = unlocker.abiFunction.inputs.flatMap((input, index) =>
+      input.name === '__internal__callInputIndex' ? [index] : []);
+    const selector = readPush(encoded, 0);
+    if (indices.length === 0) {
+      const argument = selector && readPush(encoded, selector.nextOffset);
+      const redeem = argument && readPush(encoded, argument.nextOffset);
+      if (unlocker.abiFunction.inputs.some((input) => input.name.startsWith('__internal__'))
+        || !selector || encoded[0] !== 4
+        || binToHex(selector.data) !== unlocker.abiFunction.selector?.toLowerCase()
+        || !argument || !redeem || redeem.nextOffset !== encoded.length) {
+        throw new Error(`messageBus: direct participant ${block.participant} has a non-canonical scalar frame`);
+      }
+      continue;
+    }
+    const expected = BigInt(assembly.totalSlots);
+    const hidden = selector && readPush(encoded, selector.nextOffset);
+    const canonicalHidden = scriptToBytecode([bigIntToVmNumber(expected)]);
+    if (indices.length !== 1 || indices[0] !== unlocker.abiFunction.inputs.length - 1
+      || unlocker.params[indices[0]] !== expected
+      || !selector || encoded[0] !== 4
+      || binToHex(selector.data) !== unlocker.abiFunction.selector?.toLowerCase()
+      || !hidden || binToHex(encoded.slice(selector.nextOffset, hidden.nextOffset))
+        !== binToHex(canonicalHidden)) {
+      throw new Error(`messageBus: direct participant ${block.participant} has an unbound call-index frame`);
+    }
   }
 };
 
@@ -1418,6 +1620,10 @@ export function snapshotPreflightDiagnosticState<T extends { stack: Uint8Array[]
   return { ...state, stack: state.stack.map((item) => item.slice()) };
 }
 
+export function shouldCapturePreflightDiagnosticInput(inputIndex: number, requestedInput?: number): boolean {
+  return requestedInput === undefined || inputIndex === requestedInput;
+}
+
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
 ): void => {
@@ -1437,6 +1643,9 @@ const evaluateEveryInput = (
   // a misread coordinate actually resolved to.
   const failurePreStateDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE === '1';
+  const failurePreStateInputValue = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_TRACE_INPUT;
+  const failurePreStateInput = failurePreStateInputValue === undefined ? undefined : Number(failurePreStateInputValue);
   const resourceSlotIndexDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_RESOURCE_SLOT_INDEX === '1';
   let resourceSlotIndexLogged = false;
@@ -1452,96 +1661,96 @@ const evaluateEveryInput = (
   const preStateRingByInput = new Map<number, AuthenticationProgramStateCommon[]>();
   const vm = createVirtualMachineBch2026ForProvider(builder.provider,
     (outputCompareDebug || failurePreStateDebug || resourceSlotIndexDebug) ? {
-    opcodes: failurePreStateDebug
-      ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
-      : resourceSlotIndexDebug
+      opcodes: failurePreStateDebug
         ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
-        : new Set([Op.OP_OUTPUTBYTECODE, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT]),
-    beforeOperation: (unknownState) => {
-      const resourceState = unknownState as AuthenticationProgramStateCommon;
-      if (resourceSlotIndexDebug && resourceState.program?.inputIndex === 227
+        : resourceSlotIndexDebug
+          ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
+          : new Set([Op.OP_OUTPUTBYTECODE, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT]),
+      beforeOperation: (unknownState) => {
+        const resourceState = unknownState as AuthenticationProgramStateCommon;
+        if (resourceSlotIndexDebug && resourceState.program?.inputIndex === 227
         && resourceState.instructions.length === 642 && [473, 475].includes(resourceState.ip)) {
-        const depth = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
-        console.error('graph-event-park', JSON.stringify({
-          ip: resourceState.ip,
-          depth,
-          selected: resourceState.stack.at(-2 - depth) && binToHex(resourceState.stack.at(-2 - depth)!),
-          stackDepth: resourceState.stack.length,
-          top: resourceState.stack.slice(-12).map((item) => binToHex(item)),
-        }));
-      }
-      if (resourceSlotIndexDebug
+          const depth = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+          console.error('graph-event-park', JSON.stringify({
+            ip: resourceState.ip,
+            depth,
+            selected: resourceState.stack.at(-2 - depth) && binToHex(resourceState.stack.at(-2 - depth)!),
+            stackDepth: resourceState.stack.length,
+            top: resourceState.stack.slice(-12).map((item) => binToHex(item)),
+          }));
+        }
+        if (resourceSlotIndexDebug
         && resourceState.program?.inputIndex === 227
         && resourceState.instructions.length === 13
         && resourceState.instructions[resourceState.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
-        const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
-        const output = resourceState.program.transaction.outputs[outputIndex];
-        returnCommitmentReads.push({
-          ip: resourceState.ip,
-          outputIndex,
-          expected: resourceState.stack.at(-2) && binToHex(resourceState.stack.at(-2)!),
-          outputCommitment: output?.token?.nft && binToHex(output.token.nft.commitment),
-        });
-        if (returnCommitmentReads.length > 50) returnCommitmentReads.shift();
-      }
-      if (resourceSlotIndexDebug && !resourceSlotIndexLogged
+          const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+          const output = resourceState.program.transaction.outputs[outputIndex];
+          returnCommitmentReads.push({
+            ip: resourceState.ip,
+            outputIndex,
+            expected: resourceState.stack.at(-2) && binToHex(resourceState.stack.at(-2)!),
+            outputCommitment: output?.token?.nft && binToHex(output.token.nft.commitment),
+          });
+          if (returnCommitmentReads.length > 50) returnCommitmentReads.shift();
+        }
+        if (resourceSlotIndexDebug && !resourceSlotIndexLogged
         && resourceState.program?.inputIndex === 227
         && resourceState.instructions.length === 13 && resourceState.ip === 5) {
-        const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
-        const output = resourceState.program.transaction.outputs[outputIndex];
-        if (output?.token === undefined) return;
-        resourceSlotIndexLogged = true;
-        console.error('resource-slot-index', JSON.stringify({
-          inputIndex: resourceState.program.inputIndex,
-          outputIndex,
-          output: output === undefined ? undefined : {
-            lockingBytecode: binToHex(output.lockingBytecode),
-            category: output.token && binToHex(output.token.category),
-            capability: output.token?.nft?.capability,
-            commitment: output.token?.nft && binToHex(output.token.nft.commitment),
-          },
-          stack: resourceState.stack.slice(-6).map((item) => binToHex(item)),
-        }));
-      }
-      if (failurePreStateDebug) {
-        const captured = unknownState as AuthenticationProgramStateCommon;
-        const ownedInput = captured.program?.inputIndex;
-        if (typeof ownedInput === 'number') {
-          const ring = preStateRingByInput.get(ownedInput) ?? [];
-          ring.push(snapshotPreflightDiagnosticState(captured));
-          // 256, not 64: an input can iterate a loop (or a convergence pass) more than 64 times, and at 64 the ring
-          // held only the loop's own iterations - every entry the same ip, with the coordinate instructions that
-          // built the failing operands already evicted.
-          if (ring.length > 256) ring.splice(0, ring.length - 256);
-          preStateRingByInput.set(ownedInput, ring);
+          const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+          const output = resourceState.program.transaction.outputs[outputIndex];
+          if (output?.token === undefined) return;
+          resourceSlotIndexLogged = true;
+          console.error('resource-slot-index', JSON.stringify({
+            inputIndex: resourceState.program.inputIndex,
+            outputIndex,
+            output: output === undefined ? undefined : {
+              lockingBytecode: binToHex(output.lockingBytecode),
+              category: output.token && binToHex(output.token.category),
+              capability: output.token?.nft?.capability,
+              commitment: output.token?.nft && binToHex(output.token.nft.commitment),
+            },
+            stack: resourceState.stack.slice(-6).map((item) => binToHex(item)),
+          }));
         }
-      }
-      if (!outputCompareDebug) return;
-      const state = unknownState as unknown as {
-        ip: number;
-        stack: Uint8Array[];
-        instructions: Array<{ opcode: number }>;
-        program?: { inputIndex?: number; transaction?: { outputs?: Array<{ lockingBytecode: Uint8Array }> } };
-      };
-      const { instructions, ip, stack } = state;
-      if (ip < 2 || instructions[ip - 1]?.opcode !== Op.OP_DUP) return;
-      if (instructions[ip + 1]?.opcode !== Op.OP_3 || instructions[ip + 2]?.opcode !== Op.OP_PICK) return;
-      if (instructions[ip + 3]?.opcode !== Op.OP_EQUALVERIFY) return;
-      const indexItem = stack.at(-1);
-      const index = indexItem === undefined ? -1 : Number(vmNumberToBigInt(indexItem));
-      const expected = stack[stack.length - 1 - 3];
-      const output = state.program?.transaction?.outputs?.[index];
-      console.error('output-compare-operands', JSON.stringify({
-        inputIndex: state.program?.inputIndex,
-        ip,
-        programLength: instructions.length,
-        index,
-        actual: output === undefined ? undefined : binToHex(output.lockingBytecode),
-        expected: expected === undefined ? undefined : `${expected.length}:${binToHex(expected)}`,
-        stackDepth: stack.length,
-      }));
-    },
-  } : undefined);
+        if (failurePreStateDebug) {
+          const captured = unknownState as AuthenticationProgramStateCommon;
+          const ownedInput = captured.program?.inputIndex;
+          if (typeof ownedInput === 'number' && shouldCapturePreflightDiagnosticInput(ownedInput, failurePreStateInput)) {
+            const ring = preStateRingByInput.get(ownedInput) ?? [];
+            ring.push(snapshotPreflightDiagnosticState(captured));
+            // 256, not 64: an input can iterate a loop (or a convergence pass) more than 64 times, and at 64 the ring
+            // held only the loop's own iterations - every entry the same ip, with the coordinate instructions that
+            // built the failing operands already evicted.
+            if (ring.length > 256) ring.splice(0, ring.length - 256);
+            preStateRingByInput.set(ownedInput, ring);
+          }
+        }
+        if (!outputCompareDebug) return;
+        const state = unknownState as unknown as {
+          ip: number;
+          stack: Uint8Array[];
+          instructions: Array<{ opcode: number }>;
+          program?: { inputIndex?: number; transaction?: { outputs?: Array<{ lockingBytecode: Uint8Array }> } };
+        };
+        const { instructions, ip, stack } = state;
+        if (ip < 2 || instructions[ip - 1]?.opcode !== Op.OP_DUP) return;
+        if (instructions[ip + 1]?.opcode !== Op.OP_3 || instructions[ip + 2]?.opcode !== Op.OP_PICK) return;
+        if (instructions[ip + 3]?.opcode !== Op.OP_EQUALVERIFY) return;
+        const indexItem = stack.at(-1);
+        const index = indexItem === undefined ? -1 : Number(vmNumberToBigInt(indexItem));
+        const expected = stack[stack.length - 1 - 3];
+        const output = state.program?.transaction?.outputs?.[index];
+        console.error('output-compare-operands', JSON.stringify({
+          inputIndex: state.program?.inputIndex,
+          ip,
+          programLength: instructions.length,
+          index,
+          actual: output === undefined ? undefined : binToHex(output.lockingBytecode),
+          expected: expected === undefined ? undefined : `${expected.length}:${binToHex(expected)}`,
+          stackDepth: stack.length,
+        }));
+      },
+    } : undefined);
   const debugOnlyInputValue = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT;
   const debugOnlyInput = debugOnlyInputValue === undefined ? undefined : Number(debugOnlyInputValue);
@@ -1580,7 +1789,11 @@ const evaluateEveryInput = (
       Op.OP_CAT, Op.OP_SPLIT, Op.OP_DROP, Op.OP_PICK, Op.OP_ROLL,
       Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
     ]);
-    const describeStack = (state: InvokeDebugState) => ({
+    const describeStack = (state: InvokeDebugState): {
+      depth: number;
+      top: Array<{ index: number; fromTop: number; bytes: number; head: string; tail?: string }>;
+      large: Array<{ index: number; fromTop: number; bytes: number; head: string; tail: string }>;
+    } => ({
       depth: state.stack.length,
       top: state.stack.slice(-12).map((item, offset, items) => ({
         index: state.stack.length - items.length + offset,
@@ -1880,6 +2093,7 @@ const evaluateEveryInput = (
         const tailCommitment = tailOutput?.token?.nft && binToHex(tailOutput.token.nft.commitment);
         console.error('message-bus-failure-point', JSON.stringify({
           inputIndex,
+          metrics: evaluated.metrics,
           ip: evaluated.ip,
           opcode: evaluated.instructions[evaluated.ip]?.opcode,
           programLength: evaluated.instructions.length,
@@ -2070,6 +2284,8 @@ const evaluateEveryInput = (
           routeParams: failedUnlocker?.abiFunction?.inputs?.flatMap((input, index) => {
             if (!input.name.startsWith('__internal__graph')
               && !input.name.startsWith('__internal__vmapBatch')
+              && input.name !== '__internal__dynamicChunkInputBase'
+              && input.name !== '__internal__dynamicChunkOutputBase'
               && !input.name.startsWith('__internal__valueWitness')
               && !input.name.startsWith('__internal__leadingPushValue')) return [];
             const value = failedUnlocker.params?.[index];
@@ -2635,6 +2851,7 @@ const evaluateEveryInput = (
           lastOutputCategoryIndex?: number;
           lastOutputCategory?: string;
           lastOutputBytecodeIndex?: number;
+          lastOutputCommitmentIndex?: number;
           lastInputBytecodeIndex?: number;
           lastInputSourceLock?: string;
           lastInputUnlockerLock?: string;
@@ -2642,6 +2859,7 @@ const evaluateEveryInput = (
         let lastOutputCategoryIndex: number | undefined;
         let lastOutputCategory: string | undefined;
         let lastOutputBytecodeIndex: number | undefined;
+        let lastOutputCommitmentIndex: number | undefined;
         // Input-side counterpart: a block/entry guard compares `tx.inputs[OP_INPUTINDEX + n].lockingBytecode`
         // against an expected lock, so the index it resolved is the coordinate under test. Captured at the
         // OP_UTXOBYTECODE that reads it, because the comparison itself has already popped both operands.
@@ -2761,6 +2979,11 @@ const evaluateEveryInput = (
                 });
               }
             }
+            if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
+              const indexBytes = state.stack.at(-1);
+              lastOutputCommitmentIndex = indexBytes === undefined ? undefined
+                : Number(vmNumberToBigInt(indexBytes));
+            }
             if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCATEGORY) {
               const indexBytes = state.stack.at(-1);
               lastOutputCategoryIndex = indexBytes === undefined ? undefined
@@ -2779,6 +3002,7 @@ const evaluateEveryInput = (
               lastOutputCategoryIndex,
               lastOutputCategory,
               lastOutputBytecodeIndex,
+              lastOutputCommitmentIndex,
               lastInputBytecodeIndex,
               // The VM's own view of the input the guard read, next to what that input's unlocker would generate.
               // A mismatch between the two is a stale source list; agreement means the guard's EXPECTATION is wrong.
@@ -2858,11 +3082,11 @@ const evaluateEveryInput = (
           const commitment = output.token?.nft ? binToHex(output.token.nft.commitment) : '';
           return ((lock !== '51' && failureStackHex.has(lock))
             || (commitment.length > 0 && failureStackHex.has(commitment))) ? [{
-            index,
-            lock,
-            commitment,
-            capability: output.token?.nft?.capability,
-          }] : [];
+              index,
+              lock,
+              commitment,
+              capability: output.token?.nft?.capability,
+            }] : [];
         }));
         console.error('message-bus-preflight-failure', JSON.stringify({
           diagnosticLargeValues: [...diagnosticLargeValues].map(([hex, bytes]) => ({ bytes, hex })),
@@ -2928,6 +3152,7 @@ const evaluateEveryInput = (
       const windowStart = Math.max(0, evaluated.ip - 9);
       throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection), {
         ip: evaluated.ip,
+        instructions: evaluated.instructions,
         programLength: failingProgram.length,
         opcode: failingProgram[evaluated.ip]?.opcode,
         previousOpcode: failingProgram[evaluated.ip - 1]?.opcode,
@@ -2952,6 +3177,10 @@ const readPush = (
   let length = 0;
   if (opcode === 0) {
     width = 1;
+  } else if (opcode === 0x4f) {
+    return { data: Uint8Array.of(0x81), nextOffset: offset + 1 };
+  } else if (opcode >= 0x51 && opcode <= 0x60) {
+    return { data: Uint8Array.of(opcode - 0x50), nextOffset: offset + 1 };
   } else if (opcode >= 1 && opcode <= 75) {
     width = 1;
     length = opcode;
@@ -2976,11 +3205,16 @@ const readPush = (
 /** Atomic graph-verifier unlocks place their L3V1 envelope in the first push. */
 const firstPush = (bytecode: Uint8Array): Uint8Array | undefined => readPush(bytecode, 0)?.data;
 
-/** A compiler route unlock starts with push4(SCB1), followed by its canonical batch blob. */
+/** A compiler route unlock starts with push4(SCB1); V5 root frames insert the L3C1 carrier before the batch. */
 const compilerRouteEnvelope = (bytecode: Uint8Array): Uint8Array | undefined => {
   const selector = readPush(bytecode, 0);
   if (!selector || binToHex(selector.data) !== '53434231') return undefined;
-  return readPush(bytecode, selector.nextOffset)?.data;
+  const first = readPush(bytecode, selector.nextOffset);
+  if (!first) return undefined;
+  const rootCarrier = bytecode[selector.nextOffset] === 0x4d
+    && first.data.length >= ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES
+    && binToHex(first.data.slice(0, 4)) === '4c334331';
+  return rootCarrier ? readPush(bytecode, first.nextOffset)?.data : first.data;
 };
 
 /** Validate the framing shared by canonical v1 and v2 route batches without interpreting typed arguments. */
@@ -3010,6 +3244,7 @@ export function mapMessageBusVmFailure(
   rawVmReason: string,
   failure?: {
     ip?: number; programLength?: number; opcode?: number; previousOpcode?: number;
+    instructions?: ReturnType<typeof decodeAuthenticationInstructions>;
     window?: readonly string[];
   },
 ): Error {
@@ -3023,29 +3258,29 @@ export function mapMessageBusVmFailure(
  * unlocking bytecode: `53434231 || version || valueMode || rowCount || rows[selector||index||..||argsLength||args]`.
  * Returns undefined for an ordinary selector-dispatched frame.
  */
-function describeMessageBusBatchRows(
-  unlockingBytecode: Uint8Array, artifact: { messageBus?: { handlers?: readonly { name?: string; selector?: string }[] } }
+  function describeMessageBusBatchRows(
+    unlockingBytecode: Uint8Array, artifact: { messageBus?: { handlers?: readonly { name?: string; selector?: string }[] } }
     | undefined,
-): string | undefined {
-  if (unlockingBytecode.length < 7) return undefined;
-  if (binToHex(unlockingBytecode.slice(0, 4)) !== '53434231') return undefined;
-  const valueMode = unlockingBytecode[4 + 1] === 1;
-  const rowCount = unlockingBytecode[6];
-  const handlers = artifact?.messageBus?.handlers ?? [];
-  const rows: string[] = [];
-  let offset = 7;
-  for (let row = 0; row < rowCount; row += 1) {
-    if (offset + 12 > unlockingBytecode.length) break;
-    const selector = binToHex(unlockingBytecode.slice(offset, offset + 4));
-    const logicalIndex = unlockingBytecode[offset + 4] | (unlockingBytecode[offset + 5] << 8)
+  ): string | undefined {
+    if (unlockingBytecode.length < 7) return undefined;
+    if (binToHex(unlockingBytecode.slice(0, 4)) !== '53434231') return undefined;
+    const valueMode = unlockingBytecode[4 + 1] === 1;
+    const rowCount = unlockingBytecode[6];
+    const handlers = artifact?.messageBus?.handlers ?? [];
+    const rows: string[] = [];
+    let offset = 7;
+    for (let row = 0; row < rowCount; row += 1) {
+      if (offset + 12 > unlockingBytecode.length) break;
+      const selector = binToHex(unlockingBytecode.slice(offset, offset + 4));
+      const logicalIndex = unlockingBytecode[offset + 4] | (unlockingBytecode[offset + 5] << 8)
       | (unlockingBytecode[offset + 6] << 16) | (unlockingBytecode[offset + 7] << 24);
-    const argsLength = unlockingBytecode[offset + 10] | (unlockingBytecode[offset + 11] << 8);
-    const name = handlers.find((handler) => handler.selector?.toLowerCase() === selector)?.name;
-    rows.push(`${name ?? selector}@${String(logicalIndex)}${argsLength === 0 ? '' : `/${String(argsLength)}b`}`);
-    offset += 12 + argsLength + (valueMode ? 8 : 0);
+      const argsLength = unlockingBytecode[offset + 10] | (unlockingBytecode[offset + 11] << 8);
+      const name = handlers.find((handler) => handler.selector?.toLowerCase() === selector)?.name;
+      rows.push(`${name ?? selector}@${String(logicalIndex)}${argsLength === 0 ? '' : `/${String(argsLength)}b`}`);
+      offset += 12 + argsLength + (valueMode ? 8 : 0);
+    }
+    return ` (batch rows ${String(rowCount)}: ${rows.join(', ')})`;
   }
-  return ` (batch rows ${String(rowCount)}: ${rows.join(', ')})`;
-}
 
   const detailedFailure = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_FAILURE_POINT === '1';
@@ -3075,9 +3310,87 @@ function describeMessageBusBatchRows(
       };
     }
   } | undefined;
+  // An exact decoded body is stronger than a source-map heuristic. Compare it to every participant's published
+  // function body, since a routed input can execute another participant's implementation. An ambiguous match does
+  // not authorize a require attribution.
+  const bodyRequireAttribution = (() => {
+    if (failure?.instructions === undefined || !Number.isSafeInteger(failure.ip)) return undefined;
+    const executedBody = binToHex(encodeAuthenticationInstructions(failure.instructions));
+    const matches: Array<{
+      artifactName: string;
+      selector: string;
+      requireStatement: { ip: number; line: number; message?: string };
+    }> = [];
+    const visited = new Set<unknown>();
+    const inspect = (candidate: unknown): void => {
+      if (candidate === undefined || candidate === null || visited.has(candidate)) return;
+      visited.add(candidate);
+      const artifact = candidate as {
+        contractName?: string;
+        functionBodies?: Record<string, string>;
+        debug?: { functionDebug?: Record<string, {
+          requires?: Array<{ ip: number; line: number; message?: string }>;
+        }>; invokeDebug?: Record<string, {
+          bytecode: string;
+          requires: Array<{ ip: number; line: number; message?: string }>;
+        }> };
+        delegateArtifact?: unknown;
+      };
+      for (const [selector, body] of Object.entries(artifact.functionBodies ?? {})) {
+        if (body.toLowerCase() !== executedBody) continue;
+        const requireStatement = artifact.debug?.functionDebug?.[selector]?.requires
+          ?.find((entry) => entry.ip === failure.ip! - 1)
+          ?? artifact.debug?.functionDebug?.[selector]?.requires
+            ?.find((entry) => entry.ip === failure.ip);
+        if (requireStatement !== undefined) {
+          matches.push({ artifactName: artifact.contractName ?? 'contract', selector, requireStatement });
+        }
+      }
+      // An OP_INVOKE failure reports an instruction pointer in the active outlined helper, not in the outer
+      // selector body. Match the VM's exact decoded body against the compiler's invokeDebug table as well;
+      // source-map proximity or the route selector cannot identify a nested guard safely.
+      for (const [identifier, body] of Object.entries(artifact.debug?.invokeDebug ?? {})) {
+        if (body.bytecode.toLowerCase() !== executedBody) continue;
+        const requireStatement = body.requires.find((entry) => entry.ip === failure.ip! - 1)
+          ?? body.requires.find((entry) => entry.ip === failure.ip);
+        if (requireStatement !== undefined) {
+          matches.push({
+            artifactName: artifact.contractName ?? 'contract',
+            selector: `invoke:${identifier}`,
+            requireStatement,
+          });
+        }
+      }
+      inspect(artifact.delegateArtifact);
+    };
+    for (const participant of builder.inputs as Array<{
+      unlocker?: { contract?: { artifact?: unknown } };
+    }>) inspect(participant.unlocker?.contract?.artifact);
+    const activeSelector = input?.unlocker?.abiFunction?.selector?.toLowerCase();
+    const activeMatches = activeSelector === undefined ? []
+      : matches.filter((match) => match.selector.toLowerCase() === activeSelector);
+    const selected = activeMatches.length > 0 ? activeMatches : matches;
+    const unique = new Map(selected.map((match) => [
+      `${match.artifactName}\u0000${match.selector}\u0000${match.requireStatement.ip}\u0000${match.requireStatement.line}`
+        + `\u0000${match.requireStatement.message ?? ''}`, match,
+    ]));
+    if (unique.size === 1) return { exact: [...unique.values()][0] };
+    // Several source functions can compile to byte-identical bodies. With no selector we cannot identify their
+    // source line, but a single named candidate can still give a clearly qualified diagnostic hint.
+    const messages = new Set([...unique.values()].map((match) => match.requireStatement.message)
+      .filter((message): message is string => message !== undefined));
+    return messages.size === 1 ? { possibleMessage: [...messages][0] } : undefined;
+  })();
   // Name the source predicate when the artifact maps this instruction to one. The compiler records requires per
   // function selector; libauth reports the state after the failure, so `ip - 1` is checked first.
-  const requireSite = detailedFailure ? ((): string => {
+  const exactRequire = bodyRequireAttribution?.exact;
+  const requireSite = exactRequire !== undefined
+    ? `; failing require in ${exactRequire.artifactName}:${exactRequire.requireStatement.line}`
+      + `${exactRequire.requireStatement.message === undefined
+        ? '' : ` (${exactRequire.requireStatement.message})`}`
+    : bodyRequireAttribution?.possibleMessage !== undefined
+      ? `; possible require reason from an equivalent function body: ${bodyRequireAttribution.possibleMessage}`
+      : detailedFailure ? ((): string => {
     // A proxied call executes the implementation's body, so the delegate artifact chain is searched too - the same
     // widening `probeRequireStatement` performs for probes.
     type ArtifactDebugView = {
@@ -3129,7 +3442,6 @@ function describeMessageBusBatchRows(
       if (!functions) continue;
       const runtimeIp = failure?.ip;
       if (runtimeIp === undefined) continue;
-      const selector = input?.unlocker?.abiFunction?.selector;
       const selectors = selector !== undefined && functions[selector] !== undefined
         ? [selector] : Object.keys(functions);
       for (const candidate of selectors) {
@@ -3170,15 +3482,25 @@ function describeMessageBusBatchRows(
       }
     }
     return '';
-  })() : '';
+      })() : '';
   if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
     const batchRows = describeMessageBusBatchRows(
       transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(), input?.unlocker?.contract?.artifact,
     );
-    return new Error(
+    // An ordinary selector's bare `require` has no custom reason to append. Preserve the established raw
+    // preflight message for callers matching that exact VM objection; the exact source site remains available
+    // as structured `requireStatement` metadata. Named reasons and explicit debug traces still render inline.
+    const directRequireSite = exactRequire !== undefined
+      && exactRequire.requireStatement.message === undefined && !detailedFailure
+      ? '' : requireSite;
+    const mapped = new Error(
       `messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}${batchRows ?? ''}: `
-      + `${rawVmReason}${requireSite}`,
+      + `${rawVmReason}${directRequireSite}`,
     );
+    if (exactRequire !== undefined) {
+      Object.assign(mapped, { requireStatement: exactRequire.requireStatement, inputIndex });
+    }
+    return mapped;
   }
   const envelope = compilerRouteEnvelope(
     transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(),
@@ -3226,9 +3548,9 @@ function describeMessageBusBatchRows(
     };
   })?.unlocker;
   if (unlockerParams?.abiFunction?.inputs && unlockerParams.params) {
-    const idxParams = unlockerParams.abiFunction.inputs.flatMap((input, i) => (
-      /returnOutputIdx/i.test(input.name)
-        ? [{ name: input.name, value: String(unlockerParams.params?.[i]) }] : []
+    const idxParams = unlockerParams.abiFunction.inputs.flatMap((abiInput, i) => (
+      /returnOutputIdx/i.test(abiInput.name)
+        ? [{ name: abiInput.name, value: String(unlockerParams.params?.[i]) }] : []
     ));
     if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }
@@ -3236,7 +3558,7 @@ function describeMessageBusBatchRows(
   // "input 225 OP_VERIFY" carries participant/resource/expected-output context without a full operand dump.
   const layoutWitnesses = (unlockerParams?.abiFunction?.inputs && unlockerParams.params)
     ? unlockerParams.abiFunction.inputs.flatMap((entry, i) => {
-      if (!/valueChunkOutputBase|dynamicChunkInputBase|vmapBatchPredOut_/i.test(entry.name)) return [];
+      if (!/valueChunkOutputBase|dynamicChunk(Input|Output)Base|vmapBatchPredOut_/i.test(entry.name)) return [];
       return [`${entry.name.replace(/^__internal__/, '')}=${String(unlockerParams.params?.[i])}`];
     })
     : [];
@@ -3248,10 +3570,82 @@ function describeMessageBusBatchRows(
     owner.length > 0 ? `participant ${owner}` : undefined,
     layoutWitnesses.length > 0 ? `layout ${layoutWitnesses.join(',')}` : undefined,
   ].filter((part): part is string => part !== undefined).join('; ') : '';
-  return new Error(
+  const mapped = new Error(
     `messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}`
     + `${attribution.length > 0 ? ` (${attribution})` : ''}: ${rawVmReason}${requireSite}`,
   );
+  if (exactRequire !== undefined) {
+    Object.assign(mapped, { requireStatement: exactRequire.requireStatement, inputIndex });
+  }
+  return mapped;
+}
+
+/** Outputs a refused recipe repair would rewrite, by the field it rewrites. */
+export interface RefusedOutputRepair {
+  commitments: readonly number[];
+  lockingBytecodes?: readonly number[];
+}
+
+const repairedOutputReads = new Set<number>([Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT]);
+
+/**
+ * Find a source revert that a refused output repair cannot change. A frame that fails at the exact verify of a
+ * uniquely attributed source require, without reading a field the repair rewrites, fails identically on every
+ * repaired transaction. Rejection only: nothing observed here is promoted into the transaction.
+ */
+export function provenSourceRevertIndependentOfRepair(
+  builder: TransactionBuilder,
+  repair: RefusedOutputRepair,
+): Error | undefined {
+  const commitments = new Set(repair.commitments);
+  const lockingBytecodes = new Set(repair.lockingBytecodes ?? []);
+  if (commitments.size === 0 && lockingBytecodes.size === 0) return undefined;
+  let program: ReturnType<TransactionBuilder['buildLibauthProgram']>;
+  try {
+    program = builder.buildLibauthProgram();
+  } catch {
+    return undefined;
+  }
+  const { transaction, sourceOutputs } = program;
+  let dependent = false;
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
+    opcodes: repairedOutputReads,
+    beforeOperation: (unknownState) => {
+      const state = unknownState as AuthenticationProgramStateCommon;
+      if (state.controlStack?.some((frame) => frame === false)) return;
+      const operand = state.stack.at(-1);
+      const index = operand === undefined ? undefined : vmNumberToBigInt(operand);
+      const rewritten = state.instructions[state.ip]?.opcode === Op.OP_OUTPUTBYTECODE ? lockingBytecodes : commitments;
+      if (typeof index !== 'bigint' || rewritten.has(Number(index))) dependent = true;
+    },
+  });
+  for (let inputIndex = 0; inputIndex < builder.inputs.length; inputIndex += 1) {
+    const unlocker = builder.inputs[inputIndex]?.unlocker;
+    if (!unlocker || !isContractUnlocker(unlocker)) continue;
+    dependent = false;
+    let state: AuthenticationProgramStateCommon;
+    try {
+      state = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+    } catch {
+      continue;
+    }
+    if (dependent || state.error === undefined || !state.error.includes('OP_VERIFY')) continue;
+    const failingIp = state.ip - 1;
+    const failingOpcode = state.instructions[failingIp]?.opcode;
+    const mapped = mapMessageBusVmFailure(builder, transaction, inputIndex, state.error, {
+      ip: state.ip,
+      instructions: state.instructions,
+      programLength: state.instructions.length,
+      opcode: state.instructions[state.ip]?.opcode,
+      previousOpcode: failingOpcode,
+    });
+    const require = (mapped as { requireStatement?: { ip: number; message?: string } }).requireStatement;
+    // Compiler-internal guards share the require table without a reason: a folded verify needs a source reason.
+    if (require?.ip === failingIp && (failingOpcode === Op.OP_VERIFY || require.message !== undefined)) {
+      return mapped;
+    }
+  }
+  return undefined;
 }
 
 /** Refuse any covenant failure in an exact, fully assembled transaction. */
@@ -3496,7 +3890,9 @@ export function assertAssemblyLayoutWitnessesMatchResolve(
         trailingCapacity: block.blockLayout.trailingCapacity,
         dynChunkCount: assertDyn ? 0 : undefined,
         valueChunkBandOffset: assertValueChunk ? publishedBandOffset : undefined,
-        valueChunkCount: assertValueChunk ? 1 : undefined,
+        // An all-inline entry update can publish the dormant trailing coordinate with zero capacity.
+        // Check that coordinate without inventing an occupied chunk in a compiler-published empty band.
+        valueChunkCount: assertValueChunk ? (block.blockLayout.trailingCapacity === 0 ? 0 : 1) : undefined,
         predOuts: predOutClaims,
         participant: block.participant,
       });
@@ -3521,7 +3917,8 @@ export const preflightMessageBusTransaction = (
   });
   const transaction = builder.buildLibauthTransaction();
   logComposedTransactionLayout(builder, transaction, 'finalized');
-  assertCanonicalMessageEnvelopePush(transaction, assembly);
+  assertCanonicalMessageEnvelopePush(builder, transaction, assembly);
+  assertDirectParticipantFrames(builder, transaction, assembly);
   evaluateEveryInput(builder, transaction);
   // Byte rules LAST, so a transaction that cannot execute reports its semantic cause rather than whichever
   // relay observation happens to be true of it as well. A transaction refused by the VM is broken regardless
@@ -3580,7 +3977,7 @@ export async function sendPreflightedMessageBusTransaction(
   const assembly = requireMessageBusBlockAssembly(builder);
   const raw = builder.build();
   const transaction = decodeTransactionUnsafe(hexToBin(raw));
-  assertCanonicalMessageEnvelopePush(transaction, assembly);
+  assertCanonicalMessageEnvelopePush(builder, transaction, assembly);
   evaluateEveryInput(builder, transaction);
   // The byte gate reads the DECODED broadcast bytes, not a re-derived shape, so it judges exactly what
   // `sendRawTransaction` is about to receive. This is the last thing between the composer and the network.

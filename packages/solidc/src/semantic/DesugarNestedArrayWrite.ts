@@ -626,9 +626,10 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   }
 
   // `m[k0..k_{kc-1}][i][j..] = v` where m is a mapping (kc keys) whose value is an array: the parser makes
-  // one MappingAssignNode with all indices. A 1-index write (`m[k][i]=v`) already works after ST pops the lone
-  // arrayIndex; kernel admission needs the whole-entry RMW first so the journal sees `m[k]`. A 2+-index write
-  // always desugars: `T[][] t = m[k]; t[i][j] = v; m[k] = t;`.
+  // one MappingAssignNode with all indices. A 1-index scalar-array write (`m[k][i]=v`) already has a native
+  // sorted-RMW path after ST separates arrayIndex; a struct-element write needs the whole-entry RMW before
+  // kernel admission so the journal sees `m[k]`. A 2+-index write always desugars:
+  // `T[][] t = m[k]; t[i][j] = v; m[k] = t;`.
   private tryDesugarMappingArrayValue(node: MappingAssignNode): StatementNode[] | undefined {
     if (node.arrayPush || node.arrayPop) return undefined;
     if (this.locals.has(node.name)) return undefined; // a local shadows the mapping
@@ -637,12 +638,20 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const { keyCount, valueType } = info;
     let dims = 0; let t: Type = valueType;
     while (t instanceof ArrayType) { dims++; t = t.elementType; }
-    const arrIdxCount = node.keys.length - keyCount;
+    // Earlier semantic normalization may already have separated the first array-value index from the mapping
+    // keys. It is still part of this whole-entry read/modify/write, not a second physical mapping key.
+    const arrIdxs = [...node.keys.slice(keyCount), ...(node.arrayIndex ? [node.arrayIndex] : [])];
+    const arrIdxCount = arrIdxs.length;
     if (arrIdxCount < this.mappingArrayValueMinIndices || arrIdxCount > dims) return undefined;
+    // A normalized scalar-array element write already has a native sorted-RMW lowering. Keep its arrayIndex
+    // attached to the MappingAssign so runtime counter-loop metadata can publish the exact `setAt` mutation.
+    // Struct elements need the whole-array rewrite: their field update has already become a composite value
+    // assignment, which the direct element path cannot journal as one authenticated entry transition.
+    if (node.arrayIndex && arrIdxCount === 1 && valueType instanceof ArrayType && dims === 1
+      && !(valueType.elementType instanceof StructType)) return undefined;
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     const mapKeys = node.keys.slice(0, keyCount);
-    const arrIdxs = node.keys.slice(keyCount);
 
     // 1. Materialize the whole array value: `T[] t = m[k0]..[k_{kc-1}]`.
     let read: ExpressionNode = this.ident(node.name, node);

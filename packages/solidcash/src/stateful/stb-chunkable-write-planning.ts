@@ -11,7 +11,7 @@ import {
 } from './chunkable-value-write-selection.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
-  legacyGroupLooksLikePublishJobEvent,
+  legacyInitialValueChunkWrite,
   legacyIsPublishJobEventName,
 } from './legacy-planning-heuristics.js';
 import {
@@ -21,13 +21,12 @@ import {
 } from './delegate-event-jobevent-helpers.js';
 import {
   isInitialValueChunkWrite,
-  isPersistedJobEventsReady,
+  isPersistedCompatibilityValueChunkReady,
   isValueChunkWriteReady,
   persistedJobEventsWidth,
   persistedValueChunkReadiness,
   persistedValueChunkWriteState,
   selectValueChunkWriteCategory,
-  settlement,
   shouldRematerializeDescribedValueChunkWrite,
   type ValueChunkWriteCategorySelection,
 } from './value-chunk-persist.js';
@@ -167,7 +166,7 @@ export function valueChunkWriteCategorySelection(
   return selectValueChunkWriteCategory(writes);
 }
 
-export function jobEventsPublishCategory(host: ChunkableWritePlanningHost): string | undefined {
+export function chunkableValueWriteCategory(host: ChunkableWritePlanningHost): string | undefined {
   const selection = valueChunkWriteCategorySelection(host);
   if (selection.status === 'exact') return selection.categoryId;
   if (selection.status !== 'absent') return undefined;
@@ -185,12 +184,10 @@ export function isInitialChunkableValueWrite(host: ChunkableWritePlanningHost): 
   }
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return false;
   // Compatibility only for plans predating compiler/planner value-chunk descriptors.
-  const legacyNamedInitial = host.lowLevelCallUtxoGroups.some(
-    (group) => group.functionName === 'publishJobPost',
-  )
-    || host.externalCallUtxoGroups.some((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobPost');
-  return isInitialValueChunkWrite(selection, legacyNamedInitial);
+  const legacyInitial = legacyInitialValueChunkWrite(
+    host.lowLevelCallUtxoGroups, host.externalCallUtxoGroups,
+  );
+  return isInitialValueChunkWrite(selection, legacyInitial);
 }
 
 export function shouldRematerializePersistUpdateForHost(host: ChunkableWritePlanningHost): boolean {
@@ -220,7 +217,8 @@ export function shouldRematerializePersistUpdateForHost(host: ChunkableWritePlan
     if (!names.some((n) => legacyIsPublishJobEventName(n))) continue;
     const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
     if (shouldRematerializePersistUpdate({
-      persistReady: isPersistedJobEventsReady(),
+      persistReady: group.categoryId !== undefined
+        && isPersistedCompatibilityValueChunkReady(group.categoryId),
       initialWrite: isInitialChunkableValueWrite(host),
       event,
       plannedInserts,
@@ -271,17 +269,19 @@ export function persistedChunkableValueWriteState(
 
 export function isPersistedChunkableValueWriteReady(host: ChunkableWritePlanningHost): boolean {
   const selection = valueChunkWriteCategorySelection(host);
+  const legacyCategory = selection.status === 'absent' ? chunkableValueWriteCategory(host) : undefined;
   return persistedValueChunkReadiness({
     selection,
     hasWriteMetadata: hasChunkableValueWriteMetadata(host),
     permitsLegacyFallback: permitsLegacyNamedValueChunkFallbackForGroups(host),
     descriptorReady: selection.status === 'exact'
       && persistedChunkableValueWriteState(host) !== undefined,
-    legacyReady: isPersistedJobEventsReady(),
+    legacyReady: legacyCategory !== undefined
+      && isPersistedCompatibilityValueChunkReady(legacyCategory),
   });
 }
 
-export function persistJobEventsTokenCategory(host: ChunkableWritePlanningHost): string | undefined {
+export function persistedValueChunkCategory(host: ChunkableWritePlanningHost): string | undefined {
   const selection = valueChunkWriteCategorySelection(host);
   if (selection.status === 'exact') return selection.categoryId;
   if (selection.status !== 'absent') return undefined;
@@ -292,25 +292,35 @@ export function persistJobEventsTokenCategory(host: ChunkableWritePlanningHost):
     return selectedCategories.size === 1 ? [...selectedCategories][0] : undefined;
   }
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return undefined;
-  // Compatibility only for artifacts/plans predating compiler-authored valueChunkWrites.
-  const impl = host.lowLevelCallUtxoGroups.find((group) =>
-    legacyGroupLooksLikePublishJobEvent(group))?.categoryId;
-  for (const categoryId of settlement().persistedJobEventsLocks.keys()) {
-    if (categoryId && categoryId !== impl) return categoryId;
-  }
-  for (const categoryId of settlement().persistedJobEventsRecipes.keys()) {
-    if (categoryId && categoryId !== impl) return categoryId;
-  }
-  return jobEventsPublishCategory(host);
+  // An implementation-only delegate group does not identify its state owner. Cached predecessors belong to
+  // their own categories and cannot supply the missing proxy identity by insertion order.
+  return selectedPersistedValueChunkCategory(host);
+}
+
+/** Select a derive-pass append owner from the active writer, never from an unrelated cached predecessor. */
+export function selectedPersistedValueChunkCategory(host: ChunkableWritePlanningHost): string | undefined {
+  const selection = valueChunkWriteCategorySelection(host);
+  if (selection.status === 'exact') return selection.categoryId;
+  if (selection.status !== 'absent') return undefined;
+  const selected = chunkableValueWriteGroups(host);
+  const owners = new Set([selected.external?.valueChunkStateOwner?.categoryId,
+    selected.lowLevel?.valueChunkStateOwner?.categoryId]
+    .filter((category): category is string => category !== undefined));
+  if (owners.size > 1) return undefined;
+  if (owners.size === 1) return [...owners][0];
+  if (selected.external?.categoryId) return selected.external.categoryId;
+  // An unpaired delegate executor is code, not the state owner. Without a published owner, do not infer the
+  // proxy from settlement-cache insertion order. A direct low-level call carries its own category.
+  return selected.lowLevel?.callMode === 'call' ? selected.lowLevel.categoryId : undefined;
 }
 
 export function shouldStampPersistUpdateDigestLockForHost(host: ChunkableWritePlanningHost): boolean {
-  const categoryId = persistJobEventsTokenCategory(host);
+  const categoryId = persistedValueChunkCategory(host);
   const exactPersisted = persistedChunkableValueWriteState(host);
   return shouldStampPersistUpdateDigestLock({
     persistReady: exactPersisted !== undefined || isPersistedChunkableValueWriteReady(host),
     persistWidth: exactPersisted?.width
-      ?? (categoryId ? persistedJobEventsWidth(categoryId) : persistedJobEventsWidth()),
+      ?? (categoryId ? persistedJobEventsWidth(categoryId) : 0),
     firstPublishInsert: isInitialChunkableValueWriteForDigest(host),
   });
 }
@@ -320,8 +330,8 @@ export function persistDigestCategories(host: ChunkableWritePlanningHost): strin
   const push = (value?: string): void => {
     if (value && !cats.includes(value)) cats.push(value);
   };
-  push(jobEventsPublishCategory(host));
-  push(persistJobEventsTokenCategory(host));
+  push(chunkableValueWriteCategory(host));
+  push(persistedValueChunkCategory(host));
   for (const group of [...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups]) {
     push(group.categoryId);
   }

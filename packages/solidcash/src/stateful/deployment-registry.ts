@@ -1,6 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import type { Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../utils.js';
+import { addressToLockScript, lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
 
 export interface RegisteredDeployment {
   contractName: string;
@@ -108,7 +109,7 @@ export function findDeploymentByCategory(
   return undefined;
 }
 
-export function findDeploymentByAddress(
+function findDeploymentByExactAddress(
   provider: NetworkProvider, address: string,
 ): RegisteredDeployment | undefined {
   const current = deploymentsOf(provider);
@@ -125,7 +126,17 @@ export function findDeploymentByAddress(
         if (binToHex(addressToLockScript(registered)) === wanted) return current[index];
       } catch { /* not a cashaddr */ }
     }
-  } catch { /* keep the string fallback below */ }
+  } catch { /* not a canonical cashaddr */ }
+  return undefined;
+}
+
+export function findDeploymentByAddress(
+  provider: NetworkProvider, address: string,
+): RegisteredDeployment | undefined {
+  const exact = findDeploymentByExactAddress(provider, address);
+  if (exact) return exact;
+  const current = deploymentsOf(provider);
+  const addr = String(address ?? '');
   // Fuzzy: cashaddr prefix variants / trailing payload match (MistSwap MasterChef lp.address forms).
   if (addr.length > 12) {
     const tail = addr.slice(-20);
@@ -139,20 +150,75 @@ export function findDeploymentByAddress(
   return undefined;
 }
 
+/** Canonical native address or complete raw locking bytecode; never a partial suffix or ABI projection. */
+export function exactAddressLockingBytecodeHex(value: string | Uint8Array): string | undefined {
+  if (value instanceof Uint8Array) return binToHex(value);
+  try {
+    const cashaddr = tryCashAddressToLockScript(value);
+    if (cashaddr) return binToHex(cashaddr);
+  } catch { return undefined; }
+  return /^(?:0x)?(?:[0-9a-f]{2})+$/iu.test(value)
+    ? value.replace(/^0x/iu, '').toLowerCase() : undefined;
+}
+
+/** A connect-time binding may satisfy a published target only when one of its known identities matches exactly. */
+export function connectedContractMatchesExactAddress(
+  contract: unknown, target: string | Uint8Array,
+): boolean {
+  if (typeof contract !== 'object' || contract === null) return false;
+  const wanted = exactAddressLockingBytecodeHex(target);
+  if (wanted === undefined) return false;
+  const connected = contract as {
+    inner?: { lockingBytecode?: string };
+    implementation?: { inner?: { lockingBytecode?: string } };
+    proxy?: { inner?: { lockingBytecode?: string }; _logicalAddress?: string };
+    _logicalAddress?: string;
+    address?: string;
+  };
+  return [
+    connected.inner?.lockingBytecode,
+    connected.implementation?.inner?.lockingBytecode,
+    connected.proxy?.inner?.lockingBytecode,
+    connected._logicalAddress,
+    connected.proxy?._logicalAddress,
+    connected.address,
+  ].some((identity) => typeof identity === 'string'
+    && exactAddressLockingBytecodeHex(identity) === wanted);
+}
+
 /**
  * Resolve a registered Solidity-facing address to the physical locking bytecode held by the deployment.
  *
- * Stateful contracts expose a stable logical CREATE address, while covenant comparisons (`address(this)` and
- * `msg.sender`) observe the exact locking bytecode of the executing input. Callers which persist an address after
- * its deployment exists must therefore store this physical form. An unresolved address is deliberately left to
- * the caller: it may be an EOA or a forward reference in a cyclic deployment graph.
+ * This explicitly selects the execution identity, including for routes which expose an authenticated public
+ * SCID as `address(this)` / `msg.sender`. Use registeredValueAddressLockingBytecode when persisting a peer's
+ * language-level address. Unresolved EOAs and forward references remain the caller's responsibility.
  */
 export function registeredPhysicalLockingBytecode(
   provider: NetworkProvider,
   address: string,
 ): Uint8Array | undefined {
-  const physical = findDeploymentByAddress(provider, address)?.lockingBytecode;
+  const physical = findDeploymentByExactAddress(provider, address)?.lockingBytecode;
   return physical ? hexToBin(physical) : undefined;
+}
+
+/** Address value observed when a registered contract identifies itself or calls another contract. */
+export function registeredValueAddressLockingBytecode(
+  provider: NetworkProvider,
+  address: string,
+): Uint8Array | undefined {
+  const deployment = findDeploymentByExactAddress(provider, address);
+  if (!deployment) return undefined;
+  const contract = deployment.contract as {
+    inner?: { artifact?: Artifact };
+    implementation?: { inner?: { artifact?: Artifact } };
+  };
+  const artifact = contract.implementation?.inner?.artifact ?? contract.inner?.artifact;
+  const authenticatesPublicSelf = artifact?.messageBus?.route?.inputs
+    .some((input) => input.name === '__internal__graphSelfIdentityInput') === true;
+  // New kernel routes prove their public SCID on-chain. Persisting the physical execution address instead
+  // would make an otherwise identical CREATE reference depend on whether its deployment was already known.
+  if (authenticatesPublicSelf) return addressToLockScript(deployment.address);
+  return deployment.lockingBytecode ? hexToBin(deployment.lockingBytecode) : undefined;
 }
 
 /** All deployments for a provider (most recent last). */
@@ -183,18 +249,18 @@ export function findDeploymentByLockingBytecode(
 }
 
 /**
- * Resolve the canonical 20-byte address carried by imported-Solidity ABI values.
+ * Enumerate deployments matching the canonical 20-byte address carried by imported-Solidity ABI values.
  *
  * This is intentionally separate from `findDeploymentByLockingBytecode`: a 20-byte Solidity identity is not a
- * Bitcoin Cash locking bytecode. More than one matching deployment is ambiguous and therefore unresolved.
+ * Bitcoin Cash locking bytecode. Callers must not silently choose one of multiple matching deployments.
  */
-export function findDeploymentBySolidityAddressPayload(
+export function matchingDeploymentsBySolidityAddressPayload(
   provider: NetworkProvider, payload: Uint8Array,
-): RegisteredDeployment | undefined {
-  if (payload.length !== 20) return undefined;
+): RegisteredDeployment[] {
+  if (payload.length !== 20) return [];
   const wanted = binToHex(payload);
   const current = deploymentsOf(provider);
-  const matches = current.filter((deployment) => {
+  return current.filter((deployment) => {
     const candidates = new Set<string | undefined>([
       registeredExecutionLockingBytecode(deployment), deployment.lockingBytecode,
     ]);
@@ -207,6 +273,13 @@ export function findDeploymentBySolidityAddressPayload(
       return narrowed !== undefined && binToHex(narrowed) === wanted;
     });
   });
+}
+
+/** Resolve one unambiguous registered deployment for a Solidity ABI address. */
+export function findDeploymentBySolidityAddressPayload(
+  provider: NetworkProvider, payload: Uint8Array,
+): RegisteredDeployment | undefined {
+  const matches = matchingDeploymentsBySolidityAddressPayload(provider, payload);
   return matches.length === 1 ? matches[0] : undefined;
 }
 
@@ -214,12 +287,45 @@ export function findDeploymentBySolidityAddressPayload(
 export function findDeploymentByAddressValue(
   provider: NetworkProvider, value: string | Uint8Array,
 ): RegisteredDeployment | undefined {
-  if (typeof value === 'string') {
-    return findDeploymentByAddress(provider, value)
-      ?? findDeploymentByLockingBytecode(provider, value);
+  const exact = typeof value === 'string'
+    ? findDeploymentByExactAddress(provider, value) ?? findDeploymentByLockingBytecode(provider, value)
+    : findDeploymentByLockingBytecode(provider, binToHex(value));
+  if (exact) return exact;
+  const payload = typedSolidityAddressPayload(value);
+  return payload && findDeploymentBySolidityAddressPayload(provider, payload);
+}
+
+/** Only a typed address may interpret a canonical ABI word as its right-aligned 20-byte identity. */
+function typedSolidityAddressPayload(value: string | Uint8Array): Uint8Array | undefined {
+  const bytes = value instanceof Uint8Array ? value
+    : /^(?:0x)?(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(value)
+      ? hexToBin(value.replace(/^0x/iu, '')) : undefined;
+  if (bytes?.length === 20) return bytes;
+  if (bytes?.length === 32 && bytes.subarray(0, 12).every((byte) => byte === 0)) return bytes.subarray(12);
+  return undefined;
+}
+
+/** Recover the exact registered native address which projects to a typed Solidity identity. */
+export function registeredAddressValueLockingBytecode(
+  provider: NetworkProvider, value: string | Uint8Array,
+): Uint8Array | undefined {
+  const deployment = findDeploymentByAddressValue(provider, value);
+  if (!deployment) return undefined;
+  const payload = typedSolidityAddressPayload(value);
+  if (!payload) {
+    if (value instanceof Uint8Array) return value;
+    try { return addressToLockScript(value); } catch { return hexToBin(value.replace(/^0x/iu, '')); }
   }
-  return findDeploymentByLockingBytecode(provider, binToHex(value))
-    ?? findDeploymentBySolidityAddressPayload(provider, value);
+  const candidates = new Set([deployment.lockingBytecode, registeredExecutionLockingBytecode(deployment)]);
+  try { candidates.add(binToHex(addressToLockScript(deployment.address))); } catch { /* not a cashaddr */ }
+  const wanted = binToHex(payload);
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const bytes = hexToBin(candidate.replace(/^0x/iu, ''));
+    const identity = lockingBytecodeToSolidityAddressPayload(bytes);
+    if (identity && binToHex(identity) === wanted) return bytes;
+  }
+  return undefined;
 }
 
 /**

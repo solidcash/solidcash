@@ -30,7 +30,7 @@ import {
   chunkableValueWriteGroups,
   hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
-  jobEventsPublishCategory,
+  chunkableValueWriteCategory,
   permitsLegacyNamedValueChunkFallbackForGroups,
   shouldRematerializePersistUpdateForHost,
 } from './stb-chunkable-write-planning.js';
@@ -41,20 +41,20 @@ import {
 } from './stb-scaled-preserve-emit.js';
 import { selectCompilerWriterEvent } from './value-chunk-base-writer-select.js';
 import {
-  isPersistedJobEventsReady,
+  isPersistedCompatibilityValueChunkReady,
   persistedJobEventsWidth,
 } from './value-chunk-persist.js';
 import { placeChunkableWriterEventOutput } from './writer-event-delegate-layout.js';
 
 export interface NestedEmitEventsHost extends ScaledPreserveEmitHost {
-  readonly pendingJobEventsPredecessors: UnlockableUtxo[];
-  forcedJobEventsBandStart?: number;
+  readonly pendingValueChunkPredecessors: UnlockableUtxo[];
+  forcedChunkableValueWriteBandStart?: number;
   detachedEventReceipts: Array<{ eventSignature: string; commitment: string }>;
   readonly builderOptions: { provider: object };
   ensureDistinctJobEventNfts(builder: TransactionBuilder): void;
-  materializeJobEventsBand(builder: TransactionBuilder): void;
-  placeJobEventsPredecessorInputs(extras?: UnlockableUtxo[]): void;
-  reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void;
+  materializeValueChunkBand(builder: TransactionBuilder): void;
+  placeValueChunkPredecessorInputs(extras?: UnlockableUtxo[]): void;
+  reassertPersistedValueChunkOneToOnes(builder: TransactionBuilder, emitDest: number): void;
 }
 
 /**
@@ -116,7 +116,7 @@ export function reassertNestedEmitEvents(
       ?? chunkableWriterEventOutputIndex(impl, eventOffset);
   const persistEmitEarly = shouldRematerializePersistUpdateForHost(host);
   const categoryId = eventSelection.status === 'exact'
-    ? eventSelection.categoryId : jobEventsPublishCategory(host);
+    ? eventSelection.categoryId : chunkableValueWriteCategory(host);
   const emitInfo = eventSelection.status === 'exact'
     ? { eventSignature: eventSelection.eventSignature }
     : publishFn?.emits?.[0];
@@ -229,9 +229,9 @@ export function reassertNestedEmitEvents(
   const eventCommitment = constructedCommit ?? derived?.commitment;
   if (!legacyEventFallback && !eventCommitment) return;
   const persistEmit = shouldRematerializePersistUpdateForHost(host);
-  // Preserve distinct JobEvent commitments that will leave the covenant dest so
-  // multi-emit publishes (Created then WhitelistedWorkerAdded) still decode.
-  if (emitSignature && categoryId) {
+  // Only descriptor-free legacy plans infer detached receipts from the historical JobEvent wire.
+  // An exact compiler-described event owns its own receipt; similarly-shaped sibling NFT commitments do not.
+  if (legacyEventFallback && emitSignature && categoryId) {
     const nextCommit = (eventCommitment ?? '').toLowerCase();
     const detachCommit = (commit: string): void => {
       if (!isJobEventEmitCommitment(commit)) return;
@@ -288,7 +288,8 @@ export function reassertNestedEmitEvents(
             (host.builderOptions.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
           );
           const unixThreshold = 500_000_000;
-          const appending = isPersistedJobEventsReady() && persistedJobEventsWidth() > 0;
+          const appending = isPersistedCompatibilityValueChunkReady(categoryId)
+            && persistedJobEventsWidth(categoryId) > 0;
           const locktime = appending && Number.isFinite(tip) && tip >= unixThreshold
             ? (tip > unixThreshold ? Math.trunc(tip) - 1 : Math.trunc(tip))
             : undefined;
@@ -318,10 +319,10 @@ export function reassertNestedEmitEvents(
   if (!placed && !legacyEventFallback) return;
   host.ensureDistinctJobEventNfts(builder);
   if (persistEmit && dest >= 0) {
-    host.forcedJobEventsBandStart = dest + 1;
-    host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
-    host.materializeJobEventsBand(builder);
-    host.reassertPersistedJobEventsOneToOnes(builder, dest);
+    host.forcedChunkableValueWriteBandStart = dest + 1;
+    host.placeValueChunkPredecessorInputs(host.pendingValueChunkPredecessors);
+    host.materializeValueChunkBand(builder);
+    host.reassertPersistedValueChunkOneToOnes(builder, dest);
   }
   const executingDest = legacyEventFallback && dest >= 0
     ? dest

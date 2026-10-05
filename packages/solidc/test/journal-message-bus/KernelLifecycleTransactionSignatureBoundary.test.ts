@@ -27,7 +27,8 @@ describe('kernel lifecycle transaction-signature boundary', () => {
       function openSplit(int count) public split(count) { require(count > 0); }
       function openMerge(int count) public merge(count) { require(count > 0); }
     }`, KERNEL);
-    const handler = (name: string) => artifact.messageBus?.handlers.find((entry) => entry.name === name);
+    const handler = (name: string): NonNullable<typeof artifact.messageBus>['handlers'][number] | undefined =>
+      artifact.messageBus?.handlers.find((entry) => entry.name === name);
 
     for (const name of ['signedSplit', 'signedMerge', 'opaqueSplit', 'opaqueMerge']) {
       expect(handler(name)).toMatchObject({
@@ -57,7 +58,8 @@ describe('kernel lifecycle transaction-signature boundary', () => {
         require(bytes(proof).length >= 0 && count > 0);
       }
     }`, KERNEL);
-    const handler = (name: string) => artifact.messageBus?.handlers.find((entry) => entry.name === name);
+    const handler = (name: string): NonNullable<typeof artifact.messageBus>['handlers'][number] | undefined =>
+      artifact.messageBus?.handlers.find((entry) => entry.name === name);
 
     expect(handler('nested')).toMatchObject({
       eligible: false,
@@ -82,7 +84,8 @@ describe('kernel lifecycle transaction-signature boundary', () => {
         require(bytes(payload).length >= 0);
       }
     }`, KERNEL);
-    const handler = (name: string) => artifact.messageBus?.handlers.find((entry) => entry.name === name);
+    const handler = (name: string): NonNullable<typeof artifact.messageBus>['handlers'][number] | undefined =>
+      artifact.messageBus?.handlers.find((entry) => entry.name === name);
 
     expect(handler('close')).toMatchObject({
       eligible: false,

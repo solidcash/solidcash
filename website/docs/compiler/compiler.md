@@ -33,6 +33,12 @@ Options:
   -A, --asm              Compile the contract to ASM format rather than a full artifact.
   -c, --opcount          Display the number of opcodes in the compiled bytecode.
   -s, --size             Display the size in bytes of the compiled bytecode.
+      --split            Emit a state-local one-hop root/facet bundle.
+      --no-message-bus   Disable inferred atomic message-bus composition.
+  -S, --skip-enforce-function-parameter-types
+  -L, --skip-enforce-locktime-guard
+      --allow-unverified-paths
+      --allow-unsafe-operations
   -f, --format <format>  Specify the format of the output. (choices: "json", "ts", default: "json")
   -?, --help             Display help
 ```
@@ -48,6 +54,8 @@ solidc ./Contract.scash --output ./artifact.ts --format ts
 
 ```bash
 solidc ./Contract.scash --size --opcount
+
+solidc ./Large.scash --split --output ./Large.split.json
 ```
 
 :::info
@@ -55,7 +63,8 @@ The size outputs of the `solidc` compiler are based on the bytecode without cons
 :::
 
 ## JavaScript Compilation
-Generally SolidCash contracts are compiled to an Artifact JSON file using the CLI compiler. As an alternative to this, SolidCash contracts can be compiled from within JavaScript apps using the `solidc` package. This package exports two compilation functions.
+Generally SolidCash contracts are compiled to an Artifact JSON file using the CLI compiler. They can also be
+compiled programmatically with the `solidc` package.
 
 ```bash
 npm install solidc
@@ -91,3 +100,77 @@ const source = await result.text();
 
 const P2PKH = compileString(source);
 ```
+
+## Multiple declarations
+
+`compileFile()` and `compileString()` keep the single-artifact API and select the source's primary contract (the
+last concrete top-level contract unless `primaryContractName` is provided). To compile every top-level declaration,
+use the additive multi APIs:
+
+```ts
+import { compileFileMulti, compileStringMulti } from 'solidc';
+
+const artifacts = compileFileMulti('Protocol.scash');
+const tokenArtifact = artifacts.Token;
+const factoryArtifact = artifacts.Factory;
+```
+
+The return value is an `ArtifactMap`, keyed by declaration/contract name in source order. Concrete contracts and
+libraries receive normal artifacts; declaration-only units receive minimal artifacts; abstract contracts are not
+deployable entries. Duplicate top-level names are a compile error.
+
+For a deploy-aware wrapper which carries the complete artifact graph into the SDK, use `ContractBundle`:
+
+```ts
+import { ContractBundle } from 'solidcash';
+
+const bundle = ContractBundle.from(artifacts, { provider, signer });
+const { contract: factory } = await bundle.deploy('Factory', [owner], deployOptions);
+```
+
+This lets typed child deployments and linked library dependencies resolve artifacts without calling
+`registerChild()` or `registerArtifacts()` manually.
+
+## Split bundles
+
+```ts
+import { compileFileSplit, compileStringSplit } from 'solidc';
+
+const split = compileFileSplit('Large.scash', {
+  maxShardBytes: 9_500,
+  forceSplit: false,
+});
+```
+
+These functions always return a `SplitArtifactBundle`; a fitting contract has zero facets unless `forceSplit` is
+set. See [Large Contracts & Split Bundles](./large-contracts.md) for planning, deployment, routing, and v1 limits.
+
+## Common compiler options
+
+| Option | Purpose |
+| --- | --- |
+| `primaryContractName` | Select the single-artifact primary contract explicitly |
+| `enforceFunctionParameterTypes` | Enforce declared ABI argument types |
+| `enforceLocktimeGuard` | Inject the guard required when `tx.locktime` participates in a spend |
+| `enforceFinalRequire` | Promote unverified/unconstrained spending paths from warnings to errors |
+| `allowUnsafeOperations` | Explicitly admit detected caller-controlled delegate/selfdestruct authority |
+| `commitmentLimit` | Set the state-layout NFT commitment budget (bounded by the target network) |
+| `maximumInputBytes` | Validate against a private/mock per-input ceiling; production defaults to 10,000 |
+| `solidityImportCompat` | Accept Solidity pragmas/imports and enable the Solidity porting pipeline |
+| `evmCompat` | Use EVM word encoding for the `abi.*` family |
+| `chunkedArrays` | Select the dense chunk backend for eligible unbounded state arrays |
+| `chainId` | Bake `block.chainid` as a `uint256`; the current network convention uses only `chainId & 0xff` |
+| `ecrecover` | Select the `p2pkh` or `evm` address projection for imported Solidity |
+| `forceStateful` | Give a zero-state covenant a master NFT and empty state layout |
+| `inlineLibraries` | Force named script-precompile libraries inline or into side-cars |
+| `disableAutoInline` | Disable the small/single-use library inline heuristic |
+| `userLibraries` | Register custom script-precompile code and its ABI |
+| `brandLibrary` | Bind a deployed delegate library to its owning consumer's category |
+| `messageBus` | `undefined` for inference, `true` to request a route, `false` to forbid it |
+| `messageBusKernel` | Default `true`: compile message-bus routes as the kernel row loop instead of the legacy unroll |
+
+`importResolver` and `rootFileId` are the browser/tooling hooks for imported sources. `compileFile*` supplies a
+Node filesystem resolver automatically, including `node_modules` and optional `.sol` resolution.
+
+Unsafe and relaxed options exist for migration, testing, and private networks. Publishing an artifact requires
+the limits and security settings of the network which will validate it.

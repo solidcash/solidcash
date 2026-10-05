@@ -3,6 +3,7 @@
  * constraint fixpoint: claim-pass progression uses the same MonotoneCell lattice as resource/chunk converges.
  */
 
+import { binToHex, sha256, utf8ToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
@@ -20,8 +21,10 @@ import {
 import { seedComposeComputedClaims } from './compose-seed-computed-claims.js';
 import { freezeStaticcallParticipantOutputs } from './compose-participant-helpers.js';
 import {
+  convergeMessageBusComputedDynamicChunkOutputs,
   dynamicChunkPlaceholdersRemain,
 } from './computed-dynamic-chunks.js';
+import { isVmValidationOnly } from './materialization-mode.js';
 import {
   finalizeAtomicInvocationGraph,
   type AtomicDeploymentSlotEffect,
@@ -38,6 +41,8 @@ import {
 } from './monotone-lattice.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
 import { recordActiveConstraintPass } from '../stateful/value-chunk-persist.js';
+import type { ConstraintFixpointSession } from './constraint-fixpoint-session.js';
+import { graphSemanticDerivationCeiling } from './semantic-derivation-budget.js';
 
 /**
  * Record one non-final semantic claim fingerprint on the monotone lattice.
@@ -47,13 +52,14 @@ export function recordSemanticClaimPass(
   lattice: MonotoneCell<string>,
   seen: Set<string>,
   claimState: string,
+  constraintFixpoint?: ConstraintFixpointSession,
 ): void {
   // constraint fixpoint: semantic-claim passes share the same recordMonotonePass helper as
   // resource / value-chunk / dynamic-chunk / deferred-compute converges.
   const cycleMessage = 'messageBus: semantic derivation entered a repeated non-final claim state';
   recordMonotonePass(lattice, seen, claimState, cycleMessage);
-  // Also fingerprint onto the settlement multi-domain fixpoint session.
-  recordActiveConstraintPass('semantic-claim', claimState, cycleMessage);
+  // Also fingerprint onto this build's multi-domain fixpoint session.
+  recordActiveConstraintPass('semantic-claim', claimState, cycleMessage, constraintFixpoint);
 }
 
 /** Resolve the claim lattice when the graph is admitted stable. */
@@ -66,6 +72,18 @@ export function finalizeSemanticClaimLattice(
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 type FinalizedGraph = ReturnType<typeof finalizeAtomicInvocationGraph>;
+
+/** Opt-in bounded claim fingerprints: no value bytes, locking scripts, or witness payloads. */
+function traceSemanticClaims(stage: string, pass: number, claims: Record<string, unknown>, extra = {}): void {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ATOMIC_GRAPH !== '1') return;
+  console.error('atomic-semantic-claims', { stage, pass, ...extra,
+    claims: Object.fromEntries(Object.entries(claims).map(([domain, value]) => [domain, {
+      count: Array.isArray(value) ? value.length : Object.keys(value as object).length,
+      digest: binToHex(sha256.hash(utf8ToBin(semanticJson(value)))).slice(0, 16),
+    }])),
+  });
+}
 
 export interface RunComposeSemanticClaimLoopContext {
   plan: CompiledGraphPlan;
@@ -94,19 +112,21 @@ export interface RunComposeSemanticClaimLoopContext {
   descriptorsLength: number;
   resultPropagationDepth: number;
   runtime: Pick<
-    ComposeAssemblyRuntime,
-    | 'rebalanceFeeTail'
-    | 'eventLockingBytecodes'
-    | 'eventLockingBytecodeAtOffset'
-    | 'eventLockingBytecodeForCommitment'
-    | 'assemble'
-    | 'admit'
-    | 'actualSpansMatch'
-    | 'deriveReturnResults'
+  ComposeAssemblyRuntime,
+  | 'constraintFixpoint'
+  | 'rebalanceFeeTail'
+  | 'eventLockingBytecodes'
+  | 'eventLockingBytecodeAtOffset'
+  | 'eventLockingBytecodeForCommitment'
+  | 'assemble'
+  | 'admit'
+  | 'actualSpansMatch'
+  | 'deriveReturnResults'
   >;
   propagateResultDependentArguments: (
     results: Readonly<Record<number, string>>,
-  ) => { propagated: boolean; calls: PreparedAtomicMessageBusCall[] };
+  ) => { propagated: boolean; calls: PreparedAtomicMessageBusCall[] }
+  | Promise<{ propagated: boolean; calls: PreparedAtomicMessageBusCall[] }>;
 }
 
 /**
@@ -141,16 +161,14 @@ export async function runComposeSemanticClaimLoop(
   let claimedSidecarEffects: readonly AtomicSidecarSlotEffect[] = provisionalSidecarEffects;
   let claimedComputedValueChunks: readonly ComputedValueChunkClaim[] = [];
   // Every value below is a claim which can feed a later assembly pass. Usage is one discovery pass per
-  // mutable claim plus a confirmation pass (`mutableClaimCount + 2`). published semantic-derivation ceiling: the compiler publishes
+  // mutable claim plus a confirmation pass (`mutableClaimCount + 2`). The compiler publishes
   // `resourceBudgets.maximumSemanticDerivationPasses` as the worst-case ceiling — refuse when usage
   // would exceed that plan-published bound (replaces the old undocumented `invocations + 5` class).
   const mutableClaimCount = returning.length + fixedEventSlots.length + resourceSlots.length
     + (hasRuntimeLoopEvents ? 1 : 0)
     + valueSlots.length + tokenSlots.length + sidecarSlots.length + (hasComputedValueChunks ? 1 : 0);
   const maximumPasses = mutableClaimCount + 2;
-  const publishedPassCeiling = plan.participants
-    .map((entry) => entry.artifact.messageBus?.resourceBudgets?.maximumSemanticDerivationPasses)
-    .find((ceiling): ceiling is number => typeof ceiling === 'number');
+  const publishedPassCeiling = graphSemanticDerivationCeiling(plan.participants.map((entry) => entry.artifact));
   if (publishedPassCeiling !== undefined && maximumPasses > publishedPassCeiling) {
     throw new Error(
       `messageBus: semantic derivation needs ${maximumPasses} passes but resourceBudgets `
@@ -172,7 +190,12 @@ export async function runComposeSemanticClaimLoop(
       computedValueChunks: claimedComputedValueChunks,
     });
     latestClaimState = claimState;
-    recordSemanticClaimPass(claimLattice, seenClaimStates, claimState);
+    traceSemanticClaims('record', pass, {
+      results: claimedResults, events: claimedEventEffects, resources: claimedResourceEffects,
+      values: claimedValueEffects, tokens: claimedTokenEffects, sidecars: claimedSidecarEffects,
+      computedValueChunks: claimedComputedValueChunks,
+    }, { localRepeat: seenClaimStates.has(claimState), resultPropagationDepth });
+    recordSemanticClaimPass(claimLattice, seenClaimStates, claimState, runtime.constraintFixpoint);
     finalized = finalizeAtomicInvocationGraph(
       plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
       claimedTokenEffects,
@@ -193,31 +216,9 @@ export async function runComposeSemanticClaimLoop(
       }
     }
     const provisional = assembled.builder;
-    // Return values are upstream of state/resource derivation. If a pass discovers a new return vector,
-    // rebuild immediately before validating outputs which may still contain unresolved chunk placeholders.
-    const incompleteParticipants = new Set(
-      assembled.incompleteDynamicChunks.map((item) => item.participant),
-    );
-    const missingReturnParticipants = new Set<number>();
-    const derivedResults = deriveReturnResults(
-      finalized, provisional, claimedResults, missingReturnParticipants,
-    );
-    if (returning.some((invocation) =>
-      derivedResults[invocation.index] !== claimedResults[invocation.index])) {
-      // Some compiler-authored arguments contain an earlier invocation's result inside a larger expression
-      // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
-      // rebuild those complete expressions and restart planning: argsHex, route-key witnesses, participant
-      // batches, and the call manifest all depend on the argument bytes and must change atomically.
-      const propagation = propagateResultDependentArguments(derivedResults);
-      if (propagation.propagated) {
-        if (resultPropagationDepth >= descriptorsLength) {
-          throw new Error('messageBus: authenticated result arguments did not converge');
-        }
-        return rebuildWithPreparedCalls(propagation.calls);
-      }
-      claimedResults = derivedResults;
-      continue;
-    }
+    // A fresh local assembly can contain resource placeholders even when the preceding semantic pass already
+    // established their exact commitments. Restore those claims before probing returns: an earlier entry or
+    // chunk check can otherwise hide the completed return forever, including on an apparently stable pass.
     const {
       valueChunkConvergence,
       dynamicChunkConvergence,
@@ -231,22 +232,43 @@ export async function runComposeSemanticClaimLoop(
       claimedComputedValueChunks,
       rebalanceFeeTail,
     });
+    // Return values are upstream of state/resource derivation. If a pass discovers a new return vector,
+    // rebuild immediately before validating outputs which may still contain unresolved chunk placeholders.
+    const incompleteParticipants = new Set(
+      assembled.incompleteDynamicChunks.map((item) => item.participant),
+    );
+    const missingReturnParticipants = new Set<number>();
+    const { results: derivedResults, eventProbeProgram } = deriveReturnResults(
+      finalized, provisional, claimedResults, missingReturnParticipants,
+    );
+    const previousResults = claimedResults;
+    if (returning.some((invocation) =>
+      derivedResults[invocation.index] !== previousResults[invocation.index])) {
+      traceSemanticClaims('returns', pass, { previous: claimedResults, observed: derivedResults });
+      // Some compiler-authored arguments contain an earlier invocation's result inside a larger expression
+      // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
+      // rebuild those complete expressions and restart planning: argsHex, route-key witnesses, participant
+      // batches, and the call manifest all depend on the argument bytes and must change atomically.
+      const propagation = await propagateResultDependentArguments(derivedResults);
+      if (propagation.propagated) {
+        if (resultPropagationDepth >= descriptorsLength) {
+          throw new Error('messageBus: authenticated result arguments did not converge');
+        }
+        return rebuildWithPreparedCalls(propagation.calls);
+      }
+      claimedResults = derivedResults;
+      continue;
+    }
     // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,
     // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
     // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.
     const semanticEffectClaims: ComposeSemanticEffectClaims = {
-      get computedValueChunks() { return claimedComputedValueChunks; },
-      set computedValueChunks(value) { claimedComputedValueChunks = value; },
-      get resourceEffects() { return claimedResourceEffects; },
-      set resourceEffects(value) { claimedResourceEffects = value; },
-      get valueEffects() { return claimedValueEffects; },
-      set valueEffects(value) { claimedValueEffects = value; },
-      get tokenEffects() { return claimedTokenEffects; },
-      set tokenEffects(value) { claimedTokenEffects = value; },
-      get sidecarEffects() { return claimedSidecarEffects; },
-      set sidecarEffects(value) { claimedSidecarEffects = value; },
-      get eventEffects() { return claimedEventEffects; },
-      set eventEffects(value) { claimedEventEffects = value; },
+      computedValueChunks: claimedComputedValueChunks,
+      resourceEffects: claimedResourceEffects,
+      valueEffects: claimedValueEffects,
+      tokenEffects: claimedTokenEffects,
+      sidecarEffects: claimedSidecarEffects,
+      eventEffects: claimedEventEffects,
     };
     const {
       semanticObservations,
@@ -258,6 +280,7 @@ export async function runComposeSemanticClaimLoop(
     } = observeComposeSemanticEffects(
       {
         provisional,
+        eventProbeProgram,
         finalized,
         plan,
         categories,
@@ -277,20 +300,37 @@ export async function runComposeSemanticClaimLoop(
       },
       semanticEffectClaims,
     );
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+      traceSemanticClaims('observed', pass, {
+        events: derivedEventEffects, resources: derivedResourceEffects, values: derivedValueEffects,
+        tokens: derivedTokenEffects, sidecars: derivedSidecarEffects,
+        computedValueChunks: semanticObservations[0]?.observed ?? [],
+      }, { changedObservations: semanticObservations.flatMap((observation, index) => (
+        semanticJson(observation.previous) === semanticJson(observation.observed) ? [] : [index]
+      )) });
+    }
     const semanticClaimsChanged = applySemanticClaimObservationPass(semanticObservations);
     let stable = !semanticClaimsChanged;
     if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
+    claimedComputedValueChunks = semanticEffectClaims.computedValueChunks;
     if (stable) {
       if (missingReturnParticipants.size > 0) {
         throw new Error(
-          `messageBus: stable graph did not expose return vectors for participant(s) `
+          'messageBus: stable graph did not expose return vectors for participant(s) '
           + [...missingReturnParticipants].join(', '),
         );
       }
       // Local builders freeze `00` placeholders; complete-graph OTC convergence above may already have
       // replaced them. Only fail closed when a placeholder still remains on the owned trailing chunk run.
+      // Intermediate recipe graphs do not run the dynamic-chunk validator. An incomplete stable graph
+      // still needs its authenticated output set before we decide whether a placeholder is reachable.
+      const stableDynamicChunkConvergence = isVmValidationOnly()
+        && assembled.incompleteDynamicChunks.length > 0
+        ? convergeMessageBusComputedDynamicChunkOutputs(provisional)
+        : dynamicChunkConvergence;
       if (dynamicChunkPlaceholdersRemain(
-        provisional, dynamicChunkConvergence, assembled.incompleteDynamicChunks,
+        provisional, stableDynamicChunkConvergence, assembled.incompleteDynamicChunks,
       )) {
         const detail = assembled.incompleteDynamicChunks.map((item) =>
           `${item.participant}:${item.variable} (${item.resolved}/${item.total})`).join(', ');

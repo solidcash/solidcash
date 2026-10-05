@@ -1,5 +1,4 @@
 import { xchacha20poly1305 } from "@noble/ciphers/chacha";
-import { randomBytes } from "@noble/ciphers/crypto";
 import { utf8ToBytes } from "@noble/ciphers/utils";
 import { getBytes, hexlify, toUtf8String, decodeBase58, encodeBase58, toBeArray, encodeBase64, decodeBase64, SigningKey, keccak256, Signer, JsonRpcSigner, AbiCoder } from "ethers";
 
@@ -26,7 +25,7 @@ export const encryptBinaryData = (data: Uint8Array, sessionKey: string | undefin
     return Uint8Array.from([...new Uint8Array(24), ...data]);
   }
 
-  const nonce = randomBytes(24);
+  const nonce = globalThis.crypto.getRandomValues(new Uint8Array(24));
   const chacha = xchacha20poly1305(getBytes(sessionKey), nonce);
   return Uint8Array.from([...nonce, ...chacha.encrypt(data)]);
 }

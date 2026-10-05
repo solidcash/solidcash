@@ -185,8 +185,11 @@ Execution order:
    the contract is a graph participant).
 2. Prefetch authenticated state for the published footprint (the journal wrapper already does this for
    parameter-keyed mapping helpers and scalar internals).
-3. `require(rowCount <= maximumRows)` with `maximumRows` from the artifact (8 for ordinary kernel
-   routes; the legacy resource batch of 2 is not a kernel shape).
+3. `require(rowCount <= maximumRows)` with `maximumRows` from the artifact. Kernel batches use the BCH-2026
+   10,000-byte stack-item ceiling, not the old 520-byte publication cap. The one-byte row count limits a batch
+   to 255 rows; effect frames and resource budgets reserve that same row ceiling. Actual arguments, modes,
+   values, or total input size can reach their limits sooner. Explicit smaller compiler row ceilings remain
+   valid. Legacy unrolled routes retain the 520-byte envelope and eight-row ceiling (two for compact batches).
 4. For each `row` in `[0, rowCount)`:
    - bind logical `msg.sender` / `msg.sig` / `msg.data` / `msg.value` from the row;
    - dispatch `rowSelector` to a handler `OP_INVOKE` (unknown selector → `revert("unknown batch selector")`);
@@ -194,6 +197,12 @@ Execution order:
    - append events / BCH transfers / token effects to the wrapper's effect table.
 5. Flush each dirty journal location once; emit the existing state and effect covenants.
 6. Bind the participant verifier (compact binder + `artifact.messageBus.verifierProgram`).
+
+SDK participant auto-derivation uses the compiler-published `maximumSemanticDerivationPasses` budget,
+as graph settlement does. The legacy default of twenty probes must not truncate larger kernel effect frames.
+Graph settlement sums each participant's mutable-claim allowance, with one shared assembly/confirmation pair;
+the first participant's budget alone cannot bound the complete graph.
+Unchanged-program and cycle checks still stop probes early; final VM validation is unchanged.
 
 Generated locals inside the loop are **reused across iterations**. Codegen must not bake `rowIndex`
 into names such as `__message_bus_value_${rowIndex}_${handlerIndex}_${field}`. That naming is why
@@ -374,6 +383,29 @@ Kernel artifacts should not require `_r${row}` route inputs. Row arguments stay 
 `arguments` bytes; transaction signatures of any finite array depth are the deliberate exception and use one
 aligned `_rows` array per handler parameter because committing them into the manifest would be circular. Return `position` in
 the manifest remains the logical row index; only redeem bytecode becomes a loop.
+
+`messageBusRootEnvelope: true` is an opt-in transport for direct-root atomic compositions whose duplicated
+verifier-input envelopes would breach BCH's 10,000-byte input-script limit. It does not change the manifest
+wire codec or the default V1–V4 transport. The root SCB1 input carries the one canonical envelope after its
+selector; all verifier programs read that input and their unlockers omit the envelope copy. The changed
+verifier program has a new covenant address, so existing deployments need new verifier NFTs. The SDK rejects
+mixed transports and roots that cannot carry the envelope. This mode does not yet support proxy roots or
+standalone input-0 SCB1 batches.
+
+`messageBusProxyForwardEnvelope: true` separately enables an authenticated envelope for atomic compositions
+rooted at a baked `__forward(bytes)` proxy. The proxy forwards the SCB1 selector and envelope to its co-spent
+implementation; the verifier checks both root frames and removes the repeated verifier-envelope pushes. The
+existing proxy bytecode is unchanged, but the opt-in verifier program has a new address. The two envelope
+options are mutually exclusive. By itself, this does not admit direct-only participants into a kernel graph.
+
+`messageBusDirectParticipant: true` independently opts routed artifacts into the V5 mixed-authority manifest.
+It admits a separately compiled direct-only callee for one void leaf invocation with one scalar argument and a
+fixed state block, while the routed caller authenticates the runtime target and delivered calldata. Direct
+participants have no verifier NFT; their own covenant executes normally. Unrepresented nested calls fail
+closed, and dynamic contract-typed addresses are not pinned to a particular implementation. This profile
+rejects direct methods dependent on `msg.sender` or `msg.data` until caller-slot and hidden-calldata semantics
+are certified. It requires one of the authenticated root-envelope carriers above and is otherwise unavailable
+by default.
 
 ---
 

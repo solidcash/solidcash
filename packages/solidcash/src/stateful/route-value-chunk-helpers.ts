@@ -32,13 +32,9 @@ import {
   StatefulTransactionBuilder,
   applyRedeemLockToChunks,
   chunksFromJobEventsValue,
-  expectedFromOtcEqualVerify,
   extractIdentityScanValueChunkPin,
   permitsLegacyNamedValueChunkFallback,
-  selectExpectedP2sh32OutputLock,
   selectHashedValueForChunkPin,
-  selectValueChunkCommitmentObservations,
-  type ValueChunkTraceObservation,
   type ValueChunkWriteDescriptor,
   ValueChunkWriteStagingSession,
   valueChunkWriteResourceIdentity,
@@ -50,7 +46,6 @@ import {
   legacyRememberValueChunkValue,
 } from './early-value-chunk-helpers.js';
 import {
-  isEmptyValueChunkCommitment,
   persistedValueChunkWriteState,
   rememberValueChunkUnlockRecipe,
   selectPersistedValueChunkWrite,
@@ -73,6 +68,10 @@ import {
   writesChunkableValue,
 } from './writer-group-selection.js';
 import { ownsCapturedValueChunkOutputBase } from './value-chunk-base-writer-select.js';
+import {
+  identityScanValueChunkOutputBase,
+  publishIdentityScanValueChunkRange,
+} from './identity-scan-value-chunk-range.js';
 
 type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
@@ -220,12 +219,10 @@ export function extractFailingP2sh32OutputPin(
       && candidate.stack.length >= 2);
     if (!equalStep) continue;
     const actual = equalStep.stack[equalStep.stack.length - 1];
-    const expected = isP2sh32LockingBytecode(equalStep.stack[equalStep.stack.length - 2])
-      ? equalStep.stack[equalStep.stack.length - 2]
-      : [...equalStep.stack].reverse().find((item) => (
-        isP2sh32LockingBytecode(item) && binToHex(item) !== binToHex(actual)
-      ));
-    if (!expected || !isP2sh32LockingBytecode(expected)) continue;
+    const expected = equalStep.stack[equalStep.stack.length - 2];
+    // Only the compared operands can authenticate a positional locking-bytecode pin. Identity scans keep
+    // their redeem lock deeper in the frame while comparing chunk commitments or final match counts.
+    if (!isP2sh32LockingBytecode(expected)) continue;
     if (binToHex(expected) === binToHex(actual)) continue;
     const indexItem = state.stack[state.stack.length - 1];
     const outputIndex = Number(decodeScriptNumber(indexItem));
@@ -413,6 +410,63 @@ export function extractAllRouteValueChunks(
   }));
 }
 
+function deriveFixedEntryLockPin(
+  group: ExternalCallUtxoGroup,
+  bOutputBase: number,
+  trace: AuthenticationProgramStateCommon[],
+  stb: StatefulTransactionBuilder,
+  observations: RouteProbeObservationHistory,
+  convention?: 'legacy-unroll' | 'kernel-row-loop',
+  fixedIndex = false,
+): RouteValueChunkProgress {
+  // A cold fixed entry may fail its bytecode check before the VM exposes its new commitment. Bind the
+  // expected lock to an actual OUTPUTBYTECODE read of a compiler-published entry slot, then probe again.
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const equal = trace[i];
+    if (equal.instructions[equal.ip]?.opcode !== Op.OP_EQUALVERIFY || equal.stack.length < 2) continue;
+    const expected = equal.stack[equal.stack.length - 1];
+    const actual = equal.stack[equal.stack.length - 2];
+    if (expected.length !== 35 || expected[0] !== 0xaa || expected[1] !== 0x20 || expected[34] !== 0x87
+      || binToHex(expected) === binToHex(actual)) continue;
+    let outputRead: AuthenticationProgramStateCommon | undefined;
+    for (let j = i - 1; j >= Math.max(0, i - 12); j--) {
+      const candidate = trace[j];
+      if (candidate.instructions !== equal.instructions
+        || candidate.instructions[candidate.ip]?.opcode !== Op.OP_OUTPUTBYTECODE
+        || candidate.stack.length === 0) continue;
+      const after = trace[j + 1];
+      const exactRead = after?.instructions === candidate.instructions
+        && after.ip === candidate.ip + 1 && after.stack.length > 0
+        && binToHex(after.stack[after.stack.length - 1]) === binToHex(actual);
+      // The sparse probe captures OUTPUTBYTECODE and EQUALVERIFY, but not necessarily the intermediate
+      // post-read state. This compiler fixed-entry shape keeps the read value on stack and picks the expected
+      // address immediately before comparing them.
+      const pickedExpected = candidate.ip + 3 === equal.ip
+        && (candidate.instructions[candidate.ip + 1]?.opcode ?? 0) >= Op.OP_1
+        && (candidate.instructions[candidate.ip + 1]?.opcode ?? 0) <= Op.OP_16
+        && candidate.instructions[candidate.ip + 2]?.opcode === Op.OP_PICK;
+      const legacySwap = candidate.instructions[candidate.ip - 1]?.opcode === Op.OP_SWAP
+        && candidate.stack.length > 1;
+      if (exactRead || pickedExpected || legacySwap) { outputRead = candidate; break; }
+    }
+    if (!outputRead) continue;
+    const outputIndex = Number(decodeScriptNumber(outputRead.stack[outputRead.stack.length - 1]));
+    const entryBlockSlot = outputIndex - bOutputBase;
+    if (group.blockLayout?.slots[entryBlockSlot]?.kind !== 'entry') continue;
+    if (stb.setDerivedChunkOutput(outputIndex, {
+      commitment: '00', lockingBytecode: expected, categoryId: group.categoryId,
+      fixedIndex, semanticKind: 'entryPin',
+    })) {
+      const identity = `entry-lock:${group.categoryId}:${entryBlockSlot}`;
+      const discovered = recordRouteProbeObservation(observations, {
+        identity, fingerprint: binToHex(expected),
+      }, convention) !== 'same';
+      return { changed: true, discovered };
+    }
+  }
+  return { changed: false, discovered: false };
+}
+
 export function deriveRouteValueChunks(
   group: ExternalCallUtxoGroup, bOutputBase: number, trace: AuthenticationProgramStateCommon[],
   stb: StatefulTransactionBuilder,
@@ -420,7 +474,7 @@ export function deriveRouteValueChunks(
   convention?: 'legacy-unroll' | 'kernel-row-loop',
 ): RouteValueChunkProgress {
   if (!group.blockLayout) return { changed: false, discovered: false };
-  const sharedBand = stb.getPublishJobEventsBand();
+  const sharedBand = stb.getChunkableValueWriteBand();
   const explicitBase = group.valueChunkOutputBase !== undefined && group.valueChunkOutputBase >= 0
     ? group.valueChunkOutputBase : undefined;
   const witness = valueChunkOutputWitnessCarrier(stb, group);
@@ -433,18 +487,24 @@ export function deriveRouteValueChunks(
   };
   const identityPin = extractIdentityScanValueChunkPin(trace);
   const continuationBase = explicitBase ?? sharedBand?.start ?? -1;
-  const positionalPin = extractRouteChunkPin(trace)
-    ?? extractFailingP2sh32OutputPin(trace, pinBand);
-  const pin = positionalPin ?? (identityPin && continuationBase >= 0
+  // A count mismatch authenticates the identity-scanned run, not the last output visited by the scan.
+  // Do not let that earlier OUTPUTBYTECODE read impose a positional minimum width or relocate this run.
+  const scanPin = identityPin && continuationBase >= 0
     ? {
       outputIndex: continuationBase,
       lockingBytecode: identityPin.lockingBytecode,
       commitment: '00',
     }
-    : undefined);
-  if (!pin) return { changed: false, discovered: false };
+    : undefined;
+  const positionalPin = scanPin ? undefined : (extractRouteChunkPin(trace)
+    ?? extractFailingP2sh32OutputPin(trace, pinBand));
+  const pin = scanPin ?? positionalPin;
+  if (!pin) return deriveFixedEntryLockPin(
+    group, bOutputBase, trace, stb, observations, convention,
+    explicitBase !== undefined && !usesSharedBand,
+  );
   if (usesSharedBand && isP2sh32LockingBytecode(pin.lockingBytecode)) {
-    stb.setJobEventsRedeemLock(pin.lockingBytecode);
+    stb.setValueChunkRedeemLock(pin.lockingBytecode);
   }
   const blockSlot = pin.outputIndex - bOutputBase;
   const kind = group.blockLayout.slots[blockSlot]?.kind;
@@ -465,11 +525,27 @@ export function deriveRouteValueChunks(
   let progressed = false;
   let discovered = false;
   const localWrites = group.valueChunkWrites ?? describeValueChunkWrites(group);
+  const localSelection = selectValueChunkWriteCategory(localWrites);
+  // In a multi-resource kernel row, the failing pin's redeem lock can identify one compiler-described
+  // write only when that write's complete value is visible in the VM trace. Require a unique exact-lock
+  // match; never infer a collection/key merely from the shape or output position of a chunk.
+  const pinBoundWrite = (() => {
+    if (convention !== 'kernel-row-loop' || localSelection.status !== 'multi') return undefined;
+    const stacks = trace.flatMap((state) => [
+      state.stack,
+      ...('alternateStack' in state
+        ? [(state as { alternateStack?: Uint8Array[] }).alternateStack ?? []] : []),
+    ]);
+    const matches = localSelection.writes.filter((write) => selectHashedValueForChunkPin(
+      stacks, pin.lockingBytecode, 0, [], undefined, false, write,
+    ) !== undefined);
+    return matches.length === 1 ? matches[0] : undefined;
+  })();
+  const writes = pinBoundWrite ? [pinBoundWrite] : localWrites;
   // Compiler-authored kernel descriptors are authoritative. A P2SH32 equality in a carrier with no chunkable
   // write describes an entry/resource lock, never permission to infer a value-chunk resource by output shape.
   /* eslint-disable @typescript-eslint/indent */
   if (permitsRouteValueChunkDerivation(convention, localWrites)) {
-  const writes = localWrites;
   const resourceSelection = selectValueChunkWriteCategory(writes);
   const valueChunkCategoryId = resourceSelection.status === 'exact'
     ? resourceSelection.write.categoryId
@@ -487,6 +563,17 @@ export function deriveRouteValueChunks(
     group.valueChunkProducerClaims,
     group.valueChunkStateOwner,
   );
+  if (scanPin && resourceSelection.status === 'exact' && allChunks.length > 0) {
+    const identity = valueChunkWriteResourceIdentity(resourceSelection.write);
+    const base = identityScanValueChunkOutputBase(
+      scanPin.outputIndex, allChunks.length, identity, stb.getDerivedChunkOutputs(),
+    );
+    for (const [offset, chunk] of allChunks.entries()) chunk.outputIndex = base + offset;
+    scanPin.outputIndex = base;
+    if (publishIdentityScanValueChunkRange(
+      [...new Set([group, ...(witness ? [witness.carrier] : [])])], identity, base, allChunks.length,
+    )) stb._refreshInputs();
+  }
   if (allChunks.length > 0) {
     const observedCarrier = witness?.carrier ?? group;
     const observedAbi = witness?.abiFunction ?? group.compilerRoute?.abiFunction
@@ -500,71 +587,127 @@ export function deriveRouteValueChunks(
     }
   }
   /* eslint-enable @typescript-eslint/indent */
-  if (usesSharedBand && group.categoryId && lastExtractedComputedValue) {
-    const selection = resourceSelection;
-    if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
-      [group], (physicalExternalCallFunction(group) as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention,
-    )) {
+    if (usesSharedBand && group.categoryId && lastExtractedComputedValue) {
+      const selection = resourceSelection;
+      if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
+        [group], (physicalExternalCallFunction(group) as MessageBusRuntimeAbiFunction | undefined)
+          ?.messageBusConvention,
+      )) {
       // Compatibility only for descriptor-free artifacts.
-      legacyRememberValueChunkValue(group.categoryId, lastExtractedComputedValue);
-    }
-    if (convention !== 'kernel-row-loop') {
-      stb.rememberJobEventsChunks(group.categoryId, allChunks.map((chunk) => ({
-        ...chunk,
-        categoryId: group.categoryId,
-      })));
-      if (stb.bumpPublishJobEventsWidth(allChunks.length)) stb._refreshInputs();
-    }
-  }
-  const resourceIdentity = resourceSelection.status === 'exact'
-    ? valueChunkWriteResourceIdentity(resourceSelection.write) : undefined;
-  if (allChunks.length === 0 && positionalPin !== undefined && resourceIdentity !== undefined) {
-    let priorRun = [...stb.getDerivedChunkOutputs().entries()].flatMap(([outputIndex, chunk]) => {
-      if (chunk.semanticKind !== 'valueChunk' || chunk.resourceIdentity !== resourceIdentity
-        || binToHex(chunk.lockingBytecode) !== binToHex(positionalPin.lockingBytecode)) return [];
-      try {
-        return [{ outputIndex, chunkIndex: parseValueChunkCommitment(chunk.commitment).chunkIndex, chunk }];
-      } catch {
-        return [];
+        legacyRememberValueChunkValue(group.categoryId, lastExtractedComputedValue);
       }
-    }).sort((left, right) => left.chunkIndex - right.chunkIndex);
-    if (priorRun.length === 0 && resourceSelection.status === 'exact') {
-      priorRun = stb.getObservedValueChunks(
-        resourceSelection.write.categoryId, resourceSelection.write.collection,
-      ).flatMap((chunk) => {
-        if (binToHex(chunk.lockingBytecode) !== binToHex(positionalPin.lockingBytecode)) return [];
+      if (convention !== 'kernel-row-loop') {
+        stb.rememberJobEventsChunks(group.categoryId, allChunks.map((chunk) => ({
+          ...chunk,
+          categoryId: group.categoryId,
+        })));
+        if (stb.bumpChunkableValueWriteWidth(allChunks.length)) stb._refreshInputs();
+      }
+    }
+    const resourceIdentity = resourceSelection.status === 'exact'
+      ? valueChunkWriteResourceIdentity(resourceSelection.write) : undefined;
+    if (allChunks.length === 0 && positionalPin !== undefined && resourceIdentity !== undefined) {
+      let priorRun = [...stb.getDerivedChunkOutputs().entries()].flatMap(([outputIndex, chunk]) => {
+        if (chunk.semanticKind !== 'valueChunk' || chunk.resourceIdentity !== resourceIdentity
+        || binToHex(chunk.lockingBytecode) !== binToHex(positionalPin.lockingBytecode)) return [];
         try {
-          const chunkIndex = parseValueChunkCommitment(chunk.commitment).chunkIndex;
-          return [{ outputIndex: -1, chunkIndex,
-            chunk: { ...chunk, fixedIndex: !usesSharedBand, semanticKind: 'valueChunk' as const,
-              resourceIdentity, resourcePart: `chunk:${chunkIndex}` } }];
+          return [{ outputIndex, chunkIndex: parseValueChunkCommitment(chunk.commitment).chunkIndex, chunk }];
         } catch {
           return [];
         }
       }).sort((left, right) => left.chunkIndex - right.chunkIndex);
+      if (priorRun.length === 0 && resourceSelection.status === 'exact') {
+        priorRun = stb.getObservedValueChunks(
+          resourceSelection.write.categoryId, resourceSelection.write.collection,
+        ).flatMap((chunk) => {
+          if (binToHex(chunk.lockingBytecode) !== binToHex(positionalPin.lockingBytecode)) return [];
+          try {
+            const chunkIndex = parseValueChunkCommitment(chunk.commitment).chunkIndex;
+            return [{ outputIndex: -1, chunkIndex,
+              chunk: { ...chunk, fixedIndex: !usesSharedBand, semanticKind: 'valueChunk' as const,
+                resourceIdentity, resourcePart: `chunk:${chunkIndex}` } }];
+          } catch {
+            return [];
+          }
+        }).sort((left, right) => left.chunkIndex - right.chunkIndex);
+      }
+      const coherent = priorRun.length > 0 && priorRun.every(
+        (candidate, index) => candidate.chunkIndex === index,
+      );
+      const alreadyPlaced = coherent && priorRun.every(
+        (candidate) => candidate.outputIndex === positionalPin.outputIndex + candidate.chunkIndex,
+      );
+      if (coherent && !alreadyPlaced) {
+        for (const candidate of priorRun) {
+          if (candidate.outputIndex >= 0) stb.clearDerivedChunkOutput(candidate.outputIndex);
+        }
+        for (const candidate of priorRun) {
+          progressed = stb.setDerivedChunkOutput(
+            positionalPin.outputIndex + candidate.chunkIndex,
+            { ...candidate.chunk, fixedIndex: !usesSharedBand },
+          ) || progressed;
+        }
+        if (ownsCapturedValueChunkOutputBase(group)) {
+          group.valueChunkOutputBase = positionalPin.outputIndex;
+          group.valueChunkWrites = group.valueChunkWrites?.map((write) => (
+            valueChunkWriteResourceIdentity(write) === resourceIdentity
+              ? { ...write, outputBase: positionalPin.outputIndex, outputCount: priorRun.length }
+              : write
+          ));
+          group.internalArgs = {
+            ...group.internalArgs,
+            __internal__valueChunkOutputBase: BigInt(positionalPin.outputIndex),
+          };
+          group.refreshInternalArgs?.(
+            { __internal__valueChunkOutputBase: BigInt(positionalPin.outputIndex) },
+            { shiftPredOut: false },
+          );
+        }
+        discovered = true;
+      }
     }
-    const coherent = priorRun.length > 0 && priorRun.every(
-      (candidate, index) => candidate.chunkIndex === index,
-    );
-    const alreadyPlaced = coherent && priorRun.every(
-      (candidate) => candidate.outputIndex === positionalPin.outputIndex + candidate.chunkIndex,
-    );
-    if (coherent && !alreadyPlaced) {
-      for (const candidate of priorRun) {
-        if (candidate.outputIndex >= 0) stb.clearDerivedChunkOutput(candidate.outputIndex);
+    const exactRunObservation = convention === 'kernel-row-loop'
+    && resourceIdentity !== undefined && allChunks.length > 0
+      ? recordRouteProbeObservation(observations, {
+        identity: `value-run:${resourceIdentity}`,
+        fingerprint: routeValueRunFingerprint(allChunks),
+      }, convention)
+      : undefined;
+    if (resourceIdentity !== undefined && allChunks.length > 0) {
+      if (group.valueChunkWrites === undefined) group.valueChunkWrites = [...writes];
+      if (witness && witness.carrier.valueChunkWrites === undefined) {
+        witness.carrier.valueChunkWrites = [...writes];
       }
-      for (const candidate of priorRun) {
-        progressed = stb.setDerivedChunkOutput(
-          positionalPin.outputIndex + candidate.chunkIndex,
-          { ...candidate.chunk, fixedIndex: !usesSharedBand },
-        ) || progressed;
+    }
+    // A later P2SH32 mismatch in the same handler can belong to an entry or another resource. Once this exact
+    // compiler resource has published the same semantic run, never re-project those bytes onto the later index.
+    const exactRunAlreadyPlaced = resourceIdentity !== undefined && allChunks.length > 0
+    && allChunks.every((chunk) => {
+      const placed = stb.getDerivedChunkOutputs().get(chunk.outputIndex);
+      if (placed?.resourceIdentity !== resourceIdentity
+        || placed.resourcePart !== `chunk:${parseValueChunkCommitment(chunk.commitment).chunkIndex}`) return false;
+      return placed.commitment === chunk.commitment
+        && binToHex(placed.lockingBytecode) === binToHex(chunk.lockingBytecode);
+    });
+    const exactRunRelocated = exactRunObservation === 'same' && !exactRunAlreadyPlaced;
+    if (exactRunObservation !== 'same' || exactRunRelocated) {
+      for (const chunk of allChunks) {
+        const parsed = parseValueChunkCommitment(chunk.commitment);
+        progressed = stb.setDerivedChunkOutput(chunk.outputIndex, {
+          commitment: chunk.commitment,
+          lockingBytecode: chunk.lockingBytecode,
+          categoryId: valueChunkCategoryId,
+          fixedIndex: !usesSharedBand,
+          semanticKind: 'valueChunk',
+          resourceIdentity,
+          resourcePart: resourceIdentity ? `chunk:${parsed.chunkIndex}` : undefined,
+        }) || progressed;
       }
-      if (ownsCapturedValueChunkOutputBase(group)) {
+      if (exactRunRelocated && positionalPin !== undefined && ownsCapturedValueChunkOutputBase(group)) {
         group.valueChunkOutputBase = positionalPin.outputIndex;
         group.valueChunkWrites = group.valueChunkWrites?.map((write) => (
           valueChunkWriteResourceIdentity(write) === resourceIdentity
-            ? { ...write, outputBase: positionalPin.outputIndex, outputCount: priorRun.length }
+            ? { ...write, outputBase: positionalPin.outputIndex, outputCount: allChunks.length }
             : write
         ));
         group.internalArgs = {
@@ -576,131 +719,46 @@ export function deriveRouteValueChunks(
           { shiftPredOut: false },
         );
       }
-      discovered = true;
-    }
-  }
-  const exactRunObservation = convention === 'kernel-row-loop'
-    && resourceIdentity !== undefined && allChunks.length > 0
-    ? recordRouteProbeObservation(observations, {
-      identity: `value-run:${resourceIdentity}`,
-      fingerprint: routeValueRunFingerprint(allChunks),
-    }, convention)
-    : undefined;
-  if (resourceIdentity !== undefined && allChunks.length > 0) {
-    if (group.valueChunkWrites === undefined) group.valueChunkWrites = [...writes];
-    if (witness && witness.carrier.valueChunkWrites === undefined) {
-      witness.carrier.valueChunkWrites = [...writes];
-    }
-  }
-  // A later P2SH32 mismatch in the same handler can belong to an entry or another resource. Once this exact
-  // compiler resource has published the same semantic run, never re-project those bytes onto the later index.
-  const exactRunAlreadyPlaced = resourceIdentity !== undefined && allChunks.length > 0
-    && allChunks.every((chunk) => {
-      const placed = stb.getDerivedChunkOutputs().get(chunk.outputIndex);
-      if (placed?.resourceIdentity !== resourceIdentity
-        || placed.resourcePart !== `chunk:${parseValueChunkCommitment(chunk.commitment).chunkIndex}`) return false;
-      return placed.commitment === chunk.commitment
-        && binToHex(placed.lockingBytecode) === binToHex(chunk.lockingBytecode);
-    });
-  const exactRunRelocated = exactRunObservation === 'same' && !exactRunAlreadyPlaced;
-  if (exactRunObservation !== 'same' || exactRunRelocated) {
-    for (const chunk of allChunks) {
-      const parsed = parseValueChunkCommitment(chunk.commitment);
-      progressed = stb.setDerivedChunkOutput(chunk.outputIndex, {
-        commitment: chunk.commitment,
-        lockingBytecode: chunk.lockingBytecode,
-        categoryId: valueChunkCategoryId,
-        fixedIndex: !usesSharedBand,
-        semanticKind: 'valueChunk',
-        resourceIdentity,
-        resourcePart: resourceIdentity ? `chunk:${parsed.chunkIndex}` : undefined,
-      }) || progressed;
-    }
-    if (exactRunRelocated && positionalPin !== undefined && ownsCapturedValueChunkOutputBase(group)) {
-      group.valueChunkOutputBase = positionalPin.outputIndex;
-      group.valueChunkWrites = group.valueChunkWrites?.map((write) => (
-        valueChunkWriteResourceIdentity(write) === resourceIdentity
-          ? { ...write, outputBase: positionalPin.outputIndex, outputCount: allChunks.length }
-          : write
-      ));
-      group.internalArgs = {
-        ...group.internalArgs,
-        __internal__valueChunkOutputBase: BigInt(positionalPin.outputIndex),
-      };
-      group.refreshInternalArgs?.(
-        { __internal__valueChunkOutputBase: BigInt(positionalPin.outputIndex) },
-        { shiftPredOut: false },
-      );
-    }
-    // An exact compiler resource is materialized only from its authenticated complete run. The failing pin can
-    // be a one-byte discovery sentinel or belong to a later entry/resource check; it is not a value-chunk member
-    // merely because this trace also exposed a value run.
-    if (resourceIdentity === undefined
+      // An exact compiler resource is materialized only from its authenticated complete run. The failing pin can
+      // be a one-byte discovery sentinel or belong to a later entry/resource check; it is not a value-chunk member
+      // merely because this trace also exposed a value run.
+      if (resourceIdentity === undefined
       && !allChunks.some((chunk) => chunk.outputIndex === pin.outputIndex)) {
-      progressed = stb.setDerivedChunkOutput(pin.outputIndex, {
-        commitment: pin.commitment, lockingBytecode: pin.lockingBytecode, categoryId: group.categoryId,
-        fixedIndex: !usesSharedBand,
-        semanticKind: 'valueChunk',
-        resourceIdentity,
-      }) || progressed;
+        progressed = stb.setDerivedChunkOutput(pin.outputIndex, {
+          commitment: pin.commitment, lockingBytecode: pin.lockingBytecode, categoryId: group.categoryId,
+          fixedIndex: !usesSharedBand,
+          semanticKind: 'valueChunk',
+          resourceIdentity,
+        }) || progressed;
+      }
     }
-  }
-  if (progressed) {
-    const selection = resourceSelection;
-    if (convention === 'kernel-row-loop'
+    if (progressed) {
+      const selection = resourceSelection;
+      if (convention === 'kernel-row-loop'
       && selection.status !== 'exact') {
-      throw new Error(
-        'Kernel route value-chunk derivation requires one exact compiler-published resource identity.',
-      );
-    }
-    if (exactRunObservation !== undefined) {
-      discovered = exactRunObservation !== 'same' || exactRunRelocated;
-    } else {
-      const identity = selection.status === 'exact'
-        ? `value-run:${valueChunkWriteResourceIdentity(selection.write)}`
-        : `value-coordinate:${group.categoryId}:${pin.outputIndex}`;
-      const fingerprint = routeValueRunFingerprint(allChunks.length > 0 ? allChunks : [pin]);
-      discovered = recordRouteProbeObservation(
-        observations, { identity, fingerprint }, convention,
-      ) !== 'same';
-    }
-    return { changed: true, discovered };
-  }
-  }
-
-  // After computed chunks converge, the route can reach an active fixed entry whose balanced input was a plain
-  // funder (an absent sorted-batch target). Its outlined address helper fails before the commitment is visible.
-  // Seed that exact physical output with the authenticated entry address; the next pass reveals its commitment.
-  for (let i = trace.length - 1; i >= 0; i--) {
-    const equal = trace[i];
-    if (equal.instructions[equal.ip]?.opcode !== Op.OP_EQUALVERIFY || equal.stack.length < 2) continue;
-    const expected = equal.stack[equal.stack.length - 1];
-    const actual = equal.stack[equal.stack.length - 2];
-    if (expected.length !== 35 || expected[0] !== 0xaa || expected[1] !== 0x20 || expected[34] !== 0x87
-      || binToHex(expected) === binToHex(actual)) continue;
-    const outputRead = trace.slice(Math.max(0, i - 12), i).reverse().find((candidate) =>
-      candidate.instructions === equal.instructions
-      && candidate.instructions[candidate.ip]?.opcode === Op.OP_OUTPUTBYTECODE
-      && candidate.instructions[candidate.ip - 1]?.opcode === Op.OP_SWAP
-      && candidate.stack.length > 1);
-    if (!outputRead) continue;
-    const outputIndex = Number(decodeScriptNumber(outputRead.stack[outputRead.stack.length - 1]));
-    const blockSlot = outputIndex - bOutputBase;
-    if (group.blockLayout.slots[blockSlot]?.kind !== 'entry') continue;
-    if (stb.setDerivedChunkOutput(outputIndex, {
-      commitment: '00', lockingBytecode: expected, categoryId: group.categoryId,
-      fixedIndex: explicitBase !== undefined && !usesSharedBand,
-      semanticKind: 'entryPin',
-    })) {
-      const identity = `entry-lock:${group.categoryId}:${blockSlot}`;
-      discovered = recordRouteProbeObservation(observations, {
-        identity,
-        fingerprint: binToHex(expected),
-      }, convention) !== 'same';
+        throw new Error(
+          'Kernel route value-chunk derivation requires one exact compiler-published resource identity.',
+        );
+      }
+      if (exactRunObservation !== undefined) {
+        discovered = exactRunObservation !== 'same' || exactRunRelocated;
+      } else {
+        const identity = selection.status === 'exact'
+          ? `value-run:${valueChunkWriteResourceIdentity(selection.write)}`
+          : `value-coordinate:${group.categoryId}:${pin.outputIndex}`;
+        const fingerprint = routeValueRunFingerprint(allChunks.length > 0 ? allChunks : [pin]);
+        discovered = recordRouteProbeObservation(
+          observations, { identity, fingerprint }, convention,
+        ) !== 'same';
+      }
       return { changed: true, discovered };
     }
   }
-  return { changed: false, discovered: false };
+
+  return deriveFixedEntryLockPin(
+    group, bOutputBase, trace, stb, observations, convention,
+    explicitBase !== undefined && !usesSharedBand,
+  );
 }
 
 export function valueChunkOutputWitnessCarrier(

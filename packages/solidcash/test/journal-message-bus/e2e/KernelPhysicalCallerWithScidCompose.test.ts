@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   Contract, StatefulContract, Signer, getContractFactory, upgrades,
 } from '../../../src/index.js';
+import { addressToLockScript } from '../../../src/utils.js';
 import { setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
@@ -17,7 +18,7 @@ const KERNEL = {
 } as const;
 
 describe('kernel nested caller identity with a co-spent SCID', () => {
-  it('keeps an owner call physical instead of substituting its same-category identity anchor', async () => {
+  it('uses the authenticated proxy identity for address(this) and a nested caller beside its SCID anchor', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x61), provider);
     for (let index = 0; index < 20; index += 1) {
@@ -62,10 +63,14 @@ describe('kernel nested caller identity with a co-spent SCID', () => {
 
     const callsite = callerArtifact.delegateArtifact?.abi.find((entry) => entry.name === 'poke')
       ?.externalCalls?.[0];
-    expect(callsite?.callerIdentity).toMatchObject({ role: 'owner', authOffset: 0 });
+    expect(callsite?.callerIdentity).toEqual({
+      version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff,
+    });
 
+    const publicProxyLock = addressToLockScript(await deployed.getAddress());
+    expect(publicProxyLock).not.toEqual(hexToBin(deployed.proxy.inner.lockingBytecode));
     const call = (deployed as any).poke(callee.inner.lockingBytecode)
-      .withExternalCall(callee, 'touch', [deployed.proxy.inner.lockingBytecode]);
+      .withExternalCall(callee, 'touch', [publicProxyLock]);
     const builder = await call.build();
     const sameCategoryImmutableAnchors = builder.inputs.filter((input) => (
       input.token?.nft?.capability === 'none'

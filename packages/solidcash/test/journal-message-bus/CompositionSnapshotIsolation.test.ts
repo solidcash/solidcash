@@ -4,7 +4,13 @@ import {
   StatefulContract, clearSoftBentoTotals, takeSoftStateSnapshot,
 } from '../../src/stateful/StatefulContract.js';
 
-const fakeCall = (args: readonly unknown[]) => ({
+const fakeCall = (args: readonly unknown[]): {
+  _messageBusCompositionDescriptor: () => {
+    contract: { marker: string };
+    functionName: string;
+    args: readonly unknown[];
+  };
+} => ({
   _messageBusCompositionDescriptor: () => ({
     contract: { marker: 'contract-capability' },
     functionName: 'apply',

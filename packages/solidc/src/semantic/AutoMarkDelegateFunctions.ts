@@ -2,6 +2,8 @@ import {
   Ast, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   LowLevelCallNode, LowLevelCallStatementNode,
   TransferStatementNode, AddressTransferStatementNode, TokenContainerMethodStatementNode,
+  AssignNode, VariableDefinitionNode, TupleAssignmentNode, StatementNode, BlockNode, BranchNode,
+  TryCatchNode, DoWhileNode, WhileNode, CollectionIterationNode, UncheckedNode, SwitchNode,
 } from '../ast/AST.js';
 import { containsStatefulOperation } from './EnsureFinalRequireTraversal.js';
 
@@ -48,8 +50,60 @@ function walk(node: Node | undefined, seen: Set<Node>, hit: (n: Node) => boolean
  * is built inside SymbolTableTraversal, which runs after this pass), and they do not need to be: an external
  * call mutates the CALLEE's state, never the proxy's, so it has nothing to delegate.
  */
-function touchesProxyState(fn: FunctionDefinitionNode): boolean {
-  return containsStatefulOperation(fn.body?.statements);
+function hasBareStateWrite(fn: FunctionDefinitionNode, stateNames: ReadonlySet<string>): boolean {
+  if (stateNames.size === 0) return false;
+  // Auto-marking runs before SymbolTableTraversal rewrites an unqualified Solidity `value = next` to
+  // StateAssignNode. Resolve only the narrow bare-assignment shape here, respecting parameter/local shadowing;
+  // the normal semantic pass remains the authority for the compiled write itself.
+  const scan = (statements: readonly StatementNode[] | undefined, locals: Set<string>): boolean => {
+    for (const statement of statements ?? []) {
+      if (statement instanceof VariableDefinitionNode) {
+        locals.add(statement.name);
+      } else if (statement instanceof TupleAssignmentNode) {
+        for (const element of statement.elements) {
+          if (element.name && element.type && !element.existing) locals.add(element.name);
+        }
+      } else if (statement instanceof AssignNode) {
+        if (stateNames.has(statement.identifier.name) && !locals.has(statement.identifier.name)) return true;
+      } else if (statement instanceof BlockNode) {
+        if (scan(statement.statements, statement.scoped ? new Set(locals) : locals)) return true;
+      } else if (statement instanceof BranchNode) {
+        if (scan(statement.ifBlock.statements, new Set(locals))
+          || scan(statement.elseBlock?.statements, new Set(locals))) return true;
+      } else if (statement instanceof TryCatchNode) {
+        const tryLocals = new Set(locals);
+        for (const parameter of statement.returnParameters ?? []) tryLocals.add(parameter.name);
+        if (scan(statement.tryBlock.statements, tryLocals)) return true;
+        for (const clause of statement.catchClauses) {
+          const catchLocals = new Set(locals);
+          for (const parameter of clause.parameters ?? []) catchLocals.add(parameter.name);
+          if (scan(clause.block.statements, catchLocals)) return true;
+        }
+      } else if (statement instanceof DoWhileNode || statement instanceof WhileNode) {
+        if (scan(statement.block.statements, new Set(locals))) return true;
+      } else if (statement instanceof CollectionIterationNode) {
+        const iterationLocals = new Set(locals);
+        if (statement.keyName) iterationLocals.add(statement.keyName);
+        if (statement.valueName) iterationLocals.add(statement.valueName);
+        if (scan(statement.body.statements, iterationLocals)) return true;
+      } else if (statement instanceof UncheckedNode) {
+        if (scan(statement.block.statements, new Set(locals))) return true;
+      } else if (statement instanceof SwitchNode) {
+        for (const branch of statement.cases) {
+          if (scan(branch.body.statements, new Set(locals))) return true;
+        }
+        if (scan(statement.defaultCase?.statements, new Set(locals))) return true;
+      }
+    }
+    return false;
+  };
+  return scan(fn.body?.statements, new Set([
+    ...fn.parameters.map((parameter) => parameter.name), ...fn.returnNames,
+  ]));
+}
+
+function touchesProxyState(fn: FunctionDefinitionNode, stateNames: ReadonlySet<string>): boolean {
+  return containsStatefulOperation(fn.body?.statements) || hasBareStateWrite(fn, stateNames);
 }
 
 function bodyHasUnsupportedOperation(fn: FunctionDefinitionNode): boolean {
@@ -131,6 +185,7 @@ function hasDelegatecall(
 
 export function isDelegateEligible(
   fn: FunctionDefinitionNode, callables: readonly FunctionDefinitionNode[] = [],
+  stateNames: ReadonlySet<string> = new Set(),
 ): boolean {
   if (!fn.isEntryPoint || fn.isFreeFunction) return false;
   // A delegate impl is reached through the proxy's own fallback dispatch, never through its own.
@@ -138,7 +193,7 @@ export function isDelegateEligible(
   if (fn.modifiers.some((m) => INELIGIBLE_MODIFIERS.includes(m))) return false;
   // Corpus-compatible lowering may leave internal helpers intact until after this pass. State reached through
   // that closure belongs to the proxy just as state touched directly by the entry point does.
-  if (!reachableFrom(fn, callables).some(touchesProxyState)) return false;
+  if (!reachableFrom(fn, callables).some((candidate) => touchesProxyState(candidate, stateNames))) return false;
   if (hasUnsupportedDelegateOperation(fn, callables)) return false;
   if (hasDelegatecall(fn, callables)) return false;
   return true;
@@ -159,10 +214,11 @@ export default function autoMarkDelegateFunctions(ast: Ast, forceStateful = fals
 
   // Contract methods plus file-level free functions: either can host a helper that transfers.
   const callables = [...contract.functions, ...(ast.freeFunctions ?? [])];
+  const stateNames = new Set(contract.stateVariables.map((state) => state.name));
 
   let marked = 0;
   for (const fn of contract.functions) {
-    if (!isDelegateEligible(fn, callables)) continue;
+    if (!isDelegateEligible(fn, callables, stateNames)) continue;
     fn.modifiers.push(FunctionModifier.DELEGATE);
     marked += 1;
   }

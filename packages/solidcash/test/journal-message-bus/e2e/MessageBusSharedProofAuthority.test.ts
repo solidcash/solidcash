@@ -40,10 +40,6 @@ describe('message-bus shared sorted-proof authority', () => {
         expect.objectContaining({ routeInput: '__message_bus_key_balances_0', swappable: true }),
         expect.objectContaining({ routeInput: '__message_bus_key_balances_0_row', swappable: true }),
       ]));
-    expect(() => encodeMessageBatch(artifact, [
-      { function: 'move', args: [aliceAddress, bobAddress, 1n] },
-      { function: 'move', args: [carolAddress, bobAddress, 1n] },
-    ])).toThrow(/must identify one physical entry/);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -60,5 +56,23 @@ describe('message-bus shared sorted-proof authority', () => {
 
     await expect(contract.checkBalance(aliceAddress, 70n).send()).resolves.toBeDefined();
     await expect(contract.checkBalance(bobAddress, 40n).send()).resolves.toBeDefined();
+
+    await contract.mint(carolAddress, 100n).send();
+    // The route now has one shared key (Bob) and separate row-local keys (Alice, Carol). Prove the valid
+    // orientation executes, while replacing its shared proof with a key absent from the second row still fails.
+    const distinct = encodeMessageBatch(artifact, [
+      { function: 'move', args: [aliceAddress, bobAddress, 1n] },
+      { function: 'move', args: [carolAddress, bobAddress, 1n] },
+    ]);
+    const sharedIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === '__message_bus_key_balances_0');
+    expect(sharedIndex).toBeGreaterThanOrEqual(0);
+    const forgedWitnesses = [...distinct.routeWitnesses];
+    forgedWitnesses[sharedIndex] = aliceAddress;
+    await expect(contract._batchRaw(distinct.blob, forgedWitnesses).send()).rejects.toThrow();
+    await contract._batchRaw(distinct.blob, distinct.routeWitnesses).send();
+    await expect(contract.checkBalance(aliceAddress, 69n).send()).resolves.toBeDefined();
+    await expect(contract.checkBalance(carolAddress, 99n).send()).resolves.toBeDefined();
+    await expect(contract.checkBalance(bobAddress, 42n).send()).resolves.toBeDefined();
   });
 });

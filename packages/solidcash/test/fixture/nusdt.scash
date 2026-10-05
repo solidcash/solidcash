@@ -71,11 +71,11 @@ import { UsdtSupplyFacet } from "./nusdt_supply_facet.scash";
 
 contract NativeUsdt(address initialOwner) {
 
-    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
+    uint256 constant MAX_ALLOWANCE = type(uint256).max;
 
     // ---- events emitted from the master itself ----
     event Transfer(address indexed from, address indexed to, int value);
-    event Approval(address indexed tokenOwner, address indexed spender, int value);
+    event Approval(address indexed tokenOwner, address indexed spender, uint256 value);
     event Issue(int amount);
     event AddedBlackList(address indexed user);
     event Frozen(address indexed user);
@@ -87,7 +87,7 @@ contract NativeUsdt(address initialOwner) {
     address owner;
     int totalSupply;
     mapping(address => int) balances;
-    mapping(address => mapping(address => int)) allowed;
+    mapping(address => mapping(address => uint256)) allowed;
     bool paused;
     mapping(address => bool) isBlackListed;
     bytes32 name;
@@ -255,7 +255,7 @@ contract NativeUsdt(address initialOwner) {
 
     function transferFrom(address from, address to, int value) { UsdtTransferFacet.transferFrom(from, to, value); }
 
-    function approve(address spender, int value) {
+    function approve(address spender, uint256 value) {
         require(!this.deprecated);
         address tokenOwner = msg.sender;
         require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));

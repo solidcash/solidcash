@@ -3,13 +3,14 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { binToHex, binToUtf8, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, binToUtf8, utf8ToBin } from '@bitauth/libauth';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth';
 import {
   decodePushdataValue,
   encodePushdataValue,
   peekPushdataEncodedLength,
   type Artifact,
+  type ExternalResultEncoding,
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -187,6 +188,58 @@ export function isCanonicalEvmReturnBlob(
   }
 }
 
+/** Recognize the one-push participant result vector using each invocation's own published wire format. */
+export function isCanonicalMixedReturnBlob(
+  candidate: Uint8Array,
+  typeGroups: readonly (readonly string[])[], encodings: readonly ExternalResultEncoding[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
+): boolean {
+  if (typeGroups.length === 0 || typeGroups.length !== encodings.length
+    || peekPushdataEncodedLength(candidate) !== candidate.length) return false;
+  try {
+    const outer = decodePushdataValue(candidate, 0, 'bytes');
+    if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) return false;
+    const vector = outer.value;
+    let cursor = 0;
+    for (let row = 0; row < typeGroups.length; row += 1) {
+      if (encodings[row] === 'evm-abi-v1') {
+        const decoded = decodeEvmInvocationResultPrefix(vector.subarray(cursor), typeGroups[row], structs, enums);
+        if (!decoded) return false;
+        cursor += decoded.bytesConsumed;
+      } else if (encodings[row] === 'compact-pushdata-v1') {
+        for (const type of typeGroups[row]) {
+          const decoded = decodePushdataValue(vector, cursor, type, structs);
+          const canonical = encodePushdataValue(decoded.value, type, structs);
+          const valueStart = cursor;
+          if (canonical.length !== decoded.bytesConsumed
+            || canonical.some((byte, index) => byte !== vector[valueStart + index])) return false;
+          cursor += decoded.bytesConsumed;
+        }
+      } else return false;
+    }
+    return cursor === vector.length;
+  } catch {
+    return false;
+  }
+}
+
+export function extractMixedReturnBlob(
+  trace: readonly AuthenticationProgramStateCommon[],
+  typeGroups: readonly (readonly string[])[], encodings: readonly ExternalResultEncoding[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
+): string | undefined {
+  for (let traceIndex = trace.length - 1; traceIndex >= Math.max(0, trace.length - 96); traceIndex -= 1) {
+    const stack = trace[traceIndex].stack;
+    for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+      const candidate = stack[stackIndex];
+      if (isCanonicalMixedReturnBlob(candidate, typeGroups, encodings, structs, enums)) {
+        return binToHex(candidate);
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Select a compiler-framed mixed Solidity return, falling back to raw words only for all-static schemas. */
 export function selectEvmReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
@@ -224,14 +277,21 @@ export function extractEvmReturnCommitment(
   return selectEvmReturnCommitment(candidates, expectedTypeGroups, allowRaw, structs, enums);
 }
 
+function isBoundedNumericReturnType(type: string): boolean {
+  const numeric = /^u?int([1-9][0-9]*)$/.exec(type)
+    ?? /^u?fixed([1-9][0-9]*)x\d+$/.exec(type);
+  if (!numeric) return false;
+  const width = Number(numeric[1]);
+  return width >= 8 && width <= 256 && width % 8 === 0;
+}
+
 /** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
 export function extractEvmScalarReturnCommitment(
   fullTrace: AuthenticationProgramStateCommon[], expectedTypes: readonly string[], allowRaw = true,
 ): string | undefined {
   if (expectedTypes.length === 0 || !expectedTypes.every((type) => (
     type === 'bool' || type === 'int' || type === 'uint' || type === 'bigint'
-    || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
-    || /^u?fixed(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)x\d+$/.test(type)
+    || isBoundedNumericReturnType(type)
     || type === 'address' || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)
   ))) return undefined;
   const candidates: Uint8Array[] = [];
@@ -280,6 +340,7 @@ export function probeRequireMessage(
   selector: string | undefined,
   errorIp: number | undefined,
   logicalFunctionNames: readonly string[] = [],
+  activeBodyHex?: string,
 ): string | undefined {
   if (errorIp === undefined) return undefined;
   const seen = new Set<Artifact>();
@@ -291,6 +352,23 @@ export function probeRequireMessage(
     add(artifact.delegateArtifact);
   };
   for (const artifact of artifacts) add(artifact);
+  if (activeBodyHex !== undefined) {
+    // An OP_INVOKE failure is addressed in the active outlined body, not the entry point. Identical bytecode
+    // may have more than one source owner; attribute it only if all matching owners agree on one message.
+    const messages = new Set<string>();
+    let matched = false;
+    for (const artifact of candidates) {
+      for (const body of Object.values(artifact.debug?.invokeDebug ?? {})) {
+        if (body.bytecode.toLowerCase() !== activeBodyHex.toLowerCase()) continue;
+        matched = true;
+        const requirement = body.requires.find((entry) => entry.ip === errorIp - 1)
+          ?? body.requires.find((entry) => entry.ip === errorIp);
+        if (!requirement?.message) return undefined;
+        messages.add(requirement.message);
+      }
+    }
+    if (matched) return messages.size === 1 ? [...messages][0] : undefined;
+  }
   for (const artifact of candidates) {
     const selectors = selector ? [selector] : Object.keys(artifact.debug?.functionDebug ?? {});
     for (const candidateSelector of selectors) {

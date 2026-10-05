@@ -102,7 +102,7 @@ export async function appendCreateBuilderNestedCalleeLoopWrites(
       && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)));
     const seen = new Set<string>();
     for (let i = 0; i < ks.length; i++) {
-      const slot = keyToSlotMulti([...fixedBins, encK(ks[i], varyType)]);
+      const slot = keyToSlotMulti([...fixedBins, encK(ks[i], varyType)], bColl);
       const slotHex = binToHex(slot);
       if (seen.has(slotHex)) {
         throw new Error(`cross-contract callee loop on '${li.collection}': duplicate key (fails closed).`);

@@ -173,6 +173,11 @@ export interface ValueChunkProducerMutationRow {
       readonly collection: string;
       readonly operations: readonly string[];
       readonly mutationEffectOrdinals?: readonly number[];
+      readonly storedValueSource?: {
+        readonly version: 1;
+        readonly execution: 'unconditional-once';
+        readonly mutationEffectOrdinal: number;
+      };
     }[];
   };
 }
@@ -336,7 +341,11 @@ export function terminalValueChunkProducerClaim(options: {
     && terminal.accesses.length === 1 && mutationOrdinals.length === 1
     && (options.fixedChunkableWriteSelectors ?? [])
       .some((candidate) => canonicalHex(candidate, 4) === canonicalSelector);
-  if ((terminal.row.handler.sourceEffectOrder !== 'linear' && !fixedChunkableOccurrence)
+  const exactWholeValueOccurrence = terminal.accesses.length === 1 && mutationOrdinals.length === 1
+    && terminal.accesses[0].storedValueSource?.version === 1
+    && terminal.accesses[0].storedValueSource.execution === 'unconditional-once'
+    && terminal.accesses[0].storedValueSource.mutationEffectOrdinal === mutationOrdinals[0];
+  if ((terminal.row.handler.sourceEffectOrder !== 'linear' && !fixedChunkableOccurrence && !exactWholeValueOccurrence)
     || terminal.row.producerPath?.status !== 'complete') return undefined;
   const mutationEffectDomainId = selector === undefined ? undefined
     : valueChunkEffectDomainId(options.executionLockingBytecode, selector);
@@ -549,8 +558,9 @@ export function buildTransportedContinuationResourceClaim(options: {
 }
 
 /**
- * Order continuation-resource claims by source/mutation order already present in `claims`, failing closed on
- * overlapping bands, duplicate resources, or mixed owners. Callers must still run
+ * Retain continuation-resource claims in their authenticated source/mutation order, failing closed on
+ * reversed or overlapping bands, unsafe interval ends, duplicate resources, or mixed owners. Distinct
+ * bands may have gaps occupied by unrelated physical resources. Callers must still run
  * `selectSingletonValueChunkProducer` per resource before publishing.
  */
 export function orderTransportedContinuationResourceClaims(
@@ -566,12 +576,13 @@ export function orderTransportedContinuationResourceClaims(
     if (!canonical) return undefined;
     const resource = canonical.producerClaim.resourceIdentity;
     const owner = canonicalValueChunkStateOwner(canonical.owner);
-    if (!owner || resources.has(resource)) return undefined;
-    if (nextOffset !== undefined && canonical.bandOffset !== nextOffset) return undefined;
+    const end = canonical.bandOffset + canonical.chunkCount;
+    if (!owner || resources.has(resource) || !Number.isSafeInteger(end)) return undefined;
+    if (nextOffset !== undefined && canonical.bandOffset < nextOffset) return undefined;
     resources.add(resource);
     owners.add(owner);
     ordered.push(canonical);
-    nextOffset = canonical.bandOffset + canonical.chunkCount;
+    nextOffset = end;
   }
   if (owners.size !== 1) return undefined;
   return Object.freeze(ordered);

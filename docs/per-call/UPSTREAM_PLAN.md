@@ -313,6 +313,28 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
   - Skip: `ced497d54` and the constructor tests of `1ec288a10` (they pass on HEAD).
 - Gate: the ported tests; the 20 per-call files of the merge; representative titles on both per-call lanes after a
   fixture recompile (after compiler items); representative kernel-lane marketplace titles.
+- Status 2026-10-05:
+  - Landed, each with its test passing:
+    - P1 `920cf4ad8`;
+    - P2 `84e349830`: the ABI route reads the tuple; a getter's bare name keeps HEAD's state-accessor struct;
+    - P3 `bdcef843d`: OP_MAX anchor with HEAD's no-call fallback;
+    - P4 `1c63087ed`: the step-down after a witnessed anchor is gated on "no returning call ran", HEAD's SDK
+      compaction rule; the test was adapted;
+    - P5 `c3b274eb5`.
+  - P3/P4 leave both per-call marketplace fixtures byte-identical (recompiled and compared), so no per-call titles
+    were needed.
+  - P7: superseded. HEAD's `compose-assemble.ts` already accepts a participant's own materialized value-chunk band
+    without a transported claim, and validates it against the physical outputs.
+  - P8 `a26ee78d1`: already on HEAD.
+  - P8 test 2 (external view over a callee's chunk run): passes on HEAD.
+  - P8 test 1 (second write beside a runtime mapping loop, preflight at line 12) and test 3 (view loop refused
+    without a signer): both fail identically on the pre-merge kernel beta (`d7f3c7ad6`).
+  - P6's two behavioural tests: also fail identically on the pre-merge kernel beta.
+  - So they are long-standing kernel-lane bugs in code the kernel beta has since rewritten: runtime loop trailing
+    materialization with journal output plans and a fixed loop-output base; builder alias/return-channel handling.
+    `721d7d857`'s input reorder alone does not fix test 1. They need a fresh fix inside HEAD's kernel-lane design,
+    best owned by the kernel-lane session (proxy-on lane in `.worktrees/kernel-beta-candidate`) rather than a port.
+  - P9/P10: still no behavioural evidence on HEAD; not ported.
 - Uncommitted work in the main checkout (2026-10-03 09:17-09:40): an unfinished kernel feature, row-local route
   witnesses (per-row witness bands for read-only argument keys in batched rows): `compiler.ts` +137,
   `LowerCollectionJournalHelpers.ts` +130, `StatefulContract.ts` +20, `KernelCutoverRoute.test.ts`, new

@@ -36189,10 +36189,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SUB, loc);
       }
     } else if (returningExternalSlots.length > 0 && !this.perCallMaster) {
-      // A published dynamic band is already an authenticated physical coordinate. Prefer it even when the
-      // function also declares returning calls: a conditional call may be inactive, leaving its return-event
-      // witness at -1 while the dynamic write still occurs (MasterChef.deposit). A per-call frame locates the run
-      // from its own record block instead, so it takes the branch below even when a call returns a value.
+      // A published input base is the old chunk's input index. It is the output coordinate only while every
+      // returning call is inactive (witness -1) and the write still happens (MasterChef.deposit): the
+      // replacement then stays on that index. A call that ran publishes its event after the callee block, and
+      // the replacement follows that event, so the old index is an OP_TRUE pad. Measured on refresh beside
+      // balanceOf and bump: input base 2 is the pad and the chunk is the output after the last return event.
+      // A per-call frame locates the run from its own record block instead, so it takes the branch below.
       const emitAfterReturnEvent = (): void => {
         // Returning co-spends publish their event after every callee block and before this caller's dynamic
         // chunks. Anchor to the authenticated last return-event index that ran rather than summing
@@ -36201,7 +36203,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPublishedReturnAnchor(returningExternalSlots, returningExternalSlots.length - 1, blockSize, loc);
         this.emitAddCollectionIterCounts(loc);
       };
-      if (explicitDynamicBase >= 0) {
+      const ranWitnesses = this.returnOutputWitnessNames(
+        returningExternalSlots, returningExternalSlots.length,
+      );
+      if (explicitDynamicBase >= 0 && ranWitnesses.length > 0) {
+        ranWitnesses.forEach((name, index) => {
+          // After the first pick the running maximum sits untracked on top.
+          this.emitPickCompilerRouteFrameValue(name, loc, index === 0 ? 0 : 1);
+          if (index > 0) this.emit(Op.OP_MAX, loc);
+        });
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        // A call ran. One past its event is where the replacement chunk is placed.
+        this.emit(Op.OP_1ADD, loc);
+        this.emitAddCollectionIterCounts(loc);
+        this.emit(Op.OP_ELSE, loc);
+        // None ran. The authenticated input base is the physical coordinate; a negative base reconstructs.
+        this.emit(Op.OP_DROP, loc);
+        this.emitDynamicChunkBasePick(loc);
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        // The explicit base already includes collection-iteration inputs.
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DROP, loc);
+        emitAfterReturnEvent();
+        this.emit(Op.OP_ENDIF, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      } else if (explicitDynamicBase >= 0) {
         this.emitDynamicChunkBasePick(loc);
         this.emit(Op.OP_DUP, loc);
         this.emit(encodeInt(0n), loc);

@@ -10397,6 +10397,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (param instanceof Node) this.collectExternalCalls(param, slots, enclosingConditions);
       }
     }
+    // A fixed-array literal keeps its values in `elements` (`s[0] = arb.calc(x)` rebuilt as `[arb.calc(x), ...]`).
+    // The field walk above does not name that list, so the call stayed at slot -1 after its helper was inlined.
+    if ('elements' in node && Array.isArray((node as any).elements)) {
+      for (const element of (node as any).elements) {
+        if (element instanceof Node) this.collectExternalCalls(element, slots, enclosingConditions);
+      }
+    }
   }
 
   private assignExternalCallSlotIndices(
@@ -10523,6 +10530,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('parameters' in node && Array.isArray((node as any).parameters)) {
       for (const param of (node as any).parameters) {
         if (param instanceof Node) this.assignExternalCallSlotIndices(param, slots, counter);
+      }
+    }
+    if ('elements' in node && Array.isArray((node as any).elements)) {
+      for (const element of (node as any).elements) {
+        if (element instanceof Node) this.assignExternalCallSlotIndices(element, slots, counter);
       }
     }
   }

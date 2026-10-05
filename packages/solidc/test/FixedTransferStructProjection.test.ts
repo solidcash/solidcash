@@ -28,11 +28,17 @@ describe('fixed BCH transfer struct projections', () => {
 
   it('joins a changed field in source order while retaining its sibling', () => {
     const artifact = compilePay('if (alternate) payment.amount = amount + 1; payment.marker = tx.locktime;');
+    // `amount + 1` already has the int256 field width, so the true arm is the addition. The false arm keeps
+    // the authenticated input, and the sibling marker write does not drop either recipe.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
       .toMatchObject({ eligible: true, transfers: [{
         recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
         amountRecipe: { kind: 'conditional', condition: { kind: 'handlerInput', inputIndex: 2 },
-          ifTrue: { kind: 'cast', operand: { kind: 'binary', operator: '+' } },
+          ifTrue: {
+            kind: 'binary', operator: '+', resultType: 'int256',
+            left: { kind: 'handlerInput', inputIndex: 1 },
+            right: { kind: 'intLiteral', value: '1' },
+          },
           ifFalse: { kind: 'handlerInput', inputIndex: 1 } },
       }] });
   });

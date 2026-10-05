@@ -15,7 +15,12 @@ const artifact = (selector: string, inputType = 'int'): Artifact => ({
   structs: [],
   messageBus: {
     maximumRows: 1,
-    atomicMessageBus: { protocolVersions: [1, 2, 3] },
+    atomicMessageBus: {
+      protocolVersions: [1, 2, 3],
+      messageEnvelope: {
+        region: 'participant-verifiers', canonicalInput: 'final-participant-verifier', unlockingPush: 0,
+      },
+    },
     handlers: [{
       name: 'run', selector, inputs: [{ name: 'n', type: inputType }], outputs: [], eligible: true,
     }],
@@ -1633,18 +1638,54 @@ describe('atomic compiled invocation graph', () => {
     legacyPeer.participants[0] = {
       ...legacyPeer.participants[0], outputLockingBytecode: '54'.repeat(64),
     };
+    // The peer keeps the same envelope and drops protocol 2, so the V2 check is the one that refuses it.
     legacyPeer.participants[1] = {
       ...legacyPeer.participants[1],
       artifact: {
         ...legacyPeer.participants[1].artifact,
         messageBus: {
-          ...legacyPeer.participants[1].artifact.messageBus!, atomicMessageBus: undefined,
+          ...legacyPeer.participants[1].artifact.messageBus!,
+          atomicMessageBus: {
+            ...legacyPeer.participants[1].artifact.messageBus!.atomicMessageBus!,
+            protocolVersions: [1],
+          },
         },
       },
     };
     expect(() => messageBus.finalizeAtomicInvocationGraph(
       legacyPeer, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     )).toThrow(/participant 1 verifier does not advertise.*protocol 2/);
+  });
+
+  it('rejects an atomic descriptor that omits its envelope region', () => {
+    const rootOmitted = plan();
+    rootOmitted.participants[0] = {
+      ...rootOmitted.participants[0],
+      artifact: {
+        ...rootOmitted.participants[0].artifact,
+        messageBus: {
+          ...rootOmitted.participants[0].artifact.messageBus!,
+          atomicMessageBus: { protocolVersions: [1, 2, 3] },
+        },
+      },
+    };
+    expect(() => messageBus.finalizeAtomicInvocationGraph(
+      rootOmitted, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    )).toThrow(/no supported atomic envelope transport/);
+    const peerOmitted = plan();
+    peerOmitted.participants[1] = {
+      ...peerOmitted.participants[1],
+      artifact: {
+        ...peerOmitted.participants[1].artifact,
+        messageBus: {
+          ...peerOmitted.participants[1].artifact.messageBus!,
+          atomicMessageBus: { protocolVersions: [1, 2, 3] },
+        },
+      },
+    };
+    expect(() => messageBus.finalizeAtomicInvocationGraph(
+      peerOmitted, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    )).toThrow(/participant 1 uses a different atomic envelope transport/);
   });
 
   it('admits canonical event, value, token-container, and token-settlement rows', () => {

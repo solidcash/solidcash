@@ -554,17 +554,18 @@ export function finalizeAtomicInvocationGraph(
   const layout = atomicMessageBusPhysicalLayout(
     spans, plan.participants.map((participant) => participant.authority ?? 'routed'),
   );
-  // Every participant must verify the exact same physical carrier. Treat a missing descriptor as unsupported;
-  // proxy-forward, direct root-route, and historical verifier-local transports are distinct covenants.
+  // Every participant must verify the exact same physical carrier. A missing messageEnvelope is an
+  // absent region, not a property read. Proxy-forward, direct root-route, and historical verifier-local
+  // transports are distinct covenants.
   const envelopeTransport = plan.participants[0].artifact.messageBus?.atomicMessageBus
-    ?.messageEnvelope.region;
+    ?.messageEnvelope?.region;
   if (envelopeTransport !== 'participant-verifiers'
     && envelopeTransport !== 'root-route' && envelopeTransport !== 'proxy-forward') {
     throw new Error('messageBus: root participant has no supported atomic envelope transport');
   }
   const mismatchedEnvelopeTransport = plan.participants.findIndex((participant) => (
     participant.authority !== 'direct'
-      && participant.artifact.messageBus?.atomicMessageBus?.messageEnvelope.region !== envelopeTransport
+      && participant.artifact.messageBus?.atomicMessageBus?.messageEnvelope?.region !== envelopeTransport
   ));
   if (mismatchedEnvelopeTransport >= 0) {
     throw new Error(

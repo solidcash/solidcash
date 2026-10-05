@@ -74,9 +74,19 @@ describe('legacy JobEvent helper facade/legacy JobEvent naming retirement JobEve
     expect(stb).not.toContain('export const computePublishJobEventsBand');
     expect(stb).not.toContain('export const persistedJobEventsWidth');
 
-    expect(sc).toContain("from './legacy-job-event-helpers.js'");
-    expect(sc).toMatch(/legacyLiveValueChunkBandWidth[\s\S]*from '\.\/legacy-job-event-helpers\.js'/);
+    // The band-width call moved out of the class into the pred-out extract. That file imports the neutral
+    // wrapper from its implementation module. The facade re-exports the same wrapper through the transaction
+    // builder, and this extract cannot import the facade: the builder loads the class, which loads the extract.
+    const caller = readFileSync(
+      join(here, '../../src/stateful/sc-relocate-create-builder-pred-out-bases.ts'), 'utf8',
+    );
+    expect(caller).toContain("from './early-value-chunk-helpers.js'");
+    expect(caller).toMatch(/legacyLiveValueChunkBandWidth[\s\S]*from '\.\/early-value-chunk-helpers\.js'/);
+    expect(caller).not.toContain('liveJobEventsBandWidth(');
+    expect(caller).not.toContain('computePublishJobEventsBand');
+    expect(caller).not.toContain('persistedJobEventsWidth(');
     expect(sc).not.toContain('liveJobEventsBandWidth(');
+    expect(sc).not.toContain('computePublishJobEventsBand');
     expect(sc).not.toContain('persistedJobEventsWidth(');
 
     expect(index).toContain('legacyLiveValueChunkBandWidth');

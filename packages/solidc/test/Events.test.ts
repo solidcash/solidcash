@@ -237,15 +237,16 @@ describe('minting uniqueness ignores none-cap JobEvents', () => {
         }
       }`);
     const selector = artifact.abi.find((entry) => entry.name === 'go')?.selector;
-    const body = artifact.functionBodies?.[selector!]
-      ?? artifact.delegateArtifact?.functionBodies?.[selector!]
-      ?? artifact.bytecode;
-    expect(body).toBeDefined();
-    // OUTPUTTOKENCATEGORY / SIZE / push(33) / NUMEQUAL before the minting EQUAL.
-    // Function bodies are hex; full artifact.bytecode may keep the same ops as ASM.
-    expect(
-      /d18201219c/.test(body!)
-      || body!.includes('OP_OUTPUTTOKENCATEGORY OP_SIZE 21 OP_NUMEQUAL'),
-    ).toBe(true);
+    const scripts = [
+      artifact.functionBodies?.[selector!],
+      artifact.delegateArtifact?.functionBodies?.[selector!],
+      artifact.bytecode,
+      artifact.delegateArtifact?.bytecode,
+    ].filter((script): script is string => typeof script === 'string' && script.length > 0);
+    expect(scripts.length).toBeGreaterThan(0);
+    // The output census copies each output's token category and compares it to the master's
+    // 33-byte category+capability. A 32-byte none-cap category fails that equality.
+    const census = /76d1(?:53|0103)7987|OP_DUP OP_OUTPUTTOKENCATEGORY (?:OP_3|3) OP_PICK OP_EQUAL/;
+    expect(scripts.some((script) => census.test(script))).toBe(true);
   });
 });

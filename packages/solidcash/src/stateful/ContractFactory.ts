@@ -435,13 +435,24 @@ export class ContractFactory<T extends Artifact = Artifact> {
     // per-call contract presents its own address, `addrV(category)`, which `target` carries: its handle's lock is
     // the unfilled artifact's, which no frame presents, so a stored copy of it would never equal the caller.
     const perCallAddress = (contract as StatefulContract)._perCallAddress;
+    // Frames present `addrV(category)`. Register that lock even though `target` is the logical CREATE address.
+    const executionLock = perCallAddress === undefined
+      ? contract.inner.lockingBytecode : binToHex(addressToLockScript(perCallAddress));
+    const executionAddress = perCallAddress ?? contract.target;
     registerDeployment(provider, {
       contractName: this.artifact.contractName,
-      address: contract.target,
-      lockingBytecode: perCallAddress === undefined
-        ? contract.inner.lockingBytecode : binToHex(addressToLockScript(perCallAddress)),
+      address: executionAddress,
+      lockingBytecode: executionLock,
       contract,
     });
+    if (logicalAddress !== undefined && logicalAddress !== executionAddress) {
+      registerDeployment(provider, {
+        contractName: this.artifact.contractName,
+        address: logicalAddress,
+        lockingBytecode: executionLock,
+        contract,
+      });
+    }
     return contract;
   }
 }

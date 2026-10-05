@@ -5134,9 +5134,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return this.inner.artifact;
   }
 
-  /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`). */
+  /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`).
+   * A deployed logical CREATE address is that identifier. The per-call execution address stays on `address`. */
   get target(): string {
-    return this._perCallAddress ?? this._logicalAddress ?? this.address;
+    return this._logicalAddress ?? this._perCallAddress ?? this.address;
   }
 
   /** The contract's p2sh address (async, ethers.js `contract.getAddress()`). */

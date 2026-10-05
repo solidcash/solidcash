@@ -89,10 +89,11 @@ describe('kernel successful-path state admission', () => {
       { collection: 'values', operations: ['read', 'write'] },
       { collection: 'values', operations: ['read', 'write'] },
     ]));
-    expect(abi?.emits?.map((emit) => emit.eventName)).toEqual(['Grant', 'Move']);
+    // spend() calls approveInner with publish=false, so the Grant emit is dead on moveFrom.
+    expect(abi?.emits?.map((emit) => emit.eventName)).toEqual(['Move']);
     expect(abi?.sourceEffectOrder).toBe('unsupported-flow');
     expect(abi?.blockLayout?.slots.filter((slot) => slot.kind === 'entry')).toHaveLength(3);
-    expect(abi?.blockLayout?.slots.filter((slot) => slot.kind === 'event')).toHaveLength(2);
+    expect(abi?.blockLayout?.slots.filter((slot) => slot.kind === 'event')).toHaveLength(1);
     expect(bytecodeToAsm(hexToBin(artifact.debug.bytecode))).toContain('OP_INVOKE');
   });
 });

@@ -131,12 +131,9 @@ export function materializeOwnerEventNftOutputs(
     }));
   }
   for (let eventSlot = 0; eventSlot < reservedEventSlots; eventSlot += 1) {
-    // The emitting covenant resolves its own event NFT at `masterInputIndex + slotOffset`, so an event output
-    // belongs at the layout offset of its slot - not at whatever index the build cursor happens to hold. The two
-    // only agree when nothing but the owner's block was materialized before this loop; a nested participant
-    // block, a funding pad or a derived chunk in front of the band leaves the cursor past the offset, and simply
-    // appending then puts the NFT where the covenant will never look (the slot keeps its neutral pad, whose empty
-    // commitment fails the event check).
+    // The emitting covenant resolves its own event NFT at `masterInputIndex + slotOffset`. A read-only chunk
+    // packed into that output-only coordinate is restored to its input index later; appending the event leaves
+    // the coordinate as the pad that restoration swaps in, and the commitment check then sees empty.
     // A published event slot names the emit ordinal in `slotIndex`; a layout predating that field is read in
     // offset order. Mixing the two would let an unindexed slot answer for an ordinal it does not own.
     const slotOffset = indexedOffsets.get(eventSlot) ?? orderedSlots[eventSlot]?.offset;
@@ -149,9 +146,25 @@ export function materializeOwnerEventNftOutputs(
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
       }
       const occupant = builder.outputs[slotOffset];
-      // Only a neutral (tokenless) pad may be displaced. An authenticated resource already sitting at the offset
-      // is not this event's to overwrite; appending keeps it addressable and leaves the mismatch to the covenant.
-      if (occupant !== undefined && occupant.token !== undefined) {
+      if (occupant?.token !== undefined && output.token !== undefined) {
+        // A minting master owns its coordinate. Anything else packed here is shifted right so this event
+        // lands on the output the covenant reads.
+        if (occupant.token.nft?.capability === 'minting') {
+          builder.addOutput(output);
+          return;
+        }
+        const occupantCommit = String(occupant.token.nft?.commitment ?? '');
+        const placedCommit = String(output.token.nft?.commitment ?? '');
+        if (occupant.token.nft?.capability === 'none' && occupant.token.category === output.token.category
+          && occupantCommit.toLowerCase() === placedCommit.toLowerCase() && placedCommit !== '') return;
+        const placeholder = occupant.token.nft?.capability === 'none'
+          && occupant.token.category === output.token.category
+          && (occupantCommit === '' || /^(00)+$/.test(occupantCommit));
+        if (!placeholder) {
+          builder.outputs.splice(slotOffset, 0, output);
+          return;
+        }
+      } else if (occupant?.token !== undefined) {
         builder.addOutput(output);
         return;
       }

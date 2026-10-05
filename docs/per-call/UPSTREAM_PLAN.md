@@ -238,6 +238,33 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
   `land-*`), stale branches (`codex/*`, `grok/*`) and stash entries (inspect; never pop another session's entry).
 - Ask the user before deleting anything with unmerged commits or uncommitted files: deletion cannot be undone.
 
+### W11. Port the rescued kernel-lane fixes (`rescue/main-checkout-2026-10-03`)
+- What: 27 commits (to `cac34c86d`, 2026-10-01 21:46 .. 10-03 06:19, +4501/-224 in 47 files) made on a detached HEAD
+  in the main checkout `/Code/cashscript`, branched from `solidcash_v0.13.1` like the kernel beta, and in neither
+  `feat/per-call` nor the kernel beta (`git cherry`: 27 missing, 0 equivalent). Pinned by the branch above. Shape:
+  kernel-lane (default composition) SDK work for a ported project - block bands, dynamic chunk runs, aliased return
+  channels, a multi-writer carrier union, the atomic composer for a standalone owner's repeated calls, emission order
+  by source callsites, value-chunk claims, runtime-loop entry coordinates, external view reads, vmap numeric-key
+  hashing, struct getter tuples - plus small codegen fixes (dynamic-chunk band anchor, runtime mapping entries vs a
+  same-call dynamic write, runtime cardinality for source-array upsert loops, call source positions) and the testing
+  package's ported-project config. No per-call code.
+- Evidence on `57dfa942e` (its 23 test files, run once): 4 pass (the kernel beta covers them: constructor chunked
+  write, placeholder convergence, chunkable arity, chunk band alignment); 12 fail only because they unit-test helpers
+  this line introduced; behavioural failures: e2e `VmapNumericKeySlot` and `VmapStructGetterTuple` (BCH-2026 preflight,
+  OP_VERIFY), `journal-message-bus/e2e/KernelDynamicWriteEntryBand` (2/3), solidc `DynamicChunkAnchorWitness` and
+  `DynamicChunkBaseStepDown`, `AliasReturnChannel`, `SharedViewAliasReturnChannel`, `ComposeLayoutAuthority` (layout
+  invariant), testing `physical-identity` (address mismatch). HEAD's kernel lane still has these bugs.
+- How: do not merge the line wholesale - it rewrote the files the kernel beta rewrote (`StatefulContract.ts`,
+  `StatefulTransactionBuilder.ts`, `message-bus/compose.ts`). Port per behavioural test: copy the test, find the
+  commit(s) whose change makes it pass, adapt to HEAD, land with that test; take helpers only where the fix needs
+  them. Compiler-side ports reach per-call compiles too: check the per-call fixtures' sizes and `refusedEntries`
+  (section 0). Schedule with W6.
+- Uncommitted work in the main checkout (2026-10-03 09:17-09:40): an unfinished kernel feature, row-local route
+  witnesses (per-row witness bands for read-only argument keys in batched rows): `compiler.ts` +137,
+  `LowerCollectionJournalHelpers.ts` +130, `StatefulContract.ts` +20, `KernelCutoverRoute.test.ts`, new
+  `KernelRowLocalRouteWitness.test.ts`. Leave it to its owner (two grok processes and a Claude session run in that
+  checkout); a copy is in `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scratchpad/rescue/`.
+
 ### W10. Land on solidcash_v0.13.1
 - After W6's final gate (and W5, W8 if they are in scope for the release): fast-forward `solidcash_v0.13.1` to the
   release commit (or a merge commit if the branch moved), tag it, push to `mew` and `private` with the user's go-ahead.

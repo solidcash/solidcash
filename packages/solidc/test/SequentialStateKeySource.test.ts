@@ -27,11 +27,12 @@ describe('sequential scalar state in direct mapping key recipes', () => {
       .toBe('binop:-(state:counter,lit:1)');
   });
 
-  it('does not claim one source-order projection across multiple state writes', () => {
+  it('projects each preceding increment through a local key initializer', () => {
+    // Both assignments rewrite the incoming counter. The key is that chain minus one.
     expect(keySource(`counter = counter + 1;
       counter = counter + 1;
       int key = counter - 1;
       entries[key] = value;`))
-      .toBe('binop:-(state:counter,lit:1)');
+      .toBe('binop:-(binop:+(binop:+(state:counter,lit:1),lit:1),lit:1)');
   });
 });

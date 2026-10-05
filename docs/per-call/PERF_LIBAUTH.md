@@ -102,4 +102,4 @@ No dependency change is in the tree. The measured case for the PR is the encodeD
 
 ## Marketplace titles
 
-Not in this revision. The same four cells still have to time approve sanity and refund sanity on the no-proxy lane, approve result and take job on the proxied lane, and those titles on the kernel lane, with wall time and VM share. The harness recipe in `UPSTREAM_PLAN.md` section 1 applies, including a fixture recompile. Those numbers land in this file before the release commit. The micro-benchmark above is the opcode-family half of the matrix and does not depend on them.
+The four-cell matrix has not been repeated on marketplace titles. One proxied per-call run on stock libauth with the SDK overrides on is in `PERF_KERNEL_VS_PERCALL.md`: take job 62.208 s, approve result 131.787 s, worker CPU 80.9 percent VM. The profile resolves `@bitauth/libauth` from `node_modules`, so it is the stock column, not the fork. Approve sanity, refund sanity, and the kernel lane are not timed yet.

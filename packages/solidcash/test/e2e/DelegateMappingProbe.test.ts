@@ -4,6 +4,7 @@ import { hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, Signer, SortedList, getEntryNftAddress, keyToSlot,
 } from '../../src/index.js';
+import { addressPayloadToLockingBytecode } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';
 
@@ -68,7 +69,9 @@ describe('delegate facet: mapping write vs scalar write', () => {
     await provider.addUtxo(signer.getAddress(), { txid: 'ab'.repeat(32), vout: 0, satoshis: 300000n });
     const ea = getEntryNftAddress(cons.withCategory(hexToBin(consCat)), consCat, 'bal');
     const read = async (): Promise<bigint | undefined> => {
-      const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(KEY));
+      // The call pushes a 20-byte address as its P2PKH lock, and the entry is stored under that lock's slot.
+      const e = SortedList.fromUtxos(await provider.getUtxos(ea))
+        .find(keyToSlot(addressPayloadToLockingBytecode(KEY)));
       return e ? vmNumberToBigInt(e.value) : undefined;
     };
     return { c, signer, read };

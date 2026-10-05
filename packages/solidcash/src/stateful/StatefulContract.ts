@@ -7837,11 +7837,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // sha256(sha256(empty) ++ sha256(worker-lockscript)) while the read looked up
               // sha256(sha256(0x00) ++ sha256(worker-lockscript)), co-spent the neighbouring head sentinel and
               // halted on the entry covenant's OP_VERIFY.
-              return typeof v === 'bigint' ? bigIntToVmNumber(v)
+              // A 20-byte address payload is pushed as its P2PKH lock. The covenant hashes that lock.
+              const encoded = typeof v === 'bigint' ? bigIntToVmNumber(v)
                 : typeof v === 'number' ? bigIntToVmNumber(BigInt(v))
                   : v instanceof Uint8Array ? v
                     : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
                       : encodePushdataValue(v as StateValue, keyType, stateLayout.structs);
+              return (keyType === 'address' || keyType === 'address payable') && encoded.length === 20
+                ? p2pkhLockingBytecode(encoded) : encoded;
             } catch (cause) {
               throw new Error(
                 `Cannot encode ${access.collection} entry key '${paramName}' (slot ${slotIndex}) as ${keyType}`,

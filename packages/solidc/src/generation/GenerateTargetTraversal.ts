@@ -36263,10 +36263,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Leaves the output index just past the last return event a returning call published, untracked. A call that did
-   * not run binds its return index to -1 and is passed over; when none ran, the run starts after the caller's block
-   * and each non-returning callee block whose own master-index witness is non-negative. A call at a fixed offset
-   * from the shared base is co-spent with the returning calls or not at all, so it never precedes such a run.
+   * Leaves the output index just past the physically last return event a returning call published, untracked. A
+   * call that did not run binds its return index to -1 and is passed over; when none ran, the run starts after the
+   * caller's block and each non-returning callee block whose own master-index witness is non-negative. A call at a
+   * fixed offset from the shared base is co-spent with the returning calls or not at all, so it never precedes such
+   * a run.
    */
   private emitPublishedReturnAnchor(
     returningSlots: readonly ExternalCallSlot[], last: number, blockSize: number, loc: SingleLocationData,
@@ -36291,18 +36292,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return;
     }
-    const returnParamName = returningSlots.length === 1
-      ? '__internal__externalReturnOutputIdx'
-      : `__internal__externalReturnOutputIdx${returningSlots[last].returnSlotIndex}`;
-    this.emitPickCompilerRouteFrameValue(returnParamName, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-    this.emit(Op.OP_IF, loc);
+    // The last event is the physically last one: the MAXIMUM of the witnessed return-output indices, not the last
+    // slot in declaration order. Several callsites of one callee share one physical participant, so a shared
+    // callsite publishes its event in the writer's in-block slot at an early output; measured on a no-proxy
+    // marketplace entry, a shared approve/transferFrom writer's slot named output 18 while an earlier-declared
+    // slot named 31, and anchoring on the later-declared slot pointed the chunk covenant at a return-event
+    // carrier. A call that did not run binds -1, which never wins the maximum; when none ran, the maximum plus one
+    // is zero and the run starts where no returning call precedes it.
+    const returnParamNames = returningSlots.slice(0, last + 1)
+      .map((slot) => (returningSlots.length === 1
+        ? '__internal__externalReturnOutputIdx'
+        : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`))
+      .filter((name) => this.getStackIndex(name, true) >= 0);
+    if (returnParamNames.length === 0) {
+      this.emitPublishedReturnAnchor(returningSlots, -1, blockSize, loc);
+      return;
+    }
+    returnParamNames.forEach((name, index) => {
+      // After the first pick the running maximum sits untracked on top.
+      this.emitPickCompilerRouteFrameValue(name, loc, index === 0 ? 0 : 1);
+      if (index > 0) this.emit(Op.OP_MAX, loc);
+    });
     this.emit(Op.OP_1ADD, loc);
-    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOTIF, loc);
     this.emit(Op.OP_DROP, loc);
-    this.emitPublishedReturnAnchor(returningSlots, last - 1, blockSize, loc);
+    this.emitPublishedReturnAnchor(returningSlots, -1, blockSize, loc);
     this.emit(Op.OP_ENDIF, loc);
   }
 

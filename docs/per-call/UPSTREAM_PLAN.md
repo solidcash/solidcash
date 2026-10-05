@@ -325,15 +325,31 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
     were needed.
   - P7: superseded. HEAD's `compose-assemble.ts` already accepts a participant's own materialized value-chunk band
     without a transported claim, and validates it against the physical outputs.
-  - P8 `a26ee78d1`: already on HEAD.
-  - P8 test 2 (external view over a callee's chunk run): passes on HEAD.
-  - P8 test 1 (second write beside a runtime mapping loop, preflight at line 12) and test 3 (view loop refused
-    without a signer): both fail identically on the pre-merge kernel beta (`d7f3c7ad6`).
-  - P6's two behavioural tests: also fail identically on the pre-merge kernel beta.
-  - So they are long-standing kernel-lane bugs in code the kernel beta has since rewritten: runtime loop trailing
-    materialization with journal output plans and a fixed loop-output base; builder alias/return-channel handling.
-    `721d7d857`'s input reorder alone does not fix test 1. They need a fresh fix inside HEAD's kernel-lane design,
-    best owned by the kernel-lane session (proxy-on lane in `.worktrees/kernel-beta-candidate`) rather than a port.
+  - P8 and P6 failed identically on the pre-merge kernel beta (`d7f3c7ad6`): long-standing kernel-lane bugs in code
+    the kernel beta rewrote. They were fixed fresh inside HEAD's design, not ported:
+    - P8 test 1 `bb01e8fdc`: HEAD's direct-loop rule (`0b737d6c1`) minted the entry at the predecessor's INPUT
+      index; the covenant's output base counts no old chunk of an array the call writes, so each such chunk
+      co-spent ahead of the predecessor now compacts it (`getLoopEntryOutputBase`). `721d7d857` (legacy input
+      order) does not reach this dense path.
+    - P8 test 3 `c3e9052ce`: HEAD already had the per-occurrence resolver and replacement pass; only the
+      "requires atomic composition" refusal ran before the builder knew it was a return probe. A probe now admits a
+      repeated typed loop that publishes a result array; the direct group push still refuses when no resolver
+      attaches. Sends keep the refusal.
+    - P8 `a26ee78d1`: already on HEAD. Test 2 passed on HEAD. The test file landed whole (marketplace name removed).
+    - P6 `fa3485980`: `3196a56f9`'s three placement invariants in `physical-return-layout.ts`,
+      `stb-place-tail-return.ts` and `stb-inblock-writer-returns.ts` (one output per tail family; reserve a
+      writer's built slot, not its stale plan; binding a writer alias leaves its view owner's tail and witnesses).
+      Test `unit/AliasReturnChannel` (rescued cases, neutral names, plus the witness case).
+    - P6 not ported: `26df19f6e`'s alias-channel fill (a probe already precomputes every group, an alias's too; a
+      plain callee's two returning methods are refused for a send by design; a routed callee's send composes both
+      rows) and the `9ec41b74a`/`39c5b0df2` carrier union (moved no title in its own measurement; HEAD refuses that
+      shape fail-closed). The per-call SDK does not use the stateful builder, so per-call is unaffected.
+  - Found while checking P6, not fixed: a VIEW reading two different methods of one routed participant
+    (`readBoth() { a = s.flag(); b = s.paused(); }`) fails its return probe at the second callsite's selector check:
+    the probe builds direct calls, so the alias shares the owner's input and presents `flag`'s selector. The same
+    shape SENDS fine (promoted to the atomic composer by `mayRepeatOwner`). Options: give the composer a read mode and
+    route such views through it like sends (preferred); a probe-only copy of the callee block reaches the builder's
+    universal duplicate-stateful-input guard and outpoint-keyed maps (tried and reverted).
   - P9/P10: still no behavioural evidence on HEAD; not ported.
 - Uncommitted work in the main checkout (2026-10-03 09:17-09:40): an unfinished kernel feature, row-local route
   witnesses (per-row witness bands for read-only argument keys in batched rows): `compiler.ts` +137,

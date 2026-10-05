@@ -372,11 +372,28 @@ describe('inferred message-bus batching for repeated external callees', () => {
     const program = expression?.kind === 'arrayAccess' ? expression.left : undefined;
 
     expect(program).toMatchObject({ kind: 'call', parameters: ['amount', 'splits'] });
+    // The first two ascending stores fold into the initializer. The last store reads those elements, so it
+    // stays an assignment; index 2 in the literal is only the int default that assignment replaces.
     expect(program?.statements).toMatchObject([
-      { kind: 'variable', name: 'values', type: 'uint256[3]' },
-      { kind: 'arrayAssign', name: 'values', index: { kind: 'literal', value: '0' }, expression: {} },
-      { kind: 'arrayAssign', name: 'values', index: { kind: 'literal', value: '1' }, expression: {} },
-      { kind: 'arrayAssign', name: 'values', index: { kind: 'literal', value: '2' }, expression: {} },
+      {
+        kind: 'variable',
+        name: 'values',
+        type: 'uint256[3]',
+        expression: {
+          kind: 'array',
+          args: [
+            { kind: 'binary', operator: '/' },
+            { kind: 'binary', operator: '/' },
+            { kind: 'literal', value: '0' },
+          ],
+        },
+      },
+      {
+        kind: 'arrayAssign',
+        name: 'values',
+        index: { kind: 'literal', value: '2' },
+        expression: { kind: 'binary', operator: '-' },
+      },
       { kind: 'return', expression: { kind: 'identifier', name: 'values' } },
     ]);
   });

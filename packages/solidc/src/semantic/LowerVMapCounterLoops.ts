@@ -6871,7 +6871,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (literalElements) {
         if (statements.some((statement) => statement !== declaration && statement !== returned)) return undefined;
       } else if (statements.some((statement) => statement !== declaration && statement !== returned
-        && !storedAssigns.includes(statement))) return undefined;
+        && !storedAssigns.some((assign) => assign === statement))) return undefined;
       const assignments: { index: ExpressionNode; value: ExpressionNode }[] = literalElements
         ? literalElements.map((element, index) => {
           const indexNode = new IntLiteralNode(BigInt(index));

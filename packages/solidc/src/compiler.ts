@@ -586,6 +586,11 @@ type InternalCompilerOptions = CompilerOptions & {
   __referencedChildOptions?: CompilerOptions;
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
+  /**
+   * Disk hits rebuild the delegate from caller options, which have not been through graph-free narrowing.
+   * The getter applies that narrowing once so the cold variant matches the warm one.
+   */
+  __coldDelegateRebuild?: boolean;
   __cheapAdmissionCodegen?: boolean;
   __parsedAst?: Ast;
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
@@ -2515,6 +2520,9 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
       // Re-attach delegateArtifact before promoting so a cold worker matches a warm one.
       const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
       diskOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+      // The primary pass narrowed graph-free contracts before the warm getter closed over its options.
+      // A disk hit sees only the caller's options, so the getter repeats that narrowing.
+      diskOptions.__coldDelegateRebuild = true;
       attachDelegateVariant(diskHit, code, diskOptions, errorListener, primaryContractName, true);
       compileCacheSet(cacheKey, diskHit);
       return cloneArtifact(diskHit, suppressWarnings);
@@ -3066,6 +3074,16 @@ function attachDelegateVariant(
   if (!couldBeImplementation) return;
 
   const buildVariant = (): Artifact | undefined => {
+    const internalOptions = mergedCompilerOptions as InternalCompilerOptions;
+    if (internalOptions.__coldDelegateRebuild === true) {
+      delete internalOptions.__coldDelegateRebuild;
+      if (internalOptions.__messageBusMode === 'auto' && !mergedCompilerOptions.messageBusGraphContext) {
+        narrowGraphFreeAutoMessageBus(
+          parseAndResolve(code, mergedCompilerOptions, errorListener, primaryName),
+          mergedCompilerOptions,
+        );
+      }
+    }
     // Proxy implementation bytecode is selected by the SDK for delegate execution. Atomic composition can also
     // dispatch that implementation through its participant route, so the lazy variant must receive the same
     // verifier-binding continuation as a primary artifact; otherwise its ABI omits the active verifier input
@@ -17983,9 +18001,11 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     if (diskCached) {
       // Disk stores artifacts without their lazy `delegateArtifact` getter (JSON cannot preserve it). Re-attach
       // per declaration so a cold worker matches a warm one, exactly as the single-artifact disk path does.
-      const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
-      diskOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
       for (const [name, diskArtifact] of Object.entries(diskCached)) {
+        // One options object per declaration: narrowing is per contract, and the getter reads it later.
+        const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
+        diskOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+        diskOptions.__coldDelegateRebuild = true;
         attachDelegateVariant(diskArtifact, code, diskOptions, errorListener, name, true);
       }
       // Promote into the process-local map so sibling declarations in this process skip the disk read.

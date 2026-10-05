@@ -31839,10 +31839,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (node instanceof BranchNode) {
         const then = contains(node.ifBlock);
-        const decided = evaluate(node.condition, values);
-        if ((typeof decided === 'boolean' ? decided : holds(facts, node.condition)) !== then) {
-          arms.push({ guard: node, then });
-        }
+        // A revert on the other arm decides this one: `if (c) revert(); else write` reaches the write only
+        // when c is false, so that arm is not a guard the recipe has to carry.
+        const otherFails = fails(then ? node.elseBlock : node.ifBlock);
+        const decided = otherFails ? then : evaluate(node.condition, values);
+        const known = typeof decided === 'boolean' ? decided : holds(facts, node.condition);
+        if (known !== then) arms.push({ guard: node, then });
         const inner = new Map(facts);
         learn(inner, node.condition, then);
         walk(then ? node.ifBlock : node.elseBlock!, inner, new Map(values));

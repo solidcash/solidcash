@@ -185,6 +185,7 @@ describe('X11: delegate vmap sorted mapping write', () => {
     const fixture = await setup(true);
     const builder: any = await fixture.proxySc.call.__fallback()
       .withDelegatecall(fixture.libSc, 'setBal', [30n, 100n]).build();
+    const before = encodeTransaction(builder.buildLibauthTransaction()).length;
     builder.outputs.push({
       to: fixture.entryAddress,
       amount: 1200n,
@@ -197,6 +198,18 @@ describe('X11: delegate vmap sorted mapping write', () => {
         },
       },
     });
+    // The new output spends 1200 sats and extra bytes. Pay both from the change output, or relay
+    // policy refuses the transaction before the proxy covenant runs.
+    const additional = 1200n + BigInt(encodeTransaction(builder.buildLibauthTransaction()).length - before);
+    const satoshisOf = (output: { amount?: bigint }): bigint => output.amount ?? 0n;
+    // This build has no tokenless change output. The master output carries the surplus.
+    const feeOutput = builder.outputs.reduce((
+      best: { amount?: bigint } | undefined, output: { amount?: bigint },
+    ) => (best === undefined || satoshisOf(output) > satoshisOf(best) ? output : best), undefined);
+    if (feeOutput?.amount === undefined || feeOutput.amount < additional) {
+      throw new Error(`fixture cannot fund the ${additional}-satoshi fabricated-output relay fee`);
+    }
+    feeOutput.amount -= additional;
     const outcome = await fixture.provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
     expectRejectedAt(outcome, 0);

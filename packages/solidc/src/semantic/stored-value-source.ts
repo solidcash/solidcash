@@ -1,5 +1,6 @@
 import { binToHex } from '@bitauth/libauth';
-import { ArrayType, StructType } from '@solidcash/utils';
+import { ArrayType, IntType, PrimitiveType, StructType } from '@solidcash/utils';
+import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
   ArrayAccessNode, ArrayAssignNode, ArrayNode, AssemblyStatementNode, AssertNode, AssignNode, AssignmentExpressionNode,
   BinaryOpNode, BlockNode, BoolLiteralNode,
@@ -33,6 +34,23 @@ function syntaxNodes(root: Node, result = new Set<Node>()): Set<Node> {
     }
   }
   return result;
+}
+
+/** The value a whole-entry delete stores: the same expression as writing that type's zero. */
+function deletedValueExpression(node: MappingDeleteNode): ExpressionNode {
+  const type = node.collection!.innermostValueType;
+  if (type instanceof IntType) {
+    // `uint(0)` / `int(0)`, not a bare int literal. The assign path publishes that cast.
+    const literal = new IntLiteralNode(0n);
+    literal.type = PrimitiveType.INT;
+    literal.location = node.location;
+    const cast = new CastNode(type, literal, false);
+    cast.location = node.location;
+    return cast;
+  }
+  const created = createDefaultValueExpression(type, node.location);
+  created.type = type;
+  return created;
 }
 
 type Bindings = Map<Node, ExternalCallExpression>;
@@ -110,9 +128,16 @@ function publishFunctionSources(
     ));
     if (mutations.length !== 1) continue;
     const target = mutations[0];
-    if (!(target instanceof MappingAssignNode) || target.arrayIndex || target.arrayPush || target.arrayPop
-      || target.sourceEffectOrdinal !== access.mutationEffectOrdinals[0] || !target.collection) continue;
-    const valueType = target.collection.innermostValueType.toString();
+    const deletion = target instanceof MappingDeleteNode ? target : undefined;
+    const assignment = target instanceof MappingAssignNode ? target : undefined;
+    if (deletion) {
+      if (deletion.sourceEffectOrdinal !== access.mutationEffectOrdinals[0] || !deletion.collection) continue;
+    } else if (!assignment || assignment.arrayIndex || assignment.arrayPush || assignment.arrayPop
+      || assignment.sourceEffectOrdinal !== access.mutationEffectOrdinals[0] || !assignment.collection) {
+      continue;
+    }
+    const writtenCollection = deletion?.collection ?? assignment!.collection!;
+    const valueType = writtenCollection.innermostValueType.toString();
     const environment: Environment = { locals: new Map(), state: new Map() };
     fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
       .forEach((parameter, paramIndex) => environment.locals.set(parameter, {
@@ -261,7 +286,8 @@ function publishFunctionSources(
         }
         if (statement === target) {
           if (conditional) return false;
-          value = serialize(target.expression, env);
+          const written = deletion ? deletedValueExpression(deletion) : assignment!.expression;
+          value = serialize(written, env);
           return value !== undefined;
         }
         if (statement instanceof BlockNode) {
@@ -337,7 +363,8 @@ function publishFunctionSources(
     };
     if (process(fn.body, environment) && value) {
       access.storedValueSource = {
-        version: 1, execution: 'unconditional-once', mutationEffectOrdinal: target.sourceEffectOrdinal,
+        version: 1, execution: 'unconditional-once',
+        mutationEffectOrdinal: (deletion ?? assignment)!.sourceEffectOrdinal!,
         valueType, expression: { ...value, type: valueType },
       };
     }

@@ -32,8 +32,9 @@ import {
   StateVariableNode,
   ReturnNode,
   AssignNode,
+  BoolLiteralNode,
 } from '../ast/AST.js';
-import { ArrayType } from '@solidcash/utils';
+import { ArrayType, PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -54,8 +55,10 @@ import AstTraversal from '../ast/AstTraversal.js';
  * For each dynamic array V written inside a loop in a function: every access to V in that function is
  * redirected to a fresh local `__dlcache_V` (state-array write statements become local array statements;
  * index reads / `.length` / bare reads are MappingAccess/Identifier nodes that resolve to the local by name
- * after the rename). A cache read `V` is prepended and a flush `V = __dlcache_V` appended. Runs before
- * semantic analysis so the renamed accesses resolve as a local array.
+ * after the rename). A cache read `V` is prepended and a flush `V = __dlcache_V` appended. The flush is
+ * gated on `__dlcache_dirty_V`: a message-bus route also invokes handlers that write V through the journal,
+ * and an unconditional flush of the untouched snapshot publishes that pre-call blob over the handler's
+ * update. Runs before semantic analysis so the renamed accesses resolve as a local array.
  */
 const PREFIX = '__dlcache_';
 
@@ -88,8 +91,9 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
     for (const name of writtenInLoop) {
       const sv = this.dynArrays.get(name)!;
       const local = `${PREFIX}${name}`;
+      const dirty = `${PREFIX}dirty_${name}`;
       // Convert write statements (state -> local) and rename reads (state name -> local name) throughout.
-      fn.body.statements = this.convertWrites(fn.body.statements ?? [], name, local);
+      fn.body.statements = this.convertWrites(fn.body.statements ?? [], name, local, dirty);
       this.renameReads(fn.body, name, local);
       // Cache read prepended (reads the persisted V once); flush written back on every exit path.
       // Built after the rename so they keep the state-var name V.
@@ -97,23 +101,48 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
       cacheInit.location = fn.body.location;
       const cache = new VariableDefinitionNode(sv.type, [], local, cacheInit);
       cache.location = fn.body.location;
+      const dirtyInit = new BoolLiteralNode(false);
+      dirtyInit.location = fn.body.location;
+      const dirtyLocal = new VariableDefinitionNode(PrimitiveType.BOOL, [], dirty, dirtyInit);
+      dirtyLocal.location = fn.body.location;
       // The flush writes the cache back to state and must run before EVERY return (else an early return
       // skips it and the state array is silently never written) and at the fall-through end. It must
       // precede each `return` so the return stays that path's terminal statement.
-      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], name, local, fn.body.location);
+      let stmts = this.insertFlushesBeforeReturns(
+        fn.body.statements ?? [], name, local, dirty, fn.body.location,
+      );
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
-        stmts = [...stmts, this.makeFlush(name, local, fn.body.location)];
+        stmts = [...stmts, this.makeFlush(name, local, dirty, fn.body.location)];
       }
-      fn.body.statements = [cache, ...stmts];
+      fn.body.statements = [cache, dirtyLocal, ...stmts];
     }
   }
 
-  private makeFlush(name: string, local: string, loc: Node['location']): StateAssignNode {
+  private markDirty(dirty: string, loc: Node['location']): AssignNode {
+    const identifier = new IdentifierNode(dirty);
+    identifier.location = loc;
+    const value = new BoolLiteralNode(true);
+    value.location = loc;
+    const assign = new AssignNode(identifier, value);
+    assign.location = loc;
+    return assign;
+  }
+
+  private makeFlush(name: string, local: string, dirty: string, loc: Node['location']): BranchNode {
     const rhs = new IdentifierNode(local);
     rhs.location = loc;
     const flush = new StateAssignNode(name, rhs);
     flush.location = loc;
-    return flush;
+    const flushBlock = new BlockNode([flush]);
+    flushBlock.location = loc;
+    const condition = new IdentifierNode(dirty);
+    condition.location = loc;
+    const branch = new BranchNode(condition, flushBlock);
+    branch.location = loc;
+    // The clean arm is a no-op. If-converting it would still republish the snapshot and its chunk NFTs,
+    // over a handler that already wrote the array through the journal.
+    branch.preserveConditionalEntryWrites = true;
+    return branch;
   }
 
   // Insert a `V = __dlcache_V` flush immediately before every `return`, recursing into if/else, switch
@@ -123,36 +152,48 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
   // for switch/try tails, so those recursions are defensive; the if/else one is load-bearing - that pass
   // nests the trailing flush into a synthesized else, which the return-taken path would otherwise skip.)
   private insertFlushesBeforeReturns(
-    stmts: StatementNode[], name: string, local: string, loc: Node['location'],
+    stmts: StatementNode[], name: string, local: string, dirty: string, loc: Node['location'],
   ): StatementNode[] {
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
       if (stmt instanceof ReturnNode) {
-        out.push(this.makeFlush(name, local, loc));
+        out.push(this.makeFlush(name, local, dirty, loc));
         out.push(stmt);
         continue;
       }
       if (stmt instanceof BranchNode) {
-        stmt.ifBlock.statements = this.insertFlushesBeforeReturns(stmt.ifBlock.statements ?? [], name, local, loc);
+        stmt.ifBlock.statements = this.insertFlushesBeforeReturns(
+          stmt.ifBlock.statements ?? [], name, local, dirty, loc,
+        );
         if (stmt.elseBlock) {
-          stmt.elseBlock.statements = this.insertFlushesBeforeReturns(stmt.elseBlock.statements ?? [], name, local, loc);
+          stmt.elseBlock.statements = this.insertFlushesBeforeReturns(
+            stmt.elseBlock.statements ?? [], name, local, dirty, loc,
+          );
         }
       } else if (stmt instanceof SwitchNode) {
         for (const c of stmt.cases) {
-          c.body.statements = this.insertFlushesBeforeReturns(c.body.statements ?? [], name, local, loc);
+          c.body.statements = this.insertFlushesBeforeReturns(c.body.statements ?? [], name, local, dirty, loc);
         }
         if (stmt.defaultCase) {
-          stmt.defaultCase.statements = this.insertFlushesBeforeReturns(stmt.defaultCase.statements ?? [], name, local, loc);
+          stmt.defaultCase.statements = this.insertFlushesBeforeReturns(
+            stmt.defaultCase.statements ?? [], name, local, dirty, loc,
+          );
         }
       } else if (stmt instanceof TryCatchNode) {
-        stmt.tryBlock.statements = this.insertFlushesBeforeReturns(stmt.tryBlock.statements ?? [], name, local, loc);
+        stmt.tryBlock.statements = this.insertFlushesBeforeReturns(
+          stmt.tryBlock.statements ?? [], name, local, dirty, loc,
+        );
         for (const cc of stmt.catchClauses) {
-          cc.block.statements = this.insertFlushesBeforeReturns(cc.block.statements ?? [], name, local, loc);
+          cc.block.statements = this.insertFlushesBeforeReturns(
+            cc.block.statements ?? [], name, local, dirty, loc,
+          );
         }
       } else if (stmt instanceof UncheckedNode) {
-        stmt.block.statements = this.insertFlushesBeforeReturns(stmt.block.statements ?? [], name, local, loc);
+        stmt.block.statements = this.insertFlushesBeforeReturns(
+          stmt.block.statements ?? [], name, local, dirty, loc,
+        );
       } else if (stmt instanceof BlockNode) {
-        stmt.statements = this.insertFlushesBeforeReturns(stmt.statements ?? [], name, local, loc);
+        stmt.statements = this.insertFlushesBeforeReturns(stmt.statements ?? [], name, local, dirty, loc);
       }
       out.push(stmt);
     }
@@ -195,21 +236,24 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
 
   // Replace state-array write statements for `name` with the equivalent local array statements for `local`,
   // recursing into nested blocks. Index/value sub-expressions are renamed later by renameReads.
-  private convertWrites(stmts: StatementNode[], name: string, local: string): StatementNode[] {
-    return stmts.map((stmt) => {
+  private convertWrites(
+    stmts: StatementNode[], name: string, local: string, dirty: string,
+  ): StatementNode[] {
+    const marked = (stmt: StatementNode): StatementNode[] => [this.markDirty(dirty, stmt.location), stmt];
+    return stmts.flatMap((stmt) => {
       if (stmt instanceof StateArrayPushNode && stmt.name === name) {
         const push = new ArrayPushNode(local, stmt.value);
         push.noArg = stmt.noArg; // preserve no-arg push (its value is a placeholder, defaulted at type-check)
-        return this.copyLoc(push, stmt);
+        return marked(this.copyLoc(push, stmt));
       }
       if (stmt instanceof StateArrayPopNode && stmt.name === name) {
-        return this.copyLoc(new ArrayPopNode(local), stmt);
+        return marked(this.copyLoc(new ArrayPopNode(local), stmt));
       }
       if (stmt instanceof StateArrayAssignNode && stmt.name === name) {
-        return this.copyLoc(new ArrayAssignNode(local, stmt.index, stmt.value), stmt);
+        return marked(this.copyLoc(new ArrayAssignNode(local, stmt.index, stmt.value), stmt));
       }
       if (stmt instanceof StateArrayDeleteNode && stmt.name === name) {
-        return this.copyLoc(new ArrayDeleteNode(local, stmt.index), stmt);
+        return marked(this.copyLoc(new ArrayDeleteNode(local, stmt.index), stmt));
       }
       // X167. WHOLE-array `delete arr` (StateArrayDeleteNode above is the ELEMENT delete `delete arr[i]`).
       // The cache read is prepended at function top and the flush appended, so a state-level delete left
@@ -219,7 +263,7 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
       if (stmt instanceof DeleteStateNode && stmt.name === name) {
         const ident = new IdentifierNode(local);
         ident.location = stmt.location;
-        return this.copyLoc(new DeleteLocalNode(ident), stmt);
+        return marked(this.copyLoc(new DeleteLocalNode(ident), stmt));
       }
       // X171. WHOLE-array ASSIGN `this.arr = <expr>`, the delete's sibling. Same neutralization: the flush of
       // the PRE-assign cache overwrites it, so the assigned value is dropped and the old contents kept.
@@ -227,19 +271,21 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
       if (stmt instanceof StateAssignNode && stmt.name === name) {
         const ident = new IdentifierNode(local);
         ident.location = stmt.location;
-        return this.copyLoc(new AssignNode(ident, stmt.expression), stmt);
+        return marked(this.copyLoc(new AssignNode(ident, stmt.expression), stmt));
       }
       if (stmt instanceof WhileNode || stmt instanceof DoWhileNode) {
-        stmt.block.statements = this.convertWrites(stmt.block.statements ?? [], name, local);
+        stmt.block.statements = this.convertWrites(stmt.block.statements ?? [], name, local, dirty);
       } else if (stmt instanceof BranchNode) {
-        stmt.ifBlock.statements = this.convertWrites(stmt.ifBlock.statements ?? [], name, local);
-        if (stmt.elseBlock) stmt.elseBlock.statements = this.convertWrites(stmt.elseBlock.statements ?? [], name, local);
+        stmt.ifBlock.statements = this.convertWrites(stmt.ifBlock.statements ?? [], name, local, dirty);
+        if (stmt.elseBlock) {
+          stmt.elseBlock.statements = this.convertWrites(stmt.elseBlock.statements ?? [], name, local, dirty);
+        }
       } else if (stmt instanceof UncheckedNode) {
-        stmt.block.statements = this.convertWrites(stmt.block.statements ?? [], name, local);
+        stmt.block.statements = this.convertWrites(stmt.block.statements ?? [], name, local, dirty);
       } else if (stmt instanceof BlockNode) {
-        stmt.statements = this.convertWrites(stmt.statements ?? [], name, local);
+        stmt.statements = this.convertWrites(stmt.statements ?? [], name, local, dirty);
       }
-      return stmt;
+      return [stmt];
     });
   }
 

@@ -121,6 +121,26 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
   deterministic).
 - Deliverable: a table in `docs/per-call/PERF_LIBAUTH.md` (wall time, VM share), a decision (adopt via npm alias /
   publish / upstream PR to libauth), and the dependency change if adopted.
+- Fork review (2026-10-05, by reading): what it has is correct - no aliasing hazard found (libauth's mutating ops
+  work on fresh copies, `DataView` reads honour `byteOffset`, the alternate and control stacks are shallow-cloned,
+  our SDK mutates no stack item in place), the copy-on-write marker is a non-enumerable `Symbol.for` key, and the
+  CHANGELOG states the new immutability contract. It is NOT complete:
+  - our SDK already overrides the dup family and OP_SPLIT (`installZeroCopyStackOperations` in
+    `createVirtualMachine.ts`), so for SolidCash the fork only adds the function-table copy-on-write and
+    `encodeDataPush`;
+  - the fork's OP_SPLIT still converts the index with `Number(value)` on the one-item list (a decimal string per
+    split; the SDK override fixes it);
+  - with views, OP_DEFINE now stores a view as a function body and pins its whole parent buffer (the SDK stores
+    `body.slice()`): add a compact copy in OP_DEFINE;
+  - generic VM speedups still only in the SDK: cached OP_INVOKE decoding, cached OP_ACTIVEBYTECODE, zero-copy
+    OP_INPUTBYTECODE, cached P2SH evaluation, the operation-limit check, the token-commitment introspection overrides
+    (SDK-specific hooks stay in the SDK: sparse probe branch skips, step trace, failed-close recorder); the vmNumber
+    fast path (~19% self time) is not done anywhere;
+  - unverified: run libauth's full suite including the VMB consensus vectors for the 2025 and 2026 sets, and its
+    benchmarks;
+  - packaging: still named `@bitauth/libauth` (cannot be published under that scope); publish as e.g.
+    `@solidcash/libauth` and consume as `"@bitauth/libauth": "npm:@solidcash/libauth@..."` so the SDK's deep
+    imports (`@bitauth/libauth/build/lib/vm/...`) keep resolving; not wired into the monorepo yet.
 
 ### W2. Performance: kernel vs per-call
 - Goal: the same marketplace flows on both conventions at HEAD: per-call proxied and no-proxy vs the kernel lane's
@@ -259,6 +279,40 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
   commit(s) whose change makes it pass, adapt to HEAD, land with that test; take helpers only where the fix needs
   them. Compiler-side ports reach per-call compiles too: check the per-call fixtures' sizes and `refusedEntries`
   (section 0). Schedule with W6.
+- Port items, in order (one agent per item; items touching `StatefulContract.ts`/`StatefulTransactionBuilder.ts`
+  land one after another; the failing evidence is the 2026-10-05 run, so no reproduction runs):
+  - P1 `d55a5e9bf` vmap numeric key hashed as its canonical VM number (`StatefulContract.ts`); test
+    `e2e/VmapNumericKeySlot` (preflight OP_VERIFY on HEAD). Small. Per-call already keys numbers as VM numbers.
+  - P2 `785fc7189` multi-output struct getter read as a named tuple (`StatefulContract.ts`); test
+    `e2e/VmapStructGetterTuple` (preflight). Small.
+  - P3 `e6ce62cf1` dynamic-chunk band anchored on the last returned event (GenerateTargetTraversal); test solidc
+    `DynamicChunkAnchorWitness`. Compiler: per-call fixture check.
+  - P4 `6eb0c9732` the writer's own return ABI, no unmaterialized-return chunk step (GenerateTargetTraversal,
+    `StatefulTransactionBuilder.ts`); tests solidc `DynamicChunkBaseStepDown`, sdk `WriterReturnAbi`. Compiler check.
+  - P5 `1ec288a10`, testing-package part only (`packages/testing/src/config.ts`, `hre.ts`); test testing
+    `physical-identity`. Do NOT take its root `solidcash.config.ts` change (that file is the per-call fixture config);
+    its constructor-frame part is already covered on HEAD.
+  - P6 aliased return channels, as one unit: `9ec41b74a` carrier union, `26df19f6e` fill the aliased read-only
+    callsite's return channel (it also touched testing-suite example artifacts: regenerate them, do not copy),
+    `39c5b0df2`, `3196a56f9` an output coordinate per channel; tests `SharedViewAliasReturnChannel`,
+    `AliasReturnChannel`, `MultiWriterCarrierUnion`. Medium-large.
+  - P7 `cac34c86d` participant-declared materialized value-chunk base (`message-bus/compose.ts`,
+    `layout-resolver.ts`); test `ComposeLayoutAuthority` (the rescued cases). Small-medium.
+  - P8 runtime loops beside dynamic writes, as one unit: `308e291c5` runtime cardinality for source-array upsert loops
+    (`compiler.ts`; reconcile with the kernel beta's `eee4fc1a6` fallback cardinality and keep the per-call gate in
+    `LowerVMapCounterLoops`), `a26ee78d1` runtime mapping entries not shifted by a same-call dynamic write,
+    `721d7d857`, `c2108a8e0` an external view read instead of sent, `42e034bc7`, `22ee5dbe9`, `e220dd726`; test
+    `journal-message-bus/e2e/KernelDynamicWriteEntryBand` (2/3 fail: preflight, and "typed loop callsite 0 requires
+    atomic composition", which may need P9). Compiler check. Large.
+  - P9 only if P8 or W6 shows a behaviour needing it: `37df575b2` a standalone owner's repeated calls promoted to
+    the atomic composer (large; changes the artifact schema in `utils/src/artifact.ts`), `3241b90f4`, `cf34b6417`
+    call source positions and unreached conditional entries, `21c446e8f`, `6b54ed8c8` (new `worklist.ts`). Its tests
+    are helper-level today.
+  - P10 helper-level fixes (`7b07c050e`, `dcb29f1a9`, `1ed403081`, `cd7891b12`): port one only after writing a
+    behavioural test from its commit message that fails on HEAD.
+  - Skip: `ced497d54` and the constructor tests of `1ec288a10` (they pass on HEAD).
+- Gate: the ported tests; the 20 per-call files of the merge; representative titles on both per-call lanes after a
+  fixture recompile (after compiler items); representative kernel-lane marketplace titles.
 - Uncommitted work in the main checkout (2026-10-03 09:17-09:40): an unfinished kernel feature, row-local route
   witnesses (per-row witness bands for read-only argument keys in batched rows): `compiler.ts` +137,
   `LowerCollectionJournalHelpers.ts` +130, `StatefulContract.ts` +20, `KernelCutoverRoute.test.ts`, new

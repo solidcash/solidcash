@@ -168,13 +168,15 @@ export function buildOpaqueLoopCallTransaction(opts: BuildOpaqueLoopCallOptions)
   // Synthetic params by ABI shape: base = 1 (targets at inputs 1..N), return base = N+1, skip fn return event.
   const abiFn = contract.artifact.abi.find((f) => f.name === functionName);
   if (!abiFn) throw new Error(`buildOpaqueLoopCallTransaction: function '${functionName}' not found`);
-  const internalArgs: bigint[] = [];
+  const internalArgs: Array<bigint | Uint8Array> = [];
   for (const inp of abiFn.inputs) {
     if (inp.name === '__internal__externalCallInputBase') internalArgs.push(1n);
     // Loop dispatch pins each callee against the on-chain target list, so identity takes the direct proof.
     else if (inp.name.startsWith('__internal__extcallAnchorIdx')) internalArgs.push(-1n);
     else if (inp.name === '__internal__externalReturnOutputIdx') internalArgs.push(BigInt(1 + n));
     else if (inp.name === '__internal__returnOutputIdx') internalArgs.push(-1n);
+    // A short return is stored raw. The preimage is read only when the commitment is a SHA256 digest.
+    else if (inp.name.startsWith('__internal__externalReturnPreimage')) internalArgs.push(new Uint8Array());
   }
   const unlockerFactory = contract.unlock[functionName];
   if (!unlockerFactory) throw new Error(`buildOpaqueLoopCallTransaction: no unlocker for '${functionName}'`);

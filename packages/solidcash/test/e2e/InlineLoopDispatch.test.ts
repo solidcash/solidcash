@@ -111,9 +111,14 @@ async function buildTx(
   return tb;
 }
 
-const miniUnlock = (c: Contract, t: Uint8Array, d: Uint8Array): unknown => c.unlock.run(t, d, 1n, 3n);
-// MultiCall: (targets, data, externalCallInputBase, returnOutputIdx=-1 (skip fn return event), externalReturnOutputIdx)
-const multiUnlock = (c: Contract, t: Uint8Array, d: Uint8Array): unknown => c.unlock.multiCall(t, d, 1n, -1n, 3n);
+const miniUnlock = (c: Contract, t: Uint8Array, d: Uint8Array): unknown => (
+  c.unlock.run(t, d, 1n, 3n, new Uint8Array())
+);
+// MultiCall: targets, data, externalCallInputBase, returnOutputIdx=-1 (skip the function return event),
+// externalReturnOutputIdx, and an empty preimage (these returns fit in the commitment).
+const multiUnlock = (c: Contract, t: Uint8Array, d: Uint8Array): unknown => (
+  c.unlock.multiCall(t, d, 1n, -1n, 3n, new Uint8Array())
+);
 
 describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
   it('co-spends N witness targets + mints N return events (staticcall)', async () => {

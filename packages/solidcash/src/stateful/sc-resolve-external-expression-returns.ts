@@ -46,6 +46,14 @@ function isStatefulContract(value: unknown): value is StatefulContract {
     && typeof (value as { _resolveExternalArgs?: unknown })._resolveExternalArgs === 'function';
 }
 
+/** Category a late precompute records when the callsite publishes no address target. */
+function connectedPlanningCategory(bound: unknown): string | undefined {
+  if (typeof bound !== 'object' || bound === null) return undefined;
+  const record = bound as { categoryId?: unknown; proxy?: { categoryId?: unknown } };
+  const category = 'implementation' in bound ? record.proxy?.categoryId : record.categoryId;
+  return typeof category === 'string' ? category : undefined;
+}
+
 function addressBytes(value: string | Uint8Array): Uint8Array | undefined {
   if (value instanceof Uint8Array) return value;
   try {
@@ -439,13 +447,16 @@ export async function resolveExternalExpressionReturns(
             : producer.rawSelector !== undefined && candidate.selector === producer.rawSelector)
         : undefined;
       if (producer.interfaceName === '__raw__' && !rawFunction) return undefined;
+      // A published address stays in the key so one callsite can hit different callees. An edge with no
+      // address is still one callee: late precompute keys that case by category, and this probe must too.
+      const planningBound = producer.interfaceName === '__raw__'
+        ? rawTarget : registeredTarget(producer.interfaceName, target);
+      const planningTarget = target ?? connectedPlanningCategory(planningBound);
       return await memoizeGraphPlanningProducerResult(
         planningContext,
         callsiteId,
         values,
-        // The same published callsite can execute against different runtime callees during graph planning.
-        // Keep the resolved target in the key even when its arguments and the state snapshot are unchanged.
-        target,
+        planningTarget,
         allowProvisional,
         async () => {
           if (!rawFunction || !rawExecutionTarget) {

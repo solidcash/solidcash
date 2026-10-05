@@ -611,11 +611,47 @@ describe('delegate inference', () => {
     const apply = artifact.abi.find((entry) => entry.name === 'apply');
     expect(apply?.modifiers).toContain('delegate');
 
-    const bodies = [
-      artifact.functionBodies?.[apply!.selector!],
-      ...Object.values(artifact.debug?.invokeDebug ?? {}).map((entry) => entry.bytecode),
-    ].filter((body): body is string => body !== undefined)
-      .map((body) => decodeAuthenticationInstructions(hexToBin(body)));
+    const readNumber = (instruction?: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+      if (instruction === undefined) return undefined;
+      if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
+      if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
+        return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
+      }
+      if (!instruction.data) return undefined;
+      const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
+      return typeof decoded === 'bigint' ? decoded : undefined;
+    };
+    const decodeBody = (bytecode: string): Array<{ opcode: number; data?: Uint8Array }> => (
+      decodeAuthenticationInstructions(hexToBin(bytecode))
+    );
+    // Whole-program outlining lifts the repeated bottom-ordinal proxy index into one helper. That helper is
+    // exactly `DEPTH <1> SUB PICK <1> ADD`: the authenticated proxy master, plus one, which is its data NFT.
+    const bottomPlusOne = (instructions: Array<{ opcode: number; data?: Uint8Array }>): boolean => {
+      if (instructions[0]?.opcode !== OpcodesBCH.OP_DEPTH) return false;
+      let cursor = 1;
+      if (instructions[cursor]?.opcode === OpcodesBCH.OP_1SUB) cursor += 1;
+      else if (readNumber(instructions[cursor]) === 1n
+        && instructions[cursor + 1]?.opcode === OpcodesBCH.OP_SUB) cursor += 2;
+      else return false;
+      if (instructions[cursor]?.opcode !== OpcodesBCH.OP_PICK) return false;
+      cursor += 1;
+      if (instructions[cursor]?.opcode === OpcodesBCH.OP_1ADD) cursor += 1;
+      else if (readNumber(instructions[cursor]) === 1n
+        && instructions[cursor + 1]?.opcode === OpcodesBCH.OP_ADD) cursor += 2;
+      else return false;
+      return cursor === instructions.length;
+    };
+    const decoded = [
+      { id: undefined as bigint | undefined, instructions: decodeBody(artifact.functionBodies?.[apply!.selector!] ?? '') },
+      ...Object.entries(artifact.debug?.invokeDebug ?? {}).map(([id, entry]) => ({
+        id: BigInt(id),
+        instructions: decodeBody(entry.bytecode),
+      })),
+    ].filter((body) => body.instructions.length > 0);
+    const bodies = decoded.map((body) => body.instructions);
+    const bottomPlusOneIds = new Set(decoded.flatMap((body) => (
+      body.id !== undefined && bottomPlusOne(body.instructions) ? [body.id] : []
+    )));
     const proxyStorageRead = bodies.some((instructions) => instructions.some((instruction, index) => {
       if (instruction.opcode !== OpcodesBCH.OP_DEPTH) return false;
       const pick = instructions[index + 1]?.opcode === OpcodesBCH.OP_1SUB ? index + 2
@@ -627,6 +663,12 @@ describe('delegate inference', () => {
         || (instructions[pick + 1]?.opcode === OpcodesBCH.OP_1
           && instructions[pick + 2]?.opcode === OpcodesBCH.OP_ADD
           && instructions[pick + 3]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT);
+    })) || bodies.some((instructions) => instructions.some((instruction, index) => {
+      const helperId = readNumber(instructions[index - 1]);
+      return instruction.opcode === OpcodesBCH.OP_INVOKE
+        && helperId !== undefined
+        && bottomPlusOneIds.has(helperId)
+        && instructions[index + 1]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT;
     }));
     expect(proxyStorageRead).toBe(true);
 

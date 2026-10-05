@@ -7,9 +7,6 @@ import { fundedSigner, createTestProvider, expectOverOperationCostBudget, densit
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
-const missingAuthenticatedReturn = (functionName: string): string =>
-  `Could not derive the return value of '${functionName}' for .emitReturn(). The covenant trace did not expose an authenticated return commitment.`;
-
 const preflightFailure = (reason: string): string =>
   `messageBus: BCH-2026 preflight failed at input 0: ${reason}`;
 
@@ -29,7 +26,7 @@ describe('function types', () => {
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
       await expect(sc.ok()).resolves.toBeDefined();
-      await expect(sc.wrong()).rejects.toThrow(missingAuthenticatedReturn('wrong'));
+      await expect(sc.wrong()).rejects.toThrow('Program failed an OP_VERIFY operation.');
     });
 
     // ternary_contract_internal_function.sol: test(true) -> 1, test(false) -> 2 via `(b ? C.f : C.g)()`.
@@ -43,7 +40,7 @@ describe('function types', () => {
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
       await expect(sc.ok()).resolves.toBeDefined();
-      await expect(sc.wrong()).rejects.toThrow(missingAuthenticatedReturn('wrong'));
+      await expect(sc.wrong()).rejects.toThrow('Program failed an OP_VERIFY operation.');
     });
 
     // function_delete_stack.sol: `function() y = a; delete y; y();` -> FAILURE (calling a nulled pointer reverts).
@@ -59,7 +56,7 @@ describe('function types', () => {
         }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.callDeleted()).rejects.toThrow(missingAuthenticatedReturn('callDeleted'));
+      await expect(sc.callDeleted()).rejects.toThrow('OP_INVOKE an undefined function identifier');
     });
 
     // function_delete_storage.sol: `delete y` on a STATE fn-ptr writes the invalid sentinel; a later `y()` reverts.
@@ -126,7 +123,7 @@ describe('array bounds/defaults', () => {
         function oob() public returns (bool) { int[] memory x = new int[](5); x[5]; return true; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.oob()).rejects.toThrow(missingAuthenticatedReturn('oob'));
+      await expect(sc.oob()).rejects.toThrow('OP_SPLIT operation with an invalid index');
     });
 
     // test/libsolidity/semanticTests/array/array_storage_pop_zero_length.sol
@@ -169,7 +166,7 @@ describe('panics/short-circuit', () => {
         function divZero(int a, int b) public returns (int) { return a / b; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.divZero(10n, 0n)).rejects.toThrow(missingAuthenticatedReturn('divZero'));
+      await expect(sc.divZero(10n, 0n)).rejects.toThrow('divide a number by zero');
     });
 
     it('runtime modulo by zero reverts', async () => {
@@ -177,7 +174,7 @@ describe('panics/short-circuit', () => {
         function modZero(int a, int b) public returns (int) { return a % b; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.modZero(10n, 0n)).rejects.toThrow(missingAuthenticatedReturn('modZero'));
+      await expect(sc.modZero(10n, 0n)).rejects.toThrow('divide a number by zero');
     });
 
     // test/libsolidity/semanticTests/reverts/assert_require.sol
@@ -187,7 +184,7 @@ describe('panics/short-circuit', () => {
         function assertT() public returns (bool) { assert(true); return true; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.assertF()).rejects.toThrow(missingAuthenticatedReturn('assertF'));
+      await expect(sc.assertF()).rejects.toThrow('Program failed an OP_VERIFY operation.');
       await expect(sc.assertT()).resolves.toBeDefined();
     });
 
@@ -205,7 +202,7 @@ describe('panics/short-circuit', () => {
       await expect(sc.scAnd(false, 0n)).resolves.toBeDefined(); // LHS false -> && short-circuits, no 10/0
       await expect(sc.scOr(true, 0n)).resolves.toBeDefined();   // LHS true  -> || short-circuits, no 10/0
       // Sanity: when the RHS IS reached (LHS does not decide), the div-by-zero reverts.
-      await expect(sc.scAnd(true, 0n)).rejects.toThrow(missingAuthenticatedReturn('scAnd'));
+      await expect(sc.scAnd(true, 0n)).rejects.toThrow('divide a number by zero');
     });
   });
 });
@@ -250,7 +247,7 @@ describe('internal fn-ptr memory array', () => {
 
     it('a wrong expectation reverts (dispatch is real per-index, not constant-folded)', async () => {
       const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-      await expect(sc.wrong()).rejects.toThrow(missingAuthenticatedReturn('wrong'));
+      await expect(sc.wrong()).rejects.toThrow('Program failed an OP_VERIFY operation.');
     });
   });
 });

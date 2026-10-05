@@ -1779,6 +1779,7 @@ export const fixtures: Fixture[] = [
           'name': 'checkData',
           'selector': '8d71cec7',
           'inputs': [],
+          'usesMsgData': true,
         },
         {
           'name': 'useBoth',
@@ -1789,6 +1790,7 @@ export const fixtures: Fixture[] = [
               'type': 'bytes4',
             },
           ],
+          'usesMsgData': true,
         },
       ],
       'bytecode': 'OP_INPUTINDEX OP_UTXOBYTECODE OP_SIZE OP_NIP 24 OP_LESSTHAN OP_IF OP_ACTIVEBYTECODE OP_SIZE OP_NIP OP_DUP 4c OP_LESSTHAN OP_IF OP_1ADD OP_ELSE OP_DUP 0001 OP_LESSTHAN OP_IF OP_2 OP_ADD OP_ELSE OP_3 OP_ADD OP_ENDIF OP_ENDIF OP_ELSE OP_0 OP_ENDIF 78825488750479ede9d17b8777 79ede9d1 OP_DEFINE 518a00a077 8d71cec7 OP_DEFINE 788254887504729bfbca7b88518a54a077 729bfbca OP_DEFINE 76c0ca7682777b947f758277 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',

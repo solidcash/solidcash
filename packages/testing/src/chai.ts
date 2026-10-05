@@ -100,10 +100,9 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
     }
   }
   if (actualBytes && expectedBytes) {
-    // Two byte forms of one identity: a Solidity ABI address payload and the locking bytecode that carries it are
-    // equal when the payload is the lock's own, whichever spelling of hex each side arrived in.
-    const narrow = (lock: Uint8Array, length: number): Uint8Array => payload(lock, length) ?? lock;
-    return [binToHex(narrow(actualBytes, expectedBytes.length)), binToHex(narrow(expectedBytes, actualBytes.length))];
+    // Untyped bytes compare exactly. A hash160 digest is not the locking script it came from.
+    // ABI-typed addresses already returned through the identity projection above.
+    return [binToHex(actualBytes), binToHex(expectedBytes)];
   }
   return [actual, expected];
 }

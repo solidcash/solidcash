@@ -4,26 +4,28 @@ First pair, 2026-10-05, script `scripts/compare-convention-sizes.mjs`.
 
 | side | tree | artifact mtime (MarketplaceV1.json) |
 |---|---|---|
-| kernel | `.worktrees/kernel-beta-candidate` at `d7f3c7ad6`, direct convention (no `composition` key) | 2026-10-04 18:10 UTC |
-| per-call | `.worktrees/per-call` marketplace artifacts, `composition.convention = per-call` | 2026-10-04 19:31 UTC |
+| kernel | `.worktrees/kernel-beta-candidate` at `d7f3c7ad6`, direct convention, recompiled in 61 s | 2026-10-05 10:29 UTC |
+| per-call | `.worktrees/per-call`, `composition.convention = per-call`, recompiled in 62 s | 2026-10-05 10:23 UTC |
 
 Bytes are `asmToBytecode` of `artifact.bytecode` (the real script). Chars are the ASM string length. The BCH per-input limit is 10,000 bytes. Deployment UTXOs use the shipped defaults: per-call is `dataNftCount` plus 12 masters plus 4 validators; direct is `dataNftCount` plus one master. A per-call call spends one master per entry into that contract. The state-record bound on a call is `dataNftCount` (MarketplaceV1 is 2). Records a given title touches are counted with the title runs, not from the artifact. `composition.refusedEntries` is absent on every paired contract, so the refused count is 0.
 
-The per-call directory has 7 contracts. The kernel directory has those plus interfaces, MarketplaceV2, MarketplaceV3, and delegate artifacts. This pair is not a full side-by-side compile. MistSwap and `examples/solidity-corpus` are not in this pair. A fresh compile of all three under both conventions replaces this table before the release commit. The script is what that compile's artifacts get compared with.
+The 2026-10-05 recompile put the interfaces into the per-call artifact directory as well. Kernel-only rows that remain are MarketplaceV2, MarketplaceV3, delegate artifacts, and a few application contracts. MistSwap and `examples/solidity-corpus` are not in this pair. Refused entries are 0 on every paired contract.
 
 ## Contracts present on both sides
 
-| contract | kernel bytes | per-call bytes | delta | kernel chars | per-call chars | kernel body bytes | per-call body bytes | kernel largest body | per-call largest body | kernel deploy UTXOs | per-call deploy UTXOs | over 10,000 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| FakeToken | 459090 | 24243 | -434847 | 918516 | 68776 | 448663 | 17758 | 43405 | 6333 | 2 | 17 | both |
-| MarketplaceDataV1 | 455980 | 109845 | -346135 | 912924 | 236365 | 437168 | 100748 | 34536 | 28402 | 3 | 18 | both |
-| MarketplaceV1 | 265204 | 140746 | -124458 | 531298 | 298591 | 155541 | 127987 | 20234 | 13957 | 3 | 18 | both |
-| Unicrow | 92312 | 56231 | -36081 | 187806 | 128600 | 74670 | 48170 | 6063 | 8653 | 4 | 19 | both |
-| UnicrowArbitrator | 51395 | 29451 | -21944 | 105096 | 72611 | 42078 | 23412 | 3298 | 5641 | 3 | 18 | both |
-| UnicrowClaim | 16557 | 22085 | 5528 | 34573 | 57646 | 5438 | 15576 | 2626 | 4967 | 3 | 18 | both |
-| UnicrowDispute | 82223 | 31267 | -50956 | 167332 | 76314 | 68358 | 25378 | 2274 | 7901 | 3 | 18 | both |
+| contract | kernel bytes | per-call bytes | delta | kernel bodies | per-call bodies | kernel deploy | per-call deploy | over 10k |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| FakeToken | 459090 | 24303 | -434787 | 448663 | 17863 | 2 | 17 | both |
+| MarketplaceDataV1 | 455980 | 110050 | -345930 | 437168 | 101036 | 3 | 18 | both |
+| MarketplaceV1 | 265204 | 135056 | -130148 | 155541 | 122499 | 3 | 18 | both |
+| Unicrow | 92312 | 56258 | -36054 | 74670 | 48297 | 4 | 19 | both |
+| UnicrowArbitrator | 51395 | 29487 | -21908 | 42078 | 23477 | 3 | 18 | both |
+| UnicrowClaim | 16557 | 21801 | 5244 | 5438 | 15537 | 3 | 18 | both |
+| UnicrowDispute | 82223 | 31305 | -50918 | 68358 | 25426 | 3 | 18 | both |
 
-Per-call MarketplaceV1 is 298,591 ASM characters. The plan's post-merge note was 287k proxied, so this file is a few percent above that note. Script bytes are about half the ASM character count because the listing is hex-heavy. Every paired contract's redeem script is over the 10,000-byte input limit, on both conventions. Mocknet is what allows those spends. UnicrowClaim is the one paired contract whose per-call script is larger (22,085 vs 16,557).
+Interface artifacts on both sides have an empty script. A per-call call still spends one master per entry. MarketplaceV1's state-record bound is 2 (`deploy UTXOs` 18 = 2 + 12 masters + 4 validators).
+
+Per-call MarketplaceV1 is 135,056 script bytes against 265,204 on the kernel side. Every paired application contract is over the 10,000-byte input limit on both conventions. Mocknet is what allows those spends. UnicrowClaim is the one paired contract whose per-call script is larger (21,801 vs 16,557).
 
 ## Kernel-only contracts (no per-call artifact in this directory)
 

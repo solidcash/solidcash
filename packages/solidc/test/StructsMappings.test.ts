@@ -157,8 +157,35 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
     });
     const route = (artifact: typeof sugar): typeof artifact.abi[number] | undefined =>
       artifact.abi.find((fn) => fn.name === 'f');
+    const comparable = (fn: typeof sugar.abi[number] | undefined): unknown => {
+      const clone = JSON.parse(JSON.stringify(fn ?? null)) as {
+        entryAccesses?: Array<Record<string, unknown>>;
+      } | null;
+      for (const access of clone?.entryAccesses ?? []) {
+        delete access.storedValueSource;
+        delete access.mutationEffectOrdinals;
+      }
+      return clone;
+    };
     expect(route(sugar)?.sourceEffectOrder).toBe('unsupported-flow');
-    expect(route(sugar)).toEqual(route(hand));
+    // The pointer lowers to one unconditional write per mapping. Each write keeps the other mapping's
+    // previous value, which the hand-written branch does not publish as a stored-value recipe.
+    expect(comparable(route(sugar))).toEqual(comparable(route(hand)));
+    const sources = route(sugar)?.entryAccesses ?? [];
+    expect(sources.find((access) => access.collection === 'a')?.storedValueSource).toMatchObject({
+      expression: {
+        kind: 'ternary',
+        ifTrue: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+        ifFalse: { kind: 'entryPreValue', name: 'a' },
+      },
+    });
+    expect(sources.find((access) => access.collection === 'b')?.storedValueSource).toMatchObject({
+      expression: {
+        kind: 'ternary',
+        ifTrue: { kind: 'entryPreValue', name: 'b' },
+        ifFalse: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+      },
+    });
     expect(sugar.bytecode.length).toBeGreaterThan(0);
   });
   it('direct-indexed call result L.ch(a,b,c)[k] is byte-identical to c ? a[k] : b[k]', () => {

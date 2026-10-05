@@ -344,12 +344,14 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
       plain callee's two returning methods are refused for a send by design; a routed callee's send composes both
       rows) and the `9ec41b74a`/`39c5b0df2` carrier union (moved no title in its own measurement; HEAD refuses that
       shape fail-closed). The per-call SDK does not use the stateful builder, so per-call is unaffected.
-  - Found while checking P6, not fixed: a VIEW reading two different methods of one routed participant
-    (`readBoth() { a = s.flag(); b = s.paused(); }`) fails its return probe at the second callsite's selector check:
-    the probe builds direct calls, so the alias shares the owner's input and presents `flag`'s selector. The same
-    shape SENDS fine (promoted to the atomic composer by `mayRepeatOwner`). Options: give the composer a read mode and
-    route such views through it like sends (preferred); a probe-only copy of the callee block reaches the builder's
-    universal duplicate-stateful-input guard and outpoint-keyed maps (tried and reverted).
+  - Found while checking P6, fixed `eb282b4e6`: a VIEW reading two different methods of one routed participant
+    (`readBoth() { a = s.flag(); b = s.paused(); }`) failed its return probe at the second callsite's selector check
+    (the probe builder lets only the first callsite own the participant's input), while the same shape SENDS through
+    the atomic composer (`mayRepeatOwner`). A top-level read of such a function now builds that composition without
+    broadcasting it and takes the root invocation's result, which the composer records per admitted builder
+    (`compose-invocation-results.ts`). Caller: the connected signer, else a throwaway key. Loops, nested frames and
+    per-call artifacts keep their paths. Test `e2e/SharedViewAliasRead`. (A probe-only copy of the callee block
+    was tried first and reverted: the builder's duplicate-stateful-input guard and outpoint-keyed maps.)
   - P9/P10: still no behavioural evidence on HEAD; not ported.
 - Uncommitted work in the main checkout (2026-10-03 09:17-09:40): an unfinished kernel feature, row-local route
   witnesses (per-row witness bands for read-only argument keys in batched rows): `compiler.ts` +137,

@@ -3,7 +3,6 @@ import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, getEntryNftAddress } from '../../src/index.js';
 import type { ContractUnlocker } from '../../src/interfaces.js';
-import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // A sorted-mapping (vmap) write publishes `__internal__vmapBatchProof_<slot>`: the distance from the executing
@@ -45,14 +44,17 @@ describe('sorted mapping proof-input coordinate', () => {
     const calleeArtifact = compileString(CALLEE_SOURCE, {});
     const hostArtifact = compileString(HOST_SOURCE, {});
     const calleeInner = new Contract(calleeArtifact, [], { provider });
-    const hostInner = new Contract(hostArtifact, [addressToLockScript(calleeInner.address)], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeInner, calleeArtifact.stateLayout!, { count: 0n },
+    );
+    // Category pinning changes the redeem script. The constructor target has to be that pinned locking
+    // bytecode; the unpinned address is a different script and cannot select this callee.
+    const pinnedCallee = calleeInner.withCategory(hexToBin(calleeSetup.categoryId));
+    const hostInner = new Contract(hostArtifact, [hexToBin(pinnedCallee.lockingBytecode)], { provider });
 
     expect(hostArtifact.stateLayout?.collections?.find((entry) => entry.name === 'balances')?.sorted)
       .toBe(true);
 
-    const calleeSetup = await setupStatefulUtxos(
-      provider, calleeInner, calleeArtifact.stateLayout!, { count: 0n },
-    );
     const hostSetup = await setupStatefulUtxos(
       provider, hostInner, hostArtifact.stateLayout!, { result: 0n },
     );

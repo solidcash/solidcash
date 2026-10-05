@@ -86,8 +86,9 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
   } = params;
 
   // Conditional callsites retain their ABI slot numbers when inactive, while the physical groups compact.
-  // Fill this topology by ABI name; appending one witness per physical group would put the later group's
-  // master index into an earlier omitted bytes4 selector slot.
+  // Fill that topology by ABI name; appending one witness per physical group would put the later group's
+  // master index into an earlier omitted bytes4 selector slot. A loop is the other repeated shape: its
+  // later groups share one callsite, so they are continuations, not omitted slots.
   const publishedCalls = abiFunction.externalCalls ?? [];
   const slotByCallsite = new Map(publishedCalls.flatMap((call, slot) => call.callsiteId === undefined
     ? [] : [[call.callsiteId, slot] as const]));
@@ -138,9 +139,22 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
       return undefined;
     }
   };
+  const loopContinuation = (index: number): CreateBuilderLoopIdxRange | undefined => loopIdxRanges.find(
+    (range) => index > range.start && index < range.start + range.count,
+  );
+  // Count one slot per callsite. Extra elements of an earlier loop do not shift the next callsite.
+  const callsiteOrdinal = (index: number): number => {
+    const extraElements = loopIdxRanges.reduce((count, range) => (
+      range.start + range.count <= index ? count + Math.max(0, range.count - 1) : count
+    ), 0);
+    return index - extraElements;
+  };
   const sparse = (loopIdxRanges.length === 0 && directGroupCount < publishedCalls.length)
-    || Array.from({ length: directGroupCount }, (_, index) => physicalSlot(index))
-      .some((slot, index) => slot !== index);
+    || Array.from({ length: directGroupCount }, (_, index) => index).some((index) => {
+      const continuation = loopContinuation(index);
+      if (continuation) return physicalSlot(index) !== physicalSlot(continuation.start);
+      return physicalSlot(index) !== callsiteOrdinal(index);
+    });
   if (sparse) {
     if (loopIdxRanges.length > 0) {
       throw new Error('Sparse direct-call witnesses cannot include an expanded loop slot');

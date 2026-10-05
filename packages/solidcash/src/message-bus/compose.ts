@@ -32,6 +32,7 @@ export {
 } from './compose-prepared-invocation.js';
 import {
   copyTransientConvergenceResultSeed,
+  markTransientConvergenceResultSeed,
   type ComposeAtomicMessageBusOptions,
   type PreparedAtomicMessageBusCall,
 } from './compose-prepared-invocation.js';
@@ -278,7 +279,12 @@ const snapshotPreparedCall = (
 ): PreparedAtomicMessageBusCall => {
   const snapshot = Object.fromEntries(Object.entries(call).map(([key, value]) =>
     [key, snapshotCompositionValue(value)])) as PreparedAtomicMessageBusCall;
-  if (preserveSdkResultSeed) copyTransientConvergenceResultSeed(call, snapshot);
+  if (preserveSdkResultSeed) {
+    copyTransientConvergenceResultSeed(call, snapshot);
+    // The discovered graph owns every result it carries. A caller-prepared commitment has no seed symbol;
+    // mark it so a later SDK rebuild may refresh it. Public compose never takes this path.
+    if (snapshot.provisionalResultCommitment !== undefined) markTransientConvergenceResultSeed(snapshot);
+  }
   return Object.freeze(snapshot);
 };
 

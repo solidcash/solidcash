@@ -153,13 +153,16 @@ export function hasTransientConvergenceResultSeed(call: PreparedAtomicMessageBus
   })[transientConvergenceResultSeed] === true;
 }
 
+/** Mark a result the SDK discovered, so a later rebuild may refresh its commitment. */
+export function markTransientConvergenceResultSeed(call: PreparedAtomicMessageBusCall): void {
+  Object.defineProperty(call, transientConvergenceResultSeed, { value: true, enumerable: true });
+}
+
 /** Preserve SDK-owned seed provenance when its discovered graph is defensively snapshotted. */
 export function copyTransientConvergenceResultSeed(
   source: PreparedAtomicMessageBusCall, target: PreparedAtomicMessageBusCall,
 ): void {
-  if (hasTransientConvergenceResultSeed(source)) {
-    Object.defineProperty(target, transientConvergenceResultSeed, { value: true, enumerable: true });
-  }
+  if (hasTransientConvergenceResultSeed(source)) markTransientConvergenceResultSeed(target);
 }
 
 export interface CallDescriptor extends PreparedAtomicMessageBusCall {

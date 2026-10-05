@@ -403,11 +403,12 @@ describe('address.code with an authenticated external-call slot', () => {
         },
         right: { kind: 'literal', type: 'bigint', value: '0' },
       });
+    // balanceOf's result is not replayable, so the later call publishes the code-length conjunct on its own.
     expect(artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls?.[1]?.preCallRequires)
       .toContainEqual(expect.objectContaining({
-        kind: 'binary', operator: '&&', left: expect.objectContaining({
-          kind: 'binary', operator: '>', left: expect.objectContaining({ kind: 'addressCodeLength' }),
-        }),
+        kind: 'binary', operator: '>',
+        left: expect.objectContaining({ kind: 'addressCodeLength' }),
+        right: expect.objectContaining({ kind: 'literal', value: '0' }),
       }));
     // Preserve address(0) as empty `.code`; only a non-empty address may select the authenticated slot marker.
     expect(artifact.bytecode).toContain('OP_DUP OP_SIZE OP_0 OP_NUMEQUAL OP_IF OP_ELSE OP_DROP');
@@ -1215,10 +1216,8 @@ describe('external call on a state-rooted access-chain target (ss[i].f.m(), ms[k
     expect(auto.bytecode).toBe(manual.bytecode);
   });
 
-  // A LOCAL-indexed struct-array-element field chain `ss[i].target.m()` is NOT body-top hoistable (i is defined
-  // mid-body), but it is now handled by the array-element co-spend loop (emitArrayExternalCallLoop decodes the
-  // field from each self-pinned element) - parity with the plain `arr[i].m()` element call, VM-proven sound in
-  // StructFieldArrayExternalCall.test.ts (MasterChef massUpdatePools `poolInfo[i].lpToken.balanceOf(..)`).
+  // `uint i = 0; ss[i].target.m()` is one call on ss[0]. i is a single assignment of a literal, so the chain
+  // hoists as that literal index. A loop index is not single-assignment and stays a call on every element.
   it('compiles a LOCAL-indexed struct-field chain via the array co-spend loop', () => {
     expect(() => compileString(
       `${IF}struct S { IFoo target; } contract C { S[] ss; function f() public returns (uint) { uint i = 0; return ss[i].target.m(); } }`, opts,

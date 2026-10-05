@@ -703,9 +703,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   }
 
   /**
-   * Replaces each index of an access chain that is an inliner's single-assignment binding outside any loop
-   * (`__inl<N>__pid = _pid`) with what it holds, when that is a literal or a parameter the body never assigns, so
-   * the chain hoists as the parameter-indexed one does.
+   * Replaces each index of an access chain that is a single-assignment binding outside any loop with the literal
+   * or never-assigned parameter it holds, so the chain hoists as that index. An inliner binding
+   * (`__inl<N>__pid = _pid`) and a user local (`uint i = 0`) are the same substitution. A loop index is not
+   * single-assignment, so a call on every element stays a call on every element.
    */
   private resolveIndexAliases(expr: ExpressionNode): ExpressionNode {
     if (expr instanceof FieldAccessNode) {
@@ -720,7 +721,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   }
 
   private boundIndex(index: ExpressionNode, depth = 0): ExpressionNode | undefined {
-    if (!(index instanceof IdentifierNode) || depth > 16 || !/^(__inl|__rh)/.test(index.name)
+    if (!(index instanceof IdentifierNode) || depth > 16
       || !this.singleAssignLocals.has(index.name)) return undefined;
     const bound = this.localInits.get(index.name);
     if (bound instanceof IntLiteralNode) return cloneNode(bound) as ExpressionNode;

@@ -6933,11 +6933,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         if (!derivedAState) {
-        // No state commitments found - the function doesn't write state.
-        // Preserve current on-chain state regardless of VM success/failure.
+        // No failing commitment compare was extracted. A read-only call keeps the on-chain
+        // values. An optimistic seed that the probe already accepted has nothing left to
+        // extract, and replacing it with the on-chain value submits the old commitments.
           const currentState: Record<string, StateValueType> = {};
           const onChainState = currentStateSnapshot ?? (await this.getFullState()).state;
           for (const v of stateLayout.variables) {
+            const seeded = stb.stateUpdate(v.name);
+            if (seeded !== undefined) {
+              currentState[v.name] = seeded as StateValueType;
+              continue;
+            }
             if (onChainState[v.name] !== undefined) {
               currentState[v.name] = onChainState[v.name] as StateValueType;
               stb.setState(v.name, onChainState[v.name] as StateValueType);
@@ -6957,7 +6963,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // whose final covenant check can fail after writing only a subset of a large state layout.
         const onChainState = currentStateSnapshot ?? (await this.getFullState()).state;
         for (const variable of stateLayout.variables) {
-          if (derivedAState[variable.name] === undefined && onChainState[variable.name] !== undefined) {
+          if (derivedAState[variable.name] !== undefined) continue;
+          const seeded = stb.stateUpdate(variable.name);
+          if (seeded !== undefined) {
+            derivedAState[variable.name] = seeded as StateValueType;
+            continue;
+          }
+          if (onChainState[variable.name] !== undefined) {
             derivedAState[variable.name] = onChainState[variable.name] as StateValueType;
             stb.setState(variable.name, onChainState[variable.name] as StateValueType);
           }

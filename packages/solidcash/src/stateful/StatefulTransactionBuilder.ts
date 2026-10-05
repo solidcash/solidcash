@@ -3855,6 +3855,11 @@ export class StatefulTransactionBuilder {
   /**
    * Set a state variable to a new value.
    */
+  /** A write already placed on this builder, including an optimistic first-probe seed. */
+  stateUpdate(name: string): StateValue | undefined {
+    return this.stateUpdates.get(name);
+  }
+
   setState(
     name: string,
     value: StateValue,

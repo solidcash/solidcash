@@ -14954,11 +14954,15 @@ function compileResolvedAst(
   // local the lowering follows is the helper's parameter, which becomes a caller local when the body is spliced
   // in. The helper inliners run later in the ordinary pipeline, so under the per-call convention they run once
   // here, before the lowering, and a namable payload across such a helper is served as its typed call.
+  // Sampled before the inliner below deletes the helpers it splices in. The later fold decides from this,
+  // because the definitions are already gone by the time the ordinary helper survey runs.
+  let perCallInlinedHelpers = false;
   if (mergedCompilerOptions.composition === 'per-call' && needsExternalCallLowering) {
     const perCallHasHelpers = ast.freeFunctions.length > 0
       || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.INTERNAL)
         || fn.modifiers.includes(FunctionModifier.PRIVATE));
     if (perCallHasHelpers) {
+      perCallInlinedHelpers = true;
       ast = ast.accept(new InlineStoragePointerCalls(
         mergedCompilerOptions.solidityImportCompat ?? false,
         inlineDelegateStateHelpers,
@@ -15109,7 +15113,8 @@ function compileResolvedAst(
   // entries keep the arms only literals decide; a per-call constructor folds them too, as its genesis refuses a read
   // after a branch arm's write to an entry the read may name (`_mint` inlines `_update(address(0), to, v)`). A
   // message-bus compile of the default composition keeps them (see the fold on the message-bus path above).
-  if (hasInternalHelpers && (mergedCompilerOptions.composition === 'per-call' || !mergedCompilerOptions.messageBus)) {
+  if ((hasInternalHelpers || perCallInlinedHelpers)
+    && (mergedCompilerOptions.composition === 'per-call' || !mergedCompilerOptions.messageBus)) {
     ast = ast.accept(new FoldConstantBoolBranches(
       mergedCompilerOptions.composition === 'per-call' ? 'constructor' : true,
     )) as Ast;

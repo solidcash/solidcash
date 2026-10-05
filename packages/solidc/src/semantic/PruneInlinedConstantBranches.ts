@@ -164,7 +164,7 @@ export default class PruneInlinedConstantBranches extends AstTraversal {
   }
 
   private isInlinedBinding(name: string): boolean {
-    return /^__(?:sp|rh)\d+_/.test(name);
+    return /^__(?:sp|rh|inl)\d+_/.test(name);
   }
 
   private usesInlinedConstant(expression: ExpressionNode): boolean {

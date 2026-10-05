@@ -63,6 +63,7 @@ import {
   IndirectCallNode,
   InterfaceNode,
   IntLiteralNode,
+  NewArrayNode,
   LiteralNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
@@ -376,15 +377,15 @@ function resolveBatchKey(
     };
   }
   // A constant is a compile-time value code generation inlines wherever it is read, so the derivation emits it as the
-  // body's own key does; a local is followed to the one declaration that binds it.
-  const identifier = keyNode instanceof IdentifierNode && !constants.has(keyNode.name) ? keyNode : undefined;
-  const expression = identifier === undefined
-    ? keyNode : resolveKeyIdentifier(identifier.name, entry, constants, new Set());
+  // body's own key does; a local is followed to the one declaration that binds it. A `new T[](1)` key filled by one
+  // `local[0] = value` is that value: the array itself is not what the write hashes.
+  const expression = boundKeyExpression(keyNode, entry, constants);
   if (expression === undefined) {
     return {
       kind: 'refusal',
       reason: `the body writes a mapping at slot ${slot} whose key ${keyIndex} '${source.canonical}' is the local `
-        + `'${identifier?.name ?? '?'}', which is not bound to a single compile-time value`,
+        + `'${keyNode instanceof IdentifierNode ? keyNode.name : '?'}', which is not bound to a single `
+        + 'compile-time value',
     };
   }
   const unavailable = keyOperandUnavailable(expression, constants, entry);
@@ -463,15 +464,85 @@ function mappingWriteKey(
 }
 
 /**
+ * The expression a key stands for after inliner copies and a single literal-index element store.
+ *
+ * An identifier is followed to the one local that binds it. `local[N]` with one `local[N] = value` and no other
+ * write of `local` is `value`: inlining `_update(id, new address[](0), disallowed)` leaves the write key as
+ * `disallowed[0]`, and the element store is what was hashed.
+ */
+function boundKeyExpression(
+  node: ExpressionNode,
+  entry: FunctionDefinitionNode,
+  constants: ReadonlySet<string>,
+): ExpressionNode | undefined {
+  const resolved = node instanceof IdentifierNode && !constants.has(node.name)
+    ? resolveKeyIdentifier(node.name, entry, constants, new Set())
+    : node;
+  if (resolved === undefined) return undefined;
+  return singleLiteralElement(resolved, entry) ?? resolved;
+}
+
+/**
+ * The one value stored at a literal index of a local array, or undefined when that store is not a single assignment.
+ *
+ * Any other write of the array (another index, a push, a pop, a delete, or a whole-array assign) leaves the element
+ * unresolved, so the caller refuses the key rather than hashing a value the body may not still hold.
+ */
+/**
+ * The local a literal-index read belongs to.
+ *
+ * The array is that local, or the one `new T[](N)` it was copied from. Inlining a helper argument substitutes the
+ * allocation into the key (`disallowed[0]` becomes `(new address[](1))[0]`), and N identifies the local when only
+ * one allocation of that size exists.
+ */
+function arrayElementLocal(array: ExpressionNode, entry: FunctionDefinitionNode): string | undefined {
+  if (array instanceof IdentifierNode) return array.name;
+  if (!(array instanceof NewArrayNode) || !(array.size instanceof IntLiteralNode)) return undefined;
+  const size = array.size.value;
+  let name: string | undefined;
+  let count = 0;
+  walkInvocationAst(entry.body, (node) => {
+    if (!(node instanceof VariableDefinitionNode) || !(node.expression instanceof NewArrayNode)) return;
+    if (!(node.expression.size instanceof IntLiteralNode) || node.expression.size.value !== size) return;
+    count += 1;
+    name = node.name;
+  });
+  return count === 1 ? name : undefined;
+}
+
+function singleLiteralElement(node: ExpressionNode, entry: FunctionDefinitionNode): ExpressionNode | undefined {
+  if (!(node instanceof ArrayAccessNode) || !(node.index instanceof IntLiteralNode)) return undefined;
+  const name = arrayElementLocal(node.array, entry);
+  if (name === undefined) return undefined;
+  const index = node.index.value;
+  let value: ExpressionNode | undefined;
+  let count = 0;
+  let otherWrite = false;
+  walkInvocationAst(entry.body, (current) => {
+    if (current instanceof ArrayAssignNode && current.name === name) {
+      if (current.index instanceof IntLiteralNode && current.index.value === index) {
+        count += 1;
+        value = current.value;
+      } else otherWrite = true;
+    } else if ((current instanceof ArrayPushNode || current instanceof ArrayPopNode
+      || current instanceof ArrayDeleteNode) && current.name === name) {
+      otherWrite = true;
+    } else if (current instanceof AssignNode && current.identifier.name === name) otherWrite = true;
+  });
+  return !otherWrite && count === 1 ? value : undefined;
+}
+
+/**
  * The expression a key identifier stands for, following the one local declaration that binds it, or undefined when
  * no such declaration exists.
  *
- * Lowering rewrites a source key to a synthetic local in one documented place: an inlined call with a storage
- * pointer copies its value arguments into `__spN_<name>` locals before the substituted write, so the write's own
- * key is a read of that copy. Following the declaration recovers the argument the copy was made from, which the
- * master can emit at the top of the body when it is itself compile-time. A local bound to a constant resolves to the
- * constant, which code generation inlines. A name bound more than once, or one bound to a value the walk cannot
- * follow to a single expression, is left unresolved so the caller refuses it.
+ * Lowering rewrites a source key to a synthetic local in two documented places. An inlined call with a storage
+ * pointer copies its value arguments into `__spN_<name>` locals before the substituted write, and an inlined
+ * external-call helper copies every argument into an `__inlN_<name>` local. Following the declaration recovers the
+ * argument the copy was made from, which the master can emit at the top of the body when it is itself compile-time.
+ * A local bound to a constant resolves to the constant, which code generation inlines. A local bound to a parameter
+ * resolves to that parameter: it is the call argument, not another local. A name bound more than once, or one bound
+ * to a value the walk cannot follow to a single expression, is left unresolved so the caller refuses it.
  */
 function resolveKeyIdentifier(
   name: string,
@@ -490,9 +561,14 @@ function resolveKeyIdentifier(
     if (node instanceof AssignNode && node.identifier.name === name) reassigned = true;
   });
   if (definition === undefined || reassigned) return undefined;
-  return definition instanceof IdentifierNode && !constants.has(definition.name)
-    ? resolveKeyIdentifier(definition.name, entry, constants, seen)
-    : definition;
+  if (!(definition instanceof IdentifierNode)) return definition;
+  // A parameter or a constant is the value the copy was made from. Recursing would look for a local of that name
+  // and miss it, which is how an `__inlN_jobId = jobId` key was refused as unbound.
+  const bound = definition;
+  if (constants.has(bound.name) || entry.parameters.some((parameter) => parameter.name === bound.name)) {
+    return bound;
+  }
+  return resolveKeyIdentifier(bound.name, entry, constants, seen);
 }
 
 /**
@@ -542,7 +618,11 @@ function keyOperandUnavailable(
       }
       return undefined;
     }
-    if (current instanceof ArrayAccessNode) return walk(current.array, underField) ?? walk(current.index, underField);
+    if (current instanceof ArrayAccessNode) {
+      const element = singleLiteralElement(current, entry);
+      if (element !== undefined) return walk(element, underField);
+      return walk(current.array, underField) ?? walk(current.index, underField);
+    }
     if (current instanceof NullaryOpNode) {
       return current.operator === NullaryOperator.MSG_SENDER || current.operator === NullaryOperator.TX_ORIGIN
         ? undefined

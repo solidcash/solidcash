@@ -89,7 +89,7 @@ function walk(root: Node, visit: (node: Node) => void): void {
 }
 
 /** The parameter bindings a helper inliner makes at an inline site; each is declared once and owned by the pass. */
-const isInlinedBinding = (name: string): boolean => /^__(?:sp|rh)\d+_/.test(name);
+const isInlinedBinding = (name: string): boolean => /^__(?:sp|rh|inl)\d+_/.test(name);
 
 const INCREMENTS = new Set<UnaryOperator>([
   UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.POSTFIX_DECREMENT,

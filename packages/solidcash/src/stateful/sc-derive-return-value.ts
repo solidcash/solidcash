@@ -4,6 +4,7 @@
 
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
+  attachDecodedAccessors,
   childStateLayoutDigest,
   decodePushdataValue,
   encodePushdataValue,
@@ -654,11 +655,69 @@ export async function deriveReturnValue(
     }
     return decorateFunctionResult(decoded, resultFunction, returnArtifact);
   }
-  // Multi-value (tuple) returns use a packed return-event encoding that is not a plain concatenation of each
-  // value's pushdata; decoding it needs the tuple-return convention (viewReturn machinery). Fail closed rather
-  // than mis-decode - single-value reads (the common getter shape) are fully supported.
-  throw new Error(
-    `staticCall: '${functionName}' returns ${outputs.length} values; multi-value (tuple) reads are not yet `
-    + 'supported. Read the underlying state via getState(), or split into single-value view functions.',
+  // Multi-value (tuple) returns: the return event carries one encoded component per declared output. Decode the
+  // whole vector with the same authenticated-result decoder the external-call path uses, then return an
+  // ethers-style Result - an array carrying the named components - so a Solidity `mapping(K => Struct) public m`
+  // getter reads exactly like the tuple its interface declares.
+  const tupleEncoding = resolveExternalResultEncoding(
+    resultFunction?.resultEncoding,
+    resultArtifact,
+    outputs.map((output) => output.type),
+    `function '${resultFunction?.name ?? functionName}' result`,
   );
+  const tupleNames = tupleReturnNames(host.inner.artifact, exactAbiFunction ?? resultFunction, outputs.length);
+  const tupleDecoded = tupleEncoding === 'evm-abi-v1'
+    ? decodeEvmInvocationResult(blob, outputs.map((output) => output.type), structs, resultArtifact.enums)
+    : decodeAuthenticatedProducerResultVector(
+      blob, outputs.map((output) => output.type), structs, false, resultArtifact.enums,
+    );
+  if (!tupleDecoded || tupleDecoded.length !== outputs.length) {
+    throw new Error(
+      `staticCall: '${functionName}' returns ${outputs.length} values but the authenticated return event did `
+      + 'not decode as that tuple.',
+    );
+  }
+  // Components keep the representation the artifact's result encoding gives them; an `address` component is the
+  // 20-byte account payload the tuple interface declares, never widened into a locking bytecode.
+  const tupleValues = tupleDecoded.map((component) => component as StateValue);
+  const tuple = [...tupleValues] as StateValue[] & Record<string, StateValue>;
+  for (const [index, name] of tupleNames.entries()) {
+    Object.defineProperty(tuple, name, {
+      value: tupleValues[index], enumerable: true, writable: true, configurable: true,
+    });
+  }
+  Object.defineProperty(tuple, 'toObject', {
+    value: (): Record<string, StateValue> => Object.fromEntries(
+      tupleNames.map((name, index) => [name, tupleValues[index]]),
+    ),
+    enumerable: false, writable: true, configurable: true,
+  });
+  for (const value of tupleValues) attachDecodedAccessors(value);
+  return attachDecodedAccessors(tuple as unknown as StateValue);
+}
+
+/**
+ * Component names for a multi-output getter. A `mapping(K => Struct) public m` getter is published as one scalar
+ * output per struct field, in field order (Solidity's auto-getter tuple); the compiler records that struct as the
+ * collection's `valueType`, so its field names are the tuple's names. Empty unless the function is exactly a
+ * single-collection entry read whose struct value has the same number of scalar fields - never a guess.
+ */
+function tupleReturnNames(artifact: Artifact, selection: AbiFunction | undefined, outputCount: number): string[] {
+  const access = selection?.entryAccesses;
+  if (!selection || !access || access.length !== 1 || access[0].operations.length !== 1
+    || access[0].operations[0] !== 'read') return [];
+  const collection = artifact.stateLayout?.collections?.find(
+    (candidate) => candidate.name === access[0].collection,
+  );
+  const structName = collection?.valueType;
+  if (!structName) return [];
+  const structs = artifact.stateLayout?.structs ?? artifact.structs;
+  const struct = (Array.isArray(structs) ? structs : Object.values(structs ?? {}))
+    .find((candidate) => (candidate as { name?: string }).name === structName) as
+    { fields: Array<{ name: string; type: string }> } | undefined;
+  if (!struct) return [];
+  // Mirror the compiler's filter: a getter omits mapping and array members of the struct.
+  const kept = struct.fields.filter((field) => !/^mapping\(/.test(field.type) && !/\]$/.test(field.type));
+  if (kept.length !== outputCount) return [];
+  return kept.map((field) => field.name);
 }

@@ -14589,14 +14589,17 @@ export class StatefulFunctionCall {
    * True when awaiting this call should READ the return value (ethers `view`/`pure` semantics) instead of SENDing
    * a transaction: a single-output function that provably writes no state (`writesState === false`, which fails
    * closed to `true`), is not a deploy, and has no send-intent config attached (transfers,
-   * emitReturn, state/entry overrides, split/merge, container ops). Multi-value returns still SEND (their packed
-   * encoding is not decodable yet). `.staticCall()` / `.send()` remain the explicit, typed escapes.
+   * emitReturn, state/entry overrides, split/merge, container ops). A multi-value return (a struct getter's tuple)
+   * reads too. `.staticCall()` / `.send()` remain the explicit, typed escapes.
    */
   private _isPureRead(): boolean {
     if (!this.parentContract || this.functionName === undefined) return false;
     const abiFn = this.parentContract.inner.artifact.abi.find((f) => f.name === this.functionName);
     if (!abiFn || abiFn.writesState !== false) return false;
-    if ((abiFn.outputs?.length ?? 0) !== 1) return false;
+    // A struct-typed mapping getter is published as one output per scalar field (Solidity's auto-getter tuple).
+    // Refusing anything but a single output here made `await data.users(addr)` SEND a transaction and hand back
+    // TransactionDetails, so every named field of the result read `undefined`.
+    if ((abiFn.outputs?.length ?? 0) === 0) return false;
     if (abiFn.modifiers?.includes('deploy')) return false;
     // The Solidity import pass checks external callee mutability in view/pure functions. A native
     // artifact has no equivalent proof, so retain the send path for its external calls.

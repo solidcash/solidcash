@@ -1032,14 +1032,11 @@ export function batchRaw(
       ecrecoverCompute: selectedRecoveryHandlers.length > 0,
       ecrecoverEvmFlags: selectedEcrecoverEvmFlags,
     }),
-    ...([...activeRouteSortedBatches].some(([collection]) => (
-      executionArtifact.stateLayout?.collections?.find((candidate) => candidate.name === collection)
-        ?.chunkableValue !== true
-    )) && {
-      sortedBatchInfo: [...activeRouteSortedBatches].filter(([collection]) => (
-        executionArtifact.stateLayout?.collections?.find((candidate) => candidate.name === collection)
-          ?.chunkableValue !== true
-      )).map(([collection, batch]) => ({
+    // The route bytecode censuses every active sorted batch, including a chunkable value whose
+    // tail lives in continuation NFTs. Dropping those collections leaves their lanes at the
+    // inactive sentinel while the entry NFT is still spent, so the census expects 0 inputs.
+    ...(activeRouteSortedBatches.size > 0 && {
+      sortedBatchInfo: [...activeRouteSortedBatches].map(([collection, batch]) => ({
         collection,
         slotIndices: [...batch.slots].sort((left, right) => left - right),
         ...(batch.linear && { linear: true }),

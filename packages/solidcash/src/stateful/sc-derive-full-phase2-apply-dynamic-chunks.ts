@@ -13,6 +13,7 @@ import {
   decodePushdataValue,
   isFixedWidthType,
   parseArrayTypeString,
+  parseChunkCommitment,
   splitValueIntoChunks,
   unpackFixedWidthArray,
 } from '@solidcash/utils';
@@ -25,6 +26,29 @@ import {
   isDynamicChunkCommitmentAtIndex,
 } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
+
+/** Bytes already stored in a canonical 0..n-1 chunk run, or undefined when any slot is still a placeholder. */
+function canonicalDynamicBytes(commitments: readonly string[]): Uint8Array | undefined {
+  const parts: Uint8Array[] = [];
+  for (let index = 0; index < commitments.length; index += 1) {
+    let parsed: { chunkIndex: number; chunkData: Uint8Array };
+    try {
+      parsed = parseChunkCommitment(commitments[index] ?? '');
+    } catch {
+      return undefined;
+    }
+    if (parsed.chunkIndex !== index || parsed.chunkData.length === 0) return undefined;
+    parts.push(parsed.chunkData);
+  }
+  if (parts.length === 0) return undefined;
+  const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.length;
+  }
+  return bytes;
+}
 
 export interface DeriveFullPhase2DynamicChunksHost {
   readonly categoryId: string;
@@ -132,14 +156,25 @@ export function deriveFullPhase2ApplyDynamicChunks(
       // The data-NFT state exposes its exact byte length even when it cannot decode the value itself, so
       // recover the length-matched stack item and build every canonical chunk without guessing outputs.
       if (derivedDynamicBytes === undefined && len > 0) {
-        for (let traceIndex = fullTrace2.length - 1; traceIndex >= 0 && !derivedDynamicBytes; traceIndex--) {
+        let lengthMatch: Uint8Array | undefined;
+        for (let traceIndex = fullTrace2.length - 1; traceIndex >= 0 && !lengthMatch; traceIndex--) {
           const stack = fullTrace2[traceIndex].stack;
           for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex--) {
             if (stack[stackIndex].length === len) {
-              derivedDynamicBytes = stack[stackIndex];
+              lengthMatch = stack[stackIndex];
               break;
             }
           }
+        }
+        // Several dynamic values can share one byte length. The last stack item of that
+        // length belongs to only one of them. Replacing another value's canonical chunks
+        // with it publishes the sibling (first's 0102 becomes second's 0304).
+        const preserved = canonicalDynamicBytes(existing);
+        const sharesLengthWithSibling = chunkVars.some((other) => other.name !== dv.name
+          && Number(derivedAState[`${other.name}$len`]) === len);
+        if (!(lengthMatch && preserved && preserved.length === len && sharesLengthWithSibling
+          && binToHex(preserved) !== binToHex(lengthMatch))) {
+          derivedDynamicBytes = lengthMatch;
         }
       }
       if (derivedDynamicBytes === undefined && dv.delegate === true && !hasDerivedLength) {

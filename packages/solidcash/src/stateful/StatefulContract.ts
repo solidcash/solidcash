@@ -9257,6 +9257,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (batchAliasSkips.has(slotIndex)) {
             const ownerSlot = batchAliasOwners.get(slotIndex);
             if (ownerSlot === undefined) throw new Error(`vmap alias slot has no canonical owner ${slotIndex}`);
+            // A kernel row accepts predOut=-2 together with a positive proof only when this lane's
+            // slot equals an earlier active writer. Capacity lanes that copy that writer's slot fail
+            // the check. The unused-lane sentinel (zero slot, proof -1) is accepted on its own.
+            if ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
+              ?.messageBusConvention === 'kernel-row-loop') {
+              batchWitnesses.push(new Uint8Array(32), -1n, new Uint8Array(32), -2n);
+              continue;
+            }
             // The target's logical owner can itself share an older predecessor proof. Its fixed input then
             // contains a funding pad, so aliases must inherit the physical proof owner, not the target offset.
             const ownerTarget = batchTargetSlots.get(ownerSlot)!;

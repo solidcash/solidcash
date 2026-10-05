@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { ContractFactory } from '../../src/index.js';
-import { addressToLockScript } from '../../src/utils.js';
+import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../../src/utils.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 
 // Before Solidity 0.7 an `internal` constructor marked a contract abstract. Compiled on its own, that constructor is
@@ -31,7 +31,10 @@ describe('an internal constructor reading msg.sender', () => {
     const provider = createTestProvider();
     const [alice, bob] = await getSigners(2, { provider, fundingUtxos: 4 });
     const owned: any = await new ContractFactory(artifact, alice).deploy();
-    expect(await owned.state.owner()).toEqual(addressToLockScript(alice.getAddress()));
+    // A public address getter returns the 20-byte payload. The covenant stores the P2PKH lock.
+    const owner = lockingBytecodeToSolidityAddressPayload(addressToLockScript(alice.getAddress()));
+    expect(owner).toBeDefined();
+    expect(await owned.state.owner()).toEqual(owner);
 
     await owned.set(7n).send();
     expect(await owned.state.x()).toBe(7n);

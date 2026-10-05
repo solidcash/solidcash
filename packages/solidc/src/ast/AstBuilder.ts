@@ -6107,6 +6107,7 @@ export default class AstBuilder
       );
       ctor.location = loc;
       const assign = new StateArrayAssignNode(name, buildKeys()[0], ctor);
+      assign.fieldRebuild = true;
       assign.location = loc;
       return assign;
     }

@@ -76,6 +76,9 @@ export default class CoalesceStateArrayStructFieldWrites extends AstTraversal {
         for (const write of writes) {
           ctor.parameters[write.fieldIndex] = cloneNode(write.value) as ExpressionNode;
         }
+        // The join is still the element's rebuild. When it covers every field the constructor no longer reads
+        // the array, and the per-call source replay needs this mark to tell that from an element replacement.
+        combined.fieldRebuild = true;
         // All source values are independent of this element and have no effects, so field-order evaluation of
         // the one constructor is equivalent to the original sequence of whole-element assignments.
         out.push(combined);

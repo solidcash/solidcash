@@ -2204,6 +2204,9 @@ export class StateArrayPopNode extends StatementNode implements Named {
 
 export class StateArrayAssignNode extends StatementNode implements Named {
   stateVariable?: StateVariableNode;
+  // An element-field rebuild (`arr[i].f = v`), including several of them joined into one constructor. The join
+  // can name every field, so the constructor no longer reads the element; it is still that element's rebuild.
+  fieldRebuild?: boolean;
 
   constructor(
     public name: string,

@@ -1509,6 +1509,31 @@ const dynamicWriteSourcesOf = (
       : undefined;
   };
 
+  // A field-rebuild join that overwrites every field no longer reads the array: the constructor IS the element
+  // the body writes. An indexed assignment the source spelled as a whole-element replacement is not marked, so
+  // it stays unstated. A constructor this replay cannot follow leaves the variable unstated too.
+  const replaceRebuiltElement = (
+    write: Write, statement: StateArrayAssignNode, state: ReplayState,
+  ): ExternalCallExpression | undefined => {
+    const construction = statement.value;
+    if (!(construction instanceof FunctionCallNode) || !(construction.type instanceof StructType)) return undefined;
+    const struct = construction.type;
+    const pinned = indexKey(statement.index);
+    if (pinned === undefined || construction.identifier.name !== struct.name
+      || construction.fieldNames !== undefined
+      || construction.parameters.length !== struct.fields.length) {
+      return undefined;
+    }
+    if (write.indexKey !== undefined && write.indexKey !== pinned) return undefined;
+    if (write.value !== undefined && (write.value.kind !== 'call' || write.value.name !== struct.name)) {
+      return undefined;
+    }
+    const args = construction.parameters.map((parameter) => serialize(parameter, state));
+    if (!args.every((argument): argument is ExternalCallExpression => argument !== undefined)) return undefined;
+    write.indexKey = pinned;
+    return { kind: 'call', name: struct.name, args, type: struct.name };
+  };
+
   const invalidateUnknownMutations = (node: Node, state: ReplayState): void => {
     const seen = new Set<object>();
     const visit = (value: unknown): void => {
@@ -1613,14 +1638,18 @@ const dynamicWriteSourcesOf = (
       // A write that rebuilds an element of the pushed variable in place does not add an element: the run still
       // grows by the one element the push appended, and the element rebuilt is that one. The fields it writes are
       // folded into the stated element, so what this map publishes is the element the body writes rather than the
-      // default the push appended before the rebuild replaced its fields. A rebuild this replay cannot follow
-      // leaves the variable unstated rather than defaulted. A write whose value does not read the variable replaces
-      // it (or an element) with an independent value, which this replay does not model, so it falls through to the
-      // invalidation and keeps the entry absent.
+      // default the push appended before the rebuild replaced its fields. Consecutive field writes are joined into
+      // one constructor first; once that constructor names every field it no longer reads the array, but it is
+      // still the rebuild (marked fieldRebuild) and the constructor itself is the element. A rebuild this replay
+      // cannot follow leaves the variable unstated rather than defaulted. A write whose value does not read the
+      // variable and is not that marked rebuild replaces it (or an element) with an independent value, which this
+      // replay does not model, so it falls through to the invalidation and keeps the entry absent.
       if (appendMode && statement instanceof StateArrayAssignNode && dynamicNames.has(statement.name)
-        && readsVariable(statement.value, statement.name)) {
+        && (readsVariable(statement.value, statement.name) || statement.fieldRebuild === true)) {
         const write = state.writes.get(statement.name)!;
-        const folded = foldElementRebuild(write, statement, state);
+        const folded = readsVariable(statement.value, statement.name)
+          ? foldElementRebuild(write, statement, state)
+          : replaceRebuiltElement(write, statement, state);
         if (folded !== undefined) {
           write.value = folded;
           continue;

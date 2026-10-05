@@ -28380,7 +28380,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // running it in a loop would pin only ONE iteration's delete and leave the rest un-covenanted (a vmap hole).
       // Fail closed (fixed-bound loops are unrolled to plainLoopDepth 0 before codegen and still work).
       if (this.plainLoopDepth > 0) {
-        throw new SortedMappingCodegenPendingError(node, node.collection.name);
+        // A direct contract has no handler boundary, so this stays a source error. A message-bus route can
+        // reach a counter delete after a parent loop already owns the upsert setup. Keep the explicit dead
+        // arm the assign path uses so admission can keep the handler whose body published the rank stream.
+        const sourceDirectCodegen = (this.compilerOptions as CompilerOptions & {
+          __messageBusExplicitlyDisabled?: boolean;
+        }).__messageBusExplicitlyDisabled === true;
+        if (sourceDirectCodegen) {
+          throw new SortedMappingCodegenPendingError(node, node.collection.name);
+        }
+        const unmatched = { location: node.location, positionHint: PositionHint.END };
+        this.emit(Op.OP_0, unmatched);
+        this.emit(Op.OP_VERIFY, unmatched);
+        return node;
       }
       const vt = node.collection.innermostValueType;
       if (this.sortedValueKind(vt) !== null) {

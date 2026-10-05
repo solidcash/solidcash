@@ -6379,7 +6379,25 @@ function synthesizeMessageBusRoute(
       aliases: Map<string, string>;
       nonZero: Set<string>;
       conditional: boolean;
+      // True when an enclosing branch also writes a collection, emits, or transfers. A scalar update in that
+      // branch has no row of its own. A scalar update in a branch that does none of those is unrelated.
+      settlementBranch: boolean;
     }
+    const branchSettlesCollectionOrEvent = (branch: BranchNode): boolean => {
+      let settles = false;
+      walkInvocationAst(branch, (node) => {
+        const namedCollection = (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode)
+          && collectionByName.has(node.name);
+        if (node instanceof MappingAssignNode || node instanceof MappingDeleteNode
+          || node instanceof MappingFieldAssignNode || namedCollection
+          || node instanceof StateArrayAssignNode
+          || node instanceof StateArrayDeleteNode || node instanceof StateArrayPushNode
+          || node instanceof StateArrayPopNode || node instanceof EmitStatementNode
+          || node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+          || node instanceof TokenContainerMethodStatementNode) settles = true;
+      });
+      return settles;
+    };
     let found = false;
     const zero = (expression: ExpressionNode): boolean => expression instanceof IntLiteralNode
       ? expression.value === 0n
@@ -6432,6 +6450,7 @@ function synthesizeMessageBusRoute(
       active.add(target);
       visitBlock(target.body, [{
         owner: target, aliases, nonZero: new Set(path.nonZero), conditional: path.conditional,
+        settlementBranch: path.settlementBranch,
       }]);
       active.delete(target);
     };
@@ -6444,8 +6463,10 @@ function synthesizeMessageBusRoute(
           || !path.nonZero.has(comparison.marker);
         const falsePossible = comparison === undefined || comparison.equal
           || !path.nonZero.has(comparison.marker);
+        const settles = branchSettlesCollectionOrEvent(statement);
         const branchPath = (nonZero: Set<string>): ScalarPath => ({
           owner: path.owner, aliases: new Map(path.aliases), nonZero, conditional: true,
+          settlementBranch: path.settlementBranch || settles,
         });
         const trueNonZero = new Set(path.nonZero);
         const falseNonZero = new Set(path.nonZero);
@@ -6459,11 +6480,13 @@ function synthesizeMessageBusRoute(
           : [];
         // The branch predicate selects writes *inside* an arm; an assignment after the join is not itself
         // conditional. Retain only the proven facts on each surviving path.
-        return [...yes, ...no].map((survivor) => ({ ...survivor, conditional: path.conditional }));
+        return [...yes, ...no].map((survivor) => ({
+          ...survivor, conditional: path.conditional, settlementBranch: path.settlementBranch,
+        }));
       }
       if (statement instanceof StateAssignNode || statement instanceof DeleteStateNode
         || (statement instanceof AssignNode && scalarStateNames.has(statement.identifier.name))) {
-        if (path.conditional) found = true;
+        if (path.conditional && path.settlementBranch) found = true;
       }
       if (statement instanceof WhileNode || statement instanceof DoWhileNode
         || statement instanceof SwitchNode || statement instanceof TryCatchNode
@@ -6503,7 +6526,7 @@ function synthesizeMessageBusRoute(
     visitBlock(root.body, [{
       owner: root,
       aliases: new Map(root.parameters.map((parameter, index) => [parameter.name, `${index}`])),
-      nonZero: new Set(), conditional: false,
+      nonZero: new Set(), conditional: false, settlementBranch: false,
     }]);
     return found;
   };

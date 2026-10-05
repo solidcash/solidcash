@@ -142,11 +142,11 @@ describe('computed whole-value mutation recipes', () => {
       mutationEffectOrdinal: access?.mutationEffectOrdinals?.[0],
       expression: { kind: 'call', name: 'Record' },
     });
+    // `amount = amount + 1` already has the uint256 field width, so the record field is that addition.
     expect(access?.storedValueSource?.expression.args?.[0]).toMatchObject({
-      kind: 'cast', type: 'uint256', expression: { kind: 'binary', operator: '+',
-        left: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
-        right: { kind: 'literal', value: '1' },
-      },
+      kind: 'binary', operator: '+', type: 'uint256',
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      right: { kind: 'literal', value: '1' },
     });
   });
 });

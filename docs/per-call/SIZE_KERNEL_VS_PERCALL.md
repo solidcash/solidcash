@@ -9,7 +9,10 @@ First pair, 2026-10-05, script `scripts/compare-convention-sizes.mjs`.
 
 Bytes are `asmToBytecode` of `artifact.bytecode` (the real script). Chars are the ASM string length. The BCH per-input limit is 10,000 bytes. Deployment UTXOs use the shipped defaults: per-call is `dataNftCount` plus 12 masters plus 4 validators; direct is `dataNftCount` plus one master. A per-call call spends one master per entry into that contract. The state-record bound on a call is `dataNftCount` (MarketplaceV1 is 2). Records a given title touches are counted with the title runs, not from the artifact. `composition.refusedEntries` is absent on every paired contract, so the refused count is 0.
 
-The 2026-10-05 recompile put the interfaces into the per-call artifact directory as well. Kernel-only marketplace rows that remain are MarketplaceV2, MarketplaceV3, delegate artifacts, and a few application contracts. MistSwap and the Solidity corpus are in the sections below; they were compiled with `compileFile`, not the marketplace harness. Refused entries are 0 on every paired marketplace contract.
+The 2026-10-05 recompile put the interfaces into the per-call artifact directory as well. Kernel-only
+marketplace rows that remain are MarketplaceV2, MarketplaceV3, delegate artifacts, and a few application
+contracts. MistSwap and the Solidity corpus are in the sections below; they were compiled with `compileFile`,
+not the marketplace harness. Refused entries are 0 on every paired marketplace contract.
 
 ## Contracts present on both sides
 
@@ -80,4 +83,5 @@ Interface artifacts (IERC20 and the other `I*` files) have an empty script. They
 
 ## Still unpaired
 
-MarketplaceV2, MarketplaceV3, and the delegate artifacts in the kernel-only table have no per-call artifact in the marketplace directory. MistSwap and the Solidity corpus are recorded above.
+MarketplaceV2, MarketplaceV3, and the delegate artifacts in the kernel-only table have no per-call artifact
+in the marketplace directory. MistSwap and the Solidity corpus are recorded above.

@@ -41,7 +41,10 @@ export class DeferredTransitiveReturnProbeError extends Error {
   }
 }
 
-/** Resolve an unconnected transitive callee from the compiler's exact typed address source. */
+/**
+ * Resolve a transitive callee. A connect-time interface binding wins: the caller already named that
+ * contract. An unconnected edge falls through to the compiler's exact typed address source.
+ */
 export async function resolveTransitiveExternalContract(
   caller: TransitiveExternalContract,
   edge: ExternalCallAbi,
@@ -50,7 +53,8 @@ export async function resolveTransitiveExternalContract(
 ): Promise<TransitiveExternalContract | undefined> {
   const connected = edge.interfaceName === '__raw__' ? undefined
     : caller._externalRegistry.get(edge.interfaceName);
-  if (!edge.addressSource) return connected as TransitiveExternalContract | undefined;
+  if (connected) return connected as TransitiveExternalContract;
+  if (!edge.addressSource) return undefined;
   const state = await caller.getState();
   const selfAddress = hexToBin(caller.inner.lockingBytecode);
   const hydrated = edge.addressSource.kind === 'expression' && edge.addressSource.expression

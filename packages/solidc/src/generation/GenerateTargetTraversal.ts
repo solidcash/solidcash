@@ -12858,9 +12858,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Mapping continuations are authenticated by identity and may live in separate output bands. Their total
     // width is not a positional prefix of scalar NEW entries (the SDK appends computed chunks after entries).
-    // A per-call frame still counts the value chunks its run declares ahead of them (the running width is only
-    // allocated there).
-    if (this.valueChunkTrailingCountActive) {
+    // A per-call frame still counts the value chunks its run declares ahead of them. The direct convention
+    // leaves that cell on the frame and must not add it here.
+    if (!this.directConvention && this.valueChunkTrailingCountActive) {
       this.emitPickCompilerRouteFrameValue(
         GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT,
         locationData,

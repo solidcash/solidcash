@@ -1,5 +1,9 @@
 # W6: the 14 named solidc failures
 
+The full sequential baseline is `W6_BASELINE.md` (`BASELINE_DONE 2026-10-05T13:24:55Z`,
+start commit `295f6eed6`). All 14 rows below failed in that run and keep these classes.
+That baseline marks no failure merge-caused. This note is only the section 0 list.
+
 Classified from git on 2026-10-05 at `43b4116e3`. These tests were not re-run. The pass/fail split is the one in `UPSTREAM_PLAN.md` section 0 (9 red on the kernel beta alone, 5 red on per-call alone). Git only places the assertion. Merge `1f818ffd0` joined per-call `d8166489d` and kernel `d7f3c7ad6` at base `ea7a48e27`. None of the 14 was introduced by that merge. The eight files are unchanged from the merge to `43b4116e3`.
 
 | # | test | file:line | class |
@@ -21,4 +25,5 @@ Classified from git on 2026-10-05 at `43b4116e3`. These tests were not re-run. T
 
 Rows 5 and 6 exist only on the kernel parent (`43d479e94`, `9cb6ff519`). The other twelve titles exist on the merge base. Rows 2 and 8 were rewritten on kernel only (`826faf1b6`, `66bd3c77f`); HEAD matches those kernel bodies. Row 13's per-call text calls `balanceOf` on the same pointer; kernel `4bc339555` moved that to a second pointer, and HEAD has the kernel text. The plan's "red on per-call alone" for that row is the pre-merge per-call assertion, not a new merge failure.
 
-Counts: pre-existing kernel 9, pre-existing per-call 5, merge-caused 0. A full sequential suite baseline has not been run, so this list is not every failure in the tree.
+Counts: pre-existing kernel 9, pre-existing per-call 5, merge-caused 0. Every other
+failure from the 2026-10-05 sequential run is listed in `W6_BASELINE.md`.

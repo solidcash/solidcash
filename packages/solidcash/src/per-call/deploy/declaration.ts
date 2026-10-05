@@ -35,9 +35,13 @@ export interface ReadDeclaration {
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 type VirtualMachineProgram = Parameters<VirtualMachine['evaluate']>[0];
 
-/** A machine that can step to a program's stop state without retaining every step, when it offers it. */
+/**
+ * A machine that can step to a program's stop state without retaining every step, and that can hand back the close
+ * an evaluation of a program with the same content stopped on, when it offers them.
+ */
 type BoundedDebugVirtualMachine = VirtualMachine & {
   boundedDebug?: (program: VirtualMachineProgram) => readonly ProgramStateTrace[];
+  recordedClose?: (program: VirtualMachineProgram) => ReadDeclaration | undefined;
 };
 
 /** The program state facts a stop's declaration is read from. */
@@ -66,6 +70,11 @@ export function readComputedDeclaration(options: {
   readonly maximumCommitmentBytes: number;
 }): DeclarationReading {
   const machine = options.vm as BoundedDebugVirtualMachine;
+  // The machine's own evaluation of a program with this content stopped on a failed close and kept its operands:
+  // they are the two items the trace below would read before that OP_EQUALVERIFY, so the program is not run again.
+  // Any other stop, or a program of other content, is read from a run as before.
+  const recorded = machine.recordedClose?.(options.program);
+  if (recorded !== undefined) return closeReading(recorded, options.maximumCommitmentBytes);
   const trace = (machine.boundedDebug?.(options.program)
     ?? options.vm.debug(options.program)) as unknown as readonly ProgramStateTrace[];
   const failed = trace.findIndex((state) => state.error !== undefined);
@@ -79,7 +88,13 @@ export function readComputedDeclaration(options: {
   const declared = before.stack[before.stack.length - 1];
   const computed = before.stack[before.stack.length - 2];
   if (declared === undefined || computed === undefined) return { ok: false, reason: 'no-operands' };
-  if (computed.length === 0 || computed.length > options.maximumCommitmentBytes) {
+  return closeReading({ declared, computed }, options.maximumCommitmentBytes);
+}
+
+/** A close's two operands as a reading: the computed value must be one a commitment can hold. */
+function closeReading(close: ReadDeclaration, maximumCommitmentBytes: number): DeclarationReading {
+  const { declared, computed } = close;
+  if (computed.length === 0 || computed.length > maximumCommitmentBytes) {
     return { ok: false, reason: 'implausible-length', length: computed.length };
   }
   return { ok: true, declared, computed };

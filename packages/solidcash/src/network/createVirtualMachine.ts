@@ -530,6 +530,97 @@ function installOperationLimitCheck(
   };
 }
 
+/** The two operands a failed OP_EQUALVERIFY compared, and the instruction it stood at. */
+interface FailedClose {
+  readonly instructions: unknown;
+  readonly ip: number;
+  readonly declared: Uint8Array;
+  readonly computed: Uint8Array;
+}
+
+/**
+ * OP_EQUALVERIFY as installed, noting the operands of one that fails. A body's close compares the value it computed
+ * (below) with a declaration (on top), and libauth pops both on the failure, so the state a run stops with no longer
+ * holds them; `SOLIDC_DEBUG_EQUALVERIFY_FAIL` logs them from the same place. With both operands present the only
+ * failure is the verify itself, and a failure ends the run, so a note left by an evaluation whose stop state stands
+ * one instruction past it, in the same instructions, is that run's stop.
+ */
+function installFailedCloseRecorder(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+): { last: FailedClose | undefined } {
+  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
+  const recorder: { last: FailedClose | undefined } = { last: undefined };
+  const equalVerify = instructionSet.operations[OpcodesBch2026.OP_EQUALVERIFY]!;
+  instructionSet.operations[OpcodesBch2026.OP_EQUALVERIFY] = ((state: State): State => {
+    const { stack, instructions, ip } = state;
+    const declared = stack[stack.length - 1];
+    const computed = stack[stack.length - 2];
+    const next = (equalVerify as (inner: State) => State)(state);
+    if (next.error !== undefined && declared !== undefined && computed !== undefined) {
+      recorder.last = { instructions, ip, declared, computed };
+    }
+    return next;
+  }) as typeof equalVerify;
+  return recorder;
+}
+
+/** What `copyOfPlainData` returns for a value it has no faithful copy of. */
+const NOT_PLAIN_DATA = Symbol('not plain data');
+
+/**
+ * A deep copy of a program's plain data (plain objects, arrays, byte arrays and primitives), byte for byte, so a later
+ * write to the caller's own arrays cannot reach it. Anything else (a class instance, a function, an unexpected depth)
+ * has no faithful copy here and yields `NOT_PLAIN_DATA`.
+ */
+function copyOfPlainData(value: unknown, depth = 0): unknown {
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (typeof value === 'function' || typeof value === 'symbol') return NOT_PLAIN_DATA;
+  if (typeof value !== 'object' || value === null) return value;
+  if (depth > 12) return NOT_PLAIN_DATA;
+  if (Array.isArray(value)) {
+    const copy: unknown[] = [];
+    for (const item of value) {
+      const itemCopy = copyOfPlainData(item, depth + 1);
+      if (itemCopy === NOT_PLAIN_DATA) return NOT_PLAIN_DATA;
+      copy.push(itemCopy);
+    }
+    return copy;
+  }
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  if (prototype !== Object.prototype && prototype !== null) return NOT_PLAIN_DATA;
+  const copy: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(value)) {
+    const fieldCopy = copyOfPlainData(field, depth + 1);
+    if (fieldCopy === NOT_PLAIN_DATA) return NOT_PLAIN_DATA;
+    copy[key] = fieldCopy;
+  }
+  return copy;
+}
+
+/** True when `value` holds the same plain data as `copy`, a `copyOfPlainData` result. */
+function samePlainData(copy: unknown, value: unknown): boolean {
+  if (copy instanceof Uint8Array) {
+    if (!(value instanceof Uint8Array) || value.length !== copy.length) return false;
+    for (let index = 0; index < copy.length; index += 1) {
+      if (copy[index] !== value[index]) return false;
+    }
+    return true;
+  }
+  if (typeof copy !== 'object' || copy === null) return copy === value;
+  if (typeof value !== 'object' || value === null || value instanceof Uint8Array) return false;
+  if (Array.isArray(copy)) {
+    if (!Array.isArray(value) || value.length !== copy.length) return false;
+    return copy.every((item, index) => samePlainData(item, (value as unknown[])[index]));
+  }
+  if (Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const keys = Object.keys(copy);
+  if (Object.keys(value).length !== keys.length) return false;
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(value, key)
+    && samePlainData((copy as Record<string, unknown>)[key], (value as Record<string, unknown>)[key]));
+}
+
 /**
  * libauth's stack operations without their defensive copies: the duplicating operations push the item they
  * duplicate, and OP_SPLIT pushes two views of its operand. No operation writes a stack item in place (each builds
@@ -859,6 +950,7 @@ function buildVirtualMachineBch2026ForProvider(
     consensus, ripemd160, secp256k1, sha1, sha256,
   } as never);
   let runPhases: NonNullable<typeof instructionSet.evaluate> | undefined;
+  let closes: { last: FailedClose | undefined } | undefined;
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
     runPhases = installCachedP2shEvaluator(
       instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
@@ -868,6 +960,7 @@ function buildVirtualMachineBch2026ForProvider(
     installZeroCopyInputBytecode(instructionSet, consensus.maximumStackItemLength);
     installZeroCopyStackOperations(instructionSet);
     installOperationLimitCheck(instructionSet, consensus, standard);
+    closes = installFailedCloseRecorder(instructionSet);
 
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RUNTIME_ASSIGN === '1') {
@@ -1124,6 +1217,37 @@ function buildVirtualMachineBch2026ForProvider(
       return states;
     };
     (machine as { boundedDebug?: typeof boundedDebug }).boundedDebug = boundedDebug;
+  }
+  if (runPhases !== undefined && closes !== undefined) {
+    // A derivation evaluates a program and then reads the close its run stopped at, which `boundedDebug` gets by
+    // running the same program again. An evaluation that stops on a failed close keeps what that reading needs
+    // instead: a copy of the program it ran and the close's two operands. `recordedClose` hands them back for a
+    // program with the same content, which the machine runs to the same stop; any other program reads nothing.
+    const recorder = closes;
+    type Program = Parameters<typeof machine.evaluate>[0];
+    let recorded: { readonly program: unknown; readonly declared: Uint8Array; readonly computed: Uint8Array }
+      | undefined;
+    const evaluate = machine.evaluate;
+    machine.evaluate = (program, options) => {
+      recorder.last = undefined;
+      const state = evaluate(program, options);
+      const close = recorder.last as FailedClose | undefined;
+      recorder.last = undefined;
+      const stop = state as unknown as { readonly error?: unknown; readonly instructions: unknown; readonly ip: number };
+      if (close !== undefined && options?.stateOverride === undefined && stop.error !== undefined
+        && stop.instructions === close.instructions && stop.ip === close.ip + 1) {
+        const copy = copyOfPlainData(program);
+        recorded = copy === NOT_PLAIN_DATA ? undefined : {
+          program: copy, declared: Uint8Array.from(close.declared), computed: Uint8Array.from(close.computed),
+        };
+      }
+      return state;
+    };
+    const recordedClose = (program: Program): { declared: Uint8Array; computed: Uint8Array } | undefined =>
+      (recorded !== undefined && samePlainData(recorded.program, program)
+        ? { declared: Uint8Array.from(recorded.declared), computed: Uint8Array.from(recorded.computed) }
+        : undefined);
+    (machine as { recordedClose?: typeof recordedClose }).recordedClose = recordedClose;
   }
   return machine;
 }

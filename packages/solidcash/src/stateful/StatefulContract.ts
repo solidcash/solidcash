@@ -13351,6 +13351,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const full = await caller.getFullState();
           return full.masterUtxo as UnlockableUtxo | undefined;
         },
+        contract: self,
+        signer: self._logicalNonceSigner ?? self._signer,
       } as any,
       functionName, args, calls, exactAbiFunction, calleeCalls,
       callerLockingBytecode, callerCategoryId, callerContract,

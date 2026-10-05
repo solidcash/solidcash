@@ -17,6 +17,7 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import type Signer from '../Signer.js';
 import { getNetworkPrefix } from '../utils.js';
 import {
   connectedContractMatchesExactAddress,
@@ -44,6 +45,7 @@ import {
   type ReturnAbiCandidate,
 } from './return-abi-plan.js';
 import { directMappingReadPlan } from './route-expression-key.js';
+import { deriveComposedReturnBlob } from './sc-derive-composed-return.js';
 import { legacyStatefulSimulationEnabled } from './soft-state-overlays.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
@@ -124,6 +126,9 @@ export interface DeriveReturnValueHost {
   ): Uint8Array | undefined;
   getState(): Promise<Record<string, StateValueType>>;
   getCallerMasterUtxo(caller: StatefulContract<Artifact>): Promise<UnlockableUtxo | undefined>;
+  /** The contract being read and the signer its sends would use (the caller of a composed read). */
+  readonly contract?: StatefulContract<Artifact>;
+  readonly signer?: Signer;
 }
 
 
@@ -410,79 +415,89 @@ export async function deriveReturnValue(
       if (callable) return callable(...resolvedArgs).staticCall();
     }
   }
-  // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
-  // `calls` is the caller's resolved graph (a return-ABI hint); `calleeCalls` are the probed function's OWN
-  // published calls, resolved against the frame it is being invoked with. The probe materializes those
-  // participants exactly like an ordinary build so its co-spent coordinates name the addresses the callee's
-  // identity checks expect instead of the sentinel that points back at the executing input.
-  let callerIdentityUtxos: UnlockableUtxo[] | undefined;
-  if (callerContract !== undefined) {
-    const callerMaster = (await host.getCallerMasterUtxo(callerContract));
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
-      // A missing master is why the probe would still have no caller input even though the contract arrived.
-      console.error('caller-identity-cospend', JSON.stringify({
-        callee: functionName,
-        caller: callerContract.inner.artifact.contractName,
-        callerCategory: callerContract.categoryId.slice(0, 12),
-        masterFound: callerMaster !== undefined,
-        outpoint: callerMaster === undefined ? undefined
-          : `${String(callerMaster.txid).slice(0, 8)}:${callerMaster.vout}`,
-      }));
-    }
-    if (callerMaster !== undefined) {
-      const callerLock = hexToBin(callerContract.inner.lockingBytecode);
-      callerIdentityUtxos = [{
-        ...callerMaster,
-        // Probes execute only input 0, so the lock is all this co-spend has to contribute; a real send of the
-        // same frame materializes the caller's own unlocker elsewhere.
-        unlocker: {
-          generateLockingBytecode: () => callerLock,
-          generateUnlockingBytecode: () => new Uint8Array(),
-        },
-      }];
-      // Resolve the caller's immutable identity by category. A handle can expose a
-      // physical execution address after a state transition, while msg.sender
-      // still uses the logical CREATE identity anchored by this category.
-      const callerIdentity = await resolveLogicalIdentityByCategory(
-        callerContract.inner.provider, callerContract.categoryId, [callerContract.target],
-      );
-      if (callerIdentity !== undefined
-        && callerIdentity.categoryId.toLowerCase() === callerContract.categoryId.toLowerCase()) {
-        callerIdentityUtxos.push({
-          ...callerIdentity.anchor,
-          unlocker: callerIdentity.unlocker,
-        });
+  // A top-level read whose calls reach one owner more than once is read from the composition its send would use
+  // (deriveComposedReturnBlob). Every other read, and every nested frame, keeps the return probe below.
+  let builder: StatefulTransactionBuilder | undefined;
+  let blob = host.contract !== undefined && directResult && delegatedReturn === undefined && abiFunction !== undefined
+    && (calls?.length ?? 0) === 0 && calleeCalls === undefined && callerContract === undefined
+    && callerLockingBytecode === undefined && callerCategoryId === undefined
+    ? await deriveComposedReturnBlob(host.contract, host.signer, functionName, args, abiFunction)
+    : undefined;
+  if (blob === undefined) {
+    // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
+    // `calls` is the caller's resolved graph (a return-ABI hint); `calleeCalls` are the probed function's OWN
+    // published calls, resolved against the frame it is being invoked with. The probe materializes those
+    // participants exactly like an ordinary build so its co-spent coordinates name the addresses the callee's
+    // identity checks expect instead of the sentinel that points back at the executing input.
+    let callerIdentityUtxos: UnlockableUtxo[] | undefined;
+    if (callerContract !== undefined) {
+      const callerMaster = (await host.getCallerMasterUtxo(callerContract));
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+        // A missing master is why the probe would still have no caller input even though the contract arrived.
+        console.error('caller-identity-cospend', JSON.stringify({
+          callee: functionName,
+          caller: callerContract.inner.artifact.contractName,
+          callerCategory: callerContract.categoryId.slice(0, 12),
+          masterFound: callerMaster !== undefined,
+          outpoint: callerMaster === undefined ? undefined
+            : `${String(callerMaster.txid).slice(0, 8)}:${callerMaster.vout}`,
+        }));
+      }
+      if (callerMaster !== undefined) {
+        const callerLock = hexToBin(callerContract.inner.lockingBytecode);
+        callerIdentityUtxos = [{
+          ...callerMaster,
+          // Probes execute only input 0, so the lock is all this co-spend has to contribute; a real send of the
+          // same frame materializes the caller's own unlocker elsewhere.
+          unlocker: {
+            generateLockingBytecode: () => callerLock,
+            generateUnlockingBytecode: () => new Uint8Array(),
+          },
+        }];
+        // Resolve the caller's immutable identity by category. A handle can expose a
+        // physical execution address after a state transition, while msg.sender
+        // still uses the logical CREATE identity anchored by this category.
+        const callerIdentity = await resolveLogicalIdentityByCategory(
+          callerContract.inner.provider, callerContract.categoryId, [callerContract.target],
+        );
+        if (callerIdentity !== undefined
+          && callerIdentity.categoryId.toLowerCase() === callerContract.categoryId.toLowerCase()) {
+          callerIdentityUtxos.push({
+            ...callerIdentity.anchor,
+            unlocker: callerIdentity.unlocker,
+          });
+        }
       }
     }
-  }
-  const builder = await host.createBuilder(
-    functionName, args, {
-      emitReturn: true, returnProbeOnly: true, calls, abiFunction, externalCalls: calleeCalls,
-      ...(callerIdentityUtxos !== undefined && { callerIdentityUtxos }),
-      ...(callerLockingBytecode !== undefined && { callerLockingBytecode }),
-      // Wire order, as the compiler's OP_UTXOTOKENCATEGORY exposes it (see the same encoding at the handler
-      // build site).
-      ...(callerCategoryId !== undefined && callerCategoryId.length > 0
-        && { msgSenderCategory: hexToBin(callerCategoryId).reverse() }),
-    },
-  );
-  let blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined;
-  // A compiler route's physical result coordinate and delegate input belong to the route carrier. Falling back
-  // to the logical handler's slot can decode an unrelated output as an authenticated result. Direct and legacy
-  // calls retain the established same-function slot fallback.
-  if (!blob && !delegatedReturn?.call.compilerRoute) {
-    blob = host.deriveReturnBlob(builder, physicalReturnSlot.offset);
-  }
-  if (!blob) {
-    throw new Error(
-      `staticCall: could not derive the return value of '${functionName}'. `
-      + 'Functions that write state and return a value are not yet supported as reads.'
-      // Name the failing probe predicate when one is known: a bare `require` leaves no custom message, so
-      // without this the caller sees only "could not derive" and cannot tell which check refused.
-      + `${host.lastReturnProbeFailure !== undefined
-        ? ` Probe detail: ${host.lastReturnProbeFailure}.` : ''}`,
+    builder = await host.createBuilder(
+      functionName, args, {
+        emitReturn: true, returnProbeOnly: true, calls, abiFunction, externalCalls: calleeCalls,
+        ...(callerIdentityUtxos !== undefined && { callerIdentityUtxos }),
+        ...(callerLockingBytecode !== undefined && { callerLockingBytecode }),
+        // Wire order, as the compiler's OP_UTXOTOKENCATEGORY exposes it (see the same encoding at the handler
+        // build site).
+        ...(callerCategoryId !== undefined && callerCategoryId.length > 0
+          && { msgSenderCategory: hexToBin(callerCategoryId).reverse() }),
+      },
     );
+    blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined;
+    // A compiler route's physical result coordinate and delegate input belong to the route carrier. Falling back
+    // to the logical handler's slot can decode an unrelated output as an authenticated result. Direct and legacy
+    // calls retain the established same-function slot fallback.
+    if (!blob && !delegatedReturn?.call.compilerRoute) {
+      blob = host.deriveReturnBlob(builder, physicalReturnSlot.offset);
+    }
+    if (!blob) {
+      throw new Error(
+        `staticCall: could not derive the return value of '${functionName}'. `
+        + 'Functions that write state and return a value are not yet supported as reads.'
+        // Name the failing probe predicate when one is known: a bare `require` leaves no custom message, so
+        // without this the caller sees only "could not derive" and cannot tell which check refused.
+        + `${host.lastReturnProbeFailure !== undefined
+          ? ` Probe detail: ${host.lastReturnProbeFailure}.` : ''}`,
+      );
+    }
   }
   const resultArtifact = directResult
     ? host.inner.artifact : delegatedReturn?.artifact ?? host.inner.artifact;
@@ -490,7 +505,7 @@ export async function deriveReturnValue(
   const directArrayReplacements: Array<{ start: number; end: number; encoded: Uint8Array }> = [];
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_RETURN === '1') {
-    console.error('static-loop-return-groups', builder.getExternalCallUtxoGroups().map((group) => ({
+    console.error('static-loop-return-groups', (builder?.getExternalCallUtxoGroups() ?? []).map((group) => ({
       functionName: group.functionName,
       resultArrayOutput: group.loopResultArrayOutput,
       existing: group.loopReturnCommitments?.length,
@@ -504,7 +519,7 @@ export async function deriveReturnValue(
     resultFunction?.resultEncoding, resultArtifact, outputs.map((output) => output.type),
     `function '${resultFunction?.name ?? functionName}' result`,
   );
-  for (const group of builder.getExternalCallUtxoGroups()) {
+  for (const group of builder?.getExternalCallUtxoGroups() ?? []) {
     const outputIndex = group.loopResultArrayOutput;
     if (outputIndex === undefined || !group.resolveLoopReturnCommitment) continue;
     let offset = 0;
@@ -625,7 +640,7 @@ export async function deriveReturnValue(
       // A failed require can leave an inert/partial return placeholder in the probe. Return decoding is
       // downstream of execution, so it must not replace the contract failure with a codec error. Re-evaluate
       // the already-built transaction through the normal debugger to recover the source-mapped require.
-      if ((builder as unknown as { __vmErrored?: boolean }).__vmErrored) {
+      if ((builder as unknown as { __vmErrored?: boolean } | undefined)?.__vmErrored) {
         const derivationError = (builder as unknown as { __derivationError?: Error }).__derivationError;
         if (derivationError && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN === '1') console.error('static-return-derivation-error', derivationError.message);

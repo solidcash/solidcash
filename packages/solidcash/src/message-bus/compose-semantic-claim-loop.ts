@@ -9,6 +9,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
 import type { ComposeAssemblyRuntime } from './compose-assembly-runtime.js';
 import type { ComputedValueChunkClaim } from './compose-participant-helpers.js';
+import { recordComposedInvocationResults } from './compose-invocation-results.js';
 import {
   applySemanticClaimObservationPass,
   semanticJson,
@@ -355,7 +356,9 @@ export async function runComposeSemanticClaimLoop(
         provisional, plan, finalized.layout.participantInputs, assembled.actualSizes,
       );
       finalizeSemanticClaimLattice(claimLattice, latestClaimState);
-      return admit(provisional);
+      const admitted = admit(provisional);
+      recordComposedInvocationResults(admitted, derivedResults);
+      return admitted;
     }
     claimedResults = derivedResults;
     claimedEventEffects = derivedEventEffects;

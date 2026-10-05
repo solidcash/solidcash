@@ -292,7 +292,9 @@ describe('state-backed external-call expected address', () => {
         left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
         right: {
           kind: 'source',
-          source: { kind: 'loopIndex', initialValue: '0', stepValue: '1' },
+          source: {
+            kind: 'loopIndex', counterName: 'i', initialValue: '0', stepValue: '1',
+          },
         },
       },
     }]);

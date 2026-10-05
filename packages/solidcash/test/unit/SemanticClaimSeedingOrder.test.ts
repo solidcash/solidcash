@@ -50,7 +50,7 @@ describe('semantic return discovery ordering', () => {
         actualSpansMatch: () => true,
         deriveReturnResults: (
           _graph: unknown, builder: { resourceReady: boolean }, previous: Record<number, string>,
-        ) => builder.resourceReady ? { 0: '01' } : previous,
+        ) => ({ results: builder.resourceReady ? { 0: '01' } : previous }),
         admit: (builder: unknown) => builder,
       },
     } as unknown as RunComposeSemanticClaimLoopContext;

@@ -1,4 +1,4 @@
-# W6 status at `f8e8f722c`
+# W6 status at `24ff05101`
 
 Inventory of the kernel failures left after the fixes below. Each entry names the file, the failing title, the
 class, and the evidence. "Cleared" rows are gone from the suite.
@@ -16,6 +16,7 @@ class, and the evidence. "Cleared" rows are gone from the suite.
 | `KernelNestedReturnSlotCoordinates` | 1 | two-slot block layout re-pinned |
 | `KernelTwoHopReturnProbe` | 1 | key-pool alternative lane re-pinned (8 slots) |
 | `KernelLateTransitiveSparseLoopCompose` | 3 | loop guard over occurrences; legacy cardinality; master-UTXO refusal |
+| `KernelDualRuntimeKeccakCompose` | 4 | kernel admission accepts a row-argument key beside a graph tail |
 
 ## Remaining, by class
 
@@ -59,12 +60,6 @@ Context, still useful when reading those three sites:
 
 ### Production defects (unchanged)
 
-- `KernelDualRuntimeKeccakCompose` — "settles fixed dual-key add+remove under compose". Compiling the test's
-  `Acc` source with its options yields `artifact.messageBus === undefined` while the ABI still carries
-  `__internal__vmapBatch*` params, so `compose-participant-helpers.participantOf` classifies it as a direct
-  participant and refuses with "direct participant 'Acc' lacks V5 authority". The compiler marks the handler
-  batch-shaped but emits no route; `compiler.ts` assigns `artifact.messageBus` only when some handler has
-  `messageBusRoute`.
 - `MessageBusDelegateClassesE3` — both titles. The not-taken conditional-delegate spend that requests a forged
   commitment now refuses at input 0 instead of settling on the preserved value; the sibling not-taken spend
   that requests nothing still settles.

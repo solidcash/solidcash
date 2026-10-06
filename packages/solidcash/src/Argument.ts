@@ -1,9 +1,9 @@
 import { hexToBin } from '@bitauth/libauth';
 import {
-  AbiFunction,
+  type AbiFunction,
   AddressType,
   ArrayType,
-  Artifact,
+  type Artifact,
   BytesType,
   encodeBool,
   encodeInt,
@@ -15,8 +15,8 @@ import {
   parseArrayTypeString,
   parseType,
   PrimitiveType,
-  StateValue,
-  StructDefinitionInfo,
+  type StateValue,
+  type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { TypeError } from './Errors.js';
 import SignatureTemplate from './SignatureTemplate.js';

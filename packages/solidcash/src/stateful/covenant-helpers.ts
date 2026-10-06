@@ -3,9 +3,9 @@ import {
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
-  AbiFunction,
-  AbiInput,
-  Artifact,
+  type AbiFunction,
+  type AbiInput,
+  type Artifact,
   buildCovenantArtifact,
   buildDataNftCovenantScript,
   buildTokenContainerCovenantScript,
@@ -18,7 +18,7 @@ import {
   computeEventNameHash,
   dynamicChunkSignature,
   valueChunkSignature,
-  Script,
+  type Script,
   scriptToBytecode,
   buildMessageBusVerifierCovenantScript,
   assertMessageBusVerifierProgram,
@@ -29,12 +29,12 @@ import {
   MESSAGE_BUS_VERIFIER_RECURRENT_COMMITMENT_BYTES,
   type MessageBusVerifierProgram,
 } from '@solidcash/utils';
-import { encodeFunctionArgument, FunctionArgument } from '../Argument.js';
-import { AddressType, ContractUnlocker, Utxo } from '../interfaces.js';
+import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import type { AddressType, ContractUnlocker, Utxo } from '../interfaces.js';
 import { Contract } from '../Contract.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
-import { StateReader, OnChainState } from './StateReader.js';
+import { StateReader, type OnChainState } from './StateReader.js';
 
 interface CachedCovenantContract {
   contract: Contract<any, any>;

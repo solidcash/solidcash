@@ -21,7 +21,7 @@ import {
   VariableDefinitionNode,
 } from '../ast/AST.js';
 import { DeprecatedNowError, MixedBlockOracleOwnershipError } from '../Errors.js';
-import { IntType, AddressType, Type, PrimitiveType, encodeComputedBlockhashKey } from '@solidcash/utils';
+import { IntType, AddressType, type Type, PrimitiveType, encodeComputedBlockhashKey } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { TimeOp, GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';

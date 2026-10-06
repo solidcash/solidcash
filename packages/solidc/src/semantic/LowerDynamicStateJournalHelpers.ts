@@ -25,7 +25,7 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
-import { BytesType, PrimitiveType, Type } from '@solidcash/utils';
+import { BytesType, PrimitiveType, type Type } from '@solidcash/utils';
 
 interface Candidate {
   fn: FunctionDefinitionNode;

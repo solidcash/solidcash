@@ -1,8 +1,8 @@
-import fs, { PathLike } from 'fs';
+import fs, { type PathLike } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Artifact, ArtifactMap, SplitArtifactBundle } from '@solidcash/utils';
-import { compileString, compileStringMulti, compileStringSplit, CompileOptions, SplitCompileOptions } from './compiler.js';
+import type { Artifact, ArtifactMap, SplitArtifactBundle } from '@solidcash/utils';
+import { compileString, compileStringMulti, compileStringSplit, type CompileOptions, type SplitCompileOptions } from './compiler.js';
 
 // Read a file + build the node import resolver, returning the source and the options to pass to
 // compileString / compileStringMulti. Shared by compileFile and compileFileMulti.

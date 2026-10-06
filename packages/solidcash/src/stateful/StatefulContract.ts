@@ -1,16 +1,16 @@
 /* eslint-disable max-len, @typescript-eslint/no-loop-func, @typescript-eslint/no-shadow */
 import {
-  Artifact,
-  ArtifactMap,
-  AbiInput,
-  AbiFunction,
-  ArgSource,
-  ExternalCallExpression,
-  ExternalCallAbi,
-  ExternalResultConsumerAbi,
-  ExternalResultEncoding,
-  TokenContainerTransferSiteAbi,
-  SortedUpsertLoopAbi,
+  type Artifact,
+  type ArtifactMap,
+  type AbiInput,
+  type AbiFunction,
+  type ArgSource,
+  type ExternalCallExpression,
+  type ExternalCallAbi,
+  type ExternalResultConsumerAbi,
+  type ExternalResultEncoding,
+  type TokenContainerTransferSiteAbi,
+  type SortedUpsertLoopAbi,
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
   computeCollectionHash,
@@ -24,17 +24,17 @@ import {
   encodeChunkableValueTail,
   joinValueChunks,
   parseEntryCommitment,
-  StateValue,
+  type StateValue,
   attachDecodedAccessors,
   decodePushdataValue,
   parseEntryCommitmentMultiKey,
   Op,
-  StateLayout,
-  ExternalReadAbi,
-  EntryAccessAbi,
-  EmitAbi,
-  EventDefinitionAbi,
-  FunctionBlockLayout,
+  type StateLayout,
+  type ExternalReadAbi,
+  type EntryAccessAbi,
+  type EmitAbi,
+  type EventDefinitionAbi,
+  type FunctionBlockLayout,
   isComputedBlockhashKey,
   encodePushdataValue,
   getDefaultStateValue,
@@ -44,8 +44,8 @@ import {
   hash160 as hash160Sync,
   hash256 as hash256Sync,
   parseArrayTypeString,
-  FixedBchTransferAbi,
-  KernelJournalDispositionsAbi,
+  type FixedBchTransferAbi,
+  type KernelJournalDispositionsAbi,
   peekPushdataEncodedLength,
 } from '@solidcash/utils';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
@@ -67,7 +67,7 @@ import {
   binsAreEqual,
   encodeAuthenticationInstructions,
   encodeTransaction,
-  AuthenticationProgramStateCommon,
+  type AuthenticationProgramStateCommon,
   bigIntToVmNumber,
   vmNumberToBigInt,
   utf8ToBin,
@@ -77,10 +77,10 @@ import {
   createVirtualMachineBch2026ForProvider,
 } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
-import { ConstructorArgument, FunctionArgument, encodeFunctionArgument } from '../Argument.js';
-import { AbiToFunctionMap } from '../types/type-inference.js';
-import { StateGetterMap, StateValueType } from '../types/state-inference.js';
-import NetworkProvider from '../network/NetworkProvider.js';
+import { type ConstructorArgument, type FunctionArgument, encodeFunctionArgument } from '../Argument.js';
+import type { AbiToFunctionMap } from '../types/type-inference.js';
+import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
 
@@ -120,7 +120,7 @@ import { resolveKernelDelegateForwardingTarget, resolveKernelDelegatePromotion }
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import {
+import type {
   AddressType,
   ContractOptions,
   LibauthOutput,
@@ -132,8 +132,8 @@ import {
 } from '../interfaces.js';
 import {
   StatefulTransactionBuilder,
-  EntryNftInfo,
-  ExternalCallUtxoGroup,
+  type EntryNftInfo,
+  type ExternalCallUtxoGroup,
   selectDelegateExecutionLayout,
   isJobEventEmitCommitment,
   isAuthenticatedEventRepairCommitment,
@@ -145,7 +145,7 @@ import {
   valueChunkWriteResourceIdentity,
 } from './StatefulTransactionBuilder.js';
 import { legacyIsPublishJobEventName } from './legacy-planning-heuristics.js';
-import { OnChainState, type ParsedEvent, type EventFilter } from './StateReader.js';
+import { type OnChainState, type ParsedEvent, type EventFilter } from './StateReader.js';
 import {
   getDataNftAddress,
   getEntryNftAddress,

@@ -1,6 +1,6 @@
 import { sha256, hexToBin, binToHex } from '@bitauth/libauth';
 import { addressToGraphEmissionBytes, type CollectionInfo } from '@solidcash/utils';
-import { Utxo } from '../interfaces.js';
+import type { Utxo } from '../interfaces.js';
 
 // Off-chain manager for a verified mapping (vmap; see docs/verified-mappings.md). Entries are entry NFTs whose
 // commitment is slot(32) ++ nextKey(32) [++ value]; they form an authenticated sorted singly-linked list. This

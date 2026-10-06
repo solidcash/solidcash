@@ -1,5 +1,5 @@
 import {
-  AddressType, ArrayType, BytesType, EnumType, FixedType, FunctionType, PrimitiveType, StructType, Type, ValueType,
+  AddressType, ArrayType, BytesType, EnumType, FixedType, FunctionType, PrimitiveType, StructType, type Type, ValueType,
 } from '@solidcash/utils';
 import {
   BoolLiteralNode,

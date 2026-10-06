@@ -1,5 +1,5 @@
-import { Utxo, Network } from '../interfaces.js';
-import NetworkProvider from './NetworkProvider.js';
+import { type Utxo, Network } from '../interfaces.js';
+import type NetworkProvider from './NetworkProvider.js';
 import {
   BchnRpcClient,
   type GetBlockCount,

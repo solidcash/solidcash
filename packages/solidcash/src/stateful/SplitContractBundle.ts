@@ -1,6 +1,6 @@
-import { Artifact, SplitArtifactBundle } from '@solidcash/utils';
+import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
-import { ConstructorArgument, FunctionArgument } from '../Argument.js';
+import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -10,10 +10,10 @@ import {
   resolveSplitLogicalIdentity,
 } from './logical-identity.js';
 import {
-  ContractFactory, DeployedContract, DeployContractOptions, selectGenesisFundingUtxo,
+  ContractFactory, type DeployedContract, type DeployContractOptions, selectGenesisFundingUtxo,
 } from './ContractFactory.js';
 import {
-  ConnectedStatefulContract, ContractRunner, StatefulContract, StatefulFunctionCall,
+  type ConnectedStatefulContract, type ContractRunner, StatefulContract, StatefulFunctionCall,
 } from './StatefulContract.js';
 
 export interface SplitDeployOptions extends DeployContractOptions {

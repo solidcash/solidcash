@@ -1,7 +1,7 @@
 import {
   binToHex, cashAddressToLockingBytecode, encodeCashAddress, hexToBin, lockingBytecodeToCashAddress, utf8ToBin,
 } from '@bitauth/libauth';
-import { Op, Script, scriptToBytecode } from '@solidcash/utils';
+import { Op, type Script, scriptToBytecode } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { Unlocker, Utxo } from '../interfaces.js';
 import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode } from '../utils.js';

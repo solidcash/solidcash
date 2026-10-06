@@ -2,8 +2,8 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   blockhashOracleLockingBytecode, buildBlockhashOracleCovenantScript, scriptToBytecode,
 } from '@solidcash/utils';
-import { NetworkProvider } from '../network/index.js';
-import { Utxo, Unlocker, Output } from '../interfaces.js';
+import type { NetworkProvider } from '../network/index.js';
+import type { Utxo, Unlocker, Output } from '../interfaces.js';
 
 /**
  * Consumer-side resolver for blockhash(n) (docs/block-and-transaction-properties.md s11). The read codegen co-spends the

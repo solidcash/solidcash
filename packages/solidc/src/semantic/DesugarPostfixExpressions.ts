@@ -28,7 +28,7 @@ import {
   FunctionDefinitionNode,
 } from '../ast/AST.js';
 import { UnaryOperator, BinaryOperator } from '../ast/Operator.js';
-import { MappingType, StructType, Type } from '@solidcash/utils';
+import { MappingType, StructType, type Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 

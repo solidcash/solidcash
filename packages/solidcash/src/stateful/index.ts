@@ -1,4 +1,4 @@
-import { Artifact } from '@solidcash/utils';
+import type { Artifact } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import {
   StatefulContract as StatefulContractClass,

@@ -57,7 +57,7 @@ import {
   kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
 } from './KernelEntryActivation.js';
 import {
-  ArrayType, IntType, MappingType, Type,
+  ArrayType, IntType, MappingType, type Type,
 } from '@solidcash/utils';
 import { throwKernelCatalogDiagnostic } from '../kernel-admission-catalog.js';
 

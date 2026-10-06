@@ -5,7 +5,7 @@ import {
   ArrayAccessNode, ArrayAssignNode, ArrayNode, AssemblyStatementNode, AssertNode, AssignNode, AssignmentExpressionNode,
   BinaryOpNode, BlockNode, BoolLiteralNode,
   BranchNode, CastNode, ConsoleStatementNode, ConstantDefinitionNode, ContractNode, DeleteLocalNode, DeleteStateNode,
-  EmitStatementNode, ExpressionNode, ExpressionStatementNode, ExternalCallExpression,
+  EmitStatementNode, ExpressionNode, ExpressionStatementNode, type ExternalCallExpression,
   ExternalFunctionCallNode, FieldAccessNode, FunctionCallNode, FunctionDefinitionNode, FunctionModifier,
   HexLiteralNode,
   IdentifierNode, IndirectCallNode, InstantiationNode, IntLiteralNode, LowLevelCallNode,

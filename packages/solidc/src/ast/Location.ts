@@ -1,5 +1,5 @@
 import type { ParserRuleContext, Token } from 'antlr4';
-import { LocationI } from '@solidcash/utils';
+import type { LocationI } from '@solidcash/utils';
 
 // X92. A position built while COMPILER-GENERATED source is being parsed is a position in that string, not in
 // anything the user wrote. Stamped at construction rather than walked afterwards: later lowering passes clone

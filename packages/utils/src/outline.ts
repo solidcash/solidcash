@@ -1,7 +1,7 @@
 import { binToHex } from '@bitauth/libauth';
 import { decodeInt } from './data.js';
-import { Op, Script } from './script.js';
-import { FullLocationData } from './types.js';
+import { Op, type Script } from './script.js';
+import type { FullLocationData } from './types.js';
 
 /**
  * Cross-function bytecode outlining.

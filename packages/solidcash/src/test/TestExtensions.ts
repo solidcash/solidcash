@@ -1,6 +1,6 @@
 import { binToHex, decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { type Artifact, type StateValue, type EventDefinitionAbi, type StateLayout } from '@solidcash/utils';
-import { DebugResults } from '../debugging.js';
+import type { DebugResults } from '../debugging.js';
 import { tryParseEventCommitment, valuesEqual } from '../stateful/StateReader.js';
 import type { ExtractEventNames, EventMatcherArgs, EmittingContract } from '../types/event-inference.js';
 

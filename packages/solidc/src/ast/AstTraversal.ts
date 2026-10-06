@@ -40,7 +40,7 @@ import {
   TupleAssignmentNode,
   NullaryOpNode,
   ConsoleStatementNode,
-  ConsoleParameterNode,
+  type ConsoleParameterNode,
   SliceNode,
   TryCatchNode,
   CatchClauseNode,

@@ -34,7 +34,7 @@ import {
 import { BinaryOperator } from '../ast/Operator.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError, UnsupportedReturnError } from '../Errors.js';
-import { AddressType, Type } from '@solidcash/utils';
+import { AddressType, type Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { holdsAssemblyReturn, normalizeVoidInlineReturns } from './EarlyReturnTransformation.js';

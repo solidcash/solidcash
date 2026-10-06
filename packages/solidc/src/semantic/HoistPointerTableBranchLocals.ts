@@ -2,7 +2,7 @@ import {
   FunctionDefinitionNode, VariableDefinitionNode, AssignNode, IdentifierNode, Node,
   WhileNode, DoWhileNode, CollectionIterationNode, BranchNode,
 } from '../ast/AST.js';
-import { Type } from '@solidcash/utils';
+import type { Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /** `__fnelem_3`, `__fnelem_r3`, `__fnelemsel_3`, `__fnelemsel_r3`: the fn-ptr lowering's element companions. */

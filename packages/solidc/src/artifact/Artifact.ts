@@ -1,17 +1,18 @@
 import {
-  AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
-  computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type,
-  EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
-  ValueProvenance, ValueProvenanceKind, DynamicWriteGrowthAbi, ValueType,
+  type AbiFunction, type Artifact, type CompilerOptions, type DebugInformation, type Script,
+  scriptToAsm, type StateLayout, ArrayType,
+  computeCollectionSignature, computeFunctionSelectorHex, type ExternalInterfaceInfo, MappingType, type Type,
+  EnumType, StructType, type ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
+  type ValueProvenance, type ValueProvenanceKind, type DynamicWriteGrowthAbi, ValueType,
   AddressType,
-  abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
-  ComputeSideCarRecipesAbi,
+  abiTypeString, type ChildDeploymentValueRecipe, type FixedBchTransferAbi, type ExternalResultConsumerAbi,
+  type ComputeSideCarRecipesAbi,
   ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
 import {
-  Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
+  type Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   BlockNode, WhileNode, VariableDefinitionNode,
@@ -23,11 +24,11 @@ import {
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode, StateArrayPushNode,
   ArrayPushNode,
-  MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
-  ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
+  MappingAccessNode, ArrayAccessNode, FieldAccessNode, type ExternalCallExpression, type ExternalCallArgSource,
+  type ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
   UnaryOpNode, NullaryOpNode, BranchNode, BoolLiteralNode,
   SwitchNode, TryCatchNode, InstantiationNode, UncheckedNode,
-  EntryAccessInfo,
+  type EntryAccessInfo,
 } from '../ast/AST.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';

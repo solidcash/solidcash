@@ -1,4 +1,4 @@
-import { Type } from '@solidcash/utils';
+import type { Type } from '@solidcash/utils';
 import {
   VariableDefinitionNode,
   ParameterNode,

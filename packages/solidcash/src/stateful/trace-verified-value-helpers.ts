@@ -5,15 +5,15 @@
 
 import {
   Op,
-  StateLayout,
-  StateValue,
+  type StateLayout,
+  type StateValue,
   VALUE_INLINE_LIMIT,
   decodePushdataValue,
   getDefaultStateValue,
   parsePushdataCommitment,
 } from '@solidcash/utils';
 import {
-  AuthenticationProgramStateCommon,
+  type AuthenticationProgramStateCommon,
   binToHex,
 } from '@bitauth/libauth';
 import type { StateValueType } from '../types/state-inference.js';

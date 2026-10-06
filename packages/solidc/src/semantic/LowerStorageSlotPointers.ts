@@ -1,5 +1,5 @@
 import {
-  StructType, MappingType, IntType, AddressType, BytesType, ArrayType, Type,
+  StructType, MappingType, IntType, AddressType, BytesType, ArrayType, type Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {

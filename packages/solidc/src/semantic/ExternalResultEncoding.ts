@@ -1,5 +1,5 @@
 import {
-  AddressType, ArrayType, BytesType, EnumType, FixedType, IntType, PrimitiveType, StructType, Type,
+  AddressType, ArrayType, BytesType, EnumType, FixedType, IntType, PrimitiveType, StructType, type Type,
   type CompilerOptions, type ExternalResultEncoding,
 } from '@solidcash/utils';
 

@@ -1,4 +1,4 @@
-import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi, ConstructedKeyVectorV1Abi, AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import { type Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type ConstructedKeyVectorV1Abi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 import type { AbiFunction } from '@solidcash/utils';
 import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';

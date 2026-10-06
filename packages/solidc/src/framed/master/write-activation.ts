@@ -44,7 +44,7 @@ import {
   DoWhileNode,
   EmitStatementNode,
   ExpressionNode,
-  ExternalCallExpression,
+  type ExternalCallExpression,
   FieldAccessNode,
   FunctionCallNode,
   FunctionCallStatementNode,

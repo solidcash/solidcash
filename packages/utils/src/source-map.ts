@@ -1,4 +1,4 @@
-import { FullLocationData, PositionHint } from './types.js';
+import { type FullLocationData, PositionHint } from './types.js';
 
 /*
  * The source mappings for the bytecode use the following notation (similar to Solidity):

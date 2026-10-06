@@ -2,12 +2,12 @@ import { hexToBin, binToHex, secp256k1 } from '@bitauth/libauth';
 import { ElectrumClient } from '@electrum-cash/network';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
-  Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
+  type Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
   buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, type StateVariableInfo,
 } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { Utxo, Unlocker } from '../interfaces.js';
+import type { Utxo, Unlocker } from '../interfaces.js';
 import { readFramedState, type FramedState } from '../framed/deploy/records.js';
 import { StatefulContract } from '../stateful/StatefulContract.js';
 import { getContractState, getDataNftAddress } from '../stateful/covenant-helpers.js';

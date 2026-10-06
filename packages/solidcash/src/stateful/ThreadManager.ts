@@ -1,8 +1,8 @@
-import { Artifact } from '@solidcash/utils';
-import { StatefulFunctionCall, ConnectedStatefulContract } from './StatefulContract.js';
+import type { Artifact } from '@solidcash/utils';
+import { StatefulFunctionCall, type ConnectedStatefulContract } from './StatefulContract.js';
 import { StateReader } from './StateReader.js';
-import { TransactionDetails, Utxo } from '../interfaces.js';
-import { FunctionArgument } from '../Argument.js';
+import type { TransactionDetails, Utxo } from '../interfaces.js';
+import type { FunctionArgument } from '../Argument.js';
 
 export interface SplitOptions {
   /** Name of the non-stateful gate function (e.g. 'authorize') */

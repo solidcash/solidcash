@@ -7,7 +7,7 @@ import {
   encodeAuthenticationInstructions,
   decodeAuthenticationInstructions,
   OpcodesBch,
-  AuthenticationInstruction,
+  type AuthenticationInstruction,
 } from '@bitauth/libauth';
 import OptimisationsEquivFile from './cashproof-optimisations.js';
 import { optimisationReplacements } from './optimisations.js';
@@ -17,8 +17,8 @@ const compiledOptimisationReplacements = optimisationReplacements.map(([pattern,
   replacement,
   regex: new RegExp(`${pattern}(\\s|$)`, 'g'),
 }));
-import { FullLocationData, PositionHint, SingleLocationData } from './types.js';
-import { LogEntry, RequireStatement } from './artifact.js';
+import { type FullLocationData, PositionHint, type SingleLocationData } from './types.js';
+import type { LogEntry, RequireStatement } from './artifact.js';
 
 export const Op = OpcodesBch;
 export type Op = number;

@@ -40,7 +40,7 @@ import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   containsIndirectCall,
-  MAXIMUM_POINTER_TABLE_BOUND, PointerTableBoundError, PointerTableExpansionMap, ProvenLoopCeilingMap,
+  MAXIMUM_POINTER_TABLE_BOUND, PointerTableBoundError, type PointerTableExpansionMap, type ProvenLoopCeilingMap,
   recordPointerTableExpansion, recordProvenLoopCeiling,
 } from './PointerTableBound.js';
 

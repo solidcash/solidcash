@@ -5,30 +5,30 @@ import {
   decodeTransactionUnsafe,
   encodeTransaction,
   hexToBin,
-  Transaction as LibauthTransaction,
-  WalletTemplate,
+  type Transaction as LibauthTransaction,
+  type WalletTemplate,
 } from '@bitauth/libauth';
 import {
-  Unlocker,
-  Output,
-  BchChangeOutputOptions,
-  TokenChangeOutputOptions,
-  TransactionDetails,
-  UnlockableUtxo,
-  Utxo,
-  InputOptions,
+  type Unlocker,
+  type Output,
+  type BchChangeOutputOptions,
+  type TokenChangeOutputOptions,
+  type TransactionDetails,
+  type UnlockableUtxo,
+  type Utxo,
+  type InputOptions,
   isUnlockableUtxo,
   isStandardUnlockableUtxo,
-  StandardUnlockableUtxo,
-  VmResourceUsage,
+  type StandardUnlockableUtxo,
+  type VmResourceUsage,
   isContractUnlocker,
   isCovenantUnlocker,
 } from './interfaces.js';
-import { NetworkProvider } from './network/index.js';
+import type { NetworkProvider } from './network/index.js';
 import { traceBroadcast } from './tx-trace.js';
 import {
   hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
-  SHARED_LIBRARY_SALT, ExternalLibraryAbi,
+  SHARED_LIBRARY_SALT, type ExternalLibraryAbi,
   buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_COVENANT_HASH,
   ecrecoverComputeLockingBytecode,
 } from '@solidcash/utils';
@@ -54,11 +54,11 @@ import { FailedTransactionError } from './Errors.js';
 import {
   assertFinalizedBytesWithCovenant, finalizedByteGateReceiptOf, inputSubjectsOfBuilder,
 } from './message-bus/preflight.js';
-import { DebugResults } from './debugging.js';
+import type { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
-import { getWcContractInfo, WcSourceOutput, WcTransactionOptions } from './walletconnect-utils.js';
+import { getWcContractInfo, type WcSourceOutput, type WcTransactionOptions } from './walletconnect-utils.js';
 import semver from 'semver';
-import { WcTransactionObject } from './walletconnect-utils.js';
+import type { WcTransactionObject } from './walletconnect-utils.js';
 import { attachWait } from './wait.js';
 
 export interface TransactionBuilderOptions {

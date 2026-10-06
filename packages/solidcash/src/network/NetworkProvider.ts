@@ -1,5 +1,5 @@
 import type { Transaction as LibauthTransaction } from '@bitauth/libauth';
-import { Utxo, Network } from '../interfaces.js';
+import { type Utxo, Network } from '../interfaces.js';
 
 /** Exact transaction forms already materialized by an SDK builder. */
 export interface PreparedTransaction {

@@ -6,7 +6,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  ExternalLibraryAbi,
+  type ExternalLibraryAbi,
   SHARED_LIBRARY_SALT,
   resolveLibraryBlob,
   sidecarLockingBytecode,

@@ -59,7 +59,7 @@ import {
   AmbiguousInlineOverloadError, OperatorOverloadSignatureError, UsingForInvalidFunctionReferenceError,
 } from '../Errors.js';
 import {
-  StructType, AddressType, BytesType, MappingType, ArrayType, Type, ValueType, PrimitiveType,
+  StructType, AddressType, BytesType, MappingType, ArrayType, type Type, ValueType, PrimitiveType,
 } from '@solidcash/utils';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';

@@ -1,7 +1,7 @@
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  AbiFunction,
-  Artifact,
+  type AbiFunction,
+  type Artifact,
   asmToScript,
   bytecodeToScript,
   countOpcodes,
@@ -9,21 +9,21 @@ import {
   hash256,
   Op,
   scriptToBytecode,
-  StateLayout,
+  type StateLayout,
 } from '@solidcash/utils';
 import {
-  ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, FunctionArgument,
+  type ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, type FunctionArgument,
   isDeferredSignatureArgument,
 } from './Argument.js';
-import {
+import type {
   Unlocker, ContractOptions, GenerateUnlockingBytecodeOptions, Utxo, AddressType, ContractUnlocker, LibauthOutput,
 } from './interfaces.js';
-import NetworkProvider from './network/NetworkProvider.js';
+import type NetworkProvider from './network/NetworkProvider.js';
 import {
   addressToLockScript, createUnlockingBytecode, createSighashPreimage, scriptToAddress,
 } from './utils.js';
 import SignatureTemplate from './SignatureTemplate.js';
-import { ParamsToTuple, AbiToFunctionMap } from './types/type-inference.js';
+import type { ParamsToTuple, AbiToFunctionMap } from './types/type-inference.js';
 import {
   buildOpaqueLoopCallTransaction, deriveOpaqueLoopCoSpends,
   type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend, type ExternalTargetEntry,

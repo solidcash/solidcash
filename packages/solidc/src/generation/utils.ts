@@ -9,9 +9,9 @@ import {
   encodeInt,
   Op,
   PrimitiveType,
-  Script,
+  type Script,
   StructType,
-  Type,
+  type Type,
 } from '@solidcash/utils';
 import { UnaryOperator, BinaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { GlobalFunction, TimeOp } from '../ast/Globals.js';

@@ -1,4 +1,4 @@
-import { LocationI } from '@solidcash/utils';
+import type { LocationI } from '@solidcash/utils';
 import { Node, SourceFileNode } from '../ast/AST.js';
 import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 

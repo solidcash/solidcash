@@ -1,6 +1,6 @@
 import {
-  StateLayout, parsePushdataCommitment, EventDefinitionAbi, decodePushdataValue,
-  StateValue, StateRecord, isMultiDataNftLayout, attachDecodedAccessors,
+  type StateLayout, parsePushdataCommitment, type EventDefinitionAbi, decodePushdataValue,
+  type StateValue, type StateRecord, isMultiDataNftLayout, attachDecodedAccessors,
   parseChunkCommitment, joinChunks, dynamicLenKey,
   parseArrayTypeString, isFixedWidthType, unpackFixedWidthArray, decodePackedEventArray,
 } from '@solidcash/utils';
@@ -11,8 +11,8 @@ function attachEventArgsAccessors(values: Record<string, StateValue>): Record<st
   return values;
 }
 import { hexToBin, binsAreEqual, binToUtf8, cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
-import { Utxo } from '../interfaces.js';
-import NetworkProvider from '../network/NetworkProvider.js';
+import type { Utxo } from '../interfaces.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 
 export interface OnChainState {
   state: Record<string, StateValue>;

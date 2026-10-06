@@ -1,7 +1,7 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
+import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
   Node,
@@ -46,7 +46,7 @@ import {
   TupleAssignmentNode,
   NullaryOpNode,
   ConsoleStatementNode,
-  ConsoleParameterNode,
+  type ConsoleParameterNode,
   SliceNode,
   DoWhileNode,
   WhileNode,
@@ -86,7 +86,7 @@ import {
   TypeDefinitionNode,
   ModifierDefinitionNode,
   PlaceholderStatementNode,
-  CustomModifierInvocation,
+  type CustomModifierInvocation,
   TernaryOpNode,
   BreakNode,
   ContinueNode,
@@ -97,7 +97,7 @@ import {
   InterfaceStateVariableNode,
   InterfaceFunctionNode,
   InterfaceCollectionNode,
-  ParentInvocation,
+  type ParentInvocation,
   StateVariableVisibility,
   ErrorDefinitionNode,
   RevertNode,
@@ -107,7 +107,7 @@ import {
   AddressTransferStatementNode,
   AddressSendExpressionNode,
   LowLevelCallStatementNode,
-  CallOptions,
+  type CallOptions,
   CollectionIterationNode,
   CollectionIterationMode,
   TypeIntrospectionNode,
@@ -115,7 +115,7 @@ import {
   SwitchNode,
   SwitchCaseNode,
   UsingForDirectiveNode,
-  UsingForBinding,
+  type UsingForBinding,
 } from './AST.js';
 import { cloneNode } from './clone.js';
 import { createDefaultValueExpression } from './defaults.js';

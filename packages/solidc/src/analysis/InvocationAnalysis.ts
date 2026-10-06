@@ -1,5 +1,5 @@
 import { binToHex } from '@bitauth/libauth';
-import { SplitStateFootprint } from '@solidcash/utils';
+import type { SplitStateFootprint } from '@solidcash/utils';
 import {
   AssignNode, BlockNode, BoolLiteralNode, BranchNode, CollectionIterationNode, ContractNode,
   DeleteLocalNode, FunctionCallNode,

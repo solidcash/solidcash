@@ -1,7 +1,8 @@
 import { ArrayType } from '@solidcash/utils';
 import {
   ArrayAssignNode, ArrayDeleteNode, ArrayPopNode, ArrayPushNode, AssignNode, BlockNode,
-  BranchNode, BreakNode, ContinueNode, DeleteLocalNode, ExpressionNode, ExternalCallExpression, ExternalCallStatement,
+  BranchNode, BreakNode, ContinueNode, DeleteLocalNode, ExpressionNode, type ExternalCallExpression,
+  type ExternalCallStatement,
   IdentifierNode, Node, ReturnNode, StatementNode, UncheckedNode, VariableDefinitionNode, WhileNode,
 } from '../ast/AST.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';

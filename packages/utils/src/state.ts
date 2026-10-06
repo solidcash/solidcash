@@ -1,7 +1,7 @@
-import {
+import type {
   AbiFunction, Artifact, ChildDeploymentGenesisStateAbi, StateLayout, StateVariableInfo, StructDefinitionInfo,
 } from './artifact.js';
-import { bytecodeToAsm, Op, Script, scriptToBytecode } from './script.js';
+import { bytecodeToAsm, Op, type Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
   ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,

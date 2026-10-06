@@ -6,7 +6,7 @@ import {
   AssignNode,
   BlockNode,
   BoolLiteralNode,
-  CallOptions,
+  type CallOptions,
   CastNode,
   ContractNode,
   ExpressionNode,

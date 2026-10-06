@@ -1,12 +1,12 @@
-import { Artifact, asmToBytecode } from '@solidcash/utils';
+import { type Artifact, asmToBytecode } from '@solidcash/utils';
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
 import { Contract } from '../Contract.js';
-import { ConstructorArgument } from '../Argument.js';
-import { Utxo, TransactionDetails, AddressType } from '../interfaces.js';
+import type { ConstructorArgument } from '../Argument.js';
+import type { Utxo, TransactionDetails, AddressType } from '../interfaces.js';
 import {
-  StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
+  StatefulContract, type ConnectedStatefulContract, type ContractRunner, type DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';

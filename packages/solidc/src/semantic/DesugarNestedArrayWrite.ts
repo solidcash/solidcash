@@ -1,4 +1,4 @@
-import { ArrayType, BytesType, MappingType, StructType, Type } from '@solidcash/utils';
+import { ArrayType, BytesType, MappingType, StructType, type Type } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,

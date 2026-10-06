@@ -7,8 +7,8 @@
 import { binsAreEqual, binToHex } from '@bitauth/libauth';
 import {
   Op,
-  StateLayout,
-  StateValue,
+  type StateLayout,
+  type StateValue,
   VALUE_CHUNK_MAX_COUNT,
   VALUE_CHUNK_SIZE,
   VALUE_HEAD_SIZE,

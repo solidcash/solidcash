@@ -18,7 +18,7 @@ import {
   VariableDefinitionNode,
 } from '../ast/AST.js';
 import {
-  AddressType, ArrayType, MappingType, StructType, Type,
+  AddressType, ArrayType, MappingType, StructType, type Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 

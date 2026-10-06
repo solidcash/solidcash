@@ -1,4 +1,4 @@
-import { Script, scriptToBitAuthAsm } from './script.js';
+import { type Script, scriptToBitAuthAsm } from './script.js';
 import { sourceMapToLocationData } from './source-map.js';
 import { PositionHint } from './types.js';
 

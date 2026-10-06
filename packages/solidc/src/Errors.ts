@@ -1,4 +1,4 @@
-import { Type, PrimitiveType, StructType, EnumType } from '@solidcash/utils';
+import { type Type, PrimitiveType, StructType, EnumType } from '@solidcash/utils';
 import {
   IdentifierNode,
   FunctionDefinitionNode,

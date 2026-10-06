@@ -9,9 +9,9 @@ import {
 
 import { BinaryOperator } from '../ast/Operator.js';
 import {
-  AbiFunction, abiTypeString, ArrayType, computeCollectionHash, computeCollectionSignature,
-  computeFunctionSelector, computeFunctionSignature, EnumType, ExternalCallExpression, FixedType, FunctionType,
-  IntType, isFixedWidthType, PrimitiveType, SortedUpsertLoopAbi, StructType, TupleType, ValueType,
+  type AbiFunction, abiTypeString, ArrayType, computeCollectionHash, computeCollectionSignature,
+  computeFunctionSelector, computeFunctionSignature, EnumType, type ExternalCallExpression, FixedType, FunctionType,
+  IntType, isFixedWidthType, PrimitiveType, type SortedUpsertLoopAbi, StructType, TupleType, ValueType,
 } from '@solidcash/utils';
 
 /** Immutable completed-ABI authority transferred from admission into one pristine code-generation pass. */

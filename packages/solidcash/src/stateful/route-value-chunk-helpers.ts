@@ -4,7 +4,7 @@
  */
 
 import {
-  AbiFunction,
+  type AbiFunction,
   Op,
   VALUE_CHUNK_INDEX_SIZE,
   VALUE_CHUNK_MAX_COUNT,
@@ -13,7 +13,7 @@ import {
   parseValueChunkCommitment,
 } from '@solidcash/utils';
 import {
-  AuthenticationProgramStateCommon,
+  type AuthenticationProgramStateCommon,
   binToHex,
 } from '@bitauth/libauth';
 import {
@@ -28,7 +28,7 @@ import {
   routeValueRunFingerprint,
 } from './route-probe-progress.js';
 import {
-  ExternalCallUtxoGroup,
+  type ExternalCallUtxoGroup,
   StatefulTransactionBuilder,
   applyRedeemLockToChunks,
   chunksFromJobEventsValue,

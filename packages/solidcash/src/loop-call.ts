@@ -2,8 +2,8 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import type { Contract } from './Contract.js';
 import { TransactionBuilder } from './TransactionBuilder.js';
-import { NetworkProvider } from './network/index.js';
-import { Utxo, Unlocker } from './interfaces.js';
+import type { NetworkProvider } from './network/index.js';
+import type { Utxo, Unlocker } from './interfaces.js';
 
 const OP_TRUE = new Uint8Array([0x51]);
 

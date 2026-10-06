@@ -1,4 +1,4 @@
-import { BytesType, IntType, PrimitiveType, Type, ValueType } from '@solidcash/utils';
+import { BytesType, IntType, PrimitiveType, type Type, ValueType } from '@solidcash/utils';
 import {
   Node,
   AssignNode,

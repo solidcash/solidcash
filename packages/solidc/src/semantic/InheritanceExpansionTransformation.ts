@@ -72,9 +72,9 @@ import {
   ExpressionStatementNode,
   PlaceholderStatementNode,
   AssignmentExpressionNode,
-  ParentInvocation,
+  type ParentInvocation,
 } from '../ast/AST.js';
-import { ArrayType, IntType, MappingType, StructType, Type } from '@solidcash/utils';
+import { ArrayType, IntType, MappingType, StructType, type Type } from '@solidcash/utils';
 import {
   CircularContractInheritanceError,
   C3LinearizationError,

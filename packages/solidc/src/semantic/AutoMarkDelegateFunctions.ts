@@ -1,5 +1,5 @@
 import {
-  Ast, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
+  type Ast, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   LowLevelCallNode, LowLevelCallStatementNode,
   TransferStatementNode, AddressTransferStatementNode, TokenContainerMethodStatementNode,
   AssignNode, VariableDefinitionNode, TupleAssignmentNode, StatementNode, BlockNode, BranchNode,

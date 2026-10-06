@@ -1,8 +1,8 @@
 import {
   ArrayAccessNode, ArrayAssignNode, AssignNode, BinaryOpNode, BlockNode, FunctionDefinitionNode,
   BoolLiteralNode, CastNode, HexLiteralNode, IdentifierNode, IntLiteralNode, MappingAssignNode, NewArrayNode,
-  Node, TernaryOpNode, UnaryOpNode, VariableDefinitionNode, WhileNode, ExternalCallExpression,
-  MessageBusConstructedKeyVectorProofProgram,
+  Node, TernaryOpNode, UnaryOpNode, VariableDefinitionNode, WhileNode, type ExternalCallExpression,
+  type MessageBusConstructedKeyVectorProofProgram,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';

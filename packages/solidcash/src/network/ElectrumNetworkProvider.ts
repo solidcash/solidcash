@@ -5,8 +5,8 @@ import {
   type RequestResponse,
   type ElectrumClientEvents,
 } from '@electrum-cash/network';
-import { Utxo, Network } from '../interfaces.js';
-import NetworkProvider from './NetworkProvider.js';
+import { type Utxo, Network } from '../interfaces.js';
+import type NetworkProvider from './NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
 
 

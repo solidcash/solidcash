@@ -1,4 +1,4 @@
-import { Transaction as LibauthTransaction } from '@bitauth/libauth';
+import type { Transaction as LibauthTransaction } from '@bitauth/libauth';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 
 /**

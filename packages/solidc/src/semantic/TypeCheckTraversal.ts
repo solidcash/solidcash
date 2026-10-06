@@ -10,7 +10,7 @@ import {
   encodeString,
   IntType,
   FixedType,
-  Type,
+  type Type,
   StructType,
   EnumType,
   ValueType,
@@ -112,7 +112,7 @@ import {
   StateArrayDeleteNode,
   FunctionModifier,
   TryCatchNode,
-  EmitInfo,
+  type EmitInfo,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {

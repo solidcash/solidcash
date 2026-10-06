@@ -1,5 +1,5 @@
 import {
-  IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, StructType, ArrayType, EnumType,
+  IntType, BytesType, AddressType, PrimitiveType, ValueType, type Type, MappingType, StructType, ArrayType, EnumType,
   FixedType,
   FunctionType,
   hash256, computeErc7201SlotNumber, isFixedWidthType,

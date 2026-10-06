@@ -1,40 +1,40 @@
 import {
   assertSuccess,
-  AuthenticationInstructionPush,
+  type AuthenticationInstructionPush,
   binToBase64,
   binToHex,
   decodeAuthenticationInstructions,
-  Input,
-  TransactionBch,
+  type Input,
+  type TransactionBch,
   utf8ToBin,
-  WalletTemplate,
-  WalletTemplateScenario,
-  WalletTemplateScenarioBytecode,
-  WalletTemplateScenarioOutput,
-  WalletTemplateScriptLocking,
-  WalletTemplateScriptUnlocking,
-  WalletTemplateVariable,
+  type WalletTemplate,
+  type WalletTemplateScenario,
+  type WalletTemplateScenarioBytecode,
+  type WalletTemplateScenarioOutput,
+  type WalletTemplateScriptLocking,
+  type WalletTemplateScriptUnlocking,
+  type WalletTemplateVariable,
 } from '@bitauth/libauth';
-import {
+import type {
   AbiFunction,
   AbiInput,
   Artifact,
   StructDefinitionInfo,
 } from '@solidcash/utils';
 import {
-  EncodedConstructorArgument, EncodedFunctionArgument, encodeFunctionArguments, isDeferredSignatureArgument,
+  type EncodedConstructorArgument, type EncodedFunctionArgument, encodeFunctionArguments, isDeferredSignatureArgument,
 } from '../Argument.js';
 import { Contract } from '../Contract.js';
-import { DebugResults, debugTemplate } from '../debugging.js';
+import { type DebugResults, debugTemplate } from '../debugging.js';
 import {
   isContractUnlocker,
   isP2PKHUnlocker,
   isStandardUnlockableUtxo,
   isUnlockableUtxo,
-  LibauthOutput,
-  Output,
-  StandardUnlockableUtxo,
-  Utxo,
+  type LibauthOutput,
+  type Output,
+  type StandardUnlockableUtxo,
+  type Utxo,
 } from '../interfaces.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import { addressToLockScript, extendedStringify, zip } from '../utils.js';

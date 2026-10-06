@@ -12,7 +12,7 @@ import {
   ContractReferenceNode,
   LiteralNode,
 } from '../ast/AST.js';
-import { AddressType, Type } from '@solidcash/utils';
+import { AddressType, type Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**

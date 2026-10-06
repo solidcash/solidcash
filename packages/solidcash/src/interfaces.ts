@@ -1,9 +1,9 @@
-import { AuthenticationProgramStateResourceLimits, type Transaction } from '@bitauth/libauth';
+import { type AuthenticationProgramStateResourceLimits, type Transaction } from '@bitauth/libauth';
 import type { NetworkProvider } from './network/index.js';
 import type SignatureTemplate from './SignatureTemplate.js';
 import { Contract } from './Contract.js';
-import { AbiFunction } from '@solidcash/utils';
-import { FunctionArgument } from './Argument.js';
+import type { AbiFunction } from '@solidcash/utils';
+import type { FunctionArgument } from './Argument.js';
 
 export interface Utxo {
   txid: string;

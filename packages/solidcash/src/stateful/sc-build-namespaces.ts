@@ -5,7 +5,7 @@
 import type { AbiFunction, Artifact, StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Contract } from '../Contract.js';
-import { StateGetterMap, StateValueType } from '../types/state-inference.js';
+import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type { AbiToFunctionMap } from '../types/type-inference.js';
 import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
 import {

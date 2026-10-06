@@ -1,28 +1,28 @@
 /* eslint-disable @typescript-eslint/no-loop-func */
 import {
-  StateLayout,
+  type StateLayout,
   parseEntryCommitment,
   getDefaultStateValue,
   encodePushdataValue,
-  EventDefinitionAbi,
-  StateValue,
-  FunctionBlockLayout,
-  AbiFunction,
-  BlockSlotKind,
+  type EventDefinitionAbi,
+  type StateValue,
+  type FunctionBlockLayout,
+  type AbiFunction,
+  type BlockSlotKind,
   attachDecodedAccessors,
-  Artifact,
+  type Artifact,
   encodeChunkableValueTail,
 } from '@solidcash/utils';
 import { binToHex, binsAreEqual, hexToBin, isHex, encodeTransaction } from '@bitauth/libauth';
 import { buildSidecarRedeem, sidecarLockingBytecode, scriptToBytecode } from '@solidcash/utils';
-import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
+import { TransactionBuilder, type TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { onMockNetworkProviderReset } from '../network/MockNetworkProvider.js';
 import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
 import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
-import { Utxo, UnlockableUtxo, TransactionDetails, isContractUnlocker, Unlocker } from '../interfaces.js';
+import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 
@@ -67,18 +67,17 @@ export {
 
 
 export {
-  InBlockReturnGroup,
+  type InBlockReturnGroup,
   groupOwnsInBlockReturnEvent,
   logicalReturnGroupIndex,
-  PhysicalReturnGroup,
-  MaterializedReturnEvent,
-  ExternalCallReturnCoordinate,
+  type PhysicalReturnGroup,
+  type MaterializedReturnEvent,
+  type ExternalCallReturnCoordinate,
   parseExternalCallReturnCoordinate,
-  MaterializedReturnGroup,
+  type MaterializedReturnGroup,
   selectMaterializedTailReturnEvents,
   isMintingBandTokenWriter,
   isMintingBandSwapFunction,
-  CompilerTokenWriterGroup,
   isCompilerDescribedMintingBandWriter,
   shouldRestorePersistedContinuationInputs,
   canonicalWriterReturnCommitment,
@@ -92,7 +91,7 @@ export {
   materializedParticipantWidth,
   participantSpanOverlapsLane,
   collidingParticipantGroupIndex,
-  TokenBandRepairOwnerSelection,
+  type TokenBandRepairOwnerSelection,
   selectTokenBandRepairOwner,
   proxyValueChunkPadCount,
   participantRelocationExtraFunders,
@@ -101,12 +100,16 @@ export {
   continuationOutputBaseBeforeSuffix,
   selectValueChunkOutputBase,
   viewTailOccupancyCap,
-  ViewTailPackOptions,
+  type ViewTailPackOptions,
   clampViewTailPlacement,
   liveChunkableValueBandWidth,
   scaledInputPreserveExclusiveEnd,
   scaledEventOutputIndex,
 } from './value-chunk-geometry.js';
+// A type-only import: the erased export is absent when this module is resolved from source (the `examples` script
+// runs under tsx against the root tsconfig paths), so importing it as a value breaks that path while it builds.
+import type { CompilerTokenWriterGroup } from './value-chunk-geometry.js';
+export type { CompilerTokenWriterGroup };
 import {
   groupOwnsInBlockReturnEvent,
   logicalReturnGroupIndex,
@@ -115,7 +118,7 @@ import {
   shouldReplaceReturnEventCommitment,
   isAllZeroCommitment,
   continuationOutputBaseBeforeSuffix,
-  ViewTailPackOptions,
+  type ViewTailPackOptions,
 } from './value-chunk-geometry.js';
 
 export {

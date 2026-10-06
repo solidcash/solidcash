@@ -53,7 +53,7 @@ import {
   ExpressionNode,
   ExternalCallMode,
   ExternalFunctionCallNode,
-  ExternalCallSlot,
+  type ExternalCallSlot,
   FieldAccessNode,
   FunctionCallNode,
   FunctionCallStatementNode,

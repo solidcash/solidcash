@@ -55,7 +55,7 @@ import {
   type ExternalCallExpression,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
-import { MappingType, ArrayType, StructType, Type, PrimitiveType } from '@solidcash/utils';
+import { MappingType, ArrayType, StructType, type Type, PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';

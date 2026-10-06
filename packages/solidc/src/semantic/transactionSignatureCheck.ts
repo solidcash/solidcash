@@ -1,4 +1,4 @@
-import { CompilerOptions } from '@solidcash/utils';
+import type { CompilerOptions } from '@solidcash/utils';
 import { FunctionCallNode, FunctionDefinitionNode, Node } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 

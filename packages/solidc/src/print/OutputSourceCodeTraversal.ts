@@ -29,7 +29,7 @@ import {
   TupleAssignmentNode,
   NullaryOpNode,
   ConsoleStatementNode,
-  ConsoleParameterNode,
+  type ConsoleParameterNode,
   SliceNode,
   DoWhileNode,
   WhileNode,
@@ -91,7 +91,7 @@ import {
   InterfaceNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
-  CallOptions,
+  type CallOptions,
   CollectionIterationNode,
   CollectionIterationMode,
   TypeIntrospectionNode,
@@ -101,7 +101,7 @@ import {
   SwitchCaseNode,
   UsingForDirectiveNode,
 } from '../ast/AST.js';
-import { AddressType, MappingType, Type } from '@solidcash/utils';
+import { AddressType, MappingType, type Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 export default class OutputSourceCodeTraversal extends AstTraversal {

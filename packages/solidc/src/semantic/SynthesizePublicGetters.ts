@@ -20,7 +20,7 @@ import {
   TryCatchNode,
 } from '../ast/AST.js';
 import {
-  MappingType, ArrayType, IntType, BytesType, PrimitiveType, AddressType, StructType, EnumType, FunctionType, Type,
+  MappingType, ArrayType, IntType, BytesType, PrimitiveType, AddressType, StructType, EnumType, FunctionType, type Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';

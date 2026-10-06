@@ -3,7 +3,7 @@ import {
   MethodCallNode, FunctionCallNode, Node,
   WhileNode, DoWhileNode, CollectionIterationNode,
 } from '../ast/AST.js';
-import { Type, AddressType } from '@solidcash/utils';
+import { type Type, AddressType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 // Hoist a BRANCH-LOCAL variable used as an interface-cast external-call target to the function-body top, so the

@@ -1,7 +1,8 @@
 import { encodeP2pkhCashAddress } from '../cashaddr.js';
 import {
-  MockContractDefinition, MockContractModel, MockChainView, MockEmissionSink, MockEventEmission, MockRevert,
-  MockReceipt,
+  type MockContractDefinition, MockContractModel, type MockChainView, type MockEmissionSink, type MockEventEmission,
+  MockRevert,
+  type MockReceipt,
 } from './model.js';
 
 /**

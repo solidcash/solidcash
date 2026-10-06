@@ -1,4 +1,4 @@
-import { ResolvedImport } from '@solidcash/utils';
+import type { ResolvedImport } from '@solidcash/utils';
 
 function normalizePath(p: string): string {
   const parts = p.split('/');

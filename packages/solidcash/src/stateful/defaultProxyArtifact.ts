@@ -5,7 +5,7 @@
 // The default upgradeable proxy is layout-independent: deployProxy grafts the implementation state layout and
 // bakes the implementation locking bytecode. Keep bytecode, debug.bytecode, fingerprint, ABI, and debug metadata
 // from the same compiler invocation; never patch only one generated field.
-import { Artifact } from '@solidcash/utils';
+import type { Artifact } from '@solidcash/utils';
 
 // No placeholder state var: one bytecode must serve event-only and state-holding implementations. The delegate
 // authorizes grafted state via _proxyMasterIndex; forceStateful is supplied by the regenerate script.

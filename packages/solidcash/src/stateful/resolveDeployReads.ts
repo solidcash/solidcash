@@ -1,6 +1,6 @@
-import { Artifact } from '@solidcash/utils';
-import { ConstructorArgument } from '../Argument.js';
-import { ContractRunner, StatefulContract } from './StatefulContract.js';
+import type { Artifact } from '@solidcash/utils';
+import type { ConstructorArgument } from '../Argument.js';
+import { type ContractRunner, StatefulContract } from './StatefulContract.js';
 
 /**
  * Options for {@link resolveDeployReads}.

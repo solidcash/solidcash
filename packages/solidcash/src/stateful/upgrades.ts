@@ -1,23 +1,23 @@
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
-  Artifact, AbiFunction, asmToBytecode, attachDecodedAccessors, buildEventNftCovenantScript,
+  type Artifact, type AbiFunction, asmToBytecode, attachDecodedAccessors, buildEventNftCovenantScript,
   computeEventNameHash,
 } from '@solidcash/utils';
 import {
-  ContractFactory, DeployedContract, DeployContractOptions, selectGenesisFundingUtxo,
+  ContractFactory, type DeployedContract, type DeployContractOptions, selectGenesisFundingUtxo,
 } from './ContractFactory.js';
 import type {
   FramedProxyCallerFunding, FramedProxyDeployHalf, FramedProxyDeployment,
 } from '../framed/proxy/deploy.js';
 import { poolGenesisSatoshis, resolveMasterPoolSize } from '../framed/deploy/pool.js';
 import {
-  StatefulContract, StatefulFunctionCall, ContractRunner, type ConnectedStatefulContract,
+  StatefulContract, StatefulFunctionCall, type ContractRunner, type ConnectedStatefulContract,
   type ContractEventName, type EventListener,
   type EventLog, type StatefulContractEvent,
 } from './StatefulContract.js';
 import Signer from '../Signer.js';
 import SignatureTemplate from '../SignatureTemplate.js';
-import { ConstructorArgument, FunctionArgument } from '../Argument.js';
+import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';

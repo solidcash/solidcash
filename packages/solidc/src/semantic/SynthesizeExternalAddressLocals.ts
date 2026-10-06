@@ -29,7 +29,7 @@ import {
   StateVariableVisibility,
 } from '../ast/AST.js';
 import {
-  AddressType, StructType, ArrayType, MappingType, Type,
+  AddressType, StructType, ArrayType, MappingType, type Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';

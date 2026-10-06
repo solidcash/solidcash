@@ -1,6 +1,6 @@
 import { binToHex } from '@bitauth/libauth';
 import {
-  Artifact, RequireStatement, Type, decodeBool, decodeInt, decodeString, sourceMapToLocationData,
+  type Artifact, type RequireStatement, type Type, decodeBool, decodeInt, decodeString, sourceMapToLocationData,
 } from '@solidcash/utils';
 
 const decodeCustomErrorArgument = (type: string, value: Uint8Array): unknown => {

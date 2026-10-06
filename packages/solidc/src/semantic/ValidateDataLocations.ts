@@ -1,5 +1,5 @@
 import {
-  ArrayType, BytesType, FunctionType, MappingType, PrimitiveType, StructType, Type,
+  ArrayType, BytesType, FunctionType, MappingType, PrimitiveType, StructType, type Type,
 } from '@solidcash/utils';
 import {
   AbiDecodeNode, ArrayAccessNode, AssemblyStatementNode, AssignNode, BranchNode, ContractNode, ExpressionNode,

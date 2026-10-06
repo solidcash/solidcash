@@ -1,4 +1,4 @@
-import { ImportResolverFn } from '@solidcash/utils';
+import type { ImportResolverFn } from '@solidcash/utils';
 import { SourceFileNode, ImportNode } from './ast/AST.js';
 import { cloneNode } from './ast/clone.js';
 import { parseImportedFileCached } from './compiler.js';

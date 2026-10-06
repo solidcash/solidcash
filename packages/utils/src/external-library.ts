@@ -4,9 +4,9 @@
 // It is either inlined into the contract redeem or loaded at runtime from a co-spent side-car UTXO.
 // See packages/solidc/docs/external-libraries.md.
 import { hexToBin } from '@bitauth/libauth';
-import { Op, Script, scriptToBytecode } from './script.js';
+import { Op, type Script, scriptToBytecode } from './script.js';
 import { hash256 } from './hash.js';
-import { AbiInput, AbiOutput, ExternalLibraryAbi } from './artifact.js';
+import type { AbiInput, AbiOutput, ExternalLibraryAbi } from './artifact.js';
 import {
   KECCAK256_LIBRARY_BLOB, KECCAK256_LIBRARY_BLOB_HASH, KECCAK256_LIBRARY_ID,
 } from './keccak-library.js';

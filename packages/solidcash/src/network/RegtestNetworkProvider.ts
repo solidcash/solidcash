@@ -17,8 +17,8 @@ import {
   hexToBin, binToHex, isHex, decodeTransactionUnsafe, encodeTransaction,
   cashAddressToLockingBytecode, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
-import { Utxo, Network, TokenDetails } from '../interfaces.js';
-import NetworkProvider from './NetworkProvider.js';
+import { type Utxo, Network, type TokenDetails } from '../interfaces.js';
+import type NetworkProvider from './NetworkProvider.js';
 import { getNetworkPrefix } from '../utils.js';
 
 export interface RegtestProviderOptions {

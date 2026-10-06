@@ -4,7 +4,7 @@ import {
   addressContentsToLockingBytecode,
   lockingBytecodeToCashAddress,
   binToHex,
-  Transaction,
+  type Transaction,
   encodeSigningSerializationBch,
   encodeTokenPrefix,
   encodeTransactionInputSequenceNumbersForSigning,
@@ -26,20 +26,20 @@ import {
   hash256,
   sha256,
   Op,
-  Script,
+  type Script,
   scriptToBytecode,
   encodeNullDataScript,
 } from '@solidcash/utils';
 import {
-  Utxo,
-  Output,
+  type Utxo,
+  type Output,
   Network,
-  LibauthOutput,
-  TokenDetails,
-  AddressType,
-  Unlocker,
-  UnlockableUtxo,
-  LibauthTokenDetails,
+  type LibauthOutput,
+  type TokenDetails,
+  type AddressType,
+  type Unlocker,
+  type UnlockableUtxo,
+  type LibauthTokenDetails,
 } from './interfaces.js';
 import { VERSION_SIZE, LOCKTIME_SIZE } from './constants.js';
 import {

@@ -1,5 +1,5 @@
-import { MockChain, MockDeployment } from './chain.js';
-import { MockContractModel, MockEventEmission, MockReceipt, MockRevert } from './model.js';
+import { MockChain, type MockDeployment } from './chain.js';
+import { MockContractModel, type MockEventEmission, type MockReceipt, MockRevert } from './model.js';
 
 /** Event/parameter metadata exposed the way the chai matchers read a contract artifact. */
 export interface MockArtifact {

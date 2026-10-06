@@ -23,7 +23,7 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { canonicalizeUpsertKeyExpression } from '../generation/upsertKeySources.js';
 import {
-  AddressType, ArrayType, BytesType, FixedType, FunctionType, IntType, PrimitiveType, StructType, Type,
+  AddressType, ArrayType, BytesType, FixedType, FunctionType, IntType, PrimitiveType, StructType, type Type,
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
 } from '@solidcash/utils';
 import {

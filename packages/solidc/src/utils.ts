@@ -1,4 +1,4 @@
-import { BytesType, FixedType, IntType, implicitlyCastable, PrimitiveType, Type } from '@solidcash/utils';
+import { BytesType, FixedType, IntType, implicitlyCastable, PrimitiveType, type Type } from '@solidcash/utils';
 import { BinaryOperator } from './ast/Operator.js';
 
 export function resultingTypeForBinaryOp(

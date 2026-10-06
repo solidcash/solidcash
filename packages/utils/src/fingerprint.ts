@@ -7,7 +7,7 @@ import {
 } from '@bitauth/libauth';
 import { encodeInt } from './data.js';
 import { sha256 } from './hash.js';
-import { generateContractBytecodeScript, Op, Script, scriptToBytecode } from './script.js';
+import { generateContractBytecodeScript, Op, type Script, scriptToBytecode } from './script.js';
 
 // Transform locking bytecode into the normalized "pattern" form: every run of
 // consecutive push instructions is replaced by a single push of the run length.

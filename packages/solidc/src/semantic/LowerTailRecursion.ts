@@ -4,7 +4,7 @@ import {
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, EmitStatementNode, FunctionCallNode, FunctionCallStatementNode,
   FunctionDefinitionNode, FunctionModifier, IdentifierNode,
-  ExpressionNode, ExternalCallExpression, FieldAccessNode, LiteralNode, MappingAccessNode, MappingAssignNode,
+  ExpressionNode, type ExternalCallExpression, FieldAccessNode, LiteralNode, MappingAccessNode, MappingAssignNode,
   MappingDeleteNode, MappingFieldAssignNode,
   NewArrayNode, Node, RequireNode, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, SwitchNode, TernaryOpNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
@@ -12,7 +12,7 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { ArrayType, IntType, MappingType, PrimitiveType, AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import { ArrayType, IntType, MappingType, PrimitiveType, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 
 type RecursiveFoldVariant =
   | {

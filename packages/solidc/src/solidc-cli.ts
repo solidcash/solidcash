@@ -3,7 +3,7 @@ import { binToHex } from '@bitauth/libauth';
 import {
   asmToScript,
   calculateBytesize,
-  CompilerOptions,
+  type CompilerOptions,
   countOpcodes,
   formatArtifact,
   formatSplitArtifactBundle,

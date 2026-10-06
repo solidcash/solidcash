@@ -13,7 +13,8 @@ import {
 import { binToHex, decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
-  AbiFunctionReference, Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
+  type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType,
+  type CompilerOptions,
   FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
@@ -34,12 +35,13 @@ import {
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, asmToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  AbiFunction, ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
+  type AbiFunction, type ChildDeploymentSiteAbi, type SplitArtifactBundle, type SplitStateFootprint, StructType, TupleType,
+  type Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
   isChunkableValueType,
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
-  KernelJournalDispositionsAbi,
+  type KernelJournalDispositionsAbi,
   MessageBusVerifierCapacityError, messageBusVerifierLockingBytecode,
   childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
@@ -95,7 +97,8 @@ import { deduplicateMessageBusVerifierStackSuffix } from './messageBusVerifierDe
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
 let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
 import {
-  Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode,
+  type Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode,
+  ContractReferenceNode,
   EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, InterfaceFunctionNode, InterfaceNode,
@@ -117,12 +120,12 @@ import {
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
   WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
-  ExternalCallExpression,
+  type ExternalCallExpression,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
-import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
+import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
@@ -148,9 +151,9 @@ import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import {
   clearKernelReadCarrierBindingToken, createKernelReadCarrierBindingToken, discoverKernelReadCarrier,
   deriveKernelJournalDispositionHandlerScope, freezeKernelJournalDispositions,
-  kernelJournalDispositionScopeKey, KernelJournalDispositionHandlerScope,
-  KernelReadCarrierAuthorizationBox,
-  KernelReadCarrierFamilyScope, refreshKernelReadCarrierAuthorization, sameKernelJournalDispositions,
+  kernelJournalDispositionScopeKey, type KernelJournalDispositionHandlerScope,
+  type KernelReadCarrierAuthorizationBox,
+  type KernelReadCarrierFamilyScope, refreshKernelReadCarrierAuthorization, sameKernelJournalDispositions,
 } from './semantic/KernelReadCarrierAuthorization.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import HoistBranchLocalExtcallTargets from './semantic/HoistBranchLocalExtcallTargets.js';
@@ -204,7 +207,7 @@ import {
   LowLevelCallShapeError, validateFunctionLowLevelCallShapes, validateLowLevelCallShapes,
 } from './semantic/LowLevelCallShapes.js';
 import {
-  containsIndirectCall, PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
+  containsIndirectCall, type PointerTableExpansion, type PointerTableExpansionMap, type ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
 import LowerVMapCounterLoops, {
   CounterLoopReadWriteConflictError,

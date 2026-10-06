@@ -1,5 +1,5 @@
 import {
-  ArrayType, IntType, BytesType, StructType, PrimitiveType, Type, ValueType, encodeString,
+  ArrayType, IntType, BytesType, StructType, PrimitiveType, type Type, ValueType, encodeString,
 } from '@solidcash/utils';
 import {
   Node,

@@ -4,7 +4,7 @@ import {
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
-import { ArrayType, MappingType, Type } from '@solidcash/utils';
+import { ArrayType, MappingType, type Type } from '@solidcash/utils';
 
 /** Share the pruner's conservative runtime reachability with diagnostics that run before codegen. */
 export function reachableContractFunctions(contract: ContractNode): Set<FunctionDefinitionNode> {

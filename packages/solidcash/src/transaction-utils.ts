@@ -1,4 +1,4 @@
-import { Utxo } from './interfaces.js';
+import type { Utxo } from './interfaces.js';
 import { isFungibleTokenUtxo, isNonTokenUtxo } from './utils.js';
 
 /**

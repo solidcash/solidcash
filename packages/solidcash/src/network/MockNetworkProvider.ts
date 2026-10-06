@@ -3,8 +3,9 @@ import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
-import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
-import NetworkProvider, { ConsensusLimits, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
+import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
+import type NetworkProvider from './NetworkProvider.js';
+import type { ConsensusLimits, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';

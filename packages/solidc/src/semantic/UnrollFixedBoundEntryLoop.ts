@@ -38,10 +38,10 @@ import {
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { MappingType, ArrayType, Type } from '@solidcash/utils';
+import { MappingType, ArrayType, type Type } from '@solidcash/utils';
 import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
-import { PointerTableExpansionMap, recordPointerTableExpansion } from './PointerTableBound.js';
+import { type PointerTableExpansionMap, recordPointerTableExpansion } from './PointerTableBound.js';
 
 const MAX_UNROLL = 64;
 

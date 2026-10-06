@@ -1,10 +1,10 @@
-import { Artifact, ArtifactMap } from '@solidcash/utils';
+import type { Artifact, ArtifactMap } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { AddressType } from '../interfaces.js';
-import { ConstructorArgument } from '../Argument.js';
+import type { AddressType } from '../interfaces.js';
+import type { ConstructorArgument } from '../Argument.js';
 import {
-  StatefulContract, ConnectedStatefulContract, DeployOptions, DeployResult,
+  StatefulContract, type ConnectedStatefulContract, type DeployOptions, type DeployResult,
 } from './StatefulContract.js';
 import { resolveCategoryFromAddress, resolveCategoryFromLockingBytecode } from './covenant-helpers.js';
 import type Signer from '../Signer.js';

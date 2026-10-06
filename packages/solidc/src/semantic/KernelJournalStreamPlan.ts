@@ -1,7 +1,7 @@
 import {
   ArrayAccessNode, ArrayAssignNode, AssignNode, BinaryOpNode, BlockNode, FunctionDefinitionNode, IdentifierNode,
   IntLiteralNode, MappingAssignNode, NewArrayNode, Node, VariableDefinitionNode, WhileNode,
-  KernelJournalStreamExecutionCoordinate, KernelJournalStreamPlan,
+  type KernelJournalStreamExecutionCoordinate, type KernelJournalStreamPlan,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 

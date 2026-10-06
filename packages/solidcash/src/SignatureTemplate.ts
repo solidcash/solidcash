@@ -1,10 +1,10 @@
 import { decodePrivateKeyWif, hexToBin, isHex, secp256k1, SigningSerializationFlag } from '@bitauth/libauth';
 import { hash256, scriptToBytecode } from '@solidcash/utils';
 import {
-  GenerateUnlockingBytecodeOptions,
+  type GenerateUnlockingBytecodeOptions,
   HashType,
   SignatureAlgorithm,
-  P2PKHUnlocker,
+  type P2PKHUnlocker,
 } from './interfaces.js';
 import { createSighashPreimage, publicKeyToP2PKHLockingBytecode } from './utils.js';
 

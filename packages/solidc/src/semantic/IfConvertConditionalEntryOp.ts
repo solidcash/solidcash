@@ -25,7 +25,7 @@ import {
   DoWhileNode,
 } from '../ast/AST.js';
 import {
-  Type, MappingType, ArrayType, StructType, PrimitiveType, isChunkableValueType,
+  type Type, MappingType, ArrayType, StructType, PrimitiveType, isChunkableValueType,
 } from '@solidcash/utils';
 import { UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';

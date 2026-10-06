@@ -13,7 +13,7 @@ import {
   scriptToBytecode,
 } from '@solidcash/utils';
 import {
-  AuthenticationProgramStateCommon,
+  type AuthenticationProgramStateCommon,
   binToHex,
   binToUtf8,
   utf8ToBin,

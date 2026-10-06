@@ -5,6 +5,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth';
+import { addressToLockScript } from '../utils.js';
 import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
@@ -262,9 +263,25 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   // proxy/state-owner context. New graph routes authenticate the same public CREATE identity for address(this)
   // and the outgoing caller. Older routes retain their physical self projection. Storage and executor identities
   // remain separately pinned by the delegate block.
-  const delegateSelfAddress = callInfo.contract.inner.artifact.messageBus?.route.inputs.some(
+  const storedLogical = host.selfContract?._logicalAddress as string | undefined;
+  const logicalCreateLock = storedLogical ? addressToLockScript(storedLogical) : undefined;
+  const implementationLock = String(callInfo.contract?.inner?.lockingBytecode ?? '');
+  const ownerLock = String(host.inner?.lockingBytecode ?? '');
+  // A forwarding proxy's implementation is a different script from the state owner. Its outgoing
+  // address(this) and the callee's msg.sender are the owner's CREATE lock. A delegate of the same
+  // contract keeps the executing lock so hash160(self) still matches that input.
+  const proxyFacade = callMode === 'delegatecall'
+    && logicalCreateLock !== undefined
+    && implementationLock !== ''
+    && ownerLock !== ''
+    && implementationLock.toLowerCase() !== ownerLock.toLowerCase()
+    && binToHex(logicalCreateLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase();
+  const routeAuthenticatesPublicSelf = callInfo.contract.inner.artifact.messageBus?.route.inputs.some(
     (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
-  ) ? authenticatedSelfAddress : publicSelfAddress;
+  ) === true;
+  const delegateSelfAddress = proxyFacade && logicalCreateLock !== undefined
+    ? logicalCreateLock
+    : routeAuthenticatesPublicSelf ? authenticatedSelfAddress : publicSelfAddress;
   const delegateCallerIdentity = Object.freeze({
     categoryId: host.categoryId,
     // The outgoing caller is exactly the state-owner identity used for address(this). A legacy delegate

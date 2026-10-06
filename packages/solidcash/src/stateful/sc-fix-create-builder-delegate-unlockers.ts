@@ -31,6 +31,18 @@ import {
 } from './writer-event-delegate-layout.js';
 import { computedStateWriterGroupIndex } from './writer-group-selection.js';
 
+/** True when the callee's caller subject is this contract's physical lock or its CREATE lock. */
+export function rootOwnsCallerSubject(
+  subjectLockingBytecode: string,
+  authenticatedSelfAddress: Uint8Array,
+  logicalCreateLock?: Uint8Array,
+): boolean {
+  const subject = subjectLockingBytecode.toLowerCase();
+  if (subject === binToHex(authenticatedSelfAddress).toLowerCase()) return true;
+  return logicalCreateLock !== undefined
+    && subject === binToHex(logicalCreateLock).toLowerCase();
+}
+
 /**
  * Select the optional SCID input which represents a nested call's authenticated caller subject.
  *
@@ -407,6 +419,7 @@ export async function fixCreateBuilderDelegateUnlockers(
         }
         const compilerOwnedWitness = group.compilerRoute?.internalArgs?.[inp.name];
         if (compilerOwnedWitness !== undefined
+          && inp.name !== '__internal__graphSelfIdentityInput'
           && !isSdkResolvedExternalCallTopologyWitness(inp.name)
           && !isSdkResolvedParticipantStorageWitness(inp.name)) return compilerOwnedWitness;
         if (inp.name === '__internal__returnOutputIdx') {
@@ -469,7 +482,9 @@ export async function fixCreateBuilderDelegateUnlockers(
             !== physicalCallerLockingBytecode.toLowerCase();
           const rootLogicalCaller = needsAnchor
             && (parentGroupIndex === undefined || parentGroupIndex < 0)
-            && callerSubjectLockingBytecode.toLowerCase() === binToHex(authenticatedSelfAddress).toLowerCase();
+            && rootOwnsCallerSubject(
+              callerSubjectLockingBytecode, authenticatedSelfAddress, params.logicalCreateLock,
+            );
           const band = needsAnchor && !rootLogicalCaller
             ? callerIdentityAnchorBand(
               callerSubjectLockingBytecode,
@@ -785,6 +800,20 @@ export async function fixCreateBuilderDelegateUnlockers(
         }
         const runtimeCardinality = resolveDelegateRuntimeCardinality(inp.name, activeEntryDelegate);
         if (runtimeCardinality !== undefined) return runtimeCardinality;
+        if (inp.name === '__internal__graphSelfIdentityInput') {
+          // Only a forwarding proxy presents its CREATE lock as address(this). A delegate of the same
+          // contract keeps -1 so hash160(self) still matches the input that is executing.
+          const logicalCreateLock = params.logicalCreateLock as Uint8Array | undefined;
+          const implementationLock = group.externalContract.inner.lockingBytecode;
+          const proxyFacade = logicalCreateLock !== undefined
+            && implementationLock.toLowerCase() !== binToHex(publicSelfAddress).toLowerCase();
+          if (proxyFacade) {
+            anchorFillPositions.push({
+              argIndex: inpIndex, name: inp.name, categoryId: host.categoryId, proxyRoute: false,
+            });
+          }
+          return -1n;
+        }
         throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
       });
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

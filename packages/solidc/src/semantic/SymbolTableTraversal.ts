@@ -638,6 +638,17 @@ function returnGuardsOf(fn: FunctionDefinitionNode, target: Node): PathGuard[] {
 }
 
 /** The conjunction of `conditions`, left to right, or undefined for none. */
+/** True when a delegate body reads `address(this)` and can publish a CREATE-anchor witness. */
+function delegateReadsOwnAddress(fn: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof UnaryOpNode && node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.expression instanceof NullaryOpNode
+      && node.expression.operator === NullaryOperator.INPUT_INDEX) found = true;
+  });
+  return found;
+}
+
 function allOf(conditions: readonly ExternalCallExpression[]): ExternalCallExpression | undefined {
   return conditions.reduce<ExternalCallExpression | undefined>((combined, next) => (combined === undefined
     ? next : { kind: 'binary', operator: '&&', left: combined, right: next }), undefined);
@@ -4788,6 +4799,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       const sym = this.symbolTables[0].get('__internal__proxyMasterIndex');
       if (sym) sym.references.push({ name: '__internal__proxyMasterIndex' } as IdentifierNode);
       this.pushToStack(param);
+      // A proxy delegate's Solidity address(this) is the authenticated CREATE lock when the SDK names
+      // that anchor. -1 keeps the replaceable master, which is what a self-delegate hash160(self) checks.
+      if ((this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat)
+        && !node.messageBusRoute
+        && !node.parameters.some((parameter) => parameter.name === '__internal__graphSelfIdentityInput')
+        && delegateReadsOwnAddress(node)) {
+        const identity = new ParameterNode(PrimitiveType.BIGINT, '__internal__graphSelfIdentityInput');
+        identity.location = node.location;
+        identity.syntheticallyUsed = true;
+        node.parameters.push(identity);
+        this.symbolTables[0].set(Symbol.variable(identity));
+        this.symbolTables[0].get(identity.name)?.references.push({ name: identity.name } as IdentifierNode);
+        this.pushToStack(identity);
+      }
     }
 
     // Dynamic storage inputs are a runtime transaction band, not necessarily the suffix of the function's

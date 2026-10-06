@@ -30,6 +30,7 @@ import {
   callerIdentityAnchorBand,
   isRoutePushValueWitnessName,
   resolveDelegatePushValueWitness,
+  rootOwnsCallerSubject,
 } from './sc-fix-create-builder-delegate-unlockers.js';
 
 /** Resolve compiler-published fold witnesses while completing an ordinary nested callee unlocker. */
@@ -171,7 +172,9 @@ export async function completeCreateBuilderNestedUnlockers(
       && childCallerSubjectLockingBytecode.toLowerCase() !== childPhysicalCallerLockingBytecode.toLowerCase();
     const rootLogicalCaller = needsMsgSenderAnchor
       && (childParentGroupIndex === undefined || childParentGroupIndex < 0)
-      && childCallerSubjectLockingBytecode.toLowerCase() === binToHex(authenticatedSelfAddress).toLowerCase();
+      && rootOwnsCallerSubject(
+        childCallerSubjectLockingBytecode, authenticatedSelfAddress, params.logicalCreateLock,
+      );
     if (needsMsgSenderAnchor && !rootLogicalCaller) {
       // A callback can retarget an earlier physical carrier without moving that carrier beneath
       // its own descendant in the logical graph. In that case the physical parent is not the

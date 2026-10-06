@@ -7255,6 +7255,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ? hexToBin(registeredSelf.lockingBytecode) : hexToBin(this.inner.lockingBytecode);
     const authenticatedSelfAddress = registeredSelfAddress;
     const publicSelfAddress = authenticatedSelfAddress;
+    const storedLogicalLock = this._logicalAddress === undefined
+      ? undefined : addressToLockScript(this._logicalAddress);
+    const logicalCreateLock = storedLogicalLock !== undefined
+      && binToHex(storedLogicalLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase()
+      ? storedLogicalLock : undefined;
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
       lockingBytecode: binToHex(authenticatedSelfAddress),
@@ -12361,6 +12366,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           publicSelfAddress,
           authenticatedSelfAddress,
           physicalSelfAddress: executionSelfAddress,
+          logicalCreateLock,
         },
       );
       {
@@ -12426,6 +12432,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           entryArgs,
           entryArtifact,
           physicalSelfAddress: executionSelfAddress,
+          logicalCreateLock,
         },
       );
 

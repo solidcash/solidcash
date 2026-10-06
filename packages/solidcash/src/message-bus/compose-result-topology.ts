@@ -155,6 +155,27 @@ function producerResultCallsites(
   return ids;
 }
 
+/** A byte field arrives as a `Uint8Array` on one side and as a hex `string` on the other, and JSON text keeps
+ * those apart. Compare the two forms by their bytes so a hand-prepared claim is judged on its value. */
+const canonicalArgumentJson = (value: unknown): string => JSON.stringify(value, (_key, field) =>
+  field instanceof Uint8Array ? binToHex(field)
+    : typeof field === 'bigint' ? field.toString() : field);
+
+/** A hand-prepared edge with no result resolver is an exact claim about the arguments it states - except at
+ * the positions the compiled edge itself resolves from a producer result. A caller cannot state a value it has
+ * not received yet, so the compiled edge is authoritative there and the rebuild installs its resolver. */
+function preparedArgumentsMatchCompiledEdge(
+  prepared: readonly FunctionArgument[] | undefined,
+  compiled: readonly FunctionArgument[] | undefined,
+  sources: readonly ArgSource[] | undefined,
+): boolean {
+  if (prepared === undefined || compiled === undefined) return prepared === compiled;
+  if (prepared.length !== compiled.length) return false;
+  return prepared.every((value, index) => (sources?.[index] !== undefined
+    && producerResultCallsites(sources[index]).size > 0)
+    || canonicalArgumentJson(value) === canonicalArgumentJson(compiled[index]));
+}
+
 /** Select the sole reached outer coordinate before evaluating the inner loop. This rewrites metadata only;
  * the executable call and its compiler-authored guards remain authoritative in final VM preflight. */
 function bindOuterLoopCounter<T>(value: T, counterName: string, coordinate: bigint): T {
@@ -635,7 +656,7 @@ async function rebuildCallTopology(
                   && prior.call.callsiteId !== template.callsiteId)
                 || (prior.call.selector !== undefined && prior.call.selector !== childFn.selector)
                 || (prior.call.resolveArgsFromResults === undefined
-                  && semanticJson(prior.call.args) !== semanticJson(childArgs)))) {
+                  && !preparedArgumentsMatchCompiledEdge(prior.call.args, childArgs, argSources)))) {
               throw new Error(
                 `messageBus: prepared callsite ${String(template.callsiteId)} disagrees with the compiled result edge`,
               );

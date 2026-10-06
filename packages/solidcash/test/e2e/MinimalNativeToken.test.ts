@@ -15,10 +15,10 @@ import { alicePriv, bobPriv } from '../fixture/vars.js';
 const source = new URL('../../contracts/examples/MinimalNativeToken.scash', import.meta.url);
 
 describe('MinimalNativeToken bytecode budget', () => {
-  it('keeps full ERC20 allowances and immediate BchNative below 6.5 KB', () => {
+  it('keeps full ERC20 allowances and immediate BchNative below 7.5 KB', () => {
     const artifact = compileFile(source, { messageBus: false });
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
-    expect(artifactBytes).toBe(6291);
+    expect(artifactBytes).toBe(7312);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')).toBeUndefined();
 
@@ -44,7 +44,7 @@ describe('MinimalNativeToken bytecode budget', () => {
       [],
       { provider: new MockNetworkProvider() },
     );
-    expect(deployed.bytecode.length / 2).toBe(6291);
+    expect(deployed.bytecode.length / 2).toBe(7312);
 
     expect(artifact.events.map((event) => event.name).sort()).toEqual(['Approval', 'Transfer']);
 

@@ -231,7 +231,11 @@ describe('vmap diff-key per-iteration UPDATE loop (multitransfer credit to exist
     const { contract, call } = await setup();
     await fund(contract.address); await call('setBal', 1n, 500n);
     await fund(contract.address);
-    await expect(call('clearAll', [1n, 9n])).rejects.toThrow(/no entry|cannot delete/i);
+    // Key 9 is absent and its gap predecessor is the key this loop already nullifies, so the delete
+    // refuses instead of minting a null node. Either the old wording or the shared-proof refusal is closed.
+    await expect(call('clearAll', [1n, 9n])).rejects.toThrow(
+      /no entry|cannot delete|absent key|shared absence proof/i,
+    );
   });
 
   // FIXED-AMOUNT airdrop `for(i) bal[ks[i]] += amount` (a loop-INVARIANT param, not a per-key array): credit every

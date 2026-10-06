@@ -13,16 +13,25 @@ const SOURCE = `contract C {
   function batch(int a, int b) external { m[a] = 11; m[b] = 22; require(true); }
 }`;
 
+// Three targets take the general linear verifier, which authenticates the packed rows and the rank
+// permutation. A two-target batch orders itself from the two slot hashes and does not read those witnesses.
+const SOURCE3 = `contract C {
+  mapping(int => int) m;
+  function batch3(int a, int b, int c) external { m[a] = 11; m[b] = 22; m[c] = 33; require(true); }
+}`;
+
 describe('vmap atomic batch adversarial soundness', () => {
-  const deploy = async (): Promise<StatefulContract> => {
+  const deployFrom = async (source: string): Promise<StatefulContract> => {
     const provider = createTestProvider();
-    const artifact = compile(SOURCE, { forceStateful: true });
+    const artifact = compile(source, { forceStateful: true });
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, {}, { saltContract: true },
     );
     return StatefulContract.withCategory(contract, categoryId);
   };
+  const deploy = (): Promise<StatefulContract> => deployFrom(SOURCE);
+  const deploy3 = (): Promise<StatefulContract> => deployFrom(SOURCE3);
 
   it('rejects forged proof, successor, and predecessor-output witnesses', async () => {
     const wrongProof = await deploy();
@@ -40,39 +49,41 @@ describe('vmap atomic batch adversarial soundness', () => {
     await expect(wrongPredOut.getFunction('batch')(1n, 2n).send())
       .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
 
-    const invalidRank = await deploy();
-    invalidRank._setRawVMapBatchWitness(1, { rank: 2n });
-    await expect(invalidRank.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+    // Rank 3 is outside 0..2. Empty, reordered, duplicated, and bit-flipped rows fail the general linear checks.
+    const call3 = async (sc: StatefulContract): Promise<unknown> => sc.getFunction('batch3')(1n, 2n, 3n).send();
+    const verifyFail = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
-    const omittedRows = await deploy();
+    const invalidRank = await deploy3();
+    invalidRank._setRawVMapBatchWitness(1, { rank: 3n });
+    await expect(call3(invalidRank)).rejects.toThrow(verifyFail);
+
+    const omittedRows = await deploy3();
     omittedRows._setRawVMapBatchWitness(0, { rows: new Uint8Array() });
-    await expect(omittedRows.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+    await expect(call3(omittedRows)).rejects.toThrow(verifyFail);
 
-    const slots = [1n, 2n].map((key) => keyToSlotMulti([bigIntToVmNumber(key)]))
+    const slots = [1n, 2n, 3n].map((key) => keyToSlotMulti([bigIntToVmNumber(key)]))
       .sort((a, b) => bytesToSlotValue(a) < bytesToSlotValue(b) ? -1 : 1);
-    const rows = Uint8Array.from([...slots[0], ...slots[1], ...slots[1], ...new Uint8Array(32)]);
+    const row = (slot: Uint8Array, next: Uint8Array): Uint8Array => Uint8Array.from([...slot, ...next]);
+    const rows = Uint8Array.from([
+      ...row(slots[0], slots[1]), ...row(slots[1], slots[2]), ...row(slots[2], new Uint8Array(32)),
+    ]);
 
-    const reorderedRows = await deploy();
+    const reorderedRows = await deploy3();
     reorderedRows._setRawVMapBatchWitness(0, {
-      rows: Uint8Array.from([...rows.slice(64), ...rows.slice(0, 64)]),
+      rows: Uint8Array.from([...rows.slice(128), ...rows.slice(0, 128)]),
     });
-    await expect(reorderedRows.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+    await expect(call3(reorderedRows)).rejects.toThrow(verifyFail);
 
-    const duplicateRows = await deploy();
+    const duplicateRows = await deploy3();
     duplicateRows._setRawVMapBatchWitness(0, {
-      rows: Uint8Array.from([...rows.slice(0, 64), ...rows.slice(0, 64)]),
+      rows: Uint8Array.from([...rows.slice(0, 64), ...rows.slice(0, 64), ...rows.slice(0, 64)]),
     });
-    await expect(duplicateRows.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+    await expect(call3(duplicateRows)).rejects.toThrow(verifyFail);
 
-    const forgedRowLink = await deploy();
+    const forgedRowLink = await deploy3();
     const badRows = rows.slice(); badRows[32] ^= 1;
     forgedRowLink._setRawVMapBatchWitness(0, { rows: badRows });
-    await expect(forgedRowLink.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+    await expect(call3(forgedRowLink)).rejects.toThrow(verifyFail);
 
     const aliasedKeys = await deploy();
     await expect(aliasedKeys.getFunction('batch')(1n, 1n).send()).rejects.toThrow(/duplicate slot/i);

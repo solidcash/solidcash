@@ -8036,8 +8036,18 @@ function synthesizeMessageBusRoute(
             && alternatives.length <= 2
             && directShape.computedKeysAreProvable.get(collectionName) === true
             && alternatives.every((indices) => indices.length === 1 && indices[0] === -1));
+        // A key that is one row argument is journalled by the kernel from the selected row exactly like a
+        // provable expression key: the row carries the value and the entry slot follows from it. The two-slot
+        // collection journal and the atomic route already authenticate it, so a graph tail does not force the
+        // legacy compact resource batch for this shape. Leaving it out made a handler that writes one mapping
+        // twice from its arguments (`update(addKey, removeKey)`) count as resource-shaped, which tripped the
+        // kernel admission invariant and left the artifact with batch ABI parameters but no route at all.
+        const kernelArgumentKeyAlternatives = [...directKeys].every(([collectionName, alternatives]) =>
+          collectionByName.get(collectionName)?.allKeyTypes.length === 1
+          && alternatives.length <= 2
+          && alternatives.every((indices) => indices.length === 1 && indices[0]! >= 0));
         const kernelFixedEntryAlternatives = compilerOptions.messageBusKernel === true
-          && (!graphTailCallEligible || kernelExpressionAlternatives)
+          && (!graphTailCallEligible || kernelExpressionAlternatives || kernelArgumentKeyAlternatives)
           && [...directKeys.values()].every((alternatives) =>
             alternatives.every((indices) => indices.every((index) => index >= -2)));
         for (const [collectionName, alternatives] of directKeys) {

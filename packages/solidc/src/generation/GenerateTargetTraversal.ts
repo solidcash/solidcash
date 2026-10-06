@@ -9326,7 +9326,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A delegate entry lists every data NFT in its block even when dead-code elimination removes the scalar
       // writes from its body (a transfer whose zero-address supply arms cannot run). The SDK still places those
       // outputs and may guess a new scalar from an ABI argument. Preserve them unless this body actually writes.
-      const carriesDataNfts = this.compactOffsetMap.size > 0;
+      // Only a delegate entry needs the fallback: the auto-marker never marks an upgrade, deploy or
+      // selfdestruct body, and those carry the full data-NFT set without touching it.
+      const carriesDataNfts = this.compactOffsetMap.size > 0
+        && node.modifiers.includes(FunctionModifier.DELEGATE);
       if (!this.functionHasDelegatecall && !isSelfdestruct && (this.hasStateAccess || carriesDataNfts)) {
         this.emitAutoCovenantVerification(node);
       }

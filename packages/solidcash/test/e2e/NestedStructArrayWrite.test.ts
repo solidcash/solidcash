@@ -4,16 +4,14 @@ import {
   Contract, StatefulContract, MockNetworkProvider, MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST,
 } from '../../src/index.js';
 import {
-  createTestProvider, setupStatefulUtxos, expectOverOperationCostBudget,
+  createTestProvider, setupStatefulUtxos,
 } from '../test-util.js';
 
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
-// These writes cost far more than the real BCH-2026 operation-cost budget allows at this contract's natural size:
-// `w` needs about 11M units and `wConditional` about 15M against a budget of 6.2M, and the 520-byte salt cap buys
-// under 0.5M more, so no density reserve covers them. The sibling-preservation rows therefore run on a provider that
-// names the relaxed budget, and the over-budget write is pinned on the real budget below.
+// Sibling-preservation rows run on a provider that names the relaxed budget. The natural-size `w` write
+// now fits the real BCH-2026 budget and is checked on that provider below.
 const relaxed = new MockNetworkProvider({
   consensusLimits: { ...MOCK_CONSENSUS_LIMITS, operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST },
 });
@@ -127,11 +125,10 @@ describe('nested struct-array element write (runtime, sibling preservation)', ()
     await sc.w(A, B).send();
     await expect(sc.chkWrong(A, B).send()).rejects.toThrow(verifyFailure);
   });
-  // A PIN, not an endorsement: once the write fits again, restore the positive row (`w`, then `chk`, on the real
-  // budget) rather than loosening this one.
-  it('the same write is over the real operation-cost budget at its natural size', async () => {
+  it('writes jobs[0].roles.creator on the real operation-cost budget', async () => {
     const sc = await mk(SRC, createTestProvider());
-    await expectOverOperationCostBudget(sc.w(A, B).send());
+    await sc.w(A, B).send();
+    await expect(sc.chk(A, B).send()).resolves.toBeDefined();
   });
   it('preserves a variable-width struct array across sequential conditional field writes', async () => {
     const sc = await mk(SRC);

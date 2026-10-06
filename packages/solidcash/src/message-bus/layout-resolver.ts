@@ -1790,6 +1790,16 @@ export function applyParticipantAbsoluteWitnesses(args: {
       if (absolute === undefined) {
         // Inactive PredOut stays at its negative sentinel; only active claims must resolve.
         if (isInactiveSentinel(args.params[index])) continue;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_PREDOUT === '1') {
+          console.error('predout-unresolved', JSON.stringify({
+            participant: args.participant,
+            name: input.name,
+            value: String(args.params[index]),
+            claimCount: args.witnesses.predOuts.size,
+            claims: [...args.witnesses.predOuts.keys()],
+          }));
+        }
         throw new Error(
           formatLayoutInvariant({
             invariantId: 'pred-out-unresolved',

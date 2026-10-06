@@ -1821,7 +1821,26 @@ export async function assembleAtomicComposition(
           && value >= BigInt(publishedBase)
           && value < BigInt(publishedBase + candidate.limit);
         if ((!layoutWitnessIsActiveCoordinate(value) && !pendingInsert)
-          || (layoutWitnessIsActiveCoordinate(value) && !localCoordinate && !absoluteCoordinate)) continue;
+          || (layoutWitnessIsActiveCoordinate(value) && !localCoordinate && !absoluteCoordinate)) {
+          // A published PredOut that is neither participant-local nor inside the published aggregate span cannot
+          // name an output this participant frame carries: the frame compacts away the unused trailing pads, so a
+          // coordinate past the compacted size has no output to read. Name the geometry instead of failing blind.
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process
+            ?.env?.SOLIDC_DEBUG_PREDOUT === '1' && /vmapBatchPredOut_\d+$/.test(candidate.name)) {
+            console.error('predout-skip', JSON.stringify({
+              participant: participant.participant,
+              contractName: participant.artifact.contractName,
+              abiFunction: masterUnlocker.abiFunction?.name,
+              name: candidate.name, value: String(value),
+              active: layoutWitnessIsActiveCoordinate(value), pendingInsert,
+              localCoordinate, absoluteCoordinate,
+              localLimit: candidate.limit, publishedBase, routeTrailingBase,
+              localInputs: local.inputs.length, localOutputs: local.outputs.length,
+              planBlockSize: participant.blockLayout?.blockSize,
+            }));
+          }
+          continue;
+        }
         let physicalLocalOffset: number | undefined;
         const predecessorLock = predecessor === undefined ? ''
           : binToHex(predecessor.unlocker.generateLockingBytecode()).toLowerCase();

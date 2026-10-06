@@ -140,7 +140,12 @@ Context, still useful when reading those three sites:
     that covenant derives, at the `OP_INVOKE`-then-`NUMEQUALVERIFY` pair above.
 - `KernelChunkedMappingStructCompose` — "graph-produced oversized scalar struct insert" throws
   `L3_LAYOUT_INVARIANT` / `pred-out-unresolved`: an active `__internal__vmapBatchPredOut_0` slot has no
-  `predOuts` witness. The second title fails an OP_VERIFY in `Store` at ip 2274.
+  `predOuts` witness. Attributed in `W6_CHUNKED_INSERT_FINDING.md`: the compiler plans the predecessor at the
+  fixed entry coordinate (1) for a single-target-row batch, that output fails the covenant lock+content
+  equality, and `refreshTopLevelPredOutWitnesses` falls back to appending a pad past the frame (67) because its
+  pad-search floor is `masterIndex + blockSize`. The compose pass then compacts the frame to its used span (7),
+  so the witness names an output the frame does not carry and the discovery gate rejects it. The second title
+  fails an OP_VERIFY in `Store` at ip 2274.
 
 ### Known capacity defects
 

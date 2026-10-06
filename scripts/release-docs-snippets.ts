@@ -127,7 +127,13 @@ fs.writeFileSync(probeFile, `${lines.join('\n')}\n`);
 const total = referenced.length;
 const tsc = spawnSync(
   'npx',
-  ['tsc', '--noEmit', '--skipLibCheck', '--module', 'nodenext', '--moduleResolution', 'nodenext', probeFile],
+  // `--types node` rather than the implicit type-library glob: the probe needs no ambient types beyond Node's,
+  // and without it tsc loads every directory under node_modules/@types, so an unrelated stray entry there
+  // (a self-referential @types/@types symlink, seen in a development tree) fails the gate with TS2688.
+  [
+    'tsc', '--noEmit', '--skipLibCheck', '--types', 'node',
+    '--module', 'nodenext', '--moduleResolution', 'nodenext', probeFile,
+  ],
   { cwd: path.resolve(here, '..'), encoding: 'utf8' },
 );
 fs.rmSync(probeDir, { recursive: true, force: true });

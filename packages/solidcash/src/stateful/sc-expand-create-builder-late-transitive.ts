@@ -413,7 +413,16 @@ export async function expandCreateBuilderLateTransitive(
         nested.rawSelector,
       )?.selector;
       const childState = await nestedFullState(callee);
-      if (!childState.masterUtxo) continue;
+      if (!childState.masterUtxo) {
+        // Every frame here is a reached occurrence: the loop above already dropped the ones whose guard is false.
+        // A reached occurrence has to co-spend its callee's master, so skipping this quietly composed a
+        // transaction with no callee input that the generated route then refuses at spend time. The ordinary
+        // transitive discovery path already refuses this condition; name the callsite and occurrence here too.
+        throw new Error(
+          `Late external callsite ${nested.callsiteId ?? '?'} occurrence ${occurrenceIndex} has no master UTXO `
+          + `for ${nested.interfaceName} (category ${callee.categoryId}).`,
+        );
+      }
       const requiredDataNftIndices = [...new Set(
         (selectedFn.blockLayout?.slots ?? [])
           .filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)

@@ -8,7 +8,7 @@ import {
   Contract, StatefulContract, StatefulFunctionCall, Signer,
 } from '../../src/index.js';
 import { alicePriv } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+import { createBareP2pkhFeeFunder, createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
 // ethers-v6-flavored surface: a lean constructor `new StatefulContract(category, artifact, runner, { args })`,
 // an async `StatefulContract.at(address, artifact, runner)` that reads the category from the indexer, Proxy
@@ -31,6 +31,9 @@ describe('StatefulContract v6 flavor: lean constructor + at() + Proxy dispatch',
       provider, contract, art.stateLayout!, { count: 0n }, { saltContract: true },
     );
     const address = contract.withCategory(hexToBin(categoryId)).address;
+    // increment() authenticates the connected signer from a token-free P2PKH input. The mock chain
+    // starts with only the contract's token UTXOs, so give Alice a fee input before any send.
+    await createBareP2pkhFeeFunder(provider, 1_000_000n);
     return { provider, categoryId, address };
   }
 

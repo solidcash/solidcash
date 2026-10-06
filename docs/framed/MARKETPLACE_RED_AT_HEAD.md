@@ -21,8 +21,8 @@ Each title fails with:
 
     FramedCallError: the call to "publishJobPost" was refused, so nothing was broadcast:
       validator/1: Program failed an OP_VERIFY operation.
-     ❯ FramedFunctionCall.send packages/solidcash/src/framed/call/handle.ts:106:13
-     ❯ deployMarketplaceWithUsersAndJob .marketplace/project/test/marketplace.test.ts:571:34
+     > FramedFunctionCall.send packages/solidcash/src/framed/call/handle.ts:106:13
+     > deployMarketplaceWithUsersAndJob .marketplace/project/test/marketplace.test.ts:571:34
 
 `deployMarketplaceWithUsersAndJob` is the helper every title's setup calls, so this is not one title's wall: the
 whole ladder is red. The no-proxy twin fails at the same step with the same cause reached differently -
@@ -95,7 +95,7 @@ Verdict table, oldest to newest on the first-parent line:
 | `e6138b321` | 13:39 | fix(solidc): narrow a disk-hit delegate | PASS |
 | `fa34859806` | 13:41 | fix(sdk): keep one return channel | PASS |
 | `f8c8db06f5` | 13:45 | docs(per-call): W11 status (docs-only, = `fa34859806`) | PASS (source) |
-| `2c19e710e` .. `8d4ea3bb61` | 13:45 - 14:48 | 25 commits, including `0d0600fc9`, `abf1049ff`, `246cdfd74`, `4b3d529be` | **does not compile** |
+| `2c19e710e` .. `8d4ea3bb61` | 13:45 - 14:48 | 25 commits (see the window below) | **does not compile** |
 | `bbab3e0e00` | 14:53 | fix(solidc): treat a tuple-declared interface local as a call receiver | FAIL (unmodified) |
 | `02de0b9d1` | 10:30 | refactor(framed): drop the deprecated aliases | FAIL (unmodified) |
 
@@ -139,32 +139,58 @@ Cycles: 15 harness cycles; logs in `{SCRATCH}/w4/bisect/` (`<commit>.log`, `<com
 
 ## Fix landed: the framed identifier is the execution lock
 
-The harness A/B settled both questions:
+The harness A/B settled both questions, in an isolated copy at `a0ce264c7`:
 
-| change in the isolated harness at `a0ce264c7` | verdict |
-|---|---|
-| `246cdfd74` reverted wholesale (`git apply -R` does not apply - the rename moved `_perCallAddress` to `_framedAddress` in the same files - so the reverse edit was reconstructed by hand) | PASS (`{SCRATCH}/w4/bisect/HEAD-revert-246cdfd74.log`) |
-| variant A: only `get target()` swapped back to `_framedAddress ?? _logicalAddress ?? this.address` | PASS (`HEAD-variantA-target.log`) |
-| variant B: only the factory's dual registration reverted, `target` left logical-first | FAIL, same `validator/1` refusal (`HEAD-variantB-factory.log`) |
+- `246cdfd74` reverted wholesale: PASS. The reverse patch misses (`git apply -R` fails) because the rename moved
+  `_perCallAddress` to `_framedAddress` in the same two files, so the reverse edit was reconstructed by hand.
+  Log: `{SCRATCH}/w4/bisect/HEAD-revert-246cdfd74.log`.
+- variant A, only `get target()` swapped so `_framedAddress` is preferred: PASS.
+  Log: `HEAD-variantA-target.log`.
+- variant B, only the factory's dual registration reverted while `target` stayed logical-first: FAIL, the same
+  `validator/1` refusal. Log: `HEAD-variantB-factory.log`.
 
-So variant A is the minimal repair and the factory hunk is neither cause nor necessary. Landed as that one-operand
-swap in `packages/solidcash/src/stateful/StatefulContract.ts` (`get target()`), which leaves the direct convention
-untouched because `_framedAddress` is set only by `packages/solidcash/src/framed/deploy/stateful.ts`. The reasoning
-and the open question for the user are row **D22** in `DECISIONS.md`.
+So variant A is the minimal repair and the factory hunk is neither the cause nor necessary. It is landed as that one
+operand swap in `packages/solidcash/src/stateful/StatefulContract.ts` (`get target()`), which leaves the direct
+convention untouched because `_framedAddress` is set only by `packages/solidcash/src/framed/deploy/stateful.ts`. The
+reasoning and the open question for the user are row **D22** in `DECISIONS.md`.
 
 ### What the fix changes on the ladder
 
 Measured in the worktree after `tsc -b` and a cold fixture recompile (`{SCRATCH}/mkt-fix-verify.log`), four sampled
-proxied titles (`post job 1`, `take job`, `approve result`, `approve result and review sanity checks`):
+proxied titles: `post job 1`, `take job`, `approve result` and `approve result and review sanity checks`.
 
-| | before the fix | after the fix |
-|---|---|---|
-| result | 0 passed, 3 failed (refused at `publishJobPost`) | 1 passed, 3 failed |
-| failure | `FramedCallError: the call to "publishJobPost" was refused ... validator/1: Program failed an OP_VERIFY operation.`, in 16-25 s | the run reaches the fixture's own assertions (736 s) and fails in `checkJobFromStateDiffs` (`marketplace.test.ts:225`, `recreatedJob.roles` deep-equal), from `marketplace.test.ts:2444` |
+- Before the fix: 0 passed, 3 failed, each in 16 to 25 s with
+  `FramedCallError: the call to "publishJobPost" was refused ... validator/1: Program failed an OP_VERIFY operation.`
+- After the fix: 1 passed, 3 failed, and the run takes 694 s because the titles execute and reach the fixture's own
+  assertions; the failure is now `checkJobFromStateDiffs` at `marketplace.test.ts:225`.
 
-The blanket indexer refusal is gone and titles now broadcast and execute; what remains is a narrower problem in the
-state the fixture reads back. That residual is **still open** and is the next item for W6. The captured log was
-truncated with `tail`, so the run must be repeated with the full output kept before the residual is characterised.
+The blanket indexer refusal is gone and the titles broadcast and execute. What remains is a narrower problem, now
+characterised from the full log (`{SCRATCH}/mkt-fix-full.log`):
+
+- pass: `approve result and review > sanity checks` (467 s).
+- fail: `job posting > post job 1` (7.7 s), `take job > take job`, `approve result and review > approve result`.
+- all three fail the same assertion, `checkJobFromStateDiffs` (`marketplace.test.ts:225`), comparing `roles`:
+
+      - Expected
+      + Received
+        {
+          "arbitrator": "c4ad89cdb7377ec8a163070e8442d399a87b8701",
+      -   "creator": "71782e8159265ed94bd35b8e699c08f53a6f38c6",
+      -   "worker": "47d9fe52d462741f418e9dd5efaa6ae7e7adb600",
+      +   "creator": "76a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac",
+      +   "worker": "76a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac",
+        }
+
+  The hash160 inside each received value is the expected one (`71782e81...`, `47d9fe52...`), so the mapping is right
+  and the *representation* is not: an address read back from state decodes to the full P2PKH lock
+  (`76a914<20 bytes>88ac`) where the fixture expects the 20-byte identity. Every other compared field
+  (`state`, `whitelistWorkers`, `title`, `tags`) matched up to the assertion that fired.
+
+This is an address-representation finding, so it belongs with **D13** ("results carry the 20-byte identity, stored
+values the full lock") and with the deferred model B decision in plan section 0, not with the identity precedence
+this report fixed. The three titles were green on 2026-10-03 and in the W2 measurements, so the decode side changed
+in the same window the bisect covers; the next round should bisect it the same way, on one of these three titles
+(they fail in seconds to a minute, far cheaper than `sanity checks`).
 
 Blast radius checked so far: `LogicalIdentityPreservation.test.ts` is 2 failed | 20 passed both before and after the
 change (its two failures are constructor `deriveDeployCommitments` OP_VERIFYs, unrelated to this getter), and

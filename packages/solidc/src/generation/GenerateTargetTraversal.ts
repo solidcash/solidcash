@@ -25789,7 +25789,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // recipient's slot, 0 if none). This flush (the cached msg.sender DEBIT write) reads it into a tracked temp and,
     // in its UPDATE branch, re-points msg.sender.nextKey to it (leaving coNext when 0). It's at the bottom of this
     // flush's working area, so the flush's own raw offsets are unchanged; dropped at the end.
-    const hasRepoint = this.sortedUpsertPendingRepoint;
+    // Only the stream that pushed the register may read it. A write of another stream in the same function does
+    // not own the register, so an inherited flag must not make it read a name its own setup never pushed.
+    const hasRepoint = this.sortedUpsertPendingRepoint
+      && this.sortedUpsertLoopStreamKey === this.sortedUpsertStreamKey(node);
     if (hasRepoint) {
       this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopRepointName))), loc); this.emit(Op.OP_PICK, loc);
       this.pushToStack('(__repoint)');
@@ -31563,17 +31566,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Route inlining prefixes a handler local with `__rh<depth>_`. The counter permutation keeps its marker after
-   * that prefix, so a starts-with check on the bare marker misses the name the route actually pushes.
+   * Route inlining prefixes a handler local with `__rh<depth>_`, so the permutation marker may sit behind one
+   * or more of those prefixes. The stripped name is the permutation's stable identity: every clone of the same
+   * stream must build the same register names from it, or a setup and the body reading its registers disagree.
    */
-  private isVmapCounterPermutationName(name: string): boolean {
+  private canonicalPermutationName(name: string): string {
     let rest = name;
     for (;;) {
       const prefixed = /^__rh\d+_(.*)$/.exec(rest);
       if (!prefixed) break;
       rest = prefixed[1];
     }
-    return rest.startsWith(VMAP_COUNTER_PERM_PREFIX);
+    return rest;
+  }
+
+  private isVmapCounterPermutationName(name: string): boolean {
+    return this.canonicalPermutationName(name).startsWith(VMAP_COUNTER_PERM_PREFIX);
   }
 
   /** The compiler-owned logical-key permutation embedded anywhere in a lowered runtime write. */
@@ -31600,7 +31608,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private sortedUpsertStreamKey(write: MappingAssignNode | MappingDeleteNode): string {
     const collection = write.collection?.name ?? write.name;
-    return `${collection}\0${this.runtimeCounterPermutationName(write) ?? collection}`;
+    // The permutation's canonical name, so two clones of one stream are one stream and share its registers.
+    const permutation = this.runtimeCounterPermutationName(write);
+    return `${collection}\0${permutation === undefined
+      ? collection : this.canonicalPermutationName(permutation)}`;
   }
 
   private sortedUpsertContextForWrite(
@@ -32343,7 +32354,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const collection = writeNode.collection!;
     const streamKey = this.sortedUpsertStreamKey(writeNode);
     const streamPermutation = this.runtimeCounterPermutationName(writeNode) ?? collection.name;
-    const suffix = `${collection.name}_${streamPermutation}`.replace(/[^A-Za-z0-9_]/g, '_');
+    // Register names use the canonical permutation so every clone of this stream addresses the same registers.
+    const suffix = `${collection.name}_${this.canonicalPermutationName(streamPermutation)}`
+      .replace(/[^A-Za-z0-9_]/g, '_');
     this.sortedUpsertLoopStreamKey = streamKey;
     this.sortedUpsertLoopVaryingArrayParam = streamPermutation;
     this.sortedUpsertLoopAddrName = `(sorted_upsert_addr_${suffix})`;

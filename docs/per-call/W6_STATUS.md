@@ -87,9 +87,33 @@ Context, still useful when reading those three sites:
     state has no published writer other than a conditional delegate edge, and to take the emitted commitment
     from the trace instead. That silently drops a caller's explicit `setState` for every handler matching the
     pattern, so it needs the kernel author's intent and a wider net than one file, not a local patch.
-- `KernelPhysicalCallerWithScidCompose` — OP_VERIFY at input 4 in `CallerCheck.touch` line 5
-  (`require(msg.sender == expected)`): the proxy's `address(this)` does not satisfy `msg.sender` for the
-  nested-caller-beside-SCID shape.
+- `KernelPhysicalCallerWithScidCompose` — "uses the authenticated proxy identity for address(this) and a nested
+  caller beside its SCID anchor". The earlier attribution ("`msg.sender == expected`") does not survive the
+  operand dump. Measured with `SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE=1`:
+
+  - Participant map (`SOLIDC_DEBUG_ROUTE_INPUTS=1`): `0:SolidCashProxy.__forward | 1:DataNft_00000000.spend |
+    2:PhysicalCaller.poke | 3:DataNft_00000000.spend | 4*FAIL:CallerCheck.touch | 5:DataNft_a02021a6.spend`.
+    The test's own anchor assertion (exactly one `none`-capability NFT under the proxy category) passes, so the
+    composition is shaped as the test intends before the VM leg.
+  - The failing instruction is `ip 153 OP_VERIFY` at the end of `OP_1 OP_ROLL OP_EQUAL OP_VERIFY`, immediately
+    before `OP_6 OP_INVOKE` (the handler body). Its pre-state (ip 152, depth 3) is, top first:
+    `2:32:0200000000000000000000000000000000000000000000000000000000000000`,
+    `1:35:aa2075e5b064a99571c7cf63677d240e4100ed26150b746ab7c21c1417ae5089438787`,
+    `0:35:aa20f96b89b08b808fe907d7a4ce50e33ce3efea028f2ac5c994dcfc141c22f0893387`.
+    `OP_1 OP_ROLL` brings the 35-byte locking bytecode to the top and compares it with the **32-byte**
+    `0200…00` value, which cannot be equal. So the failing comparison is a locking bytecode against a
+    bytes32 value — not the user's address compare.
+  - The callee publishes exactly that shape: `touch(address expected)` has
+    `inputs: ["expected:address", "__internal__msgSenderCategory:bytes32"]`, and its route inputs include
+    `__internal__graphCallers`. `msg.sender` is therefore transported as a bytes32 category/SCID (the measured
+    `0200…00`), while the source compares it to an `address`. The intended comparison is very likely the
+    **anchor input's locking bytecode** (the test's one `none`-capability anchor under the proxy category) rather
+    than the category bytes.
+  - Next step for whoever picks this up: decide whether the generated `msg.sender` expression should derive the
+    caller's locking bytecode from `__internal__msgSenderCategory` (via the anchor input) before comparing, or
+    whether the composer must supply a different witness. That is a codegen question in the
+    category-anchored-`msg.sender` path, not a local SDK patch, and it is also the shape the plan's msg.sender
+    audit touches.
 - `KernelSegmentedHandlerReturnWidths` — OP_VERIFY at batch input 0 for a batch mixing a void, a one-value and
   a two-value handler over one mapping. No `requireStatement` metadata is published, so the failing
   instruction is unidentified.

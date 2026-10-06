@@ -1109,8 +1109,10 @@ function markConstructorCapturedHelperGraphEffects(ast: Ast): void {
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
   // Composition convention is resolved and checked before any lowering: the two conventions produce different
   // addresses and unlocking bytecode, so a request whose code generation is absent must refuse rather than emit
-  // an artifact for the other convention.
-  assertCompositionConventionSupported(resolveCompositionConvention(options.composition));
+  // an artifact for the other convention. The resolved value replaces the request, so the deprecated `per-call`
+  // name never survives into a comparison or into the published artifact.
+  const compositionConvention = resolveCompositionConvention(options.composition);
+  assertCompositionConventionSupported(compositionConvention);
   if (options.messageBusRootEnvelope === true && options.messageBusProxyForwardEnvelope === true) {
     throw new Error('messageBusRootEnvelope and messageBusProxyForwardEnvelope are mutually exclusive');
   }
@@ -1137,6 +1139,7 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
   const normalized = {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
+    composition: compositionConvention,
     optimise,
     ownerAltAnchor: options.ownerAltAnchor ?? featureFlags.ownerAltAnchor,
     handlerBandModel: options.handlerBandModel ?? featureFlags.handlerBandModel,

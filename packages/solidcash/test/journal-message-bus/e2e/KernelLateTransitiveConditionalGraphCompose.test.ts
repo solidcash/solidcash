@@ -118,7 +118,11 @@ describe('kernel late transitive conditional graph planning', () => {
         }
       }`, KERNEL);
     expect(rootArtifact.messageBus?.convention).toBe('kernel-row-loop');
-    expect(rootArtifact.bytecode.replace(/\s+/gu, '')).toContain('OP_INVOKE');
+    // The root is a foreign-delegate proxy: its own body is the pre-auth covenant and no helper reaches the
+    // two-use floor, so there is no OP_INVOKE to look for. The published delegate forwarding is what states
+    // that this route executes the implementation it was given as constructor argument 0.
+    expect(rootArtifact.abi.find((entry) => entry.name === 'execute')?.delegateForwarding)
+      .toMatchObject({ targetBinding: { kind: 'constructorArg', input: 0, name: 'implementation' } });
     const rootBase = new Contract(rootArtifact, [relay.inner.lockingBytecode], { provider });
     const rootSetup = await setupStatefulUtxos(
       provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
@@ -295,7 +299,11 @@ describe('kernel late transitive conditional graph planning', () => {
         }
       }`, KERNEL);
       expect(rootArtifact.messageBus?.convention).toBe('kernel-row-loop');
-      expect(rootArtifact.bytecode.replace(/\s+/gu, '')).toContain('OP_INVOKE');
+      // The root is a foreign-delegate proxy: its own body is the pre-auth covenant and no helper reaches the
+      // two-use floor, so there is no OP_INVOKE to look for. The published delegate forwarding is what states
+      // that this route executes the implementation it was given as constructor argument 0.
+      expect(rootArtifact.abi.find((entry) => entry.name === 'execute')?.delegateForwarding)
+        .toMatchObject({ targetBinding: { kind: 'constructorArg', input: 0, name: 'implementation' } });
       const rootBase = new Contract(rootArtifact, [relay.inner.lockingBytecode], { provider });
       const rootSetup = await setupStatefulUtxos(
         provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },

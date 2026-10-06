@@ -47,6 +47,7 @@ export function resolveExternalArgs(
   stateIncludesPriorWrites = false,
   executionSelfAddress?: FunctionArgument,
   executionCallerAddress?: FunctionArgument,
+  ownerConstructorArgs?: readonly FunctionArgument[],
 ): FunctionArgument[] | undefined {
   if (!argSources) return undefined;
   if (argSources.length === 0) return [];
@@ -69,11 +70,13 @@ export function resolveExternalArgs(
       }
       case 'constructorArg': {
         if (!source.paramName) return undefined;
+        // The index is taken from `artifact`, so the value must come from the same contract's arguments. A
+        // caller that passes another contract's artifact - a nested compose reading the callee's own
+        // constructor - supplies them; the host's own arguments stay the default.
+        const ownerArgs = ownerConstructorArgs ?? host.inner.encodedConstructorArgs;
         const paramIndex = artifact.constructorInputs.findIndex((inp) => inp.name === source.paramName);
-        if (paramIndex < 0 || paramIndex >= host.inner.encodedConstructorArgs.length) {
-          return undefined;
-        }
-        resolved.push(host.inner.encodedConstructorArgs[paramIndex]);
+        if (paramIndex < 0 || paramIndex >= ownerArgs.length) return undefined;
+        resolved.push(ownerArgs[paramIndex]);
         break;
       }
       case 'literal': {

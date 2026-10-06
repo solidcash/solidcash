@@ -13496,6 +13496,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     stateIncludesPriorWrites = false,
     executionSelfAddress?: FunctionArgument,
     executionCallerAddress?: FunctionArgument,
+    ownerConstructorArgs?: readonly FunctionArgument[],
   ): FunctionArgument[] | undefined {
     return resolveExternalArgsImpl(
       {
@@ -13505,7 +13506,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       argSources, functionArgs, artifact, state, callerInputs, externalReturns,
       occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
-      executionCallerAddress,
+      executionCallerAddress, ownerConstructorArgs,
     );
   }
 

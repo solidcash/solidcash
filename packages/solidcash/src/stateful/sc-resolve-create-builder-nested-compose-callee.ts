@@ -101,7 +101,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
     delegateFn: AbiFunction | undefined;
     callInfoContract: {
       _externalRegistry: Map<string, unknown>;
-      inner: { artifact: Artifact };
+      inner: { artifact: Artifact; encodedConstructorArgs?: readonly Uint8Array[] };
     };
     onChainState: { state: Record<string, unknown> };
     delegateSelfAddress: FunctionArgument;
@@ -132,6 +132,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
     ? host.resolveExternalArgs(
       [nested.addressSource], delegateVisibleArgs, callInfoContract.inner.artifact,
       onChainState.state, delegateVisibleInputs, undefined, 0, false, delegateSelfAddress,
+      undefined, callInfoContract.inner.encodedConstructorArgs,
     )?.[0]
     // Backward compatibility for artifacts which predate addressSource: addressStateVar names the
     // authenticated caller-state field, not a deployment-registry hint. Prefer it over interface-name

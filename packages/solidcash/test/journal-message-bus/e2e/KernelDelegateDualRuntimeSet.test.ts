@@ -67,13 +67,18 @@ describe('delegated dual runtime mapping-set streams', () => {
         '__message_bus_key_membership_0', '__message_bus_key_membership_1',
         '__message_bus_key_membership_0_alt', '__message_bus_key_membership_1_alt',
       ]);
+    // The route commits its whole result vector to one output-only slot and no longer reserves one conditional
+    // return slot per possible row, so the frame is the state block plus the trailing key pool rather than a
+    // maximumRows-padded return bank.
     expect(delegate.messageBus?.route.blockLayout).toMatchObject({
-      blockSize: 389,
-      trailingBase: 259,
+      blockSize: 134,
+      trailingBase: 4,
       trailingCapacity: 130,
     });
+    const delegateLayout = delegate.messageBus!.route.blockLayout!;
+    expect(delegateLayout.trailingBase! + delegateLayout.trailingCapacity!).toBe(delegateLayout.blockSize);
     // The physical executor and logical identity follow the complete compiler-owned route frame.
-    expect(delegate.messageBus!.route.blockLayout!.blockSize + 2).toBe(391);
+    expect(delegate.messageBus!.route.blockLayout!.blockSize + 2).toBe(136);
     const routeAsm = bytecodeToAsm(hexToBin(delegate.functionBodies![delegate.messageBus!.route.selector]));
     expect(routeAsm).toContain('OP_INVOKE');
 

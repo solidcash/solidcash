@@ -58,8 +58,10 @@ describe('kernel two-hop return probe', () => {
     expect(sourceArtifact.abi.find((fn) => fn.name === 'read')?.entryAccesses).toEqual([
       expect.objectContaining({ collection: 'values', operations: ['read'] }),
     ]);
+    // The read handler keys the value the loop variable selects, so its key pool covers every physical entry
+    // slot the loop can reach: the published alternative lane is the whole pool, not a two-slot window.
     expect(sourceArtifact.messageBus?.handlers.find((fn) => fn.name === 'read'))
-      .toMatchObject({ physicalEntrySlotAlternatives: [[expect.any(Number), expect.any(Number)]] });
+      .toMatchObject({ physicalEntrySlotAlternatives: [[0, 1, 2, 3, 4, 5, 6, 7]] });
 
     const collectorArtifact = compileString(`pragma solidity ^0.8.0;
       interface INumberSource {

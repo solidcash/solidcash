@@ -51,16 +51,14 @@ describe('kernel nested return-slot coordinates', () => {
     for (const artifact of [rootArtifact, leafArtifact]) {
       const bus = artifact.messageBus!;
       const layout = bus.route.blockLayout!;
-      // The direct result is still block-local at offset 1. The kernel additionally reserves one conditional
-      // return lane for each possible row; all of those lanes must remain local to this participant.
-      expect(layout.blockSize).toBe(2 + bus.maximumRows);
+      // The route commits its complete result vector to one output-only return slot; per-row return slots are
+      // deliberately not reserved, because they would pad every returning route with inert outputs. The block is
+      // therefore the master slot plus that single return slot, and both stay local to this participant.
       expect(layout.slots).toEqual([
         { kind: 'master', offset: 0 },
         { kind: 'returnEvent', offset: 1 },
-        ...Array.from({ length: bus.maximumRows }, (_, slotIndex) => ({
-          kind: 'returnEvent', offset: slotIndex + 2, slotIndex, conditional: true,
-        })),
       ]);
+      expect(layout.blockSize).toBe(layout.slots.length);
     }
 
     const callsiteId = rootArtifact.abi.find((entry) => entry.name === 'read')!

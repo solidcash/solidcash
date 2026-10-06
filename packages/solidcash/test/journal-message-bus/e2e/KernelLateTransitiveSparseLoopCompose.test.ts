@@ -353,7 +353,7 @@ describe('kernel late transitive sparse loop graph planning', () => {
     ))).not.toContain('ReachableSink');
     await expect((missingDeploymentRelay as any).relay(
       missingDeploymentCoordinator.inner.lockingBytecode, [1n, 0n],
-    ).build()).rejects.toThrow(/callsite .* occurrence 0 has no authenticated target deployment/);
+    ).build()).rejects.toThrow(/callsite .* published target .* does not match a connected .* callee/);
 
     const missingMasterArtifact = compileString(`pragma solidcash >=0.8.0;
       contract ReachableSink {

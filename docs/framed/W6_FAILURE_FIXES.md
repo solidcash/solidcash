@@ -16,10 +16,10 @@ those stretches are noted below where they limit attribution.
 |---|---|---|---|
 | G1 | 2 (solidc `InlineAssemblyYul`, `solidity-compat/yul-evm`) | `ce2f7bba1` | `add6f3c71` |
 | G2 | 1 (solidc `ComputeSideCarRecipes`) | `b6ee86a3f` | `07950282c` |
-| G3 | 2 (`test/unit/ExternalCallPredicate`) | `a2bcdb614` | pending |
-| G4 | 13 (direct/kernel layout) | `598b92837`, `0cffcb936` | pending |
+| G3 | 2 (`test/unit/ExternalCallPredicate`) | `a2bcdb614` | `27108b19b` |
+| G4 | 13 (direct/kernel layout) | `598b92837`, `0cffcb936`, `db0551317` | `ac4a136f2` |
 | G5 | 7 (six `test/e2e/Upgrade.test.ts`, `KernelSelfdestructStateCompose`) | `d532aa32a` | `3d90af923` |
-| G6 | 3 (the two Kernel*Result* compose titles and `KernelResultTopology`) | `fcb3aff77`, `f4a00d3ff` | pending |
+| G6 | 3 (the two Kernel*Result* compose titles and `KernelResultTopology`) | `fcb3aff77`, `f4a00d3ff` | `da3b9d2ac` |
 
 The causes, one per group:
 
@@ -29,16 +29,32 @@ The causes, one per group:
 - G2: `containsProducerResult` dropped the whole pre-call require, and the side-car recipe is derived only from
   `externalCalls[].preCallRequires`, so no recipe was produced. `07950282c` exempts a Keccak/`ECDSA.recover`
   compute call from the producer-result rejection.
-- G3: caching a repeated whole-struct mapping assign changed the published predicate and dropped a dominating
-  field type.
-- G4: `598b92837` (loop-cached dynamic-array flush guard) fails `DynamicWriteBehavior`; `0cffcb936` (single-arm
-  chunkable write) fails the other twelve.
+- G3: caching a repeated whole-struct mapping assign marked the entry written, so a lone field-write-then-read
+  took the cache and the dominating write the predicate folds disappeared. `27108b19b` keeps counting the
+  whole-struct assigns but stops setting `written` in that arm, so a repeat still caches and `a2bcdb614`'s own
+  titles (386 passed) stay green.
+- G4: three commits, not two. `598b92837`'s dirty-bit guard marked only the `StateArray*` forms, so a bare
+  `arr[0] = x` (an `ArrayAssignNode` whose name `renameReads` rewrites to the cache) never set the dirty flag and
+  a conditional re-write skipped the flush: `DynamicWriteBehavior`. `0cffcb936` admitted every non-bool-param
+  single-arm branch, changing the published layout of a direct non-routed writer: both
+  `KernelDirectComputedChunks` titles, `KernelDirectWitnessAbi`, `WitnessAbiPublication`. `db0551317` added
+  chunkable collections to the runtime route's `sortedBatchInfo` and the alias sentinel, shifting the derived
+  `vmapBatchPredOut` coordinate: the eight remaining titles. `ac4a136f2` marks the renamed local-array writes
+  dirty, narrows the admission to `BranchNode.preserveConditionalEntryWrites`, and restores the
+  chunkable-filtered `sortedBatchInfo` and the pre-alias witness branch.
+- G4 trade-off, deliberate: `KernelIndependentComputedChunks` - "keeps a direct writer and delegated writer in
+  separate continuation ranges" is failing again. It is a `W6_BASELINE.md` pre-existing kernel row that
+  `0cffcb936` had fixed; its `Store.update` shape is byte-identical to `KernelDirectComputedChunks`'s, and the
+  two titles pin the same `eligible` flag to opposite values, so the direct-writer pin and this one cannot both
+  hold without a graph-context-aware admission. The fix returns it to its documented baseline state.
 - G5: the `carriesDataNfts` fallback emitted the auto covenant verification for any body listing data NFTs,
   including upgrade, deploy and unsafe bodies that list the full set for their modifier while their own code
   touches none. `3d90af923` limits the fallback to `FunctionModifier.DELEGATE` entries, which is what that
   commit targeted.
-- G6: `fcb3aff77` (a hand-prepared edge judged by argument value) fails `KernelMultiProducerResultCompose`;
-  `f4a00d3ff` (a legacy unrolled loop resolved by cardinality) fails `KernelResultTopology`.
+- G6: `fcb3aff77` spared every position whose compiled source consumes a producer result, so a hand-prepared
+  edge with swapped scalar lanes was never judged; `f4a00d3ff` let any domain-less loop fall through to the
+  cardinality fallback, which is only correct for `legacy-unroll`. `da3b9d2ac` narrows the escape to address
+  producer results and gates the fallback on the convention.
 
 The one failure that is not a regression is `ExactAdditiveRecurrenceSecurity` - "caps rank at 64": it passes
 alone at HEAD (82 s and 10 s on two runs) and only timed out under full-suite load against the 120 s config cap.

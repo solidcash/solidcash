@@ -39,6 +39,7 @@ import {
   bytesToHex,
   collectionChunksValue,
   decodePushdataValue,
+  decorateDecodedResult,
   dynamicChunkSignature,
   dynamicLenKey,
   joinChunks,
@@ -1594,17 +1595,29 @@ function decodeEntryValues(entry: ReadEntry, artifact: Artifact, retval: Uint8Ar
   const decoded = decodeReturnValues(
     retval, entry.outputs, structDefinitionsOf(artifact), entry.resultEncoding, artifact.enums,
   );
+  const structs = structDefinitionsOf(artifact);
+  // A public read answers with the same typed projection the direct convention publishes. An `evm-abi-v1` address
+  // leaf becomes its canonical 20-byte identity and carries that encoding, so a caller that also holds the stored
+  // locking bytecode of the same address meets one value in two forms rather than two unrelated byte strings; the
+  // matcher in `@solidcash/testing` relies on that mark to compare them, and without it the two forms are exactly
+  // unequal. Only a single declared output names the value's schema; a tuple keeps the plain accessor boundary.
+  const project = (value: StateValue): StateValue => (
+    entry.outputs.length !== 1 || entry.outputs[0] === undefined
+      ? attachDecodedAccessors(value)
+      : decorateDecodedResult(
+        value, entry.outputs[0].type, structs, entry.resultEncoding ?? 'compact-pushdata-v1',
+      ));
   const struct = mappingValueStruct(entry, artifact);
   if (struct !== undefined && decoded.length === struct.fields.length) {
     const record: Record<string, StateValue> = {};
     struct.fields.forEach((field, index) => { record[field.name] = decoded[index]!; });
-    return [attachDecodedAccessors(record)];
+    return [project(record)];
   }
   const paged = pagedValueStruct(entry, artifact);
   if (paged !== undefined && decoded.length === 1 && Array.isArray(decoded[0])) {
     // Every turn's record sits in the one output the getter declared, so the accessor boundary is attached to the
     // array and, through it, to each record in the order the turns walk.
-    return [attachDecodedAccessors(decoded[0]!)];
+    return [project(decoded[0]!)];
   }
   // A getter returning a record, an array of records or a nested struct reads as one: every returned value carries
   // the accessor boundary, so a caller sees the same shape whatever the getter's own return layout is.
@@ -1617,7 +1630,7 @@ function decodeEntryValues(entry: ReadEntry, artifact: Artifact, retval: Uint8Ar
     hopTrace(`read ${entry.name} outputs=${entry.outputs.map((output) => output.type).join(',')} `
       + `n=${decoded.length} shape=${decoded.map(shape).join(' ')}`);
   }
-  return decoded.map((value) => attachDecodedAccessors(value));
+  return decoded.map((value) => project(value));
 }
 
 /** The argument pushes a frame's unlocking bytecode carries, in the order a callee's body reads them. */

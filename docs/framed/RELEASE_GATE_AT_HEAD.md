@@ -162,3 +162,20 @@ source-export crash. `yarn spellcheck` is RED, but the plan's section 3 does not
   route of their own; none of these scripts reaches them.
 - The whole gate should be re-run once on an idle box, because every wall time here was taken under another
   worker's load.
+
+## Addendum (coordinator, after this run)
+
+Two of the three red scripts are fixed since this run, and one of them was a repo-wide defect rather than a single
+line:
+
+- `yarn examples`: the crash was a family of type-only exports imported as values. A `verbatimModuleSyntax: true`
+  pass over `packages/*/src` found 460 such sites in 115 files (453 imports and 7 re-exports); all are converted at
+  `e21385cf1` and `yarn examples` now exits 0 with all three scripts (`p2pkh`, `transfer_with_timeout`,
+  `hodl_vault`), 20.93 s. The regex helper used to find the first one undercounted; the `verbatimModuleSyntax` pass
+  is the check worth adding to CI.
+- `yarn test:kernel-beta:local`: the vocabulary abort is cleared at `76c80c519` by rewording four production comment
+  lines that carried a forbidden stem; the gate now passes that check and stops at its own clean-checkout guard,
+  which is expected on an uncommitted tree. Its build and test steps have still not been run.
+
+Still red: `test:application-conformance` (the six `test/e2e/Upgrade.test.ts` failures, which belong to the same
+class as `W6_UPGRADE_ROUTE_FINDING.md`). Still amber: the docs-snippets probe and its `@types` self-symlink.

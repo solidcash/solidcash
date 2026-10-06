@@ -29,6 +29,12 @@ export type MaterializeCreateBuilderLowLevelStatefulCallHost = {
   statefulCall: (name: string) => FunctionArgument[] | undefined;
   resolveExternalExpressionReturns: (...args: any[]) => Promise<any>;
   evaluateExternalExpression: (...args: any[]) => any;
+  /**
+   * The shipped per-occurrence planner (`_planExternalCallOccurrences`). Optional so an older host keeps the
+   * occurrence-zero behaviour instead of failing to compile; when present it is the only authority used to decide
+   * whether a guarded loop reaches its callee.
+   */
+  planExternalCallOccurrences?: (...args: any[]) => Promise<readonly { sourceIteration: number }[]>;
 };
 
 export type MaterializeCreateBuilderLowLevelStatefulCallResult = {
@@ -330,6 +336,27 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
         lane: 'condition',
       },
     );
+    // A loop's guard is per iteration. Deciding it from occurrence zero alone drops the co-spent callee for a
+    // sparse loop whose first row is skipped but whose later rows still call it, and the compiled route is left
+    // with an unresolved `__internal__extcallMasterIdx*` witness. Ask the shipped occurrence planner instead, and
+    // keep the call when it cannot answer: an unresolved guard retains the covenant's own occurrence handling.
+    if (nested.occurrence === 'loop' && host.planExternalCallOccurrences !== undefined) {
+      let reached: readonly { sourceIteration: number }[] | undefined;
+      try {
+        reached = await host.planExternalCallOccurrences(nested, {
+          functionArgs: delegateVisibleArgs,
+          artifact: callInfo.contract.inner.artifact,
+          state: onChainState.state,
+          callerInputs: delegateVisibleInputs,
+          executionSelfAddress: delegateSelfAddress,
+          externalReturns: conditionReturns,
+        });
+      } catch {
+        reached = undefined;
+      }
+      if (reached === undefined || reached.length > 0) nestedExternalCalls.push(nested);
+      continue;
+    }
     const active = host.evaluateExternalExpression(
       nested.condition,
       delegateVisibleArgs,

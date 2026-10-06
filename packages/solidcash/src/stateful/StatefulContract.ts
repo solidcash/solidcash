@@ -11973,6 +11973,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               evaluateExternalExpression: (...a: any[]) => (
                 this as any
               )._evaluateExternalExpression(...a),
+              planExternalCallOccurrences: (...a: any[]) => (
+                this as any
+              )._planExternalCallOccurrences(...a),
             },
             {
               callInfo,

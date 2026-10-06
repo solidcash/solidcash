@@ -98,12 +98,13 @@ export default defineConfig(solidhatPreset(
       globalSetup: ['./scripts/marketplace-fixture-fresh.mjs'],
       // Kernel-mode history tests compose dozens of multi-participant BCH transactions serially. Keep the
       // unchanged upstream test bodies authoritative rather than aborting a healthy loop at the ten-minute mark.
-      // The budget is the original 20 minutes. Measured 2026-10-06 at 8c4671242 under a concurrent load: the
-      // slowest no-proxy title, `approve result and review sanity checks`, is 1148.58 s of test time (1155.62 s
-      // file), and the pair with `refund sanity checks` is 1915.66 s. A single gate run on an unloaded box is
-      // faster than that reading, so 20 minutes holds; raise this only with a new measurement.
-      testTimeout: 1_200_000,
-      hookTimeout: 1_200_000,
+      // The original 20-minute budget does not hold for the no-proxy twin. Measured 2026-10-06 at 19f6c28b5:
+      // `approve result and review sanity checks` is 1148.58 s of test time (1155.62 s file) on a lightly loaded
+      // box, but 1360.99 s in a full ladder run on a loaded one, and it timed out at a 1_200_000 ms cap there. The
+      // cap is 30 minutes: half again the loaded worst case measured so far, and tighter than the 40 minutes a
+      // 20-26-minute reading previously justified. Raise it only with a new measurement.
+      testTimeout: 1_800_000,
+      hookTimeout: 1_800_000,
       fileParallelism: false,
       // The fixture retains several multi-megabyte covenant transactions. Avoid spending most of a full run in
       // major GC at Node's default ~4 GB worker ceiling, and expose per-test progress without SDK debug logging.

@@ -108,9 +108,13 @@ Measured at `8c4671242`, heap 6144 MB, in the worktree; logs in `{SCRATCH}`.
   (`{SCRATCH}/w4-proxied-pair.log`), so the proxied lane is 7-10 % slower. The four sampled proxied titles together
   are 629 s (`{SCRATCH}/read-fix-four.log`).
 
-Both no-proxy titles are inside the original 20-minute budget, so the harness timeout is reverted from 40 minutes to
-20 (`testTimeout` and `hookTimeout` `2_400_000` -> `1_200_000`, with the measurement in the comment), which is W4's
-stated target.
+**The 20-minute budget target is NOT met, and the first revert was wrong.** Reverting the cap to 20 minutes
+(`1_200_000`) made a full no-proxy ladder run time `approve result and review sanity checks` out: vitest reports
+1360.99 s for it under a loaded box (a full ladder plus a lint pass running alongside), against 1155.62 s in the
+lighter worktree run. The cap is therefore 30 minutes (`testTimeout` and `hookTimeout` `2_400_000` -> `1_800_000`),
+half again the loaded worst case, with the numbers in the comment. So W4's "slowest no-proxy titles back under the
+original 20-minute budget" is open: on this evidence that title needs 19 to 23 minutes depending on load, and the
+only way to get it under 20 reliably is the perf work in `W4_WINS.md`, not a timeout change.
 
 ## Not done, and why
 

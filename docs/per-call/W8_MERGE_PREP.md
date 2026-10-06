@@ -56,7 +56,41 @@ which is the same class as the SDK fee-estimation shortfall recorded in `W6_STAT
 `KernelMultiContinuationResourceCompose` (fee 33353 versus the 43528 the final 43.5 KB transaction needs). Porting
 it is worth doing before attempting that item again, and it may remove the shortfall outright.
 
-## 5. Recommended execution order (one quiet window)
+## 5. Gap analysis: which behavioural commits our tree already has
+
+Checked by grep against the renamed targets before planning the port.
+
+Already present in our tree (no port needed):
+
+- `8964e5d7c` `MockNetworkProvider.addUtxo` returns the UTXO - ours is `addUtxo(...): Promise<Utxo>`.
+- `cd1c74589` custom syntax error listeners - ours is `ast/error-listeners.ts` with `SolidCashErrorListener`,
+  `ThrowingErrorListener`, `ForwardingErrorListener` and `CompilerOptions.errorListener`.
+- `5d8f3cba2` export `ast/Location` - ours is `export * from './ast/Location.js'` in `solidc/src/index.ts`.
+
+Definitively missing, and independently useful:
+
+- `57ca18b17` `TransactionBuilder.calculateTransactionFee` - absent from `packages/solidcash/src`.
+- `f05ef0dd5` placeholder P2PKH sizing - `constants.ts` still has only `P2PKH_INPUT_SIZE` and
+  `getTransactionSize()` adds no placeholder allowance.
+
+Needs a per-hunk comparison against heavily diverged files (the first task inside the window, not a prerequisite
+for opening it):
+
+- `1024ddf5f` more local validation checks - our builder was rewritten (it has `checkMaxFee`,
+  `checkFungibleTokenBurn`, `checkNftBurn` where upstream has `checkFee`, `checkTransactionSize`).
+- `42e8ad81d` source tags for stack cleanup and loop condition - touches
+  `solidc/src/generation/GenerateTargetTraversal.ts` plus three `packages/utils/src` files whose paths are
+  unchanged.
+- `1597840a1` ParseError carries a Location, normalised syntax messages - `solidc/src/Errors.ts` and
+  `solidc/src/ast/error-listeners.ts` exist and our listener file is a superset of upstream's.
+- `b7119e195` location data in tuple assignment errors - touches `SymbolTableTraversal.ts` and
+  `TypeCheckTraversal.ts`, both present and diverged.
+- `4c46aa351` test case update - n/a.
+
+So three of the ten are already in, two are missing and worth porting on their own merits, and five need the
+comparison.
+
+## 6. Recommended execution order (one quiet window)
 
 1. Confirm the window and that no other agent is writing to `/Code/cashscript` (check `/proc/*/cwd` per the
    plan's rule, not by killing anything).

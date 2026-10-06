@@ -10158,14 +10158,18 @@ export default class SymbolTableTraversal extends AstTraversal {
           .some((child) => child !== undefined && dependsOnRuntimeValue(child))
       );
       // A producer result is not known when a later call's reachability is published. It is not a
-      // replayable require, and it must not drag a sibling conjunct into one opaque predicate.
-      const containsProducerResult = (expression: ExternalCallExpression): boolean => (
-        expression.kind === 'producerResult' || expression.kind === 'externalCall'
-        || [expression.expression, expression.left, expression.right, expression.condition,
+      // replayable require, and it must not drag a sibling conjunct into one opaque predicate. A Keccak or
+      // recovery compute call is the exception: its result is replayed from a compute side-car recipe, so a
+      // producer result named under it is a recipe operand, not an unknown reachability dependency.
+      const containsProducerResult = (expression: ExternalCallExpression): boolean => {
+        if (expression.kind === 'call' && expression.computeSourceSite !== undefined
+          && (expression.name === 'keccak256' || expression.name === 'ECDSA.recover')) return false;
+        if (expression.kind === 'producerResult' || expression.kind === 'externalCall') return true;
+        return [expression.expression, expression.left, expression.right, expression.condition,
           expression.ifTrue, expression.ifFalse, expression.source?.expression,
           ...(expression.args ?? [])]
-          .some((child) => child !== undefined && containsProducerResult(child))
-      );
+          .some((child) => child !== undefined && containsProducerResult(child));
+      };
       const preCallRequires = (dominatingStatements() ?? []).flatMap((statement) => {
         if (!(statement instanceof RequireNode)) return [];
         const callPriorStatements = priorStatements;

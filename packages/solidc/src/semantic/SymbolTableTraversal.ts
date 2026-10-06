@@ -8927,12 +8927,25 @@ export default class SymbolTableTraversal extends AstTraversal {
       };
       // What a local holds where it is read: `undefined` when the dominating statements never write it after its
       // declaration (the resolvers below read it as before), `null` when a write cannot be followed.
-      const followLocal = (identifier: IdentifierNode): ExternalCallExpression | null | undefined => {
-        if (!followable(identifier)) return undefined;
+      const followLocal = (
+        identifier: IdentifierNode, seen = new Set<string>(),
+      ): ExternalCallExpression | null | undefined => {
+        if (!followable(identifier) || seen.has(identifier.name)) return undefined;
+        seen.add(identifier.name);
         const prior = priorStatements ?? [];
         let last = prior.length - 1;
         while (last >= 0 && !writesLocal(prior[last]!, identifier.name)) last -= 1;
-        if (last < 0) return undefined;
+        if (last < 0) {
+          // An inlined helper binds its parameter to the caller's local (`__inlN_gone = gone`). That binding is
+          // not a later write, so the value is the caller's local as it stands here, element writes included.
+          // Reading the declaration initializer alone would keep the array it was allocated as.
+          const definition = identifier.definition?.definition;
+          const initializer = definition instanceof VariableDefinitionNode ? definition.expression
+            : this.currentFunction?.body
+              ? this.findLocalInit(this.currentFunction.body, identifier.name) : undefined;
+          if (initializer instanceof IdentifierNode) return followLocal(initializer, seen);
+          return undefined;
+        }
         const before = prior.slice(0, last);
         const write = prior[last]!;
         // The value keeps the type the local is declared with, which a packed read of it encodes by: a join of an

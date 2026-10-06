@@ -118,11 +118,14 @@ only way to get it under 20 reliably is the perf work in `W4_WINS.md`, not a tim
 
 ## Not done, and why
 
-- **`MarketplaceV1`'s framed artifact grew 864 bytes** against the W3 baseline (135056 -> 135920), so W4's "no
-  artifact grows" target is not met. Every other framed contract is byte-identical. The growth lies somewhere in the
-  150 commits between the W3 compile (2026-10-05 15:37, then HEAD `c473ba4a0`) and HEAD, and it needs its own
-  compile-only bisect: each step is a forced build plus one project compile, about three minutes, with no test run.
-  Not started.
+- **`MarketplaceV1`'s framed artifact grew 864 bytes** against the W3 baseline (135056 -> 135920). The compile-only
+  bisect is done: `598b92837` ("fix(solidc): flush a loop-cached dynamic array only after it changes") is the first
+  commit over the old value, and it is the whole change. `CacheDynamicArrayInLoop` adds a per-array dirty bit and
+  gates the flush on it, so the pass emits `markDirty()` assignments and a conditional flush branch; those nodes are
+  the 864 bytes. At the bracketing pair only `MarketplaceV1` moves (`FakeToken` and `MarketplaceDataV1` are
+  byte-identical), the refused count stays 0, and the same 9 sources compile on both sides. So the growth is the
+  cost of a correctness fix, not codegen drift and not an admission: `W4_SIZE_GROWTH.md` has the table, the diff and
+  the logs.
 - No marketplace perf or size optimization landed. The ranked candidates are in `W4_WINS.md`; the first one
   (batching the learned-value walk) changes the reading's semantics, so it wants the timings above as its baseline
   and its own measurement.

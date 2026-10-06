@@ -232,7 +232,14 @@ describe('fixed conditional BCH transfer transcript security', () => {
       eligible: true,
       transfers: [{
         recipientRecipe: { kind: 'handlerInput', inputIndex: 2 },
-        amountRecipe: { kind: 'cast', operand: { kind: 'binary', operator: '+' } },
+        // The amount is `adjusted + 1`, and the recipe now resolves both operands instead of a cast wrapper:
+        // handler input 3 (the `amount` parameter) plus the literal 1.
+        amountRecipe: {
+          kind: 'binary',
+          operator: '+',
+          left: { kind: 'handlerInput', inputIndex: 3, resultType: 'uint256' },
+          right: { kind: 'intLiteral', value: '1', resultType: 'int' },
+        },
         condition: { kind: 'unary', operator: '!' },
       }],
     });

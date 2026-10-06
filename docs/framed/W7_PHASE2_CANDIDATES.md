@@ -223,3 +223,111 @@ runs that key (the global instrument used `deploy`/`hostile`/`call` baselines, w
   captured with `reportOnFailure`, so a failing file's baseline reflects only the part that ran.
 - `ahead/` was not measured (it is gated behind `FRAMED_AHEAD=1` and out of the task's list), and
   `FRAMED_FULL=1`-only cases were not measured.
+
+## Extension: solidc and utils framed suites (phase 2)
+
+Same method, second scratch root `{SCRATCH2}` = `/tmp/grok-goal-4b830698eeec/implementer/w7p2b`. Each run is
+`yarn workspace <solidc|@solidcash/utils> vitest run --config <pkg config>` with the same v8 flags as above,
+`--coverage.allowExternal=true`, `--coverage.reportOnFailure=true` and
+`--coverage.include` for `packages/solidc/src/**/*.ts`, `packages/solidcash/src/**/*.ts` and
+`packages/utils/src/**/*.ts`.
+
+### What was measured
+
+- `solidc` with `packages/solidc/vitest.framed.config.ts`: `test/framed/master` (131 files),
+  `test/framed/records` (7), `test/framed/validator` (4) and `test/framed/machine.test.ts` (1). There is no
+  `machine/` directory; the machine suite is that single file. Baselines `{SCRATCH2}/<dir>-base.log`; per-file
+  `{SCRATCH2}/s-master-<name>.log`, `s-records-<name>.log`, `s-validator-<name>.log`, `s-machine.log`; coverage
+  `{SCRATCH2}/cov-<tag>/coverage-final.json`.
+- `@solidcash/utils` with the package `vitest.config.ts` (it has no framed config; `test/framed` is the framed
+  subset): 6 files, 119 tests. Baseline `{SCRATCH2}/utils-base.log`; per-file `{SCRATCH2}/u-<name>.log`.
+- 143 solidc files plus 6 utils files = 149 per-file runs. Within-directory summary `{SCRATCH2}/wid-master.txt`
+  (and `analyze2.py` for records, validator and utils); global output `{SCRATCH2}/global2.txt`
+  (`global2.py`).
+
+The global instrument for these packages seeds the key counter with every `solidcash` directory baseline
+(17 runs, `{SCRATCH}/cov-*-base`) and then adds the 149 individual runs, so a key is global-unique when no
+solidcash baseline and no other solidc/utils file covers it. As before this makes the global set a lower bound
+on deletable-per-TypeScript.
+
+### The caveat is stronger in solidc
+
+`solidc` framed tests are compiler-fixture and machine tests: each compiles its own `.scash` shape, and many run
+the emitted program, a validator fragment or the master head in the VM. No two solidc framed test files share
+their longest source literal, and the largest overlap of any two files' long-literal sets is 0.22 (helper
+fragments, not whole contracts). So no two solidc files compile the same shape, and zero TypeScript marginal
+does not mean redundant: 100 of 131 master files and 108 of 149 solidc/utils files have zero global marginal,
+and nearly all of them are the sole executor of a compiler shape or an emitted fragment.
+
+### Directory results
+
+| directory | files | within-dir zero | global zero | note |
+| --- | ---: | ---: | ---: | --- |
+| solidc master | 131 | 100 | 104 | union 91291 keys; 31 within-dir carriers |
+| solidc records | 7 | 0 | 2 | delete-default near-zero (1L/0B/1F) |
+| solidc validator | 4 | 0 | 1 | address-check near-zero (0L/1B); context-walk (3L/0B/1F) |
+| solidc machine | 1 | n/a | 1 | one file; uniqueness is its whole baseline |
+| utils framed | 6 | 0 | 0 | minimal-push near-zero (1L/1B/0F) |
+
+Within-directory and global numbers for `solidc` differ because the global instrument also counts solidcash
+baselines: 104 master files are globally zero but only 100 are zero within master.
+
+### Ranked candidates (solidc and utils)
+
+No file meets both conditions, so nothing here is recommended for deletion. The near-zero files a later round
+might propose are listed with the reason each is kept (the caveat, case by case).
+
+Solidc validator and records, VM fragments and compiler pins:
+
+- `validator/address-check.test.ts` (global 0L/1B). Runs `addressCheckScript` in the VM, including the
+  sender-longer-than-127-bytes sign-bit case; sole executor of that fragment.
+- `validator/context-walk.test.ts` (global 3L/0B/1F). Runs `contextCategoryScript` over a delegate/internal
+  caller chain; sole executor.
+- `records/delete-default.test.ts` (global 1L/0B/1F). Compiles `delete m[k]` against `m[k] = default` and
+  asserts byte-identical output for bool and int mappings; the only compiler pin of that rule.
+
+Solidc master near-zero compiler-shape/VM executors (global marginal in brackets, all kept):
+
+- `master/composition-convention.test.ts` (1L/1B), `master/master-program.test.ts` (1L/1B),
+  `master/multi-entry-dispatch.test.ts` (1L/1B), `master/refused-body.test.ts` (1L/1B),
+  `master/msg-data.test.ts` (1L/1B), `master/guarded-batch-target.test.ts` (1L/1B),
+  `master/own-category-conservation.test.ts` (1L/1B), `master/read-only-frame.test.ts` (1L/2B/1F),
+  `master/dynamic-call-settlement.test.ts` (0L/3B), `master/witness-shape.test.ts` (4L/0B/1F),
+  `master/composite-return.test.ts` (3L/2B/1F), `master/loop-effects.test.ts` (3L/2B/1F),
+  `master/write-segment.test.ts` (4L/1B/1F), `master/guarded-dynamic-write-across-call.test.ts` (1L/3B),
+  `master/insert-beside-append.test.ts` (0L/0B/0F), `records/absence-proof.test.ts` (3L/3B/0F).
+  Each compiles a distinct shape or runs an emitted fragment that no other file does.
+- `master/machine.test.ts` (global 0L/0B/0F). The only test pinning that the framed profile accepts a
+  20_000-byte unlock that the stock machine refuses; a suite-wide regression guard, keep.
+
+The 100 zero-within-master files (listed in `{SCRATCH2}/wid-master.txt`) are the compiler-shape-only executors:
+every line they cover is covered by a sibling, but each compiles a shape no other file compiles, so the keep
+rule above applies to all of them. `master/run-apart-from-batch` and `master/run-apart-key-read` are the closest
+pair (8 shared literals, j=0.22); they drive different entries of related shapes and both stay.
+
+Utils:
+
+- `utils/test/framed/minimal-push.test.ts` (global 1L/1B/0F). Its marginal is the PUSHDATA4 assignment at
+  `utils/src/framed/primitives.ts:199` plus one branch arm at line 197, reached by the payload lengths 65536 and
+  65537; no other test pushes more than 0xffff bytes, so it is the only executor of that arm. Keep; a later round
+  could drop the two oversized lengths only if it also accepts losing that branch.
+- The other five utils files carry unique coverage and are not candidates: `u-interfaces` 95L/37B/17F,
+  `u-transcript` 62L/12B/2F, `u-stop-site` 48L/33B/8F, `u-identity` 23L/12B/9F, `u-canonical` 18L/10B/11F.
+
+### Negative results for these packages
+
+Top within-directory carriers in solidc master (lines/branches/functions), so the next round does not re-derive
+them: `permit-token-constructor` 5374L/3671B/798F, `route-call-batch-operand` 3793L/3127B/698F,
+`inlined-literal-branch` 907L/910B/93F, `returning-event-helper` 872L/555B/128F, `aliased-key-read`
+827L/412B/65F, `entry-append-source` 776L/521B/88F, `entry-cache-across-calls` 534L/551B/64F,
+`read-after-write-refusal` 364L/426B/38F, `ecrecover-invalid-input` 271L/87B/42F. Full list
+`{SCRATCH2}/wid-master.txt`.
+
+### What this extension did not cover
+
+- `solidcash/deploy`, `solidcash/hostile` and `solidcash/call` are still baseline-only (201 test files). Their
+  per-file runs were judged not cheap at roughly 20 s each, so they were not done; the global instrument treats
+  each directory as one baseline. This is the same limitation the first section's Limits records.
+- `ahead/` and `FRAMED_FULL=1`-only cases were not measured, as before.
+- Duplicate-source scans for solidc are `{SCRATCH2}/maxsrc-solidc.py` (longest literal per file) and
+  `{SCRATCH2}/jaccard-solidc.py` (pairwise literal overlap).

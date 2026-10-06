@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { sha256, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
@@ -8,8 +8,7 @@ import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';
-import * as composer from '../../../src/framed/composer/index.js';
-import { FramedProxyDeployError, buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import { sharedNodeId } from '../../../src/framed/proxy/entry-writes.js';
 import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
@@ -19,22 +18,17 @@ import { aliceAddress, alicePkh, alicePriv, alicePub, bobAddress, bobPkh, bobPri
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A proxied root that calls a proxied store, a registry and a token, then fails a check (PW1 step 1).
+ * A proxied root that calls a proxied store, a registry and a token, and settles (MS10, PW1 step 1).
  *
  * `Desk.post` replicates a publish entry: argument checks, a write into a proxied store, two registry reads, three
- * token calls (`balanceOf`, `approve`, `transferFrom`) and a second store write. Each case fails one check through
- * `callFramedProxyEntry`. Today a check in the entry stalls the settle at the call after it, and a revert in a
- * callee refuses that callee's own settle; either way the refusal reporter is asked, and its innermost frame is a
- * store proxy leg no attempt reached, refusing because its delegate reference is still the unfilled sentinel. The
- * error names that leg and carries neither the draft nor the report; the draft is reached here by spying on the
- * composer. Its report holds the failing frame's own reason, including when the entry stops at a check before a
- * call and a callee settled first refuses: the entry never entered that callee, so its own reason is the one that
- * surfaces (spec V6), also when the stalled step at that very call's site left the call's reference filled.
- * With every check passing the entry settles and broadcasts: the token's `balanceOf` and `transferFrom` reaches touch
- * Alice's balance node, which the hop places once and whose views it chains across the two frames.
+ * token calls (`balanceOf`, `approve`, `transferFrom`) and a second store write. With every check passing the entry
+ * settles and broadcasts: the token's `balanceOf` and `transferFrom` reaches touch Alice's balance node, which the
+ * hop places once and whose views it chains across the two frames.
  *
  * The registry is plain; a value a proxied callee returns reaches its caller since PW8, and that read settles
- * (pinned last).
+ * (pinned last). The refusal reporter a failing check asks - the entry's own reason, a callee's custom error and its
+ * arguments, and the reached-path rule between them - is guarded on the shipped path by default in
+ * `conformance/revert-after-calls-rows.test.ts`, `reverts/` and `call/own-stop-before-refused-plan.test.ts`.
  */
 
 const txid = (seed: string): string => `${seed.repeat(31)}c4`;
@@ -116,14 +110,6 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-/** The input index a frame reads through an unfilled call record: the sentinel read as a script number. */
-const UNFILLED_INDEX = -(composer.UNFILLED_CALLEE_REF & 0x7fff);
-
-/** The 1-based line of the first source line containing `needle`. */
-function lineOf(needle: string): number {
-  return SOURCE.split('\n').findIndex((line) => line.includes(needle)) + 1;
-}
-
 /** A coin a genesis or a call is funded from; a genesis coin's txid becomes the category it mints. */
 function funding(id: string): { txid: string; vout: number; satoshis: bigint } {
   return { txid: id, vout: 0, satoshis: 5_000_000n };
@@ -134,8 +120,6 @@ interface Compiled {
   readonly roster: Artifact;
   readonly coin: Artifact;
   readonly desk: Artifact;
-  /** Every artifact a frame of the hop runs, for the refusal reporter. */
-  readonly all: readonly Artifact[];
   readonly coinAddress: Uint8Array;
   readonly rosterAddress: Uint8Array;
 }
@@ -146,7 +130,6 @@ function compile(): Compiled {
   const [journal, roster, coin, desk] = [artifacts.Journal!, artifacts.Roster!, artifacts.Coin!, artifacts.Desk!];
   return {
     journal, roster, coin, desk,
-    all: [buildProxyArtifact(desk), desk, buildProxyArtifact(journal), journal, roster, coin],
     coinAddress: deployMaster(coin, hexToBin(COIN_CATEGORY), VALIDATOR_PROGRAM).address,
     rosterAddress: deployMaster(roster, hexToBin(ROSTER_CATEGORY), VALIDATOR_PROGRAM).address,
   };
@@ -249,63 +232,6 @@ async function deployAll(): Promise<Deployed> {
   };
 }
 
-/** What a refused call left: the error, the stalls the settle caught, the last draft built, and any broadcast. */
-interface Refused {
-  readonly error: Error & { readonly errorArgs?: readonly unknown[] };
-  readonly stalls: readonly string[];
-  readonly draft: composer.CompositionDraft;
-  readonly broadcasts: number;
-}
-
-/**
- * Calls a `Desk` entry through its proxy and returns what the refusal left behind.
- *
- * Neither the error nor any result carries the draft, so the composer's own entry points are watched: the last draft
- * built is the one the thrown refusal was read from, and a derivation that threw is a stall the settle caught.
- */
-async function refusedCall(
-  caller: Caller, functionName: string, args: readonly FunctionArgument[],
-): Promise<Refused> {
-  const { network } = deployed;
-  const raw = vi.spyOn(network, 'sendRawTransaction');
-  const prepared = vi.spyOn(network, 'sendPreparedTransaction');
-  const hosts = vi.spyOn(composer, 'createComposedDerivationHost');
-  const derivations = vi.spyOn(composer, 'deriveComposition');
-  try {
-    await callFramedProxyEntry({
-      provider: network,
-      implementationArtifact: compiled.desk,
-      proxyArtifact: buildProxyArtifact(compiled.desk),
-      proxyCategoryId: deployed.deskProxyCategoryId,
-      implementationCategoryId: deployed.deskImplementationCategoryId,
-      functionName,
-      args,
-      externals: deployed.externals,
-      callerUtxo: caller.coin,
-      callerLockingBytecode: caller.lock,
-      funder: caller.funder,
-      changeAddress: caller.address,
-      vm: compositionMachine(),
-    });
-  } catch (error) {
-    const last = hosts.mock.results.at(-1);
-    if (last?.type !== 'return') throw error;
-    return {
-      error: error as Refused['error'],
-      stalls: derivations.mock.results.filter((result) => result.type === 'throw')
-        .map((result) => String((result.value as Error).message)),
-      draft: last.value.draft,
-      broadcasts: raw.mock.calls.length + prepared.mock.calls.length,
-    };
-  } finally {
-    raw.mockRestore();
-    prepared.mockRestore();
-    hosts.mockRestore();
-    derivations.mockRestore();
-  }
-  throw new Error(`Desk.${functionName} settled`);
-}
-
 /** Calls a `Desk` entry through its proxy and returns the settled hop. */
 function settledCall(
   caller: Caller, functionName: string, args: readonly FunctionArgument[],
@@ -327,149 +253,11 @@ function settledCall(
   });
 }
 
-/** The stall the settle catches when the entry's frame stops before call `call`, counted from zero. */
-function stalledAt(call: number): string {
-  return `FRAMED_DERIVATION_STALLED: master "implementation-master" of Desk.post() filled no witness at site ${call} `
-    + `(call ${call})`;
-}
-
-/** The report the shipped reporter gives for a draft, on the machine the hop ran. */
-function reportOf(draft: composer.CompositionDraft): composer.CompositionRefusal {
-  return composer.reportCompositionRefusal({ draft, artifacts: compiled.all, vm: compositionMachine() });
-}
-
-/**
- * The refusal names `frame`, the innermost frame the execution reached: a store proxy leg no attempt reached, which
- * refuses reading the input its unfilled delegate reference names, is passed over. The error carries the values that
- * frame's custom error was raised with, when it raised one, and still no draft and no report.
- */
-function expectReported(refused: Refused, prefix: string, frame: string): composer.CompositionRefusal {
-  const { error } = refused;
-  expect(error).toBeInstanceOf(FramedProxyDeployError);
-  expect(error.message.startsWith(`${prefix} did not settle through the proxy: `)).toBe(true);
-  expect(error.message).toContain(`frame "${frame}" of `);
-  expect(error.message).not.toContain(`requested index: ${UNFILLED_INDEX}`);
-  expect('draft' in error || 'report' in error).toBe(false);
-  expect(refused.broadcasts).toBe(0);
-
-  // The message is the reporter's innermost frame on the last draft, so that draft is the one the refusal read.
-  const report = reportOf(refused.draft);
-  expect(report.innermost?.master).toBe(frame);
-  expect(error.message).toContain(composer.describeInnermost(report.innermost));
-  expect(error.errorArgs).toStrictEqual(report.innermost?.reason.arguments);
-  const unreached = report.refusals.filter((refusal) => refusal.objection.includes(`requested index: ${UNFILLED_INDEX}`));
-  expect(unreached.every((refusal) => refusal.master !== frame)).toBe(true);
-  return report;
-}
-
-/** The reason one frame of the report carries: its line and its `require` message or custom error. */
-function reasonOf(report: composer.CompositionRefusal, master: string): composer.FrameRevertReason | undefined {
-  return report.refusals.find((refusal) => refusal.master === master)?.reason;
-}
-
 describe.runIf(process.env.FRAMED_AHEAD === '1')('a revert after calls through the shipped proxy hop', () => {
   beforeAll(async () => {
     compiled = compile();
     deployed = await deployAll();
   }, 600_000);
-
-  it('a check before any call reports the entry\'s own reason', async () => {
-    const refused = await refusedCall(deployed.alice, 'post', [0n, 100n, 7n, BOB_LOCK, compiled.coinAddress]);
-    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
-    expect(refused.error.message).toContain(': name too short or long (Program failed an OP_VERIFY operation.)');
-    expect(refused.stalls).toStrictEqual([stalledAt(0)]);
-    expect(reasonOf(report, 'implementation-master'))
-      .toStrictEqual({ line: lineOf('"name too short or long"'), message: 'name too short or long' });
-  });
-
-  it('a check after a store write and a registry read reports the entry\'s own reason', async () => {
-    const refused = await refusedCall(deployed.alice, 'post', [5n, 100n, 7n, ALICE_LOCK, compiled.coinAddress]);
-    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
-    expect(refused.error.message).toContain(': referee is the poster (Program failed an OP_VERIFY operation.)');
-    expect(refused.stalls).toStrictEqual([stalledAt(2)]);
-    expect(reasonOf(report, 'implementation-master'))
-      .toStrictEqual({ line: lineOf('"referee is the poster"'), message: 'referee is the poster' });
-  });
-
-  it('a check on the coin argument after a token read reports the entry\'s own reason', async () => {
-    const refused = await refusedCall(deployed.alice, 'post', [5n, 100n, 7n, BOB_LOCK, compiled.rosterAddress]);
-    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
-    expect(refused.error.message).toContain(': invalid coin (Program failed an OP_VERIFY operation.)');
-    expect(refused.stalls).toStrictEqual([stalledAt(3)]);
-    expect(reasonOf(report, 'implementation-master'))
-      .toStrictEqual({ line: lineOf('"invalid coin"'), message: 'invalid coin' });
-  });
-
-  it('a check after the state-changing token call reports the entry\'s own reason', async () => {
-    const refused = await refusedCall(deployed.alice, 'post', [5n, 100n, 0n, BOB_LOCK, compiled.coinAddress]);
-    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
-    expect(refused.error.message).toContain(': method too short or long (Program failed an OP_VERIFY operation.)');
-    expect(refused.stalls).toStrictEqual([stalledAt(4)]);
-    expect(reasonOf(report, 'implementation-master'))
-      .toStrictEqual({ line: lineOf('"method too short or long"'), message: 'method too short or long' });
-  });
-
-  it('a check on a registry read after state-changing calls reports the entry\'s own reason', async () => {
-    const refused = await refusedCall(deployed.bob, 'post', [5n, 100n, 7n, ALICE_LOCK, compiled.coinAddress]);
-    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
-    expect(refused.error.message).toContain(': not a member (Program failed an OP_VERIFY operation.)');
-    expect(refused.stalls).toStrictEqual([stalledAt(5)]);
-    expect(reasonOf(report, 'implementation-master'))
-      .toStrictEqual({ line: lineOf('"not a member"'), message: 'not a member' });
-  });
-
-  it('a revert inside the third token call reports the callee\'s custom error and its arguments', async () => {
-    const refused = await refusedCall(deployed.alice, 'post', [5n, 1500n, 7n, BOB_LOCK, compiled.coinAddress]);
-    const report = expectReported(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-7');
-    expect(refused.error.message).toContain(': revert ShortBalance(address, int256, int256)');
-    // The refusal carries the values the callee's error was raised with: the holder, its balance, the amount asked.
-    expect(refused.error.errorArgs).toStrictEqual([`0x${binToHex(ALICE_LOCK)}`, 1000n, 1500n]);
-    // The entry's own frame is derived with the callee's verdict deferred, so the refusal carries that stall; the
-    // deferred callee's own revert is still what the report names.
-    expect(refused.stalls).toStrictEqual([
-      'FRAMED_DERIVATION_STALLED: master "callee-master-7" of Coin.transferFrom() filled no witness at site 0 '
-      + '(close of segment 0)',
-    ]);
-    const reason = reasonOf(report, 'callee-master-7');
-    expect(reason?.line).toBe(lineOf('revert ShortBalance'));
-    expect(reason?.error?.name).toBe('ShortBalance');
-    expect(reason?.error?.parameters?.map((parameter) => parameter.type)).toStrictEqual(['address', 'int256', 'int256']);
-    expect(reason?.arguments).toStrictEqual([`0x${binToHex(ALICE_LOCK)}`, 1000n, 1500n]);
-  });
-
-  it('a check before any call reports the entry\'s own reason, not the callee it never reaches', async () => {
-    const refused = await refusedCall(deployed.alice, 'post', [0n, 1500n, 7n, BOB_LOCK, compiled.coinAddress]);
-    // The entry stops at its first check, before it makes any call, so the entry's own reason surfaces even though a
-    // callee was settled first and refused: the execution never entered that callee.
-    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
-    expect(refused.error.message).toContain(': name too short or long');
-    expect(reasonOf(report, 'implementation-master'))
-      .toStrictEqual({ line: lineOf('"name too short or long"'), message: 'name too short or long' });
-    // The callee's frame is still reported, with its own reason, in the same report.
-    expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
-  });
-
-  it('a check right before the reverting token call reports the entry\'s own reason, not the call it never makes',
-    async () => {
-      const refused = await refusedCall(deployed.bob, 'post', [5n, 1500n, 7n, ALICE_LOCK, compiled.coinAddress]);
-      // Bob is no member, so the entry stops at its own check right before `transferFrom`, which refuses his short
-      // balance in its own settle. The stalled step at that call's site leaves its reference filled, but the entry's
-      // frame stops at the same place with it unfilled: the call is never made, so the entry's reason is reported.
-      const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
-      expect(refused.error.message).toContain(': not a member (Program failed an OP_VERIFY operation.)');
-      expect(refused.stalls).toStrictEqual([stalledAt(5)]);
-      expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
-    });
-
-  it('a check between calls, beside a reverting callee it never reaches, reports the entry\'s own check', async () => {
-    const refused = await refusedCall(deployed.alice, 'post', [5n, 1500n, 0n, BOB_LOCK, compiled.coinAddress]);
-    // The entry fails its own "method too short or long" check, which is before the reverting transferFrom call it
-    // never reaches, so the entry's own reason is the one the report names rather than the callee's revert.
-    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
-    expect(refused.error.message).toContain(': method too short or long (Program failed an OP_VERIFY operation.)');
-    expect(reasonOf(report, 'implementation-master'))
-      .toStrictEqual({ line: lineOf('"method too short or long"'), message: 'method too short or long' });
-  });
 
   it('with every check passing, the hop settles and broadcasts, the balance read and then debited one input',
     async () => {

@@ -6,14 +6,20 @@ import { publishedRefusals } from '../../../../solidc/test/framed/master/refused
  * The contract shapes the framed path refuses by name.
  *
  * Each source is a real `.scash` unit handed to the shipped compiler with the framed convention, and each
- * assertion is the refusal the shipped code raises: an error code plus the fragment that names the fact. They
- * stand beside the shapes that do compile so the refusal is the named feature and not a syntax error.
+ * assertion is the refusal the shipped code raises: an error code plus the fragment that names the fact.
+ *
+ * The shapes the framed path admits are not pinned here. Each settles in the case its refusal names: a value send
+ * in `solidc/test/framed/master/send-output.test.ts`, a recovery precompile and a keccak side-car in
+ * `solidc/test/framed/master/ecrecover-invalid-input.test.ts` and `composer/keccak-side-car.test.ts`, a
+ * constructor that hashes in `deploy/genesis.test.ts`, a composite return and a struct argument in
+ * `solidc/test/framed/master/composite-return.test.ts` and `composed-arguments.test.ts`, and a string-keyed
+ * string mapping in `shapes/mapping-values.test.ts` and `shapes/string-mapping-delete.test.ts`.
  */
 
 /** The message the compiler raises for a framed shape it will not emit. */
-function refusal(source: string, options: Record<string, unknown> = {}): string {
+function refusal(source: string): string {
   try {
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'framed', ...options }));
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'framed' }));
     if (refusals.length === 0) return '';
     return `FRAMED_CODEGEN_UNAVAILABLE: ${refusals.map((refused) => `${refused.functionName}: `
       + `${refused.reason}`).join(' | ')}`;
@@ -25,17 +31,6 @@ function refusal(source: string, options: Record<string, unknown> = {}): string 
 // A body holding native assembly, as SafeERC20's re-raise of a callee's revert does, is refused by name in
 // `solidc/test/framed/master/raw-call-refusals.test.ts`.
 
-describe('a value send', () => {
-  it('is served: the body pins the lock it computed at the listed output', () => {
-    // The recipient lock is a run-time value, so the head leaves the listed output index for the body to pin the
-    // lock and the value it computed against. The accept and the mutations are machine cases in
-    // `solidc/test/framed/master/send-output.test.ts`.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Sender { function pay(address to) { this.transfer(to, 1000); require(true); } }';
-    expect(refusal(source)).toBe('');
-  });
-});
-
 describe('a low-level call', () => {
   it('is refused by name: the witness call checks are not emitted', () => {
     const source = 'pragma solidcash ^0.13.0;'
@@ -46,50 +41,7 @@ describe('a low-level call', () => {
   });
 });
 
-// At an entry boundary, an entry that returns a fixed-size array or a struct is admitted, not refused: each is one
-// value the language holds already encoded, so the frame records the blob the entry's own `return` built and
-// compares them. The accepts, the dynamic-member cases and the shapes that stay refused (a struct with a mapping
-// member, an external function pointer) are cases in `solidc/test/framed/master/composite-return.test.ts`.
-//
-// A call that passes a struct argument is admitted too, whether the struct is built from run-time values or
-// written as a literal: the caller materializes one blob and the site's digest is the wire's. The accept, the
-// array argument in both spellings, and the one argument type that stays refused (an external function pointer)
-// are cases in `solidc/test/framed/master/composed-arguments.test.ts`.
-
-describe('a recovery precompile', () => {
-  it('is served: a master locates its recovery side-car pair from the input it runs on', () => {
-    // The pair is placed immediately after the master's own input, so the head admits the body and the machine
-    // cases in `solidc/test/framed/master/ecrecover-invalid-input.test.ts` drive a real recovery.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Rec {'
-      + '   function f(bytes32 h, int v, bytes32 r, bytes32 s) returns (address) { return ecrecover(h, v, r, s); }'
-      + ' }';
-    expect(refusal(source, { ecrecover: 'p2pkh' })).toBe('');
-  });
-});
-
 describe('a keccak compute side-car', () => {
-  // A straight-line call reads the side-car the composer places after the master; `composer/keccak-side-car`
-  // settles it.
-  it('serves a straight-line call', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Hashes {'
-      + '   function f(bytes preimage) returns (bytes32) { return keccak256(preimage); }'
-      + ' }';
-    expect(refusal(source)).toBe('');
-  });
-
-  it('serves a call inside a loop, which reads one side-car per turn its recurrence counts', () => {
-    // The body reads the side-car its count of hashes names and the artifact publishes the loop's recurrence, so a
-    // call lays one side-car per turn; `call/loop-turn-effects` settles a path walk that hashes once per step.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Hashes {'
-      + '   bytes32 h;'
-      + '   function f(bytes a, int n) { for (int i = 0; i < n; i = i + 1) { this.h = keccak256(a); } require(true); }'
-      + ' }';
-    expect(refusal(source)).toBe('');
-  });
-
   it('is refused by name inside a loop whose bound is no counted recurrence', () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Hashes {'
@@ -99,55 +51,5 @@ describe('a keccak compute side-car', () => {
     const message = refusal(source);
     expect(message).toContain('FRAMED_CODEGEN_UNAVAILABLE');
     expect(message).toContain('a keccak256 call in a loop whose counter or bound is not a recurrence');
-  });
-});
-
-describe('a constructor that runs a keccak compute side-car', () => {
-  /**
-   * The two spellings differ only in where the hashing body sits, and the master gives the constructor the same
-   * block it gives an entry: the artifact publishes the constructor's own `keccakCompute` and a `keccakSideCar`
-   * slot in its block beside the entries', and the genesis co-spends the side-car the frame reads the way a call
-   * site does for an entry. The settlements are machine cases in `deploy/genesis.test.ts`; what a constructor
-   * cannot do is hash inside a loop, whose side-car count the artifact does not fix.
-   */
-  const sourceOf = (hashingBody: 'entry' | 'constructor' | 'loop'): string => 'pragma solidcash ^0.13.0;'
-    + ' contract Hashes { bytes32 h;'
-    + (hashingBody === 'constructor'
-      ? '   constructor(bytes seed) { this.h = keccak256(seed); }'
-        + '   function peek() returns (bytes32) { return this.h; }'
-      : hashingBody === 'loop'
-        ? '   constructor(bytes seed, int turns) {'
-          + '     for (int i = 0; i < turns; i = i + 1) { this.h = keccak256(seed); }'
-          + '   }'
-          + '   function peek() returns (bytes32) { return this.h; }'
-        : '   function f(bytes seed) { this.h = keccak256(seed); require(true); }')
-    + ' }';
-
-  it('is served when the hashing body is an entry, which a call lays the side-car for', () => {
-    expect(refusal(sourceOf('entry'))).toBe('');
-  });
-
-  it('is served as a constructor too, which the genesis lays the side-car for', () => {
-    expect(refusal(sourceOf('constructor'))).toBe('');
-  });
-
-  it('is emitted even inside a loop, whose count the deployment refuses rather than the compiler', () => {
-    // The loop's side-car count is the loop's to decide, which is a witness the genesis cannot lay: it is refused
-    // there, by name, rather than at admission.
-    expect(refusal(sourceOf('loop'))).toBe('');
-  });
-});
-
-describe('a string-keyed string mapping', () => {
-  it('serves its set: the head supplies the value witness from the frame\'s block', () => {
-    // The body reads a long value through a value-witness operand, which the frame's block lists; a short value is
-    // inline in the node, so the operand is unread. The frames it settles are cases in `shapes/mapping-values`; the
-    // delete is served and settled in `shapes/string-mapping-delete`.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Tags {'
-      + '   mapping(string => string) public tags;'
-      + '   function put(string k, string v) { this.tags[k] = v; require(true); }'
-      + ' }';
-    expect(refusal(source)).toBe('');
   });
 });

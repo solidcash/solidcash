@@ -1486,7 +1486,7 @@ risk. Take the slices in order, each with its own tests.
   field, through the read path (`framed/read/read.ts`). With no replica yet: a re-entering static read returning a
   struct or a `uint16[5]`, and a static read of a flag a deeper frame wrote. The row stays open until every edge is
   carried.
-- [x] G7 Marketplace flow shapes MS1-MS10 (`MARKETPLACE_SHAPES.md`): one neutral replica each, settling (milestone **Met 2026-10-03:** the replicas settle through the shipped hop - `fan-in` (MS3, 4 cases), `reentry-payout` (MS4, 3), `origin-gated-payout` (MS5, 6), `time-gated-challenge` (MS6, 5), `deep-arbitration` (MS7, 3) and `revert-after-calls` (MS10, 11) - and `test/framed/ahead` passes as a directory (28 files / 184 cases under `FRAMED_AHEAD=1`). The replicas of shapes beyond the ladder keep their pinned refusals there, which is the walls-ahead table's subject.
+- [x] G7 Marketplace flow shapes MS1-MS10 (`MARKETPLACE_SHAPES.md`): one neutral replica each, settling (milestone **Met 2026-10-03:** the replicas settle through the shipped hop - `fan-in` (MS3, 4 cases), `reentry-payout` (MS4, 3), `origin-gated-payout` (MS5, 6), `time-gated-challenge` (MS6, 5), `deep-arbitration` (MS7, 3) and `revert-after-calls` (MS10, 11 -> 2 after the W7 reduction, which moved its restated refusal-reporter cases to `conformance/revert-after-calls-rows.test.ts`, `reverts/` and `call/own-stop-before-refused-plan.test.ts`; see `docs/framed/W7_REDUCTIONS.md`) - and `test/framed/ahead` passes as a directory (28 files / 184 cases under `FRAMED_AHEAD=1`; eleven fewer after the W7 reduction). The replicas of shapes beyond the ladder keep their pinned refusals there, which is the walls-ahead table's subject.
   I2b).
 
 ### 4.4 Integration milestones and the gate

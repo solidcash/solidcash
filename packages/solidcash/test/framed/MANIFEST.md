@@ -42,24 +42,23 @@ default. `FRAMED_FULL=1` restores its full 400-case sample; use it at milestones
 | `packages/solidcash/test/framed/time/` | `solidcash` | 12 |
 | `packages/solidcash/test/framed/hostile/` | `solidcash` | 171 |
 | `packages/solidcash/test/framed/shapes/` | `solidcash` | 93 |
-| `packages/solidcash/test/framed/edges/` | `solidcash` | 77 |
+| `packages/solidcash/test/framed/edges/` | `solidcash` | 70 |
 | `packages/solidcash/test/framed/primitives/` | `solidcash` | 9 (6 by default, 3 under `FRAMED_FULL=1`) |
 | `packages/solidcash/test/framed/toys/` | `solidcash` | 81 |
 | `packages/solidcash/test/framed/conformance/` | `solidcash` | 137 (135 by default, 2 under `FRAMED_FULL=1`) |
-| `packages/solidcash/test/framed/pw7-measure.test.ts` | `solidcash` | 2, under `FRAMED_FULL=1` |
-| `packages/solidcash/test/framed/ahead/` | `solidcash` | 174, under `FRAMED_AHEAD=1` |
+| `packages/solidcash/test/framed/ahead/` | `solidcash` | 163, under `FRAMED_AHEAD=1` (174 less the 11 W7 removed) |
 | `packages/testing/test/framed/` | `@solidcash/testing` | 11 |
 
-Total: 2751 checks (119 + 1054 + 1567 + 11). Twelve cases in a default `solidcash` run are skipped and run under
+Total: 2741 checks (119 + 1054 + 1557 + 11). Ten cases in a default `solidcash` run are skipped and run under
 `FRAMED_FULL=1` instead: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal,
 which `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), the shipped data contract's clock-stamped append
 (`call/proxy-proxied-callee-element-clock.test.ts`), which deploys the project's compiled `MarketplaceDataV1`
-behind its proxy and takes about three and a half minutes, `pw7-measure.test.ts`'s two, and the full-width samplers
-the `validator/`, `conformance/` and `call/` rows show. The `ahead/` row's 174 run under `FRAMED_AHEAD=1`. The
+behind its proxy and takes about three and a half minutes, and the full-width samplers
+the `validator/`, `conformance/` and `call/` rows show. The `ahead/` row's 163 run under `FRAMED_AHEAD=1`. The
 package totals are full-config runs of
 `vitest.framed.config.ts`: `solidc` 1054 is the four rows above it (122 files),
-`solidcash` 1567 is the rows above it from `validator/` down, `ahead/` excepted (285 files), every row above
+`solidcash` 1557 is the rows above it from `validator/` down, `ahead/` excepted (284 files), every row above
 re-measured 2026-10-03 by rerunning its own directory in the same sweep (the `call/` and `conformance/` rows then
 counted forward by the cases PL1 to PL5 and VC3 added and merged), and `@solidcash/testing` is its own row
 and drives the layer's public entry points rather than the SDK's.
@@ -346,16 +345,14 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   plans callee frames between plain deployments, `call/plain-callees.test.ts`); the other seven each the EVM's
   answer beside the refusal the framed path meets by name, the fallback call with its signature built at run time
   among them.
-- **`solidcash/test/framed/pw7-measure.test.ts`** - a measurement instrument rather than a regression guard: it
-  drives the shipped composer and derivation on Y2, Y6 and the vault graph, counts the machine's own evaluations
-  per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). It runs only under
-  `FRAMED_FULL=1`, and its twenty-four-master case under `PW7_FULL=1` as well. The plan's 4.5 rows carry the
-  numbers it produces.
 - **`solidcash/test/framed/ahead/`** - walls ahead: neutral replicas of the later groups' flow shapes, deployed
   behind generated proxies and driven through `callFramedProxyEntry`, each pinned where it stands and, with its
   first wall stepped around, at the next; the scoreboard's "Walls ahead" table in the plan names each wall and its
   owner. `fan-in.test.ts` (MS3), `reentry-payout.test.ts` (MS4), `origin-gated-payout.test.ts` (MS5),
-  `time-gated-challenge.test.ts` (MS6), `deep-arbitration.test.ts` (MS7), `revert-after-calls.test.ts` (MS10),
+  `time-gated-challenge.test.ts` (MS6), `deep-arbitration.test.ts` (MS7), `revert-after-calls.test.ts` (MS10: the
+  settle and the proxied-return read; the refusal reporter's own-reason rules, which this replica used to restate,
+  are guarded on the shipped path by default in `conformance/revert-after-calls-rows.test.ts`, `reverts/` and
+  `call/own-stop-before-refused-plan.test.ts`),
   `job-threads-and-refusals.test.ts` (L4: posting, thread messages, allowlists and refusals), `job-updates.test.ts`
   (L4: updates, closing, reopening and withdrawing), `call-argument-from-own-write.test.ts` (a call argument read
   from the entry's own write), `packed-address-argument.test.ts` and `packed-integer-argument.test.ts` (a

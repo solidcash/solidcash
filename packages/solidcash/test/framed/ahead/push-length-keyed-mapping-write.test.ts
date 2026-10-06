@@ -5,9 +5,7 @@ import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import {
-  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
-} from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -83,7 +81,6 @@ const SHAPE = (mappingWrite: string, initialize = 'require(true);'): string => '
   + ' }';
 
 const KEYED_BY_THE_PUSH = SHAPE('setAllowed(id, allowed);');
-const WITHOUT_THE_WRITE = SHAPE('require(allowed.length >= 0);');
 /**
  * The same entry, over a collection the deployment already holds a node of.
  *
@@ -132,21 +129,23 @@ async function wired(seed: string): Promise<World> {
   await network.addUtxo(binToHex(deployerLock), funded.caller);
   await network.addUtxo(binToHex(deployerLock), funded.call);
   await fundShippedFacets(network);
-  return { network, signature, funder: funder.unlock.spend(alicePub, signature), deployerLock, changeAddress: funder.address };
+  return {
+    network, signature, funder: funder.unlock.spend(alicePub, signature), deployerLock, changeAddress: funder.address,
+  };
 }
 
 /** Deploys `source` behind its own proxy and then calls `append` once through it. */
 async function appendThroughTheProxy(
   source: string, seed: string,
 ): Promise<{
-  readonly accepted: boolean;
-  readonly objection?: string;
-  /** The slot each record the entry's own write creates carries, in the settled transaction. */
-  readonly createdSlots: readonly string[];
-  /** Each node of the written collection the settled transaction outputs, by the slot it carries. */
-  readonly nodeValues: ReadonlyMap<string, Uint8Array>;
-  readonly broadcastTxid?: string;
-}> {
+    readonly accepted: boolean;
+    readonly objection?: string;
+    /** The slot each record the entry's own write creates carries, in the settled transaction. */
+    readonly createdSlots: readonly string[];
+    /** Each node of the written collection the settled transaction outputs, by the slot it carries. */
+    readonly nodeValues: ReadonlyMap<string, Uint8Array>;
+    readonly broadcastTxid?: string;
+  }> {
   const wire = await wired(seed);
   const funded = coins(seed);
   const artifacts = compileStringMulti(source, { composition: 'framed' });
@@ -204,11 +203,6 @@ async function appendThroughTheProxy(
 }
 
 describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: a mapping write keyed by the frame\'s own push', () => {
-  it('settles the same entry with the mapping write removed', async () => {
-    const outcome = await appendThroughTheProxy(WITHOUT_THE_WRITE, '1');
-    expect(outcome.accepted, outcome.objection).toBe(true);
-  });
-
   it('settles the entry that keys the mapping write by the push', async () => {
     const outcome = await appendThroughTheProxy(KEYED_BY_THE_PUSH, '9');
     expect(outcome.accepted, outcome.objection).toBe(true);

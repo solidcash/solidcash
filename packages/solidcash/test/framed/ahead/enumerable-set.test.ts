@@ -16,8 +16,8 @@ import {
  *
  * The state form's removal is refused at its key, the array's last element, which lives in the frame's chunk run
  * rather than where the master derives a target slot, whichever order the write and the `delete` come in. The set
- * per group id compiles in both, its key read out of the node its own batch writes. The remaining wall is in
- * `docs/framed/WALLS_BEYOND_LADDER.md` (2.11).
+ * per group id, whose key is read out of the node its own batch writes, settles through the shipped proxy in
+ * `call/enumerable-set.test.ts`. The remaining wall is in `docs/framed/WALLS_BEYOND_LADDER.md` (2.11).
  *
  * The file runs only under `FRAMED_AHEAD=1`.
  */
@@ -76,30 +76,6 @@ const STATE_SET = (removal: Removal): string => [
   '}',
 ].join('\n');
 
-/** The same set per group id: an array of members per key beside a two-key mapping of positions. */
-const GROUP_SETS = (removal: Removal): string => [
-  'pragma solidity ^0.8.20;',
-  'contract GroupSets {',
-  '  address public implementation;',
-  '  mapping(uint256 => address[]) private _values;',
-  '  mapping(uint256 => mapping(address => uint256)) private _positions;',
-  '  function initialize() public {}',
-  '  function contains(uint256 group, address value) public view returns (bool) {',
-  '    return _positions[group][value] != 0;',
-  '  }',
-  '  function length(uint256 group) external view returns (uint256) { return _values[group].length; }',
-  '  function at(uint256 group, uint256 index) external view returns (address) { return _values[group][index]; }',
-  '  function add(uint256 group, address value) external {',
-  '    require(!contains(group, value), "member");',
-  '    _values[group].push(value);',
-  '    _positions[group][value] = _values[group].length;',
-  '  }',
-  '  function remove(uint256 group, address value) external {',
-  removal('_values[group]', (key) => `_positions[group][${key}]`),
-  '  }',
-  '}',
-].join('\n');
-
 const BOB = encodeLockingBytecodeP2pkh(bobPkh);
 
 /** The compiler's refusal of the state form's removal, at the key it reads out of its own array. */
@@ -138,9 +114,5 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: removing a member of an
         + 'parameter, the frame\'s sender, a value of its own record, or a compile-time value the body holds at its '
         + 'start',
     }]);
-  }, 300_000);
-
-  it('with the delete first: compiles the group form, whose key reads the node its own batch writes', () => {
-    expect(compileFramed(GROUP_SETS(DELETE_FIRST)).GroupSets!.composition?.refusedEntries ?? []).toStrictEqual([]);
   }, 300_000);
 });

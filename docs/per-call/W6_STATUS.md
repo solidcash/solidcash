@@ -1,4 +1,4 @@
-# W6 status at `89a09a273`
+# W6 status at `f8e8f722c`
 
 Inventory of the kernel failures left after the fixes below. Each entry names the file, the failing title, the
 class, and the evidence. "Cleared" rows are gone from the suite.
@@ -15,64 +15,47 @@ class, and the evidence. "Cleared" rows are gone from the suite.
 | `KernelDelegateDualRuntimeSet` | 1 | `blockLayout` re-pinned 389/259 -> 134/4 |
 | `KernelNestedReturnSlotCoordinates` | 1 | two-slot block layout re-pinned |
 | `KernelTwoHopReturnProbe` | 1 | key-pool alternative lane re-pinned (8 slots) |
-| `KernelLateTransitiveSparseLoopCompose` | 1 of 2 | refusal message re-pinned; see below for the second |
+| `KernelLateTransitiveSparseLoopCompose` | 3 | loop guard over occurrences; legacy cardinality; master-UTXO refusal |
 
 ## Remaining, by class
 
-### Fixed: the silent omission of a reached direct inferred-delegate callee
+### Fixed: `KernelLateTransitiveSparseLoopCompose` (3 titles, file green)
 
-`sc-materialize-create-builder-low-level-stateful-call.ts` filtered a guarded loop callsite by evaluating its
-condition once, at occurrence zero. A sparse loop whose first row is skipped
-(`values = [0, 2, 3]`, `if (values[i] != 0) Sink(sink).add(values[i])`) therefore lost the callsite entirely:
-no callee input was co-spent and every `__internal__extcallMasterIdx*` witness resolved to -1, so the composed
-transaction omitted the callee instead of co-spending or refusing it. The filter now asks the shipped occurrence
-planner (`_planExternalCallOccurrences`), which walks the compiler's iteration domain and evaluates the guard per
-occurrence, and retains the call when the planner cannot answer.
+Three defects in the same shape, each fixed on the shipped path:
 
-Evidence: `KernelLateTransitiveSparseLoopCompose` "preserves zero, sparse, and full source order for a direct
-inferred-delegate loop" passes the three kernel `run` legs (participant counts 0/1/1, `vmAccepts`, `send`,
-totals 0/23/23456), the second parity leg and the unconnected-target refusal, and now fails at line 292 in the
-**legacy** leg with a different error. That title is still red.
+1. **The silent omission.** `sc-materialize-create-builder-low-level-stateful-call.ts` filtered a guarded loop
+   callsite by evaluating its condition once, at occurrence zero. A sparse loop whose first row is skipped
+   (`values = [0, 2, 3]`, `if (values[i] != 0) Sink(sink).add(values[i])`) therefore lost the callsite entirely:
+   no callee input was co-spent and every `__internal__extcallMasterIdx*` witness resolved to -1, so the composed
+   transaction omitted the callee instead of co-spending or refusing it. The filter now asks the shipped
+   occurrence planner (`_planExternalCallOccurrences`), which walks the compiler's iteration domain and evaluates
+   the guard per occurrence, and retains the call when the planner cannot answer. Evidence: the three kernel
+   `run` legs build, accept at the VM, send, and land totals 0/23/23456.
+2. **The legacy leg.** The legacy convention unrolls a loop and publishes no `iterationDomain`, so
+   `compose-result-topology` threw `result-dependent loop has no compiler iteration domain` on send. It now
+   enumerates candidate occurrences from the published array cardinality
+   (`externalCallReachedOccurrenceIndices`) and lets the per-occurrence guard decide, keeping the fail-closed
+   refusal for an unprovable cardinality, a lone nested domain, and a candidate set above the row limit. Evidence:
+   the legacy relay settles and reaches the same single-row total as the kernel one.
+3. **The missing master UTXO.** The late-transitive expander skipped a reached callee whose state has no master
+   UTXO with a bare `continue`. Every frame at that point is a reached occurrence, so the skip composed a
+   transaction the route refuses at spend time. It now refuses at build time, naming the callsite, the occurrence
+   and the category, matching the ordinary transitive discovery path.
 
-### Legacy path: result-dependent loop without a compiler iteration domain
+Context, still useful when reading those three sites:
 
-`KernelLateTransitiveSparseLoopCompose` — the tail of the same title, and the tail of "requires target resources
-only for rows that are actually reached". The legacy leg (`messageBusKernel: false`,
-`messageBusGraphContext: false`, convention `legacy-unroll`) throws
-
-    Error: messageBus: result-dependent loop has no compiler iteration domain
-
-from `compose-result-topology.ts:435` (`rebuildCallTopology`), reached through
-`prepareTypedCallbackGraph` (`sc-send-without-logical-nonce.ts`). The missing-master leg of the second title
-fails differently: the build resolves where the test expects a refusal.
-
-### The delegate group map (context for the entry above)
-
-The omission surfaced in `sc-fix-create-builder-delegate-unlockers.ts`, where `nestedGroups` is empty, so
-`__internal__extcallMasterIdx*` takes the documented no-group branch and returns -1 for a non-`once` callsite.
-`delegateExternalGroupIndices` is populated from the delegate branch of `StatefulContract._createBuilder`
-(`delegateExternalGroupIndices.set(delegateGroupIndex, nestedIndices)`), which is fed by
-`materializeCreateBuilderLowLevelStatefulCallImpl`'s `nestedExternalCalls` — the list the fix above corrects.
-
-### The direct inferred-delegate shape
-
-The build is a proxy forward, not a plain route call: `upgrades.deployProxy` returns a `wrapDispatch` Proxy
-(`upgrades.ts`), so `proxy.relay(...)` becomes `forward('relay', ...)` and then
-`builder.withDelegatecall(implSc, 'relay', ...)`. The compiler publishes the callsite completely
-(`occurrence: 'loop'`, `addressParam: 'sink'`, `addressSource: { kind: 'forward', paramIndex: 0 }`,
-`argSources: [{ kind: 'arrayElement', paramIndex: 1, counterName: 'i', indexValue: 0, indexStepValue: 1 }]`,
-`condition: values[i] != 0`, `iterationDomain: { counterName: 'i', ... , maximumIterations: 65535 }`,
-`maximumOccurrences: 65535`, `occurrenceBoundSource: 'guard'`). Nothing is missing from the metadata, and the
-test is not at fault: it drives the shipped path end to end (`upgrades.deployProxy`, the dispatch proxy,
-`call.build()`), asserting the participant list before the VM leg.
-
-With `SOLIDC_DEBUG_ROUTE_CONCISE=1` the failing run logs `delegate-function-selection` and
-`delegate-encoded-args` from `sc-fix-create-builder-delegate-unlockers.ts` while
-`delegateExternalGroupIndices.get(groupLocalIdx)` is empty (`nestedGroups = []`, that file's line 273) — the
-symptom, not the cause, of the filter fixed above. The late-transitive path is live for a co-spent participant:
-the sibling title "requires target resources only for rows that are actually reached" logs 8 `atomic-node-push`
-entries, all for the coordinator's `run` callsite, where the sink arrives as a **constructor argument** rather
-than a forwarded one.
+- The symptom surfaced in `sc-fix-create-builder-delegate-unlockers.ts`, where `nestedGroups` was empty, so
+  `__internal__extcallMasterIdx*` took the documented no-group branch and returned -1 for a non-`once` callsite.
+  `delegateExternalGroupIndices` is fed from the delegate branch of `StatefulContract._createBuilder` by
+  `materializeCreateBuilderLowLevelStatefulCallImpl`'s `nestedExternalCalls` — the list fix 1 corrects.
+- The build is a proxy forward: `upgrades.deployProxy` returns a `wrapDispatch` Proxy (`upgrades.ts`), so
+  `proxy.relay(...)` becomes `forward('relay', ...)` and then `builder.withDelegatecall(implSc, 'relay', ...)`.
+  The compiler publishes the callsite completely (`occurrence: 'loop'`, `addressSource: { kind: 'forward',
+  paramIndex: 0 }`, `argSources: [{ kind: 'arrayElement', paramIndex: 1 }]`, `condition: values[i] != 0`,
+  `occurrenceBoundSource: 'guard'`); only the **legacy** convention omits `iterationDomain`, which is what fix 2
+  handles. The late-transitive path is live for a co-spent participant: the sibling title logs 8
+  `atomic-node-push` entries for the coordinator's `run` callsite, where the sink arrives as a constructor
+  argument rather than a forwarded one.
 
 ### Production defects (unchanged)
 

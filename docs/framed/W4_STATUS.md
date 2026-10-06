@@ -104,10 +104,13 @@ through a wrapped machine. Verified: 18 tests in that file plus `declaration-cap
 
 ## Next
 
-1. The refusal is fixed: `StatefulContract.get target()` returns the framed execution lock when one exists
-   (decision D22). The blanket `validator/1: Program failed an OP_VERIFY operation.` refusal is gone; one of four
-   sampled proxied titles passes and the other three now fail in the fixture's own state comparison
-   (`checkJobFromStateDiffs`). Characterise that residual next, with the full run output kept.
+1. Both blockers are fixed: `StatefulContract.get target()` returns the framed execution lock when one exists
+   (decision D22), and a framed read publishes the typed result projection (`decodeEntryValues`), which is what the
+   fixture's own state comparison needed. The four sampled proxied titles now pass 4/4 (`post job 1`, `take job`,
+   `approve result`, `approve result and review sanity checks`, 629 s), and the whole solidcash framed config is
+   1815 passed with the 7 pre-existing `call/` failures. The W4 timings can resume: re-take the two title sets and
+   compare against the W2 numbers (1044.3 s / 718.8 s no-proxy; 62.2 s / 131.8 s proxied), then decide the
+   `vitest.marketplace.config.ts` timeout and re-run the size diff.
 2. Re-take the two title sets: no-proxy `approve result and review sanity checks` and `refund sanity checks`,
    proxied `take job sanity checks` and `approve result and review sanity checks`, and compare against the W2
    numbers (1044.3 s / 718.8 s no-proxy; 62.2 s / 131.8 s proxied).

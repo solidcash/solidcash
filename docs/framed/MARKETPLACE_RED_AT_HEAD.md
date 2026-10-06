@@ -171,35 +171,69 @@ proxied titles: `post job 1`, `take job`, `approve result` and `approve result a
 - After the fix: 1 passed, 3 failed, and the run takes 694 s because the titles execute and reach the fixture's own
   assertions; the failure is now `checkJobFromStateDiffs` at `marketplace.test.ts:225`.
 
-The blanket indexer refusal is gone and the titles broadcast and execute. What remains is a narrower problem, now
-characterised from the full log (`{SCRATCH}/mkt-fix-full.log`):
+## The residual is fixed: the framed read never published the typed projection
+
+The residual was bisected the same way (logs `{SCRATCH}/w4/bisect/residual-<commit>.log`):
+
+| commit | classification |
+|---|---|
+| `12c011dfe`, `c3b274eb5`, `bb01e8fdc`, `c3e9052ce` | PASS |
+| `e48645783` | docs-only (neutral) |
+| **`7088b6d6e`** | **FAIL-roles** (first bad) |
+| `bbab3e0e00`, `02de0b9d1`, `8d4ec9749` | FAIL-roles |
+
+`7088b6d6e` is `fix(testing): compare untyped byte arrays exactly`, a seven-line change to
+`packages/testing/src/chai.ts` that removed the matcher's fallback which had bridged an untyped 20-byte digest with a
+25-byte P2PKH lock. Its pin, `packages/testing/test/chai-typed-address.test.ts:39` (`expect(identity).to.equal(lock)`
+must throw), requires exactly that strictness for **untyped** values, and D13 is confirmed by the pair it compares:
+the stored side is the full lock, the ABI result side the 20-byte identity. So the matcher change was not the cause
+either; it removed the masking of a real gap.
+
+A probe of the matcher in a live run showed the failing pair as `bytes(25, untagged)` against
+`bytes(20, untagged)` (`{SCRATCH}/addr-probe-full.log`), while other address leaves in the same run carried the
+`evm-abi-v1` mark (`bytes(20, evm-abi-v1)`). The framed read path was the one without it:
+`decodeEntryValues` (`packages/solidcash/src/framed/read/read.ts`) attached the ethers-style accessors but never the
+public typed projection that the direct convention applies in `stateful/public-result.ts`, so an `evm-abi-v1`
+address leaf stayed a plain identity with no mark, and the matcher's identity-projection branch could not fire.
+
+**Fix:** `decodeEntryValues` now projects a single declared output with the entry's own `outputs[0].type` and
+`resultEncoding`, so a framed read publishes the same typed result the direct convention does. The matcher is
+untouched, so the pin keeps its strictness: the value is marked instead of the comparison being loosened.
+
+Answer to the framing question: not a fixture bug (the shipped test is unchanged and its expectation matches the
+stored form), and not a model-B or D13 semantics change (D13 holds: stored values the lock, results the identity).
+It was a missing result mark on the framed read path, exposed when the matcher stopped bridging untyped pairs.
+
+Verified at `8c4671242`:
+
+- `post job 1` passed, and the four sampled proxied titles (post job 1, take job, approve result, approve result and
+  review sanity checks) passed 4/4 in 629 s (`{SCRATCH}/read-fix-four.log`), against 1 passed and 3 failed before.
+- the whole `packages/solidcash` framed config: **1815 passed, 7 failed, 148 skipped (1970)** in 225 s
+  (`{SCRATCH}/w6-solidcash-framed.log`). The seven are the pre-existing `call/` set below, unchanged by this fix.
+- `packages/testing/test/chai-typed-address.test.ts` 4/4, `tsc -b` and eslint clean.
+
+### The symptom as it was observed
+
+The failures below are what the residual looked like before the bisect and the fix; they are kept because the
+documents that cite this ladder run should show what was measured.
 
 - pass: `approve result and review > sanity checks` (467 s).
-- fail: `job posting > post job 1` (7.7 s), `take job > take job`, `approve result and review > approve result`.
-- all three fail the same assertion, `checkJobFromStateDiffs` (`marketplace.test.ts:225`), comparing `roles`:
+- fail: `job posting > post job 1` (7.7 s), `take job > take job`, `approve result and review > approve result`, all
+  three on the same assertion, `checkJobFromStateDiffs` (`marketplace.test.ts:225`):
 
       - Expected
       + Received
-        {
-          "arbitrator": "c4ad89cdb7377ec8a163070e8442d399a87b8701",
-      -   "creator": "71782e8159265ed94bd35b8e699c08f53a6f38c6",
-      -   "worker": "47d9fe52d462741f418e9dd5efaa6ae7e7adb600",
-      +   "creator": "76a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac",
-      +   "worker": "76a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac",
-        }
+        { "arbitrator": "c4ad89cdb7377ec8a163070e8442d399a87b8701",
+          "creator": "71782e8159265ed94bd35b8e699c08f53a6f38c6",
+          "worker": "47d9fe52d462741f418e9dd5efaa6ae7e7adb600" }
+        { "arbitrator": "c4ad89cdb7377ec8a163070e8442d399a87b8701",
+          "creator": "76a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac",
+          "worker": "76a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac" }
 
-  The hash160 inside each received value is the expected one (`71782e81...`, `47d9fe52...`), so the mapping is right
-  and the *representation* is not: an address read back from state decodes to the full P2PKH lock
-  (`76a914<20 bytes>88ac`) where the fixture expects the 20-byte identity. Every other compared field
-  (`state`, `whitelistWorkers`, `title`, `tags`) matched up to the assertion that fired.
+  The hash160 inside each lock is the expected identity, so the mapping was right and only the representation
+  differed. The full log is `{SCRATCH}/mkt-fix-full.log`.
 
-This is an address-representation finding, so it belongs with **D13** ("results carry the 20-byte identity, stored
-values the full lock") and with the deferred model B decision in plan section 0, not with the identity precedence
-this report fixed. The three titles were green on 2026-10-03 and in the W2 measurements, so the decode side changed
-in the same window the bisect covers; the next round should bisect it the same way, on one of these three titles
-(they fail in seconds to a minute, far cheaper than `sanity checks`).
-
-Blast radius checked so far: `LogicalIdentityPreservation.test.ts` is 2 failed | 20 passed both before and after the
-change (its two failures are constructor `deriveDeployCommitments` OP_VERIFYs, unrelated to this getter), and
+Blast radius of the getter change: `LogicalIdentityPreservation.test.ts` is 2 failed | 20 passed both before and
+after (its two failures are constructor `deriveDeployCommitments` OP_VERIFYs, unrelated to the getter), and
 `ContractFactoryFunding.test.ts` passes. The framed suites of `solidc`, `@solidcash/utils` and `@solidcash/testing`
 (152 files, 1331 tests) were green before the change and are unaffected by a getter in `solidcash`.

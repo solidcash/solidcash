@@ -96,7 +96,13 @@ The manifest's solidc row totals 1054 checks across 122 files, while the config 
 1201 tests. The observed counts from the run logs are the ones reported above; the manifest figure is older and
 is not restated as current.
 
-## `packages/solidcash` framed: from the W7 phase-2 baselines, not a fresh run
+## `packages/solidcash` framed: full-config run at `8c4671242`
+
+A full-config run of `vitest.framed.config.ts` in `packages/solidcash` at `8c4671242`: **1815 passed, 7 failed,
+148 skipped (1970 tests, 358 files)** in 225 s (`{SCRATCH}/w6-solidcash-framed.log`). The seven failures are the
+`call/` set below, all pre-existing and none a `W6_BASELINE.md` row; `deploy/address-identity.test.ts` is green after
+the `target()` fix. The section below keeps the per-directory reading that the W7 phase-2 worker measured, which is
+where the failing files were first seen.
 
 The solidcash framed suite was owned by another worker, which ran 17 directory baselines for its coverage work
 (`docs/framed/W7_PHASE2_CANDIDATES.md`, logs in `/tmp/grok-goal-4b830698eeec/implementer/w7p2/*-base.log`). Those

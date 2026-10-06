@@ -306,12 +306,12 @@ async function deploy(
   args: readonly unknown[] = [],
   broadcast = false,
 ): Promise<{
-  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
-  readonly network: MockNetworkProvider;
-  readonly artifacts: ReturnType<typeof compileStringMulti>;
-  readonly layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>;
-  readonly funding: Funding;
-}> {
+    readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
+    readonly network: MockNetworkProvider;
+    readonly artifacts: ReturnType<typeof compileStringMulti>;
+    readonly layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>;
+    readonly funding: Funding;
+  }> {
   const artifacts = compileStringMulti(source, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network, broadcast);
@@ -338,7 +338,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
   it('settles a literal element, sizing the run from the element the artifact publishes', async () => {
     // The artifact states the pushed element as a literal, so the hop sizes the run through the shipped encoder
     // rather than refusing an element type it cannot name.
-    const { deployment, network, artifacts, layout, funding } = await deploy(LITERAL_SOURCE, [], true);
+    const { deployment, network, layout, funding } = await deploy(LITERAL_SOURCE, [], true);
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
 
@@ -356,7 +356,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     const { value: chunkData } = decodePushdataValue(commitment, 1, 'bytes') as { value: Uint8Array };
     expect(chunkData.length).toBeGreaterThan(0);
     const state = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['items$len']).toBe(BigInt(chunkData.length));
+    expect(state.byNft[0]!.items$len).toBe(BigInt(chunkData.length));
     expect(await network.getRawTransaction(deployment.initialize.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
     expect(funding.deployerLock.length).toBe(25);
   });
@@ -400,7 +400,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     const hop = deployment.initialize.broadcast;
     expect(hop).toBeDefined();
     const held = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(held.byNft[0]!['items$len']).toBe(BigInt(value.length));
+    expect(held.byNft[0]!.items$len).toBe(BigInt(value.length));
     expect([...held.byNft[0]!.implementation as Uint8Array])
       .toStrictEqual([...deployment.implementation.address]);
     expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
@@ -434,7 +434,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
     );
     const state = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['items$len']).toBe(BigInt(grown.length));
+    expect(state.byNft[0]!.items$len).toBe(BigInt(grown.length));
     const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
     expect(chunks).toHaveLength(1);
     expect(bytesToHex(chunks[0]!.data)).toBe(bytesToHex(grown));
@@ -458,7 +458,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, value))));
 
     const state = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
+    expect(state.byNft[0]!.items$len).toBe(BigInt(value.length));
     expect(await network.getRawTransaction(deployment.initialize.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
 
     const result = await callFramedProxyEntry({
@@ -549,7 +549,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(result.transaction.outputs[chunkIds[0]!.index]!.token!.nft!.commitment)
       .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
     const state = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['items$len']).toBe(BigInt(grown.length));
+    expect(state.byNft[0]!.items$len).toBe(BigInt(grown.length));
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
@@ -1059,9 +1059,9 @@ describe('a proxied entry that writes one field of the marketplace\'s 13-field e
 
   it('settles a partial write whose new field value the artifact does not state', async () => {
     const id = 21n;
-    const reference = 'r'.repeat(80);
+    const referenceText = 'r'.repeat(80);
     const { deployment, network, artifacts, funding }
-      = await deploy(UNSTATED_PARTIAL_SOURCE, [id, { claimed: 0n, reference }], true);
+      = await deploy(UNSTATED_PARTIAL_SOURCE, [id, { claimed: 0n, reference: referenceText }], true);
     expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
     const result = await callFramedProxyEntry({
       provider: network,
@@ -1078,7 +1078,7 @@ describe('a proxied entry that writes one field of the marketplace\'s 13-field e
     });
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.accepted).toBe(true);
-    const value = encodePushdataValue({ claimed: 2n, reference }, 'Escrow', artifacts.Impl!.structs);
+    const value = encodePushdataValue({ claimed: 2n, reference: referenceText }, 'Escrow', artifacts.Impl!.structs);
     const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
     expect(nodeIds).toHaveLength(1);
     const node = decodeEntryCommitment(

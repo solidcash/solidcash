@@ -183,8 +183,8 @@ const PAGED_MEMBERS = PAGED_ADDRESSES.map((holder, index) => ({
 }));
 
 const PAGED_BATCH = planMappingBatch({
-  writes: PAGED_ADDRESSES.map((key, index) => ({
-    keys: [key], value: encodePushdataValue(PAGED_MEMBERS[index]!, 'Member', PAGED_STRUCTS)!,
+  writes: PAGED_ADDRESSES.map((slotKey, index) => ({
+    keys: [slotKey], value: encodePushdataValue(PAGED_MEMBERS[index]!, 'Member', PAGED_STRUCTS)!,
   })),
   inventory: [headSentinelCommitment()],
   encodeValue: encodeChunkableValueTail,

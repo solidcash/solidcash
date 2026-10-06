@@ -140,11 +140,11 @@ async function deploy(
   args: readonly unknown[] = [],
   broadcast = false,
 ): Promise<{
-  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
-  readonly network: MockNetworkProvider;
-  readonly artifacts: ReturnType<typeof compileStringMulti>;
-  readonly funding: Funding;
-}> {
+    readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
+    readonly network: MockNetworkProvider;
+    readonly artifacts: ReturnType<typeof compileStringMulti>;
+    readonly funding: Funding;
+  }> {
   const artifacts = compileStringMulti(source, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network, broadcast);

@@ -11,7 +11,8 @@ const APPROVE = { name: 'approve', writesState: true, outputs: [{ type: 'bool' }
 const TRANSFER_FROM = { name: 'transferFrom', writesState: true, outputs: [{ type: 'bool' }] };
 const BALANCE_OF = { name: 'balanceOf', writesState: false, outputs: [{ type: 'uint256' }] };
 
-const withAbi = (functions: readonly unknown[]) => ({ inner: { artifact: { abi: functions } } });
+const withAbi = (functions: readonly unknown[]): { inner: { artifact: { abi: readonly unknown[] } } } =>
+  ({ inner: { artifact: { abi: functions } } });
 
 describe('in-block writer return ABI', () => {
   it('reads the writer alias entry, not the shared physical owner entry', () => {

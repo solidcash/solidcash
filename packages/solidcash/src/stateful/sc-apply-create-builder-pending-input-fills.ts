@@ -55,7 +55,6 @@ export function applyCreateBuilderPendingInputFills(params: {
   const {
     builder,
     overrides,
-    functionName,
     entryAbiFunction,
     externalCallUtxoGroups,
     lowLevelCallUtxoGroups,

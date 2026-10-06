@@ -81,15 +81,15 @@ async function deployedWithCallerCoins(
   network: MockNetworkProvider,
   proxyArtifact: typeof impl = buildProxyArtifact(impl),
 ): Promise<{
-  readonly proxyArtifact: typeof impl;
-  readonly proxyCategoryId: string;
-  readonly implementationCategoryId: string;
-  readonly deployerLock: Uint8Array;
-  readonly changeAddress: string;
-  readonly hopCoin: { txid: string; vout: number; satoshis: bigint };
-  readonly callCoin: { txid: string; vout: number; satoshis: bigint };
-  readonly funder: ReturnType<Contract['unlock']['spend']>;
-}> {
+    readonly proxyArtifact: typeof impl;
+    readonly proxyCategoryId: string;
+    readonly implementationCategoryId: string;
+    readonly deployerLock: Uint8Array;
+    readonly changeAddress: string;
+    readonly hopCoin: { txid: string; vout: number; satoshis: bigint };
+    readonly callCoin: { txid: string; vout: number; satoshis: bigint };
+    readonly funder: ReturnType<Contract['unlock']['spend']>;
+  }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const funder = source.unlock.spend(alicePub, signature);

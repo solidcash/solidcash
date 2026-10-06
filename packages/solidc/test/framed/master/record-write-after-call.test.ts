@@ -5,7 +5,7 @@ import {
 import {
   asmToScript, buildPushdataCommitment, computeFunctionSelector, computeFunctionSignature,
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress,
-  type Artifact, type RecordEntry, type WitnessBlock,
+  type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
@@ -68,9 +68,9 @@ const EM_PTY = new Uint8Array(0);
 const token = (
   category: Uint8Array,
   capability: 'minting' | 'mutable' | 'none',
-  commitment: Uint8Array = new Uint8Array(0),
+  nftCommitment: Uint8Array = new Uint8Array(0),
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable' | 'none'; commitment: Uint8Array } } =>
-  ({ category, amount: 0n, nft: { capability, commitment } });
+  ({ category, amount: 0n, nft: { capability, commitment: nftCommitment } });
 
 /** The commitment the record holds before the write, and the one the entry's own body computes for it. */
 function commitment(counter: number): Uint8Array {

@@ -142,7 +142,7 @@ async function chain(): Promise<MockNetworkProvider> {
   await fundContract(provider, impl, IMPL_CATEGORY, 'b');
   const record = new Uint8Array(Buffer.from(
     buildPushdataCommitment(proxy.stateLayout!, {
-      implementation: IMPL_ADDRESS, [`list$len`]: BigInt(LIST_BYTES.length),
+      implementation: IMPL_ADDRESS, ['list$len']: BigInt(LIST_BYTES.length),
     }, 0), 'hex'));
   await fundContract(provider, proxy, PROXY_CATEGORY, 'c', { commitment: record });
 

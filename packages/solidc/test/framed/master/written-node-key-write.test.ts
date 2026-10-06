@@ -50,8 +50,8 @@ const slotValue = (slot: Uint8Array): bigint => slot.reduceRight((value, byte) =
 /** Three parties, in the order their balance nodes take in the list. */
 const [P0, P1, P2] = [distinctBytes(20, 0x31), distinctBytes(20, 0x55), distinctBytes(20, 0x77)]
   .sort((left, right) => (slotValue(partySlot(left)) < slotValue(partySlot(right)) ? -1 : 1)) as [
-    Uint8Array, Uint8Array, Uint8Array,
-  ];
+  Uint8Array, Uint8Array, Uint8Array,
+];
 
 const OWNERS = DEED.collectionLock('owners');
 const BALANCES = DEED.collectionLock('balances');

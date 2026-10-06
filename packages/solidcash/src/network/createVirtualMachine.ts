@@ -1262,7 +1262,7 @@ function buildVirtualMachineBch2026ForProvider(
     const recorder = closes;
     type Program = Parameters<typeof machine.evaluate>[0];
     let recorded: { readonly program: unknown; readonly declared: Uint8Array; readonly computed: Uint8Array }
-      | undefined;
+    | undefined;
     const evaluate = machine.evaluate;
     machine.evaluate = (program, options) => {
       recorder.last = undefined;

@@ -111,8 +111,9 @@ describe('the shipped validator program refuses a UTXO that is not the mutable N
   test('accepts the reference composition, so the refusals below are not malformed frames', () => {
     const composition = laidOut();
     const modelled = materialise(composition);
-    expect(decideValidator(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: composition.validatorIndex }).accepted)
-      .toBe(true);
+    expect(decideValidator(modelled, {
+      validatorTemplate: PROGRAM, validatorInputIndex: composition.validatorIndex,
+    }).accepted).toBe(true);
     expect(accepted(modelled, composition.validatorIndex)).toBe(true);
   });
 
@@ -184,8 +185,9 @@ describe('the shipped validator program refuses a covered master that is not at 
   test('accepts the delegate-call reference, so the refusal below is the address rule', () => {
     const composition = planComposition({ ...delegateRootPlan(), validatorTemplate: PROGRAM, validatorFacets: FACETS });
     const modelled = materialise(composition);
-    expect(decideValidator(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: composition.validatorIndex }).accepted)
-      .toBe(true);
+    expect(decideValidator(modelled, {
+      validatorTemplate: PROGRAM, validatorInputIndex: composition.validatorIndex,
+    }).accepted).toBe(true);
     expect(accepted(modelled, composition.validatorIndex)).toBe(true);
   });
 

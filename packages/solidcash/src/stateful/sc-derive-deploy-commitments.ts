@@ -200,8 +200,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
       // Genesis has no prior chunked mapping value or earlier same-transaction array push. The constructor
       // probe learns any newly published continuation outputs from the layout-relative sentinel above.
       internalInitArgs.push(new Uint8Array());
-    }
-    else {
+    } else {
       const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut|Rank)_(\d+)$/);
       if (match) {
         const slotIndex = Number(match[2]);

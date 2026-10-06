@@ -96,7 +96,10 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
     if (lockingBytecode) {
       const projected = typeof expected === 'string' && expectedBytes.length === 20
         ? decodedSolidityAddressIdentity(lockingBytecode) : undefined;
-      return [binToHex(projected ?? payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
+      return [
+        binToHex(projected ?? payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode),
+        binToHex(expectedBytes),
+      ];
     }
   }
   if (actualBytes && expectedBytes) {

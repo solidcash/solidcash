@@ -826,7 +826,8 @@ describe('conditional external-call topology', () => {
         addressSource: { kind: 'expression', expression: { kind: 'state', name: 'target' } },
       }],
     } as unknown as Artifact['abi'][number];
-    const resolve = (connected: unknown, state: Record<string, unknown>) =>
+    const resolve = (connected: unknown, state: Record<string, unknown>):
+    ReturnType<typeof expandResolveCreateBuilderExternalCalls> =>
       expandResolveCreateBuilderExternalCalls({
         getExternalTargetEntriesByInterface: () => [],
         getExternalRegistryEntry: () => connected,

@@ -7,7 +7,6 @@ import {
   type StopSite,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { refusalMessageOf } from './refused-entry.js';
 import {
   entryStopSites,
   publishFramedStopSites,

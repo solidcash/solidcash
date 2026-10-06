@@ -99,7 +99,7 @@ function drive(): {
   // The three writes of the one key, planned against the view each frame's predecessor leaves: the insert splices
   // the created node in beside the head, the update rewrites it, and the delete writes its default value back.
   const insertPlan = planMappingWrite({ keys: [KEY_PUSH], value: INSERTED, inventory: [head], encodeValue });
-  const created = insertPlan.written.find((node) => !node.existed)!;
+  const created = insertPlan.written.find((entry) => !entry.existed)!;
   const updatePlan = planMappingWrite({
     keys: [KEY_PUSH], value: UPDATED, inventory: [insertPlan.written[0]!.after, created.after], encodeValue,
   });
@@ -155,7 +155,9 @@ function drive(): {
   // The node sits at the mapping collection's own entry covenant; the head the transaction spends carries the
   // genesis commitment, and the created node is written at the inserting master's own adjacent output.
   const entryLock = scriptToLockingBytecode(
-    buildEntryNftCovenantScript(ledger.category, computeCollectionHash(artifacts.Ledger!.stateLayout!.collections![0]!.signature)),
+    buildEntryNftCovenantScript(
+      ledger.category, computeCollectionHash(artifacts.Ledger!.stateLayout!.collections![0]!.signature),
+    ),
     'p2sh32',
   );
   const headAfter = insertPlan.written[0]!.after;

@@ -372,7 +372,8 @@ function evaluateCreatedHead(options: SpendOptions = {}): { accepted: boolean; o
   });
 }
 
-describe('a framed master whose entry inserts a mapping target beside a dynamic append', () => {  it('publishes a framed master whose layout puts the dynamic run past the batch group', () => {
+describe('a framed master whose entry inserts a mapping target beside a dynamic append', () => {
+  it('publishes a framed master whose layout puts the dynamic run past the batch group', () => {
     expect(artifact.composition?.convention).toBe('framed');
     expect(deployed.script.length).toBeGreaterThan(0);
   });
@@ -390,16 +391,16 @@ describe('a framed master whose entry inserts a mapping target beside a dynamic 
   });
 
   it('settles the insert through the head a genesis minted, which the transaction spends', () => {
-    // The empty list's head sits at an input, as every genesis mints it, and the write spends and recreates it
-    // relinked to the target: the honest insert into a collection nothing has written yet.
+  // The empty list's head sits at an input, as every genesis mints it, and the write spends and recreates it
+  // relinked to the target: the honest insert into a collection nothing has written yet.
     expect(evaluate(EMPTY_RUN)).toStrictEqual({ accepted: true });
   });
 
   it('refuses the insert when the transaction creates its predecessor rather than spending it', () => {
-    // The same insert with the head minted by the transaction itself, as a hop laid it: the predecessor record
-    // carries the create sentinel and states the empty list's own head as its input view. A frame that settles alone
-    // refuses a created record that states a start view, and a relink to another slot meets the same refusal. Under a
-    // validator the head's zero slot is refused (chained-insert-across-frames.test.ts).
+  // The same insert with the head minted by the transaction itself, as a hop laid it: the predecessor record
+  // carries the create sentinel and states the empty list's own head as its input view. A frame that settles alone
+  // refuses a created record that states a start view, and a relink to another slot meets the same refusal. Under a
+  // validator the head's zero slot is refused (chained-insert-across-frames.test.ts).
     const elsewhere = keyToSlot(new Uint8Array([1, 1, 1]));
     const wrongHead = encodeEntryCommitment(ZERO_SLOT, elsewhere, new Uint8Array(64));
     const asLaid: SpendOptions[] = [

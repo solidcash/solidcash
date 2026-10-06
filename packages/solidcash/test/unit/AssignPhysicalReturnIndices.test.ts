@@ -4286,7 +4286,16 @@ describe('assignPhysicalReturnIndices', () => {
   it('restores selected read-only chunks ahead of a displaced mapping entry', () => {
     const chunkLock = Uint8Array.of(0xaa, 0x20, 0x05, 0x87);
     const entryLock = Uint8Array.of(0xaa, 0x20, 0x16, 0x87);
-    const chunk = (id: string, commitment: string, flag: bigint) => ({
+    const chunk = (id: string, commitment: string, flag: bigint): {
+      txid: string; vout: number; satoshis: bigint;
+      token: { amount: bigint; category: string; nft: { capability: 'mutable'; commitment: string } };
+      unlocker: {
+        generateLockingBytecode: () => Uint8Array;
+        contract: { artifact: { contractName: string } };
+        abiFunction: { inputs: { name: string }[] };
+        params: bigint[];
+      };
+    } => ({
       txid: id.repeat(64), vout: 0, satoshis: 1200n,
       token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment } },
       unlocker: {

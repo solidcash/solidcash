@@ -1770,12 +1770,12 @@ async function callInShape(
   const unscopedFrames = new Set<string>();
   const scopedCalleeValue = (plan: CompositionDraftPlan): CalleeValues | undefined => {
     if (calleePlan === undefined) return undefined;
-    const master = scopedCalleeFrame(calleePlan, calleeValues);
-    if (master === undefined || unscopedFrames.has(master)) return undefined;
+    const frameMaster = scopedCalleeFrame(calleePlan, calleeValues);
+    if (frameMaster === undefined || unscopedFrames.has(frameMaster)) return undefined;
     let answered: CalleeValues | undefined;
     try {
       const { host, draft: scoped } = composeCandidate(plan);
-      if (deriveThroughFrame([...payeeRequests, root], host, master, { onCalleeStall: () => undefined })) {
+      if (deriveThroughFrame([...payeeRequests, root], host, frameMaster, { onCalleeStall: () => undefined })) {
         answered = learnCalleeValue({
           planned: calleePlan, draft: scoped, host, vm: machine, maximumCommitmentBytes, values: calleeValues,
           firstOnly: true,
@@ -1785,7 +1785,7 @@ async function callInShape(
       // A refusal on the way is the whole composition's to name: it is derived below and refuses as it always did.
       answered = undefined;
     }
-    if (answered === undefined) unscopedFrames.add(master);
+    if (answered === undefined) unscopedFrames.add(frameMaster);
     return answered;
   };
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
@@ -1796,7 +1796,7 @@ async function callInShape(
     const scopedAnswer = attempt < maximumAttempts - 1 ? scopedCalleeValue(plan) : undefined;
     if (scopedAnswer !== undefined) {
       // As below: a chunking value a callee's close exposed plans the call again from it.
-      const exposed = [...scopedAnswer.writeValues ?? []].filter(([master]) => !prior.writeValues.has(master));
+      const exposed = [...scopedAnswer.writeValues ?? []].filter(([namedMaster]) => !prior.writeValues.has(namedMaster));
       if (exposed.length > 0) {
         return callInShape(options, shape, { ...prior, writeValues: new Map([...prior.writeValues, ...exposed]) });
       }
@@ -1805,23 +1805,19 @@ async function callInShape(
     }
     const { host, draft: candidate } = composeCandidate(plan);
     draft = candidate;
-    let stalled = false;
     try {
       // A callee whose own derivation stalls is left as far as it got and its caller resumes, as the hop settles its
       // callees and keeps going past one that refuses (`settleCallees`): a frame the plan states past the entry's own
       // revert closes nothing, and the entry still runs to that revert, binding the calls it makes before it, so the
       // machine's verdict below names its reason rather than the first record the stall left unbound.
       completed = deriveComposition([...payeeRequests, root], host, {
-        onCalleeStall: () => {
-          stalled = true;
-        },
+        onCalleeStall: () => undefined,
       }).completed;
     } catch (error) {
       // A body that refuses before its segment closes never hands the derivation a record view, so the driver stops.
       // The machine is asked about the draft as it stands below, and the refusing participant's verdict carries the
       // objection.
       if (!(error instanceof FramedComposerError) || error.code !== 'FRAMED_DERIVATION_STALLED') throw error;
-      stalled = true;
     }
     // A callee answers before the frame that reads its result: its own close hands back what it returned, each
     // payload it emitted and each node view it wrote, deepest first. While one cannot, every frame above it computed
@@ -1834,7 +1830,7 @@ async function callInShape(
         // A chunking value a callee's close exposed sizes the run of chunk records its write takes, so the call is
         // planned again from it, as the hop plans its callee's write again (`planCalleeWrites`). A value an earlier
         // pass already planned from is not planned from twice: its frame then refuses as it stands.
-        const exposed = [...answered.writeValues ?? []].filter(([master]) => !prior.writeValues.has(master));
+        const exposed = [...answered.writeValues ?? []].filter(([namedMaster]) => !prior.writeValues.has(namedMaster));
         if (exposed.length > 0) {
           return callInShape(options, shape, { ...prior, writeValues: new Map([...prior.writeValues, ...exposed]) });
         }

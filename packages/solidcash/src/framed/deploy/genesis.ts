@@ -57,7 +57,7 @@
 
 import {
   bigIntToVmNumber, binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin,
-  Opcodes, utf8ToBin,
+  utf8ToBin,
 } from '@bitauth/libauth';
 import {
   FrameKind,
@@ -986,23 +986,23 @@ function probeLayout(
   chunkCount: number,
   sideCarCount: number,
 ): {
-  readonly caller: number;
-  readonly master: number;
-  /** The compute side-cars the frame co-spends, immediately after its own input, in body order. */
-  readonly sideCars: readonly number[];
-  readonly records: readonly number[];
-  readonly validator: number;
-  readonly spare: number;
-  readonly events: readonly number[];
-  /** The spent mapping heads' indices, one per collection the constructor writes, in plan order. */
-  readonly heads: readonly number[];
-  /** The created mapping nodes' trailing output indices, in plan and group order; empty when it writes none. */
-  readonly created: readonly number[];
-  /** The first chunk output's index, or `-1` when the constructor writes no dynamic value. */
-  readonly chunkBase: number;
-  /** How many chunk outputs the constructor's frames create. */
-  readonly chunkCount: number;
-} {
+    readonly caller: number;
+    readonly master: number;
+    /** The compute side-cars the frame co-spends, immediately after its own input, in body order. */
+    readonly sideCars: readonly number[];
+    readonly records: readonly number[];
+    readonly validator: number;
+    readonly spare: number;
+    readonly events: readonly number[];
+    /** The spent mapping heads' indices, one per collection the constructor writes, in plan order. */
+    readonly heads: readonly number[];
+    /** The created mapping nodes' trailing output indices, in plan and group order; empty when it writes none. */
+    readonly created: readonly number[];
+    /** The first chunk output's index, or `-1` when the constructor writes no dynamic value. */
+    readonly chunkBase: number;
+    /** How many chunk outputs the constructor's frames create. */
+    readonly chunkCount: number;
+  } {
   const caller = 0;
   const master = 1;
   // A framed body locates its side-cars from its own input, so they sit immediately after the master and every
@@ -1555,7 +1555,7 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   // over those first, then reads the target's group. Both commitments are the shipped planner's. A body that writes
   // several collections verifies them in plan order, so each collection's records follow the one before.
   const placements = mappingPlacementsOf(options.mappings, layout);
-  const mappingEntries: readonly RecordEntry[] = options.mappings.flatMap((mapping, at) => {
+  const mappingNodeEntries: readonly RecordEntry[] = options.mappings.flatMap((mapping, at) => {
     const placed = placements[at]!;
     return layOutMapping(
       mapping, options.nodeOuts.slice(placed.offset, placed.offset + placed.created.length), placed,
@@ -1576,7 +1576,7 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
       ...layout.records.map((index, nftIndex) => (
         kept(index, options.preState[nftIndex]!, options.viewOuts[nftIndex]!)
       )),
-      ...mappingEntries,
+      ...mappingNodeEntries,
       // The run's records follow the mapping's groups, which is the ordinal the body reads the run at.
       ...options.chunks.map((record) => record.entry),
     ]],

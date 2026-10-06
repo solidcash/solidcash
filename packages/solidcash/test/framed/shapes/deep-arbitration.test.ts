@@ -127,7 +127,7 @@ function source(shares: readonly bigint[]): string {
     'interface IStore { function write(int amount); }',
     `interface IRater { function enter(uint16[2] xs) returns (${type});`
       + ` function readFlag() view returns (int); function calc(${type} xs) pure returns (${type}); }`,
-    `interface IVault { function readRecord() view returns (int);`
+    'interface IVault { function readRecord() view returns (int);'
       + ` function settle(uint16[4] xs, int16[2] ys) returns (${type});`
       + ' function setClaimed(int value); function sendShare(); }',
     'interface IClaimer { function claim() returns (int); }',
@@ -672,7 +672,7 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
 
     // Twenty calls across twenty-one masters.
     expect(run.plan.masters).toHaveLength(21);
-    expect(run.plan.masters.reduce((calls, master) => calls + master.calls.length, 0)).toBe(20);
+    expect(run.plan.masters.reduce((calls, frame) => calls + frame.calls.length, 0)).toBe(20);
 
     // Every participant the layout places - every master of every contract, the validator and every record - is
     // accepted by the machine. The rater accepting is what holds the amounts up: its body reads the claimer's
@@ -709,7 +709,7 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
     expect(depthOf(draft, CLAIM_MASTER)).toBe(2);
     expect(depthOf(draft, run.shareMasters[0]!)).toBe(3);
     expect(depthOf(draft, run.transferMasters[0]!)).toBe(4);
-    expect(Math.max(...run.plan.masters.map((master) => depthOf(draft, master.master)))).toBe(4);
+    expect(Math.max(...run.plan.masters.map((frame) => depthOf(draft, frame.master)))).toBe(4);
     // The claimer re-enters the rater for the flag and the calculation, one level below itself.
     expect(depthOf(draft, FLAG_MASTER)).toBe(3);
     expect(depthOf(draft, CALC_MASTER)).toBe(3);

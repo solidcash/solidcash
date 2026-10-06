@@ -118,7 +118,10 @@ function planFor(source: string): { plan: CompositionDraftPlan; artifacts: Retur
         output: { ...recordSource, token: tokenWith(ledger.category, 'mutable', AFTER) },
         unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, masterIndex, 1),
       },
-      user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
+      user: {
+        source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+        unlockingBytecode: userInput().unlockingBytecode,
+      },
     },
     validator: { id: 'validator', covers: ['Callee'], settles: [], redeemScript: validator.redeem },
   };

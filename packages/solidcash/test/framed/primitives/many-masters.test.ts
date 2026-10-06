@@ -283,11 +283,11 @@ describe('three contracts entered eight times each in one transaction', () => {
 
   it.runIf(process.env.FRAMED_FULL === '1')(
     'carries twenty-four masters, one record chain per contract, and every input is accepted', () => {
-    const { artifacts, contracts, ledgers } = compose(specs);
-    const { plan, recordIndex } = buildPlan(artifacts, contracts, ledgers);
-    const outcome = composeAndDerive(plan, [
-      artifacts.Hub!, artifacts.Alpha!, artifacts.Beta!, artifacts.Gamma!,
-    ], [rootOf('Hub', 'run', HUB_MASTER)]);
+      const { artifacts, contracts, ledgers } = compose(specs);
+      const { plan, recordIndex } = buildPlan(artifacts, contracts, ledgers);
+      const outcome = composeAndDerive(plan, [
+        artifacts.Hub!, artifacts.Alpha!, artifacts.Beta!, artifacts.Gamma!,
+      ], [rootOf('Hub', 'run', HUB_MASTER)]);
 
       // The inputs the layout places: twenty-four ledger masters, the hub, the validator, the facet it binds and
       // three records.

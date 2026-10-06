@@ -379,7 +379,10 @@ describe('the settlement walk chains every record a segment declares', () => {
       secondInput: MIDDLE,
       plainFirstPair: true,
       segments: [
-        [keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER), { in: 0xffff, out: RECORD_INDEX, viewIn: new Uint8Array(0), viewOut: MIDDLE }],
+        [
+          keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER),
+          { in: 0xffff, out: RECORD_INDEX, viewIn: new Uint8Array(0), viewOut: MIDDLE },
+        ],
         [kept(MIDDLE, AFTER)],
       ],
       outputCommitment: AFTER,
@@ -392,7 +395,10 @@ describe('the settlement walk chains every record a segment declares', () => {
       secondInput: MIDDLE,
       secondOutput: AFTER,
       segments: [
-        [keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER), { in: 0xffff, out: SECOND_RECORD_INDEX, viewIn: new Uint8Array(0), viewOut: AFTER }],
+        [
+          keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER),
+          { in: 0xffff, out: SECOND_RECORD_INDEX, viewIn: new Uint8Array(0), viewOut: AFTER },
+        ],
       ],
     }).accepted).toBe(false);
     expect(evaluate({
@@ -409,7 +415,10 @@ describe('the settlement walk chains every record a segment declares', () => {
       secondRecord: true,
       secondInput: MIDDLE,
       segments: [
-        [{ in: RECORD_INDEX, out: 0xffff, viewIn: BEFORE, viewOut: new Uint8Array(0) }, keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER)],
+        [
+          { in: RECORD_INDEX, out: 0xffff, viewIn: BEFORE, viewOut: new Uint8Array(0) },
+          keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER),
+        ],
       ],
       plainFirstPair: false,
       outputCommitment: AFTER,

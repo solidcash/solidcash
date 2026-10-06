@@ -262,8 +262,8 @@ describe('a Solidity-compatible proxy implementation', () => {
       composition: 'framed', solidityImportCompat: true,
     });
     expect(publishedRefusals(artifacts)).toStrictEqual([]);
-    for (const artifact of Object.values(artifacts)) {
-      for (const entry of artifact.abi) {
+    for (const compiled of Object.values(artifacts)) {
+      for (const entry of compiled.abi) {
         expect(entry.inputs.map((input) => input.name)).not.toContain('__internal__proxyMasterIndex');
       }
     }

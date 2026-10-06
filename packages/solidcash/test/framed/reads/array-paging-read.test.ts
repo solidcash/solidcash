@@ -179,7 +179,8 @@ describe('reading a page whose key is an element of a chunk-backed dynamic array
     const program = result.draft.programFor('read');
     expect(verdict(program, program.inputIndex)).toBe('accepted');
     for (const id of result.draft.layout.participants.map((placed) => placed.id)
-      .filter((id) => id.startsWith('record-') || id.startsWith('read-entry-') || id.startsWith('read-chunk-'))) {
+      .filter((placedId) => placedId.startsWith('record-') || placedId.startsWith('read-entry-')
+        || placedId.startsWith('read-chunk-'))) {
       expect(verdict(program, participant(result.draft.layout, id).index), id).toBe('accepted');
     }
   });

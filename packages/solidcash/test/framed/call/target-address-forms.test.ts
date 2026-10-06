@@ -52,7 +52,7 @@ function siteTarget(arg: unknown): Uint8Array | undefined {
 }
 
 /** The plan the shipped hop derives for the entry, with the one address argument. */
-async function plan(arg: unknown) {
+async function plan(arg: unknown): Promise<Awaited<ReturnType<typeof planHopExternalCalls>>> {
   return planHopExternalCalls({
     provider: new MockNetworkProvider(),
     artifact: caller,

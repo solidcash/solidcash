@@ -78,7 +78,8 @@ contract Caller {
 }
 
 const empty = new Uint8Array(0);
-const token = (category: Uint8Array, capability: 'minting' | 'mutable') =>
+const token = (category: Uint8Array, capability: 'minting' | 'mutable'):
+{ category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } =>
   ({ category, amount: 0n, nft: { capability, commitment: empty } });
 
 interface Composition {

@@ -642,7 +642,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     const { built, outcome } = settledUserEntered();
     // Each root's delegate callee completes before the root that forwarded to it, once per entry, in root order.
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
-      ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => [
+      ...Array.from({ length: APPEND_COUNT }, (_unused, _turn) => [
         entryName(built.implementationContract, 'append'),
         entryName(built.proxyContract, '__fallback'),
       ]).flat(),
@@ -746,7 +746,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     // Each append's delegate frame completes before the proxy fallback that forwarded to it, in call order, and
     // the hub that drove them all completes last.
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
-      ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => [
+      ...Array.from({ length: APPEND_COUNT }, (_unused, _turn) => [
         entryName(built.implementationContract, 'append'),
         entryName(built.proxyContract, '__fallback'),
       ]).flat(),

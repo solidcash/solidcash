@@ -117,11 +117,6 @@ interface CompositionOptions {
   readonly outputRecordCategory?: Uint8Array;
 }
 
-interface Composition {
-  readonly transaction: VmTransaction;
-  readonly sourceOutputs: VmProgram['sourceOutputs'];
-}
-
 /** Builds the composition and evaluates the implementation's master input. */
 function evaluate(options: CompositionOptions = {}): { accepted: boolean; objection?: string } {
   const recordCategory = options.recordCategory ?? CATEGORY_PROXY;

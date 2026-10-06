@@ -176,7 +176,7 @@ describe('the cross-reach write check', () => {
         ...(value === undefined ? {} : { value }),
       }],
     } as unknown as HopEntryWrites);
-    const frames = (value: Uint8Array | undefined) => [
+    const frames = (value: Uint8Array | undefined): ReturnType<typeof frame>[] => [
       frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating(value) }),
       frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating(value) }),
     ];

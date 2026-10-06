@@ -112,18 +112,23 @@ describe('a chain of four contracts, each calling the next', () => {
       inputs: {
         ...Object.fromEntries(LINKS.map((link) => [`${link.name.toLowerCase()}-1`, {
           source: {
-            lockingBytecode: deployMaster(artifacts[link.name]!, category(link.label), REAL_VALIDATOR_PROGRAM).lockingBytecode,
+            lockingBytecode: deployMaster(
+              artifacts[link.name]!, category(link.label), REAL_VALIDATOR_PROGRAM,
+            ).lockingBytecode,
             valueSatoshis: 20_000n, token: token(category(link.label), 'minting'),
           },
         }])),
         validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(category(labels.A), 'mutable') } },
-        user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: callerUnlockingBytecode() },
+        user: {
+          source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+          unlockingBytecode: callerUnlockingBytecode(),
+        },
       },
       validator: { id: 'validator', covers: ['B', 'C', 'D'], settles: [], redeemScript: validator.redeem },
     };
 
     const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(),
+      vm: compositionMachine(),
       artifacts: LINKS.map((link) => artifacts[link.name]!),
       plan,
     });

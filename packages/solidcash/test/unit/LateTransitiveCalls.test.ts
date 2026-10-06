@@ -131,7 +131,9 @@ function preparation(groups: ExternalCallUtxoGroup[]): {
   return { groups, nodes, host, params, expand: () => expandCreateBuilderLateTransitive(host, params) };
 }
 
-function addressedLateFixture(target: Uint8Array) {
+function addressedLateFixture(target: Uint8Array): {
+  fixture: ReturnType<typeof preparation>; sink: ReturnType<typeof contract>;
+} {
   const call = {
     ...edge('Sink'),
     addressSource: { kind: 'expression' as const, expression: { kind: 'state', name: 'target' } },

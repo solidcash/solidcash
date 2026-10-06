@@ -193,8 +193,7 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
             });
           }
           value = externalCallAnchorIndices.get(groupIndex) ?? -1n;
-        }
-        else if (returned) {
+        } else if (returned) {
           const outputIndex = returnEventIndexMap.get(groupIndex);
           if (outputIndex !== undefined) value = BigInt(outputIndex);
         }

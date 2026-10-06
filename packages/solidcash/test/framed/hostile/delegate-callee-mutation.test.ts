@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, type Artifact } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   VALIDATOR_PROGRAM_REASONS, decideValidator, type FramedTransaction, type TokenShape,
 } from '../../../../solidc/src/framed/validator/index.js';

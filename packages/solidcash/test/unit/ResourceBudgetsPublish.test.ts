@@ -19,7 +19,11 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-const publishedLayoutBudgets = (maximumRows: number) => {
+const publishedLayoutBudgets = (maximumRows: number): {
+  maximumRows: number; maximumParticipants: number; maximumBlobBytes: number; maximumDynamicChunks: number;
+  maximumValueContinuationChunks: number; maximumJournalRecords: number; maximumEvents: number;
+  maximumTransfers: number; maximumReturnCarriers: number; maximumExternalEdges: number;
+} => {
   const published = buildMessageBusResourceBudgets({ maximumRows });
   return {
     maximumRows: published.maximumRows,

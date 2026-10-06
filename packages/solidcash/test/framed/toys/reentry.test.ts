@@ -124,15 +124,15 @@ function driveSettled(
   control = false,
   recordedPair: readonly [bigint, bigint] = [1n, 2n],
 ): {
-  readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
-  readonly completed: readonly string[];
-  readonly error?: string;
-  readonly verdicts: readonly string[];
-  readonly written: Uint8Array;
-  readonly nodeIndex: number;
-  readonly createdIndex: number;
-  readonly headIndex: number;
-} {
+    readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
+    readonly completed: readonly string[];
+    readonly error?: string;
+    readonly verdicts: readonly string[];
+    readonly written: Uint8Array;
+    readonly nodeIndex: number;
+    readonly createdIndex: number;
+    readonly headIndex: number;
+  } {
   const { artifacts, contracts } = compileAndDeploy(PAIRED_SOURCE, { Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL });
   const vault = contracts.Vault!;
   const claimer = contracts.Claimer!;
@@ -294,7 +294,7 @@ describe('a vault whose release writes its record and calls a claimer that reads
     // rewritten in place and the created node as a trailing output. The creating frame names the created node by
     // its position in that declaration - the record after the target's own - and the frame one call higher rewrites
     // it, so the chain ends at the commitment the transaction writes.
-    const { draft, completed, error, verdicts, written, createdIndex, headIndex } = driveSettled(true);
+    const { draft, completed, error, written, createdIndex, headIndex } = driveSettled(true);
 
     expect(error).toBeUndefined();
     expect(completed).toStrictEqual(['markClaimed-1', 'claim-1', 'release-1']);
@@ -321,7 +321,7 @@ describe('a vault whose release writes its record and calls a claimer that reads
     // The control leaves the created node at the value the creating frame wrote instead of the value the frame one
     // call higher ends it at, so the chain's last declaration is not the commitment the transaction writes. The
     // creating frame's own input is unaffected; the validator that settles the contract refuses.
-    const { draft, verdicts } = driveSettled(true, true);
+    const { verdicts } = driveSettled(true, true);
     expect(verdicts[0]).toBe('accepted');
     expect(verdicts[3]).toBe('refused: Program failed an OP_VERIFY operation.');
   });
@@ -875,7 +875,7 @@ function driveReadBack(): GraphOutcome {
   const idPush = encodeIntegerValue(ID);
   const slot = keyToSlotMulti([idPush]);
   const before = encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(0n));
-  const releaseView = encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(1n));
+  const releaseCommitment = encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(1n));
   const releaseWrite = planMappingWrite({
     keys: [idPush], value: 1n, inventory: [before], encodeValue: (value) => encodeIntegerValue(value),
   });
@@ -938,7 +938,7 @@ function driveReadBack(): GraphOutcome {
           },
           enteredBy: 'claim-1', origin: 'user', argumentPushes: [getSelector, idPush],
           // The read-only frame declares the record it reads, at the coordinate the writing frames use.
-          segments: [[{ in: vaultNodeIndex, out: vaultNodeIndex, viewIn: releaseView, viewOut: releaseView }]],
+          segments: [[{ in: vaultNodeIndex, out: vaultNodeIndex, viewIn: releaseCommitment, viewOut: releaseCommitment }]],
         }),
         retval: encodeResultList([encodeIntegerValue(1n)]),
       },
@@ -1000,7 +1000,7 @@ function driveReadBack(): GraphOutcome {
   return {
     draft, completed, error, verdicts: verdictsOf(draft),
     vaultNodeIndex, tokenNodeIndex: -1, eventIndex,
-    vaultRelease: releaseView, vaultWritten: releaseWrite.written[0]!.after, balanceWritten: new Uint8Array(0),
+    vaultRelease: releaseCommitment, vaultWritten: releaseWrite.written[0]!.after, balanceWritten: new Uint8Array(0),
   };
 }
 

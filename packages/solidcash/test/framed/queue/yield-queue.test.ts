@@ -108,7 +108,7 @@ function sourceFromUtxo(contract: DeployedContract, utxo: Utxo): DraftSourceOutp
 
 /** The plan one send composes: one master entered by a signed user, no records. */
 function planFor(
-  fixture: Fixture,
+  built: Fixture,
   contractName: string,
   contract: DeployedContract,
   masterId: string,
@@ -147,7 +147,7 @@ function planFor(
 
 /** Builds and broadcasts a composed plan: the master on its live outpoint, a signed input, and BCH change. */
 async function broadcast(
-  fixture: Fixture,
+  built: Fixture,
   contractName: string,
   contract: DeployedContract,
   masterId: string,
@@ -155,7 +155,7 @@ async function broadcast(
   plan: CompositionDraftPlan,
 ): Promise<SendResult> {
   const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [fixture.artifacts[contractName]!], plan,
+    vm: compositionMachine(), artifacts: [built.artifacts[contractName]!], plan,
   });
   deriveComposition([
     { contract: contractName, functionName: entryName(contractName, ENTRY), kind: FrameKind.ROOT, master: masterId },
@@ -164,13 +164,13 @@ async function broadcast(
   const program = draft.programFor(masterId);
   const masterIndex = participant(draft.layout, masterId).index;
   const masterSource = program.sourceOutputs[masterIndex]!;
-  const masterUtxo = await liveMaster(fixture.provider, contract);
+  const masterUtxo = await liveMaster(built.provider, contract);
   const masterUnlocker: Unlocker = {
     generateLockingBytecode: () => masterSource.lockingBytecode,
     generateUnlockingBytecode: () => program.transaction.inputs[masterIndex]!.unlockingBytecode,
   };
 
-  const builder = new TransactionBuilder({ provider: fixture.provider, skipAutomaticCoSpends: true });
+  const builder = new TransactionBuilder({ provider: built.provider, skipAutomaticCoSpends: true });
   builder.setLocktime(program.transaction.locktime ?? 0);
   const sequence = program.transaction.inputs[masterIndex]?.sequenceNumber;
   builder.addInput(masterUtxo, masterUnlocker, sequence === undefined ? undefined : { sequence });
@@ -186,24 +186,24 @@ async function broadcast(
   const transaction = builder.buildLibauthTransaction();
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
-  const txid = await fixture.provider.sendPreparedTransaction({ rawHex, rawBytes, transaction });
+  const txid = await built.provider.sendPreparedTransaction({ rawHex, rawBytes, transaction });
   return { txid, plan, draft, master: masterUtxo, sources: [masterUtxo, funding] };
 }
 
 /** A send that reads the live master when its turn comes, then builds and broadcasts against it. */
 function sendFor(
-  fixture: Fixture,
+  built: Fixture,
   contractName: string,
   masterId: string,
   fundingTxid: string,
 ): QueuedSend<SendResult> {
-  const contract = fixture.contracts[contractName]!;
+  const contract = built.contracts[contractName]!;
   const resources: SendResources = [masterId];
   const funding: Utxo = { txid: fundingTxid, vout: 0, satoshis: FUNDING_VALUE };
   return {
     resources,
-    plan: async () => planFor(fixture, contractName, contract, masterId, await liveMaster(fixture.provider, contract)),
-    run: (plan) => broadcast(fixture, contractName, contract, masterId, funding, plan),
+    plan: async () => planFor(built, contractName, contract, masterId, await liveMaster(built.provider, contract)),
+    run: (plan) => broadcast(built, contractName, contract, masterId, funding, plan),
   };
 }
 

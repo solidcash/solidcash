@@ -76,7 +76,9 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
         outpointIndex: 0,
         outpointTransactionHash: new Uint8Array(32).fill(1),
         sequenceNumber: 0xffffffff,
-        unlockingBytecode: new Uint8Array([...encodeDataPush(encodeWitnessBlock(block)), ...encodeDataPush(deployed.script)]),
+        unlockingBytecode: new Uint8Array([
+          ...encodeDataPush(encodeWitnessBlock(block)), ...encodeDataPush(deployed.script),
+        ]),
       },
       {
         outpointIndex: 0,

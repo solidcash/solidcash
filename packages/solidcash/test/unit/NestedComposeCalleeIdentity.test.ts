@@ -17,7 +17,9 @@ const nested = {
 } as ExternalCallAbi;
 const delegateFn = { name: 'run', inputs: [] } as unknown as AbiFunction;
 
-function connected(lockingBytecode: Uint8Array) {
+function connected(lockingBytecode: Uint8Array): {
+  inner: { lockingBytecode: string; artifact: { contractName: string; abi: { name: string; inputs: never[] }[] } };
+} {
   return {
     inner: {
       lockingBytecode: binToHex(lockingBytecode),
@@ -26,7 +28,8 @@ function connected(lockingBytecode: Uint8Array) {
   };
 }
 
-function resolve(callee: unknown, state: Record<string, unknown>, edge = nested) {
+function resolve(callee: unknown, state: Record<string, unknown>, edge = nested):
+ReturnType<typeof resolveCreateBuilderNestedComposeCallee> {
   const host: ResolveCreateBuilderNestedComposeCalleeHost = {
     provider: createTestProvider(),
     resolveExternalArgs: (sources: readonly ArgSource[] | undefined, _args: FunctionArgument[],

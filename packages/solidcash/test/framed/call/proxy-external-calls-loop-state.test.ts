@@ -163,7 +163,7 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
     expect(plan.callees).toHaveLength(workers.length);
   });
 
-  it("resolves a call whose target and arguments live in a dynamic state value", async () => {
+  it('resolves a call whose target and arguments live in a dynamic state value', async () => {
     const network = new MockNetworkProvider();
     const facade = loadArtifact(FACADE);
     const data = loadArtifact(DATA);

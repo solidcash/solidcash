@@ -78,7 +78,7 @@ const MAPPING_HEAD = (): string => HEAD() + '   mapping(address => uint) balance
  */
 const MAPPING_WALL_SOURCE = `pragma solidcash ^0.13.0;${MAPPING_HEAD()}`
   + '   function move(address to, uint amount, int turns) {\n'
-  + `     for (int i = 0; i < turns; i = i + 1) { balances[to] = amount; }\n`
+  + '     for (int i = 0; i < turns; i = i + 1) { balances[to] = amount; }\n'
   + `     IOther(0x${hexOf(calleeAddress())}).ping.call();\n`
   + '     require(true);\n   }\n }';
 

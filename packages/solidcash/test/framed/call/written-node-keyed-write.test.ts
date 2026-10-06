@@ -207,8 +207,8 @@ describe('a mapping write keyed by a value read out of a node the body writes', 
     expect(refusingParticipants(draft, entry)).toStrictEqual([]);
     const debited = draft.blockOf(entry).segments.flat().find((record) => record.viewIn.length >= 64
       && bytesEqual(decodeEntryCommitment(record.viewIn).slot, partySlot(ALICE.lock)))!;
-    const moveTo = (view: Uint8Array): Uint8Array => {
-      const held = decodeEntryCommitment(view);
+    const moveTo = (bytes: Uint8Array): Uint8Array => {
+      const held = decodeEntryCommitment(bytes);
       return encodeEntryCommitment(partySlot(CAROL_LOCK), held.nextKey, held.value);
     };
     debited.viewIn = moveTo(debited.viewIn);

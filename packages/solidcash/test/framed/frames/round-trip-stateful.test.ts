@@ -390,14 +390,14 @@ function deriveRoundTrip(): ReturnType<typeof deriveFresh> {
  * re-states what the machine was handed, so the derivation can be asked about the bytes the machine ran.
  */
 function toModel(program: VmProgram): FramedTransaction {
-  const shape = (token: VmToken | undefined): TokenShape => (token === undefined
+  const shape = (held: VmToken | undefined): TokenShape => (held === undefined
     ? { category: empty, capability: 0, hasNft: false, nftCommitment: empty, amount: 0n }
     : {
-      category: token.category,
-      capability: capabilityOf(token),
-      hasNft: token.nft !== undefined,
-      nftCommitment: token.nft?.commitment ?? empty,
-      amount: token.amount,
+      category: held.category,
+      capability: capabilityOf(held),
+      hasNft: held.nft !== undefined,
+      nftCommitment: held.nft?.commitment ?? empty,
+      amount: held.amount,
     });
   return {
     inputs: program.transaction.inputs.map((input, index) => ({
@@ -416,9 +416,9 @@ function toModel(program: VmProgram): FramedTransaction {
 }
 
 /** The capability number the derivation uses for the machine's token. */
-function capabilityOf(token: VmToken): number {
-  if (token.nft?.capability === 'minting') return 2;
-  if (token.nft?.capability === 'mutable') return 1;
+function capabilityOf(held: VmToken): number {
+  if (held.nft?.capability === 'minting') return 2;
+  if (held.nft?.capability === 'mutable') return 1;
   return 0;
 }
 
@@ -508,7 +508,7 @@ describe('a two-contract round trip where both contracts keep records', () => {
     // program, cannot fill its first site.
     const { plan, artifacts: compiled } = buildComposition({ event: false });
     const { host } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
+      vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
     expect(() => deriveDepthFirst(ROOT, host)).toThrowError(/FRAMED_DERIVATION_STALLED/);
   });
 
@@ -563,7 +563,7 @@ describe('a two-contract round trip where both contracts keep records', () => {
       const segments = segmentsOf();
       const { plan, artifacts: compiled } = buildComposition({ segments: { ...segments, aSecond: [second] } });
       const { draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
+        vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
       return verdict(machine(), draft.programFor(A_SECOND), participant(draft.layout, A_SECOND).index);
     };
     expect(at([kept(RECORD_A_INDEX, A_AFTER_F0, A_AFTER_K)]).objection ?? 'accepted').toBe('accepted');
@@ -579,7 +579,7 @@ describe('a two-contract round trip where both contracts keep records', () => {
       const segments = segmentsOf();
       const { plan, artifacts: compiled } = buildComposition({ segments: { ...segments, aSecond: [second] } });
       const { draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
+        vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
       return verdict(machine(), draft.programFor(A_SECOND), participant(draft.layout, A_SECOND).index);
     };
     expect(at([kept(RECORD_A_INDEX, A_AFTER_F0, A_AFTER_K)]).objection ?? 'accepted').toBe('accepted');

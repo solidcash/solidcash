@@ -721,7 +721,8 @@ async function framedGenesisHalf(
   signer: Signer,
   excluded: ReadonlySet<string>,
 ): Promise<FramedProxyDeployHalf> {
-  const { fundingUtxo, funder, changeAddress, initialState: _seed, ...rest } = overrides ?? {};
+  const { fundingUtxo, funder, changeAddress, ...rest } = overrides ?? {};
+  delete rest.initialState;
   // The genesis mints the whole pool, so the selection has to hold the pool's outputs too: a caller that states no
   // size gets the composing default, and one that names a size gets exactly that. The validator facets the genesis
   // also funds are counted beside it, so a leaner signer is still offered a coin the whole genesis can spend.
@@ -857,8 +858,6 @@ async function framedProxyHandle(
   implementationCategoryId: string, proxyAddress: Uint8Array,
 ): Promise<ConnectedStatefulContract<Artifact>> {
   const { Contract } = await import('../Contract.js');
-  const { StatefulContract } = await import('./StatefulContract.js');
-  const { lockingBytecodeToCashAddress } = await import('@bitauth/libauth');
   const inner = new Contract(implementationArtifact, [] as never, {
     provider: signer.provider, category: hexToBin(proxyCategoryId),
   });

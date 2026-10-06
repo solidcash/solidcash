@@ -187,7 +187,7 @@ describe('a proxied call whose append publishes no element', () => {
     let offset = 0;
     for (const chunk of chunks) { value.set(chunk.data, offset); offset += chunk.data.length; }
     const state = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['posts$len']).toBe(BigInt(value.length));
+    expect(state.byNft[0]!.posts$len).toBe(BigInt(value.length));
 
     const decoded = decodePushdataValue(value, 0, 'Post[]', structs).value as StateValue[];
     expect(decoded).toHaveLength(2);

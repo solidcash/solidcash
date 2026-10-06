@@ -10,7 +10,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import * as composer from '../../../src/framed/composer/index.js';
 import * as resolution from '../../../src/framed/proxy/call-resolution.js';
 import {
-  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
   type FramedProxyCallResult,
 } from '../../../src/framed/proxy/index.js';
 import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
@@ -194,11 +194,6 @@ const FIXTURE_OPTIONS = {
   sortedMappingsAll: false,
   composition: 'framed',
 } as const;
-
-/** The 1-based line of the first source line containing `needle`. */
-function lineOf(needle: string): number {
-  return SOURCE.split('\n').findIndex((line) => line.includes(needle)) + 1;
-}
 
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
 let compiledRun: ArtifactMap | undefined;

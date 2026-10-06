@@ -115,7 +115,10 @@ function plan(): CompositionDraftPlan {
         output: { ...recordSource, token: tokenWith(guarded.category, 'mutable', AFTER) },
         unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, masterIndex, 1),
       },
-      user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
+      user: {
+        source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+        unlockingBytecode: userInput().unlockingBytecode,
+      },
     },
     validator: { id: 'validator', covers: ['Callee'], settles: [], redeemScript: validator.redeem },
   };
@@ -136,7 +139,7 @@ function verdictAt(draft: CompositionDraft, id: string): { accepted: boolean; ob
 describe('a guard field carried across the call split', () => {
   it('chains the guarded record through both segments and the machine accepts the master and the record', () => {
     const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [artifacts.Guarded!, artifacts.Callee!], plan: plan() });
+      vm: compositionMachine(), artifacts: [artifacts.Guarded!, artifacts.Callee!], plan: plan() });
     deriveDepthFirst({ contract: 'Guarded', functionName: entryName('Guarded', 'bump'), kind: FrameKind.ROOT, master: 'guarded-1' }, host);
     // Segment 0 leaves the guard set; segment 1 reads that commitment and clears the guard.
     expect(draft.blockOf('guarded-1').segments.map((segment) => segment.map((entry) => entry.in)))
@@ -162,8 +165,8 @@ describe('a guard a callee re-enters', () => {
       + `   function outer() { this.locked = 1; ICallee(0x${hexOf(CALLEE)}).hop.call(); this.locked = 0; require(true); }`
       + '   function inner() { require(this.locked == 0); }'
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'framed' });
-    expect(artifacts.Guarded?.composition?.convention).toBe('framed');
-    expect(artifacts.Guarded?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'outer']);
+    const compiled = compileStringMulti(source, { composition: 'framed' });
+    expect(compiled.Guarded?.composition?.convention).toBe('framed');
+    expect(compiled.Guarded?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'outer']);
   });
 });

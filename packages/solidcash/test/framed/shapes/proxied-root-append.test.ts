@@ -11,7 +11,6 @@ import {
   splitValueIntoChunks,
   type Artifact,
   type RecordEntry,
-  type StateLayout,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/framed/master/validator-input.js';
@@ -229,8 +228,6 @@ function setupImpl(source: string, entry: string, args: readonly Uint8Array[]): 
 
 const APPEND_SETUP = setupImpl(ROOT_IMPL_SOURCE, 'run', []);
 const RUNTIME_SETUP = setupImpl(ROOT_IMPL_RUNTIME_SOURCE, 'run', [encodeIntegerValue(10n), encodeIntegerValue(20n)]);
-
-const ROOT = rootOf(APPEND_SETUP.proxyContract, '__fallback', PROXY_MASTER);
 
 /** The element stream the store's log holds: each element packed at the type's fixed width. */
 function itemsBytes(values: readonly bigint[]): Uint8Array {

@@ -39,7 +39,9 @@ export interface SendWithoutLogicalNonceHost {
 }
 
 /** Local VM diagnostics may model the caller, but this outpoint must never reach a send. */
-function diagnosticFeeInput(signer: Signer) {
+function diagnosticFeeInput(signer: Signer): {
+  txid: string; vout: number; satoshis: bigint; unlocker: ReturnType<Signer['unlockP2PKH']>;
+} {
   return {
     txid: '00'.repeat(32), vout: 0, satoshis: 100_000_000n,
     unlocker: signer.unlockP2PKH(),

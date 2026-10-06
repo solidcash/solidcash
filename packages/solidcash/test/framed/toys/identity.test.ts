@@ -65,7 +65,9 @@ function sweepOutcome(): { readonly code?: string; readonly message: string; rea
     [bytesToHex(selfSlot), { in: 2, out: 2 }],
   ]);
   const entries = layOutMappingBatch(batch, { placementOf: (slot) => placements.get(bytesToHex(slot)) });
-  const nodeSource = (commitment: Uint8Array) => ({
+  const nodeSource = (commitment: Uint8Array): {
+    lockingBytecode: Uint8Array; valueSatoshis: bigint; token: ReturnType<typeof token>;
+  } => ({
     lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(tok.category, 'mutable', commitment),
   });
   const plan: CompositionDraftPlan = {
@@ -246,27 +248,6 @@ function refusalOf(run: () => unknown): { readonly name?: string; readonly code?
   throw new Error('the shipped framed path accepted the composition, so there is no refusal to record');
 }
 
-/** The refusals a compile publishes, or the error it throws, as one record. */
-function compileRefusal(source: string): { readonly name?: string; readonly code?: string; readonly message: string } {
-  try {
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'framed' }));
-    if (refusals.length === 0) {
-      throw new Error('the shipped framed compiler served the source, so there is no refusal to record');
-    }
-    return {
-      code: 'FRAMED_CODEGEN_UNAVAILABLE',
-      message: refusals.map((refused) => `${refused.functionName}: ${refused.reason}`).join(' | '),
-    };
-  } catch (error) {
-    const refusal = error as { name?: string; code?: string; message: string };
-    return {
-      ...(refusal.name === undefined ? {} : { name: refusal.name }),
-      ...(refusal.code === undefined ? {} : { code: refusal.code }),
-      message: refusal.message,
-    };
-  }
-}
-
 /** One contract, one master entered by a user, and the user's signed input; no records and no calls. */
 function singlePlan(
   artifacts: ReturnType<typeof compileAndDeploy>['artifacts'],
@@ -323,7 +304,7 @@ function settlePlan(
   artifacts: ReturnType<typeof compileAndDeploy>['artifacts'],
   contract: string,
   entry: string,
-) {
+): { outcome: ReturnType<typeof composeAndDerive>; rejected: string[] } {
   const outcome = composeAndDerive(plan, [artifacts[contract]!], [rootOf(contract, entry, 'tok-1')]);
   const rejected = outcome.verdicts
     .filter((verdict) => verdict.participant === 'tok-1')

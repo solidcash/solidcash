@@ -1368,7 +1368,9 @@ describe('the validator program refuses each rule it enforces', () => {
         sourceOutputs: program.sourceOutputs,
         transaction: program.transaction,
       });
-      const cost = (state as { readonly metrics?: { readonly operationCost?: number; readonly maximumOperationCost?: number } }).metrics;
+      const cost = (state as {
+        readonly metrics?: { readonly operationCost?: number; readonly maximumOperationCost?: number };
+      }).metrics;
       return {
         inputIndex,
         validatorInput: inputIndex - index,

@@ -151,13 +151,13 @@ function commitment(artifact: Artifact, state: Record<string, bigint | Uint8Arra
 async function deployed(
   network: MockNetworkProvider, implementation: Artifact,
 ): Promise<{
-  readonly proxyCategoryId: string;
-  readonly implementationCategoryId: string;
-  readonly deployerLock: Uint8Array;
-  readonly changeAddress: string;
-  readonly callCoin: { txid: string; vout: number; satoshis: bigint };
-  readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
-}> {
+    readonly proxyCategoryId: string;
+    readonly implementationCategoryId: string;
+    readonly deployerLock: Uint8Array;
+    readonly changeAddress: string;
+    readonly callCoin: { txid: string; vout: number; satoshis: bigint };
+    readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
+  }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const funder = source.unlock.spend(alicePub, signature);

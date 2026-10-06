@@ -10,7 +10,7 @@ import {
   type RecordEntry,
   type WitnessBlock,
 } from '@solidcash/utils';
-import { compileString, compileStringMulti } from '../../../src/compiler.js';
+import { compileStringMulti } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import {

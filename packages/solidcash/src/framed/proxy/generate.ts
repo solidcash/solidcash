@@ -235,7 +235,7 @@ export function readLayoutAgreement(implementationArtifact: Artifact, proxyArtif
       ok: false,
       reason: `the implementation "${implementationArtifact.contractName}" and the proxy `
         + `"${proxyArtifact.contractName}" must declare the same record fields, because the implementation's write `
-        + `rebuilds the record from its own declaration: the implementation declares `
+        + 'rebuilds the record from its own declaration: the implementation declares '
         + `[${implementationFields.join(', ')}] and the proxy declares [${proxyFields.map(coordinate).join(', ')}]`,
     };
   }
@@ -249,7 +249,7 @@ export function readLayoutAgreement(implementationArtifact: Artifact, proxyArtif
       reason: `the implementation "${implementationArtifact.contractName}" declares `
         + `${implementation.dataNftCount} data NFT(s) and the proxy "${proxyArtifact.contractName}" declares `
         + `${proxy.dataNftCount}, so only one of them leads a commitment with the index it belongs to; a delegate `
-        + `frame writes the record through the implementation's own declaration, so both must use the same one`,
+        + 'frame writes the record through the implementation\'s own declaration, so both must use the same one',
     };
   }
   if (own.length === 0) {

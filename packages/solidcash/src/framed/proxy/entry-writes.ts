@@ -1093,7 +1093,6 @@ function planHopCollectionBatch(
   targets: readonly HopTargetWrite[],
   loop?: CallLoopWritePlan,
 ): HopMappingBatch {
-  const visible = visibleInputs(fn);
   const args = [...(request.args ?? [])];
   const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
   const keyTypes = collection.keyTypes ?? [collection.keyType];
@@ -1197,7 +1196,7 @@ function planHopCollectionBatch(
   const valueWitnesses = new Map<number, Uint8Array>();
   if (chunkable && request.liveDeployment !== undefined) {
     for (const access of targets.map((target) => target.access)
-      .filter((access, index, all) => all.indexOf(access) === index)) {
+      .filter((candidate, index, all) => all.indexOf(candidate) === index)) {
       if (access.slotIndex === undefined || !access.operations.includes('read')) continue;
       const keys = access.keyParams.map((_param, index) => resolveHopKey(request, fn, access, index));
       const slot = keyToSlotMulti([...keys]);

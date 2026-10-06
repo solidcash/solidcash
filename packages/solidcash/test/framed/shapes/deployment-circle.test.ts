@@ -234,11 +234,11 @@ async function statefulCallPlan(options: {
   readonly userLock: Uint8Array;
   readonly funding: Utxo;
 }): Promise<{
-  readonly plan: CompositionDraftPlan;
-  readonly masterId: string;
-  readonly masterUtxo: Utxo;
-  readonly recordUtxo: Utxo;
-}> {
+    readonly plan: CompositionDraftPlan;
+    readonly masterId: string;
+    readonly masterUtxo: Utxo;
+    readonly recordUtxo: Utxo;
+  }> {
   const layout = options.artifact.stateLayout!;
   const category = hexToBin(options.categoryId);
   const deployed = deployMaster(options.artifact, category, VALIDATOR_PROGRAM);

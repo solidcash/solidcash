@@ -5,7 +5,10 @@ import { registerDeployment } from '../../src/stateful/deployment-registry.js';
 import { ProxyContract } from '../../src/stateful/upgrades.js';
 import { createTestProvider } from '../test-util.js';
 
-function fixture() {
+function fixture(): {
+  handle: ProxyContract; address: string; target: object; registerExternal: ReturnType<typeof vi.fn>;
+  delegate: ReturnType<typeof vi.fn>; lock: Uint8Array;
+} {
   const provider = createTestProvider();
   const lock = hexToBin(`aa20${'42'.repeat(32)}87`);
   const address = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchtest' });

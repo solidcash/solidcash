@@ -1500,7 +1500,7 @@ async function planEntryCalls(
       );
     }
     // An address the caller holds as the identity a call result carried reaches the callee as the lock it names.
-    const lockOf = (identity: Uint8Array): Uint8Array => lockOfIdentity(identity, reachableAddresses(ctx));
+    const lockOf = (carried: Uint8Array): Uint8Array => lockOfIdentity(carried, reachableAddresses(ctx));
     const resolved = turns.map((turn) => (
       resolvePublishedCall(effective, external.artifact, siteCaller, siteResolver, turn, lockOf)
     ));

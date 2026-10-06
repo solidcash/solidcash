@@ -158,7 +158,9 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
     redeemScript: a.script,
   };
 
-  const masterSource = (lockingBytecode: Uint8Array, category: Uint8Array): { lockingBytecode: Uint8Array; valueSatoshis: bigint; token: ReturnType<typeof token> } =>
+  const masterSource = (
+    lockingBytecode: Uint8Array, category: Uint8Array,
+  ): { lockingBytecode: Uint8Array; valueSatoshis: bigint; token: ReturnType<typeof token> } =>
     ({ lockingBytecode, valueSatoshis: 20_000n, token: token(category, 'minting') });
 
   const plan: CompositionDraftPlan = {
@@ -203,14 +205,14 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
  * handed, so the derivation can be asked about the bytes the machine ran.
  */
 function toModel(program: VmProgram): FramedTransaction {
-  const shape = (token: VmToken | undefined): TokenShape => (token === undefined
+  const shape = (held: VmToken | undefined): TokenShape => (held === undefined
     ? { category: empty, capability: 0, hasNft: false, nftCommitment: empty, amount: 0n }
     : {
-      category: token.category,
-      capability: capabilityOf(token),
-      hasNft: token.nft !== undefined,
-      nftCommitment: token.nft?.commitment ?? empty,
-      amount: token.amount,
+      category: held.category,
+      capability: capabilityOf(held),
+      hasNft: held.nft !== undefined,
+      nftCommitment: held.nft?.commitment ?? empty,
+      amount: held.amount,
     });
   return {
     inputs: program.transaction.inputs.map((input, index) => ({
@@ -229,9 +231,9 @@ function toModel(program: VmProgram): FramedTransaction {
 }
 
 /** The capability number the derivation uses for the machine's token. */
-function capabilityOf(token: VmToken): number {
-  if (token.nft?.capability === 'minting') return 2;
-  if (token.nft?.capability === 'mutable') return 1;
+function capabilityOf(held: VmToken): number {
+  if (held.nft?.capability === 'minting') return 2;
+  if (held.nft?.capability === 'mutable') return 1;
   return 0;
 }
 
@@ -284,7 +286,7 @@ describe('a contract entered twice, composed on the machine', () => {
   it('places the two A masters, the validator and B in the order the layout derives', () => {
     const { plan, artifacts } = buildComposition();
     const { draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
+      vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
 
     expect(participant(draft.layout, A_FIRST).index).toBe(0);
     expect(participant(draft.layout, A_SECOND).index).toBe(1);
@@ -351,8 +353,8 @@ describe('a contract entered twice, composed on the machine', () => {
     // The head walks the call section with the length the block declares and each body pins that length to the
     // calls its own source makes, so a plan that hands an entry a call record it never makes stops the program.
     const { plan, artifacts } = buildComposition();
-    const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { draft } = createComposedDerivationHost({
+      vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
     const stray = structuredClone(draft.blockOf(A_SECOND)) as WitnessBlock;
     stray.calls = [{
       kind: FrameKind.CALL, target: ADDRESS_B, value: 0n, calleeRef: 3,

@@ -1132,8 +1132,8 @@ export const externalCallIterationDomains = (
   }>();
   for (const [key, domains] of externalCallIterationDomainLists(fn, compilerOptions, [], targets)) {
     if (domains.length !== 1) continue;
-    const { sourceLoopId: _sourceLoopId, ...domain } = domains[0]!;
-    single.set(key, domain);
+    const { counterName, initialValue, stepValue, continueCondition, maximumIterations } = domains[0]!;
+    single.set(key, { counterName, initialValue, stepValue, continueCondition, maximumIterations });
   }
   return single;
 };

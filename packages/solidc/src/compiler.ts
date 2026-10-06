@@ -2991,7 +2991,8 @@ function restoreSpeculativeMessageBusRefusals(
  */
 function withoutUpgradesFrom(options: CompileOptions): CompileOptions {
   if (!Object.prototype.hasOwnProperty.call(options, 'upgradesFrom')) return options;
-  const { upgradesFrom: _layoutOnly, ...descriptors } = Object.getOwnPropertyDescriptors(options);
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  delete descriptors.upgradesFrom;
   return Object.defineProperties({}, descriptors) as CompileOptions;
 }
 
@@ -5875,14 +5876,14 @@ function synthesizeMessageBusRoute(
     }
     if (!(declaration!.expression instanceof FunctionCallNode)) return false;
     const call = declaration!.expression;
-    const lexicalType = (expression: ExpressionNode, fn: FunctionDefinitionNode): string | undefined => {
-      if (expression.type !== undefined) return expression.type.toString();
-      if (!(expression instanceof IdentifierNode)) return undefined;
-      const parameters = fn.parameters.filter((parameter) => parameter.name === expression.name);
+    const lexicalType = (candidate: ExpressionNode, fn: FunctionDefinitionNode): string | undefined => {
+      if (candidate.type !== undefined) return candidate.type.toString();
+      if (!(candidate instanceof IdentifierNode)) return undefined;
+      const parameters = fn.parameters.filter((parameter) => parameter.name === candidate.name);
       if (parameters.length === 1) return parameters[0].type.toString();
       const locals: VariableDefinitionNode[] = [];
       walkInvocationAst(fn.body, (node) => {
-        if (node instanceof VariableDefinitionNode && node.name === expression.name) locals.push(node);
+        if (node instanceof VariableDefinitionNode && node.name === candidate.name) locals.push(node);
       });
       return locals.length === 1 ? locals[0].type.toString() : undefined;
     };
@@ -19592,42 +19593,6 @@ function compileReferencedContractStandalone(
     referencedContractCompileStack.pop();
     pendingSpanAdmissionAnalysis = enclosingAdmissionAnalysis;
   }
-}
-
-/**
- * The unit's file-level functions the contract's own bodies reach, directly or through another one.
- *
- * A master is compiled with the definitions its bodies invoke, so a definition only a sibling contract reaches is
- * not part of this program and a question about the master's own code is not a question about it. The walk is by
- * name because it runs before symbol resolution, and a library call is spelled `L.fn`, so a definition is matched
- * by both its qualified and its bare name — the same pair the definition emitter registers. The contract's own
- * functions are registered too, so the closure descends through a helper into the file-level function it calls.
- */
-function reachedFileFunctions(
-  contract: ContractNode,
-  freeFunctions: readonly FunctionDefinitionNode[],
-): FunctionDefinitionNode[] {
-  if (freeFunctions.length === 0) return [];
-  const byName = new Map<string, FunctionDefinitionNode[]>();
-  const register = (fn: FunctionDefinitionNode): void => {
-    for (const key of [fn.name, fn.name.slice(fn.name.lastIndexOf('.') + 1)]) {
-      const list = byName.get(key);
-      if (list) list.push(fn);
-      else byName.set(key, [fn]);
-    }
-  };
-  for (const fn of freeFunctions) register(fn);
-  const own = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]
-    .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
-  for (const fn of own) register(fn);
-  const wanted = new Set<FunctionDefinitionNode>(freeFunctions);
-  const reached = new Set<FunctionDefinitionNode>();
-  for (const fn of own) {
-    for (const name of collectNamedFunctionClosure(fn, byName)) {
-      for (const candidate of byName.get(name) ?? []) if (wanted.has(candidate)) reached.add(candidate);
-    }
-  }
-  return freeFunctions.filter((fn) => reached.has(fn));
 }
 
 /** The bodies a framed master can run, in declaration order: the constructor, fallback, receive and entries. */

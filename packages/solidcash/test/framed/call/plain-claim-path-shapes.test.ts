@@ -170,8 +170,8 @@ async function enter(
   world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
   reached: readonly PlainDeployment[] = [],
 ): Promise<FramedCallResult> {
-  const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
-    [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
+  const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((entry) =>
+    [entry.artifact.contractName, { artifact: entry.artifact, categoryId: entry.categoryId }])));
   expect(outcome.error?.message).toBeUndefined();
   expect(refusedVerdicts(outcome.result!)).toBeUndefined();
   return outcome.result!;
@@ -179,10 +179,10 @@ async function enter(
 
 /** A view's value, read from a plain deployment's records and nodes through the read path. */
 async function view(
-  world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
+  world: World, entry: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
   const read = await readFramedEntry({
-    provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
+    provider: world.network, artifact: entry.artifact, categoryId: entry.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
   expect(read.accepted, read.objection).toBe(true);

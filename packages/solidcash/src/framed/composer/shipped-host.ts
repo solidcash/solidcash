@@ -33,7 +33,6 @@
 
 import { binToHex, createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { stepProbeTrace } from '../../network/createVirtualMachine.js';
-import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
 import {
   FrameKind,
   validateStopSiteMetadata,

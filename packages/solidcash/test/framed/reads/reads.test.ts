@@ -183,14 +183,14 @@ function transactionCount(provider: MockNetworkProvider): number {
 function toModel(program: Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0],
 ): ReferenceTransaction {
   type MachineToken = { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
-  const shape = (token: MachineToken | undefined): ReferenceToken => (token === undefined
+  const shape = (held: MachineToken | undefined): ReferenceToken => (held === undefined
     ? { category: new Uint8Array(0), capability: 0, hasNft: false, nftCommitment: new Uint8Array(0), amount: 0n }
     : {
-      category: token.category,
-      capability: token.nft?.capability === 'minting' ? 2 : token.nft?.capability === 'mutable' ? 1 : 0,
-      hasNft: token.nft !== undefined,
-      nftCommitment: token.nft?.commitment ?? new Uint8Array(0),
-      amount: token.amount,
+      category: held.category,
+      capability: held.nft?.capability === 'minting' ? 2 : held.nft?.capability === 'mutable' ? 1 : 0,
+      hasNft: held.nft !== undefined,
+      nftCommitment: held.nft?.commitment ?? new Uint8Array(0),
+      amount: held.amount,
     });
   return {
     inputs: program.transaction.inputs.map((input, index) => ({

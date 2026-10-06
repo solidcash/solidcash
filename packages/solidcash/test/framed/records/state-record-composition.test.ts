@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
   buildPushdataCommitment,
   bytesToHex,
   computeFunctionSelector,
   computeFunctionSignature,
-  sha256,
   validatorAddress,
   type RecordEntry,
 } from '@solidcash/utils';
@@ -85,8 +83,6 @@ const commitment = (counter: bigint): Uint8Array =>
 const BEFORE = commitment(5n);
 const MIDDLE = commitment(6n);
 const AFTER = commitment(8n);
-
-type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 
 const empty = new Uint8Array(0);
 const token = (
@@ -329,7 +325,7 @@ describe('a stateful composition whose record sits away from its master', () => 
     // and the program stops on the first state site, which the derivation reports as a stalled step.
     const { plan, artifacts: compiled } = buildComposition({ segments: [[], []] });
     const composed = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
+      vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
     expect(masterVerdict(composed.draft).accepted).toBe(false);
     expect(() => deriveDepthFirst(ROOT, composed.host)).toThrow(/FRAMED_DERIVATION_STALLED/);
   });

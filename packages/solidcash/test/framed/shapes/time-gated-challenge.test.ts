@@ -71,7 +71,6 @@ import {
 const ROOT_LABEL = 'time gated challenge root';
 const JUDGE_LABEL = 'time gated challenge judge';
 const ESCROW_LABEL = 'time gated challenge escrow';
-const ROOT_ADDRESS = hexOf(seededAddress(ROOT_LABEL));
 const JUDGE_ADDRESS = hexOf(seededAddress(JUDGE_LABEL));
 const ESCROW_ADDRESS = hexOf(seededAddress(ESCROW_LABEL));
 

@@ -2097,8 +2097,9 @@ export function framedTurnWrites(entry: FunctionDefinitionNode): readonly Framed
   const batched = new Set((entry.sortedBatchInfo ?? []).map((batch) => batch.collection));
   const returnsBetween = (parent: BlockNode, from: number, to: number): boolean => {
     let returns = false;
+    const markReturn = (node: Node): void => { if (node instanceof ReturnNode) returns = true; };
     for (const statement of (parent.statements ?? []).slice(from + 1, to)) {
-      walkInvocationAst(statement, (node) => { if (node instanceof ReturnNode) returns = true; });
+      walkInvocationAst(statement, markReturn);
     }
     return returns;
   };

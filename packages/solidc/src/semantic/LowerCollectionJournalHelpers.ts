@@ -1287,14 +1287,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const laneSelection = linearArgument && runtimeAliases.every((alias) =>
         alias.keyIdentity.every((identity) => identity.startsWith('parameter:__message_bus_key_')));
       if (laneSelection) {
-        const cache = [...this.activeMultiCaches.values()].find((candidate) => candidate.calls.has(call));
+        const laneCache = [...this.activeMultiCaches.values()].find((candidate) => candidate.calls.has(call));
         const temps = [
           { name: runtimeValueName, type: binding.entry.valueType },
           { name: runtimeOwnerName, type: new IntType(false, 256) },
         ];
-        if (cache) {
-          cache.hoistedTemps ??= [];
-          cache.hoistedTemps.push(...temps);
+        if (laneCache) {
+          laneCache.hoistedTemps ??= [];
+          laneCache.hoistedTemps.push(...temps);
         } else {
           for (const temp of temps) {
             runtimeDeclarations.push(this.at(new VariableDefinitionNode(

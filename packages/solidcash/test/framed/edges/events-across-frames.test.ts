@@ -63,7 +63,10 @@ describe('the events one transaction carries', () => {
     const log = contracts.Log!;
     const events = artifacts.Log!.events!;
     const indices = [1, 2];
-    const payloads = [encodeEventCommitment(events[0]!.parameters, [1n]), encodeEventCommitment(events[1]!.parameters, [2n])];
+    const payloads = [
+      encodeEventCommitment(events[0]!.parameters, [1n]),
+      encodeEventCommitment(events[1]!.parameters, [2n]),
+    ];
     const locks = events.map((event) => eventCovenantLock(log.category, event.signature));
 
     const master: DraftMaster = {
@@ -84,7 +87,10 @@ describe('the events one transaction carries', () => {
         'log-1': { source: { lockingBytecode: log.lockingBytecode, valueSatoshis: 20_000n, token: token(log.category, 'minting') } },
         'event-0': eventInput(locks[0]!, log.category, payloads[0]!),
         'event-1': eventInput(locks[1]!, log.category, payloads[1]!),
-        user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
+        user: {
+          source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+          unlockingBytecode: userInput().unlockingBytecode,
+        },
       },
     };
 
@@ -167,7 +173,10 @@ describe('an event emitted by a nested frame', () => {
         validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(caller.category, 'mutable') } },
         'event-0': eventInput(eventCovenantLock(caller.category, callerEvent.signature), caller.category, callerPayload),
         'event-1': eventInput(eventCovenantLock(emitter.category, emitterEvent.signature), emitter.category, emitterPayload),
-        user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
+        user: {
+          source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+          unlockingBytecode: userInput().unlockingBytecode,
+        },
       },
       validator: { id: 'validator', covers: ['Emitter'], settles: [], redeemScript: validator.redeem },
     };

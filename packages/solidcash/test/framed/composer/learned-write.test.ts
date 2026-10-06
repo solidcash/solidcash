@@ -282,7 +282,9 @@ function buildSplitPlan(): {
       [SPLIT_RECORD]: {
         source: recordSource,
         // A master of the record's own category rewrites it, so the covenant's write path authorizes the spend.
-        unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, participant(layoutWithFacets(blocks), SPLIT_LEDGER).index, 1),
+        unlockingBytecode: stateRecordUnlockingBytecode(
+          categoryHex, participant(layoutWithFacets(blocks), SPLIT_LEDGER).index, 1,
+        ),
       },
       [USER_ID]: userInput(),
     },

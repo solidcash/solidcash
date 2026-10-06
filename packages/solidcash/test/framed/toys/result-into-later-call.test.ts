@@ -40,7 +40,7 @@ function source(mode: IdMode): string {
   return 'pragma solidcash ^0.13.0;'
     + ' interface IFee { function fee(int id) view returns (int); }'
     + ' interface IPay { function pay(int id, int amount); }'
-    + ` contract Fee { function fee(int id) view returns (int) { return id * 2; } }`
+    + ' contract Fee { function fee(int id) view returns (int) { return id * 2; } }'
     + ' contract Pay { function pay(int id, int amount) { require(amount > 0); } }'
     + ' contract Claimer {'
     + '   function f() {'
@@ -53,7 +53,7 @@ function source(mode: IdMode): string {
 }
 
 type MasterIdentity = Pick<
-  DraftMaster, 'master' | 'contract' | 'functionName' | 'program' | 'facts' | 'frame' | 'enteredBy' | 'origin'
+DraftMaster, 'master' | 'contract' | 'functionName' | 'program' | 'facts' | 'frame' | 'enteredBy' | 'origin'
 >;
 
 function draftMaster(spec: Partial<DraftMaster> & MasterIdentity): DraftMaster {
@@ -217,11 +217,11 @@ describe('a read whose result a later call consumes', () => {
 
     // The masters are recreated in place, so each contract's post-state is its own lock and its own category.
     const byMaster = new Map(outcome.contractInputs.map((input) => [input.id, input.index]));
-    for (const master of ['claimer-1', 'fee-1', 'pay-1']) {
-      const source = built.plan.inputs[master]!.source;
-      const output = outcome.transaction.outputs[byMaster.get(master)!]!;
-      expect(output.lockingBytecode).toStrictEqual(source.lockingBytecode);
-      expect(output.token!.category).toStrictEqual(source.token!.category);
+    for (const frameId of ['claimer-1', 'fee-1', 'pay-1']) {
+      const inputSource = built.plan.inputs[frameId]!.source;
+      const output = outcome.transaction.outputs[byMaster.get(frameId)!]!;
+      expect(output.lockingBytecode).toStrictEqual(inputSource.lockingBytecode);
+      expect(output.token!.category).toStrictEqual(inputSource.token!.category);
     }
   });
 });

@@ -6675,11 +6675,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             ?? this.literalWholeValueSource(node.expression)
             ?? (directValueParam ? `id:${valueIdentifier!.name}`
               : this.readsWrittenLocal(node.expression) ? undefined
-              : node.expression instanceof TernaryOpNode || node.expression instanceof InstantiationNode
+                : node.expression instanceof TernaryOpNode || node.expression instanceof InstantiationNode
                 || node.expression instanceof FunctionCallNode
-                ? this.canonicalizeExpression(node.expression)
-                : this.isOffChainEvaluableMappingValue(node.expression)
-                  ? this.canonicalizeExpression(node.expression) : undefined));
+                  ? this.canonicalizeExpression(node.expression)
+                  : this.isOffChainEvaluableMappingValue(node.expression)
+                    ? this.canonicalizeExpression(node.expression) : undefined));
       if (existing) {
         const alreadyWrote = existing.operations.includes('write');
         if (!existing.operations.includes('write')) existing.operations.push('write');

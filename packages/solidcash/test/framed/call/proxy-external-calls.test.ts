@@ -120,7 +120,7 @@ const UNFIXED = compileStringMulti('pragma solidcash ^0.13.0;'
   + '   address public sink;'
   + '   function run(bool go, int n) {'
   + `     if (go) { IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(); }`
-  + `     for (int i = 0; i < n; i = i + 1) { require(IOracle(this.sink).amountOf() > 0); }`
+  + '     for (int i = 0; i < n; i = i + 1) { require(IOracle(this.sink).amountOf() > 0); }'
   + '     require(true);'
   + '   }'
   + ' }', { composition: 'framed' });
@@ -136,7 +136,7 @@ const CYCLE = compileStringMulti('pragma solidcash ^0.13.0;'
   + ' interface ICycleA { function x(); }'
   + ` contract CycleA { int public seen; function x() { ICycleB(0x${hexOf(CYCLE_B_ADDRESS)}).y(); require(true); } }`
   + ` contract CycleB { int public seen; function y() { ICycleA(0x${hexOf(CYCLE_A_ADDRESS)}).x(); require(true); } }`,
-  { composition: 'framed' });
+{ composition: 'framed' });
 
 /** The record's own state, read back through the shipped deployment reader and decoded as a field map. */
 async function recordState(network: MockNetworkProvider, categoryId: string): Promise<string> {
@@ -217,11 +217,13 @@ async function deployedWithCallees(network: MockNetworkProvider): Promise<{
 
   const callees: readonly [Artifact, string][] =
     [[oracle, ORACLE_CATEGORY], [escrow, ESCROW_CATEGORY], [writer, WRITER_CATEGORY], [guard, GUARD_CATEGORY],
-     [ledger, LEDGER_CATEGORY]];
+      [ledger, LEDGER_CATEGORY]];
   for (const [artifact, categoryId] of callees) {
     const funding = { txid: categoryId, vout: 0, satoshis: 500_000n };
     await network.addUtxo(source.address, funding);
-    await deployStatefulContract(artifact, [], { fundingUtxo: funding, funder, changeAddress: source.address, provider: network });
+    await deployStatefulContract(artifact, [], {
+      fundingUtxo: funding, funder, changeAddress: source.address, provider: network,
+    });
   }
 
   // The validator runs as a head plus one input per facet, each locked by its own code and holding no token, so

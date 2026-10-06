@@ -70,7 +70,7 @@ async function setup(network: MockNetworkProvider): Promise<Setup> {
 async function deployEntering(
   setup_: Setup, entry: string, args: readonly (bigint | Uint8Array | string | boolean)[],
 ): Promise<{ readonly accepted: boolean; readonly proxyCategoryId: string;
-  readonly implementationCategoryId: string }> {
+    readonly implementationCategoryId: string }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: setup_.network });
   const funder = source.unlock.spend(alicePub, signature);
@@ -174,15 +174,15 @@ describe('a root proxy frame whose implementation entry records nothing', () => 
   // delegate frame is the one pinned, and its layout names the offsets its events sit at.
   it('settles a void emitting entry entered as the user\'s own initialize', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const deployed = await deployEntering(setup_, 'note', []);
+    const setupRun = await setup(network);
+    const deployed = await deployEntering(setupRun, 'note', []);
     expect(deployed.accepted).toBe(true);
   });
 
   it('settles a returning entry that also emits, entered as the user\'s own initialize', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const deployed = await deployEntering(setup_, 'publish', [4n]);
+    const setupRun = await setup(network);
+    const deployed = await deployEntering(setupRun, 'publish', [4n]);
     expect(deployed.accepted).toBe(true);
   });
 

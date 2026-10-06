@@ -873,13 +873,13 @@ function buildOnePullPlan(order: 'published' | 'written' = 'published'): {
 
 /** The derivation's refusal for a plan, and the machine's own stop at the named frame's failing site. */
 function derivationRefusal(
-  plan: CompositionDraftPlan, artifacts: readonly Artifact[], master: string,
+  plan: CompositionDraftPlan, artifacts: readonly Artifact[], frameId: string,
 ): { readonly message: string; readonly objection: string } {
   const objections: string[] = [];
   const { host } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts, plan,
     onRun: (name, _site, stop) => {
-      if (name === master && stop.error !== undefined) objections.push(stop.error);
+      if (name === frameId && stop.error !== undefined) objections.push(stop.error);
     },
   });
   let message = '';

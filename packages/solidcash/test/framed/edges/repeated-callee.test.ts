@@ -213,8 +213,8 @@ function derive(run: Run): {
     vm: compositionMachine(),
     artifacts: [run.artifacts.Hub!, run.artifacts.Log!],
     plan: run.plan,
-    onRun: (master: string, _site: unknown, stop: { accepted: boolean; error?: string }) => {
-      stops.push({ master, accepted: stop.accepted, ...(stop.error === undefined ? {} : { error: stop.error }) });
+    onRun: (frameId: string, _site: unknown, stop: { accepted: boolean; error?: string }) => {
+      stops.push({ master: frameId, accepted: stop.accepted, ...(stop.error === undefined ? {} : { error: stop.error }) });
     },
   });
   const result = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
@@ -250,7 +250,11 @@ function verdictAt(draft: CompositionDraft, id: string): { readonly accepted: bo
 function toModel(draft: CompositionDraft): FramedTransaction {
   const program = draft.programFor('hub-1');
   const shape = (
-    holder: { readonly token?: { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } } },
+    holder: {
+      readonly token?: {
+        category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array };
+      };
+    },
   ): TokenShape => (holder.token === undefined
     ? { category: EMPTY, capability: 0, hasNft: false, nftCommitment: EMPTY, amount: 0n }
     : {
@@ -318,7 +322,7 @@ describe('one entry that calls one callee from a loop', () => {
     // then the caller's own program asks for a third the block does not carry.
     const run = build(2, 3);
     const { host } = createComposedDerivationHost({
-    vm: compositionMachine(),
+      vm: compositionMachine(),
       artifacts: [run.artifacts.Hub!, run.artifacts.Log!],
       plan: run.plan,
     });
@@ -370,8 +374,8 @@ describe('one entry that calls one callee from a loop', () => {
     const { draft, completed } = derive(run);
 
     expect(completed).toStrictEqual(['log-1', 'log-2', 'log-3', 'hub-1']);
-    for (const master of ['log-1', 'log-2', 'log-3', 'hub-1']) {
-      expect(verdictAt(draft, master), master).toStrictEqual({ accepted: true });
+    for (const frameId of ['log-1', 'log-2', 'log-3', 'hub-1']) {
+      expect(verdictAt(draft, frameId), frameId).toStrictEqual({ accepted: true });
     }
     expect(verdictAt(draft, VALIDATOR_ID)).toStrictEqual({ accepted: true });
     expect(verdictAt(draft, RECORD_ID)).toStrictEqual({ accepted: true });

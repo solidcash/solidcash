@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
+  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh,
   hash256,
 } from '@bitauth/libauth';
 import {
@@ -44,7 +44,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function idle() { require(true); }'
   + ' }';
 
-type Artifact = ReturnType<typeof compileString>;
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];

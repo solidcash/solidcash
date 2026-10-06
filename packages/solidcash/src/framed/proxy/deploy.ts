@@ -1232,20 +1232,20 @@ export async function deployFramedProxy(
   const { externalPlan, settled } = await planAndSettleHop({
     plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations, stopBefore) =>
       planHopExternalCalls({
-      provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
-      args: initializeArgs, externals: options.externals ?? {}, validatorProgram,
-      stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
-      entryDeployment: { categoryId: proxy.categoryId, deployment, layout: proxyArtifact.stateLayout! },
-      selfAddress: proxyMaster.address,
-      senderAddress: options.callerLockingBytecode,
-      externalReturns,
-      reachedResults,
-      ...(calleeWriteViews.size === 0 ? {} : { calleeWriteViews }),
-      ...(calleeWriteValues.size === 0 ? {} : { calleeWriteValues }),
-      ...(implementationSideCars.size === 0 ? {} : { sideCars: implementationSideCars }),
-      ...(heldContinuations === true ? { heldContinuations: true } : {}),
-      ...(stopBefore === undefined ? {} : { stopBefore }),
-    }),
+        provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
+        args: initializeArgs, externals: options.externals ?? {}, validatorProgram,
+        stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
+        entryDeployment: { categoryId: proxy.categoryId, deployment, layout: proxyArtifact.stateLayout! },
+        selfAddress: proxyMaster.address,
+        senderAddress: options.callerLockingBytecode,
+        externalReturns,
+        reachedResults,
+        ...(calleeWriteViews.size === 0 ? {} : { calleeWriteViews }),
+        ...(calleeWriteValues.size === 0 ? {} : { calleeWriteValues }),
+        ...(implementationSideCars.size === 0 ? {} : { sideCars: implementationSideCars }),
+        ...(heldContinuations === true ? { heldContinuations: true } : {}),
+        ...(stopBefore === undefined ? {} : { stopBefore }),
+      }),
     settle: (stated, seed, defer) => settleHop(defer === true
       ? { ...settleOptionsFor(stated, seed), deferCalleeFailures: true }
       : settleOptionsFor(stated, seed)),
@@ -1650,7 +1650,7 @@ async function settleCallees(options: {
             // The derivation bound the frame's own calls, which does not by itself mean the machine accepts the
             // frame: a declaration the frame's body disagrees with still refuses, and the frame's own stop is named
             // here so a frame that derived and refuses anyway is told apart from one that accepted.
-            hopTrace(`callee-derived-stop `
+            hopTrace('callee-derived-stop '
               + `${traceFrameFacts(callee.master, callee.functionName, callee.kind)} `
               + traceStopInstructions(options.vm, candidate.draft.programFor(callee.master)));
           }
@@ -2182,10 +2182,10 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     const eventClose = reading.ok ? eventCloseOf(reading, writtenEvents) : undefined;
     const skippedEvent = eventClose !== undefined && reading.ok && reading.declared.length === 0;
     const learned = reading.ok && !skippedEvent
-      ? writtenCommitments.findIndex((candidate) => bytesEqual(reading.declared, candidate))
+      ? writtenCommitments.findIndex((stated) => bytesEqual(reading.declared, stated))
       : -1;
     const learnedExtra = reading.ok && !skippedEvent && learned < 0
-      ? writtenExtras.findIndex((candidate) => bytesEqual(reading.declared, candidate))
+      ? writtenExtras.findIndex((stated) => bytesEqual(reading.declared, stated))
       : -1;
     const learnedEvent = learned < 0 && learnedExtra < 0 ? eventClose?.position ?? -1 : -1;
     // A send's pin compares the lock and the amount the body computed with the output the plan listed for it.
@@ -2270,8 +2270,8 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     }
     if (learned >= 0) {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-record nft=${learned}`);
-      writtenCommitments = writtenCommitments.map((candidate, nftIndex) =>
-        (nftIndex === learned ? Uint8Array.from(reading.computed) : candidate));
+      writtenCommitments = writtenCommitments.map((previous, nftIndex) =>
+        (nftIndex === learned ? Uint8Array.from(reading.computed) : previous));
       entryWrites = options.entryWritesFor?.(writtenCommitments, learnedValue) ?? entryWrites;
     } else if (learnedExtra >= 0) {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-write at=${learnedExtra}`);
@@ -2280,8 +2280,8 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       if (ready !== undefined) throw ready;
     } else if (learnedEvent >= 0) {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-event at=${learnedEvent}`);
-      writtenEvents = writtenEvents.map((candidate, emitIndex) =>
-        (emitIndex === learnedEvent ? eventClose!.payload : candidate));
+      writtenEvents = writtenEvents.map((previous, emitIndex) =>
+        (emitIndex === learnedEvent ? eventClose!.payload : previous));
     } else {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-send`);
       learnedSends = sendsLearned!;
@@ -2710,7 +2710,7 @@ async function planAndSettleHop(options: {
    * kind waits on. The held plan replaces a refusal only when it settles where the first did not.
    */
   const heldPlanOf = async (): Promise<
-    { readonly externalPlan: HopExternalPlan; readonly settled: SettledHop } | undefined
+  { readonly externalPlan: HopExternalPlan; readonly settled: SettledHop } | undefined
   > => {
     // The held reading only restates a declaration for a node one frame of this hop writes and an earlier one wrote
     // as well, and a created node is the shape no deployment holds: a hop without one is not planned again.
@@ -2873,7 +2873,7 @@ async function planAndSettleHop(options: {
     }
     if (pass >= externalPlan.conditionalProducers.length) {
       throw new FramedProxyDeployError(
-        `the entry's arms an earlier call's result decides did not settle: the hop re-planned `
+        'the entry\'s arms an earlier call\'s result decides did not settle: the hop re-planned '
         + `${pass + 1} time(s) without its sites stopping`,
       );
     }
@@ -3217,10 +3217,10 @@ export function chainSharedNodeViews(
   held = false,
   relinks: ReadonlySet<DraftRecordEntry> = new Set(),
 ): {
-  readonly masters: readonly DraftMaster[];
-  readonly ends: ReadonlyMap<number, Uint8Array>;
-  readonly createdEnds: ReadonlyMap<number, Uint8Array>;
-} {
+    readonly masters: readonly DraftMaster[];
+    readonly ends: ReadonlyMap<number, Uint8Array>;
+    readonly createdEnds: ReadonlyMap<number, Uint8Array>;
+  } {
   const byId = new Map(masters.map((master) => [master.master, master]));
   const chained = new Map<string, DraftRecordEntry[][]>();
   const views = new Map<number, Uint8Array>();
@@ -3356,8 +3356,9 @@ export function withChainEnds(
   if (hopTraceOn()) {
     for (const placed of participants) {
       const input = inputs[placed.id];
-      const len = (source: { readonly token?: { readonly nft?: { readonly commitment?: Uint8Array } } } | undefined): number =>
-        source?.token?.nft?.commitment?.length ?? -1;
+      const len = (
+        source: { readonly token?: { readonly nft?: { readonly commitment?: Uint8Array } } } | undefined,
+      ): number => source?.token?.nft?.commitment?.length ?? -1;
       if (len(input?.source) === len(input?.output) && ends.get(placed.index) === undefined) continue;
       hopTrace(`chain-end ${placed.index} ${placed.id.slice(0, 44)} `
         + `src=${String(len(input?.source))} out=${String(len(input?.output))} `
@@ -3484,7 +3485,11 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // contract reached at several sites therefore contributes several masters to its one block, and its records are
   // placed once however many of its masters read them. Two deployments of one contract are two blocks (`block`).
   const calleeBlocks = new Map<
-    string, { readonly contract: string; masters: string[]; state: string[]; readonly recovery: Record<string, readonly string[]> }
+  string,
+  {
+    readonly contract: string; masters: string[]; state: string[];
+    readonly recovery: Record<string, readonly string[]>;
+  }
   >();
   // Each block's data records by participant id, with the data record each one is.
   const calleeRecordIndices = new Map<string, Map<string, number>>();
@@ -3630,8 +3635,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // implementation's records its entry's block layout names, as a callee frame does, because a body addresses each
   // record by its position in that list and reads its chunk run right after them.
   const implementationRecords = implementationArtifact.stateLayout?.dataNftCount ?? recordIds.length;
-  const at = (entries: readonly RecordEntry[], nftIndex: number): RecordEntry =>
-    (writes[nftIndex] ? entries[nftIndex]! : recordKept[nftIndex]!);
+  const at = (list: readonly RecordEntry[], nftIndex: number): RecordEntry =>
+    (writes[nftIndex] ? list[nftIndex]! : recordKept[nftIndex]!);
   const proxySegments: RecordEntry[][] = [
     [...recordKept],
     recordKept.map((_entry, nftIndex) => at(recordAfter, nftIndex)),
@@ -3670,42 +3675,42 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const implementationSegments: DraftRecordEntry[][] = Array.from({ length: calls.length + 1 },
     (_unused, segmentIndex) => frameDataRecordIndices(implementationArtifact, options.entry.functionName)
       .filter((nftIndex) => nftIndex < implementationRecords).map((nftIndex): DraftRecordEntry => {
-      const writeAt = recordWriteAt[nftIndex];
-      if (writeAt === undefined) return recordKept[nftIndex]!;
-      // The frame's declarations are read as one chain, so each change continues from what the last one left. A
-      // record whose writes all land in one segment states that change and keeps its end view in the rest.
-      const landings = recordLandings.get(nftIndex);
-      if (reentryCall !== undefined) {
-        const landed = landings ?? [writeAt.least];
-        const { in: index, out } = recordKept[nftIndex]!;
-        if (segmentIndex < landed[0]!) return recordKept[nftIndex]!;
-        if (!landed.includes(segmentIndex)) return { in: index, out, viewIn: 'carried', viewOut: 'carried' };
-        const written: DraftRecordEntry = {
-          in: index,
-          out,
-          viewIn: segmentIndex === landed[0] && segmentIndex <= reentryCall ? recordKept[nftIndex]!.viewIn : 'carried',
-          ...(segmentIndex === landed[landed.length - 1] && segmentIndex > reentryCall
-            ? { viewOut: recordWritten[nftIndex]!.viewOut } : {}),
+        const writeAt = recordWriteAt[nftIndex];
+        if (writeAt === undefined) return recordKept[nftIndex]!;
+        // The frame's declarations are read as one chain, so each change continues from what the last one left. A
+        // record whose writes all land in one segment states that change and keeps its end view in the rest.
+        const landings = recordLandings.get(nftIndex);
+        if (reentryCall !== undefined) {
+          const landed = landings ?? [writeAt.least];
+          const { in: index, out } = recordKept[nftIndex]!;
+          if (segmentIndex < landed[0]!) return recordKept[nftIndex]!;
+          if (!landed.includes(segmentIndex)) return { in: index, out, viewIn: 'carried', viewOut: 'carried' };
+          const written: DraftRecordEntry = {
+            in: index,
+            out,
+            viewIn: segmentIndex === landed[0] && segmentIndex <= reentryCall ? recordKept[nftIndex]!.viewIn : 'carried',
+            ...(segmentIndex === landed[landed.length - 1] && segmentIndex > reentryCall
+              ? { viewOut: recordWritten[nftIndex]!.viewOut } : {}),
+          };
+          rootRecordWrites.add(written);
+          return written;
+        }
+        if (landings === undefined || landings.length <= 1) {
+          if (segmentIndex < writeAt.least) return recordKept[nftIndex]!;
+          return segmentIndex === writeAt.least ? recordWritten[nftIndex]! : recordAfter[nftIndex]!;
+        }
+        const change = landings.indexOf(segmentIndex);
+        if (change < 0) {
+          return segmentIndex < landings[0]! ? recordKept[nftIndex]!
+            : { in: recordKept[nftIndex]!.in, out: recordKept[nftIndex]!.out, viewIn: 'carried', viewOut: 'carried' };
+        }
+        return {
+          in: recordWritten[nftIndex]!.in,
+          out: recordWritten[nftIndex]!.out,
+          viewIn: change === 0 ? recordKept[nftIndex]!.viewIn : 'carried',
+          ...(change === landings.length - 1 ? { viewOut: recordWritten[nftIndex]!.viewOut } : {}),
         };
-        rootRecordWrites.add(written);
-        return written;
-      }
-      if (landings === undefined || landings.length <= 1) {
-        if (segmentIndex < writeAt.least) return recordKept[nftIndex]!;
-        return segmentIndex === writeAt.least ? recordWritten[nftIndex]! : recordAfter[nftIndex]!;
-      }
-      const change = landings.indexOf(segmentIndex);
-      if (change < 0) {
-        return segmentIndex < landings[0]! ? recordKept[nftIndex]!
-          : { in: recordKept[nftIndex]!.in, out: recordKept[nftIndex]!.out, viewIn: 'carried', viewOut: 'carried' };
-      }
-      return {
-        in: recordWritten[nftIndex]!.in,
-        out: recordWritten[nftIndex]!.out,
-        viewIn: change === 0 ? recordKept[nftIndex]!.viewIn : 'carried',
-        ...(change === landings.length - 1 ? { viewOut: recordWritten[nftIndex]!.viewOut } : {}),
-      };
-    }),
+      }),
   );
   // The nodes the entry only reads follow its data records in every segment, kept, ahead of any write: one record
   // per key, at the position the frame reads that key from, so a node two keys share is declared at both. A node the
@@ -3878,18 +3883,18 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     createdElsewhere.set(createdNodeKey(options.proxyCategory, node.collection, node.slot), node.out);
   }
   const calleeTrailing = callees.map((callee, position) => {
-    const writes = calleeWritesOf(callee);
+    const calleeWrites = calleeWritesOf(callee);
     const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
     const category = (owner ?? callee).category;
     let laid: LaidHopEntryWrites | undefined;
     let records: ReturnType<typeof laidWriteRecords> | undefined;
     // This frame's own created region starts where the frames laid before it left the cursor.
-    const createdBase = trailingCursor;
-    if (writes !== undefined) {
-      laid = writes.lay({
+    const frameCreatedBase = trailingCursor;
+    if (calleeWrites !== undefined) {
+      laid = calleeWrites.lay({
         indexOf: (id) => participant(layout, id).index,
         proxyMasterIndex: participant(layout, (owner ?? callee).master).index,
-        createdBase,
+        createdBase: frameCreatedBase,
         recordAmount: (owner ?? callee).records[0]?.satoshis ?? options.validatorAmount,
         category,
         learnedViews: options.calleeWriteViews?.get(callee.master) ?? [],
@@ -3903,14 +3908,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       // Each of the frame's own writes is declared in its own segment, which the artifact publishes per write.
       records = laidWriteRecords({
         laid,
-        writes,
+        writes: calleeWrites,
         indexOf: (id) => participant(layout, id).index,
         category,
-        createdBase,
+        createdBase: frameCreatedBase,
         dynamicRuns: dynamicWriteVariables(callee.artifact, callee.entry),
       });
     }
-    return { laid, records, createdBase, ...calleeEventPlan[position]! };
+    return { laid, records, createdBase: frameCreatedBase, ...calleeEventPlan[position]! };
   });
   settle(options.proxyCategory, [...recordIds, ...readNodeIds, ...entryWriteIds], laidWrites?.createdOutputs ?? []);
   for (const owner of delegateOwnerIndices(callees)) {
@@ -3926,13 +3931,13 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // caller's for the delegate frame a proxied callee reaches. Only a category the hop already settles has one —
   // the settlement rules reach a settled contract, and settling one the validator does not need is itself refused.
   callees.forEach((callee, calleePosition) => {
-    const writes = calleeWritesOf(callee);
+    const calleeWrites = calleeWritesOf(callee);
     const laid = calleeTrailing[calleePosition]?.laid;
-    if (writes === undefined || laid === undefined) return;
+    if (calleeWrites === undefined || laid === undefined) return;
     const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
     const category = (owner ?? callee).category;
     if (!settlementOf.has(bytesToHex(category))) return;
-    settle(category, writes.participantIds, laid.createdOutputs);
+    settle(category, calleeWrites.participantIds, laid.createdOutputs);
   });
   // The nodes a frame only reads are state inputs of the category their records sit at, so a settlement that
   // reaches that category accounts for them too, exactly as a frame's own write does.
@@ -4067,9 +4072,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       const authority = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;
       recordWriters.set(record.id, { master: authority.master });
       if (hopTraceOn()) {
-        const segments = published.map((segment) => String(segment === 'last' ? positionCount - 1 : segment));
+        const publishedSegments = published.map((segment) => String(segment === 'last' ? positionCount - 1 : segment));
         hopTrace(`callee-record-write ${callee.functionName} record=${String(nftIndex)} `
-          + `segments=[${segments.join(',')}] from=${binToHex(record.commitment)}`);
+          + `segments=[${publishedSegments.join(',')}] from=${binToHex(record.commitment)}`);
       }
     }
 
@@ -4095,8 +4100,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         // The records this frame declares for its own writes, with the segment span each is placed in and the two
         // views it carries there: a body that reads one of them resolves against the declaration it finds in the
         // segment the read stands in, so the span is what a read that returns the default is compared against.
-        const identity = (at: number): string => {
-          const write = laidRecords[at]?.write;
+        const identity = (index: number): string => {
+          const write = laidRecords[index]?.write;
           if (write?.collection !== undefined) return `map:${write.collection}`;
           if (write?.variable !== undefined) return `dyn:${write.variable}`;
           if (write?.record !== undefined) return `rec:${write.record}`;
@@ -4105,8 +4110,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         const short = (bytes: Uint8Array | undefined): string => binToHex(bytes ?? new Uint8Array()).slice(0, 64);
         hopTrace(`callee-placed ${callee.functionName} count=${placed.length} `
           + `segments=${callee.calls.length + 1}`);
-        for (const [at, { span, entry }] of placed.entries()) {
-          hopTrace(`callee-record ${callee.functionName} ${identity(at)} ${String(entry.in)}/${String(entry.out)}`
+        for (const [placedIndex, { span, entry }] of placed.entries()) {
+          hopTrace(`callee-record ${callee.functionName} ${identity(placedIndex)} ${String(entry.in)}/${String(entry.out)}`
             + `@${span.least}..${span.most}:${short(entry.viewIn)}>${short(entry.viewOut)}`);
           // A record the plan names at an output alone carries no input, so the body reads its value from the
           // declaration rather than from a spent node: the tail of each view is the value the read resolves to.
@@ -4350,12 +4355,12 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // target address, while the assembled draft is what carries the callee reference.
   if (hopTraceOn()) {
     for (const master of plan.masters) {
-      const calls = master.calls.map((call) =>
+      const masterCalls = master.calls.map((call) =>
         `${call.callee}:${frameKindName(call.kind)}->${binToHex(call.target).slice(0, 8)}`).join(' ');
       const self = (master.frame as { readonly selfAddress?: Uint8Array }).selfAddress;
       hopTrace(`plan ${traceFrameFacts(master.master, master.functionName, master.frame.kind)} `
         + `contract=${master.contract} self=${self === undefined ? 'none' : binToHex(self).slice(0, 12)} `
-        + `calls=[${calls}]`);
+        + `calls=[${masterCalls}]`);
     }
   }
   return plan;
@@ -4794,7 +4799,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   // the hop is materialized by the builder and handed to the provider directly. The provider stays the decider.
   const transaction = builder.buildLibauthTransaction();
   if (hopTraceOn()) await traceAssembledHop(builder, provider, program);
-  const { binToHex, encodeTransaction, hash256 } = await import('@bitauth/libauth');
+  const { encodeTransaction } = await import('@bitauth/libauth');
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
   const submitPrepared = provider.sendPreparedTransaction?.bind(provider);
@@ -5140,21 +5145,21 @@ export async function callFramedProxyEntry(
   const { externalPlan, settled } = await planAndSettleHop({
     plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations, stopBefore) =>
       planHopExternalCalls({
-      provider, artifact: implementationArtifact, functionName: options.functionName,
-      args, externals: options.externals ?? {}, validatorProgram,
-      stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
-      entryDeployment: { categoryId: options.proxyCategoryId, deployment: proxyPools, layout: classificationLayout },
-      reentrantRoot,
-      selfAddress: proxyMaster.address,
-      senderAddress: options.callerLockingBytecode,
-      externalReturns,
-      reachedResults,
-      ...(calleeWriteViews.size === 0 ? {} : { calleeWriteViews }),
-      ...(calleeWriteValues.size === 0 ? {} : { calleeWriteValues }),
-      ...(implementationSideCars.size === 0 ? {} : { sideCars: implementationSideCars }),
-      ...(heldContinuations === true ? { heldContinuations: true } : {}),
-      ...(stopBefore === undefined ? {} : { stopBefore }),
-    }),
+        provider, artifact: implementationArtifact, functionName: options.functionName,
+        args, externals: options.externals ?? {}, validatorProgram,
+        stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+        entryDeployment: { categoryId: options.proxyCategoryId, deployment: proxyPools, layout: classificationLayout },
+        reentrantRoot,
+        selfAddress: proxyMaster.address,
+        senderAddress: options.callerLockingBytecode,
+        externalReturns,
+        reachedResults,
+        ...(calleeWriteViews.size === 0 ? {} : { calleeWriteViews }),
+        ...(calleeWriteValues.size === 0 ? {} : { calleeWriteValues }),
+        ...(implementationSideCars.size === 0 ? {} : { sideCars: implementationSideCars }),
+        ...(heldContinuations === true ? { heldContinuations: true } : {}),
+        ...(stopBefore === undefined ? {} : { stopBefore }),
+      }),
     settle: (stated, seed, defer) => settleHop(defer === true
       ? { ...settleOptionsFor(stated, seed), deferCalleeFailures: true }
       : settleOptionsFor(stated, seed)),

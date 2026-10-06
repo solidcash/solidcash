@@ -66,7 +66,10 @@ function settleGuard(guard: string): ReturnType<typeof composeAndDerive> {
       'caller-1': { source: { lockingBytecode: caller.lockingBytecode, valueSatoshis: 20_000n, token: token(caller.category, 'minting') } },
       'cal-1': { source: { lockingBytecode: cal.lockingBytecode, valueSatoshis: 20_000n, token: token(cal.category, 'minting') } },
       validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(caller.category, 'mutable') } },
-      user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
+      user: {
+        source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+        unlockingBytecode: userInput().unlockingBytecode,
+      },
     },
     validator: { id: 'validator', covers: ['Cal'], settles: [], redeemScript: validator.redeem },
   };

@@ -82,11 +82,11 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   address public implementation;'
   + '   int public seed;'
   + `   function peek() view returns (int) { return IStore(0x${hex(STORE_ADDRESS)}).value(); }`
-  + `   function both() view returns (int) {`
+  + '   function both() view returns (int) {'
   + `     return IStore(0x${hex(STORE_ADDRESS)}).value() + IStore(0x${hex(STORE_ADDRESS)}).value()`
   + `       + IStore(0x${hex(STORE_ADDRESS)}).count();`
   + '   }'
-  + `   function mix() view returns (int) {`
+  + '   function mix() view returns (int) {'
   + `     int first = IStore(0x${hex(STORE_ADDRESS)}).value();`
   + `     int second = IPeer(0x${hex(PEER_ADDRESS)}).value();`
   + '     return first + second;'

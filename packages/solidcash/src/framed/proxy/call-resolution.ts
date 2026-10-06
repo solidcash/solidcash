@@ -234,7 +234,7 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
   const host: EvaluateExternalExpressionHost = {
     resolveExternalArgs(
       sources, _functionArgs, _artifact, _state, _callerInputs, externalReturns,
-      occurrenceIndex = 0, _stateIncludesPriorWrites, executionSelfAddress,
+      occurrenceIndex = 0, _stateIncludesPriorWrites = false, executionSelfAddress = undefined,
     ): FunctionArgument[] | undefined {
       if (sources === undefined) return undefined;
       const resolved: FunctionArgument[] = [];
@@ -382,7 +382,7 @@ export function resolveCallArguments(
     const value = resolver.resolveArgument(source, occurrence);
     if (value === undefined) {
       throw new FramedProxyDeployError(
-        `${where} passes argument ${index} from a "${source.kind}"${source.expression === undefined ? '' : ` `
+        `${where} passes argument ${index} from a "${source.kind}"${source.expression === undefined ? '' : ' '
           + `expression of kind "${source.expression.kind}"`}, which the hop cannot resolve from the caller's own `
         + 'arguments and state',
       );

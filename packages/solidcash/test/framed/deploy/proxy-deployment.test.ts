@@ -154,7 +154,7 @@ describe('a framed proxy deployment', () => {
   });
 
   it('reads the implementation\'s address back through the shipped decoder', async () => {
-    const { provider, artifacts, deployment, proxyCategory, implCategory } = await deploy();
+    const { provider, artifacts, proxyCategory, implCategory } = await deploy();
     const implMaster = deployMaster(
       artifacts.Impl!, new Uint8Array(Buffer.from(implCategory, 'hex')), VALIDATOR_PROGRAM,
     );

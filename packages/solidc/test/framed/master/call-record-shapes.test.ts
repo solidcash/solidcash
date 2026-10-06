@@ -27,7 +27,7 @@ const INTERFACES = ' interface IState { function add(int x); }'
 /** The shape the marketplace's claim entry has: a helper whose arms each call out, reached from the entry. */
 const HELPER_WITH_ARMS = HEAD + INTERFACES
   + ' contract Caller {'
-  + `   function pick(bool take, int x) internal returns (int) {`
+  + '   function pick(bool take, int x) internal returns (int) {'
   + '     int chosen;'
   + `     if (take) { chosen = ISum(0x${CALLEE}).sum(x); }`
   + `     else { chosen = ISum(0x${CALLEE}).sum(x + 1); }`
@@ -39,7 +39,7 @@ const HELPER_WITH_ARMS = HEAD + INTERFACES
 /** A helper that calls out only in one arm, reached from an entry: the shape a parameter-checking helper has. */
 const HELPER_WITH_ONE_ARM = HEAD + INTERFACES
   + ' contract Caller {'
-  + `   function pick(bool take, int x) internal returns (int) {`
+  + '   function pick(bool take, int x) internal returns (int) {'
   + '     int chosen = 0;'
   + `     if (take) { chosen = ISum(0x${CALLEE}).sum(x); }`
   + '     return chosen;'

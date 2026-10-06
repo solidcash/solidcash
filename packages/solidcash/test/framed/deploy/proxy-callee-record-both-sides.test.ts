@@ -49,7 +49,7 @@ function sourceOf(): string {
     + '   uint public status;'
     + '   uint public total;'
     + '   mapping(uint => uint) public held;'
-    + `   function run(uint x, uint mode) returns (uint) {`
+    + '   function run(uint x, uint mode) returns (uint) {'
     + '     this.status = this.status + 1;'
     + '     uint a = 0;'
     + '     if (mode > 0) {'

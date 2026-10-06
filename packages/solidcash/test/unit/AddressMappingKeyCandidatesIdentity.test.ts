@@ -4,7 +4,9 @@ import { addressMappingKeyCandidates } from '../../src/stateful/sc-address-mappi
 import { registerDeployment } from '../../src/stateful/deployment-registry.js';
 import { createTestProvider } from '../test-util.js';
 
-function fixture() {
+function fixture(): {
+  provider: ReturnType<typeof createTestProvider>; address: string; logicalLock: Uint8Array; executionLock: Uint8Array;
+} {
   const provider = createTestProvider();
   const logicalLock = hexToBin(`aa20${'42'.repeat(32)}87`);
   const executionLock = hexToBin(`aa20${'31'.repeat(32)}87`);

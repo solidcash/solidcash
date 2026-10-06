@@ -76,6 +76,6 @@ describe('a proxy does not compile for framed composition', () => {
       + ' contract Proxy { function set(address target, bytes data) { target.delegatecall(data); require(true); } }';
     const refusal = thrownOf(source);
     expect(refusal.code).toBeUndefined();
-    expect(refusal.message).toContain("whose identity is controlled by the caller");
+    expect(refusal.message).toContain('whose identity is controlled by the caller');
   });
 });

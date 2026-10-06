@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { bytesToHex, type Artifact } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -50,7 +49,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const ledger = artifacts.Ledger!;
-const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
 const SEED_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));
 const RECIPIENT_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x44));

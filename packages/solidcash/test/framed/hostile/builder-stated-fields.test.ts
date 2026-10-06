@@ -10,7 +10,7 @@ import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
-import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';

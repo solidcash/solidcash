@@ -8,7 +8,7 @@ import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import * as resolution from '../../../src/framed/proxy/call-resolution.js';
 import {
-  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
   type FramedProxyCallResult,
 } from '../../../src/framed/proxy/index.js';
 import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';

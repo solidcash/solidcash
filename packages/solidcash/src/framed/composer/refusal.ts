@@ -348,9 +348,10 @@ function reachedThroughCalls(
     // A delegate frame is entered by the proxy whose fallback forwards to it, a structural edge the derivation
     // does not bind: an unfilled reference into it does not mean the frame went unentered. Every other frame is
     // entered by a call, and only a filled reference means the caller reached it rather than stopping on the read.
-    if (draft.blockOf(child).kind !== FrameKind.DELEGATE) {
+    const entered = child;
+    if (draft.blockOf(entered).kind !== FrameKind.DELEGATE) {
       const call = draft.blockOf(caller).calls.find((candidate) => candidate.calleeRef !== UNFILLED_CALLEE_REF
-        && idByIndex.get(candidate.calleeRef) === child);
+        && idByIndex.get(candidate.calleeRef) === entered);
       if (call === undefined) return false;
     }
     child = caller;

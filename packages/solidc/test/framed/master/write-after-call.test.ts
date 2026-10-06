@@ -294,7 +294,7 @@ describe('a framed master whose entry writes a verified mapping after an externa
 describe('a framed master whose entry deletes a mapping entry beside a call elsewhere', () => {
   const DELETE_SOURCE = 'pragma solidcash ^0.13.0;'
     + ' interface ICallee { function ping(); }'
-    + ` contract Callee { function ping() { require(true); } }`
+    + ' contract Callee { function ping() { require(true); } }'
     + ' contract Caller {'
     + '   mapping(string => string) meceTags;'
     + '   function callIt() {'
@@ -319,7 +319,7 @@ describe('a framed master whose entry deletes a mapping entry beside a call else
  */
 const WRITE_FIRST_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
-  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
   + '   mapping(address => uint) balances;'
   + '   function set(address to, uint amount) {'
@@ -331,7 +331,7 @@ const WRITE_FIRST_SOURCE = 'pragma solidcash ^0.13.0;'
 /** The same write with an unconditional call after it, so the entry carries no calls-made counter. */
 const WRITE_FIRST_PLAIN_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
-  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
   + '   mapping(address => uint) balances;'
   + '   function set(address to, uint amount) {'
@@ -353,7 +353,7 @@ describe('a framed master whose write precedes a call in the same body', () => {
  */
 const SAME_CALL_BRANCH_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); function pong(); }'
-  + ` contract Callee { function ping() { require(true); } function pong() { require(true); } }`
+  + ' contract Callee { function ping() { require(true); } function pong() { require(true); } }'
   + ' contract Caller {'
   + '   mapping(address => uint) balances;'
   + '   function set(address to, uint amount) {'
@@ -383,7 +383,7 @@ describe('a framed master whose write follows a branch whose arms call the same 
  */
 const VARYING_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
-  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
   + '   mapping(address => uint) balances;'
   + '   function set(address to, uint amount) {'
@@ -417,7 +417,7 @@ describe('a framed master whose write follows a branch whose arms call a differe
  */
 const REMOVE_AFTER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
-  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
   + '   mapping(address => uint) tags;'
   + '   function callIt() {'
@@ -431,15 +431,13 @@ const REMOVE_AFTER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const removeAfterCallArtifacts = compileStringMulti(REMOVE_AFTER_CALL_SOURCE, { composition: 'framed' });
-
 /**
  * A removal whose own body makes no call, in a contract whose other entry does. Its records are declared in the
  * frame's opening segment, the one segment the entry has.
  */
 const REMOVE_ONLY_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
-  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
   + '   mapping(address => uint) tags;'
   + '   function callIt() {'

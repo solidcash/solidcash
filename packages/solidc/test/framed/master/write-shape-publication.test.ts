@@ -28,10 +28,10 @@ function publishedWrites(
   contractName: string,
   entryName: string,
 ): {
-  readonly single?: number | 'last';
-  readonly writes?: readonly PublishedWrite[];
-  readonly refused: readonly PublishedRefusedEntry[];
-} {
+    readonly single?: number | 'last';
+    readonly writes?: readonly PublishedWrite[];
+    readonly refused: readonly PublishedRefusedEntry[];
+  } {
   const { composition } = artifact;
   const entry = composition?.stopSites?.entries
     .find((candidate) => candidate.functionName === `${contractName}.${entryName}()`);
@@ -100,7 +100,7 @@ const LOOP_UPSERT_BETWEEN_CALLS_SOURCE = `pragma solidcash ^0.13.0;${PING}`
 // the shipped call path settles and whose mutation it refuses (the first case of
 // `solidcash/test/framed/conformance/loop-upsert-settlement.test.ts`). The body below is that guard's body, so the
 // fact this file pins and the machine pair that file pins are about one shape.
-const LOOP_UPSERT_ALONE_SOURCE = `pragma solidcash ^0.13.0;`
+const LOOP_UPSERT_ALONE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address to, uint amount, int turns) {'

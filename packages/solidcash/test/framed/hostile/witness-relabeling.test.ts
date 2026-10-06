@@ -224,9 +224,9 @@ function modelOf(transaction: VmProgram['transaction'], sourceOutputs: VmSourceO
 /** The signed transaction with the listed masters' blocks rebuilt from the mutated blocks. */
 function relabel(fixture: Fixture, blocks: Readonly<Record<string, WitnessBlock>>): VmTransaction {
   const transaction = structuredClone(fixture.signed.transaction) as VmTransaction;
-  for (const [master, block] of Object.entries(blocks)) {
-    const spec = fixture.plan.masters.find((candidate) => candidate.master === master)!;
-    const index = participant(fixture.outcome.draft.layout, master).index;
+  for (const [frameId, block] of Object.entries(blocks)) {
+    const spec = fixture.plan.masters.find((candidate) => candidate.master === frameId)!;
+    const index = participant(fixture.outcome.draft.layout, frameId).index;
     transaction.inputs[index]!.unlockingBytecode =
       buildMasterUnlockingBytecode(block, spec.argumentPushes, spec.redeemScript);
   }
@@ -255,15 +255,16 @@ function contractVerdicts(
 
 /** A byte fingerprint of the outputs, so a relabelling's effect on them is compared over their whole content. */
 function outputsFingerprint(outputs: VmProgram['transaction']['outputs']): string {
-  const token = (held: unknown): string => (held === undefined ? '-' : JSON.stringify(held, (_key, value) => {
-    if (typeof value === 'bigint') return value.toString();
-    if (value instanceof Uint8Array) return Buffer.from(value).toString('hex');
-    return value;
-  }));
+  const fingerprintToken = (held: unknown): string => (held === undefined
+    ? '-' : JSON.stringify(held, (_key, value) => {
+      if (typeof value === 'bigint') return value.toString();
+      if (value instanceof Uint8Array) return Buffer.from(value).toString('hex');
+      return value;
+    }));
   return outputs.map((output) => [
     output.valueSatoshis.toString(),
     Buffer.from(output.lockingBytecode).toString('hex'),
-    token(output.token),
+    fingerprintToken(output.token),
   ].join('|')).join('||');
 }
 
@@ -275,8 +276,8 @@ function decisionOf(fixture: Fixture, transaction: VmTransaction): ReturnType<ty
 }
 
 /** The block the derivation produced for a master, as the mutation's starting point. */
-function blockOf(fixture: Fixture, master: string): WitnessBlock {
-  return structuredClone(fixture.outcome.draft.blockOf(master)) as WitnessBlock;
+function blockOf(fixture: Fixture, frameId: string): WitnessBlock {
+  return structuredClone(fixture.outcome.draft.blockOf(frameId)) as WitnessBlock;
 }
 
 describe('a witness block relabelled after the user signed', () => {

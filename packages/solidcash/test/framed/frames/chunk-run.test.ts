@@ -90,13 +90,13 @@ function build(options: {
   readonly spent?: Uint8Array;
   readonly written?: Uint8Array;
 } = {}): {
-  plan: CompositionDraftPlan;
-  layout: StateLayout;
-  source: string;
-  chunkIds: readonly string[];
-  base: number;
-  stateIndex: number;
-} {
+    plan: CompositionDraftPlan;
+    layout: StateLayout;
+    source: string;
+    chunkIds: readonly string[];
+    base: number;
+    stateIndex: number;
+  } {
   const source = options.source ?? SOURCE;
   const spentBytes = options.spent ?? SPENT;
   const writtenBytes = options.written ?? WRITTEN;

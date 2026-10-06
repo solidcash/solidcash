@@ -147,12 +147,12 @@ async function deploy(
   source: string,
   args: readonly unknown[] = [],
 ): Promise<{
-  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
-  readonly network: MockNetworkProvider;
-  readonly artifacts: ReturnType<typeof compileStringMulti>;
-  readonly layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>;
-  readonly funding: Funding;
-}> {
+    readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
+    readonly network: MockNetworkProvider;
+    readonly artifacts: ReturnType<typeof compileStringMulti>;
+    readonly layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>;
+    readonly funding: Funding;
+  }> {
   const artifacts = compileStringMulti(source, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network);
@@ -229,7 +229,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
       .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, value))));
 
     const state = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
+    expect(state.byNft[0]!.items$len).toBe(BigInt(value.length));
     const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
     expect(chunks.map((chunk) => bytesToHex(chunk.data))).toStrictEqual([bytesToHex(value)]);
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
@@ -270,7 +270,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
     const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
     expect(chunks.map((chunk) => bytesToHex(chunk.data))).toStrictEqual([bytesToHex(value)]);
     const state = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
+    expect(state.byNft[0]!.items$len).toBe(BigInt(value.length));
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
@@ -311,7 +311,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
     let offset = 0;
     for (const chunk of chunks) { value.set(chunk.data, offset); offset += chunk.data.length; }
     const state = await readFramedState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['jobs$len']).toBe(BigInt(value.length));
+    expect(state.byNft[0]!.jobs$len).toBe(BigInt(value.length));
 
     const decoded = decodePushdataValue(value, 0, 'JobPost[]', artifacts.Impl!.structs).value as StateValue[];
     expect(decoded).toHaveLength(1);

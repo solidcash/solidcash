@@ -47,7 +47,7 @@ describe('a call inside a data-dependent loop', () => {
     const goSelector = selectorOf(artifacts, 'Looper', 'go');
     const pingSelector = selectorOf(artifacts, 'Cal', 'ping');
     const one = encodeIntegerValue(1n);
-    const master = (
+    const planMaster = (
       id: string, contract: string, entry: string, kind: FrameKindValue, sender: Uint8Array, enteredBy: string,
       calls: DraftMaster['calls'], argumentPushes: readonly Uint8Array[],
     ): DraftMaster => ({
@@ -69,18 +69,21 @@ describe('a call inside a data-dependent loop', () => {
       // The facet the validator binds is one participant ahead of the user.
       userInputs: [{ id: 'user', index: 5 }],
       masters: [
-        master('caller-1', 'Caller', 'start', FrameKind.ROOT, USER_LOCK, 'user',
+        planMaster('caller-1', 'Caller', 'start', FrameKind.ROOT, USER_LOCK, 'user',
           [{ kind: FrameKind.CALL, callee: 'looper-1', target: looper.address, value: 0n, argumentPushes: [goSelector, one] }], []),
-        master('looper-1', 'Looper', 'go', FrameKind.CALL, caller.address, 'caller-1',
+        planMaster('looper-1', 'Looper', 'go', FrameKind.CALL, caller.address, 'caller-1',
           [{ kind: FrameKind.CALL, callee: 'cal-1', target: cal.address, value: 0n, argumentPushes: [pingSelector] }], [goSelector, one]),
-        master('cal-1', 'Cal', 'ping', FrameKind.CALL, looper.address, 'looper-1', [], [pingSelector]),
+        planMaster('cal-1', 'Cal', 'ping', FrameKind.CALL, looper.address, 'looper-1', [], [pingSelector]),
       ],
       inputs: {
         'caller-1': { source: { lockingBytecode: caller.lockingBytecode, valueSatoshis: 20_000n, token: token(caller.category, 'minting') } },
         'looper-1': { source: { lockingBytecode: looper.lockingBytecode, valueSatoshis: 20_000n, token: token(looper.category, 'minting') } },
         'cal-1': { source: { lockingBytecode: cal.lockingBytecode, valueSatoshis: 20_000n, token: token(cal.category, 'minting') } },
         validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(caller.category, 'mutable') } },
-        user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
+        user: {
+          source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+          unlockingBytecode: userInput().unlockingBytecode,
+        },
       },
       validator: { id: 'validator', covers: ['Looper', 'Cal'], settles: [], redeemScript: validator.redeem },
     };
@@ -270,18 +273,21 @@ describe('a static read whose callee reverts', () => {
       masters: [
         build('reader-1', 'Reader', 'start', FrameKind.ROOT, USER_LOCK, 'user',
           [{ kind: FrameKind.STATIC, callee: 'cal-1', target: cal.address, value: 0n, argumentPushes: [selector] }], []),
-        build('cal-1', 'Cal', 'check', FrameKind.STATIC, reader.address, 'reader-1', [], [selector], ),
+        build('cal-1', 'Cal', 'check', FrameKind.STATIC, reader.address, 'reader-1', [], [selector] ),
       ],
       inputs: {
         'reader-1': { source: { lockingBytecode: reader.lockingBytecode, valueSatoshis: 20_000n, token: token(reader.category, 'minting') } },
         'cal-1': { source: { lockingBytecode: cal.lockingBytecode, valueSatoshis: 20_000n, token: token(cal.category, 'minting') } },
         validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(reader.category, 'mutable') } },
-        user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
+        user: {
+          source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+          unlockingBytecode: userInput().unlockingBytecode,
+        },
       },
       validator: { id: 'validator', covers: ['Cal'], settles: [], redeemScript: validator.redeem },
     };
     const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [artifacts.Reader!, artifacts.Cal!], plan });
+      vm: compositionMachine(), artifacts: [artifacts.Reader!, artifacts.Cal!], plan });
     deriveDepthFirst({ contract: 'Reader', functionName: entryName('Reader', 'start'), kind: FrameKind.ROOT, master: 'reader-1' }, host);
     return { host, draft };
   }

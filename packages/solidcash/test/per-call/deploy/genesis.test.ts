@@ -681,8 +681,8 @@ describe('a per-call genesis beside a call-making entry the master serves', () =
  *
  * A `string` is not held in the data NFT that declares it: the NFT carries the value's length and the bytes live in
  * a run of chunk NFTs. The value is one of the constructor's arguments, so the deployment can state the run before
- * the body runs and declare it; the body's own close still settles the header commitment. The control shows a value
- * the deployment cannot state being refused by name rather than planned.
+ * the body runs and declare it; the body's own close still settles the header commitment. A later literal write
+ * replaces an earlier one, and the artifact publishes that literal, so the deployment states it.
  */
 const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Named {'
@@ -727,7 +727,10 @@ describe('a per-call genesis whose constructor writes a dynamic value', () => {
     );
   });
 
-  it('refuses a write whose value the artifact publishes no source for', () => {
+  it('states the literal the last write leaves, which the artifact publishes over the concat', () => {
+    // The constructor writes a concat and then the literal "c". The value the body leaves is the literal, and
+    // the artifact publishes that source, so the deployment states its run. A value no source names, such as a
+    // concat of constructor arguments, is refused by name rather than planned.
     const runtime = compileString(
       'pragma solidcash ^0.13.0;'
       + ' contract Named {'
@@ -737,10 +740,20 @@ describe('a per-call genesis whose constructor writes a dynamic value', () => {
       + ' }',
       { composition: 'per-call' },
     );
-    expect(() => derivePerCallGenesis({
+    expect(runtime.abi.find((row) => row.name === '__construct')?.dynamicWriteSources?.name)
+      .toMatchObject({ kind: 'literal', value: 'c', type: 'string' });
+    const genesis = derivePerCallGenesis({
       artifact: runtime, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [1n], senderLockingBytecode: OWNER_LOCK,
-    })).toThrow(/writes dynamic "name", which the artifact publishes no value source for/);
+    });
+    expect(accepted(genesis.program)).toBe(true);
+    expect(genesis.commitments[0]).toBe(buildPushdataCommitment(runtime.stateLayout!, { name: 'c' }, 0));
+    const run = planChunkRun({
+      layout: runtime.stateLayout!, variable: 'name', spent: new Uint8Array(0), written: utf8('c'),
+    });
+    expect(genesis.chunks.map((chunk) => chunk.commitment)).toStrictEqual(
+      run.written.chunks.map((commitment) => Buffer.from(commitment).toString('hex')),
+    );
   });
 
   it('mints the chunk at the value covenant in the deployment transaction the SDK builds', async () => {

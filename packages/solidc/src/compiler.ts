@@ -5166,17 +5166,22 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
         if (node.elseBlock !== undefined) scan(node.elseBlock, activation);
         return;
       }
+      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
+      if (branchActivation === undefined) {
+        // A compiler-synthesized dirty flush (`__vmapcache_*_dirty` / `__dlcache_*_dirty`) gates its write on
+        // a local bit, never a route argument, so the write is still direct. Any other single-arm condition is
+        // a source read (`records[key].length > 1`): the route cannot replay it and must not invent an
+        // argument activation, so keep the handler non-routed.
+        if (node.preserveConditionalEntryWrites !== true) {
+          unsupported = true;
+          return;
+        }
+        scan(node.ifBlock, activation);
+        return;
+      }
       if (elseWritesChunkable) {
         // Writes in both arms are same-iteration resource selection — still fenced.
         unsupported = true;
-        return;
-      }
-      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
-      // A bool parameter is replayed by the route. Any other single-arm condition, such as
-      // `records[key].length > 1`, runs inside the handler. The route only needs the exactly-once
-      // bound; it does not invent an argument activation for a state read.
-      if (branchActivation === undefined) {
-        scan(node.ifBlock, activation);
         return;
       }
       const combined: ExternalCallExpression = activation === undefined

@@ -273,6 +273,14 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
         ident.location = stmt.location;
         return marked(this.copyLoc(new AssignNode(ident, stmt.expression), stmt));
       }
+      // A bare `arr[i] = x` parses as the local Array* node (only `this.arr[i] = x` is the StateArray*
+      // form above) and renameReads rewrites its name to the cache. Mark the rename dirty too: otherwise a
+      // conditional element re-write whose enclosing loop wrote nothing else never flushes.
+      if ((stmt instanceof ArrayPushNode || stmt instanceof ArrayPopNode
+        || stmt instanceof ArrayAssignNode || stmt instanceof ArrayDeleteNode)
+        && stmt.name === name) {
+        return marked(stmt);
+      }
       if (stmt instanceof WhileNode || stmt instanceof DoWhileNode) {
         stmt.block.statements = this.convertWrites(stmt.block.statements ?? [], name, local, dirty);
       } else if (stmt instanceof BranchNode) {

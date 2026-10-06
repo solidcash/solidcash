@@ -31202,6 +31202,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const walk = (n: Node): void => {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
+      // Mirror findSortedUpsertLoopWrite: an inner loop owns the writes in its own body, so the enclosing
+      // loop must not pin an entry-mint counter for a write it never executes on its own.
+      if (n !== node && (n instanceof WhileNode || n instanceof DoWhileNode)) return;
       const idx = (n as unknown as { entrySlotIndex?: number }).entrySlotIndex;
       // A compiler-owned read stream is settled by the sorted-upsert loop, not by this entry-mint counter.
       // Counting it here pins the collection's outputs to zero beside the upsert's reproduced nodes.
@@ -31647,6 +31650,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const walk = (n: Node): void => {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
+      // A write inside a nested loop executes once per inner iteration, so the inner loop owns its own
+      // registers. Claiming it here would place them outside that loop and leave the inner loop's own
+      // setup to bail, which then pins a counter the write never advances.
+      if (n !== node && (n instanceof WhileNode || n instanceof DoWhileNode)) return;
       if (n instanceof MappingAssignNode && n.collection?.sorted
         && !excludedStreams.has(this.sortedUpsertStreamKey(n))
         && hasRuntimeVaryingKey(n)) {

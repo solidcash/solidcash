@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs';
 import { describe, expect, it } from 'vitest';
+import { parsePushdataCommitment } from '@solidcash/utils';
 import { compileStringSplit } from '../direct-compile.js';
 import {
   ContractFactory, Signer, SignatureTemplate, SplitContractBundle, StatefulContract,
@@ -147,12 +148,38 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     // transition on the root script rather than a delegated one.
     const rootRoute = bundle.manifest.routes.find((r: any) => r.function === '__updateBlockOracle');
     expect(rootRoute.target).toBe('root');
-    await deployed.call.__updateBlockOracle(new SignatureTemplate(alicePriv), 1_700_000_000n)
-      .setState({ __block_timestamp: 1_700_000_000n }).send();
+    const oracleCall = deployed.call.__updateBlockOracle(new SignatureTemplate(alicePriv), 1_700_000_000n)
+      .setState({ __block_timestamp: 1_700_000_000n });
+    const built = await oracleCall.build();
+    const tx = built.buildLibauthTransaction();
+    // The root script commits this output. send() then mines, and the mock keeper rewrites a timestamp-only
+    // oracle: this contract has no __block_number, so the signed update has no height to stand on and the
+    // refresh replaces it with the new tip (the default mock time plus the mined height). Read the covenant
+    // commitment here, before that rewrite.
+    const timestampNft = bundle.root.stateLayout.variables.find(
+      (variable: { name: string }) => variable.name === '__block_timestamp',
+    ).nftIndex as number;
+    const committed = tx.outputs.flatMap((output: any) => {
+      const commitment = output.token?.nft?.commitment as Uint8Array | undefined;
+      if (commitment === undefined || commitment.length === 0) return [];
+      try {
+        return [parsePushdataCommitment(
+          Buffer.from(commitment).toString('hex'), bundle.root.stateLayout, timestampNft,
+        )];
+      } catch {
+        return [];
+      }
+    });
+    expect(committed).toHaveLength(1);
+    expect(committed[0].__block_timestamp).toBe(1_700_000_000n);
+    expect(committed[0].CStorage__c).toBe(9n);
+    await oracleCall.send();
     const afterOracle = await deployed.root.getState();
-    expect(afterOracle.__block_timestamp).toBe(1_700_000_000n);
     expect(afterOracle.AStorage__a).toBe(5n);
     expect(afterOracle.CStorage__c).toBe(9n);
+    expect(afterOracle.__block_timestamp).toBe(BigInt(
+      (signer.provider as { getBlockTime(): number }).getBlockTime(),
+    ));
   }, 300_000);
 });
 

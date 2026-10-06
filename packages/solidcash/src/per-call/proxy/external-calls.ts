@@ -1712,6 +1712,67 @@ function recordWrittenNodes(
   ctx.rewrittenNodes.set(categoryId, heldRewritten);
 }
 
+/** Labels an imported read uses for the caller, beside the `msgSender` kind a write publishes. */
+const CALLER_KEY_LABELS: Readonly<Record<string, string>> = {
+  'nullop:msg.sender': 'caller:msg.sender',
+  'sender:msg.sender': 'caller:msg.sender',
+  'call:_msgSender()': 'caller:msg.sender',
+  'nullop:tx.origin': 'caller:tx.origin',
+};
+
+/** One key source, as far as the allowance check has to tell two spellings of a key apart. */
+interface AccessKeySource {
+  readonly kind: string;
+  readonly paramName?: string;
+  readonly senderOp?: string;
+  readonly expressionLabel?: string;
+  readonly stateVarName?: string;
+  readonly constantValue?: string;
+}
+
+/** One entry access, as far as that check reads it. */
+interface AccessKey {
+  readonly slotIndex?: number;
+  readonly collection: string;
+  readonly keyParams: readonly string[];
+  readonly keySources?: readonly AccessKeySource[];
+  readonly operations: readonly string[];
+}
+
+/** The key expression an access names, so `msg.sender` matches across the read's label and the write's kind. */
+function accessKeyIdentity(access: AccessKey): string {
+  return access.keyParams.map((param, index) => {
+    const source = access.keySources?.[index];
+    if (source?.kind === 'msgSender') return `caller:${source.senderOp ?? 'msg.sender'}`;
+    const label = source?.expressionLabel ?? param;
+    const caller = CALLER_KEY_LABELS[label];
+    if (caller !== undefined) return caller;
+    if (source?.kind === 'param' && source.paramName !== undefined) return `param:${source.paramName}`;
+    if (source?.kind === 'state' && source.stateVarName !== undefined) return `state:${source.stateVarName}`;
+    if (source?.kind === 'constant' && source.constantValue !== undefined) return `const:${source.constantValue}`;
+    return source?.expressionLabel ?? param;
+  }).join('\0');
+}
+
+/**
+ * True when `node` reads a key a write of its collection also names.
+ *
+ * An allowance is that key: the read and the write are one node, and the frame keeps the value the write starts
+ * from. A second spelling that only resolves to the node is not.
+ */
+function readNamesWrittenKey(accesses: readonly AccessKey[] | undefined, node: HopCalleeReadNode): boolean {
+  if (accesses === undefined) return true;
+  const read = accesses.find((access) => access.slotIndex === node.slotIndex && access.collection === node.collection);
+  if (read === undefined) return true;
+  const key = accessKeyIdentity(read);
+  const sameParams = (access: AccessKey): boolean => access.keyParams.length === read.keyParams.length
+    && access.keyParams.every((param, index) => param === read.keyParams[index]);
+  return accesses.some((access) => access.collection === node.collection
+    && access.slotIndex !== read.slotIndex
+    && access.operations.some((operation) => operation !== 'read')
+    && (accessKeyIdentity(access) === key || sameParams(access)));
+}
+
 /**
  * The records one callee frame's own entry writes beyond the records its frame declares.
  *
@@ -1722,9 +1783,10 @@ function recordWrittenNodes(
  *
  * A body that writes a sorted mapping walks every group of its batch whichever path it takes, so a batch this planner
  * cannot state is refused by name, naming the callee, rather than left to a frame that cannot settle; so is a read
- * naming a node the batch also spends by another id, which one transaction cannot spend twice. A dynamic value's run
- * is read only where its write runs, so an entry that writes no batch keeps a plan without the run: a path that skips
- * the write still settles, and one that takes it is refused by the callee's own frame.
+ * naming a node the batch also spends under another id or another key, which one transaction cannot spend twice. A
+ * read of the same key the write names, an allowance a token reads before it rewrites it, is one input. A dynamic
+ * value's run is read only where its write runs, so an entry that writes no batch keeps a plan without the run: a
+ * path that skips the write still settles, and one that takes it is refused by the callee's own frame.
  */
 function calleeEntryWrites(
   artifact: Artifact,
@@ -1764,12 +1826,16 @@ function calleeEntryWrites(
       + `${error instanceof Error ? error.message : String(error)}`);
   }
   // A node the batch spends and the entry also reads, an allowance a token reads before it rewrites it, is one input
-  // when both name it by its shared id: the read is declared kept ahead of the batch's transition of it, as the hop
-  // declares its own frame's (`batchSpentReads`). A read naming it by another id would spend it a second time.
+  // when both name that key: the read is declared kept ahead of the batch's transition of it. A read that names the
+  // same node under another id, or under another key that only resolves to it, would spend it a second time. The
+  // frame used to fail an OP_VERIFY on that second spelling instead of naming the node.
   const spentAs = new Map([...writes?.spentUtxos ?? []].map(([id, utxo]) => [`${utxo.txid}:${utxo.vout}`, id]));
+  const fn = artifact.abi.find((candidate) => candidate.name === functionName);
   const shared = readNodes.find((node) => {
     const spentId = node.utxo === undefined ? undefined : spentAs.get(`${node.utxo.txid}:${node.utxo.vout}`);
-    return spentId !== undefined && spentId !== node.id;
+    if (spentId === undefined) return false;
+    if (spentId !== node.id) return true;
+    return !readNamesWrittenKey(fn?.entryAccesses, node);
   });
   if (shared !== undefined) {
     throw new PerCallProxyDeployError(

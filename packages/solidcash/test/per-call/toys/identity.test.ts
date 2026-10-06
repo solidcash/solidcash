@@ -41,10 +41,9 @@ function nodeCommitment(slot: Uint8Array, value: bigint): Uint8Array {
 /**
  * What the shipped path does with the literal sweep, given the plan the callee's own batch names.
  *
- * The callee's body derives its two record groups from the frame's first segment, in its own slot order, and the
- * transaction spends and recreates the two nodes the writes touch. The caller's own read is what the layout has to
- * reconcile with that list; this returns whichever the shipped path reports - a refusal by name, or the machine's
- * verdicts - so the case can pin it.
+ * The plan spends and recreates the two nodes the writes would touch, in the callee's slot order. A self-called
+ * sorted-mapping writer is refused at compile time, so the host reports that reason before derivation; this returns
+ * whichever the shipped path reports - a refusal by name, or the machine's verdicts - so the case can pin it.
  */
 function sweepOutcome(): { readonly code?: string; readonly message: string; readonly rejected: readonly string[] } {
   const { artifacts, contracts } = compileAndDeploy(LITERAL_SWEEP_SOURCE, { Tok: TOK_LABEL });
@@ -141,7 +140,7 @@ const MAPPING_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
  * The plan's sweep with the treasury fixed at compile time.
  *
  * This is the same shape as the plan's `sweep(t)` with the treasury named in the source, so the frame's own
- * argument plays no part and what the frame does with the callee's records is the only thing measured.
+ * argument plays no part. The callee still writes a sorted mapping through a self-call, which is refused.
  */
 const LITERAL_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Tok {'
@@ -334,15 +333,26 @@ function settlePlan(
 }
 
 describe('sweep: the internal transfer debits the contract, as the EVM does', () => {
-  it('resolves the plan\'s exact shape at compile: the self-call takes the callee\'s declared parameters', () => {
-    // The self-called body writes a sorted mapping, which carries the sorted-batch operands the direct convention
-    // receives from its SDK. A per-call master derives each operand from its own witness block, so the call site
-    // passes only the declared parameters and the call resolves: the exact `sweep(t)` spelling the plan names
-    // compiles, with or without an internal helper declared beside it.
-    const withHelper = MAPPING_SWEEP_SOURCE.replace(/ }$/, ' function h(int x) private returns (int) { return x + 1; } }');
+  it('refuses the plan\'s exact shape at compile: a self-call cannot write a sorted mapping', () => {
+    // `sweep` reaches `transfer` by `this.transfer(...)`, and `transfer` writes the sorted mapping `bal`. That
+    // body compiles as a subroutine, which returns before the sorted-batch transition, so the predecessor relink,
+    // the distinct-target check and the node-count census are never emitted in the caller's frame. The compiler
+    // refuses the writer by name, and the caller with it, with or without an internal helper beside it. Called
+    // directly, `transfer`'s own entry frame emits the transition; letting the self-call through would leave a
+    // forged segment able to settle two nodes for one key.
+    const transfer = 'the body derives a sorted-mapping write and is run as a subroutine by a self-call, whose '
+      + 'frame never emits the batch transition that proves the write\'s topology (the predecessor relink, the '
+      + 'distinct-target check and the node count); call it directly so its own entry frame proves it';
+    const sweep = `it runs 'transfer', which the master cannot serve: ${transfer}`;
+    const withHelper = MAPPING_SWEEP_SOURCE.replace(
+      / }$/, ' function h(int x) private returns (int) { return x + 1; } }',
+    );
     for (const source of [MAPPING_SWEEP_SOURCE, withHelper]) {
       const artifacts = compileStringMulti(source, { composition: 'per-call' });
-      expect(publishedRefusals(artifacts)).toStrictEqual([]);
+      expect(publishedRefusals(artifacts)).toStrictEqual([
+        { functionName: 'Tok.transfer()', reason: transfer },
+        { functionName: 'Tok.sweep()', reason: sweep },
+      ]);
       expect(artifacts.Tok!.bytecode!.length).toBeGreaterThan(0);
     }
   });
@@ -367,15 +377,18 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     }
   });
 
-  it('cannot yet lay the sweep out: the frame the callee writes in declares records its own layout omits', () => {
-    // The mapping sweep compiles, and the frame accepts up to the record the read resolves: the caller's published
-    // accesses name the read, and the callee's batch derives its two groups from the same segment, so the shipped
-    // layout has no declaration that satisfies both (the frame fails an OP_VERIFY before the segment close, and the
-    // derivation reads it as a stall). Serving it means attributing a self-called body's accesses to the frame that
-    // runs it and sizing the derivation's leading records from that frame.
+  it('refuses to settle the literal sweep: the self-called writer is refused before layout', () => {
+    // The literal sweep is the same sorted-mapping writer reached by a self-call, so the compiler refuses `sweep`
+    // because it runs `transfer`. The host reports that published reason and never reaches the old layout stall
+    // (the frame used to fail an OP_VERIFY before the segment close, read as PER_CALL_DERIVATION_STALLED). The
+    // honest batch the plan still declares, so the refusal is the missing transition, not a missing record.
     const refusal = sweepOutcome();
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
-    expect(refusal.message).toMatch(/master "tok-1" of Tok\.sweep\(\) filled no witness at site 0 /);
+    expect(refusal.code).toBe('PER_CALL_HOST_ENTRY_REFUSED');
+    expect(refusal.message).toBe('PER_CALL_HOST_ENTRY_REFUSED: Tok.sweep() is refused by the compiler: it runs '
+      + '\'transfer\', which the master cannot serve: the body derives a sorted-mapping write and is run as a '
+      + 'subroutine by a self-call, whose frame never emits the batch transition that proves the write\'s '
+      + 'topology (the predecessor relink, the distinct-target check and the node count); call it directly so '
+      + 'its own entry frame proves it');
   });
 
   it('accepts the contract-debited commitment: the self-call debits the contract, as the EVM does', () => {

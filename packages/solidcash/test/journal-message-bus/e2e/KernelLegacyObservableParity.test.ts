@@ -161,14 +161,13 @@ describe('kernel and legacy observable parity', () => {
     expect(totals).toEqual([9n, 9n]);
   }, 180_000);
 
-  // A real transaction differential for this shape reaches the kernel VM and fails OP_VERIFY at input 0.
-  // Keep it fail-closed until scalar, collection, and event output ownership share a proven row settlement.
+  // aefb5499f admits this shape in kernel mode: the conditional writes a scalar only, and no arm settles a
+  // collection or emits, so the unconditional chunkable replacement below it is not a mixed settlement.
   it('freezes mixed scalar, runtime collection, and row-effect geometry in kernel mode', () => {
     const kernel = compileString(MIXED_RUNTIME_SOURCE, { ...BASE_OPTIONS, messageBusKernel: true });
     const legacy = compileString(MIXED_RUNTIME_SOURCE, { ...BASE_OPTIONS, messageBusKernel: false });
     expect(kernel.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
     });
     expect(legacy.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
       eligible: true,

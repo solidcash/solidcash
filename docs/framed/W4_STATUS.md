@@ -104,8 +104,10 @@ through a wrapped machine. Verified: 18 tests in that file plus `declaration-cap
 
 ## Next
 
-1. Decide and land the fix for `246cdfd74` (revert at HEAD, minimal variant, or condition the logical-address
-   change on the composition convention). A worker is testing the revert now; see `MARKETPLACE_RED_AT_HEAD.md`.
+1. The refusal is fixed: `StatefulContract.get target()` returns the framed execution lock when one exists
+   (decision D22). The blanket `validator/1: Program failed an OP_VERIFY operation.` refusal is gone; one of four
+   sampled proxied titles passes and the other three now fail in the fixture's own state comparison
+   (`checkJobFromStateDiffs`). Characterise that residual next, with the full run output kept.
 2. Re-take the two title sets: no-proxy `approve result and review sanity checks` and `refund sanity checks`,
    proxied `take job sanity checks` and `approve result and review sanity checks`, and compare against the W2
    numbers (1044.3 s / 718.8 s no-proxy; 62.2 s / 131.8 s proxied).

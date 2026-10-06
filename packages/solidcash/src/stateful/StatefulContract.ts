@@ -5135,9 +5135,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`).
-   * A deployed logical CREATE address is that identifier. The framed execution address stays on `address`. */
+   * A framed deployment is identified by the lock its frames present (`address`), not by the logical CREATE address:
+   * that anchor belongs to the direct convention, where no framed address exists. A deployed logical CREATE address
+   * is the identifier only when there is no framed address. */
   get target(): string {
-    return this._logicalAddress ?? this._framedAddress ?? this.address;
+    return this._framedAddress ?? this._logicalAddress ?? this.address;
   }
 
   /** The contract's p2sh address (async, ethers.js `contract.getAddress()`). */

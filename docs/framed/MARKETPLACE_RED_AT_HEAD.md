@@ -136,3 +136,37 @@ whether the fix is a correction to the framed address convention or a revert of 
 into framed, which is the leak plan section 0 warns about.
 
 Cycles: 15 harness cycles; logs in `{SCRATCH}/w4/bisect/` (`<commit>.log`, `<commit>.patched.log`).
+
+## Fix landed: the framed identifier is the execution lock
+
+The harness A/B settled both questions:
+
+| change in the isolated harness at `a0ce264c7` | verdict |
+|---|---|
+| `246cdfd74` reverted wholesale (`git apply -R` does not apply - the rename moved `_perCallAddress` to `_framedAddress` in the same files - so the reverse edit was reconstructed by hand) | PASS (`{SCRATCH}/w4/bisect/HEAD-revert-246cdfd74.log`) |
+| variant A: only `get target()` swapped back to `_framedAddress ?? _logicalAddress ?? this.address` | PASS (`HEAD-variantA-target.log`) |
+| variant B: only the factory's dual registration reverted, `target` left logical-first | FAIL, same `validator/1` refusal (`HEAD-variantB-factory.log`) |
+
+So variant A is the minimal repair and the factory hunk is neither cause nor necessary. Landed as that one-operand
+swap in `packages/solidcash/src/stateful/StatefulContract.ts` (`get target()`), which leaves the direct convention
+untouched because `_framedAddress` is set only by `packages/solidcash/src/framed/deploy/stateful.ts`. The reasoning
+and the open question for the user are row **D22** in `DECISIONS.md`.
+
+### What the fix changes on the ladder
+
+Measured in the worktree after `tsc -b` and a cold fixture recompile (`{SCRATCH}/mkt-fix-verify.log`), four sampled
+proxied titles (`post job 1`, `take job`, `approve result`, `approve result and review sanity checks`):
+
+| | before the fix | after the fix |
+|---|---|---|
+| result | 0 passed, 3 failed (refused at `publishJobPost`) | 1 passed, 3 failed |
+| failure | `FramedCallError: the call to "publishJobPost" was refused ... validator/1: Program failed an OP_VERIFY operation.`, in 16-25 s | the run reaches the fixture's own assertions (736 s) and fails in `checkJobFromStateDiffs` (`marketplace.test.ts:225`, `recreatedJob.roles` deep-equal), from `marketplace.test.ts:2444` |
+
+The blanket indexer refusal is gone and titles now broadcast and execute; what remains is a narrower problem in the
+state the fixture reads back. That residual is **still open** and is the next item for W6. The captured log was
+truncated with `tail`, so the run must be repeated with the full output kept before the residual is characterised.
+
+Blast radius checked so far: `LogicalIdentityPreservation.test.ts` is 2 failed | 20 passed both before and after the
+change (its two failures are constructor `deriveDeployCommitments` OP_VERIFYs, unrelated to this getter), and
+`ContractFactoryFunding.test.ts` passes. The framed suites of `solidc`, `@solidcash/utils` and `@solidcash/testing`
+(152 files, 1331 tests) were green before the change and are unaffected by a getter in `solidcash`.

@@ -7249,13 +7249,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // windows are strictly dominated by savings-ranked 12 or 10. Legacy message-bus bodies stay at the
       // trace-stable window of 12 (EntryWriteBehavior oscillated at 7/10/11). Kernel routes retry at 10 only when
       // the best result is near the consensus size boundary, where the shorter shared journal-verifier spans can
-      // change deployability. Ordinary contracts retain the same 12-vs-10 competition. Speed-hinted large-contract
-      // compiles measured window 8 as strictly dominating 12/10/9/7 on savedBytes, so they run 8 only.
+      // change deployability. Ordinary contracts try window 8 as well and keep whichever attempt saves more
+      // bytes. Speed-hinted large-contract compiles measured window 8 as strictly dominating 12/10/9/7, so they
+      // run 8 only.
       const minimumWindows = largeBodyOutline
         ? [8]
         : this.currentContractHasMessageBus
           ? this.compilerOptions.messageBusKernel === true ? [12, 10] : [12]
-          : [12, 10];
+          : [12, 10, 8];
       // A direct contract still over the input-script limit before outlining searches more groups per round.
       const candidateGroupsPerRound = largeBodyOutline ? 12288
         : !this.currentContractHasMessageBus && this.directConvention && emittedBytesBeforeOutline > MAX_INPUT_BYTESIZE
@@ -7324,8 +7325,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The first pass deliberately treats every OP_INVOKE as a hard boundary. Once it has settled, make one
     // conservative follow-up pass that may move only invocations of compiler-authored structural helpers.
     // Those helpers have a stable, stack-only ABI and are safe to nest; user/source entry points and outlining
-    // ids are intentionally absent from this allow-list. Keeping the original window-12 floor also prevents
-    // this pass from exposing the shorter structural fragments on which SDK derivation must not depend.
+    // ids are intentionally absent from this allow-list. Message-bus bodies keep the window-12 floor so traced
+    // derivation does not match a shorter fragment. Ordinary direct contracts use window 8 here.
     const nestedCompilerHelperIds = new Set(
       this.definedBodyRecords.flatMap((record) =>
         record.compilerHelperId === undefined ? [] : [record.compilerHelperId]),
@@ -7342,7 +7343,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         () => encodeInt(this.allocateCompactHelperId()),
         () => this.peekCompactHelperIdPushBytes(),
         'savings',
-        MINIMUM_WINDOW_ELEMENTS,
+        // Ordinary direct contracts may nest compiler helpers at window 8. Message-bus bodies keep the
+        // window-12 floor so traced derivation does not lose the fragments it matches.
+        !this.currentContractHasMessageBus && this.directConvention ? 8 : MINIMUM_WINDOW_ELEMENTS,
         1024,
         undefined,
         6,
@@ -9315,9 +9318,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasEntryAccess) {
         this.emitEntryCategoryVerification(node);
       }
-      // Data NFT covenant verification: handles both written and read-only NFTs
-      // Selfdestruct functions skip output verification - data NFTs are destroyed via flag=2
-      if (!this.functionHasDelegatecall && this.hasStateAccess && !isSelfdestruct) {
+      // Data NFT covenant verification: handles both written and read-only NFTs.
+      // Selfdestruct functions skip output verification - data NFTs are destroyed via flag=2.
+      // A delegate entry lists every data NFT in its block even when dead-code elimination removes the scalar
+      // writes from its body (a transfer whose zero-address supply arms cannot run). The SDK still places those
+      // outputs and may guess a new scalar from an ABI argument. Preserve them unless this body actually writes.
+      const carriesDataNfts = this.compactOffsetMap.size > 0;
+      if (!this.functionHasDelegatecall && !isSelfdestruct && (this.hasStateAccess || carriesDataNfts)) {
         this.emitAutoCovenantVerification(node);
       }
       if (!this.functionHasDelegatecall && (hasEntryWrites || hasEntryDeletes)) {
@@ -29640,7 +29647,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         targetSlot(second, 1); bin(Op.OP_BIN2NUM);
         bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
 
+        // The two arms are the same checks aimed at witness groups five slots apart. When those groups are the
+        // top of the frame, rotate them so the second arm emits the same pick depths as the first and the
+        // outliner keeps one copy.
+        const snapAt = (suffix: string, slot: number): number => this.getStackIndex(
+          `__vmap_snapshot___internal__vmapBatch${suffix}_${slot}`, true,
+        );
+        const witnessSuffixes = ['Slot', 'Proof', 'Next', 'PredOut', 'Rank'];
+        const canonicalTwoGroup = witnessSuffixes.every((suffix, index) =>
+          snapAt(suffix, first) === index && snapAt(suffix, second) === index + 5);
+        const rotateTopWitnessGroups = (): void => {
+          for (let step = 0; step < 5; step += 1) {
+            this.emit(encodeInt(9n), loc);
+            this.emit(Op.OP_ROLL, loc);
+          }
+          const top = this.stack.splice(0, 10);
+          this.stack.unshift(...top.slice(5), ...top.slice(0, 5));
+        };
+
         for (const [slot, other] of [[first, second], [second, first]]) {
+          const rotate = slot === second && canonicalTwoGroup;
+          if (rotate) rotateTopWitnessGroups();
           // The earlier target points to the later one iff it lies in this proof's old gap. The later target
           // retains its old successor. This is the two-row form of the general min(nextTarget, oldNext) check.
           isBefore(slot, other); bin(Op.OP_IF);
@@ -29683,6 +29710,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
           bin(Op.OP_ENDIF);
           bin(Op.OP_ENDIF);
+          if (rotate) rotateTopWitnessGroups();
         }
       } else if (batch.linear) {
         const rowsName = `__internal__vmapBatchRows_${batch.collection}`;

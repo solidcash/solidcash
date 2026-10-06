@@ -95,12 +95,33 @@ unstated declaration it learns without exceeding one traced reading per value", 
 through a wrapped machine. Verified: 18 tests in that file plus `declaration-capture.test.ts`
 (`{SCRATCH}/w4-own-tests.log`).
 
+## The budget, re-taken (both blockers fixed)
+
+Measured at `8c4671242`, heap 6144 MB, in the worktree; logs in `{SCRATCH}`.
+
+- no-proxy `approve result and review sanity checks`: 1044.307 s at W2, **1148.58 s** of test time now (1155.62 s
+  file, `{SCRATCH}/w4-noproxy-one.log`). That is the slowest of the two and 95.7 % of a 20-minute budget; it was
+  measured while the full proxied ladder ran concurrently, so an unloaded gate run is faster.
+- no-proxy `refund sanity checks`: 718.767 s at W2, about 767 s now. The pair is 1915.66 s of test time against
+  1763.08 s at W2 (+8.7 %, `{SCRATCH}/w4-noproxy-run.log`).
+- proxied `take job`: 62.2 s at W2, 66.8 s now; proxied `approve result`: 131.8 s at W2, 144.5 s now
+  (`{SCRATCH}/w4-proxied-pair.log`), so the proxied lane is 7-10 % slower. The four sampled proxied titles together
+  are 629 s (`{SCRATCH}/read-fix-four.log`).
+
+Both no-proxy titles are inside the original 20-minute budget, so the harness timeout is reverted from 40 minutes to
+20 (`testTimeout` and `hookTimeout` `2_400_000` -> `1_200_000`, with the measurement in the comment), which is W4's
+stated target.
+
 ## Not done, and why
 
-- The 20-minute budget check and the `vitest.marketplace.config.ts` timeout decision (`2_400_000` -> `1_200_000`)
-  need passing timings. The timeout stays at 40 minutes.
-- No marketplace perf or size optimization landed: with `publishJobPost` refusing, no timing is attributable, and
-  the artifact-size change is a regression to fix rather than a saving to bank.
+- **`MarketplaceV1`'s framed artifact grew 864 bytes** against the W3 baseline (135056 -> 135920), so W4's "no
+  artifact grows" target is not met. Every other framed contract is byte-identical. The growth lies somewhere in the
+  150 commits between the W3 compile (2026-10-05 15:37, then HEAD `c473ba4a0`) and HEAD, and it needs its own
+  compile-only bisect: each step is a forced build plus one project compile, about three minutes, with no test run.
+  Not started.
+- No marketplace perf or size optimization landed. The ranked candidates are in `W4_WINS.md`; the first one
+  (batching the learned-value walk) changes the reading's semantics, so it wants the timings above as its baseline
+  and its own measurement.
 
 ## Next
 

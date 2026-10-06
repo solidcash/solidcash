@@ -73,11 +73,66 @@ Swapping the 2026-10-05 artifact set into a HEAD tree does **not** isolate the c
 SDK/VM are only coherent at the same revision. Any A/B of artifacts must hold the rest of the tree fixed at the
 commit the artifacts were compiled at. Log: `{SCRATCH}/w4-ab.log`.
 
-## Bisect (in flight)
+## Bisect result: `246cdfd74`
 
-Method: a full-copy harness tree (`{SCRATCH}/w4/harness`, no `.git`, 1.9 GB, its own `node_modules`) whose tracked
-sources are replaced from `git -C /Code/cashscript/.worktrees/per-call archive <commit>`, then
-`npx tsc -b tsconfig.packages.json`, a cold fixture recompile, and the one title
-`approve result and review sanity checks$` (pass ~130 s, fail ~16 s). The real repository is read-only to that work.
+**First bad commit:** `246cdfd746153280b517711811cf9fc39166f7db` -
+`fix(sdk): expose the logical CREATE address from getAddress` (2026-10-05 14:40:41 UTC). It touches
+`packages/solidcash/src/stateful/ContractFactory.ts` and `packages/solidcash/src/stateful/StatefulContract.ts`.
+Its message says a framed deployment kept `addrV(category)` in front of the logical CREATE address, so `getAddress()`
+was not the address holding the SCID anchor; `target` now returns the logical address, `address` still returns the
+framed execution lock, and the factory registers both.
 
-Verdict table and the offending commit go here when the bisect lands.
+**Last good commit before it:** `a04d069833ca636a37821e3a5f7ff02ce9e48260` (test-only, one line, code-identical in
+behaviour to `abf1049ff`, which was run and passes).
+
+Verdict table, oldest to newest on the first-parent line:
+
+| commit | time (UTC) | subject (short) | verdict |
+|---|---|---|---|
+| `12c011dfe` | 10:21 | solidcash: trace a broadcast's bytes ... | PASS |
+| `c3b274eb5` | 12:30 | feat(testing,sdk): logicalIdentity knob for deploy addresses | PASS |
+| `7088b6d6e` | 13:32 | fix(testing): compare untyped byte arrays | PASS |
+| `e6138b321` | 13:39 | fix(solidc): narrow a disk-hit delegate | PASS |
+| `fa34859806` | 13:41 | fix(sdk): keep one return channel | PASS |
+| `f8c8db06f5` | 13:45 | docs(per-call): W11 status (docs-only, = `fa34859806`) | PASS (source) |
+| `2c19e710e` .. `8d4ea3bb61` | 13:45 - 14:48 | 25 commits, including `0d0600fc9`, `abf1049ff`, `246cdfd74`, `4b3d529be` | **does not compile** |
+| `bbab3e0e00` | 14:53 | fix(solidc): treat a tuple-declared interface local as a call receiver | FAIL (unmodified) |
+| `02de0b9d1` | 10:30 | refactor(framed): drop the deprecated aliases | FAIL (unmodified) |
+
+Inside the non-buildable window, four commits were run with one gated, type-only, behaviour-preserving workaround
+(`node.name === target.name` -> `node.name === (target as any).name` in `stored-value-source.ts`; the surrounding
+filter pins `node.name === access.collection`, so the runtime value is identical): `0d0600fc9` PASS, `7e9b251657`
+PASS, `abf1049ff` PASS, `246cdfd74` **FAIL**. The workaround cannot manufacture that failure: `bbab3e0e00` fails with
+an unmodified build, and `fa34859806`/`f8c8db06f5` pass with one.
+
+Two boundaries are worth keeping because the tree layout changed twice in this range:
+
+- unmodified recipe: last good `f8c8db06f5`, first bad `bbab3e0e00`;
+- with the workaround: last good `a04d069833`, first bad `246cdfd74`.
+
+### The non-buildable window (a finding of its own)
+
+A type error exists from `2c19e710e` (2026-10-05 13:45:36, the `const deletion = target instanceof MappingDeleteNode`
+refactor) through `8d4ea3bb61` (14:48:49):
+
+    packages/solidc/src/semantic/stored-value-source.ts(170,69): error TS2339: Property 'name' does not exist on type 'Node'.
+
+`bbab3e0e00` fixes that line to read `access.collection`. Twenty-five commits on the branch do not typecheck, which
+is why the plan's rule about running `yarn build` before handoff matters; the fix is only eleven commits later, so
+nothing on `feat/per-call` past `bbab3e0e00` is affected.
+
+### Recipe correction used for the bisect
+
+`git archive` writes files with commit-time mtimes, which are older than the `*.tsbuildinfo` already in a copied
+tree, so `tsc -b` skips every rebuild and serves stale `dist` (`Module '"@solidcash/utils"' has no exported member`).
+A bisect (or any archive-based tree refresh) must delete the `*.tsbuildinfo` files first and build with
+`tsc -b ... --force`.
+
+### Next
+
+A worker is testing whether reverting `246cdfd74` at HEAD restores the title, and whether a minimal variant (only
+`target` returning the logical address, or only the factory's dual registration) is enough. That result decides
+whether the fix is a correction to the framed address convention or a revert of a kernel-oriented change that leaked
+into framed, which is the leak plan section 0 warns about.
+
+Cycles: 15 harness cycles; logs in `{SCRATCH}/w4/bisect/` (`<commit>.log`, `<commit>.patched.log`).

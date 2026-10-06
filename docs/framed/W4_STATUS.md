@@ -36,10 +36,15 @@ This contradicts the record: `PLAN_MARKETPLACE_66.md` marks title #50 (and #51, 
 both full M2 runs at 66/66, and `PERF_KERNEL_VS_FRAMED.md` records `approve result and review / sanity checks` as
 `passed` at 1044.307 s in the W2 no-proxy measurement. So the failure was introduced after those runs.
 
-The bisect is in flight (see `MARKETPLACE_RED_AT_HEAD.md` for the result as it lands). What is known:
+The bisect has landed: the regression was introduced by `246cdfd74`
+(`fix(sdk): expose the logical CREATE address from getAddress`, 2026-10-05 14:40:41), which changes
+`ContractFactory.ts` / `StatefulContract.ts` address resolution. The full verdict table, the last good commit
+(`a04d069833`) and the twenty-five-commit non-buildable window the bisect had to work around are in
+`MARKETPLACE_RED_AT_HEAD.md`. What is known:
 
 - HEAD `02de0b9d1` is bad; the title is fast-failing, not timing out (16-25 s).
-- `12c011dfe` (the W2/W3-era profile commit ancestor) is the first candidate on the good side.
+- `12c011dfe` (the W2/W3-era profile commit ancestor) passes, and so do `c3b274eb5`, `7088b6d6e`, `e6138b321`,
+  `fa34859806` and `abf1049ff`; `246cdfd74` is the first that fails.
 - The worktree's pre-existing artifacts (compiled 2026-10-05 15:37, when HEAD was `c473ba4a0`) match the W3 framed
   baseline for every contract, so the fixture the W2/W3 numbers used is not from HEAD.
 
@@ -99,7 +104,8 @@ through a wrapped machine. Verified: 18 tests in that file plus `declaration-cap
 
 ## Next
 
-1. Land the regression fix the bisect names.
+1. Decide and land the fix for `246cdfd74` (revert at HEAD, minimal variant, or condition the logical-address
+   change on the composition convention). A worker is testing the revert now; see `MARKETPLACE_RED_AT_HEAD.md`.
 2. Re-take the two title sets: no-proxy `approve result and review sanity checks` and `refund sanity checks`,
    proxied `take job sanity checks` and `approve result and review sanity checks`, and compare against the W2
    numbers (1044.3 s / 718.8 s no-proxy; 62.2 s / 131.8 s proxied).

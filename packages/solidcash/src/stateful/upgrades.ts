@@ -29,6 +29,7 @@ import {
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
 import { decorateFunctionResult, decorateStateAccessorResult } from './public-result.js';
+import { artifactUsesSolidityAbi } from './solidityAbi.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -493,13 +494,16 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               value as import('@solidcash/utils').StateValue | undefined, storageName, args.length, implArtifact,
             );
             const getter = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
+            // A stored locking script still surfaces as its cash address. An ABI address word is not one:
+            // lockingBytecodeToCashAddress rejects it, and the decorated result is the 20-byte identity.
             if (getter?.outputs?.[0]?.type === 'address' && value instanceof Uint8Array) {
               const cashaddr = lockingBytecodeToCashAddress({
                 bytecode: value,
                 prefix: getNetworkPrefix(target.proxy.inner.provider.network),
                 tokenSupport: false,
               });
-              return typeof cashaddr === 'string' ? `0x${binToHex(value)}` : cashaddr.address;
+              if (typeof cashaddr !== 'string') return cashaddr.address;
+              if (!artifactUsesSolidityAbi(implArtifact)) return `0x${binToHex(value)}`;
             }
             return result;
           };

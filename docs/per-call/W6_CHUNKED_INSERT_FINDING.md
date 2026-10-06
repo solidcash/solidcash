@@ -77,15 +77,16 @@ Both need the kernel author's intent for the single-target-row case, which is wh
 1. **Place the predecessor inside the frame instead of appending past it.** In
    `refreshTopLevelPredOutWitnesses`, lower the disposable-pad search floor from
    `masterIndex + blockSize` to the start of the participant's trailing band, so the P' takes an in-frame
-   `0x51` pad (here index 7). The frame would then compact to 8, the discovery would accept the witness as a
-   local coordinate, and the layout authority would publish a real absolute. Risk: the value-chunk transport
-   pass (`materializeTransportedContinuations`) also selects trailing slots and may want the same pad; the floor
-   must exclude slots the plan reserves for continuations.
+   `0x51` pad. **Tried and measured:** with the floor at `masterIndex + trailingBase` the witness moves from
+   67 to 7, and the run still fails with `pred-out-unresolved` because `localLimit` stays 7 - the pad at 7 is
+   exactly one past the compacted span. The pad floor alone is therefore not sufficient.
 2. **Teach the compaction about active PredOuts.** Fold the active PredOut's physical slot into
-   `minimumActualSize` (the same way computed value-chunk claims and pending value-chunk claims are folded in) and
-   run the PredOut discovery before the splice, so a frame is never compacted below the output its own witness
-   names. Risk: the witness here is already past `blockSize` (67 vs a 67-slot block), so this only works together
-   with (1) - otherwise the append still exceeds the published maximum.
+   `minimumActualSize` (the same way computed value-chunk claims and pending value-chunk claims are folded in)
+   and run the PredOut discovery before the splice, so a frame is never compacted below the output its own
+   witness names. Measured for this title: `minimumActualSize` is 7 and comes from
+   `minimumActualSizeForComputedValueChunkClaims` (the oversized entry's three value chunks at offsets 4..6), so
+   the free trailing pad starts at 7; the frame is then spliced to `[0, 7)`. Fix 2 has to be combined with
+   fix 1 - the pad floor decides *which* output carries P', and the compaction floor decides whether it survives.
 
 The single-target-row branch is the discriminating fact: for `batch.slotIndices.length === 1` the compiler
 expects the predecessor republished at the *fixed entry* coordinate (`proofOwnerOffset`), and the built frame's

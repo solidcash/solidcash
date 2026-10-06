@@ -7,13 +7,35 @@ evidence that no line or branch left the suite.
 
 ## What was removed
 
-| file | before | after | removed | replacement guard the case pointed at |
-|---|---:|---:|---|---|
-| `packages/solidcash/test/framed/pw7-measure.test.ts` | 2 | 0 (file deleted) | the whole measurement instrument, both cases under `FRAMED_FULL=1` (`PW7_FULL=1` for the twenty-four-master one) | none needed: it asserts nothing about the shipped path; `toys/fan-in.test.ts`, `toys/reentry.test.ts` and `primitives/many-masters.test.ts` settle the shapes it measured |
-| `packages/solidcash/test/framed/edges/refused-contract-shapes.test.ts` | 10 | 2 | the eight "is served" admits and the four `describe` blocks they were the only member of, plus `sourceOf` | `solidc/test/framed/master/send-output.test.ts` (a value send), `ecrecover-invalid-input.test.ts` (a recovery precompile), `composer/keccak-side-car.test.ts` (a keccak side-car), `deploy/genesis.test.ts` (a hashing constructor), `composite-return.test.ts` / `composed-arguments.test.ts` (a composite return, a struct argument), `shapes/mapping-values.test.ts` / `shapes/string-mapping-delete.test.ts` (a string-keyed mapping). The two "is refused by name" cases stay |
-| `packages/solidcash/test/framed/ahead/enumerable-set.test.ts` | 3 | 2 | the group-form compile case and `GROUP_SETS`, its only user | `call/enumerable-set.test.ts:181` drives the group-form swap-remove through the shipped proxy and reads the set back. The two refusal cases stay |
-| `packages/solidcash/test/framed/ahead/push-length-keyed-mapping-write.test.ts` | 3 | 2 | the control case `settles the same entry with the mapping write removed` and `WITHOUT_THE_WRITE`, its only user | the two settlement cases keep the mapping-write shape; the control only removed the write to isolate it, which is the probe this cluster deletes. Carrying cost: the file has no control isolating the mapping write any more |
-| `packages/solidcash/test/framed/ahead/revert-after-calls.test.ts` | 11 | 2 | the nine own-reason cases and the helpers they orphaned (`refusedCall`, `Refused`, `reportOf`, `expectReported`, `reasonOf`, `stalledAt`, `lineOf`, `UNFILLED_INDEX`, `Compiled.all`) and the `vi`, `composer`, `FramedProxyDeployError` imports | `conformance/revert-after-calls-rows.test.ts` (590 lines, section-23 row 5, runs by default), `reverts/innermost-revert.test.ts`, `reverts/proxied-callee-reason.test.ts`, `reverts/proxied-callee-error-arguments.test.ts`, `call/own-stop-before-refused-plan.test.ts` (7 cases). The settle case and the proxied-return read stay, which are the only assertions of the `Coin` balance view chain and the proxied `peek` return |
+Each entry is `file`: cases before, cases after. Removed says what left the file; Replacement names the shipped guard
+that keeps the rule covered.
+
+- `packages/solidcash/test/framed/pw7-measure.test.ts`: 2, then 0 (file deleted). Removed the whole measurement
+  instrument, both cases behind `FRAMED_FULL=1` (its twenty-four-master case behind `PW7_FULL=1` as well).
+  Replacement: none needed, it asserted nothing about the shipped path; `toys/fan-in.test.ts`,
+  `toys/reentry.test.ts` and `primitives/many-masters.test.ts` settle the shapes it measured.
+- `packages/solidcash/test/framed/edges/refused-contract-shapes.test.ts`: 10, then 2. Removed the eight "is served"
+  admits, the four `describe` blocks they were the only member of, and the `sourceOf` helper.
+  Replacement: `solidc/test/framed/master/send-output.test.ts` (a value send), `ecrecover-invalid-input.test.ts` (a
+  recovery precompile), `composer/keccak-side-car.test.ts` (a keccak side-car), `deploy/genesis.test.ts` (a hashing
+  constructor), `composite-return.test.ts` and `composed-arguments.test.ts` (a composite return, a struct argument),
+  and `shapes/mapping-values.test.ts` with `shapes/string-mapping-delete.test.ts` (a string-keyed mapping). The two
+  "is refused by name" cases stay.
+- `packages/solidcash/test/framed/ahead/enumerable-set.test.ts`: 3, then 2. Removed the group-form compile case and
+  `GROUP_SETS`, its only user. Replacement: `call/enumerable-set.test.ts:181` drives the group-form swap-remove
+  through the shipped proxy and reads the set back. The two refusal cases stay.
+- `packages/solidcash/test/framed/ahead/push-length-keyed-mapping-write.test.ts`: 3, then 2. Removed the control case
+  `settles the same entry with the mapping write removed` and `WITHOUT_THE_WRITE`, its only user. Replacement: the
+  two settlement cases keep the mapping-write shape, and the control only removed the write to isolate it, which is
+  the probe this cluster deletes. Carrying cost: the file has no control isolating the mapping write any more.
+- `packages/solidcash/test/framed/ahead/revert-after-calls.test.ts`: 11, then 2. Removed the nine own-reason cases
+  and the helpers they orphaned (`refusedCall`, `Refused`, `reportOf`, `expectReported`, `reasonOf`, `stalledAt`,
+  `lineOf`, `UNFILLED_INDEX`, `Compiled.all`) plus the `vi`, `composer` and `FramedProxyDeployError` imports.
+  Replacement: `conformance/revert-after-calls-rows.test.ts` (590 lines, spec section 23 row 5, runs by default),
+  `reverts/innermost-revert.test.ts`, `reverts/proxied-callee-reason.test.ts`,
+  `reverts/proxied-callee-error-arguments.test.ts` and `call/own-stop-before-refused-plan.test.ts` (7 cases). The
+  settle case and the proxied-return read stay, and they are the only assertions of the `Coin` balance view chain
+  and the proxied `peek` return.
 
 Twenty-one `it`s are gone: nineteen from the four files (27 cases before, 8 after, measured) and two from the
 gated instrument.

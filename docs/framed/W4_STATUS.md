@@ -25,8 +25,8 @@ Each failure is the same shape:
     FAIL ... > approve result and review > approve result
     FramedCallError: the call to "publishJobPost" was refused, so nothing was broadcast:
       validator/1: Program failed an OP_VERIFY operation.
-     ❯ FramedFunctionCall.send packages/solidcash/src/framed/call/handle.ts:106:13
-     ❯ deployMarketplaceWithUsersAndJob .marketplace/project/test/marketplace.test.ts:571:34
+     > FramedFunctionCall.send packages/solidcash/src/framed/call/handle.ts:106:13
+     > deployMarketplaceWithUsersAndJob .marketplace/project/test/marketplace.test.ts:571:34
 
 `deployMarketplaceWithUsersAndJob` is the fixture helper every title depends on, so the whole ladder is red, not one
 title. The no-proxy twin fails the same way at the same step (`FramedCompositionRefusedError`, frame

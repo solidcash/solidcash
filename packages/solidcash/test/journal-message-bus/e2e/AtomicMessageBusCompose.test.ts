@@ -900,12 +900,15 @@ describe('messageBus.compose atomic transaction', () => {
     const factory = (await connect(artifacts.Factory)).registerChild(artifacts.Child);
     const driver = await connect(artifacts.Driver, [hexToBin(factory.inner.lockingBytecode)]);
     const handler = artifacts.Factory.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    // The recipe no longer wraps a redundant identity cast around plain int expressions: `seed + 1` and the
+    // `marker` assignment now publish as `kind: 'binary'` carrying `resultType: 'int256'` directly. Explicit
+    // source casts (`Phase(seed)`) still publish as `kind: 'cast'`.
     expect(handler).toMatchObject({
       eligible: true,
       childDeployments: [{
-        constructorArgs: [{ kind: 'cast', operand: { kind: 'binary', operator: '+' } }],
+        constructorArgs: [{ kind: 'binary', operator: '+' }],
         genesisState: { fields: [
-          { name: 'marker', value: { kind: 'cast', operand: { kind: 'binary' } } },
+          { name: 'marker', value: { kind: 'binary', operator: '+' } },
           { name: 'phase', type: 'bigint', value: { kind: 'cast', resultType: 'bigint' } },
           { name: 'pair', type: 'Pair', value: {
             kind: 'conditional', resultType: 'Pair',
@@ -2734,8 +2737,10 @@ describe('messageBus.compose atomic transaction', () => {
     const forged = await composition.build();
     const sourceMaster = forged.inputs.findIndex((input) => input.token?.category === sourceSetup.categoryId
       && input.token.nft?.capability === 'minting');
+    // A route block publishes a single output-only `returnEvent` slot at `offset` from the block start; it
+    // carries no `slotIndex`.
     const firstLogicalSlot = sourceArtifact.messageBus!.route.blockLayout!.slots.find((slot) =>
-      slot.kind === 'returnEvent' && slot.slotIndex === 0)!;
+      slot.kind === 'returnEvent')!;
     const firstLogicalOutput = forged.outputs[sourceMaster + firstLogicalSlot.offset];
     const exactCommitment = firstLogicalOutput.token!.nft!.commitment;
     firstLogicalOutput.token!.nft!.commitment = `${exactCommitment.slice(0, -2)}${exactCommitment.endsWith('00') ? '01' : '00'}`;

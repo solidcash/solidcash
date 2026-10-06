@@ -10,6 +10,7 @@ import {
   findDeploymentByAddressValue, registeredAddressValueLockingBytecode,
 } from '../stateful/deployment-registry.js';
 import { externalReturnsForCallsites } from '../stateful/external-returns-for-callsites.js';
+import { externalCallReachedOccurrenceIndices } from '../stateful/physical-external-call.js';
 import { AuthenticatedProducerResults } from './authenticated-producer-results.js';
 import { externalCallIterationIndices } from '../stateful/external-call-iteration-domain.js';
 import { hydrateExternalPredicateState } from '../stateful/sc-hydrate-external-predicate-state.js';
@@ -431,7 +432,10 @@ async function rebuildCallTopology(
           if (sourceTemplate.occurrence === 'loop') {
             const domain = sourceTemplate.iterationDomain;
             const nested = sourceTemplate.nestedIterationDomains;
-            if (!domain && nested?.length !== 2) {
+            // An absent domain with no nested pair is the legacy convention, which unrolls a loop and publishes no
+            // affine coordinate; the cardinality fallback below covers it. One nested domain without an outer
+            // domain is genuinely unsupported and keeps failing closed.
+            if (!domain && nested !== undefined && nested.length !== 2) {
               throw new Error('messageBus: result-dependent loop has no compiler iteration domain');
             }
             if (nested && (nested.length !== 2 || nested[0]?.counterName === nested[1]?.counterName)) {
@@ -460,7 +464,22 @@ async function rebuildCallTopology(
               if (domain) occurrences = (await domainIndices(domain)).map((iteration) => ({
                 iteration, edge: sourceTemplate, outerIndex: iteration,
               }));
-              else {
+              else if (nested === undefined) {
+                // The legacy convention publishes the loop without an affine domain, so the candidate occurrences
+                // are the published array cardinality: the guard evaluated for each of them below decides which
+                // ones the call actually reaches, exactly as the domain path does. An unprovable cardinality keeps
+                // the fail-closed refusal.
+                const candidates = externalCallReachedOccurrenceIndices(sourceTemplate, [...args]);
+                if (candidates === undefined) {
+                  throw new Error('messageBus: result-dependent loop has no compiler iteration domain');
+                }
+                if (candidates.length > ATOMIC_MESSAGE_BUS_MAX_ROWS) {
+                  throw new Error('messageBus: result-dependent loop exceeds the graph row limit');
+                }
+                occurrences = candidates.map((iteration) => ({
+                  iteration, edge: sourceTemplate, outerIndex: iteration,
+                }));
+              } else {
                 const outer = await domainIndices(nested![0]!);
                 // A nested consumer can select its outer producer occurrence only if one unconditional,
                 // non-batched producer precedes it in the same exact compiler-published outer domain.

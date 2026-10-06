@@ -162,9 +162,21 @@ const canonicalArgumentJson = (value: unknown): string => JSON.stringify(value, 
   field instanceof Uint8Array ? binToHex(field)
     : typeof field === 'bigint' ? field.toString() : field);
 
-/** A hand-prepared edge with no result resolver is an exact claim about the arguments it states - except at
- * the positions the compiled edge itself resolves from a producer result. A caller cannot state a value it has
- * not received yet, so the compiled edge is authoritative there and the rebuild installs its resolver. */
+/** An address result is published in the compiler's own identity lane, which a caller's stated locking
+ * bytecode does not reproduce byte for byte, so such a position cannot be judged by value. Every other
+ * result - a plain scalar value or bytes - is one the caller states exactly. */
+function consumesAddressProducerResult(value: unknown, seen = new Set<object>()): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  const node = value as { kind?: string; type?: string };
+  if (node.kind === 'producerResult' && node.type === 'address') return true;
+  return Object.values(value).some((child) => consumesAddressProducerResult(child, seen));
+}
+
+/** A hand-prepared edge with no result resolver is an exact claim about the arguments it states, including
+ * at the positions the compiled edge resolves from a producer result: a stated scalar or byte value must
+ * still agree, so a swapped sink lane keeps failing closed. Only an address result is spared, because the
+ * compiled identity lane and the caller's locking bytecode are two representations of the same address. */
 function preparedArgumentsMatchCompiledEdge(
   prepared: readonly FunctionArgument[] | undefined,
   compiled: readonly FunctionArgument[] | undefined,
@@ -173,7 +185,7 @@ function preparedArgumentsMatchCompiledEdge(
   if (prepared === undefined || compiled === undefined) return prepared === compiled;
   if (prepared.length !== compiled.length) return false;
   return prepared.every((value, index) => (sources?.[index] !== undefined
-    && producerResultCallsites(sources[index]).size > 0)
+    && consumesAddressProducerResult(sources[index]))
     || canonicalArgumentJson(value) === canonicalArgumentJson(compiled[index]));
 }
 
@@ -432,9 +444,9 @@ async function rebuildCallTopology(
           if (sourceTemplate.occurrence === 'loop') {
             const domain = sourceTemplate.iterationDomain;
             const nested = sourceTemplate.nestedIterationDomains;
-            // An absent domain with no nested pair is the legacy convention, which unrolls a loop and publishes no
-            // affine coordinate; the cardinality fallback below covers it. One nested domain without an outer
-            // domain is genuinely unsupported and keeps failing closed.
+            // A legacy-unroll loop publishes no affine coordinate; the cardinality fallback below covers the
+            // absent-domain case. One nested domain without an outer domain is genuinely unsupported and keeps
+            // failing closed, and a domain-less kernel loop is refused below when it reaches that fallback.
             if (!domain && nested !== undefined && nested.length !== 2) {
               throw new Error('messageBus: result-dependent loop has no compiler iteration domain');
             }
@@ -468,7 +480,12 @@ async function rebuildCallTopology(
                 // The legacy convention publishes the loop without an affine domain, so the candidate occurrences
                 // are the published array cardinality: the guard evaluated for each of them below decides which
                 // ones the call actually reaches, exactly as the domain path does. An unprovable cardinality keeps
-                // the fail-closed refusal.
+                // the fail-closed refusal. A kernel-row-loop always publishes a domain for a result-dependent
+                // loop, so a kernel loop without one cannot be enumerated and keeps the refusal too - the second
+                // loop of a kernel route whose bound a prior loop overwrote is exactly that unproven case.
+                if (artifact.messageBus?.convention !== 'legacy-unroll') {
+                  throw new Error('messageBus: result-dependent loop has no compiler iteration domain');
+                }
                 const candidates = externalCallReachedOccurrenceIndices(sourceTemplate, [...args]);
                 if (candidates === undefined) {
                   throw new Error('messageBus: result-dependent loop has no compiler iteration domain');

@@ -77,29 +77,34 @@ interface CapacityReading {
   inputMaximumOperationCosts: number[];
 }
 
+// Exact stock-VM snapshot of the finalized two-party bytes. Refreshed after the intervening compiler commits
+// reduced the emitted verifier/route bytecode: the kernel worst operation cost moved 3_597_958 -> 3_068_177 and
+// transactionBytes 23_195 -> 23_121; legacy moved 6_168_252 -> 6_113_134 and 23_692 -> 23_485. The derived
+// maximum costs fell the same way on the per-participant inputs. The title still asserts the same property (the
+// same two-party composition, pinned byte-for-byte against the stock VM), only the measured values moved.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_195, callManifestBytes: 294,
-    worstOperationCost: 3_597_958, worstMaximumOperationCost: 7_232_800,
-    worstRatio: 0.49745022674482914,
+    transactionBytes: 23_121, callManifestBytes: 294,
+    worstOperationCost: 3_068_177, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.4241093940064138,
     inputOperationCosts: [
-      443_583, 404_166, 695, 3_597_958, 3_581_634, 27_321,
+      437_852, 399_373, 695, 3_068_177, 3_037_456, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_033_600, 1_516_800, 34_400, 7_232_800, 7_234_400, 112_800,
+      1_999_200, 1_490_400, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_692, callManifestBytes: 294,
-    worstOperationCost: 6_168_252, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.8526279995576689,
+    transactionBytes: 23_485, callManifestBytes: 294,
+    worstOperationCost: 6_113_134, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.8450091230786243,
     inputOperationCosts: [
-      431_940, 440_353, 695, 6_168_252, 6_079_908, 27_321,
+      426_810, 420_385, 695, 6_113_134, 6_020_080, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_935_200, 2_011_200, 34_400, 7_234_400, 7_234_400, 112_800,
+      1_900_800, 1_880_000, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });
@@ -287,10 +292,14 @@ describe('atomic single-transaction capacity', () => {
     }
   }, 600_000);
 
+  // Kernel density boundary: 4- and 5-participant kernel chains now report no stock-VM error (the same cost
+  // reduction that lowered the two-party pins moved them under the density ceiling), while 6 and 7 participants
+  // still exceed it. The 4-participant legacy chain still exceeds it. The property is unchanged: each listed
+  // composition is classified against the stock operation-cost density limit.
   it.each([
-    { count: 4, messageBusKernel: true, convention: 'kernel' },
     { count: 4, messageBusKernel: false, convention: 'legacy' },
-    { count: 5, messageBusKernel: true, convention: 'kernel' },
+    { count: 6, messageBusKernel: true, convention: 'kernel' },
+    { count: 7, messageBusKernel: true, convention: 'kernel' },
     { count: 8, messageBusKernel: true, convention: 'kernel' },
   ])('classifies a $count-participant $convention chain at the stock operation-density boundary', async ({
     count, messageBusKernel,
@@ -300,6 +309,17 @@ describe('atomic single-transaction capacity', () => {
     expect(encodeTransaction(transaction).length).toBeLessThanOrEqual(100_000);
     expect(stockVmErrors(builder)).toContainEqual(expect.stringMatching(/operation cost density limit/));
   }, 600_000);
+
+  // The same cost reduction that lowered the two-party pins moved the 4- and 5-participant kernel chains under
+  // the stock density ceiling, so they are classified as accepted rather than listed in the refusal table.
+  it.each([4, 5])(
+    'accepts a %i-participant kernel chain under the stock operation-density boundary', async (count) => {
+      const builder = await buildChain(count, true);
+      const transaction = builder.buildLibauthTransaction();
+      expect(encodeTransaction(transaction).length).toBeLessThanOrEqual(100_000);
+      expect(stockVmErrors(builder)).not.toContainEqual(expect.stringMatching(/operation cost density limit/));
+    }, 600_000,
+  );
 
   it.skipIf(Boolean(process.env.TESTS_USE_REGTEST)).each([6])(
     'converges a %i-participant resource-heavy chain without the former pass refusal', async (count) => {

@@ -1318,15 +1318,17 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       // InlineReturningStateHelpers rewrites `m[k].addElastic(e)` into `T t = m[k]; <mutate t>; m[k] = t`.
       // That whole-struct assign is not a field write, so the rebuild cache missed it and the next call read
-      // the entry the first call had written. Count the assigns. One overwrite stays a write: only a repeat,
-      // a loop, or a later read takes the one-upsert cache, so a write-only assign does not gain a read.
+      // the entry the first call had written. Count the assigns so a repeat reaches the one-upsert cache, but do
+      // not mark the entry `written`: a whole-struct assign is also how Solidity-facing lowering coalesces the
+      // single field write `m[k].f = v`, and marking it written let the field read that follows record a
+      // read-after-write and take the cache. That dropped the dominating write the external-call predicate
+      // publishes as the argument (the `stateAccess` and lost packed field type this arm once regressed).
       if (n instanceof MappingAssignNode && this.structMappings.has(n.name) && n.keys.length === 1) {
         const e = get(n.name, n.keys, true);
         if (e) {
           e.fromModifier ??= n.fromModifier;
           if (n.arrayIndex === undefined && !n.arrayPush && !n.arrayPop) {
             e.count += 1;
-            e.written = true;
             if (inLoop) e.inLoop = true;
           } else {
             e.bad = true;

@@ -173,16 +173,22 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
   to 20 minutes; no artifact grows.
 - Each change lands with tsc, its own test, and 2-4 representative titles on both lanes after a fixture recompile.
 
-### W5. Rename "framed" to "framed" (or the name the user picks)
-- Footprint: 2739 lines in 124 src files; directories `packages/{solidc,solidcash,utils}/src/framed` and their
-  `test/framed`, `packages/testing/test/framed`, `docs/framed`, `vitest.framed.config.ts`; public surface: the
-  option value `composition: 'framed'`, the published `artifact.composition.convention`, error classes
-  `Framed*Error` and codes `FRAMED_*`, exported functions (`callFramedEntry`, `callFramedProxyEntry`,
+### W5. Rename the convention to "framed" - DONE 2026-10-06, as a complete rename
+- Footprint (as measured): 2704 lines in 120 src files plus their tests; directories
+  `packages/{solidc,solidcash,utils}/src/framed` and their `test/framed`, `packages/testing/test/framed`,
+  `docs/framed`, `packages/*/vitest.framed.config.ts`, `tsconfig.framed-tests.json`; public surface: the option
+  value `composition: 'framed'`, the published `artifact.composition.convention`, error classes `Framed*Error`
+  and codes `FRAMED_*`, exported functions (`callFramedEntry`, `callFramedProxyEntry`,
   `deployFramedStatefulContract`, `readFramedEntry`, ...), the fixture configs that set `composition`.
-- Plan: confirm the name with the user; scripted codemod (word-boundary sed + `git mv`), two commits (moves, then
-  content); keep `'framed'` accepted as a deprecated alias for the option and when reading artifacts for one
-  release; regenerate generated fixtures; update docs and DECISIONS.
-- Timing: in a quiet window after W4 and W8 (a rename conflicts with every in-flight branch).
+- Plan: scripted codemod (letter-guarded substitutions + `git mv`), two commits (moves, then content).
+- **As executed (2026-10-06, `391208e7a` moves / `369b34419` content / `88c026992` fix).** The user chose a
+  complete rename: there is **no deprecated alias**. `'per-call'` is refused as an unknown convention (pinned by
+  `composition-convention.test.ts`), the artifact type publishes and reads only `'framed'`, and no `perCall*`
+  export remains. This supersedes the original plan's "keep `'per-call'` accepted as a deprecated alias ... for
+  one release", and the plan's text itself was renamed by the codemod, so treat this bullet as the record.
+  Generated fixtures were renamed by the same codemod, consistent with what the compiler now emits; `yarn build`
+  and `tsc -p tsconfig.framed-tests.json` pass; the framed suites sampled solidc, solidcash and testing pass.
+- Timing: done before W8 at the user's direction (2026-10-06) rather than after it.
 
 ### W6. All suites green
 - Suites: `yarn test` projects (solidc, solidcash incl. e2e and framed, utils, testing), `vitest.framed.config.ts`,

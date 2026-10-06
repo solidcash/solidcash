@@ -1109,8 +1109,7 @@ function markConstructorCapturedHelperGraphEffects(ast: Ast): void {
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
   // Composition convention is resolved and checked before any lowering: the two conventions produce different
   // addresses and unlocking bytecode, so a request whose code generation is absent must refuse rather than emit
-  // an artifact for the other convention. The resolved value replaces the request, so the deprecated `per-call`
-  // name never survives into a comparison or into the published artifact.
+  // an artifact for the other convention. The resolved value replaces the request in the normalized options.
   const compositionConvention = resolveCompositionConvention(options.composition);
   assertCompositionConventionSupported(compositionConvention);
   if (options.messageBusRootEnvelope === true && options.messageBusProxyForwardEnvelope === true) {
@@ -3053,10 +3052,8 @@ function attachDelegateVariant(
 ): void {
   if (mergedCompilerOptions.autoDelegate || artifact.isLibrary) return;
   // A master program runs at the contract's own address and is never selected as a proxy implementation, so a
-  // second delegate-mode compile of the same source would only produce an unusable artifact. `per-call` is the
-  // deprecated name of `framed`, so an artifact compiled by an earlier version is recognised too.
-  if (artifact.composition?.convention === 'framed'
-    || artifact.composition?.convention === 'per-call') return;
+  // second delegate-mode compile of the same source would only produce an unusable artifact.
+  if (artifact.composition?.convention === 'framed') return;
   // Solidity initializer inference marks the primary artifact itself as a proxy implementation. Do not attach a
   // second delegate pass to that already-delegate artifact: synthetic ABI helpers such as __updateBlockOracle
   // have no visibility modifier and previously looked like another candidate, producing a much larger hybrid

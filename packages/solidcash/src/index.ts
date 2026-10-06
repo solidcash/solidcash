@@ -65,19 +65,3 @@ export * as framedCall from './framed/call/index.js';
 export * as framedReceipt from './framed/receipt/index.js';
 // Serializing sends whose compositions could touch the same masters, validators or records.
 export * as framedQueue from './framed/queue/index.js';
-
-// Deprecated aliases of the namespaces above, kept for one release under their previous `perCall` names.
-/** @deprecated use {@link framedComposer} */
-export * as perCallComposer from './framed/composer/index.js';
-/** @deprecated use {@link framedReference} */
-export * as perCallReference from './framed/validator/reference/index.js';
-/** @deprecated use {@link framedDeploy} */
-export * as perCallDeploy from './framed/deploy/index.js';
-/** @deprecated use {@link framedRead} */
-export * as perCallRead from './framed/read/index.js';
-/** @deprecated use {@link framedCall} */
-export * as perCallCall from './framed/call/index.js';
-/** @deprecated use {@link framedReceipt} */
-export * as perCallReceipt from './framed/receipt/index.js';
-/** @deprecated use {@link framedQueue} */
-export * as perCallQueue from './framed/queue/index.js';

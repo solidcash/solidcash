@@ -167,10 +167,8 @@ export interface CompilerOptions {
    * block layout. `framed` compiles each entry point as a master program that recreates itself unchanged, so one
    * contract's state settles once per transaction however many times the transaction enters it. The resolved
    * convention is published on `artifact.composition`.
-   *
-   * `per-call` is the deprecated previous name of `framed`, accepted for one release and resolved to `framed`.
    */
-  composition?: 'direct' | 'framed' | 'per-call';
+  composition?: 'direct' | 'framed';
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];
@@ -2064,11 +2062,8 @@ export interface Artifact {
    */
   refusedFunctions?: readonly PublishedRefusedEntry[];
   composition?: {
-    /**
-     * The convention the artifact was compiled for. A compiler at this version publishes `framed`; `per-call` is
-     * the deprecated previous name, still accepted by every reader for one release.
-     */
-    convention: 'framed' | 'per-call';
+    /** The convention the artifact was compiled for. */
+    convention: 'framed';
     placeholders: CompositionPlaceholders;
     /** The stop sites a builder resumes each served entry from; absent on a master compiled before the table. */
     stopSites?: PublishedFramedStopSites;

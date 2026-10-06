@@ -107,13 +107,14 @@ describe('composition convention selection', () => {
     expect(code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
   });
 
-  it('compiles the deprecated per-call name to the same master as framed', () => {
-    // The deprecated name is accepted at the option boundary and resolved to `framed`, so the artifact publishes
-    // the new convention and produces the same bytecode. The literal is not cast: the option type still admits it.
-    const framed = compileString(STATE_CONTRACT, { composition: 'framed' });
-    const deprecated = compileString(STATE_CONTRACT, { composition: 'per-call' });
-    expect(deprecated.composition?.convention).toBe('framed');
-    expect(deprecated.bytecode).toBe(framed.bytecode);
+  it('refuses the old per-call spelling of the framed convention', () => {
+    // The rename is complete: the previous name is an unknown convention, not a silent alias, and the refusal
+    // names both the offending value and the conventions this compiler accepts.
+    const code = codeOf(() => compileString(STATE_CONTRACT, { composition: 'per-call' as 'framed' }));
+    expect(code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
+    const message = messageOf(() => compileString(STATE_CONTRACT, { composition: 'per-call' as 'framed' }));
+    expect(message).toContain('per-call');
+    expect(message).toContain('framed');
   });
 
   it('names the offending value when a convention is unknown', () => {

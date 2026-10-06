@@ -18,12 +18,6 @@ import { SolidcDiagnosticError } from '../../Errors.js';
 /** The composition convention a compile targets. */
 export type CompositionConvention = 'direct' | 'framed';
 
-/**
- * @deprecated The previous name of `framed`, accepted for one release so an existing caller does not break.
- * It resolves to `framed`; artifacts never publish it.
- */
-export const DEPRECATED_COMPOSITION_CONVENTIONS: readonly string[] = ['per-call'];
-
 /** The convention used when a compile does not ask for one. */
 export const DEFAULT_COMPOSITION_CONVENTION: CompositionConvention = 'direct';
 
@@ -32,18 +26,16 @@ export const COMPOSITION_CONVENTIONS: readonly CompositionConvention[] = ['direc
 
 /**
  * Resolves the requested convention. An absent value selects the default; anything a caller does supply must name a
- * convention, so a typo cannot silently fall back. The deprecated name resolves to `framed`.
+ * convention, so a typo cannot silently fall back.
  */
 export function resolveCompositionConvention(requested: string | undefined): CompositionConvention {
   if (requested === undefined) return DEFAULT_COMPOSITION_CONVENTION;
-  if (DEPRECATED_COMPOSITION_CONVENTIONS.includes(requested)) return 'framed';
   if ((COMPOSITION_CONVENTIONS as readonly string[]).includes(requested)) {
     return requested as CompositionConvention;
   }
   throw new SolidcDiagnosticError(
     'FRAMED_CODEGEN_UNAVAILABLE',
-    `unknown composition convention '${requested}'; expected one of `
-    + `${[...COMPOSITION_CONVENTIONS, ...DEPRECATED_COMPOSITION_CONVENTIONS].join(', ')}`,
+    `unknown composition convention '${requested}'; expected one of ${COMPOSITION_CONVENTIONS.join(', ')}`,
     { requested, supported: COMPOSITION_CONVENTIONS },
   );
 }

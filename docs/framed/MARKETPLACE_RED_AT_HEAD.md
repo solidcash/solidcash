@@ -154,6 +154,13 @@ operand swap in `packages/solidcash/src/stateful/StatefulContract.ts` (`get targ
 convention untouched because `_framedAddress` is set only by `packages/solidcash/src/framed/deploy/stateful.ts`. The
 reasoning and the open question for the user are row **D22** in `DECISIONS.md`.
 
+The SDK's own guard corroborates the direction: `packages/solidcash/test/framed/deploy/address-identity.test.ts`
+("the address a framed deployment reports > reports addrV(category), and the registry and the genesis agree") fails
+at HEAD without the change and passes with it, measured in an A/B over that file plus the five failing `call/` files
+(`{SCRATCH}/fixab/with2.log`, `without2.log`: 9 failed without, 7 with, and the two that flip are that deploy case
+and one `call/plain-caller-identity` case). So the framed convention's own invariant is "a framed deployment reports
+`addrV(category)`", and `246cdfd74` broke it.
+
 ### What the fix changes on the ladder
 
 Measured in the worktree after `tsc -b` and a cold fixture recompile (`{SCRATCH}/mkt-fix-verify.log`), four sampled

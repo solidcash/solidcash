@@ -137,3 +137,20 @@ today, so the window the marketplace bisect covers is the place to look next.
 The `solidcash` framed suite is not a fresh full-config run here (its 1557 cases include the `ahead/` lane and the
 gated cases), the marketplace ladder is tracked in `MARKETPLACE_RED_AT_HEAD.md`, and no kernel/direct-convention
 suite was run.
+
+## Re-verified after the lint commit (`3fc4c2fe9`)
+
+The lint cleanup touched 22 `packages/*/src` files (plus 80 test files), so the two gate readings were re-taken at
+that revision, on a box that was also running other suites:
+
+- whole `packages/solidcash` framed config: **5 failed | 332 passed | 21 skipped (358 files)**, **7 failed | 1815
+  passed | 148 skipped (1970 tests)**, 500.57 s. That is the same five files and the same seven cases as the run
+  before the lint commit, so the cleanup changed no framed behaviour. The duration is 2.2x the idle 225 s because of
+  the concurrent load, and must not be read as a slowdown.
+- the four sampled proxied marketplace titles (`post job 1`, `take job`, `approve result`, `approve result and review
+  sanity checks`): **4 passed** in 1318.28 s, against 629 s in the lighter run. Log
+  `{SCRATCH}/postlint-marketplace.log`, framed run `{SCRATCH}/postlint-framed.log`.
+- `yarn lint` exit 0, `npx tsc -b tsconfig.packages.json` exit 0 (`{SCRATCH}/postlint-build.log`).
+
+The proxied marketplace ladder's 66/66 (`LADDER_AT_HEAD.md`) is at `d4fe519ed`; these two readings are what carries
+the later revisions, and the full ladder should be re-taken once, at the release gate, on an idle box.

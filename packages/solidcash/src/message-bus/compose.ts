@@ -132,7 +132,8 @@ export class AtomicMessageBusComposition {
         { plan, descriptors, returning },
         results,
       );
-      if (!this.options.requirePreparedIdentity) return argumentsResult;
+      // A producer result also chooses which later calls exist. Refresh that topology for every
+      // composition, including one that was discovered rather than handed in as prepared calls.
       const topology = await propagateResultDependentCallTopology(
         { plan, descriptors, returning, rootCaller, stateOf }, argumentsResult.calls, results,
       );

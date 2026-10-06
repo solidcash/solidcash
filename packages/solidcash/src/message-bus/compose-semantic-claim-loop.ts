@@ -243,20 +243,25 @@ export async function runComposeSemanticClaimLoop(
       finalized, provisional, claimedResults, missingReturnParticipants,
     );
     const previousResults = claimedResults;
-    if (returning.some((invocation) =>
-      derivedResults[invocation.index] !== previousResults[invocation.index])) {
+    const resultsChanged = returning.some((invocation) =>
+      derivedResults[invocation.index] !== previousResults[invocation.index]);
+    if (resultsChanged) {
       traceSemanticClaims('returns', pass, { previous: claimedResults, observed: derivedResults });
-      // Some compiler-authored arguments contain an earlier invocation's result inside a larger expression
-      // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
-      // rebuild those complete expressions and restart planning: argsHex, route-key witnesses, participant
-      // batches, and the call manifest all depend on the argument bytes and must change atomically.
-      const propagation = await propagateResultDependentArguments(derivedResults);
-      if (propagation.propagated) {
-        if (resultPropagationDepth >= descriptorsLength) {
-          throw new Error('messageBus: authenticated result arguments did not converge');
-        }
-        return rebuildWithPreparedCalls(propagation.calls);
+    }
+    // Some compiler-authored arguments contain an earlier invocation's result inside a larger expression
+    // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
+    // rebuild those complete expressions and restart planning: argsHex, route-key witnesses, participant
+    // batches, and the call manifest all depend on the argument bytes and must change atomically.
+    // The optimistic bool seed is the true word, so a real true return does not change the hex. The
+    // discovered call list can still be the pre-transaction false branch. Re-check that topology anyway.
+    const propagation = await propagateResultDependentArguments(derivedResults);
+    if (propagation.propagated) {
+      if (resultPropagationDepth >= descriptorsLength) {
+        throw new Error('messageBus: authenticated result arguments did not converge');
       }
+      return rebuildWithPreparedCalls(propagation.calls);
+    }
+    if (resultsChanged) {
       claimedResults = derivedResults;
       continue;
     }

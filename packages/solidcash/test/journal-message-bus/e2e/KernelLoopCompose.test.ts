@@ -2643,14 +2643,16 @@ describe('kernel composite-signature rows', () => {
       function check(int expected) public { require(this.total == expected); }
     }`, KERNEL);
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    // A unique modifier-only state-bearing selfdestruct is admitted as a lifecycle row; only a swarm stays KERNEL_LIFECYCLE.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'kill'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'add'))
       .toMatchObject({ eligible: true });
+    // With `kill` admitted as row 0, `add` is the second handler, so its signature-row route inputs carry slot 1.
     expect(artifact.messageBus?.route.inputs).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: '__message_bus_sig_0_0_0_rows', type: 'sig[]' }),
-      expect.objectContaining({ name: '__message_bus_sig_0_0_1_rows', type: 'sig[]' }),
-      expect.objectContaining({ name: '__message_bus_sig_0_1_rows', type: 'sig[][]' }),
+      expect.objectContaining({ name: '__message_bus_sig_1_0_0_rows', type: 'sig[]' }),
+      expect.objectContaining({ name: '__message_bus_sig_1_0_1_rows', type: 'sig[]' }),
+      expect.objectContaining({ name: '__message_bus_sig_1_1_rows', type: 'sig[][]' }),
     ]));
 
     const inner = new Contract(artifact, [], { provider });

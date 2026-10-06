@@ -200,12 +200,23 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
   that pins superseded behaviour is updated or removed with a reason in the commit message; nothing is skipped
   silently; (5) final gate: each suite once more, sequentially.
 - Pitfall: compile caches key on compiler source hashes; harness fixtures do not (see the recipe).
-- Status, 2026-10-06 (pointers, not decisions): the marketplace lane was red at HEAD for two reasons, both fixed -
+- Status, 2026-10-06 (pointers, not decisions). The marketplace lane was red at HEAD for two reasons, both fixed:
   `246cdfd74` made a framed deployment report the logical CREATE address at `getAddress()` (`cee831dc2`, row D22), and
   a framed read never published the typed result projection, which `7088b6d6e` then exposed by removing the matcher's
-  bridge for untyped byte pairs (`8c4671242`). Both are recorded in `MARKETPLACE_RED_AT_HEAD.md`. With them, the four
-  sampled proxied titles pass 4/4 and the whole `packages/solidcash` framed config is 1815 passed with seven
-  pre-existing `call/` failures; the full 66-title ladder and the other suites have not been re-run yet.
+  bridge for untyped byte pairs (`8c4671242`). Both are recorded in `MARKETPLACE_RED_AT_HEAD.md`.
+- What is green now: `yarn lint` exit 0 (407 errors cleared, lerna had hidden 318 of them); `tsc -b` clean; the framed
+  configs of solidc, utils and testing 1331 tests green; `packages/solidcash` framed 1815 passed with seven
+  pre-existing `call/` failures; the proxied marketplace ladder 66/66 in 2509 s (`LADDER_AT_HEAD.md`); the no-proxy
+  twin functionally 65/65, its two cap-induced timeouts passing alone (`LADDER_NOPROXY_AT_HEAD.md`); and four of the
+  nine release gate scripts green, with the artifact-size item closed at `598b92837` (`W4_SIZE_GROWTH.md`).
+- What is still open for the gate: `yarn test` and `yarn test:e2e` are not green - 70 failing tests, 41 matching a
+  `W6_BASELINE.md` row and 29 with no row anywhere (4 solidc, 13 solidcash, 12 e2e), so step 2 of this section
+  (classify every failure) is the next work item, in `W6_FULL_SUITE_AT_HEAD.md`. The release gate scripts are red on
+  `yarn examples` (type-only exports imported as values, a fix in flight), on application conformance (the same six
+  `test/e2e/Upgrade.test.ts` failures) and on the kernel-beta vocabulary check (four production comment lines that
+  name the application), with the docs-snippets probe amber on a `@types` self-symlink: `RELEASE_GATE_AT_HEAD.md`.
+- Also open, from W4: the slowest no-proxy title needs 19 to 23 minutes depending on load, so W4's 20-minute budget
+  target is unmet; the ranked perf work is in `W4_WINS.md` and its baseline needs an idle box.
 
 ### W7. Test count reduction
 - Phase 1, by the shape of the code (no coverage tools yet): cluster test files by subject using

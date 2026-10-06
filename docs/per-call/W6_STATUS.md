@@ -114,9 +114,30 @@ Context, still useful when reading those three sites:
     whether the composer must supply a different witness. That is a codegen question in the
     category-anchored-`msg.sender` path, not a local SDK patch, and it is also the shape the plan's msg.sender
     audit touches.
-- `KernelSegmentedHandlerReturnWidths` — OP_VERIFY at batch input 0 for a batch mixing a void, a one-value and
-  a two-value handler over one mapping. No `requireStatement` metadata is published, so the failing
-  instruction is unidentified.
+- `KernelSegmentedHandlerReturnWidths` — "preserves a multi-segment journal through repeated void, one-value, and
+  two-value handler invokes". Attributed by instrumenting the test's own VM leg (it takes none of the preflight
+  knobs, so the assertion message was extended temporarily and then reverted; clean baseline unchanged, 1 failed /
+  1 passed):
+
+  - The refusing input is **not** the route. Input 0's locking bytecode is
+    `aa201e105d9aa5d61ec2604b9bacf16bfce1806e475d5a82ed2451a5af3e52b38e3487`, which differs from
+    `inner.lockingBytecode`, i.e. it is the **DataNft** covenant that carries the journal/state, not
+    `SegmentBankReturnWidths`.
+  - The failing program is 41 instructions and fails at `ip 7` (the state's ip is one past the failing
+    instruction): window `OP_TOALTSTACK OP_TOALTSTACK OP_SWAP OP_2 OP_INVOKE OP_SWAP OP_FROMALTSTACK
+    [OP_NUMEQUALVERIFY] OP_SWAP OP_8 OP_INVOKE`. The failing instruction is a `NUMEQUALVERIFY` of a value the
+    invoked helper (id 2) produced against one taken from the alternate stack — a derived number, not a raw
+    commitment comparison.
+  - Stack at the failure: five empty items, a 35-byte P2SH32 lock `aa20e7053e…3487`-style and one 28-byte value
+    `1b060147e66079eb4df37b6d43322a1e60cd3f11da4d5b4e…`.
+  - The test's route-level assertions already pass: `>= 4` journal records decode from the
+    `__internal__kernelJournalRecordSegment_*` route parameters with `>= 2` non-empty segments, and every
+    decoding consumed its whole encoded length. So the route did carry the segments and the DataNft refused the
+    composed commitment.
+  - Owner and next step: the data-NFT covenant lives in `packages/utils/src/state.ts` (the segment-name constant
+    is `packages/utils/src/artifact.ts:1760`) while the commitment is composed by the SDK, so the next step is to
+    compare the SDK's DataNft commitment for a mixed-width batch (void + one-value + two-value rows) against what
+    that covenant derives, at the `OP_INVOKE`-then-`NUMEQUALVERIFY` pair above.
 - `KernelChunkedMappingStructCompose` — "graph-produced oversized scalar struct insert" throws
   `L3_LAYOUT_INVARIANT` / `pred-out-unresolved`: an active `__internal__vmapBatchPredOut_0` slot has no
   `predOuts` witness. The second title fails an OP_VERIFY in `Store` at ip 2274.

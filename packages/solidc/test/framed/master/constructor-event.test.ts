@@ -8,13 +8,13 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { deployMaster } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster } from '../../../../solidcash/src/framed/deploy/index.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose constructor emits an event.
+ * A framed master whose constructor emits an event.
  *
  * A master runs one head and then one of several bodies: its entries and its constructor. The head parks a
  * fixed-size event region, and each body pins the number of events it emits against the count the witness block
@@ -49,7 +49,7 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = deployed.lockingBytecode;
 
@@ -174,9 +174,9 @@ const spendConstructor = (overrides: {
   outputs: overrides.outputs ?? [FILLER, eventOutput()],
 });
 
-describe('a per-call master whose constructor emits an event', () => {
+describe('a framed master whose constructor emits an event', () => {
   it('publishes the constructor as a dispatched body beside its entry', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.composition?.convention).toBe('framed');
     expect(artifact.abi.map((entry) => entry.name)).toContain('__construct');
     expect(deployed.script.length).toBeGreaterThan(0);
   });

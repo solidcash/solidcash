@@ -9,7 +9,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -18,7 +18,7 @@ import {
 } from './validator-input.js';
 
 /**
- * A per-call contract paying another contract (spec 4b): a value send whose recipient is not a user's lock is a
+ * A framed contract paying another contract (spec 4b): a value send whose recipient is not a user's lock is a
  * call into the recipient's `receive()` carrying the amount, made after the sender's own code.
  *
  * Both masters are compiled from source and co-spent with the validator that covers them. The payer pays from its
@@ -47,7 +47,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Depot { function deposit() payable { require(msg.value > 0); } }'
   + ' contract Payer { function pay(bytes to, int amount) { this.transfer(to, amount); require(true); } }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -173,7 +173,7 @@ function verdicts(payment: Payment = {}): Record<'payer' | 'vault' | 'validator'
   return { payer: accepted(PAYER_INDEX), vault: accepted(VAULT_INDEX), validator: accepted(VALIDATOR_INDEX) };
 }
 
-describe('a contract paying another contract through its receive(), compiled per-call', () => {
+describe('a contract paying another contract through its receive(), compiled framed', () => {
   it('is accepted at every input when the recipient\'s containers receive what the payer\'s give up', () => {
     expect(verdicts()).toStrictEqual({ payer: true, vault: true, validator: true });
     // A funder may pay the value instead: the payer's containers need not shrink.

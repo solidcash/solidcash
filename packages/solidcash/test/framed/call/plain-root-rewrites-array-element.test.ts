@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth';
 import { INDEX_NONE, concatBytes, encodeWitnessBlock, splitFirstPush, type WitnessBlock } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
@@ -44,7 +44,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 const FIRST_TITLE = 'a first item on the board';
 const SECOND_TITLE = 'a second item, titled apart';
@@ -69,7 +69,7 @@ function chain(): Promise<Chain> {
 }
 
 /** One entry of the board that has to settle and broadcast on the plain call path. */
-async function enter(c: Chain, functionName: string, args: readonly FunctionArgument[]): Promise<PerCallCallResult> {
+async function enter(c: Chain, functionName: string, args: readonly FunctionArgument[]): Promise<FramedCallResult> {
   const outcome = await enterPlain(c.world, c.board, functionName, args);
   expect(outcome.error).toBeUndefined();
   const refused = refusedVerdicts(outcome.result!);
@@ -80,7 +80,7 @@ async function enter(c: Chain, functionName: string, args: readonly FunctionArgu
 
 /** A view's value, read from the board's records and chunks through the read path. */
 async function view(c: Chain, functionName: string, args: readonly FunctionArgument[] = []): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: c.world.network, artifact: c.board.artifact, categoryId: c.board.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -97,7 +97,7 @@ async function items(c: Chain): Promise<readonly (readonly unknown[])[]> {
 }
 
 /** The root frame's block as the settled call declares it. */
-function rootBlock(result: PerCallCallResult, functionName: string): { master: string; block: WitnessBlock } {
+function rootBlock(result: FramedCallResult, functionName: string): { master: string; block: WitnessBlock } {
   const [root] = result.completed.filter((frame) => frame.functionName === `Board.${functionName}()`);
   expect(root).toBeDefined();
   return { master: root!.master, block: structuredClone(result.draft.blockOf(root!.master)) as WitnessBlock };
@@ -107,7 +107,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -115,7 +115,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 }
 
 /** The settled transaction with one master's witness block replaced by `block`. */
-function withBlock(result: PerCallCallResult, master: string, block: WitnessBlock): VmTransaction {
+function withBlock(result: FramedCallResult, master: string, block: WitnessBlock): VmTransaction {
   const forged = structuredClone(result.transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
   const { rest } = splitFirstPush(forged.inputs[index]!.unlockingBytecode);
@@ -126,7 +126,7 @@ function withBlock(result: PerCallCallResult, master: string, block: WitnessBloc
   return forged;
 }
 
-let closed: PerCallCallResult | undefined;
+let closed: FramedCallResult | undefined;
 
 describe('a plain root rewriting an element its own array of structs holding strings holds', () => {
   it('posts two items and closes one, each on the plain path', async () => {

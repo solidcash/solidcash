@@ -8,10 +8,10 @@ import {
   scriptToBytecode, sha256, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { selfSettlementScript } from '../../../src/per-call/master/frame-tail.js';
+import { selfSettlementScript } from '../../../src/framed/master/frame-tail.js';
 import {
-  decideValidator, type PerCallTransaction, type TokenShape, type ValidatorReasonName,
-} from '../../../src/per-call/validator/index.js';
+  decideValidator, type FramedTransaction, type TokenShape, type ValidatorReasonName,
+} from '../../../src/framed/validator/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -24,12 +24,12 @@ import {
 } from './validator-input.js';
 
 /**
- * C3, the own-category mutable NFT count, on the per-call path.
+ * C3, the own-category mutable NFT count, on the framed path.
  *
  * The direct convention ends an entry with no mapping access by requiring as many mutable NFTs of the contract's own
- * category among the outputs as among the inputs, so no record is destroyed or minted beside it. A per-call frame of
+ * category among the outputs as among the inputs, so no record is destroyed or minted beside it. A framed frame of
  * such an entry can sit beside a sibling frame of its contract that inserts a node or consumes a chunk, and the count
- * then refuses it. A per-call master's records are settled by a census instead: its own walk when it is its
+ * then refuses it. A framed master's records are settled by a census instead: its own walk when it is its
  * category's only master (S2, S3), the validator's when another master or a delegate frame shares them (V7, V8). Both
  * admit an own-category mutable token only where a frame declares it, so the count is dropped for every master whose
  * head runs that walk whenever it stands alone. A head that can forward a delegate call runs it for a frame whose
@@ -56,14 +56,14 @@ type VmInput = VmTransaction['inputs'][number];
 type VmOutput = VmTransaction['outputs'][number];
 type VmState = ReturnType<Machine['evaluate']>;
 
-/** A deployed per-call master, and the covenant its first collection's nodes sit at, when it has one. */
+/** A deployed framed master, and the covenant its first collection's nodes sit at, when it has one. */
 interface Deployed extends ChunkRunContract {
   readonly nodeLock: Uint8Array;
   readonly nodeRedeem: Uint8Array;
 }
 
 function deploy(name: string, source: string): Deployed {
-  const artifact = compileString(source, { composition: 'per-call' });
+  const artifact = compileString(source, { composition: 'framed' });
   const contract = deployChunkRunContract(artifact, `own category ${name}`);
   const signature = artifact.stateLayout!.collections?.[0]?.signature ?? `${name} has no collection`;
   const nodeScript = buildEntryNftCovenantScript(contract.category, computeCollectionHash(signature));
@@ -304,7 +304,7 @@ function siteOf(state: VmState): Site {
 }
 
 /** The same transaction in the shape the validator's derivation reads. */
-function modelOf(built: Built): PerCallTransaction {
+function modelOf(built: Built): FramedTransaction {
   const capabilities = { none: 0, mutable: 1, minting: 2 } as const;
   const shape = (holder: VmOutput): TokenShape => (holder.token === undefined
     ? { category: EMPTY, capability: 0, hasNft: false, nftCommitment: EMPTY, amount: 0n }

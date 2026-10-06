@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { bytesToHex, encodeChunkableValueTail, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -43,9 +43,9 @@ function outpointHash(seed: number): string {
 
 /** The value tail the live node a key names carries, read back through the shipped decoders. */
 async function heldValue(
-  provider: MockNetworkProvider, categoryId: string, layout: Parameters<typeof readPerCallDeployment>[2],
+  provider: MockNetworkProvider, categoryId: string, layout: Parameters<typeof readFramedDeployment>[2],
 ): Promise<string | undefined> {
-  const pools = await readPerCallDeployment(provider, categoryId, layout);
+  const pools = await readFramedDeployment(provider, categoryId, layout);
   const slot = bytesToHex(keyToSlotMulti([encoder.encode(KEY)]));
   const node = pools.collectionNodes.find((utxo) => utxo.token?.nft?.commitment !== undefined
     && bytesToHex(decodeEntryCommitment(hexToBin(utxo.token.nft.commitment)).slot) === slot);
@@ -75,11 +75,11 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
    * and the value tail the deployment's node for the key holds.
    */
   async function direct(): Promise<{
-    readonly write: (entry: string, args: readonly string[]) => ReturnType<typeof callPerCallEntry>;
+    readonly write: (entry: string, args: readonly string[]) => ReturnType<typeof callFramedEntry>;
     readonly held: () => Promise<string | undefined>;
   }> {
     directRun ??= (async (): Promise<DirectDeployment> => {
-      const artifact = compileStringMulti(DIRECT_SOURCE, { composition: 'per-call', solidityImportCompat: true })
+      const artifact = compileStringMulti(DIRECT_SOURCE, { composition: 'framed', solidityImportCompat: true })
         .Ledger!;
       const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
       const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -103,7 +103,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
         seeded += 1;
         const callerUtxo = { txid: outpointHash(0x50 + seeded), vout: 0, satoshis: 200_000n };
         await provider.addUtxo(binToHex(user), callerUtxo);
-        return callPerCallEntry({
+        return callFramedEntry({
           provider, artifact, categoryId, functionName: entry, args: args as never,
           callerUtxo, callerLockingBytecode: user, funder: signature.unlockP2PKH(), vm: compositionMachine(),
         });
@@ -133,7 +133,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
       + '   function initialize(string k, string v) { this.tags[k] = v; }'
       + '   function untag(string k) { delete this.tags[k]; }'
       + ' }';
-    const artifacts = compileStringMulti(PROXY_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(PROXY_SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -151,7 +151,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
 
     // The deploy's own third transaction is the proxied `initialize`: it sets the entry as a delegate frame, so
     // the hop declares the executed collection's chunk run the direct path could not.
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: {
@@ -172,7 +172,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
     expect(await heldValue(network, deployment.proxy.categoryId, layout)).toBe(bytesToHex(VALUE_TAIL));
 
     // The delete runs through the shipped proxy hop; the node is rewritten where it stood to the default tail.
-    const removed = await callPerCallProxyEntry({
+    const removed = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,

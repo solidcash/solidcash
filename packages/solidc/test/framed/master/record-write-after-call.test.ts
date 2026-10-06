@@ -8,10 +8,10 @@ import {
   type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../../solidcash/src/per-call/deploy/index.js';
+} from '../../../../solidcash/src/framed/deploy/index.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
@@ -20,7 +20,7 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * A compiled master whose entry writes its own data-NFT record after it has made an external call.
  *
  * A call closes the witness segment the code before it runs in, so the record write lands in the second segment of
- * the frame's two. The whole shipped path runs: the source through `compileStringMulti` with the per-call
+ * the frame's two. The whole shipped path runs: the source through `compileStringMulti` with the framed
  * convention, the reserved slots filled the way a deployment fills them, and the machine's verdict on the caller's
  * own input is the assertion. The declaration the frame carries is the one a builder reads the artifact's
  * published write segment from — the record kept in the segments before the write, written from the write's own.
@@ -48,7 +48,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const callerArtifact = artifacts.Caller!;
 
 type Program = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
@@ -239,7 +239,7 @@ function verdict(options: Options = {}): { accepted: boolean; objection?: string
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry writes its own record after an external call', () => {
+describe('a framed master whose entry writes its own record after an external call', () => {
   it('settles the record written in the segment the call opened', () => {
     const outcome = verdict();
     expect(outcome.accepted, outcome.objection).toBe(true);

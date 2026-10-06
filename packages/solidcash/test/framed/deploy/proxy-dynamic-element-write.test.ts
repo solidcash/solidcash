@@ -3,15 +3,15 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth
 import {
   bytesToHex, parsePushdataCommitment, validatorAddress, type Artifact,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -32,7 +32,7 @@ const PING_CATEGORY = '55'.repeat(31) + 'aa';
 const CALLER_TXID = '33'.repeat(31) + 'cc';
 const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const PING_ADDRESS = validatorAddress(hexToBin(PING_CATEGORY), VALIDATOR_PROGRAM);
 
 /** A note long enough that the seeded element's pushdata encoding spans several chunks on its own. */
@@ -124,7 +124,7 @@ async function deploy(hashed: boolean): Promise<{
   readonly funding: Funding;
   readonly initialized: boolean;
 }> {
-  const artifacts = compileStringMulti(sourceOf(hashed), { composition: 'per-call' });
+  const artifacts = compileStringMulti(sourceOf(hashed), { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network);
   const signature = new SignatureTemplate(alicePriv);
@@ -134,7 +134,7 @@ async function deploy(hashed: boolean): Promise<{
     fundingUtxo: pingFunding, funder: funding.funder, changeAddress: funding.changeAddress,
     provider: network, threadCount: 4,
   });
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: {
@@ -156,7 +156,7 @@ async function recordFields(
   network: MockNetworkProvider,
   layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>,
 ): Promise<Record<string, unknown>> {
-  const deployment = await readPerCallDeployment(network, PROXY_CATEGORY, layout);
+  const deployment = await readFramedDeployment(network, PROXY_CATEGORY, layout);
   const commitment = bytesToHex(new Uint8Array(hexToBin(deployment.records[0]!.token!.nft!.commitment)));
   return parsePushdataCommitment(commitment, layout, 0);
 }
@@ -164,7 +164,7 @@ async function recordFields(
 describe('a proxied entry that rewrites an element of a chunked dynamic value', () => {
   it('settles a chain of edits, each reading an absent key of a live sorted list', async () => {
     const layout = buildProxyArtifact(
-      compileStringMulti(sourceOf(false), { composition: 'per-call' }).Impl!,
+      compileStringMulti(sourceOf(false), { composition: 'framed' }).Impl!,
     ).stateLayout!;
     const { network, artifacts, funding, initialized } = await deploy(false);
     expect(initialized).toBe(true);
@@ -186,7 +186,7 @@ describe('a proxied entry that rewrites an element of a chunked dynamic value', 
     // Two edits: key 2 is absent between the list's two nodes and key 11 past its last, the two proofs of absence.
     const results = [];
     for (const [index, absent] of [2n, 11n].entries()) {
-      results.push(await callPerCallProxyEntry({
+      results.push(await callFramedProxyEntry({
         provider: network,
         implementationArtifact: artifacts.Impl!,
         proxyArtifact: buildProxyArtifact(artifacts.Impl!),
@@ -215,7 +215,7 @@ describe('a proxied entry that rewrites an element of a chunked dynamic value', 
 
   it('settles the same entry once it hashes a runtime value, with the side-car laid after its own master', async () => {
     const layout = buildProxyArtifact(
-      compileStringMulti(sourceOf(true), { composition: 'per-call' }).Impl!,
+      compileStringMulti(sourceOf(true), { composition: 'framed' }).Impl!,
     ).stateLayout!;
     const { network, artifacts, funding, initialized } = await deploy(true);
     expect(initialized).toBe(true);
@@ -227,7 +227,7 @@ describe('a proxied entry that rewrites an element of a chunked dynamic value', 
       .toStrictEqual(['master', 'dataNft', 'keccakSideCar', 'entry']);
 
     const before = await recordFields(network, layout);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyArtifact: buildProxyArtifact(artifacts.Impl!),

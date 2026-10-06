@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth';
 import { concatBytes, encodeWitnessBlock, splitFirstPush, type WitnessBlock } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import { SignatureTemplate } from '../../../src/index.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { satoshiContainerLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { satoshiContainerLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { alicePriv } from '../../fixture/vars.js';
 import {
-  USER_LOCK, compilePerCall, deployPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  USER_LOCK, compileFramed, deployPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A typed call carrying value, `IWrapper(w).deposit{value: v}()`, beside the caller's own write, on the plain call
- * path (`callPerCallEntry`). A DEX router or a wrapper deposits native value into another contract this way.
+ * path (`callFramedEntry`). A DEX router or a wrapper deposits native value into another contract this way.
  *
  * The call's own record carries the value: the router's site holds the record's `value` to the amount its code
  * computes, the validator holds the wrapper's frame value to the record (V5), and the value rule charges the
@@ -42,7 +42,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const units = compilePerCall(SOURCE);
+const units = compileFramed(SOURCE);
 const FUNDER = new SignatureTemplate(alicePriv).unlockP2PKH();
 
 interface Chain {
@@ -64,8 +64,8 @@ function chain(): Promise<Chain> {
 }
 
 /** The router's deposit of `amount` into the wrapper, carried by the user's call, which has to settle. */
-async function depositVia(c: Chain, amount: bigint): Promise<PerCallCallResult> {
-  const result = await callPerCallEntry({
+async function depositVia(c: Chain, amount: bigint): Promise<FramedCallResult> {
+  const result = await callFramedEntry({
     provider: c.world.network, artifact: c.router.artifact, categoryId: c.router.categoryId,
     functionName: 'depositVia', args: [c.wrapper.address, amount], value: amount,
     externals: { Wrapper: { artifact: c.wrapper.artifact, categoryId: c.wrapper.categoryId } },
@@ -81,7 +81,7 @@ async function depositVia(c: Chain, amount: bigint): Promise<PerCallCallResult> 
 async function view(
   world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -99,7 +99,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -108,7 +108,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 
 /** The settled transaction, or `transaction` when given, with one master's witness block replaced by `block`. */
 function withBlock(
-  result: PerCallCallResult, master: string, block: WitnessBlock, transaction: VmTransaction = result.transaction,
+  result: FramedCallResult, master: string, block: WitnessBlock, transaction: VmTransaction = result.transaction,
 ): VmTransaction {
   const forged = structuredClone(transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;

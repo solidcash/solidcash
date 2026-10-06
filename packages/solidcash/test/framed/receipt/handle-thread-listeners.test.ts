@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { sha256 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
   MockNetworkProvider, Signer, deployProxy, getContractFactory,
-  type PerCallArtifact, type PerCallProxyHandle,
+  type FramedArtifact, type FramedProxyHandle,
 } from '../../../src/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A message thread kept by a contract behind a generated per-call proxy, followed through the handle's listeners and
+ * A message thread kept by a contract behind a generated framed proxy, followed through the handle's listeners and
  * read back through its views (Solidity-compatible).
  *
  * Each post appends an item to the thread and emits it as an event whose first parameter is indexed. A listener is
@@ -59,7 +59,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-/** The options an imported Solidity project compiles with under the per-call composition. */
+/** The options an imported Solidity project compiles with under the framed composition. */
 const OPTIONS = {
   solidityImportCompat: true,
   commitmentLimit: 128,
@@ -69,7 +69,7 @@ const OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const artifacts = compileStringMulti(SOURCE, OPTIONS as never);
@@ -112,14 +112,14 @@ interface Heard {
   readonly key: unknown;
 }
 
-describe('a thread behind a per-call proxy, followed through the handle', () => {
+describe('a thread behind a framed proxy, followed through the handle', () => {
   it('fires a connected listener with the indexed id and the item, and reads a key and a page', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const owner = await fundedSigner(network, 0x61);
     const helper = await fundedSigner(network, 0x62);
     await fundShippedFacets(network);
-    const board: PerCallProxyHandle = await deployProxy(
-      getContractFactory(artifacts.Board! as PerCallArtifact, owner), [],
+    const board: FramedProxyHandle = await deployProxy(
+      getContractFactory(artifacts.Board! as FramedArtifact, owner), [],
     );
     const call = (signer: Signer): Record<string, (...args: unknown[]) => Promise<unknown>> =>
       board.connect(signer) as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;

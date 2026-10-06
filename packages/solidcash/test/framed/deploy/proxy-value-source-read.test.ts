@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { bytesToHex, decodePushdataValue, joinValueChunks, parseValueChunkCommitment, VALUE_HEAD_SIZE } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { mappingValueChunkLock } from '../../../src/framed/composer/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -83,8 +83,8 @@ async function heldValue(
   structs: ReturnType<typeof compileStringMulti>[string]['structs'],
   source = SOURCE,
 ): Promise<Record<string, unknown> | undefined> {
-  const layout = buildProxyArtifact(compileStringMulti(source, { composition: 'per-call' }).Impl!).stateLayout!;
-  const pools = await readPerCallDeployment(network, categoryId, layout);
+  const layout = buildProxyArtifact(compileStringMulti(source, { composition: 'framed' }).Impl!).stateLayout!;
+  const pools = await readFramedDeployment(network, categoryId, layout);
   const slot = bytesToHex(keyToSlotMulti([key]));
   const node = pools.collectionNodes.find((candidate) => {
     const commitment = candidate.token?.nft?.commitment;
@@ -140,12 +140,12 @@ async function bumpDetached(who: Uint8Array): Promise<{
   readonly network: MockNetworkProvider;
   readonly categoryId: string;
   readonly structs: ReturnType<typeof compileStringMulti>[string]['structs'];
-  readonly call: ReturnType<typeof callPerCallProxyEntry>;
+  readonly call: ReturnType<typeof callFramedProxyEntry>;
 }> {
-  const artifact = compileStringMulti(DETACHED, { composition: 'per-call' }).Impl!;
+  const artifact = compileStringMulti(DETACHED, { composition: 'framed' }).Impl!;
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifact,
     implementationDeploy: {
@@ -160,7 +160,7 @@ async function bumpDetached(who: Uint8Array): Promise<{
     vm: compositionMachine(),
   });
   expect(deployment.initialize.accepted).toBe(true);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider: network,
     implementationArtifact: artifact,
     proxyCategoryId: deployment.proxy.categoryId,
@@ -178,12 +178,12 @@ async function bumpDetached(who: Uint8Array): Promise<{
 
 describe('a proxied call whose mapping value is built from the node it writes', () => {
   it('settles the read-modify-write and broadcasts it, the node carrying the composed value', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = await funded(network);
 
     // The deployment's initialize writes the node; its value source is the struct over the entry's own argument.
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: {
@@ -204,7 +204,7 @@ describe('a proxied call whose mapping value is built from the node it writes', 
     expect(before?.down).toBe(0n);
 
     // The call composes its value from the fields the live node holds: only `up` moves.
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -242,10 +242,10 @@ describe('a proxied call whose mapping value is built from the node it writes', 
       + '   function initialize(address who, string name_) { this.members[who] = Member(who, name_, 1); }'
       + '   function rename(address who, string name_) { this.members[who].name = name_; }'
       + ' }';
-    const artifacts = compileStringMulti(longSource, { composition: 'per-call' });
+    const artifacts = compileStringMulti(longSource, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = await funded(network);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: {
@@ -262,7 +262,7 @@ describe('a proxied call whose mapping value is built from the node it writes', 
     expect(deployment.initialize.accepted).toBe(true);
 
     const renamed = 'm'.repeat(100);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,

@@ -4,16 +4,16 @@ import {
   buildChunkCommitment, buildValueChunkCommitment, bytesToHex, decodePushdataValue, encodeChunkableValueTail,
   encodePushdataValue, parseChunkCommitment, sha256, splitValueIntoValueChunks, VALUE_INLINE_LIMIT,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  chunkRecordLockingBytecode, readPerCallDeployment, readPerCallState,
-} from '../../../src/per-call/deploy/index.js';
-import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+  chunkRecordLockingBytecode, readFramedDeployment, readFramedState,
+} from '../../../src/framed/deploy/index.js';
+import { mappingValueChunkLock } from '../../../src/framed/composer/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
 } from '../../../src/stateful/SortedList.js';
@@ -306,16 +306,16 @@ async function deploy(
   args: readonly unknown[] = [],
   broadcast = false,
 ): Promise<{
-  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
   readonly network: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>;
   readonly funding: Funding;
 }> {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network, broadcast);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: {
@@ -355,7 +355,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     const commitment = deployment.initialize.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!;
     const { value: chunkData } = decodePushdataValue(commitment, 1, 'bytes') as { value: Uint8Array };
     expect(chunkData.length).toBeGreaterThan(0);
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const state = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(state.byNft[0]!['items$len']).toBe(BigInt(chunkData.length));
     expect(await network.getRawTransaction(deployment.initialize.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
     expect(funding.deployerLock.length).toBe(25);
@@ -399,7 +399,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     // The record the hop writes carries the value's byte length, from the shipped header encoder.
     const hop = deployment.initialize.broadcast;
     expect(hop).toBeDefined();
-    const held = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const held = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(held.byNft[0]!['items$len']).toBe(BigInt(value.length));
     expect([...held.byNft[0]!.implementation as Uint8Array])
       .toStrictEqual([...deployment.implementation.address]);
@@ -408,7 +408,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
 
     // The deployment's hop created the run's only chunk; the call spends that live chunk and recreates it with the
     // value the append produced, so the run stays one chunk wide and no chunk is created.
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -433,7 +433,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     const grown = encodePushdataValue(
       [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
     );
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const state = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(state.byNft[0]!['items$len']).toBe(BigInt(grown.length));
     const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
     expect(chunks).toHaveLength(1);
@@ -457,11 +457,11 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(deployment.initialize.transaction.outputs[trailing[1]!.index]!.token!.nft!.commitment)
       .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, value))));
 
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const state = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
     expect(await network.getRawTransaction(deployment.initialize.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -496,7 +496,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(deployment.initialize.accepted).toBe(true);
 
     const workers = [FRESH_LOCK, encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x78))];
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -548,7 +548,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(chunkIds).toHaveLength(1);
     expect(result.transaction.outputs[chunkIds[0]!.index]!.token!.nft!.commitment)
       .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const state = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(state.byNft[0]!['items$len']).toBe(BigInt(grown.length));
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
@@ -561,7 +561,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     const { deployment, network, artifacts, funding } = await deploy(LOOP_KEYED_BY_APPEND_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -589,7 +589,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
 
   it('settles a chunked mapping value the live list holds beside the append, and broadcasts it', async () => {
     // Both open runs are declared in one segment: the dynamic value's chunk, then the run of chunk records the
-    // mapping value takes. A per-call body locates a dynamic run at the ordinal its own arithmetic names and a
+    // mapping value takes. A framed body locates a dynamic run at the ordinal its own arithmetic names and a
     // mapping value's run by address, so the two families are declared in the order the compiler emits them and
     // both settle.
     const seeded = { who: encodeLockingBytecodeP2pkh(alicePkh), name: 'n', bio: 'b', up: 1n };
@@ -598,7 +598,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
 
     const name = 'n'.repeat(80);
     const bio = 'b'.repeat(80);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -667,7 +667,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
 
     const name = 'n'.repeat(80);
     const bio = 'b'.repeat(80);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -748,7 +748,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
 
     const name = 'n'.repeat(80);
     const bio = 'b'.repeat(80);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -807,7 +807,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
 
     const name = 'n'.repeat(80);
     const bio = 'b'.repeat(80);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -855,11 +855,11 @@ describe('a proxied entry that writes one field of a struct mapping element', ()
   const SLOT = keyToSlotMulti([bigIntToVmNumber(ID)]);
 
   interface PartialRun {
-    readonly result: Awaited<ReturnType<typeof callPerCallProxyEntry>>;
+    readonly result: Awaited<ReturnType<typeof callFramedProxyEntry>>;
     readonly network: MockNetworkProvider;
     readonly artifacts: ReturnType<typeof compileStringMulti>;
-    readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
-    readonly trailing: NonNullable<Awaited<ReturnType<typeof callPerCallProxyEntry>>['draft']['trailingOutputs']>;
+    readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
+    readonly trailing: NonNullable<Awaited<ReturnType<typeof callFramedProxyEntry>>['draft']['trailingOutputs']>;
   }
 
   /** Seeds one element with `reference`, then enters the partial-field write through the shipped hop. */
@@ -867,7 +867,7 @@ describe('a proxied entry that writes one field of a struct mapping element', ()
     const { deployment, network, artifacts, funding }
       = await deploy(PARTIAL_FIELD_SOURCE, [ID, { claimed: 0n, reference }], true);
     expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -941,7 +941,7 @@ describe('a proxied entry that writes one field of a struct mapping element', ()
     const { deployment, network, artifacts, funding }
       = await deploy(SHRINK_FIELD_SOURCE, [ID, { claimed: 0n, reference }], true);
     expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -1001,7 +1001,7 @@ describe('a proxied entry that writes one field of the marketplace\'s 13-field e
     const { deployment, network, artifacts, funding }
       = await deploy(FULL_ESCROW_SOURCE, [ID, seeded], true);
     expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -1033,7 +1033,7 @@ describe('a proxied entry that writes one field of the marketplace\'s 13-field e
     const { deployment, network, artifacts, funding }
       = await deploy(SETTLE_FIELD_SOURCE, [ID, seeded], true);
     expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -1063,7 +1063,7 @@ describe('a proxied entry that writes one field of the marketplace\'s 13-field e
     const { deployment, network, artifacts, funding }
       = await deploy(UNSTATED_PARTIAL_SOURCE, [id, { claimed: 0n, reference }], true);
     expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -1092,7 +1092,7 @@ describe('a proxied entry that writes one field of the marketplace\'s 13-field e
     const { deployment, network, artifacts, funding }
       = await deploy(GUARDED_PARTIAL_SOURCE, [id, { claimed: 0n, reference }], true);
     expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -1123,7 +1123,7 @@ async function liveChunks(
   layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>,
   lock: Uint8Array,
 ): Promise<readonly { readonly index: number; readonly data: Uint8Array }[]> {
-  const pools = await readPerCallDeployment(network, categoryId, layout);
+  const pools = await readFramedDeployment(network, categoryId, layout);
   return [...pools.chunks, ...pools.collectionNodes]
     .filter((utxo) => utxo.lockingBytecode !== undefined
       && bytesToHex(utxo.lockingBytecode) === bytesToHex(lock))

@@ -1,20 +1,20 @@
 /**
- * The call surface a deployed per-call contract's handle exposes.
+ * The call surface a deployed framed contract's handle exposes.
  *
- * A direct-convention handle builds a covenant spend out of its own state layout; a per-call handle composes
+ * A direct-convention handle builds a covenant spend out of its own state layout; a framed handle composes
  * instead: one root frame entered by the caller's own coin, the contract's live records and a validator, derived
- * and broadcast as one transaction (`callPerCallEntry`). An entry the ABI publishes as read-only is run the way the
+ * and broadcast as one transaction (`callFramedEntry`). An entry the ABI publishes as read-only is run the way the
  * read path runs it — derived and evaluated locally, never broadcast — so awaiting such a call yields the entry's
  * returned value the same way the direct convention's probe does.
  *
  * What this surface covers today: a contract's entry, entered by a signer, whose calls reach plain deployments the
  * provider registers (`callees.ts`, which refuses by name the callee shapes it does not settle yet). A writing
- * entry that returns a value is carried, and the decoded value is on the call result (`PerCallCallResult.values`); an
+ * entry that returns a value is carried, and the decoded value is on the call result (`FramedCallResult.values`); an
  * entry reached through the proxy hop is carried the same way when the proxy's forwarded call records a result (a
  * fallback that consumes the delegated result), and refused by name for the generated closure shape, whose bare
  * `delegatecall(input)` drops it. A read-only entry reached through the proxy hop is read at the proxy's category,
  * where the implementation's delegate frame finds the records it runs on. A call's fluent modifiers (a time lock, an
- * age lock, an extra output) have no per-call equivalent here yet and are not aliased; the entry's own arguments are
+ * age lock, an extra output) have no framed equivalent here yet and are not aliased; the entry's own arguments are
  * the whole of what it takes.
  *
  * A call from a wallet that holds no coin is simulated before any funding: it is derived and evaluated over a
@@ -31,14 +31,14 @@ import { encodeFunctionArgument, resolveAddressArguments, type FunctionArgument 
 import type { TransactionDetails, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
-import { callPerCallEntry, PerCallCallError, type PerCallCallResult } from './call.js';
-import { callPerCallProxyEntry } from '../proxy/deploy.js';
-import { readPerCallEntry, PerCallReadError, type PerCallReadResult } from '../read/index.js';
-import { PerCallCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
-import { perCallSendQueue, perCallSendResources, proxyHopSendsAreQueued } from '../queue/index.js';
+import { callFramedEntry, FramedCallError, type FramedCallResult } from './call.js';
+import { callFramedProxyEntry } from '../proxy/deploy.js';
+import { readFramedEntry, FramedReadError, type FramedReadResult } from '../read/index.js';
+import { FramedCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
+import { framedSendQueue, framedSendResources, proxyHopSendsAreQueued } from '../queue/index.js';
 
 /** The handle a call is made through: the deployed artifact, its category, its provider and its signer. */
-export interface PerCallHandleContract {
+export interface FramedHandleContract {
   readonly artifact: Artifact;
   /**
    * The ABI row the call names, whose `writesState` decides whether the call is a transaction or a read, and whose
@@ -59,22 +59,22 @@ export interface PerCallHandleContract {
   readonly proxyImplementationCategoryId?: string;
 }
 
-/** One entry of one deployed per-call contract, as a call the handle's namespace hands back. */
-export class PerCallFunctionCall {
+/** One entry of one deployed framed contract, as a call the handle's namespace hands back. */
+export class FramedFunctionCall {
   /** The value the call carries: the frame's `msg.value`. */
   private value = 0n;
 
   public constructor(
-    private readonly contract: PerCallHandleContract,
+    private readonly contract: FramedHandleContract,
     private readonly functionName: string,
     private readonly args: readonly FunctionArgument[],
   ) {}
 
   /** Attaches value to a call to a payable entry, paid by the signer into the contract's containers. */
   public withValue(amount: bigint): this {
-    if (amount < 0n) throw new PerCallCallError('a call carries no negative value');
+    if (amount < 0n) throw new FramedCallError('a call carries no negative value');
     if (amount > 0n && !(this.contract.abiEntry.modifiers ?? []).includes('payable')) {
-      throw new PerCallCallError(`entry "${this.functionName}" is not payable, so a call to it carries no value`);
+      throw new FramedCallError(`entry "${this.functionName}" is not payable, so a call to it carries no value`);
     }
     this.value = amount;
     return this;
@@ -100,10 +100,10 @@ export class PerCallFunctionCall {
       // A frame the machine refused is reported the way a refused read is: the entry's own source reason, read from
       // the artifact's publication, rather than the opcode the run stopped on.
       const refusal = (result as { readonly refusal?: CompositionRefusal }).refusal;
-      if (refusal?.innermost !== undefined) throw new PerCallCompositionRefusedError(refusal);
+      if (refusal?.innermost !== undefined) throw new FramedCompositionRefusedError(refusal);
       const refused = result.verdicts.filter((verdict) => !verdict.accepted)
         .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `the call to "${this.functionName}" was refused, so nothing was broadcast: ${refused}`,
       );
     }
@@ -133,10 +133,10 @@ export class PerCallFunctionCall {
   }
 
   /** Composes and derives the call without requiring it to be accepted, for a caller that wants the verdicts. */
-  public async compose(): Promise<PerCallCallResult> {
+  public async compose(): Promise<FramedCallResult> {
     const { provider, signer, categoryId, proxyImplementationCategoryId } = this.contract;
     if (signer === undefined) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `a call to "${this.functionName}" needs the signer whose coin enters the frame; connect one to the handle`,
       );
     }
@@ -145,18 +145,18 @@ export class PerCallFunctionCall {
     if (proxyImplementationCategoryId !== undefined && !proxyHopSendsAreQueued()) {
       return this.composeNow(provider, signer);
     }
-    const resources = perCallSendResources({
+    const resources = framedSendResources({
       callerLockingBytecode: signer.getLockingBytecode(),
       categoryIds: [categoryId, ...(proxyImplementationCategoryId === undefined ? [] : [proxyImplementationCategoryId])],
     });
-    return perCallSendQueue(provider).hold(resources, () => this.composeNow(provider, signer));
+    return framedSendQueue(provider).hold(resources, () => this.composeNow(provider, signer));
   }
 
   /**
    * Resolves the arguments, then picks the caller's coin and composes over it, or simulates without one. A queued
    * call runs this in its turn, so resolving them never moves it ahead of a call made before it.
    */
-  private async composeNow(provider: NetworkProvider, signer: Signer): Promise<PerCallCallResult> {
+  private async composeNow(provider: NetworkProvider, signer: Signer): Promise<FramedCallResult> {
     const args = await this.resolvedArguments();
     const callerUtxo = await callerCoin(provider, signer);
     if (callerUtxo === undefined) {
@@ -164,7 +164,7 @@ export class PerCallFunctionCall {
         return await this.composeWith(simulationProvider(provider), signer, STAND_IN_COIN, args);
       } catch (error) {
         if (!(error instanceof SimulationAccepted)) throw error;
-        throw new PerCallCallError(
+        throw new FramedCallError(
           `the caller's address ${signer.getAddress()} holds no tokenless UTXO to pay the call with`,
         );
       }
@@ -175,14 +175,14 @@ export class PerCallFunctionCall {
   /** Composes the call with `args` over the caller's coin `callerUtxo`, reading and broadcasting through `provider`. */
   private async composeWith(
     provider: NetworkProvider, signer: Signer, callerUtxo: Utxo, args: readonly FunctionArgument[],
-  ): Promise<PerCallCallResult> {
+  ): Promise<FramedCallResult> {
     const { artifact, categoryId, proxyImplementationCategoryId } = this.contract;
     if (proxyImplementationCategoryId !== undefined) {
       // The hop delegates into the implementation frame: a returning entry's value is recorded in that frame's
       // `retval` and reported back through the proxy hop, or refused by name when the proxy's forwarded call
       // records no result for it to travel in. The call's value is paid into the proxy, whose delegate frame takes
       // it as `msg.value`.
-      return callPerCallProxyEntry({
+      return callFramedProxyEntry({
         provider,
         implementationArtifact: artifact,
         proxyCategoryId: categoryId,
@@ -196,7 +196,7 @@ export class PerCallFunctionCall {
         ...(this.value > 0n ? { value: this.value } : {}),
       });
     }
-    return callPerCallEntry({
+    return callFramedEntry({
       provider,
       artifact,
       categoryId,
@@ -216,9 +216,9 @@ export class PerCallFunctionCall {
    * A handle that names a proxy reads the proxy's category, because `categoryId` is the proxy's: the implementation
    * runs there as the proxy's delegate frame, over the proxy's records, which is the frame the read composes.
    */
-  public async staticCall(): Promise<PerCallReadResult> {
+  public async staticCall(): Promise<FramedReadResult> {
     const { artifact, categoryId, provider } = this.contract;
-    return readPerCallEntry({
+    return readFramedEntry({
       provider, artifact, categoryId, functionName: this.functionName, args: await this.resolvedArguments(),
     });
   }
@@ -244,8 +244,8 @@ export class PerCallFunctionCall {
   private async readValue(): Promise<StateValue> {
     const read = await this.staticCall();
     if (!read.accepted) {
-      if (read.refusal !== undefined) throw new PerCallCompositionRefusedError(read.refusal);
-      throw new PerCallReadError(
+      if (read.refusal !== undefined) throw new FramedCompositionRefusedError(read.refusal);
+      throw new FramedReadError(
         `the read of "${this.functionName}" was refused, so it returned no value: ${read.objection ?? 'refused'}`,
       );
     }

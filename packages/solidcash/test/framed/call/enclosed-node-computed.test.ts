@@ -3,15 +3,15 @@ import {
   bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin,
 } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, parsePushdataCommitment, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, encodeEntryCommitment } from '../../../src/stateful/SortedList.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { readComputedDeclaration } from '../../../src/per-call/deploy/declaration.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { readComputedDeclaration } from '../../../src/framed/deploy/declaration.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -119,7 +119,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const counter = artifacts.Counter!;
 const reader = artifacts.Reader!;
 const root = artifacts.Root!;
@@ -163,7 +163,7 @@ async function deployWorld(): Promise<World> {
   const callCoins = [funding(idOf('first call coin')), funding(idOf('second call coin'))];
   for (const coin of [counterInitCoin, rootInitCoin, ...callCoins]) await network.addUtxo(binToHex(callerLock), coin);
   await fundShippedFacets(network);
-  const counterDeployment = await deployPerCallProxy({
+  const counterDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: counter,
     proxyArtifact: buildProxyArtifact(counter),
@@ -176,7 +176,7 @@ async function deployWorld(): Promise<World> {
   });
   expect(counterDeployment.initialize.broadcast).toBeDefined();
   expect(binToHex(counterDeployment.proxy.address)).toBe(addressOf(COUNTER_PROXY_CATEGORY));
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -212,8 +212,8 @@ async function deployed(): Promise<World> {
 }
 
 /** One call of the root's entry through its proxy, the counter reached behind its own, paid from coin `coin`. */
-function callRoot(world: World, functionName: string, coin = 0): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+function callRoot(world: World, functionName: string, coin = 0): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -239,25 +239,25 @@ function callRoot(world: World, functionName: string, coin = 0): Promise<PerCall
 }
 
 /** The value the root left in its field `name`, read from the record the hop wrote. */
-function fieldOf(result: PerCallProxyCallResult, name: string): unknown {
+function fieldOf(result: FramedProxyCallResult, name: string): unknown {
   const layout = buildProxyArtifact(root).stateLayout!;
   const field = layout.variables.find((variable) => variable.name === name)!;
   return parsePushdataCommitment(binToHex(result.writtenCommitments[field.nftIndex]!), layout, field.nftIndex)[name];
 }
 
 /** The value the root left in its `last` field. */
-function lastOf(result: PerCallProxyCallResult): unknown {
+function lastOf(result: FramedProxyCallResult): unknown {
   return fieldOf(result, 'last');
 }
 
 /** The hop settled every frame and broadcast. */
-function expectBroadcast(result: PerCallProxyCallResult): void {
+function expectBroadcast(result: FramedProxyCallResult): void {
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
 }
 
 /** The count node the hop spends and the one it leaves, read off the transaction's own input and output. */
-function countNode(result: PerCallProxyCallResult): { readonly before: Uint8Array; readonly after: Uint8Array } {
+function countNode(result: FramedProxyCallResult): { readonly before: Uint8Array; readonly after: Uint8Array } {
   const index = result.sourceOutputs.findIndex((output) => {
     const commitment = output.token?.nft?.commitment;
     return commitment !== undefined && commitment.length > 64

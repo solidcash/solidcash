@@ -2,24 +2,24 @@ import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue, type RecordEntry } from '@solidcash/utils';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  deployPerCallMaster, evaluateMasterSpend, head, node, spent, type PlacedRecord,
+  deployFramedMaster, evaluateMasterSpend, head, node, spent, type PlacedRecord,
 } from './record-spend.js';
 
 /**
- * A per-call batch whose write a `delete` of another key of its mapping follows: swap-and-pop's
+ * A framed batch whose write a `delete` of another key of its mapping follows: swap-and-pop's
  * `m[last] = v; delete m[k]`, which an enumerable set's `remove` makes.
  *
  * Where the two keys meet at run time the EVM's delete wins, and the write is a no-op the body's alias gate skips.
- * A per-call master admits the pair as an ordinary batch whose write may be declared skipped: its group is then the
+ * A framed master admits the pair as an ordinary batch whose write may be declared skipped: its group is then the
  * kept predecessor of the key, the delete alone rewrites the node, and the two targets' slot operands may agree
- * (`emitPerCallDistinctBatchTargets` passes a pair one of whose targets is skipped). Where the keys differ both
+ * (`emitFramedDistinctBatchTargets` passes a pair one of whose targets is skipped). Where the keys differ both
  * writes settle, a skipped declaration of the write is refused by its own update-only proof, and where they meet a
  * frame that declares the write as written is refused for naming one node twice. Each verdict is the BCH-2026
  * machine's on the master's own input.
  */
 
 const PRAGMA = 'pragma solidcash ^0.13.0;';
-const SWAP = deployPerCallMaster(`${PRAGMA} contract Swap { mapping(uint => uint) m;`
+const SWAP = deployFramedMaster(`${PRAGMA} contract Swap { mapping(uint => uint) m;`
   + ' function swap(uint a, uint b, uint x) { m[a] = x; delete m[b]; }'
   + ' }', 'swap remove alias');
 
@@ -56,7 +56,7 @@ const spend = (write: PlacedRecord, remove: PlacedRecord): Spend => ({
 const accepts = (a: Uint8Array, b: Uint8Array, records: Spend): boolean =>
   evaluateMasterSpend(SWAP, { args: [X, b, a], ...records }).accepted;
 
-describe('a per-call swap-remove pair: a write a delete of another key follows', () => {
+describe('a framed swap-remove pair: a write a delete of another key follows', () => {
   it('admits the pair and settles both writes where the keys differ', () => {
     expect(SWAP.artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
     expect(accepts(KEY_A, KEY_B, spend(spent(LOCK, 2, nodeA(50n), nodeA(8n)), spent(LOCK, 3, nodeB(50n), nodeB(0n)))))

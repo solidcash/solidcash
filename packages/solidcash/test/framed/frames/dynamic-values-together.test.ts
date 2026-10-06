@@ -9,10 +9,10 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   chunkRecordLockingBytecode, deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
@@ -23,12 +23,12 @@ import {
   type ChunkRecordPlacement,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { hopEntryWrites } from '../../../src/per-call/proxy/entry-writes.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { hopEntryWrites } from '../../../src/framed/proxy/entry-writes.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Two dynamic values written by one entry, composed from the runs the chunk plan states.
@@ -83,7 +83,7 @@ function draftOf(shape: Shape, placement: Placement): {
   readonly firstOutput: number;
 } {
   const category = seededCategory(`dynamic values together ${shape.label}`);
-  const artifact = compileString(source(shape), { composition: 'per-call' });
+  const artifact = compileString(source(shape), { composition: 'framed' });
   const layout = artifact.stateLayout!;
   const master = deployMaster(artifact, category, REAL_VALIDATOR_PROGRAM);
   const stateLock = stateRecordLockingBytecode(bytesToHex(category));
@@ -267,7 +267,7 @@ describe('two dynamic runs whose later run is declared at one of the first value
 describe('the hop that plans a call\'s writes', () => {
   it('lays an entry that writes two dynamic values as one run per value, in the order the artifact publishes', () => {
     const shape = SHAPES[0]!;
-    const artifact = compileString(source(shape), { composition: 'per-call' });
+    const artifact = compileString(source(shape), { composition: 'framed' });
     expect(artifact.abi.find((fn) => fn.name === 'set')?.dynamicWriteOrder).toStrictEqual(['first', 'second']);
     // The record the body writes states each value's length, which sizes its run: two chunks, then one.
     const written = hexToBin(buildPushdataCommitment(artifact.stateLayout!, {

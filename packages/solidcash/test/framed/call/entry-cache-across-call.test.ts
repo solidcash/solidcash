@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, parsePushdataCommitment, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -98,7 +98,7 @@ const SOURCE = [
 ].join('\n');
 
 // The machine the hops run on relaxes the consensus limits (`COMPOSITION_LIMITS`), and so does the compile.
-const compiled = compileStringMulti(SOURCE, { composition: 'per-call', maximumInputBytes: 10_000_000 });
+const compiled = compileStringMulti(SOURCE, { composition: 'framed', maximumInputBytes: 10_000_000 });
 const { Ledger, Settler, Root } = compiled as Required<typeof compiled>;
 
 /** A coin a genesis or a hop is funded from; a genesis's txid becomes the category it mints. */
@@ -110,7 +110,7 @@ function funding(txid: string): Utxo {
 interface World {
   readonly network: MockNetworkProvider;
   readonly snapshot: SnapshotRestorer;
-  readonly enter: (functionName: string) => Promise<PerCallProxyCallResult>;
+  readonly enter: (functionName: string) => Promise<FramedProxyCallResult>;
 }
 
 /** The ledger and the settler plain, the root behind its proxy, and the row opened through the root. */
@@ -129,7 +129,7 @@ async function deployWorld(): Promise<World> {
   for (const id of [ROOT_IMPL_CATEGORY, ROOT_PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(id));
   await network.addUtxo(binToHex(ALICE_LOCK), funding(ROOT_INIT_TXID));
   await fundShippedFacets(network);
-  const root = await deployPerCallProxy({
+  const root = await deployFramedProxy({
     provider: network,
     implementationArtifact: Root!,
     proxyArtifact: buildProxyArtifact(Root!),
@@ -142,11 +142,11 @@ async function deployWorld(): Promise<World> {
   });
   expect(root.initialize.broadcast).toBeDefined();
   let coins = 0;
-  const call = async (functionName: string): Promise<PerCallProxyCallResult> => {
+  const call = async (functionName: string): Promise<FramedProxyCallResult> => {
     coins += 1;
     const coin = funding(idOf(`call coin ${coins}`));
     await network.addUtxo(binToHex(ALICE_LOCK), coin);
-    return callPerCallProxyEntry({
+    return callFramedProxyEntry({
       provider: network,
       implementationArtifact: Root!,
       proxyArtifact: buildProxyArtifact(Root!),
@@ -187,7 +187,7 @@ describe('a node a frame accesses on both sides of the call that leads to frames
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     // The row holds the frame's own write and the close made inside its call.
-    const read = async (functionName: string): Promise<unknown> => (await readPerCallEntry({
+    const read = async (functionName: string): Promise<unknown> => (await readFramedEntry({
       provider: world.network, artifact: Ledger!, categoryId: LEDGER_CATEGORY, functionName, args: [ID],
       vm: compositionMachine(),
     })).value;

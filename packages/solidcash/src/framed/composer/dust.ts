@@ -1,5 +1,5 @@
 /**
- * The satoshis a per-call output must carry to be relayed.
+ * The satoshis a framed output must carry to be relayed.
  *
  * A node refuses an output worth less than three satoshis per byte of the output plus the 148 bytes of the input
  * that later spends it: `3 * (serialized output size + 148)`. The size is the whole serialized output, token prefix

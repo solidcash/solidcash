@@ -1,8 +1,8 @@
 # Gate report
 
-Commit `13aaad66c` on `feat/per-call` (the composition layer landed in `6df597fd3`, the API export and Log
+Commit `13aaad66c` on `feat/framed` (the composition layer landed in `6df597fd3`, the API export and Log
 rows in `ab2abd832`, the master prologue in `d90acd49b`, the validator program in `13aaad66c`). Recorded in
-`docs/per-call/PLAN_MARKETPLACE_66.md` section 7.
+`docs/framed/PLAN_MARKETPLACE_66.md` section 7.
 
 ## Decision
 
@@ -25,7 +25,7 @@ reference model agreeing with the shipped script. Two of those need code generat
 
 Both are changes inside the compiler's main traversal (`GenerateTargetTraversal.ts` is 37,918 lines) and the plan
 sizes them at 5–7 weeks with four coders. The gate's "no per-shape special case" clause therefore cannot be
-evaluated: there are no compiled per-call artifacts to inspect.
+evaluated: there are no compiled framed artifacts to inspect.
 
 Two further gate items are also unavailable: the hostile suite's rejection tests are written against the
 derivation rather than a script, and the reference model agrees with the derivation rather than with `V_TEMPLATE`,
@@ -35,16 +35,16 @@ because `V_TEMPLATE` itself is not implemented.
 
 | Item | State | Evidence |
 | --- | --- | --- |
-| Interface frozen, version 1, pinned by vectors | done | `packages/utils/src/per-call/`, `packages/utils/test/per-call/vectors/`, 113 tests |
-| Validator decision procedure V1–V11 **as TypeScript** | done | `packages/solidc/src/per-call/validator/`, 25 tests including one hostile test per check |
-| `V_TEMPLATE`, the program that enforces those checks on chain | **started, running** | the first rules run in the machine: the validator recreates itself and a master of its category is spent (V1), the transcript's wire name, version and root count parse and every root index is in range (V2, partial), and the first root's category is the validator's (V9). `packages/solidcash/test/per-call/validator/script.test.ts` runs the real program against the real derivation over 400 generated compositions and one targeted case per enforced rule. V3–V8, V10, V11 and the rest of V2 remain TypeScript only |
+| Interface frozen, version 1, pinned by vectors | done | `packages/utils/src/framed/`, `packages/utils/test/framed/vectors/`, 113 tests |
+| Validator decision procedure V1–V11 **as TypeScript** | done | `packages/solidc/src/framed/validator/`, 25 tests including one hostile test per check |
+| `V_TEMPLATE`, the program that enforces those checks on chain | **started, running** | the first rules run in the machine: the validator recreates itself and a master of its category is spent (V1), the transcript's wire name, version and root count parse and every root index is in range (V2, partial), and the first root's category is the validator's (V9). `packages/solidcash/test/framed/validator/script.test.ts` runs the real program against the real derivation over 400 generated compositions and one targeted case per enforced rule. V3–V8, V10, V11 and the rest of V2 remain TypeScript only |
 | Independent reference model, differential agreement | done | 240 generated compositions over two seeds; zero accept/reject, check or order disagreements |
 | Golden re-entrant composition | done | accepted at the section 5.1 indices with the section 8 derived order |
-| Composer derivation, assembly, layout, refusals | done | `packages/solidcash/src/per-call/composer/`, 35 tests |
-| Record reuse claim tested rather than assumed | done, one divergence | `packages/solidc/test/per-call/records/`, 29 tests |
-| Master ownership and recreation checks, VM-proven | done | `packages/solidc/src/per-call/master/prologue.ts`, 12 VM tests in `packages/solidcash/test/per-call/frames/` |
-| Compiler emits a per-call master | **done for one shape** | one inlined entry point, no external calls, no returns; 29 tests in `solidc/test/per-call/master` |
-| A compiled master is deployed and spent | **done** | `solidcash/test/per-call/frames/compiled-master-spend.test.ts`: VM accepts the spend, three controls refused |
+| Composer derivation, assembly, layout, refusals | done | `packages/solidcash/src/framed/composer/`, 35 tests |
+| Record reuse claim tested rather than assumed | done, one divergence | `packages/solidc/test/framed/records/`, 29 tests |
+| Master ownership and recreation checks, VM-proven | done | `packages/solidc/src/framed/master/prologue.ts`, 12 VM tests in `packages/solidcash/test/framed/frames/` |
+| Compiler emits a framed master | **done for one shape** | one inlined entry point, no external calls, no returns; 29 tests in `solidc/test/framed/master` |
+| A compiled master is deployed and spent | **done** | `solidcash/test/framed/frames/compiled-master-spend.test.ts`: VM accepts the spend, three controls refused |
 | Selector dispatch | **done** | a two-entry contract compiles to one master and both entries are spent |
 | A callee compiles as well as a caller | **done** | both masters compiled, co-spent with a validator, accepted |
 | The return check | **absent** | refused by name, now naming the entry |
@@ -56,7 +56,7 @@ because `V_TEMPLATE` itself is not implemented.
 | Record view mode (state settlement) | **absent** | state still read through today's direct covenant |
 | Records read through a segment view | **absent** | — |
 | Registry of the plan's own go/kill bounds (12K lines, 5 s Y2) | partly measurable | 1,366 compiler source lines added; composer suite ~2.6 s on a stub step |
-| Tests, all green | done | the focused per-call directories pass together (42 files at this commit); the full build and the existing utils suite pass |
+| Tests, all green | done | the focused framed directories pass together (42 files at this commit); the full build and the existing utils suite pass |
 
 ## Defects found and fixed
 
@@ -78,7 +78,7 @@ stored verbatim and can exceed the 64-byte tail.
 A master's frame values — `msg.sender`, `address(this)`, `msg.value` and `tx.origin` — are taken from its witness
 block rather than read inline from the transaction. The sites this report used to list are no longer the obstacle:
 the master head reads the block, checks it against the first push of its own unlocking bytecode, and the frame
-values are VM-proven (`C4`, `C5`; `packages/solidcash/test/per-call/frames/`).
+values are VM-proven (`C4`, `C5`; `packages/solidcash/test/framed/frames/`).
 
 ## What the shape does not have
 

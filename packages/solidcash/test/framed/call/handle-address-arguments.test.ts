@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { bytesToHex, parsePushdataCommitment } from '@solidcash/utils';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { HDSigner } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import type { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import type { FramedFunctionCall } from '../../../src/framed/call/index.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
@@ -25,14 +25,14 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   function hold(address who) external { holder = who; }'
   + '   function holds(address who) external view returns (bool) { return who == holder; } }';
 
-const pin = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never).Pin!;
+const pin = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never).Pin!;
 
 interface PinCalls {
-  readonly hold: (who: unknown) => PerCallFunctionCall;
-  readonly holds: (who: unknown) => PerCallFunctionCall;
+  readonly hold: (who: unknown) => FramedFunctionCall;
+  readonly holds: (who: unknown) => FramedFunctionCall;
 }
 
-describe('a per-call handle resolves a signer passed for an address argument', () => {
+describe('a framed handle resolves a signer passed for an address argument', () => {
   it('records and reads a signer exactly as its .address', async () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signer = HDSigner.fromPhrase(PHRASE, provider);
@@ -47,7 +47,7 @@ describe('a per-call handle resolves a signer passed for an address argument', (
     const handle = (deployment.contract as StatefulContract).connect(signer);
     const calls = handle.call as unknown as PinCalls;
     const record = async (): Promise<string> =>
-      (await readPerCallDeployment(provider, handle.categoryId, pin.stateLayout!)).records[0]!.token!.nft!.commitment;
+      (await readFramedDeployment(provider, handle.categoryId, pin.stateLayout!)).records[0]!.token!.nft!.commitment;
     const holder = (commitment: string): string =>
       bytesToHex(parsePushdataCommitment(commitment, pin.stateLayout!, 0).holder as Uint8Array);
 

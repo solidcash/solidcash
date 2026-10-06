@@ -12,21 +12,21 @@ import {
   type CallRecord,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { publishedRefusals } from '../../../../solidc/test/framed/master/refused-entry.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   USER_LOCK, compileAndDeploy, hexOf, master, masterInput, rootOf, seededAddress, selectorOf, token, userInput,
   userInputs, validatorFor, composeAndDerive,
 } from '../shapes/harness.js';
 import {
   createComposedDerivationHost, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A low-level call spelled the way a token wrapper spells it, lowered to the typed call it denotes.
  *
  * `address(t).call(abi.encodeCall(I.transfer, (to, amount)))` and the `abi.encodeWithSelector(I.transfer.selector,
- * ...)` spelling both denote `I(address(t)).transfer(to, amount)`. The per-call convention compiles typed calls and
+ * ...)` spelling both denote `I(address(t)).transfer(to, amount)`. The framed convention compiles typed calls and
  * refuses the raw calldata form, so the spellings are compared against the typed call through the whole shipped
  * path: compile, deploy, plan, derive and machine. Their call records must agree on the argument digest and the
  * target, and every contract input must be accepted.
@@ -189,14 +189,14 @@ const GATED_NO_CODE = HEAD
   + '   require(ok);'
   + ' } }';
 
-/** Why the per-call convention refuses an unlowered low-level call. */
+/** Why the framed convention refuses an unlowered low-level call. */
 const RAW_REFUSAL =
   "the call to '__raw__' takes the direct path's return-event or value-transfer machinery, "
-  + 'which a per-call body does not emit';
+  + 'which a framed body does not emit';
 
 /** The calls a source's compiled artifacts publish as refused, or the empty list when every body is served. */
 function refusalsOf(source: string): { functionName: string; reason: string }[] {
-  return publishedRefusals(compileStringMulti(source, { composition: 'per-call' }));
+  return publishedRefusals(compileStringMulti(source, { composition: 'framed' }));
 }
 
 interface Run {
@@ -295,7 +295,7 @@ describe('a low-level token call whose callee and method are statically known', 
     // The whole record agrees: kind, target, value, callee reference, argument digest and returned result.
     expect(callRecord(BOUND).record).toStrictEqual(typed.record);
     // The selector spelling compiles to the bound spelling's program, so it settles as that one does.
-    const callerOf = (source: string): Artifact => compileStringMulti(source, { composition: 'per-call' }).Caller!;
+    const callerOf = (source: string): Artifact => compileStringMulti(source, { composition: 'framed' }).Caller!;
     expect(callerOf(SELECTOR).bytecode).toBe(callerOf(BOUND).bytecode);
   });
 
@@ -398,7 +398,7 @@ describe('the address.code.length gate on a token target', () => {
 
     // The P2SH32 target's length is non-zero, so the opposite gate never settles.
     const empty = planFor(GATED_EMPTY);
-    expect(() => composeAndDerive(empty.plan, empty.artifacts, [ROOT])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => composeAndDerive(empty.plan, empty.artifacts, [ROOT])).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('answers zero for a plain account and the zero address, as the EVM does for an account without code', () => {

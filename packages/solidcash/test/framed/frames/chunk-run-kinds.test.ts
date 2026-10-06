@@ -10,10 +10,10 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
@@ -23,11 +23,11 @@ import {
   planChunkRun,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * `bytes` and dynamic-array state runs, composed from a plan the chunk plan states.
@@ -75,7 +75,7 @@ function compose(shape: Shape): {
   readonly base: number;
 } {
   const category = seededCategory(`chunk run kinds ${shape.label}`);
-  const artifact = compileString(shape.source, { composition: 'per-call' });
+  const artifact = compileString(shape.source, { composition: 'framed' });
   const layout = artifact.stateLayout!;
   const master = deployMaster(artifact, category, REAL_VALIDATOR_PROGRAM);
   const stateLock = stateRecordLockingBytecode(bytesToHex(category));

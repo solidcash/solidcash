@@ -10,9 +10,9 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
 import {
   entryStopSites,
-  publishPerCallStopSites,
-  type PublishedPerCallStopSites,
-} from '../../../src/per-call/master/stop-sites.js';
+  publishFramedStopSites,
+  type PublishedFramedStopSites,
+} from '../../../src/framed/master/stop-sites.js';
 
 /**
  * The published stop-site table, taken from real compiles.
@@ -64,14 +64,14 @@ const twoEntrySource = (): string => 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The composition publication, which carries the stop-site table beside the placeholder descriptor. */
-const publicationOf = (artifact: Pick<Artifact, 'composition'>): PublishedPerCallStopSites => {
+const publicationOf = (artifact: Pick<Artifact, 'composition'>): PublishedFramedStopSites => {
   expect(artifact.composition?.stopSites).toBeDefined();
   return artifact.composition!.stopSites!;
 };
 
 describe('the stop-site table published from a real compile', () => {
   it('publishes one entry per entry point, each with a validated table', () => {
-    const artifacts = compileStringMulti(callingSource(), { composition: 'per-call' });
+    const artifacts = compileStringMulti(callingSource(), { composition: 'framed' });
     for (const name of ['Caller', 'Callee']) {
       const stopSites = publicationOf(artifacts[name]!);
       expect(stopSites.version).toBe(1);
@@ -84,7 +84,7 @@ describe('the stop-site table published from a real compile', () => {
   });
 
   it('shapes a caller with one external call as one call site then two segment closes', () => {
-    const artifacts = compileStringMulti(callingSource(), { composition: 'per-call' });
+    const artifacts = compileStringMulti(callingSource(), { composition: 'framed' });
     const stopSites = publicationOf(artifacts.Caller!);
     const entry = stopSites.entries[0]!;
     expect(entry.sites).toStrictEqual({
@@ -106,7 +106,7 @@ describe('the stop-site table published from a real compile', () => {
   });
 
   it('shapes a caller with no external call as one segment close', () => {
-    const artifacts = compileStringMulti(silentSource(), { composition: 'per-call' });
+    const artifacts = compileStringMulti(silentSource(), { composition: 'framed' });
     const stopSites = publicationOf(artifacts.Solo!);
     expect(stopSites.entries).toStrictEqual([{
       functionName: 'Solo.ping()',
@@ -123,7 +123,7 @@ describe('the stop-site table published from a real compile', () => {
   });
 
   it('publishes no read site, because the compiler does not hold the record a read resolves to', () => {
-    const artifacts = compileStringMulti(callingSource(), { composition: 'per-call' });
+    const artifacts = compileStringMulti(callingSource(), { composition: 'framed' });
     const sites = publicationOf(artifacts.Caller!).entries.flatMap((entry) => entry.sites.sites) as StopSite[];
     expect(sites.some((site) => site.kind === 'read')).toBe(false);
   });
@@ -131,7 +131,7 @@ describe('the stop-site table published from a real compile', () => {
   it('publishes one entry for each entry point, each naming its own callee', () => {
     // Two entries make different calls; each entry's table has to name the callee its own site binds, so entry
     // `a` publishes `ping` at `TARGET` and entry `b` publishes `pong` at `OTHER_TARGET`.
-    const artifacts = compileStringMulti(twoEntrySource(), { composition: 'per-call' });
+    const artifacts = compileStringMulti(twoEntrySource(), { composition: 'framed' });
     expect(publicationOf(artifacts.Caller!).entries).toStrictEqual([
       {
         functionName: 'Caller.a()',
@@ -179,7 +179,7 @@ describe('the stop-site table published from a real compile', () => {
   it('marks the call site of a loop, whose repetition the source does not fix', () => {
     // The body reaches the site as often as the loop turns, so the table describes the source's call rather than
     // enumerating one execution's witnesses, and a driver reads the marker to know that.
-    const artifacts = compileStringMulti(loopedCallSource(), { composition: 'per-call' });
+    const artifacts = compileStringMulti(loopedCallSource(), { composition: 'framed' });
     const entry = publicationOf(artifacts.Caller!).entries.find(
       (candidate) => candidate.functionName === 'Caller.go()',
     )!;
@@ -190,16 +190,16 @@ describe('the stop-site table published from a real compile', () => {
     ]);
     // The same call written without a loop carries no marker, which is the control beside it.
     const plain = publicationOf(
-      compileStringMulti(callingSource(), { composition: 'per-call' }).Caller!,
+      compileStringMulti(callingSource(), { composition: 'framed' }).Caller!,
     ).entries[0]!;
     expect(plain.sites.sites[0]).toStrictEqual({ kind: 'call', site: 0, callIndex: 0, descriptor: 0 });
   });
 
   it('gives an entry that calls the same method at the same target twice one site per call', () => {
-    // A per-call master carries one call record per call and gives each call its own frame, so the two identical
+    // A framed master carries one call record per call and gives each call its own frame, so the two identical
     // calls are two sites rather than one coalesced batch: the head checks two records and each site binds its own
     // descriptor.
-    const artifacts = compileStringMulti(repeatedCallSource(), { composition: 'per-call' });
+    const artifacts = compileStringMulti(repeatedCallSource(), { composition: 'framed' });
     const entry = publicationOf(artifacts.Caller!).entries[0]!;
     // Neither site carries the marker the loop case's single site does, which is what tells turns of one site from
     // two sites.
@@ -226,6 +226,6 @@ describe('the stop-site table published from a real compile', () => {
     ]);
     expect(metadata.sites.map((site) => site.site)).toStrictEqual([0, 1, 2, 3, 4]);
     expect(() => validateStopSiteMetadata(metadata)).not.toThrow();
-    expect(publishPerCallStopSites('X', [{ entryName: 'f', calls: [] }]).entries[0]!.sites.sites).toHaveLength(1);
+    expect(publishFramedStopSites('X', [{ entryName: 'f', calls: [] }]).entries[0]!.sites.sites).toHaveLength(1);
   });
 });

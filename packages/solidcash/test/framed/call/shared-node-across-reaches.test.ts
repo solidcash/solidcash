@@ -3,15 +3,15 @@ import {
   bigIntToVmNumber, binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin,
 } from '@bitauth/libauth';
 import { bytesToHex, sha256, type RecordEntry } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/framed/proxy/entry-writes.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -94,7 +94,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const token = artifacts.Token!;
 const desk = artifacts.Desk!;
 const TOKEN_ADDRESS = deployMaster(token, hexToBin(TOKEN_CATEGORY), VALIDATOR_PROGRAM).address;
@@ -138,7 +138,7 @@ async function deployWorld(): Promise<World> {
   for (const coin of [initCoin, callCoin]) await network.addUtxo(binToHex(HOLDER), coin);
   await fundShippedFacets(network);
 
-  const deskDeployment = await deployPerCallProxy({
+  const deskDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: desk,
     proxyArtifact: buildProxyArtifact(desk),
@@ -173,8 +173,8 @@ async function deployed(): Promise<World> {
 /** One call of the root's entry through its proxy, made by the holder, the token reached directly. */
 function callDesk(
   world: World, functionName: string, args: readonly (bigint | Uint8Array)[],
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: desk,
     proxyArtifact: buildProxyArtifact(desk),
@@ -199,7 +199,7 @@ async function callCoinLive(world: World): Promise<boolean> {
 
 /** The balance the token's live node holds for `who`, read back from the chain after the hop. */
 async function liveBalance(world: World, who: Uint8Array): Promise<string | undefined> {
-  const deployment = await readPerCallDeployment(world.network, TOKEN_CATEGORY, token.stateLayout!);
+  const deployment = await readFramedDeployment(world.network, TOKEN_CATEGORY, token.stateLayout!);
   const slot = bytesToHex(keyToSlotMulti([who]));
   const node = (deployment.nodesByCollection.get('balances') ?? [])
     .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
@@ -213,7 +213,7 @@ function balanceValue(amount: bigint): string {
 }
 
 /** Each declaration one frame makes of the holder's node, in segment order, as `viewIn -> viewOut` value pairs. */
-function holderViews(result: PerCallProxyCallResult, master: string): readonly (readonly [string, string])[] {
+function holderViews(result: FramedProxyCallResult, master: string): readonly (readonly [string, string])[] {
   const index = result.draft.layout.participants.find((placed) => placed.id === HOLDER_NODE)!.index;
   const value = (commitment: Uint8Array): string => bytesToHex(decodeEntryCommitment(commitment).value);
   return result.draft.blockOf(master).segments.flatMap((segment: readonly RecordEntry[]) => segment)
@@ -222,20 +222,20 @@ function holderViews(result: PerCallProxyCallResult, master: string): readonly (
 }
 
 /** The value the holder's node output carries in the settled transaction. */
-function holderOutput(result: PerCallProxyCallResult): string {
+function holderOutput(result: FramedProxyCallResult): string {
   const index = result.draft.layout.participants.find((placed) => placed.id === HOLDER_NODE)!.index;
   return bytesToHex(decodeEntryCommitment(Uint8Array.from(result.transaction.outputs[index]!.token!.nft!.commitment))
     .value);
 }
 
 /** The records one frame declares with no input index: the nodes it creates or continues at an output. */
-function outputDeclarations(result: PerCallProxyCallResult, master: string): readonly RecordEntry[] {
+function outputDeclarations(result: FramedProxyCallResult, master: string): readonly RecordEntry[] {
   return result.draft.blockOf(master).segments.flatMap((segment: readonly RecordEntry[]) => segment)
     .filter((entry) => entry.in === 0xffff);
 }
 
 /** Every participant placed for a node of the token's balances. */
-function balanceNodes(result: PerCallProxyCallResult): readonly string[] {
+function balanceNodes(result: FramedProxyCallResult): readonly string[] {
   return result.draft.layout.participants.map((placed) => placed.id)
     .filter((id) => id.startsWith(`mapping-node-${TOKEN_CATEGORY}-balances-`) || id.startsWith('mapping-read-'));
 }

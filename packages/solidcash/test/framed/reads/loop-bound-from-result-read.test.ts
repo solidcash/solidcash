@@ -11,18 +11,18 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode,
   deployMaster,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * A read whose call site sits in a loop whose bound comes from an earlier call's result.
@@ -76,7 +76,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const pager = artifacts.Pager!;
 const store = artifacts.Store!;
 
@@ -160,8 +160,8 @@ async function chain(): Promise<MockNetworkProvider> {
 /** The pager's own read of one of its entries. */
 function read(
   provider: MockNetworkProvider, functionName: string, args: readonly bigint[] = [],
-): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider,
     artifact: pager,
     categoryId: PAGER_HEX,
@@ -173,7 +173,7 @@ function read(
 }
 
 /** How many frames of the read run the store's element entry: one per turn of the loop that called. */
-function elementFrames(result: Awaited<ReturnType<typeof readPerCallEntry>>): number {
+function elementFrames(result: Awaited<ReturnType<typeof readFramedEntry>>): number {
   return result.draft.runs.filter((run) => run.functionName === 'Store.at()').length;
 }
 
@@ -259,7 +259,7 @@ const PROXIED_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const proxiedArtifacts = compileStringMulti(PROXIED_SOURCE, { composition: 'per-call', evmCompat: true });
+const proxiedArtifacts = compileStringMulti(PROXIED_SOURCE, { composition: 'framed', evmCompat: true });
 const reader = proxiedArtifacts.Reader!;
 const shelf = proxiedArtifacts.Shelf!;
 const shelfProxy = buildProxyArtifact(shelf);
@@ -295,7 +295,7 @@ async function proxiedChain(): Promise<MockNetworkProvider> {
 describe('a read whose loop of calls reaches a store behind its own proxy', () => {
   it('runs one proxy pair per turn, each delegate frame reading its own element of the run', async () => {
     const provider = await proxiedChain();
-    const list = (index: bigint, limit: bigint): ReturnType<typeof readPerCallEntry> => readPerCallEntry({
+    const list = (index: bigint, limit: bigint): ReturnType<typeof readFramedEntry> => readFramedEntry({
       provider,
       artifact: reader,
       categoryId: READER_HEX,

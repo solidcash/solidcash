@@ -7,9 +7,9 @@ import {
   ContractFactory, DeployedContract, DeployContractOptions, selectGenesisFundingUtxo,
 } from './ContractFactory.js';
 import type {
-  PerCallProxyCallerFunding, PerCallProxyDeployHalf, PerCallProxyDeployment,
-} from '../per-call/proxy/deploy.js';
-import { poolGenesisSatoshis, resolveMasterPoolSize } from '../per-call/deploy/pool.js';
+  FramedProxyCallerFunding, FramedProxyDeployHalf, FramedProxyDeployment,
+} from '../framed/proxy/deploy.js';
+import { poolGenesisSatoshis, resolveMasterPoolSize } from '../framed/deploy/pool.js';
 import {
   StatefulContract, StatefulFunctionCall, ContractRunner, type ConnectedStatefulContract,
   type ContractEventName, type EventListener,
@@ -98,11 +98,11 @@ export interface DeployProxyOptions {
   proxyOverrides?: DeployContractOptions;
   implementationOverrides?: DeployContractOptions;
   /**
-   * The coin that enters a per-call proxy's `initialize` hop, or absent to take the runner's own largest tokenless
+   * The coin that enters a framed proxy's `initialize` hop, or absent to take the runner's own largest tokenless
    * UTXO. A hop's root frame binds `msg.sender` to the lock of the input it names, so the coin has to sit at the
    * deployer's own P2PKH lock.
    */
-  callerFunding?: PerCallProxyCallerFunding;
+  callerFunding?: FramedProxyCallerFunding;
 }
 
 /** OZ `upgrades.deployProxy` initial state: a positional initializer list or a named state record. */
@@ -695,32 +695,32 @@ function graftDefaultProxy(impl: Artifact): Artifact {
   } as Artifact;
 }
 
-/** A stateful implementation the compiler marked as compiled for the per-call convention. */
-export type PerCallArtifact = Artifact & { composition: { convention: 'per-call' } };
+/** A stateful implementation the compiler marked as compiled for the framed convention. */
+export type FramedArtifact = Artifact & { composition: { convention: 'framed' } };
 
-/** The per-call deployment `deployProxy` returns for a per-call implementation. */
-export type { PerCallProxyDeployment };
+/** The framed deployment `deployProxy` returns for a framed implementation. */
+export type { FramedProxyDeployment };
 
 /**
- * The handle a `deployProxy` of a per-call implementation returns: the implementation's entries addressed and held
+ * The handle a `deployProxy` of a framed implementation returns: the implementation's entries addressed and held
  * by the deployed proxy, with the deployment's own record nested as `proxyDeployment`.
  *
  * A bare name resolves to the implementation's entry of that name, as it does for a direct-convention deploy, so
  * the record is not spread over the handle: an implementation that declares `initialize` keeps that name callable.
  */
-export type PerCallProxyHandle = ConnectedStatefulContract<Artifact> & {
-  readonly proxyDeployment: PerCallProxyDeployment;
+export type FramedProxyHandle = ConnectedStatefulContract<Artifact> & {
+  readonly proxyDeployment: FramedProxyDeployment;
   deploymentTransaction(): ReturnType<DeployedContract['deploymentTransaction']>;
   waitForDeployment(): Promise<unknown>;
 };
 
 /** One genesis's funding: the caller's override, or a fresh vout-0 coin the Signer fans out and pays. */
-async function perCallGenesisHalf(
+async function framedGenesisHalf(
   overrides: DeployContractOptions | undefined,
   artifact: Artifact,
   signer: Signer,
   excluded: ReadonlySet<string>,
-): Promise<PerCallProxyDeployHalf> {
+): Promise<FramedProxyDeployHalf> {
   const { fundingUtxo, funder, changeAddress, initialState: _seed, ...rest } = overrides ?? {};
   // The genesis mints the whole pool, so the selection has to hold the pool's outputs too: a caller that states no
   // size gets the composing default, and one that names a size gets exactly that. The validator facets the genesis
@@ -737,34 +737,34 @@ async function perCallGenesisHalf(
 }
 
 /**
- * Routes a `deployProxy` of a per-call implementation onto the per-call deployment.
+ * Routes a `deployProxy` of a framed implementation onto the framed deployment.
  *
  * Two geneses (the implementation's, then the proxy's with a record naming the implementation's address) and an
  * `initialize` hop through the proxy. The proxy is the caller's `options.proxy`, or generated from the
  * implementation's own declaration when none is given. The hop is entered by the deployer, so the Signer's own
- * P2PKH lock is the `callerLockingBytecode` the per-call deployment takes.
+ * P2PKH lock is the `callerLockingBytecode` the framed deployment takes.
  */
-async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
+async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
   factory: ContractFactory<TImpl>,
   initialState: ProxyInitialState | undefined,
   options: DeployProxyOptions,
-): Promise<PerCallProxyHandle> {
+): Promise<FramedProxyHandle> {
   const implementationArtifact = factory.artifact;
   const runner = options.runner ?? factory.runner;
   const signer = runner instanceof Signer ? runner : undefined;
   if (!signer) {
     throw new Error(
-      `A per-call implementation ('${implementationArtifact.contractName}') routes deployProxy through the per-call `
+      `A framed implementation ('${implementationArtifact.contractName}') routes deployProxy through the framed `
       + 'deployment, which needs a Signer runner: the initialize hop is entered by the deployer, whose own P2PKH '
       + 'lock is the caller the hop runs as.',
     );
   }
-  // The hop always runs: the per-call record belongs to the proxy, so state seeded at the implementation's genesis
+  // The hop always runs: the framed record belongs to the proxy, so state seeded at the implementation's genesis
   // would sit in a record the proxy's delegate frames never read.
   if (options.initializer === false) {
     throw new Error(
-      'A per-call deployment always runs one initialize hop through the proxy; `initializer: false` (seed state at '
-      + 'genesis) has no per-call equivalent.',
+      'A framed deployment always runs one initialize hop through the proxy; `initializer: false` (seed state at '
+      + 'genesis) has no framed equivalent.',
     );
   }
   const initializer = typeof options.initializer === 'string' ? options.initializer : 'initialize';
@@ -779,21 +779,21 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
     throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array.`);
   }
 
-  const { buildProxyArtifact, deployPerCallProxy } = await import('../per-call/proxy/index.js');
+  const { buildProxyArtifact, deployFramedProxy } = await import('../framed/proxy/index.js');
   const proxyArtifact = options.proxy ?? buildProxyArtifact(implementationArtifact);
   // The hop is entered by the deployer's own coin, so a caller that funds it is selected before the geneses and
   // excluded from them: a genesis must not spend the coin the hop is about to sign.
-  const callerFunding = options.callerFunding ?? await perCallCallerFunding(signer);
+  const callerFunding = options.callerFunding ?? await framedCallerFunding(signer);
   const callerOutpoint = `${callerFunding.utxo.txid}:${callerFunding.utxo.vout}`;
-  const implementationDeploy = await perCallGenesisHalf(
+  const implementationDeploy = await framedGenesisHalf(
     options.implementationOverrides, implementationArtifact, signer, new Set([callerOutpoint]),
   );
-  const proxyDeploy = await perCallGenesisHalf(
+  const proxyDeploy = await framedGenesisHalf(
     options.proxyOverrides, proxyArtifact, signer,
     new Set([`${implementationDeploy.fundingUtxo.txid}:${implementationDeploy.fundingUtxo.vout}`, callerOutpoint]),
   );
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: signer.provider,
     implementationArtifact,
     implementationDeploy,
@@ -808,9 +808,9 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
   if (!deployment.initialize.accepted) {
     const refused = deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
-    throw new Error(`The per-call proxy's '${initializer}' hop was refused, so it was not broadcast: ${refused}`);
+    throw new Error(`The framed proxy's '${initializer}' hop was refused, so it was not broadcast: ${refused}`);
   }
-  const handle = await perCallProxyHandle(
+  const handle = await framedProxyHandle(
     implementationArtifact, signer, deployment.proxy.categoryId, deployment.implementation.categoryId,
     deployment.proxy.address,
   );
@@ -825,7 +825,7 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
       await deployment.initialize.broadcast?.wait?.();
       return handle;
     },
-  }) as unknown as PerCallProxyHandle;
+  }) as unknown as FramedProxyHandle;
 }
 
 /**
@@ -834,7 +834,7 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
  * The hop's root frame binds `msg.sender` to the lock of the input it names, so the coin has to sit at the
  * deployer's own P2PKH lock; it also pays the hop's fee, so the largest one is taken rather than a dust output.
  */
-async function perCallCallerFunding(signer: Signer): Promise<PerCallProxyCallerFunding> {
+async function framedCallerFunding(signer: Signer): Promise<FramedProxyCallerFunding> {
   const spendable = (await signer.getUtxos()).filter((utxo) => utxo.token === undefined);
   const coin = spendable.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
   if (coin === undefined) {
@@ -846,13 +846,13 @@ async function perCallCallerFunding(signer: Signer): Promise<PerCallProxyCallerF
 }
 
 /**
- * The handle a per-call proxy deployment returns: the implementation's entries, addressed and held by the proxy.
+ * The handle a framed proxy deployment returns: the implementation's entries, addressed and held by the proxy.
  *
  * The proxy's own artifact is a fallback and nothing else, so a suite's calls name the implementation's ABI while
  * the state, the address and the category belong to the proxy. The handle carries both facts, and its calls are
  * composed as the hop that enters the proxy's fallback and delegates into the implementation.
  */
-async function perCallProxyHandle(
+async function framedProxyHandle(
   implementationArtifact: Artifact, signer: Signer, proxyCategoryId: string,
   implementationCategoryId: string, proxyAddress: Uint8Array,
 ): Promise<ConnectedStatefulContract<Artifact>> {
@@ -867,10 +867,10 @@ async function perCallProxyHandle(
     bytecode: proxyAddress, prefix: getNetworkPrefix(signer.provider.network), tokenSupport: true,
   });
   if (typeof encoded === 'string') {
-    throw new Error(`The per-call proxy's own address is not encodable: ${encoded}`);
+    throw new Error(`The framed proxy's own address is not encodable: ${encoded}`);
   }
-  handle._perCallProxyImplementationCategory = implementationCategoryId;
-  handle._perCallProxyAddress = encoded.address;
+  handle._framedProxyImplementationCategory = implementationCategoryId;
+  handle._framedProxyAddress = encoded.address;
   handle._signer = signer;
   handle._logicalNonceSigner = signer;
   return handle as unknown as ConnectedStatefulContract<Artifact>;
@@ -881,19 +881,19 @@ async function perCallProxyHandle(
  * state-holding proxy, seed the state, and return a handle whose method calls forward to the implementation
  * through the pinned delegatecall. Uses the built-in SolidCashProxy unless `options.proxy` is given.
  *
- * An implementation artifact compiled for the per-call convention is routed to the per-call deployment instead,
+ * An implementation artifact compiled for the framed convention is routed to the framed deployment instead,
  * because the direct builder below - implementation beside a proxy whose data NFTs sit at a category-derived
  * address, one `initialize` forwarded through the pinned delegatecall - has nothing to spend for a master program.
  * That route is a different three-transaction shape (both geneses and an `initialize` hop) and its result is a
- * `PerCallProxyHandle`: the contract's entries addressed and held by the proxy, with the `PerCallProxyDeployment`
+ * `FramedProxyHandle`: the contract's entries addressed and held by the proxy, with the `FramedProxyDeployment`
  * nested under it - the proxy's category and address, the implementation it forwards to, the derived hop and the
  * machine's verdict on every participant. It needs a Signer runner to name the hop's caller and to fund the
  * geneses, and it always runs the hop, so `initializer: false` is refused.
  */
 export function deployProxy(
-  implementationFactory: ContractFactory<PerCallArtifact>, initialState?: ProxyInitialState,
+  implementationFactory: ContractFactory<FramedArtifact>, initialState?: ProxyInitialState,
   options?: DeployProxyOptions,
-): Promise<PerCallProxyHandle>;
+): Promise<FramedProxyHandle>;
 export function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl>, initialState?: ProxyInitialState,
   options?: DeployProxyOptions,
@@ -906,7 +906,7 @@ export async function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl> | SplitContractBundle,
   initialState?: ProxyInitialState,
   options: DeployProxyOptions = {},
-): Promise<ProxyContract<TImpl> | SplitContract | PerCallProxyHandle> {
+): Promise<ProxyContract<TImpl> | SplitContract | FramedProxyHandle> {
   // Hardhat-compatible factories wrap SplitContractBundle to provide positional `.deploy(...)`. Accept that
   // transparent facade here too, otherwise it falls through the ordinary implementation+proxy path, reserves a
   // nonce, and then attempts a nested split deployment which reserves the same nonce again.
@@ -943,10 +943,10 @@ export async function deployProxy<TImpl extends Artifact>(
     });
   }
   const ordinaryFactory = implementationFactory as ContractFactory<TImpl>;
-  // A per-call artifact's entries read their frame from a witness block, so the direct builder has nothing to
-  // spend; route the whole deployment through the per-call path, which returns that deployment.
-  if (ordinaryFactory.artifact.composition?.convention === 'per-call') {
-    return deployPerCallProxyThroughFactory(ordinaryFactory, initialState, options);
+  // A framed artifact's entries read their frame from a witness block, so the direct builder has nothing to
+  // spend; route the whole deployment through the framed path, which returns that deployment.
+  if (ordinaryFactory.artifact.composition?.convention === 'framed') {
+    return deployFramedProxyThroughFactory(ordinaryFactory, initialState, options);
   }
   const runner = options.runner ?? ordinaryFactory.runner;
   const deploymentSigner = runner instanceof Signer ? runner : undefined;

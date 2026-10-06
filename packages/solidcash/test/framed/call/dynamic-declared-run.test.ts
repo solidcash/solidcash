@@ -4,15 +4,15 @@ import {
   buildChunkCommitment, bytesToHex, chunkCountForLength, decodePushdataValue, encodePushdataValue,
   parseChunkCommitment, type StateValue,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  chunkRecordLockingBytecode, readPerCallDeployment, readPerCallState,
-} from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+  chunkRecordLockingBytecode, readFramedDeployment, readFramedState,
+} from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePriv, alicePub, alicePkh } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -20,7 +20,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 /**
  * A proxied call that appends a default element and fills its fields with a value the artifact cannot state.
  *
- * A per-call body holds a dynamic value in a run of chunk NFTs, and the run's records have to be declared before
+ * A framed body holds a dynamic value in a run of chunk NFTs, and the run's records have to be declared before
  * the body runs. An append the artifact publishes an element for sizes the run outright, but a body that appends
  * the element type's default and then fills its fields through a storage pointer publishes no element as soon as
  * one field's value is a fact of the machine rather than a value the vocabulary speaks — the frame's own input, here.
@@ -108,14 +108,14 @@ async function funded(network: MockNetworkProvider): Promise<Funding> {
 async function deployed(): Promise<{
   readonly network: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
-  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
   readonly layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>;
   readonly funding: Funding;
 }> {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: {
@@ -141,7 +141,7 @@ async function liveChunks(
   layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>,
 ): Promise<readonly { readonly index: number; readonly data: Uint8Array }[]> {
   const lock = chunkRecordLockingBytecode(categoryId, 'posts', 'Post[]');
-  const pools = await readPerCallDeployment(network, categoryId, layout);
+  const pools = await readFramedDeployment(network, categoryId, layout);
   return [...pools.chunks, ...pools.collectionNodes]
     .filter((utxo) => utxo.lockingBytecode !== undefined
       && bytesToHex(utxo.lockingBytecode) === bytesToHex(lock))
@@ -163,7 +163,7 @@ describe('a proxied call whose append publishes no element', () => {
     // The artifact publishes no element for the entry's append: one of the fields it writes is the machine's own.
     expect(artifacts.Impl!.abi.find((entry) => entry.name === 'post')?.dynamicWriteSources).toBeUndefined();
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -186,7 +186,7 @@ describe('a proxied call whose append publishes no element', () => {
     const value = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.data.length, 0));
     let offset = 0;
     for (const chunk of chunks) { value.set(chunk.data, offset); offset += chunk.data.length; }
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const state = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(state.byNft[0]!['posts$len']).toBe(BigInt(value.length));
 
     const decoded = decodePushdataValue(value, 0, 'Post[]', structs).value as StateValue[];
@@ -213,7 +213,7 @@ describe('a proxied call whose append publishes no element', () => {
     // An entry that pops: the record the pop writes declares a value of one chunk where the run is now two. The run
     // is declared at the two chunks it spends: the first is rewritten in place, and the second is consumed with no
     // successor, its index paying its satoshis to the caller.
-    const dropped = await callPerCallProxyEntry({
+    const dropped = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -231,7 +231,7 @@ describe('a proxied call whose append publishes no element', () => {
     expect(dropped.draft.trailingOutputs).toHaveLength(0);
     expect((await liveChunks(network, deployment.proxy.categoryId, layout)).map((chunk) => chunk.data))
       .toStrictEqual([seedValue]);
-    const dropState = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const dropState = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(dropState.byNft[0]!.posts$len).toBe(BigInt(seedValue.length));
   });
 });

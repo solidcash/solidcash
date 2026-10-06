@@ -1,13 +1,13 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
-// Focused per-call suites (test/per-call/MANIFEST.md). They use no custom matchers, so the package setup file is
+// Focused framed suites (test/framed/MANIFEST.md). They use no custom matchers, so the package setup file is
 // not loaded, and they run without per-file isolation. Each worker loads the compiler and SDK graphs once, so the
 // on-disk module cache, not parallelism, is what shortens a rerun.
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['test/per-call/**/*.test.ts'],
+    include: ['test/framed/**/*.test.ts'],
     globals: true,
     isolate: false,
     maxWorkers: 3,

@@ -1,6 +1,6 @@
 # Release hygiene triage (section 3 item 4)
 
-Surveyed 2026-10-05 on `feat/per-call` at `57dfa942e`. Nothing in this list is deleted here. Phase 3 cleans a row or leaves it, with the reason, before the tag.
+Surveyed 2026-10-05 on `feat/framed` at `57dfa942e`. Nothing in this list is deleted here. Phase 3 cleans a row or leaves it, with the reason, before the tag.
 
 ## Debug hooks
 

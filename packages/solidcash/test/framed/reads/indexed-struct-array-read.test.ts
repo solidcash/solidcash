@@ -4,16 +4,16 @@ import {
   bytesToHex, encodeChunkableValueTail, encodePushdataValue, sha256, type StateRecord,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster, entryRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { mappingValueChunkLock, planMappingBatch } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { deployMaster, entryRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { mappingValueChunkLock, planMappingBatch } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../../../src/utils.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading one element of a mapping whose values are arrays of a struct (Solidity-compatible).
@@ -33,7 +33,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   mapping(address => Note[]) public notes;'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true }).Board!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Board!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'notes')!;
 const STRUCTS = artifact.stateLayout!.structs;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
@@ -92,7 +92,7 @@ describe('reading one element of a mapping whose values are arrays of a struct',
       .toStrictEqual(STRUCTS!.find((struct) => struct.name === 'Note')!.fields.map((field) => field.type));
 
     for (const [index, note] of NOTES.entries()) {
-      const result = await readPerCallEntry({
+      const result = await readFramedEntry({
         provider, artifact, categoryId: CATEGORY_HEX, functionName: 'notes', args: [TARGET, BigInt(index)],
         vm: compositionMachine(),
       });

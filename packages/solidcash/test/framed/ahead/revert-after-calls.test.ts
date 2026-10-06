@@ -1,18 +1,18 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { sha256, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import * as composer from '../../../src/per-call/composer/index.js';
-import { PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import * as composer from '../../../src/framed/composer/index.js';
+import { FramedProxyDeployError, buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/framed/proxy/entry-writes.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub, bobAddress, bobPkh, bobPriv } from '../../fixture/vars.js';
@@ -23,7 +23,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  *
  * `Desk.post` replicates a publish entry: argument checks, a write into a proxied store, two registry reads, three
  * token calls (`balanceOf`, `approve`, `transferFrom`) and a second store write. Each case fails one check through
- * `callPerCallProxyEntry`. Today a check in the entry stalls the settle at the call after it, and a revert in a
+ * `callFramedProxyEntry`. Today a check in the entry stalls the settle at the call after it, and a revert in a
  * callee refuses that callee's own settle; either way the refusal reporter is asked, and its innermost frame is a
  * store proxy leg no attempt reached, refusing because its delegate reference is still the unfilled sentinel. The
  * error names that leg and carries neither the draft nor the report; the draft is reached here by spying on the
@@ -142,7 +142,7 @@ interface Compiled {
 
 /** Compiled when the suite runs, so a run that skips it compiles nothing. */
 function compile(): Compiled {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const [journal, roster, coin, desk] = [artifacts.Journal!, artifacts.Roster!, artifacts.Coin!, artifacts.Desk!];
   return {
     journal, roster, coin, desk,
@@ -163,7 +163,7 @@ interface Deployed {
   readonly network: MockNetworkProvider;
   readonly deskProxyCategoryId: string;
   readonly deskImplementationCategoryId: string;
-  readonly externals: Record<string, PerCallProxyExternal>;
+  readonly externals: Record<string, FramedProxyExternal>;
   readonly alice: Caller;
   readonly bob: Caller;
 }
@@ -196,7 +196,7 @@ async function deployAll(): Promise<Deployed> {
   for (const initCoin of [journalInitCoin, deskInitCoin]) await network.addUtxo(binToHex(ALICE_LOCK), initCoin);
   await fundShippedFacets(network);
 
-  const journalDeployment = await deployPerCallProxy({
+  const journalDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: journal,
     proxyArtifact: buildProxyArtifact(journal),
@@ -209,7 +209,7 @@ async function deployAll(): Promise<Deployed> {
   });
   expect(journalDeployment.initialize.broadcast).toBeDefined();
 
-  const deskDeployment = await deployPerCallProxy({
+  const deskDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: desk,
     proxyArtifact: buildProxyArtifact(desk),
@@ -272,7 +272,7 @@ async function refusedCall(
   const hosts = vi.spyOn(composer, 'createComposedDerivationHost');
   const derivations = vi.spyOn(composer, 'deriveComposition');
   try {
-    await callPerCallProxyEntry({
+    await callFramedProxyEntry({
       provider: network,
       implementationArtifact: compiled.desk,
       proxyArtifact: buildProxyArtifact(compiled.desk),
@@ -309,8 +309,8 @@ async function refusedCall(
 /** Calls a `Desk` entry through its proxy and returns the settled hop. */
 function settledCall(
   caller: Caller, functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: deployed.network,
     implementationArtifact: compiled.desk,
     proxyArtifact: buildProxyArtifact(compiled.desk),
@@ -329,7 +329,7 @@ function settledCall(
 
 /** The stall the settle catches when the entry's frame stops before call `call`, counted from zero. */
 function stalledAt(call: number): string {
-  return `PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.post() filled no witness at site ${call} `
+  return `FRAMED_DERIVATION_STALLED: master "implementation-master" of Desk.post() filled no witness at site ${call} `
     + `(call ${call})`;
 }
 
@@ -345,7 +345,7 @@ function reportOf(draft: composer.CompositionDraft): composer.CompositionRefusal
  */
 function expectReported(refused: Refused, prefix: string, frame: string): composer.CompositionRefusal {
   const { error } = refused;
-  expect(error).toBeInstanceOf(PerCallProxyDeployError);
+  expect(error).toBeInstanceOf(FramedProxyDeployError);
   expect(error.message.startsWith(`${prefix} did not settle through the proxy: `)).toBe(true);
   expect(error.message).toContain(`frame "${frame}" of `);
   expect(error.message).not.toContain(`requested index: ${UNFILLED_INDEX}`);
@@ -367,7 +367,7 @@ function reasonOf(report: composer.CompositionRefusal, master: string): composer
   return report.refusals.find((refusal) => refusal.master === master)?.reason;
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through the shipped proxy hop', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('a revert after calls through the shipped proxy hop', () => {
   beforeAll(async () => {
     compiled = compile();
     deployed = await deployAll();
@@ -427,7 +427,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     // The entry's own frame is derived with the callee's verdict deferred, so the refusal carries that stall; the
     // deferred callee's own revert is still what the report names.
     expect(refused.stalls).toStrictEqual([
-      'PER_CALL_DERIVATION_STALLED: master "callee-master-7" of Coin.transferFrom() filled no witness at site 0 '
+      'FRAMED_DERIVATION_STALLED: master "callee-master-7" of Coin.transferFrom() filled no witness at site 0 '
       + '(close of segment 0)',
     ]);
     const reason = reasonOf(report, 'callee-master-7');

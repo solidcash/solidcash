@@ -10,7 +10,7 @@
  * spend with no indication of why.
  */
 
-import { bytesEqual, PerCallEncodingError, type CompositionPlaceholders } from '@solidcash/utils';
+import { bytesEqual, FramedEncodingError, type CompositionPlaceholders } from '@solidcash/utils';
 
 /** Length of the state category. */
 export const CATEGORY_SLOT_LENGTH = 32;
@@ -37,11 +37,11 @@ export function emptySlot(length: number): Uint8Array {
 
 /** Bytes a push of `length` payload bytes spends on its opcode and length field. */
 export function placeholderPrefixLength(length: number): number {
-  if (length < 1) throw new PerCallEncodingError(`a slot holds at least one byte: got ${length}`);
+  if (length < 1) throw new FramedEncodingError(`a slot holds at least one byte: got ${length}`);
   if (length <= 75) return 1;
   if (length <= 0xff) return 2;
   if (length <= 0xffff) return 3;
-  throw new PerCallEncodingError(`a slot above 65535 bytes is not representable: got ${length}`);
+  throw new FramedEncodingError(`a slot above 65535 bytes is not representable: got ${length}`);
 }
 
 /** The script bytes that reserve a slot: a minimal push of a zero-filled value of that length. */
@@ -52,7 +52,7 @@ export function placeholderPush(length: number): Uint8Array {
   if (length <= 0xffff) {
     return new Uint8Array([PUSHDATA2_OPCODE, length & 0xff, (length >>> 8) & 0xff, ...payload]);
   }
-  throw new PerCallEncodingError(`a slot above 65535 bytes is not representable: got ${length}`);
+  throw new FramedEncodingError(`a slot above 65535 bytes is not representable: got ${length}`);
 }
 
 /** Byte length of `placeholderPush(length)`. */
@@ -95,18 +95,18 @@ export function declaredSlots(
  */
 export function assertPlaceholders(script: Uint8Array, placeholders: CompositionPlaceholders): void {
   if (placeholders.version !== 1) {
-    throw new PerCallEncodingError(`unsupported placeholder version: ${String(placeholders.version)}`);
+    throw new FramedEncodingError(`unsupported placeholder version: ${String(placeholders.version)}`);
   }
   for (const slot of declaredSlots(placeholders)) {
     if (slot.offset < 0 || slot.offset + placeholderPushLength(slot.length) > script.length) {
-      throw new PerCallEncodingError(
+      throw new FramedEncodingError(
         `${slot.what} slot at ${slot.offset} is outside a ${script.length}-byte script`,
       );
     }
     const expected = placeholderPush(slot.length);
     const actual = script.subarray(slot.offset, slot.offset + expected.length);
     if (!bytesEqual(actual, expected)) {
-      throw new PerCallEncodingError(
+      throw new FramedEncodingError(
         `${slot.what} slot at ${slot.offset} is not a reserved ${slot.length}-byte zero push`,
       );
     }
@@ -133,27 +133,27 @@ export function fillPlaceholders(
   values: { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array },
 ): Uint8Array {
   if (values.category.length !== CATEGORY_SLOT_LENGTH) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `a category is ${CATEGORY_SLOT_LENGTH} bytes: got ${values.category.length}`,
     );
   }
   if (values.contractAddress.length !== ADDRESS_SLOT_LENGTH) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `a contract address is ${ADDRESS_SLOT_LENGTH} bytes: got ${values.contractAddress.length}`,
     );
   }
   const declaresTemplateHash = placeholders.templateHashOffset !== undefined;
   if (declaresTemplateHash) {
     if (values.templateHash === undefined) {
-      throw new PerCallEncodingError('the descriptor declares a validator program hash slot, so a value is required');
+      throw new FramedEncodingError('the descriptor declares a validator program hash slot, so a value is required');
     }
     if (values.templateHash.length !== TEMPLATE_HASH_SLOT_LENGTH) {
-      throw new PerCallEncodingError(
+      throw new FramedEncodingError(
         `a validator program hash is ${TEMPLATE_HASH_SLOT_LENGTH} bytes: got ${values.templateHash.length}`,
       );
     }
   } else if (values.templateHash !== undefined) {
-    throw new PerCallEncodingError('the descriptor declares no validator program hash slot, so none can be filled');
+    throw new FramedEncodingError('the descriptor declares no validator program hash slot, so none can be filled');
   }
   assertPlaceholders(script, placeholders);
 
@@ -177,7 +177,7 @@ export function readPlaceholders(
 ): { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array } {
   const bounds = (offset: number, length: number): void => {
     if (offset < 0 || offset + placeholderPushLength(length) > script.length) {
-      throw new PerCallEncodingError(`slot at ${offset} is outside a ${script.length}-byte script`);
+      throw new FramedEncodingError(`slot at ${offset} is outside a ${script.length}-byte script`);
     }
   };
   bounds(placeholders.categoryOffset, CATEGORY_SLOT_LENGTH);

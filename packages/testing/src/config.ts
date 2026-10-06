@@ -64,10 +64,10 @@ export interface SolidcashConfig {
   compiler?: Record<string, unknown>;
   /**
    * Composition convention the compiler targets. `direct` (the default) gives every entry point its own
-   * top-level function and block layout; `per-call` compiles each entry point as a master program that settles
+   * top-level function and block layout; `framed` compiles each entry point as a master program that settles
    * the contract's state once per transaction. Passed through to solidc `compileString` / `compileStringMulti`.
    */
-  composition?: 'direct' | 'per-call';
+  composition?: 'direct' | 'framed';
   /**
    * Address a deployment by a stable, chain-independent CREATE identity (default) or by the address its own
    * deployment transaction produces.
@@ -90,7 +90,7 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   accounts?: AccountsConfig;
   solc?: Record<string, unknown>;
   compiler?: Record<string, unknown>;
-  composition?: 'direct' | 'per-call';
+  composition?: 'direct' | 'framed';
   logicalIdentity: boolean;
   typegen: {
     targets: { target: TypegenTarget; layout: 'typechain'; outDir: string; sourceDir?: string }[];
@@ -113,7 +113,7 @@ export const solidcashConfigSchema = {
     } },
     defaultNetwork: { type: 'string' }, mnemonic: { type: 'string' },
     compiler: { type: 'object' }, solc: { type: 'object', deprecated: true },
-    composition: { enum: ['direct', 'per-call'] },
+    composition: { enum: ['direct', 'framed'] },
     logicalIdentity: { type: 'boolean' },
     networks: { type: 'object', additionalProperties: { type: 'object' } },
     accounts: { type: 'object' },

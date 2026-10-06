@@ -1,6 +1,6 @@
 # W8 preparation: upstream merge distance, conflict surface, and port plan
 
-Read-only measurement at `feat/per-call` = `48e4c4f62` (2026-10-06). Nothing merged, fetched, or checked out.
+Read-only measurement at `feat/framed` = `48e4c4f62` (2026-10-06). Nothing merged, fetched, or checked out.
 
 ## 1. The remote already exists (corrects the plan's setup note)
 
@@ -94,12 +94,12 @@ comparison.
 
 1. Confirm the window and that no other agent is writing to `/Code/cashscript` (check `/proc/*/cwd` per the
    plan's rule, not by killing anything).
-2. Port in the order above, behaviour first, docs last, each as its own commit on `feat/per-call` with the
+2. Port in the order above, behaviour first, docs last, each as its own commit on `feat/framed` with the
    upstream sha named in the message (the branch already uses the `(rescued <sha>)` convention). Keep the
    package renames: never create `packages/cashc` or `packages/cashscript` paths.
-3. Skip the three version-bump commits; record why in `docs/per-call/DECISIONS.md`.
+3. Skip the three version-bump commits; record why in `docs/framed/DECISIONS.md`.
 4. After the last port: one-shot `yarn build`, `yarn lint`, then the compiler and SDK suites once each
-   (`--maxWorkers=2..3`), and compare the failure list against `docs/per-call/W6_BASELINE.md`. Any *new* failure
+   (`--maxWorkers=2..3`), and compare the failure list against `docs/framed/W6_BASELINE.md`. Any *new* failure
    is a port defect; the recorded pre-existing rows must not grow.
 5. Re-pin whatever upstream's `42e8ad81d` (source tags) and `1597840a1`/`b7119e195` (error text) move in our
    pinned test expectations, in the same commits as the port that moved them.

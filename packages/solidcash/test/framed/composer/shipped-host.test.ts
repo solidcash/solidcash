@@ -9,19 +9,19 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 import {
   createShippedDerivationHost,
   deriveDepthFirst,
   publishedCallee,
   readPublishedStopSites,
   type ShippedMasterRun,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * Deriving a composition through the real host.
@@ -90,7 +90,7 @@ interface Composition {
 }
 
 function buildComposition(): Composition {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const scriptBytes = (name: string): Uint8Array => {
     const artifact = artifacts[name]!;
     return fillPlaceholders(
@@ -203,7 +203,7 @@ function buildHost(
   }) => void,
   vm: Parameters<typeof createShippedDerivationHost>[0]['vm'] = compositionMachine(),
 ): { host: ReturnType<typeof createShippedDerivationHost>; composition: Composition } {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const composition = buildComposition();
   const published = readPublishedStopSites(artifacts.Caller!);
   const callerEntry = published.entries.find((entry) => entry.functionName === CALLER_ENTRY)!;
@@ -248,7 +248,7 @@ function buildHost(
 
 describe('a host driving the derivation from a real compile', () => {
   it('publishes the caller and callee tables the host reads', () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const caller = readPublishedStopSites(artifacts.Caller!);
     const callee = readPublishedStopSites(artifacts.Callee!);
     expect(caller.entries.map((entry) => entry.functionName)).toStrictEqual([CALLER_ENTRY]);
@@ -276,7 +276,7 @@ describe('a host driving the derivation from a real compile', () => {
   });
 
   it('refuses a site whose fill does not move the real program', () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const composition = buildComposition();
     const run: ShippedMasterRun = {
       master: 'caller-1',
@@ -293,7 +293,7 @@ describe('a host driving the derivation from a real compile', () => {
     };
     const host = createShippedDerivationHost({ artifacts: [artifacts.Caller!], runs: [run] });
     const root = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.ROOT, master: 'caller-1' };
-    expect(() => deriveDepthFirst(root, host)).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => deriveDepthFirst(root, host)).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });
 
@@ -304,7 +304,7 @@ const SOLO_SOURCE = 'pragma solidcash ^0.13.0;'
 describe('a host driving a caller whose entry makes no call', () => {
   it('publishes and derives the single segment close, running the compiled master', () => {
     const category = seededCategory('shipped host solo');
-    const artifacts = compileStringMulti(SOLO_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOLO_SOURCE, { composition: 'framed' });
     const artifact = artifacts.Solo!;
     const address = validatorAddress(category, VALIDATOR_PROGRAM);
     const program = fillPlaceholders(
@@ -389,24 +389,24 @@ describe('a host driving a caller whose entry makes no call', () => {
   it('refuses an artifact that publishes no stop-site table', () => {
     // A master compiled before the table existed, or one compiled for the direct convention, publishes nothing:
     // the host has to refuse it rather than derive against a guessed set of sites.
-    const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Caller!;
+    const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Caller!;
     const withoutTable = { ...artifact.composition! };
     delete withoutTable.stopSites;
     expect(() => readPublishedStopSites({ composition: withoutTable }))
-      .toThrow(/PER_CALL_HOST_STOP_SITES_UNPUBLISHED/);
+      .toThrow(/FRAMED_HOST_STOP_SITES_UNPUBLISHED/);
     expect(() => createShippedDerivationHost({ artifacts: [{ composition: withoutTable }], runs: [] }))
-      .toThrow(/PER_CALL_HOST_STOP_SITES_UNPUBLISHED/);
+      .toThrow(/FRAMED_HOST_STOP_SITES_UNPUBLISHED/);
   });
 
   it('refuses a stop-site table whose schema version it does not know', () => {
     // The schema is frozen with a version, so a table written by a later compiler is refused by name rather than
     // read as if it had today's shape.
-    const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Caller!;
+    const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Caller!;
     const composition = artifact.composition!;
     // A version today's type does not admit, so the table is handed over as untyped data.
     const future: unknown = { ...composition, stopSites: { ...composition.stopSites!, version: 2 } };
     expect(() => readPublishedStopSites({ composition: future as typeof composition }))
-      .toThrow(/PER_CALL_HOST_STOP_SITES_VERSION/);
+      .toThrow(/FRAMED_HOST_STOP_SITES_VERSION/);
   });
 });
 
@@ -483,7 +483,7 @@ const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + `     else { INear(0x${toHex(ADDRESS_NEAR)}).pong.call(); } require(true); }`
   + ' }';
 
-/** A contract one of whose bodies is a shape the per-call convention cannot emit. */
+/** A contract one of whose bodies is a shape the framed convention cannot emit. */
 const REFUSED_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Only {'
   + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
@@ -493,16 +493,16 @@ describe('an entry the compiler refused', () => {
   it('is refused by name, with the reason, when a derivation asks for its sites', () => {
     // The refused body is not in the published table, and the composition metadata says why: a driver reports the
     // unsupported function instead of a spend that fails for a reason it cannot name.
-    const artifacts = compileStringMulti(REFUSED_ENTRY_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(REFUSED_ENTRY_SOURCE, { composition: 'framed' });
     const host = createShippedDerivationHost({ artifacts: [artifacts.Only!], runs: [] });
-    expect(() => host.sitesFor('Only.bad()')).toThrow(/PER_CALL_HOST_ENTRY_REFUSED/);
+    expect(() => host.sitesFor('Only.bad()')).toThrow(/FRAMED_HOST_ENTRY_REFUSED/);
     expect(() => host.sitesFor('Only.bad()')).toThrow(/returns a function pointer/);
   });
 });
 
 describe('a caller whose arms each call a different contract', () => {
   it('publishes both arms at one record, each marked conditional, over the path\'s own closes', () => {
-    const artifacts = compileStringMulti(CONDITIONAL_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(CONDITIONAL_SOURCE, { composition: 'framed' });
     const entry = readPublishedStopSites(artifacts.Chooser!).entries.find(
       (candidate) => candidate.functionName === CHOOSER_ENTRY,
     )!;
@@ -518,7 +518,7 @@ describe('a caller whose arms each call a different contract', () => {
   });
 
   it('derives the callee of the arm that ran, step over the arm that did not', () => {
-    const artifacts = compileStringMulti(CONDITIONAL_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(CONDITIONAL_SOURCE, { composition: 'framed' });
     const chooserEntry = readPublishedStopSites(artifacts.Chooser!).entries
       .find((entry) => entry.functionName === CHOOSER_ENTRY)!;
     const fillProgram = (

@@ -32,9 +32,9 @@ const {
   readPlaceholders,
 } = compositionPlaceholders;
 
-/** Raised when an artifact cannot serve as a per-call master. */
-export class PerCallDeploymentError extends Error {
-  public readonly name = 'PerCallDeploymentError';
+/** Raised when an artifact cannot serve as a framed master. */
+export class FramedDeploymentError extends Error {
+  public readonly name = 'FramedDeploymentError';
 
   public constructor(message: string) {
     super(message);
@@ -55,8 +55,8 @@ export interface DeployedMaster {
 function requirePlaceholders(artifact: Artifact): CompositionPlaceholders {
   const composition = artifact.composition;
   if (composition === undefined || composition.placeholders === undefined) {
-    throw new PerCallDeploymentError(
-      `artifact "${artifact.contractName}" was not compiled per-call, so it publishes no placeholder descriptor`,
+    throw new FramedDeploymentError(
+      `artifact "${artifact.contractName}" was not compiled framed, so it publishes no placeholder descriptor`,
     );
   }
   return composition.placeholders;
@@ -100,7 +100,7 @@ function programBytes(artifact: Artifact): Uint8Array {
   try {
     script = asmToScript(artifact.bytecode);
   } catch (error) {
-    throw new PerCallDeploymentError(
+    throw new FramedDeploymentError(
       "the artifact's program is not assembly, so its published slot offsets cannot apply: "
       + (error as Error).message,
     );
@@ -150,30 +150,30 @@ export function verifyMasterDeployment(
 
   const expectedAddress = validatorAddress(category, validatorProgram);
   if (!bytesEqual(deployed.address, expectedAddress)) {
-    throw new PerCallDeploymentError('the deployed address is not addrV(category)');
+    throw new FramedDeploymentError('the deployed address is not addrV(category)');
   }
   if (deployed.script.length !== original.length) {
-    throw new PerCallDeploymentError(
+    throw new FramedDeploymentError(
       `the deployed script is ${deployed.script.length} bytes, not the artifact's ${original.length}`,
     );
   }
 
   const readBack = readPlaceholders(deployed.script, placeholders);
   if (readBack.category.length !== CATEGORY_SLOT_LENGTH || !bytesEqual(readBack.category, chainCategory(category))) {
-    throw new PerCallDeploymentError('the category slot does not read back as the filled category');
+    throw new FramedDeploymentError('the category slot does not read back as the filled category');
   }
   if (placeholders.templateHashOffset !== undefined) {
     const expected = validatorTemplateHash(validatorProgram);
     const read = readBack.templateHash;
     if (read === undefined || read.length !== TEMPLATE_HASH_SLOT_LENGTH || !bytesEqual(read, expected)) {
-      throw new PerCallDeploymentError(
+      throw new FramedDeploymentError(
         "the validator program hash slot does not read back as the program's hash",
       );
     }
   }
   if (readBack.contractAddress.length !== ADDRESS_SLOT_LENGTH
     || !bytesEqual(readBack.contractAddress, deployed.address)) {
-    throw new PerCallDeploymentError('the address slot does not read back as the filled address');
+    throw new FramedDeploymentError('the address slot does not read back as the filled address');
   }
 
   // Every slot the descriptor declares is where a fill may land, and nowhere else.
@@ -183,11 +183,11 @@ export function verifyMasterDeployment(
   for (let index = 0; index < original.length; index += 1) {
     if (inSlot(index)) continue;
     if (deployed.script[index] !== original[index]) {
-      throw new PerCallDeploymentError(`byte ${index} outside the slots changed`);
+      throw new FramedDeploymentError(`byte ${index} outside the slots changed`);
     }
   }
 
   if (!bytesEqual(deployed.lockingBytecode, masterLock(deployed.script))) {
-    throw new PerCallDeploymentError('the master lock is not the P2SH32 of the filled program');
+    throw new FramedDeploymentError('the master lock is not the P2SH32 of the filled program');
   }
 }

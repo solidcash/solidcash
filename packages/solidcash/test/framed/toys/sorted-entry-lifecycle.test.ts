@@ -4,7 +4,7 @@ import {
   FrameKind, INDEX_NONE, buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, bytesToHex,
   type RecordEntry,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { scriptToLockingBytecode } from '../../../src/utils.js';
 import { encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
@@ -14,7 +14,7 @@ import {
 import {
   createComposedDerivationHost, deriveComposition, layOutMappingWrites, participant, planMappingWrite,
   readPublishedStopSites, type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * One entry inserting, updating and deleting one key across three calls in one transaction.

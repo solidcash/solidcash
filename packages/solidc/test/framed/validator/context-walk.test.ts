@@ -6,7 +6,7 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import { FrameKind, chainCategory, encodeWitnessBlock, type WitnessBlock } from '@solidcash/utils';
-import { contextCategoryScript } from '../../../src/per-call/validator/program.js';
+import { contextCategoryScript } from '../../../src/framed/validator/program.js';
 import { compositionMachine } from '../machine.js';
 
 /**

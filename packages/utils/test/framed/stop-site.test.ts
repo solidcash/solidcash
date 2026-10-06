@@ -5,9 +5,9 @@ import {
   nextStopSite,
   validateStopSiteMetadata,
   witnessKindOf,
-} from '../../src/per-call/index.js';
-import type { StopSiteMetadata } from '../../src/per-call/stop-site.js';
-import { expectPerCallRejection } from './helpers.js';
+} from '../../src/framed/index.js';
+import type { StopSiteMetadata } from '../../src/framed/stop-site.js';
+import { expectFramedRejection } from './helpers.js';
 
 const metadata = (sites: StopSiteMetadata['sites']): StopSiteMetadata => ({
   version: 1,
@@ -36,14 +36,14 @@ describe('stop-site metadata validation', () => {
   });
 
   it('rejects a version other than the current one', () => {
-    expectPerCallRejection(
+    expectFramedRejection(
       () => validateStopSiteMetadata({ ...coherent, version: 2 as unknown as 1 }),
       /unsupported stop-site metadata version/,
     );
   });
 
   it('rejects a gap in the site ordinals', () => {
-    expectPerCallRejection(
+    expectFramedRejection(
       () => validateStopSiteMetadata(metadata([
         { kind: 'read', site: 0, record: 'DA' },
         { kind: 'read', site: 2, record: 'DB' },
@@ -53,7 +53,7 @@ describe('stop-site metadata validation', () => {
   });
 
   it('rejects a repeated site ordinal', () => {
-    expectPerCallRejection(
+    expectFramedRejection(
       () => validateStopSiteMetadata(metadata([
         { kind: 'read', site: 0, record: 'DA' },
         { kind: 'read', site: 0, record: 'DB' },
@@ -63,7 +63,7 @@ describe('stop-site metadata validation', () => {
   });
 
   it('rejects a segment close before the call it closes', () => {
-    expectPerCallRejection(
+    expectFramedRejection(
       () => validateStopSiteMetadata(metadata([
         { kind: 'read', site: 0, record: 'DA' },
         { kind: 'segmentClose', site: 1, segmentIndex: 1 },
@@ -75,7 +75,7 @@ describe('stop-site metadata validation', () => {
   });
 
   it('rejects the wrong number of segment closes', () => {
-    expectPerCallRejection(
+    expectFramedRejection(
       () => validateStopSiteMetadata(metadata([
         { kind: 'call', site: 0, callIndex: 0 },
         { kind: 'segmentClose', site: 1, segmentIndex: 0 },
@@ -85,7 +85,7 @@ describe('stop-site metadata validation', () => {
   });
 
   it('rejects duplicate call indices', () => {
-    expectPerCallRejection(
+    expectFramedRejection(
       () => validateStopSiteMetadata(metadata([
         { kind: 'call', site: 0, callIndex: 0 },
         { kind: 'call', site: 1, callIndex: 0 },
@@ -97,7 +97,7 @@ describe('stop-site metadata validation', () => {
   });
 
   it('rejects call indices that are not contiguous', () => {
-    expectPerCallRejection(
+    expectFramedRejection(
       () => validateStopSiteMetadata(metadata([
         { kind: 'call', site: 0, callIndex: 1 },
         { kind: 'call', site: 1, callIndex: 2 },

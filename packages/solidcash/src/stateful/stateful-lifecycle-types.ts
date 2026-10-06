@@ -5,7 +5,7 @@
 
 import type { Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { AddressType, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
-import type { PerCallGenesisHeadCollection } from '../per-call/deploy/genesis.js';
+import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { StateValueType } from '../types/state-inference.js';
@@ -16,7 +16,7 @@ export interface DeployOptions {
   fundingUtxo: Utxo;
   funder: Unlocker;
   /**
-   * The 25-byte P2PKH lock of the deployer, which a per-call constructor reads as `msg.sender`. A deployment made by
+   * The 25-byte P2PKH lock of the deployer, which a framed constructor reads as `msg.sender`. A deployment made by
    * a Signer states the Signer's own lock - the one its calls carry - whatever coin funds the genesis. Unset, the
    * funder's lock stands in when it is a P2PKH lock.
    */
@@ -28,15 +28,15 @@ export interface DeployOptions {
    * genesis mints the head of every sorted collection its implementation declares, which the proxy artifact's own
    * layout does not carry, since a head is minted only at genesis.
    */
-  headCollections?: readonly PerCallGenesisHeadCollection[];
+  headCollections?: readonly FramedGenesisHeadCollection[];
   changeAddress: string;
   masterAmount?: bigint;   // default 1200n
   dataNftAmount?: bigint;  // default 1200n per data NFT
   fee?: bigint;            // default 1000n
   maxFee?: bigint;         // maximum allowed fee (throws if exceeded)
   addressType?: AddressType;
-  threadCount?: number;    // number of master minting NFTs (direct default 1; per-call default 12)
-  /** Number of validator UTXOs at the contract's address; per-call deployments default to the composing size. */
+  threadCount?: number;    // number of master minting NFTs (direct default 1; framed default 12)
+  /** Number of validator UTXOs at the contract's address; framed deployments default to the composing size. */
   validatorCount?: number;
   /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:

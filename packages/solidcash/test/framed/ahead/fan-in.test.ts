@@ -5,7 +5,7 @@ import { ethers } from 'ethers';
 import {
   SHARED_LIBRARY_SALT, bytesToHex, encodePushdataValue, hash160, validatorAddress, type Artifact,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
@@ -13,20 +13,20 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
 import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { deploymentStateValues, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { deploymentStateValues, type FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Walls ahead: the fan-in shape (MS3) through the shipped hop, `callPerCallProxyEntry`.
+ * Walls ahead: the fan-in shape (MS3) through the shipped hop, `callFramedProxyEntry`.
  *
  * `Desk` (a proxied root) fans into `Journal` (a proxied store), `Coin` (a token), `Vault` (an escrow) and `Panel`
  * (the escrow's arbitrator), as `takeJob` with one applicant and `payStartJob` do. `take` reads membership and the
@@ -38,7 +38,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the arbitrator (gated on the escrow's address), then writes its record under a counter field and returns the id.
  *
  * Each flow is pinned where it stops today; a flow that settles moves its case to every verdict accepted and the
- * broadcast, as `payStart` has. The whole file runs only under `PER_CALL_AHEAD=1`.
+ * broadcast, as `payStart` has. The whole file runs only under `FRAMED_AHEAD=1`.
  */
 
 /** A 32-byte id that is neither one repeated byte nor a palindrome. */
@@ -52,7 +52,7 @@ const COIN_CATEGORY = id32('3e');
 const VAULT_CATEGORY = id32('3f');
 const PANEL_CATEGORY = id32('4a');
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (category: string): Uint8Array => validatorAddress(hexToBin(category), VALIDATOR_PROGRAM);
 
 const MAX = 2n ** 256n - 1n;
@@ -237,7 +237,7 @@ let compiledRun: Compiled | undefined;
 /** The five contracts, compiled once and only when the file runs. */
 function compiled(): Compiled {
   if (compiledRun === undefined) {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     compiledRun = {
       journal: artifacts.Journal!, coin: artifacts.Coin!, panel: artifacts.Panel!, vault: artifacts.Vault!,
       desk: artifacts.Desk!,
@@ -300,7 +300,7 @@ interface Deployed {
   readonly network: MockNetworkProvider;
   readonly deskProxyCategoryId: string;
   readonly deskImplementationCategoryId: string;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly creatorLock: Uint8Array;
   readonly creatorFunder: Unlocker;
   readonly changeAddress: string;
@@ -363,7 +363,7 @@ async function deployFanIn(worker: Worker): Promise<Deployed> {
     });
   }
 
-  const journalDeployment = await deployPerCallProxy({
+  const journalDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: journal,
     proxyArtifact: buildProxyArtifact(journal),
@@ -376,7 +376,7 @@ async function deployFanIn(worker: Worker): Promise<Deployed> {
   });
   expect(journalDeployment.initialize.broadcast).toBeDefined();
 
-  const deskDeployment = await deployPerCallProxy({
+  const deskDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: desk,
     proxyArtifact: buildProxyArtifact(desk),
@@ -396,7 +396,7 @@ async function deployFanIn(worker: Worker): Promise<Deployed> {
   expect(deskDeployment.initialize.broadcast).toBeDefined();
   expect(binToHex(deskDeployment.proxy.address)).toBe(binToHex(deskAddress));
 
-  const journalExternal: PerCallProxyExternal = {
+  const journalExternal: FramedProxyExternal = {
     artifact: journal,
     categoryId: journalDeployment.proxy.categoryId,
     proxyArtifact: buildProxyArtifact(journal),
@@ -405,7 +405,7 @@ async function deployFanIn(worker: Worker): Promise<Deployed> {
 
   // The arbitrator's fee is its own hop, as when a proxied initialize writing two collections stopped at its
   // broadcast; that initialize settles now (pinned below).
-  const enlisted = await callPerCallProxyEntry({
+  const enlisted = await callFramedProxyEntry({
     provider: network,
     implementationArtifact: journal,
     proxyArtifact: buildProxyArtifact(journal),
@@ -422,7 +422,7 @@ async function deployFanIn(worker: Worker): Promise<Deployed> {
   expect(enlisted.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
 
   // The job is opened with one note, as a posted job holds its creation event before it is taken.
-  const opened = await callPerCallProxyEntry({
+  const opened = await callFramedProxyEntry({
     provider: network,
     implementationArtifact: desk,
     proxyArtifact: buildProxyArtifact(desk),
@@ -459,10 +459,10 @@ async function deployFanIn(worker: Worker): Promise<Deployed> {
 async function enterDesk(
   deployed: Deployed, functionName: string, args: readonly (bigint | Uint8Array)[],
   caller: { readonly lock: Uint8Array; readonly funder: Unlocker; readonly coin: Utxo },
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const { desk } = compiled();
   await deployed.network.addUtxo(binToHex(caller.lock), caller.coin);
-  return callPerCallProxyEntry({
+  return callFramedProxyEntry({
     provider: deployed.network,
     implementationArtifact: desk,
     proxyArtifact: buildProxyArtifact(desk),
@@ -487,11 +487,11 @@ function publishedSites(artifact: Artifact, functionName: string): readonly stri
   return (row.externalCalls ?? []).map((call) => `${call.interfaceName}.${call.functionName}`);
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the shipped hop (MS3)', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('the fan-in shape through the shipped hop (MS3)', () => {
   it('compiles every entry and publishes the calls each flow makes, in order', () => {
     const { journal, coin, panel, vault, desk } = compiled();
     for (const artifact of [journal, coin, panel, vault, desk]) {
-      expect(artifact.composition?.convention).toBe('per-call');
+      expect(artifact.composition?.convention).toBe('framed');
       expect(artifact.composition!.refusedEntries ?? []).toStrictEqual([]);
     }
     expect(publishedSites(desk, 'take')).toStrictEqual([
@@ -510,7 +510,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     const { journal } = compiled();
     const { network, funder, creatorFunder, creatorLock, changeAddress, hopCoins } = await fundedNetwork();
     const judgeLock = encodeLockingBytecodeP2pkh(bobPkh);
-    const deployed = await deployPerCallProxy({
+    const deployed = await deployFramedProxy({
       provider: network,
       implementationArtifact: journal,
       proxyArtifact: buildProxyArtifact(journal),
@@ -530,7 +530,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     // One insert into each of two collections, which spent one empty head twice at the broadcast until the hop
     // looked each head up at its own collection's lock (225b23731).
     expect(deployed.initialize.broadcast).toBeDefined();
-    const read = (functionName: string, who: Uint8Array): Promise<unknown> => readPerCallEntry({
+    const read = (functionName: string, who: Uint8Array): Promise<unknown> => readFramedEntry({
       provider: network, artifact: journal, categoryId: deployed.proxy.categoryId, functionName, args: [who],
       vm: compositionMachine(),
     }).then((answer) => answer.value);
@@ -550,7 +550,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
 
   /** The number of notes one job holds, read back through the shipped read path. */
   async function noteCountOf(deployed: Deployed, id: bigint): Promise<bigint> {
-    const answered = await readPerCallEntry({
+    const answered = await readFramedEntry({
       provider: deployed.network, artifact: compiled().journal,
       categoryId: deployed.externals.IJournal!.categoryId, functionName: 'noteCount', args: [id],
       vm: compositionMachine(),
@@ -563,7 +563,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
   async function coinBalances(
     deployed: Deployed, holders: Readonly<Record<string, Uint8Array>>,
   ): Promise<Record<string, readonly string[]>> {
-    const deployment = await readPerCallDeployment(deployed.network, COIN_CATEGORY, compiled().coin.stateLayout!);
+    const deployment = await readFramedDeployment(deployed.network, COIN_CATEGORY, compiled().coin.stateLayout!);
     const nodes = (deployment.nodesByCollection.get('balances') ?? [])
       .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)));
     return Object.fromEntries(Object.entries(holders).map(([name, holder]) => {
@@ -581,7 +581,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     });
 
     // The post's note carries `noteCount`'s result, `pay` carries `feeOf`'s and the last post carries `pay`'s, so
-    // the hop plans in execution order (`PER_CALL_HOP_TRACE=1`: `stop-plan` three times, `learned=[|1:1]`,
+    // the hop plans in execution order (`FRAMED_HOP_TRACE=1`: `stop-plan` three times, `learned=[|1:1]`,
     // `learned=[|4:250]`, then `learned=[|5:0]`). The token fan-in settles inside `pay`, and the second post to one
     // job's notes continues the node the first left, so the entry settles and both notes land.
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -609,7 +609,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     });
     const layout = buildProxyArtifact(compiled().desk).stateLayout!;
     const desk = deploymentStateValues(layout, deployed.deskProxyCategoryId,
-      await readPerCallDeployment(deployed.network, deployed.deskProxyCategoryId, layout));
+      await readFramedDeployment(deployed.network, deployed.deskProxyCategoryId, layout));
     expect([desk.state, desk.dealId]).toStrictEqual([1n, 0n]);
   });
 });

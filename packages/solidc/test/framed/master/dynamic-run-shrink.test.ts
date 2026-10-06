@@ -5,7 +5,7 @@ import {
 } from './chunk-run-input.js';
 
 /**
- * A per-call master whose entry writes a dynamic value narrower than the run it spends, settled on the BCH-2026
+ * A framed master whose entry writes a dynamic value narrower than the run it spends, settled on the BCH-2026
  * machine.
  *
  * The segment declares the run at the wider of its two widths: each chunk the written value holds is rewritten in
@@ -26,7 +26,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function set(string value) { this.text = value; }'
   + ' }';
 
-const note = deployChunkRunContract(compileString(SOURCE, { composition: 'per-call' }), 'dynamic run shrink');
+const note = deployChunkRunContract(compileString(SOURCE, { composition: 'framed' }), 'dynamic run shrink');
 
 /** 300 bytes take three chunks, 200 two and 100 one. */
 const THREE = distinctBytes(300, 0x15);
@@ -45,7 +45,7 @@ const SHAPES: readonly Shape[] = [
   { label: 'two chunks to one', spent: TWO, written: ONE },
 ];
 
-describe.each(SHAPES)('a per-call master that shortens a string value from $label', (shape) => {
+describe.each(SHAPES)('a framed master that shortens a string value from $label', (shape) => {
   const write = (mutation: ChunkRunMutation = {}): boolean => evaluateChunkRuns(note, {
     args: [shape.written],
     runs: [{ variable: 'text', type: 'string', spent: shape.spent, written: shape.written }],

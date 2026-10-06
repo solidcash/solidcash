@@ -14,8 +14,8 @@ import {
   splitFirstPush,
   type PublishedEntryStopSites,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
 import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -27,7 +27,7 @@ import {
   createComposedDerivationHost, deriveDepthFirst, layOutMappingWrites,
   participant, planMappingWrite, type CompositionDraft, type CompositionDraftPlan,
   type DraftMaster, type MappingNodePlacement,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import type { ArtifactMap } from '../shapes/harness.js';
 
@@ -713,7 +713,7 @@ function sharedGraph(): GraphOutcome {
 describe('the vault graph: release, two payments through the token and the emit', () => {
   it('publishes the descriptor, the two collections and the event the graph needs', () => {
     for (const name of ['Token', 'Vault', 'Claimer']) {
-      expect(graph.artifacts[name]?.composition?.convention).toBe('per-call');
+      expect(graph.artifacts[name]?.composition?.convention).toBe('framed');
     }
     expect(graph.artifacts.Vault?.stateLayout?.mappings?.map((mapping) => `${mapping.name}:${mapping.sorted}`))
       .toStrictEqual(['recs:true']);

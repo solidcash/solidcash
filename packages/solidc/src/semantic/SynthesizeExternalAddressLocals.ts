@@ -51,7 +51,7 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
  *
  * Runs before semantic analysis so the synthesised decls resolve normally. The constructor is not visited
  * (it sets the state var; the local would read it before assignment). SOUND: the target is the genuine
- * self-pinned state value, never a per-call caller witness - it is NOT lifted to a parameter.
+ * self-pinned state value, never a framed caller witness - it is NOT lifted to a parameter.
  */
 const PREFIX = '__extaddr_';
 // Arithmetic of parameters and literals is still in scope at the function-body top.

@@ -9,11 +9,11 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveComposition,
@@ -23,7 +23,7 @@ import {
   type CompositionDraftPlan,
   type DraftMaster,
   type FrameRequest,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   USER_LOCK, compileAndDeploy, entryName, layoutWithFacets, master, masterInput, rootOf,
   seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
@@ -369,7 +369,7 @@ describe('a root whose own check fails after an earlier call succeeded', () => {
     // The driver threw: the root's frame fails its own check, so nothing is built and the partial derivation's
     // completions are discarded. The earlier call still ran first — its write is the record declaration the
     // derivation left in the writer's own block — but no accepted transaction carries it.
-    expect((run.derivationError as { code?: string }).code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect((run.derivationError as { code?: string }).code).toBe('FRAMED_DERIVATION_STALLED');
     expect(run.draft.blockOf(PAIR_STORE).segments[0]!.map((entry) => entry.out)).toStrictEqual([run.recordIndex]);
     // The write would change the record, and the same composition with the check passing settles (control below).
     expect(bytesToHex(run.before)).not.toBe(bytesToHex(run.after));
@@ -395,7 +395,7 @@ describe('a nested callee whose check fails after the root called another callee
 
     // The root called the writer and then the mid contract; the mid contract called the deep one, which fails.
     // The derivation stalls at the deep frame, and the report names it rather than the entry the user made.
-    expect((run.derivationError as { code?: string }).code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect((run.derivationError as { code?: string }).code).toBe('FRAMED_DERIVATION_STALLED');
 
     const report = reportCompositionRefusal({
       draft: run.draft,
@@ -467,7 +467,7 @@ describe('a revert with a declared error carrying arguments', () => {
   it('type-checks the arguments: a mismatched count is refused at compile time', () => {
     // The arguments are checked even though they are never evaluated. One argument for a two-parameter error is
     // refused by the compiler before any bytecode is emitted.
-    expect(() => compileStringMulti(chainSource('revert Rejected(7);'), { composition: 'per-call' }))
+    expect(() => compileStringMulti(chainSource('revert Rejected(7);'), { composition: 'framed' }))
       .toThrow(/Error 'Rejected' expects 2 arguments but got 1/);
   });
 });

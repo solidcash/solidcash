@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { decodeWitnessBlock, encodeWitnessBlockPush, splitFirstPush } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { participant } from '../../../src/per-call/composer/index.js';
-import { callPerCallProxyEntry, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { participant } from '../../../src/framed/composer/index.js';
+import { callFramedProxyEntry, deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -37,7 +37,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 
 describe('a dispatched forwarding fallback\'s recorded result', () => {
   it('is refused when it is not the result its delegate returned', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -51,7 +51,7 @@ describe('a dispatched forwarding fallback\'s recorded result', () => {
     for (const coin of [implFunding, proxyFunding]) await network.addUtxo(source.address, coin);
     for (const coin of [hopCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);
     await fundShippedFacets(network);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyArtifact: artifacts.ImplProxy!,
@@ -64,7 +64,7 @@ describe('a dispatched forwarding fallback\'s recorded result', () => {
     });
     expect(deployment.initialize.broadcast).toBeDefined();
 
-    const call = await callPerCallProxyEntry({
+    const call = await callFramedProxyEntry({
       provider: network, implementationArtifact: artifacts.Impl!, proxyArtifact: artifacts.ImplProxy!,
       proxyCategoryId: deployment.proxy.categoryId, implementationCategoryId: deployment.implementation.categoryId,
       functionName: 'bump', args: [4n], callerUtxo: callCoin, callerLockingBytecode: deployerLock, funder: caller,

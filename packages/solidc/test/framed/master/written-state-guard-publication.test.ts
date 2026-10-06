@@ -12,7 +12,7 @@ import { compileStringMulti } from '../../../src/compiler.js';
  * cannot follow, made in a loop before the call, is published as a `writtenState` node, which a builder refuses by
  * name rather than read a value the body overwrote. A field no statement before the call writes stays the read of
  * the value the entry starts with. A hop settles the first shape on either side of its guard, and refuses the loop's
- * by name, in `solidcash/test/per-call/call/root-record-write-skipped-call.test.ts`.
+ * by name, in `solidcash/test/framed/call/root-record-write-skipped-call.test.ts`.
  */
 
 const SOURCE = [
@@ -36,7 +36,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const LEDGER = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never)
+const LEDGER = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never)
   .Ledger as Artifact;
 
 /** The guard's left operand and the call's one argument, as the entry's only call site publishes them. */

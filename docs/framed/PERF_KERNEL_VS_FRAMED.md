@@ -1,10 +1,10 @@
-# Performance: kernel vs per-call (W2)
+# Performance: kernel vs framed (W2)
 
-Measured 2026-10-05. Three lanes: per-call proxied at `12c011dfe`, per-call no-proxy at `d326e325b` (measurement worktree, sources retargeted at the no-proxy contracts), and the kernel lane at `d7f3c7ad6`.
+Measured 2026-10-05. Three lanes: framed proxied at `12c011dfe`, framed no-proxy at `d326e325b` (measurement worktree, sources retargeted at the no-proxy contracts), and the kernel lane at `d7f3c7ad6`.
 
 ## How this lane was run
 
-Worktree `/Code/cashscript/.worktrees/per-call`. `solidcash.config.ts` sets `composition: 'per-call'` and points tests at the proxied contract suite. Limits in that config: `operationCostBudgetPerByte` 1,000,000, `maximumInputBytes` 10,000,000, `maximumTransactionBytes` 100,000,000. Those are the relaxed mock limits. The harness matcher is the one in `packages/testing/src/chai.ts` at this commit: a per-call failure must carry the contract's own reason (`TRIAGE_SECURITY.md`). `MARKETPLACE_FIXTURE_STALE_OK` was unset.
+Worktree `/Code/cashscript/.worktrees/framed`. `solidcash.config.ts` sets `composition: 'framed'` and points tests at the proxied contract suite. Limits in that config: `operationCostBudgetPerByte` 1,000,000, `maximumInputBytes` 10,000,000, `maximumTransactionBytes` 100,000,000. Those are the relaxed mock limits. The harness matcher is the one in `packages/testing/src/chai.ts` at this commit: a framed failure must carry the contract's own reason (`TRIAGE_SECURITY.md`). `MARKETPLACE_FIXTURE_STALE_OK` was unset.
 
 Fixture recompile before the titles: `node --max-old-space-size=8192 packages/solidhat/dist/cli.js compile`, 62 seconds. `MarketplaceV1.json` mtime 2026-10-05 10:23:00 UTC, after `packages/solidc/dist/compiler.js` (08:26 UTC).
 
@@ -19,7 +19,7 @@ Vitest duration for the file was 199.67 s (tests 194.00 s). Exit 0. Two passed, 
 
 ## Transactions
 
-`SOLIDCASH_TX_TRACE=1` prints one line per broadcast from `TransactionBuilder.send` and from the per-call call submit. Fee is input satoshis minus output satoshis. The composed calls use fee rate 1, so their fee equals their byte length.
+`SOLIDCASH_TX_TRACE=1` prints one line per broadcast from `TransactionBuilder.send` and from the framed call submit. Fee is input satoshis minus output satoshis. The composed calls use fee rate 1, so their fee equals their byte length.
 
 take job, 21 broadcasts, 184,575 bytes, fee 200,095 satoshis. Four of them are the composed calls:
 
@@ -41,7 +41,7 @@ One profile for the worker (`--cpu-prof`), 97,050 samples:
 | bucket | samples | share |
 |---|---:|---:|
 | VM (`libauth` virtual machine, instruction set, `runPhases`) | 78475 | 80.9% |
-| derivation (names containing derive, per-call, composer, frame) | 6033 | 6.2% |
+| derivation (names containing derive, framed, composer, frame) | 6033 | 6.2% |
 | compile | 95 | 0.1% |
 | other, of which garbage collection is 6942 samples (7.2%) | 12447 | 12.8% |
 
@@ -49,11 +49,11 @@ Compile is absent because the fixture was already compiled. The VM in the profil
 
 ## Kernel proxied lane
 
-Worktree `.worktrees/kernel-beta-candidate` at `d7f3c7ad6`. Its `solidcash.config.ts` does not set `composition`, so the compile is the direct kernel convention. The mock limits match the per-call config: `operationCostBudgetPerByte` 1,000,000, `maximumInputBytes` 10,000,000, `maximumTransactionBytes` 100,000,000. `MARKETPLACE_FIXTURE_STALE_OK` was unset. Fixture compile: 61 seconds, 22 sources, 26 artifacts, 0 cache hits. `MarketplaceV1.json` mtime 2026-10-05 10:29:32 UTC.
+Worktree `.worktrees/kernel-beta-candidate` at `d7f3c7ad6`. Its `solidcash.config.ts` does not set `composition`, so the compile is the direct kernel convention. The mock limits match the framed config: `operationCostBudgetPerByte` 1,000,000, `maximumInputBytes` 10,000,000, `maximumTransactionBytes` 100,000,000. `MARKETPLACE_FIXTURE_STALE_OK` was unset. Fixture compile: 61 seconds, 22 sources, 26 artifacts, 0 cache hits. `MarketplaceV1.json` mtime 2026-10-05 10:29:32 UTC.
 
-The kernel worker heap is the config default, 8192 MB. The per-call run above set `SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB=6144`. Same titles, same limit numbers, different heap ceiling.
+The kernel worker heap is the config default, 8192 MB. The framed run above set `SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB=6144`. Same titles, same limit numbers, different heap ceiling.
 
-`packages/testing/src/chai.ts` on this kernel commit requires a relaxed-network revert's message to contain the expected reason, and it rethrows a construction failure. It has no per-call frame-reason branch. These two titles are success paths, so that matcher did not decide them. It is not the older matcher that ignored reasons.
+`packages/testing/src/chai.ts` on this kernel commit requires a relaxed-network revert's message to contain the expected reason, and it rethrows a construction failure. It has no framed frame-reason branch. These two titles are success paths, so that matcher did not decide them. It is not the older matcher that ignored reasons.
 
 CPU profile was not enabled, and this tree has no `SOLIDCASH_TX_TRACE`, so this lane has no CPU split and no transaction byte, fee, or input counts. The log's only runtime note is a `preflight-return-idx` line during take job (`inputIndex` 1352, `OP_VERIFY`), and the title still passed.
 
@@ -64,23 +64,23 @@ CPU profile was not enabled, and this tree has no `SOLIDCASH_TX_TRACE`, so this 
 
 Vitest file duration 242.03 s (tests 237.46 s). Exit 0. Two passed, 64 skipped.
 
-| title | per-call wall | kernel wall |
+| title | framed wall | kernel wall |
 |---|---:|---:|
 | take job | 62.208 s | 126.242 s |
 | approve result | 131.787 s | 111.212 s |
 | fixture compile | 62 s | 61 s |
 
-take job is about twice as fast on per-call. approve result is slower on per-call (132 s against 111 s). The lanes are not uniformly ordered.
+take job is about twice as fast on framed. approve result is slower on framed (132 s against 111 s). The lanes are not uniformly ordered.
 
 ## The post-merge speed note
 
-The plan records post-merge per-call titles about 1.5 to 2 times faster than the pre-merge ladder, with close job before timeout at 27 s versus 49 s. This pair did not re-time that title. On the two titles that were timed, only take job matches a 2x gap, and it is per-call against the kernel lane at the same limits, not per-call against its own pre-merge ladder. approve result goes the other way.
+The plan records post-merge framed titles about 1.5 to 2 times faster than the pre-merge ladder, with close job before timeout at 27 s versus 49 s. This pair did not re-time that title. On the two titles that were timed, only take job matches a 2x gap, and it is framed against the kernel lane at the same limits, not framed against its own pre-merge ladder. approve result goes the other way.
 
-Not re-running an evaluation that stopped on a failing close (`d8166489d`) took the slowest no-proxy title from 1,415 s to 1,286 s, about 9 percent. The per-call worker profile is 81 percent VM on stock libauth. Neither number accounts for a 27 s versus 49 s close-job gap. That title is still untimed in this pair.
+Not re-running an evaluation that stopped on a failing close (`d8166489d`) took the slowest no-proxy title from 1,415 s to 1,286 s, about 9 percent. The framed worker profile is 81 percent VM on stock libauth. Neither number accounts for a 27 s versus 49 s close-job gap. That title is still untimed in this pair.
 
-## No-proxy per-call lane
+## No-proxy framed lane
 
-Worktree `.worktrees/per-call-noproxy-measure`, detached at `d326e325b`, `composition: 'per-call'`. Contract and test paths point at `/Code/effectiveacceleration.ai/contract-noproxy`. Same relaxed mock limits as the proxied config. `MARKETPLACE_FIXTURE_STALE_OK` was unset. Worker heap 6144 MB, one worker. `SOLIDCASH_TX_TRACE=1`.
+Worktree `.worktrees/framed-noproxy-measure`, detached at `d326e325b`, `composition: 'framed'`. Contract and test paths point at `/Code/effectiveacceleration.ai/contract-noproxy`. Same relaxed mock limits as the proxied config. `MARKETPLACE_FIXTURE_STALE_OK` was unset. Worker heap 6144 MB, one worker. `SOLIDCASH_TX_TRACE=1`.
 
 Fixture compile: 97 seconds, 22 sources, 26 artifacts, 0 cache hits. `MarketplaceV1.json` mtime 2026-10-05 10:37:32 UTC. The harness test file is a symlink to the no-proxy `marketplace.test.ts`. The first vitest launch exited before that symlink existed. The numbers below are the retry, against the fixture from that compile.
 

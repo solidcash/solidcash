@@ -9,8 +9,8 @@ import {
   splitFirstPush, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { buildMasterHeadScript } from '../../../src/per-call/master/master-head.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { buildMasterHeadScript } from '../../../src/framed/master/master-head.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
@@ -126,7 +126,7 @@ const compiledBySource = new Map<string, ReturnType<typeof compileString>>();
 function compiled(source: string): ReturnType<typeof compileString> {
   let artifact = compiledBySource.get(source);
   if (artifact === undefined) {
-    artifact = compileString(source, { composition: 'per-call' });
+    artifact = compileString(source, { composition: 'framed' });
     compiledBySource.set(source, artifact);
   }
   return artifact;

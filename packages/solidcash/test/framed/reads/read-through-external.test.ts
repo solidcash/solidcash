@@ -8,23 +8,23 @@ import {
   validatorAddress,
   type Artifact,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { registerDeployment } from '../../../src/stateful/deployment-registry.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * The read path reaching a contract the caller never named in `externals`.
@@ -106,7 +106,7 @@ describe('a read whose callee only the provider\'s registrations name', () => {
       + ' contract A {'
       + `   function peek() view returns (int) { return IB(0x${hex(ADDRESS_B)}).value(); }`
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const bArtifact = artifacts.B!;
     const commitment = new Uint8Array(
       Buffer.from(buildPushdataCommitment(bArtifact.stateLayout!, { v: 7n }, 0), 'hex'),
@@ -125,7 +125,7 @@ describe('a read whose callee only the provider\'s registrations name', () => {
     });
 
     const before = transactionCount(provider);
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider,
       artifact: artifacts.A!,
       categoryId: A_HEX,
@@ -153,7 +153,7 @@ async function deployProxied(network: MockNetworkProvider): Promise<{ readonly p
     + '   }'
     + '   function peek() view returns (int) { return this.total; }'
     + ' }';
-  const impl = compileStringMulti(source, { composition: 'per-call' }).Impl!;
+  const impl = compileStringMulti(source, { composition: 'framed' }).Impl!;
 
   const signature = new SignatureTemplate(alicePriv);
   const funderSource = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -167,7 +167,7 @@ async function deployProxied(network: MockNetworkProvider): Promise<{ readonly p
   await network.addUtxo(binToHex(deployerLock), hopCoin);
   await fundShippedFacets(network);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress: funderSource.address },
@@ -191,11 +191,11 @@ describe('a read whose callee sits behind its own proxy', () => {
       + ' contract A {'
       + `   function job() view returns (int) { return IJob(0x${hex(proxyAddress)}).peek(); }`
       + ' }';
-    const root = compileStringMulti(source, { composition: 'per-call' }).A!;
+    const root = compileStringMulti(source, { composition: 'framed' }).A!;
     await fund(network, { artifact: root, category: A, categoryHex: A_HEX, seed: 'a', withValidator: true });
 
     const before = transactionCount(network);
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider: network,
       artifact: root,
       categoryId: A_HEX,
@@ -243,7 +243,7 @@ describe('a read that states a callee\'s arguments', () => {
     + `   function fromState() view returns (int) { return IEcho(0x${hex(ADDRESS_B)}).echo(this.seed); }`
     + ' }';
 
-  const artifacts = compileStringMulti(ECHO_SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(ECHO_SOURCE, { composition: 'framed' });
   const root = artifacts.Root!;
   const echo = artifacts.Echo!;
   const SEED_COMMITMENT = new Uint8Array(
@@ -253,14 +253,14 @@ describe('a read that states a callee\'s arguments', () => {
   /** Reads one entry of the root against a fresh chain: the root at `A`, the echo contract at `B`. */
   async function readRoot(
     functionName: string, args?: readonly bigint[],
-  ): Promise<Awaited<ReturnType<typeof readPerCallEntry>>> {
+  ): Promise<Awaited<ReturnType<typeof readFramedEntry>>> {
     const provider = new MockNetworkProvider();
     await fund(provider, {
       artifact: root, category: A, categoryHex: A_HEX, seed: 'a',
       records: [SEED_COMMITMENT], withValidator: true,
     });
     await fund(provider, { artifact: echo, category: B, categoryHex: B_HEX, seed: 'b' });
-    return readPerCallEntry({
+    return readFramedEntry({
       provider,
       artifact: root,
       categoryId: A_HEX,

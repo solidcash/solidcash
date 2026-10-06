@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A hop whose entry calls a contract that itself sits behind a per-call proxy.
+ * A hop whose entry calls a contract that itself sits behind a framed proxy.
  *
  * The caller's own record holds the callee's address, which is the address the callee's proxy presents rather than
  * its implementation's, so the callee has to be placed as the same chain a root hop places for its own proxy: the
@@ -57,7 +57,7 @@ const RELAY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function runLateWrite(int id, int v) { IInner(this.inner).lateWrite(id, v); require(true); }'
   + ' }';
 
-const relayArtifacts = compileStringMulti(RELAY_SOURCE, { composition: 'per-call' });
+const relayArtifacts = compileStringMulti(RELAY_SOURCE, { composition: 'framed' });
 const relayPing = relayArtifacts.Ping!;
 const relayInner = relayArtifacts.Inner!;
 const relayOuter = relayArtifacts.Outer!;
@@ -85,7 +85,7 @@ async function deployRelay(network: MockNetworkProvider): Promise<{
   const callerFunder = signature.unlockP2PKH();
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
 
-  // The callee's own callee is a plain per-call contract, reached at the address the callee's record holds.
+  // The callee's own callee is a plain framed contract, reached at the address the callee's record holds.
   const pingFunding = funding(RELAY_PING_CATEGORY);
   await network.addUtxo(source.address, pingFunding);
   await deployStatefulContract(relayPing, [], {
@@ -105,7 +105,7 @@ async function deployRelay(network: MockNetworkProvider): Promise<{
 
   // The proxied callee's record holds the address of the contract its own call reaches.
   const pingMaster = deployMaster(relayPing, hexToBin(RELAY_PING_CATEGORY), VALIDATOR_PROGRAM).address;
-  const innerDeployment = await deployPerCallProxy({
+  const innerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: relayInner,
     proxyArtifact: buildProxyArtifact(relayInner),
@@ -122,7 +122,7 @@ async function deployRelay(network: MockNetworkProvider): Promise<{
   });
   expect(innerDeployment.initialize.broadcast).toBeDefined();
 
-  const outerDeployment = await deployPerCallProxy({
+  const outerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: relayOuter,
     proxyArtifact: buildProxyArtifact(relayOuter),
@@ -145,7 +145,7 @@ async function deployRelay(network: MockNetworkProvider): Promise<{
 }
 
 /** The externals a relay hop names: the callee's own callee, and the callee behind its proxy. */
-function relayExternals(funded: Awaited<ReturnType<typeof deployRelay>>): Record<string, PerCallProxyExternal> {
+function relayExternals(funded: Awaited<ReturnType<typeof deployRelay>>): Record<string, FramedProxyExternal> {
   return {
     IPing: { artifact: relayPing, categoryId: RELAY_PING_CATEGORY },
     IInner: {
@@ -182,7 +182,7 @@ describe('a hop whose proxied callee calls a third contract of its own', () => {
   it("settles the callee chain and the callee's own call, and broadcasts", async () => {
     const { network, funded } = await deployedRelay();
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: relayOuter,
       proxyArtifact: buildProxyArtifact(relayOuter),
@@ -218,7 +218,7 @@ describe('a hop whose proxied callee calls a third contract of its own', () => {
     // `Inner.lateWrite` writes its verified mapping, calls out, then writes again, and the compiler refuses it by
     // name: the segment its second write lands in is a fact the derivation does not read. The hop has no call
     // records for it, so the plan would settle the frame against a program whose calls stay unbound.
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: relayOuter,
       proxyArtifact: buildProxyArtifact(relayOuter),

@@ -5,7 +5,7 @@ import {
   splitValueIntoValueChunks,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
+import { mappingValueChunkLock } from '../../../src/framed/composer/index.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   callerFields, edgeDeployment, expectRefusedEdge, readCallee, settleEdge,
@@ -46,7 +46,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     this.mine[ks[i]].push(n); } }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const relay = edgeDeployment({
   scope: 'aliased keys edge', callee: artifacts.Holder!, caller: artifacts.Relay!, interfaceName: 'IHolder',
 });

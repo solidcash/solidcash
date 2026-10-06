@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  USER_LOCK, compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment,
+  USER_LOCK, compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment,
   type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A plain root that reverts between the calls of a loop and the calls after it, on the plain call path
- * (`callPerCallEntry`).
+ * (`callFramedEntry`).
  *
  * `Board.post` looks each of its labels up in a dictionary, one static call per turn of a loop over its argument array,
  * counts the labels the dictionary tags and requires exactly one. Only then does it pull a token from its caller and
@@ -71,7 +71,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 interface Chain {
   readonly world: World;
@@ -108,14 +108,14 @@ function chain(): Promise<Chain> {
 }
 
 /** The board's post of `labels`, which reaches the dictionary, the token and the log. */
-function post(c: Chain, labels: readonly string[]): Promise<Outcome<PerCallCallResult>> {
+function post(c: Chain, labels: readonly string[]): Promise<Outcome<FramedCallResult>> {
   return enterPlain(c.world, c.board, 'post', [[...labels]], Object.fromEntries([c.dict, c.token, c.log]
     .map((deployed) => [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
 }
 
 /** A view's value, read from a plain deployment's records and nodes through the read path. */
 async function view(c: Chain, deployed: PlainDeployment, functionName: string, args: FunctionArgument[]): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: c.world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName, args,
     vm: compositionMachine(),
   });

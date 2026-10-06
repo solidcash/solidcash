@@ -10,7 +10,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -18,18 +18,18 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose entry writes a mapping keyed by a value the frame already holds.
+ * A framed master whose entry writes a mapping keyed by a value the frame already holds.
  *
  * Two key forms the direct convention receives from its SDK are derived from the master's own frame here: the
  * caller (`msg.sender`), which the head leaves as the frame's sender, and a compile-time expression (`address(0)`,
  * the empty locking bytecode), which the body only computes at its start. The whole shipped path runs: the source
- * through `compileString` with the per-call convention, the program through `deployMaster`, and the BCH-2026
+ * through `compileString` with the framed convention, the program through `deployMaster`, and the BCH-2026
  * machine is asked for a verdict on the master's own input. The write is an INSERT, so the segment declares the
  * head sentinel relocated in place and the created node as a trailing output. A control that declares no record is
  * refused, and one whose created node carries a value the code did not compute is refused.
  */
 
-const CATEGORY = seededCategory('key forms write per-call');
+const CATEGORY = seededCategory('key forms write framed');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const AMOUNT = 42;
@@ -67,7 +67,7 @@ interface Env {
 }
 
 function envFor(source: string): Env {
-  const artifact = compileString(source, { composition: 'per-call' });
+  const artifact = compileString(source, { composition: 'framed' });
   const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
   verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM);
   return {
@@ -180,11 +180,11 @@ function evaluateInsert(
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master keyed by the frame sender', () => {
+describe('a framed master keyed by the frame sender', () => {
   const env = envFor(SENDER_KEY_SOURCE);
 
-  it('publishes a per-call master whose write witness is derived from the frame', () => {
-    expect(env.artifact.composition?.convention).toBe('per-call');
+  it('publishes a framed master whose write witness is derived from the frame', () => {
+    expect(env.artifact.composition?.convention).toBe('framed');
     expect(env.deployed.script.length).toBeGreaterThan(0);
     expect(env.artifact.abi.find((entry) => entry.name === 'set')?.inputs?.map((input) => input.name))
       .toStrictEqual(['amount']);
@@ -202,13 +202,13 @@ describe('a per-call master keyed by the frame sender', () => {
   });
 });
 
-describe('a per-call master keyed by a compile-time expression', () => {
+describe('a framed master keyed by a compile-time expression', () => {
   const env = envFor(EXPRESSION_KEY_SOURCE);
   /** `address(0)` casts an integer literal, and a cast to address is a no-op, so the key is the empty value. */
   const ZERO_KEY = EMPTY;
 
-  it('publishes a per-call master whose write witness is derived from the frame', () => {
-    expect(env.artifact.composition?.convention).toBe('per-call');
+  it('publishes a framed master whose write witness is derived from the frame', () => {
+    expect(env.artifact.composition?.convention).toBe('framed');
     expect(env.deployed.script.length).toBeGreaterThan(0);
   });
 
@@ -251,7 +251,7 @@ const CAST_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
 describe.each([
   ['a contract constant', CONSTANT_KEY_SOURCE, keccak_256(utf8ToBin('ROLE')), utf8ToBin('ROLE')],
   ['a cast that widens a literal', CAST_KEY_SOURCE, Uint8Array.from([1, ...new Uint8Array(31)]), Uint8Array.of(1)],
-])('a per-call master keyed by %s', (_shape, source, key, misread) => {
+])('a framed master keyed by %s', (_shape, source, key, misread) => {
   const env = envFor(source);
 
   it('publishes the key as the bytes the body hashes and refuses no entry', () => {
@@ -284,11 +284,11 @@ const TERNARY_SENDER_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-describe('a per-call master keyed by a ternary over the frame values', () => {
+describe('a framed master keyed by a ternary over the frame values', () => {
   const env = envFor(TERNARY_SENDER_SOURCE);
 
-  it('publishes a per-call master whose write witness is derived from the frame', () => {
-    expect(env.artifact.composition?.convention).toBe('per-call');
+  it('publishes a framed master whose write witness is derived from the frame', () => {
+    expect(env.artifact.composition?.convention).toBe('framed');
     expect(env.artifact.abi.find((entry) => entry.name === 'set')?.inputs?.map((input) => input.name))
       .toStrictEqual(['amount']);
   });
@@ -319,7 +319,7 @@ const STATE_FIELD_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function open(uint amount) { escrows[next.value] = amount; }'
   + ' }';
 
-const STATE_ARTIFACT = compileString(STATE_FIELD_SOURCE, { composition: 'per-call' });
+const STATE_ARTIFACT = compileString(STATE_FIELD_SOURCE, { composition: 'framed' });
 const STATE_DEPLOYED = deployMaster(STATE_ARTIFACT, CATEGORY, VALIDATOR_PROGRAM);
 verifyMasterDeployment(STATE_DEPLOYED, STATE_ARTIFACT, CATEGORY, VALIDATOR_PROGRAM);
 const STATE_MASTER_LOCK = encodeLockingBytecodeP2sh32(hash256(STATE_DEPLOYED.script));
@@ -431,9 +431,9 @@ function evaluateStateKey(options: { readonly recordField?: number } = {}): {
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master keyed by a field of its state record', () => {
-  it('publishes a per-call master with the entry point it was asked for', () => {
-    expect(STATE_ARTIFACT.composition?.convention).toBe('per-call');
+describe('a framed master keyed by a field of its state record', () => {
+  it('publishes a framed master with the entry point it was asked for', () => {
+    expect(STATE_ARTIFACT.composition?.convention).toBe('framed');
     expect(STATE_ARTIFACT.abi.find((entry) => entry.name === 'open')?.inputs?.map((input) => input.name))
       .toStrictEqual(['amount']);
   });
@@ -470,23 +470,23 @@ const COLLECTION_FIELD_TERNARY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** The refusals a per-call compile publishes, or the empty list when it serves every body. */
+/** The refusals a framed compile publishes, or the empty list when it serves every body. */
 function publishedRefusals(source: string, options: Record<string, unknown> = {}): string[] {
-  const artifact = compileString(source, { composition: 'per-call', ...options });
+  const artifact = compileString(source, { composition: 'framed', ...options });
   return (artifact.composition?.refusedEntries ?? []).map((refused) => refused.reason);
 }
 
-describe('a per-call master keyed by a ternary over a field read through a collection', () => {
+describe('a framed master keyed by a ternary over a field read through a collection', () => {
   it('serves the write and publishes no refusal for the entry', () => {
     expect(publishedRefusals(COLLECTION_FIELD_TERNARY_SOURCE)).toStrictEqual([]);
-    const artifact = compileString(COLLECTION_FIELD_TERNARY_SOURCE, { composition: 'per-call' });
-    expect(artifact.composition?.convention).toBe('per-call');
+    const artifact = compileString(COLLECTION_FIELD_TERNARY_SOURCE, { composition: 'framed' });
+    expect(artifact.composition?.convention).toBe('framed');
     expect(artifact.abi.find((entry) => entry.name === 'refund')?.inputs?.map((input) => input.name))
       .toStrictEqual(['jobId']);
   });
 });
 
-describe('a per-call master keyed by a ternary over another mapping\'s entry', () => {
+describe('a framed master keyed by a ternary over another mapping\'s entry', () => {
   it('serves the write: the entry read in the key takes a slot, whose record the frame declares', () => {
     // The machine's verdict on a key read from another mapping's entry, bare and in a ternary, is in
     // `nested-entry-read.test.ts`.
@@ -497,13 +497,13 @@ describe('a per-call master keyed by a ternary over another mapping\'s entry', (
       + '   function set(uint id, uint amount) { balances[(1 == 1) ? owners[id] : address(0)] = amount; }'
       + ' }';
     expect(publishedRefusals(source)).toStrictEqual([]);
-    const row = compileString(source, { composition: 'per-call' }).abi.find((entry) => entry.name === 'set');
+    const row = compileString(source, { composition: 'framed' }).abi.find((entry) => entry.name === 'set');
     expect(row?.entryAccesses?.map((access) => [access.collection, access.operations]))
       .toStrictEqual([['balances', ['write']], ['owners', ['read']]]);
   });
 });
 
-describe('a per-call master keyed by a value the body does not hold where it derives the slot', () => {
+describe('a framed master keyed by a value the body does not hold where it derives the slot', () => {
   it('refuses a key the body computes with a call', () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Hashed {'

@@ -4,7 +4,7 @@ import {
 } from '@bitauth/libauth';
 import { asmToScript, encodeIntegerValue, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
-import { deployPerCallMaster, distinctBytes, evaluateMasterSpend, spent } from './per-call/master/record-spend.js';
+import { deployFramedMaster, distinctBytes, evaluateMasterSpend, spent } from './framed/master/record-spend.js';
 
 /**
  * Expressions whose value carries a side effect, on the BCH-2026 machine on both conventions.
@@ -51,10 +51,10 @@ function settleDirect(artifact: Artifact, entry: string, args: readonly bigint[]
 function expectSettles(members: string, label: string, honest: readonly bigint[][], wrong: readonly bigint[][]): void {
   const source = `${P} contract C { ${members} }`;
   const direct = compileString(source, { messageBus: false });
-  const master = deployPerCallMaster(source, label);
+  const master = deployFramedMaster(source, label);
   const conventions: Array<[string, (args: readonly bigint[]) => boolean]> = [
     ['direct', (args) => settleDirect(direct, 'f', args)],
-    ['per-call', (args) => evaluateMasterSpend(master, {
+    ['framed', (args) => evaluateMasterSpend(master, {
       entry: master.artifact.abi.length > 1 ? 'f' : undefined, args: [...args].reverse().map(num), records: [],
     }).accepted],
   ];
@@ -100,10 +100,10 @@ describe('a sequence expression', () => {
 });
 
 describe('an assignment to a state variable used as an expression', () => {
-  let master: ReturnType<typeof deployPerCallMaster> | undefined;
+  let master: ReturnType<typeof deployFramedMaster> | undefined;
   const spend = (entry: string, args: readonly bigint[], before: Record<string, bigint>,
     after: Record<string, bigint>): boolean => {
-    master ??= deployPerCallMaster(`${P} contract C { uint n; bool z; mapping(address => uint) m;`
+    master ??= deployFramedMaster(`${P} contract C { uint n; bool z; mapping(address => uint) m;`
       + ' function twice(uint x) internal returns (uint) { return x * 2; }'
       + ' function condition(uint e) { uint y = (z = true) ? 5 : 6; require(z); require(y == e); }'
       + ' function argument(uint v, uint e) { uint y = twice(n = v); require(y == e); require(n == v); }'

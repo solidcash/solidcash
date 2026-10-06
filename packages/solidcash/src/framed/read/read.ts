@@ -1,5 +1,5 @@
 /**
- * An off-chain read of a deployed per-call contract.
+ * An off-chain read of a deployed framed contract.
  *
  * A read is a composition whose root frame is `STATIC`: it is derived and evaluated on the machine, changes
  * nothing, and the value its entry returned is what the caller asked for. The value is not logged anywhere: the
@@ -12,7 +12,7 @@
  * only when a validator binds it) and the records the frame reads, and it recreates every one of them unchanged.
  * Locally evaluating that transaction is the whole read; the caller's provider is only ever read from.
  *
- * What the read is of: a data-NFT state record, read fresh through the deployment layer (`readPerCallDeployment`),
+ * What the read is of: a data-NFT state record, read fresh through the deployment layer (`readFramedDeployment`),
  * so the record the read resolves is the one the chain holds rather than a fixture. An entry that calls another
  * contract reads that contract's own live records the same way: the caller names the other contracts in
  * `externals`, each callee becomes its own `STATIC` frame over its own master and records, and one validator — the
@@ -72,22 +72,22 @@ import {
   registeredExternalFor,
   routingOf,
   waitingProducers,
-  type PerCallProxyExternal,
+  type FramedProxyExternal,
 } from '../proxy/external-calls.js';
 import {
   makeCallResolver, resolveCallArguments, type CallResolver,
 } from '../proxy/call-resolution.js';
-import { PerCallProxyDeployError } from '../proxy/errors.js';
+import { FramedProxyDeployError } from '../proxy/errors.js';
 import { decodeAuthenticatedProducerResultVector } from '../../stateful/external-return-encoding.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
-import { PerCallCallRecordError, readEntryNode } from '../call/entry-records.js';
+import { FramedCallRecordError, readEntryNode } from '../call/entry-records.js';
 import {
   chunkRecordLockingBytecode,
   deployMaster,
   entryRecordReadUnlock,
   readComputedDeclaration,
-  readPerCallDeployment,
+  readFramedDeployment,
   readSatoshiContainers,
   satoshiContainerLockingBytecode,
   satoshiContainerUnlockingBytecode,
@@ -95,7 +95,7 @@ import {
   stateRecordUnlockingBytecode,
   type DeclarationReading,
   type DeployedMaster,
-  type PerCallDeploymentSet,
+  type FramedDeploymentSet,
 } from '../deploy/index.js';
 import {
   UNFILLED_CALLEE_REF,
@@ -125,8 +125,8 @@ import {
 type ReadMachine = ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 
 /** Raised when a read cannot be planned or driven from what the caller supplied. */
-export class PerCallReadError extends Error {
-  public readonly name = 'PerCallReadError';
+export class FramedReadError extends Error {
+  public readonly name = 'FramedReadError';
 
   public constructor(message: string) {
     super(message);
@@ -134,9 +134,9 @@ export class PerCallReadError extends Error {
 }
 
 /** What the caller asks a read for. */
-export interface PerCallReadOptions {
+export interface FramedReadOptions {
   readonly provider: NetworkProvider;
-  /** The deployed contract's per-call artifact. */
+  /** The deployed contract's framed artifact. */
   readonly artifact: Artifact;
   /** The deployed contract's token category, as hex. */
   readonly categoryId: string;
@@ -144,7 +144,7 @@ export interface PerCallReadOptions {
   readonly functionName: string;
   /** The entry's arguments, in parameter order. */
   readonly args?: readonly FunctionArgument[];
-  /** The validator program the deployment used. Defaults to the shipped per-call validator's. */
+  /** The validator program the deployment used. Defaults to the shipped framed validator's. */
   readonly validatorProgram?: Uint8Array;
   /** The machine the read is derived and evaluated on. Defaults to the provider's own. */
   readonly vm?: ReadMachine;
@@ -156,11 +156,11 @@ export interface PerCallReadOptions {
    * implementation's artifact beside the proxy's artifact and the implementation's own category, exactly as the
    * provider's registrations carry it. A call the caller supplies nothing for falls back to those registrations.
    */
-  readonly externals?: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals?: Readonly<Record<string, FramedProxyExternal>>;
 }
 
 /** What a read returned, and how it landed. */
-export interface PerCallReadResult {
+export interface FramedReadResult {
   /** The entry's returned values, decoded with the shipped decoder, in declaration order. */
   readonly values: readonly StateValue[];
   /** The first returned value, for the common single-value read. */
@@ -359,22 +359,22 @@ function calleeRecordId(contract: string, nftIndex: number): string {
  * entry's own `return` never produces, which is what lets the run's close say which operand is the answer.
  */
 function retvalPlaceholder(master: string): Uint8Array {
-  return sha256(new TextEncoder().encode(`per-call read retval\u0000${master}`));
+  return sha256(new TextEncoder().encode(`framed read retval\u0000${master}`));
 }
 
 /** The ABI row a read names, refusing an entry the artifact does not publish. */
 function requireEntry(artifact: Artifact, functionName: string): ReadEntry {
   const entry = artifact.abi.find((candidate) => candidate.name === functionName);
   if (entry === undefined) {
-    throw new PerCallReadError(`artifact "${artifact.contractName}" publishes no entry "${functionName}"`);
+    throw new FramedReadError(`artifact "${artifact.contractName}" publishes no entry "${functionName}"`);
   }
   if (entry.selector === undefined) {
-    throw new PerCallReadError(
+    throw new FramedReadError(
       `entry "${functionName}" publishes no selector, so its frame cannot be dispatched to`,
     );
   }
   if ((entry.outputs ?? []).length === 0) {
-    throw new PerCallReadError(`entry "${functionName}" returns nothing, so it is not a read`);
+    throw new FramedReadError(`entry "${functionName}" returns nothing, so it is not a read`);
   }
   return {
     name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [],
@@ -393,10 +393,10 @@ function publishedEntryOf(artifact: Artifact, functionName: string): PublishedEn
 /** The external contract a published call reaches, or `undefined` when nothing names one. */
 function externalOf(
   call: PublishedCallSite,
-  externals: PerCallReadOptions['externals'],
+  externals: FramedReadOptions['externals'],
   provider: NetworkProvider,
   validatorProgram: Uint8Array,
-): PerCallProxyExternal | undefined {
+): FramedProxyExternal | undefined {
   // The published table names the interface the call goes through; a caller keyed by the contract name is reached
   // through the address the site carries instead, which the external's own category derives.
   const named = externals?.[call.interfaceName];
@@ -453,7 +453,7 @@ function readCallArguments(
     if (index >= visible.length) break;
     if (resolver.resolveArgument(source, turn) !== undefined) continue;
     const expression = source.expression === undefined ? '' : ` of kind "${source.expression.kind}"`;
-    throw new PerCallReadError(
+    throw new FramedReadError(
       `entry "${frame.contract}.${frame.entry.name}()" calls "${row.interfaceName}.${row.functionName}()", `
       + `whose argument ${index} comes from a "${source.kind}"${expression}, which a read cannot state from the `
       + "caller's own arguments and addresses",
@@ -462,7 +462,7 @@ function readCallArguments(
   try {
     return resolveCallArguments(effective, calleeArtifact, calleeEntry, resolver, turn);
   } catch (error) {
-    if (error instanceof PerCallProxyDeployError) throw new PerCallReadError(error.message);
+    if (error instanceof FramedProxyDeployError) throw new FramedReadError(error.message);
     throw error;
   }
 }
@@ -492,7 +492,7 @@ function siteTurns(
     );
     return callingTurnsOf(row, count, resolver, frame.artifact, writtenState, siteIndex, routing, known);
   } catch (error) {
-    if (error instanceof PerCallProxyDeployError) throw new PerCallReadError(error.message);
+    if (error instanceof FramedProxyDeployError) throw new FramedReadError(error.message);
     throw error;
   }
 }
@@ -533,7 +533,7 @@ function planReadFrames(options: {
   readonly categoryId: string;
   readonly functionName: string;
   readonly args: readonly FunctionArgument[];
-  readonly externals: PerCallReadOptions['externals'];
+  readonly externals: FramedReadOptions['externals'];
   readonly validatorProgram: Uint8Array;
   /** The results earlier passes learned, keyed by `reachedResultKey`: the calling frame's path and the site. */
   readonly results: ReadonlyMap<string, FunctionArgument>;
@@ -604,7 +604,7 @@ function planReadFrames(options: {
       const row = routing[callIndex];
       if (row === undefined || row.interfaceName !== call.interfaceName
         || row.functionName !== call.functionName) {
-        throw new PerCallReadError(
+        throw new FramedReadError(
           `entry "${frame.contract}.${frame.entry.name}()" publishes call ${callIndex} to `
           + `"${call.interfaceName}.${call.functionName}()", which its ABI routing does not describe`,
         );
@@ -633,7 +633,7 @@ function planReadFrames(options: {
       frame.callBases.push(frame.calls.length);
       const external = externalOf(call, options.externals, options.provider, options.validatorProgram);
       if (external === undefined) {
-        throw new PerCallReadError(
+        throw new FramedReadError(
           `entry "${frame.contract}.${frame.entry.name}()" makes ${calls.length} external call(s): `
           + `"${call.interfaceName}.${call.functionName}()" at 0x${call.target} is not supplied in externals`,
         );
@@ -648,7 +648,7 @@ function planReadFrames(options: {
       const placed = proxied ? [proxyArtifact.contractName, contract] : [contract];
       const repeated = placed.find((name) => callerChain(frame).some((ancestor) => ancestor.contract === name));
       if (repeated !== undefined) {
-        throw new PerCallReadError(
+        throw new FramedReadError(
           `the read reaches "${repeated}" again below itself, so its frames have no order`,
         );
       }
@@ -815,14 +815,14 @@ function planReadFrames(options: {
 async function readFrameDeployments(
   provider: NetworkProvider,
   frames: readonly ReadFrame[],
-  deployments: Map<string, PerCallDeploymentSet>,
+  deployments: Map<string, FramedDeploymentSet>,
 ): Promise<void> {
   const mastersTaken = new Map<string, number>();
   const byMaster = new Map(frames.map((frame) => [frame.master, frame]));
-  const deploymentFor = async (categoryId: string, layout: StateLayout): Promise<PerCallDeploymentSet> => {
+  const deploymentFor = async (categoryId: string, layout: StateLayout): Promise<FramedDeploymentSet> => {
     let deployment = deployments.get(categoryId);
     if (deployment === undefined) {
-      deployment = await readPerCallDeployment(provider, categoryId, layout);
+      deployment = await readFramedDeployment(provider, categoryId, layout);
       deployments.set(categoryId, deployment);
     }
     return deployment;
@@ -836,7 +836,7 @@ async function readFrameDeployments(
     const taken = mastersTaken.get(frame.categoryId) ?? 0;
     const master = deployment.masters[taken];
     if (master === undefined) {
-      throw new PerCallReadError(
+      throw new FramedReadError(
         `category ${frame.categoryId} holds ${deployment.masters.length} master(s), and the read runs `
         + `${taken + 1} frame(s) over it`,
       );
@@ -846,7 +846,7 @@ async function readFrameDeployments(
     if (frame.master === READ_MASTER) {
       const validator = deployment.validators[0];
       if (validator === undefined) {
-        throw new PerCallReadError(
+        throw new FramedReadError(
           `category ${frame.categoryId} holds no validator, which a read frame needs to be admitted`,
         );
       }
@@ -863,16 +863,16 @@ async function readFrameDeployments(
 }
 
 /** One data-NFT record a frame reads, as the deployment's classified records name it. */
-function dataNftReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, nftIndex: number): ReadRecord {
+function dataNftReadRecord(frame: ReadFrame, deployment: FramedDeploymentSet, nftIndex: number): ReadRecord {
   const utxo = deployment.records[nftIndex];
   if (utxo === undefined) {
-    throw new PerCallReadError(
+    throw new FramedReadError(
       `category ${recordCategoryIdOf(frame)} holds no data-NFT record at index ${nftIndex}, which the entry reads`,
     );
   }
   const commitment = utxo.token?.nft?.commitment;
   if (commitment === undefined) {
-    throw new PerCallReadError(`the record at data-NFT index ${nftIndex} carries no commitment`);
+    throw new FramedReadError(`the record at data-NFT index ${nftIndex} carries no commitment`);
   }
   return {
     id: frame.master === READ_MASTER ? recordId(nftIndex) : calleeRecordId(recordContractOf(frame), nftIndex),
@@ -901,7 +901,7 @@ interface EntryRead {
 function joinedNodeValue(
   frame: ReadFrame,
   node: ReturnType<typeof readEntryNode>,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
 ): Uint8Array | undefined {
   const { slot, value: tail } = decodeEntryCommitment(node.commitment);
   if (tail.length < 4 + 32 + VALUE_HEAD_SIZE) return undefined;
@@ -925,7 +925,7 @@ function joinedNodeValue(
 }
 
 /** The live mapping node one entry slot reads, as the deployment layer's own classification locates it. */
-function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slotIndex: number): EntryRead {
+function entryReadRecord(frame: ReadFrame, deployment: FramedDeploymentSet, slotIndex: number): EntryRead {
   let node: ReturnType<typeof readEntryNode>;
   try {
     node = readEntryNode({
@@ -938,7 +938,7 @@ function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slo
       slotIndex,
     });
   } catch (error) {
-    if (error instanceof PerCallCallRecordError) throw new PerCallReadError(error.message);
+    if (error instanceof FramedCallRecordError) throw new FramedReadError(error.message);
     throw error;
   }
   return readRecordOf(frame, deployment, node);
@@ -947,7 +947,7 @@ function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slo
 /** The record one located node contributes to a frame, with the long value its body reads by witness. */
 function readRecordOf(
   frame: ReadFrame,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
   node: ReturnType<typeof readEntryNode>,
 ): EntryRead {
   // A node the key names holds its value inline, or past the inline limit as a digest whose bytes sit in chunk
@@ -962,7 +962,7 @@ function readRecordOf(
   if (node.present && length > VALUE_INLINE_LIMIT) {
     value = joinedNodeValue(frame, node, deployment);
     if (value === undefined) {
-      throw new PerCallReadError(
+      throw new FramedReadError(
         `the node of collection "${node.collection}" the entry reads holds a ${length}-byte value whose bytes sit `
         + `in chunk records that category ${recordCategoryIdOf(frame)} does not hold, so the read cannot state its `
         + 'witness',
@@ -1103,7 +1103,7 @@ function loopTurns(
 /** The live node one key names, or the node the key would be spliced beside. */
 function locatedNode(
   frame: ReadFrame,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
   collection: { readonly name: string; readonly signature: string },
   key: Uint8Array,
 ): ReturnType<typeof readEntryNode> {
@@ -1111,7 +1111,7 @@ function locatedNode(
   const nodes = (deployment.nodesByCollection.get(collection.name) ?? []).map((utxo) => {
     const commitment = utxo.token?.nft?.commitment;
     if (commitment === undefined) {
-      throw new PerCallReadError(
+      throw new FramedReadError(
         `category ${recordCategoryIdOf(frame)} holds a node of collection "${collection.name}" with no commitment`,
       );
     }
@@ -1126,7 +1126,7 @@ function locatedNode(
       > bytesToSlotValue(decodeEntryCommitment(best.commitment).slot) ? candidate : best;
   }, undefined);
   if (node === undefined) {
-    throw new PerCallReadError(
+    throw new FramedReadError(
       `category ${recordCategoryIdOf(frame)} holds no node of collection "${collection.name}" whose slot is the `
       + 'key\'s or the key\'s bracketing predecessor, so the read cannot locate what it reads',
     );
@@ -1152,7 +1152,7 @@ function locatedNode(
  */
 function entryReadRecords(
   frame: ReadFrame,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
   slotIndex: number,
 ): readonly EntryRead[] {
   const label = entryKeyLabel(frame, slotIndex);
@@ -1167,14 +1167,14 @@ function entryReadRecords(
   const collection = frame.artifact.stateLayout?.collections
     ?.find((candidate) => candidate.name === access?.collection);
   if (collection === undefined) {
-    throw new PerCallReadError(
+    throw new FramedReadError(
       `entry "${frame.entry.name}" reads mapping "${access?.collection ?? '<unnamed>'}", which the artifact does `
       + 'not publish as a collection',
     );
   }
   const live = arrayed === undefined ? undefined : liveArrayValue(frame, deployment, arrayed.array);
   if (arrayed !== undefined && live === undefined) {
-    throw new PerCallReadError(
+    throw new FramedReadError(
       `entry "${frame.entry.name}" names mapping "${access?.collection ?? '<unnamed>'}" at an element of `
       + `"${arrayed.array}" that the artifact's live records do not state`,
     );
@@ -1192,7 +1192,7 @@ function entryReadRecords(
   // coordinates where the emitted body reads them and lets the entry's own body decide the page it asked for.
   const namelessTurn = chunkBacked && turns === 0 && live!.length > 0;
   if (chunkBacked && turns !== 1 && !namelessTurn) {
-    throw new PerCallReadError(
+    throw new FramedReadError(
       `entry "${frame.entry.name}" reads "${arrayed!.array}" at ${turns} turn(s), but a chunk-backed array's chunk `
       + 'run shares the fixed record band with the entry slot\'s own turn, so exactly one turn can be composed',
     );
@@ -1210,7 +1210,7 @@ function entryReadRecords(
       ? pagedKeyAt(label!, paged.counter, frame.args, frame.entry.inputs, turn)
       : arrayElementKeyAt(frame, arrayed!, live!, keyType, turn);
     if (key === undefined) {
-      throw new PerCallReadError(
+      throw new FramedReadError(
         `entry "${frame.entry.name}" names mapping "${access?.collection ?? '<unnamed>'}" at a key no run of its `
         + 'own arguments determines',
       );
@@ -1261,7 +1261,7 @@ function isChunkBacked(frame: ReadFrame, array: string): boolean {
 /** The live array a collection label indexes, decoded from the variable's own data-NFT record and its chunk run. */
 function liveArrayValue(
   frame: ReadFrame,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
   array: string,
 ): readonly StateValue[] | undefined {
   const layout = frame.artifact.stateLayout;
@@ -1270,7 +1270,7 @@ function liveArrayValue(
   const record = deployment.records[variable.nftIndex ?? 0];
   const commitment = record?.token?.nft?.commitment;
   if (commitment === undefined) {
-    throw new PerCallReadError(
+    throw new FramedReadError(
       `category ${recordCategoryIdOf(frame)} holds no data-NFT record at index ${variable.nftIndex ?? 0}, which `
       + `the entry reads "${array}" from`,
     );
@@ -1302,7 +1302,7 @@ function liveArrayValue(
 /** A dynamic variable's live chunk data, ordered by chunk index. */
 function dynamicChunkBytes(
   frame: ReadFrame,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
   variable: { readonly name: string; readonly type: string },
 ): Uint8Array[] {
   const lock = bytesToHex(chunkRecordLockingBytecode(recordCategoryIdOf(frame), variable.name, variable.type));
@@ -1317,7 +1317,7 @@ function dynamicChunkBytes(
 /** The records a dynamic array's live chunk run contributes to the frame, in chunk order. */
 function arrayChunkRecords(
   frame: ReadFrame,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
   array: string,
 ): readonly ReadRecord[] {
   const variable = frame.artifact.stateLayout?.variables?.find((candidate) => candidate.name === array);
@@ -1377,7 +1377,7 @@ function arrayElementKeyAt(
  */
 function frameReadRecords(
   frame: ReadFrame,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
   stateLayout: StateLayout,
 ): readonly ReadRecord[] {
   const slots = frame.entry.slots;
@@ -1418,7 +1418,7 @@ function frameReadRecords(
  * place, exactly as the hop declares the run a callee frame reads. The records sit at the category whose records
  * the frame reads, which is the record owner's for a delegate frame.
  */
-function dynamicReadRecords(frame: ReadFrame, deployment: PerCallDeploymentSet): readonly ReadRecord[] {
+function dynamicReadRecords(frame: ReadFrame, deployment: FramedDeploymentSet): readonly ReadRecord[] {
   const fn = frame.artifact.abi.find((candidate) => candidate.name === frame.entry.name);
   const reads = fn?.dynamicReads ?? [];
   if (reads.length === 0) return [];
@@ -1501,7 +1501,7 @@ export function decodeReturnValues(
       retval, outputs.map((output) => output.type), structs, true, enums,
     );
     if (decoded === undefined) {
-      throw new PerCallReadError('the frame recorded bytes that are not the entry\'s declared Solidity ABI returns');
+      throw new FramedReadError('the frame recorded bytes that are not the entry\'s declared Solidity ABI returns');
     }
     return decoded as readonly StateValue[];
   }
@@ -1631,7 +1631,7 @@ function entryArgumentPushes(
     new Uint8Array(hexToBin(entry.selector)),
     ...args.map((value, index) => {
       const input = entry.inputs[index];
-      if (input === undefined) throw new PerCallReadError(`entry "${functionName}" has no parameter ${index}`);
+      if (input === undefined) throw new FramedReadError(`entry "${functionName}" has no parameter ${index}`);
       return encodeFunctionArgument(value, input.type, structs) as Uint8Array;
     }).reverse(),
   ];
@@ -1962,10 +1962,10 @@ async function composeInPasses(options: {
   readonly categoryId: string;
   readonly functionName: string;
   readonly args: readonly FunctionArgument[];
-  readonly externals: PerCallReadOptions['externals'];
+  readonly externals: FramedReadOptions['externals'];
   readonly validatorProgram: Uint8Array;
 }): Promise<{ readonly frames: readonly ReadFrame[]; readonly root: ReadFrame; readonly composed: ComposedRead }> {
-  const deployments = new Map<string, PerCallDeploymentSet>();
+  const deployments = new Map<string, FramedDeploymentSet>();
   let results: ReadonlyMap<string, FunctionArgument> = new Map();
   for (;;) {
     const { frames, root, waits } = planReadFrames({ ...options, results });
@@ -1975,7 +1975,7 @@ async function composeInPasses(options: {
     const fresh = waitedResults(frames, waits, composed, results);
     if (fresh.size === 0) {
       if (composed.stopped !== undefined) return { frames, root, composed };
-      throw new PerCallReadError(
+      throw new FramedReadError(
         `${waits[0]!.where} runs a loop whose bound reads an earlier call's result, which the read could not learn`,
       );
     }
@@ -1990,10 +1990,10 @@ async function composeInPasses(options: {
  * makes against the frame's `retval`, then derives the composition and returns the decoded value. Nothing is
  * broadcast.
  */
-export async function readPerCallEntry(options: PerCallReadOptions): Promise<PerCallReadResult> {
+export async function readFramedEntry(options: FramedReadOptions): Promise<FramedReadResult> {
   const { provider, categoryId, functionName } = options;
-  const { perCallValidator } = await import('solidc');
-  const validatorProgram = options.validatorProgram ?? perCallValidator.buildValidatorProgram();
+  const { framedValidator } = await import('solidc');
+  const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
 
   const { frames, root, composed } = await composeInPasses({

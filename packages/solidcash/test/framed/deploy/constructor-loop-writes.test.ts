@@ -1,24 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { bytesToHex, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { encodeFunctionArgument, type ConstructorArgument, type FunctionArgument } from '../../../src/Argument.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment, readPerCallState } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { orderLoopKeyArgs } from '../../../src/per-call/call/entry-records.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { readFramedDeployment, readFramedState } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { orderLoopKeyArgs } from '../../../src/framed/call/entry-records.js';
+import { deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A constructor that writes a mapping in a loop, deployed through the shipped per-call deployment.
+ * A constructor that writes a mapping in a loop, deployed through the shipped framed deployment.
  *
  * Every key and value such a constructor writes is a function of its arguments, so the genesis derives the entries
  * by running the constructor frame: a run-time loop's turns are planned from the arguments as a call's are, each
@@ -55,7 +55,7 @@ const COMMITTEE = compileStringMulti(`${PRAGMA}`
   + '   }'
   + '   function confirm(address who) { require(this.members[who]); }'
   + '   function ping() { require(true); }'
-  + ' }', { composition: 'per-call' }).Committee!;
+  + ' }', { composition: 'framed' }).Committee!;
 
 const ALLOWLIST = compileStringMulti(`${PRAGMA}`
   + ' contract Allowlist {'
@@ -65,7 +65,7 @@ const ALLOWLIST = compileStringMulti(`${PRAGMA}`
   + '   }'
   + '   function enter(address who) { require(this.allowed[who]); }'
   + '   function ping() { require(true); }'
-  + ' }', { composition: 'per-call' }).Allowlist!;
+  + ' }', { composition: 'framed' }).Allowlist!;
 
 const LEDGER = compileStringMulti(`${PRAGMA}`
   + ' contract Ledger {'
@@ -78,7 +78,7 @@ const LEDGER = compileStringMulti(`${PRAGMA}`
   + '     this.balances[msg.sender] -= amount; this.balances[to] += amount;'
   + '   }'
   + '   function ping() { require(true); }'
-  + ' }', { composition: 'per-call' }).Ledger!;
+  + ' }', { composition: 'framed' }).Ledger!;
 
 const TALLY = compileStringMulti(`${PRAGMA}`
   + ' contract Tally {'
@@ -86,7 +86,7 @@ const TALLY = compileStringMulti(`${PRAGMA}`
   + '   constructor(uint k, uint n) { for (uint i = 0; i < n; i++) { this.counts[k] += 1; } }'
   + '   function check(uint k, uint expected) { require(this.counts[k] == expected); }'
   + '   function ping() { require(true); }'
-  + ' }', { composition: 'per-call' }).Tally!;
+  + ' }', { composition: 'framed' }).Tally!;
 
 const TALLIES = compileStringMulti(`${PRAGMA}`
   + ' contract Tallies {'
@@ -94,7 +94,7 @@ const TALLIES = compileStringMulti(`${PRAGMA}`
   + '   constructor(uint[] memory keys) { for (uint i = 0; i < keys.length; i++) { this.counts[keys[i]] += 1; } }'
   + '   function check(uint k, uint expected) { require(this.counts[k] == expected); }'
   + '   function ping() { require(true); }'
-  + ' }', { composition: 'per-call' }).Tallies!;
+  + ' }', { composition: 'framed' }).Tallies!;
 
 /** The multisig owner loop: each turn requires its owner set and not yet an owner, then makes it one. */
 const OWNER_LOOP = ''
@@ -116,7 +116,7 @@ const WALLET = compileStringMulti(`${PRAGMA}`
   + `   constructor(address[] memory owners, uint quorum) { ${OWNER_LOOP} }`
   + WALLET_ENTRIES
   + '   function ping() { require(true); }'
-  + ' }', { composition: 'per-call' }).Wallet!;
+  + ' }', { composition: 'framed' }).Wallet!;
 
 const TOKEN = compileStringMulti(`${PRAGMA}`
   + ' contract Token {'
@@ -130,7 +130,7 @@ const TOKEN = compileStringMulti(`${PRAGMA}`
   + '     require(this.admins[msg.sender]); this.supply = this.supply + amount; this.balances[to] += amount;'
   + '   }'
   + '   function ping() { require(true); }'
-  + ' }', { composition: 'per-call' }).Token!;
+  + ' }', { composition: 'framed' }).Token!;
 
 /** A 32-byte txid whose bytes are distinct, taken from a counter. */
 let coins = 0;
@@ -180,7 +180,7 @@ async function settles(
 ): Promise<true | string> {
   const callerUtxo = { txid: nextTxid(), vout: 0, satoshis: 200_000n };
   await deployed.provider.addUtxo(binToHex(caller), callerUtxo);
-  const result = await callPerCallEntry({
+  const result = await callFramedEntry({
     provider: deployed.provider, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], callerUtxo, callerLockingBytecode: caller,
     funder: new SignatureTemplate(key).unlockP2PKH(), vm: compositionMachine(),
@@ -193,7 +193,7 @@ async function settles(
 async function nodeValues(
   provider: MockNetworkProvider, artifact: Artifact, categoryId: string, collection: string,
 ): Promise<Map<string, string>> {
-  const live = await readPerCallDeployment(provider, categoryId, artifact.stateLayout!);
+  const live = await readFramedDeployment(provider, categoryId, artifact.stateLayout!);
   return new Map((live.nodesByCollection.get(collection) ?? []).map((utxo) => {
     const decoded = decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment));
     return [bytesToHex(decoded.slot), bytesToHex(decoded.value)] as const;
@@ -232,7 +232,7 @@ describe('a constructor that writes a member set in a loop', () => {
     const deployed = await committee();
     const nodes = await nodeValues(deployed.provider, COMMITTEE, deployed.categoryId, 'members');
     expect(nodes).toStrictEqual(new Map(MEMBERS.map((member) => [slotOf(member, 'address'), TRUE])));
-    const state = await readPerCallState(deployed.provider, deployed.categoryId, COMMITTEE.stateLayout!);
+    const state = await readFramedState(deployed.provider, deployed.categoryId, COMMITTEE.stateLayout!);
     expect(state.byNft[0]).toMatchObject({ threshold: 2n });
   });
 
@@ -364,7 +364,7 @@ describe('a multisig wallet whose owner loop requires each owner not yet an owne
     const deployed = await wallet();
     expect(await nodeValues(deployed.provider, WALLET, deployed.categoryId, 'isOwner'))
       .toStrictEqual(new Map(OWNER_SET.map((owner) => [slotOf(owner, 'address'), TRUE])));
-    const state = await readPerCallState(deployed.provider, deployed.categoryId, WALLET.stateLayout!);
+    const state = await readFramedState(deployed.provider, deployed.categoryId, WALLET.stateLayout!);
     expect(state.byNft[0]).toMatchObject({ required: 2n, confirmations: 0n });
   });
 
@@ -398,7 +398,7 @@ const PROXIED = compileStringMulti(`${PRAGMA}`
   + '     for (uint i = 0; i < owners.length; i++) { this.members[owners[i]] = true; }'
   + '   }'
   + '   function confirm(address who) { require(this.members[who]); }'
-  + ' }', { composition: 'per-call' }).Impl!;
+  + ' }', { composition: 'framed' }).Impl!;
 
 describe('a member set behind a generated proxy', () => {
   it('runs the constructor loop at the implementation genesis and the initializer loop through the proxy', async () => {
@@ -415,7 +415,7 @@ describe('a member set behind a generated proxy', () => {
     const half = { funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address };
     const genesisMembers = ascending([lockOf(6), lockOf(7)]);
     const proxyMembers = [lockOf(8), CALLER, lockOf(9)];
-    const deployed = await deployPerCallProxy({
+    const deployed = await deployFramedProxy({
       provider,
       implementationArtifact: PROXIED,
       implementationArgs: [genesisMembers],
@@ -436,7 +436,7 @@ describe('a member set behind a generated proxy', () => {
       const callerUtxo = { txid: nextTxid(), vout: 0, satoshis: 200_000n };
       await provider.addUtxo(binToHex(CALLER), callerUtxo);
       try {
-        const result = await callPerCallProxyEntry({
+        const result = await callFramedProxyEntry({
           provider, implementationArtifact: PROXIED, proxyCategoryId: deployed.proxy.categoryId,
           implementationCategoryId: deployed.implementation.categoryId, functionName: 'confirm', args: [who],
           callerUtxo, callerLockingBytecode: CALLER, funder: signature.unlockP2PKH(), vm: compositionMachine(),
@@ -469,12 +469,12 @@ const PROXIED_WALLET = compileStringMulti(`${PRAGMA}`
   + '     this.required = quorum;'
   + '   }'
   + WALLET_ENTRIES
-  + ' }', { composition: 'per-call' }).Wallet!;
+  + ' }', { composition: 'framed' }).Wallet!;
 
 /** Deploys the proxied wallet with its genesis owners and the owners its initializer records. */
 async function proxiedWallet(
   genesisOwners: readonly Uint8Array[], proxyOwners: readonly Uint8Array[],
-): Promise<{ provider: MockNetworkProvider; deployed: Awaited<ReturnType<typeof deployPerCallProxy>> }> {
+): Promise<{ provider: MockNetworkProvider; deployed: Awaited<ReturnType<typeof deployFramedProxy>> }> {
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -486,7 +486,7 @@ async function proxiedWallet(
   await provider.addUtxo(binToHex(CALLER), hopUtxo);
   await fundShippedFacets(provider);
   const half = { funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address };
-  const deployed = await deployPerCallProxy({
+  const deployed = await deployFramedProxy({
     provider,
     implementationArtifact: PROXIED_WALLET,
     implementationArgs: [[...genesisOwners], 1n],
@@ -515,7 +515,7 @@ describe('a multisig wallet behind a generated proxy', () => {
       const callerUtxo = { txid: nextTxid(), vout: 0, satoshis: 200_000n };
       await provider.addUtxo(binToHex(caller), callerUtxo);
       try {
-        const result = await callPerCallProxyEntry({
+        const result = await callFramedProxyEntry({
           provider, implementationArtifact: PROXIED_WALLET, proxyCategoryId: deployed.proxy.categoryId,
           implementationCategoryId: deployed.implementation.categoryId, functionName: 'confirm', args: [],
           callerUtxo, callerLockingBytecode: caller, funder: new SignatureTemplate(key).unlockP2PKH(),

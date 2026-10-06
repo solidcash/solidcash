@@ -9,18 +9,18 @@ import {
   type DerivationHost,
   type FrameRequest,
   CompositionPools,
-  PerCallComposerError,
+  FramedComposerError,
   deriveComposition,
   layoutTransaction,
   selectGroupValidators,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /** Runs `body` and returns the refusal it raised. */
-function captureRefusal(body: () => unknown): PerCallComposerError {
+function captureRefusal(body: () => unknown): FramedComposerError {
   try {
     body();
   } catch (error) {
-    if (error instanceof PerCallComposerError) return error;
+    if (error instanceof FramedComposerError) return error;
     throw error;
   }
   throw new Error('expected a refusal, but nothing was raised');
@@ -44,7 +44,7 @@ describe('master pool exhaustion', () => {
 
     const refusal = captureRefusal(() => pools.takeMaster('Ledger'));
 
-    expect(refusal.code).toBe('PER_CALL_POOL_EXHAUSTED');
+    expect(refusal.code).toBe('FRAMED_POOL_EXHAUSTED');
     expect(refusal.message).toContain('Ledger');
     expect(refusal.message).toContain('3');
     expect(refusal.message).toContain('2');
@@ -107,7 +107,7 @@ describe('master pool exhaustion', () => {
       layoutTransaction([{ contract: 'A', masters: pools.mastersTaken('A'), state: [] }]);
     });
 
-    expect(refusal.code).toBe('PER_CALL_POOL_EXHAUSTED');
+    expect(refusal.code).toBe('FRAMED_POOL_EXHAUSTED');
     expect(refusal.message).toContain('"B"');
     expect(refusal.message).toContain('2');
     expect(refusal.message).toContain('1');
@@ -167,7 +167,7 @@ describe('validator selection', () => {
       built += 1;
     });
 
-    expect(refusal.code).toBe('PER_CALL_POOL_EXHAUSTED');
+    expect(refusal.code).toBe('FRAMED_POOL_EXHAUSTED');
     expect(refusal.message).toContain('A');
     expect(refusal.message).toContain('no validator');
     expect(built).toBe(0);
@@ -181,7 +181,7 @@ describe('validator selection', () => {
       { firstRootContract: 'A', masters: [{ contract: 'A', master: 'A m2' }] },
     ], pools));
 
-    expect(refusal.code).toBe('PER_CALL_POOL_EXHAUSTED');
+    expect(refusal.code).toBe('FRAMED_POOL_EXHAUSTED');
     expect(refusal.message).toContain('A');
     expect(refusal.message).toContain('no validator');
   });

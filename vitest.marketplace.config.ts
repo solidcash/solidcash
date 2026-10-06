@@ -69,7 +69,7 @@ if (Number.isSafeInteger(workerInspectPort) && workerInspectPort > 0 && workerIn
   workerExecArgv.push(`--inspect=127.0.0.1:${workerInspectPort}`);
 }
 // The kernel lane materializes `.marketplace/project` as a self-contained project with its own solidcash config (the
-// no-proxy twin); the per-call lane keeps the config, artifacts and compiler build at the worktree root, which the
+// no-proxy twin); the framed lane keeps the config, artifacts and compiler build at the worktree root, which the
 // fixture-freshness setup reads through this variable. Each layout gets the root its config lives at.
 const projectHasOwnConfig = ['solidcash.config.ts', 'solidcash.config.mjs', 'solidcash.config.js']
   .some((name) => existsSync(path.join(projectRoot, name)));

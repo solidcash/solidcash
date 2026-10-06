@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import { assembleComposition, type CompositionPlan } from '../../../src/per-call/composer/assemble.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import { assembleComposition, type CompositionPlan } from '../../../src/framed/composer/assemble.js';
 import { FrameKind } from '@solidcash/utils';
-import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
 import { encodeDataPush, hash256, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { callerUnlockingBytecode } from './caller-input.js';
 
@@ -43,7 +43,7 @@ const RELAXED_LIMITS = {
 
 /** Compiles, deploys, plans, assembles, and evaluates a spend of the assembled master. */
 function evaluateAssembledSpend(): { accepted: boolean; objection?: string } {
-  const artifact = compileString(SOURCE, { composition: 'per-call' });
+  const artifact = compileString(SOURCE, { composition: 'framed' });
   const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
   // A contract's redeem script is its constructor arguments pushed before its program.
   const redeemScript = new Uint8Array([
@@ -127,7 +127,7 @@ describe('a spend assembled by the composer', () => {
 
   it('places the master and the user at the indices the plan named', () => {
     // The layout decides the order, and the assembly reports it rather than the caller recomputing it.
-    const artifact = compileString(SOURCE, { composition: 'per-call' });
+    const artifact = compileString(SOURCE, { composition: 'framed' });
     const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
     const assembly = assembleComposition({
       blocks: [{ contract: 'Frame', masters: ['M0'], state: [] }],

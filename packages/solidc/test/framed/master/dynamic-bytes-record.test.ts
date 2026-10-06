@@ -8,7 +8,7 @@ import {
 } from './chunk-run-input.js';
 
 /**
- * A per-call master whose state is `bytes`, settled on the BCH-2026 machine.
+ * A framed master whose state is `bytes`, settled on the BCH-2026 machine.
  *
  * A `bytes` state variable is held like a `string`: the data NFT carries the value's length and the bytes live in a
  * run of 120-byte chunk records at the value's own collection address. A write consumes every chunk the spent value
@@ -49,10 +49,10 @@ const COPY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function copy() { this.other = this.data; }'
   + ' }';
 
-const append = deployChunkRunContract(compileString(APPEND_SOURCE, { composition: 'per-call' }), 'bytes append');
-const set = deployChunkRunContract(compileString(SET_SOURCE, { composition: 'per-call' }), 'bytes set');
-const read = deployChunkRunContract(compileString(READ_SOURCE, { composition: 'per-call' }), 'bytes read');
-const copy = deployChunkRunContract(compileString(COPY_SOURCE, { composition: 'per-call' }), 'bytes copy');
+const append = deployChunkRunContract(compileString(APPEND_SOURCE, { composition: 'framed' }), 'bytes append');
+const set = deployChunkRunContract(compileString(SET_SOURCE, { composition: 'framed' }), 'bytes set');
+const read = deployChunkRunContract(compileString(READ_SOURCE, { composition: 'framed' }), 'bytes read');
+const copy = deployChunkRunContract(compileString(COPY_SOURCE, { composition: 'framed' }), 'bytes copy');
 
 const BANG = new Uint8Array([0x21]);
 const SHORT = distinctBytes(5, 0x11);
@@ -72,10 +72,10 @@ const setTo = (
 ): ReturnType<typeof evaluateChunkRuns> =>
   evaluateChunkRuns(set, { args: [written], runs: [{ variable: 'data', type: 'bytes', spent, written }] }, mutation);
 
-describe('a per-call master whose state is bytes', () => {
-  it('is emitted as a per-call master for every shape below', () => {
+describe('a framed master whose state is bytes', () => {
+  it('is emitted as a framed master for every shape below', () => {
     for (const contract of [append, set, read, copy]) {
-      expect(contract.artifact.composition?.convention).toBe('per-call');
+      expect(contract.artifact.composition?.convention).toBe('framed');
       expect(contract.artifact.composition!.refusedEntries).toBeUndefined();
     }
     expect(append.artifact.stateLayout?.variables).toStrictEqual([

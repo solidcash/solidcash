@@ -4,13 +4,13 @@ import {
   computeFunctionSelector, computeFunctionSignature, concatBytes, decodeWitnessBlock, encodeWitnessBlock, hash160,
   sha256, splitFirstPush, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { satoshiContainerLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { satoshiContainerLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -31,7 +31,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '     (bool ok, ) = payable(address(vault)).call{value: msg.value}(""); require(ok);'
   + '     return (vault.lastSender(), vault.total()); } }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
 const AMOUNT = 5_000n;
 const RECEIVE_SELECTOR = computeFunctionSelector(computeFunctionSignature('__receive', []));
 
@@ -39,7 +39,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 interface Payment {
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
   readonly payerAddress: Uint8Array;
   readonly payerContainer: Uint8Array;
   readonly vaultAddress: Uint8Array;
@@ -51,8 +51,8 @@ let payment: Payment | undefined;
 beforeAll(async () => {
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const { perCallValidator } = await import('solidc');
-  const validatorProgram = perCallValidator.buildValidatorProgram();
+  const { framedValidator } = await import('solidc');
+  const validatorProgram = framedValidator.buildValidatorProgram();
   const deploy = async (name: string, args: readonly Uint8Array[]): Promise<string> => {
     const fundingUtxo = { txid: binToHex(sha256(utf8ToBin(`${name} funding`))), vout: 0, satoshis: 500_000n };
     await provider.addUtxo(funder.address, fundingUtxo);
@@ -69,7 +69,7 @@ beforeAll(async () => {
   const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: binToHex(sha256(utf8ToBin('caller coin'))), vout: 0, satoshis: 300_000n };
   await provider.addUtxo(binToHex(callerLock), callerUtxo);
-  const result = await callPerCallEntry({
+  const result = await callFramedEntry({
     provider, artifact: artifacts.Payer!, categoryId: payerCategory, functionName: 'pay', callerUtxo,
     callerLockingBytecode: callerLock, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
     externals: { Vault: { artifact: artifacts.Vault!, categoryId: vaultCategory } }, value: AMOUNT,

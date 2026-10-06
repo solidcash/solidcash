@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-} from '../../../src/per-call/proxy/index.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+} from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
 /**
  * An implementation entry the compiler refused is reported by name, not as the opcode its stub fails on.
  *
- * A body a per-call master cannot serve is emitted as a body that fails whenever the dispatcher reaches it, so a
+ * A body a framed master cannot serve is emitted as a body that fails whenever the dispatcher reaches it, so a
  * hop that runs one stops on that stub. The artifact publishes the reason beside the stop sites, and the deployment
  * has to say which entry the compiler refused rather than report the opcode the stub stopped on. The refused shape
  * here is an opaque low-level call, which names no method to lower to.
@@ -45,7 +45,7 @@ const REFUSED_SOURCE = 'pragma solidcash ^0.13.0;\n'
   + '  }\n'
   + '}\n';
 
-// The same fields and the same body with the opaque call replaced by a state write: an ordinary per-call entry.
+// The same fields and the same body with the opaque call replaced by a state write: an ordinary framed entry.
 const SERVED_SOURCE = 'pragma solidcash ^0.13.0;\n'
   + 'contract Impl {\n'
   + '  uint public initialized;\n'
@@ -82,8 +82,8 @@ const KEPT_BALANCE_SOURCE = SERVED_SOURCE.replace(/}\n$/, ''
   + '  function mine() internal view returns (int) { return address(this).balance; }\n'
   + '}\n');
 
-const COMPILE_OPTIONS = { composition: 'per-call' } as const;
-const SOLIDITY_OPTIONS = { composition: 'per-call', solidityImportCompat: true } as const;
+const COMPILE_OPTIONS = { composition: 'framed' } as const;
+const SOLIDITY_OPTIONS = { composition: 'framed', solidityImportCompat: true } as const;
 
 /** Funds the two genesis UTXOs and returns the deployer's own lock and funder. */
 async function funded(network: MockNetworkProvider): Promise<{
@@ -124,7 +124,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
 
-    const deployment = deployPerCallProxy({
+    const deployment = deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
@@ -134,7 +134,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
       vm: compositionMachine(),
     });
 
-    await expect(deployment).rejects.toThrow(PerCallProxyDeployError);
+    await expect(deployment).rejects.toThrow(FramedProxyDeployError);
     await expect(deployment).rejects.toThrow(
       /the implementation's "initialize" entry is refused by the compiler \(Impl\.initialize\(\)\).*'__raw__'/,
     );
@@ -148,7 +148,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
 
     // The refusal is a fact about the artifact, so it is read before the live pools are: the categories below name
     // no deployment.
-    const call = callPerCallProxyEntry({
+    const call = callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: PROXY_CATEGORY,
@@ -160,7 +160,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
       funder,
     });
 
-    await expect(call).rejects.toThrow(PerCallProxyDeployError);
+    await expect(call).rejects.toThrow(FramedProxyDeployError);
     await expect(call).rejects.toThrow(/the implementation's "initialize" entry is refused by the compiler/);
   });
 
@@ -170,7 +170,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
     const artifacts = compileStringMulti(KEPT_BALANCE_SOURCE, COMPILE_OPTIONS);
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, deployerLock } = await funded(network);
-    const call = callPerCallProxyEntry({
+    const call = callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: PROXY_CATEGORY,
@@ -182,7 +182,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
       funder,
     });
 
-    await expect(call).rejects.toThrow(PerCallProxyDeployError);
+    await expect(call).rejects.toThrow(FramedProxyDeployError);
     await expect(call).rejects.toThrow('the implementation\'s "settle" entry is refused by the compiler '
       + '(Impl.settle()): it runs \'mine\', which the master cannot serve: the body reads its contract\'s balance');
   });
@@ -195,7 +195,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
     const proxy = buildProxyArtifact(artifacts.Impl!);
 
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
@@ -212,7 +212,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
 
   it('serves a Solidity-compatible proxy implementation whose entries initializer inference would mark', async () => {
     // Initializer inference belongs to the direct convention, which hands an entry the co-spent proxy master's
-    // input index; a per-call master serves a delegate frame from the records its own block declares. So the
+    // input index; a framed master serves a delegate frame from the records its own block declares. So the
     // marking no longer runs for this convention, the entries stay ordinary bodies, and the hop settles.
     const artifacts = compileStringMulti(INITIALIZER_SOURCE, SOLIDITY_OPTIONS);
     const refusals = artifacts.Impl!.composition?.refusedEntries ?? [];
@@ -223,7 +223,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
 
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },

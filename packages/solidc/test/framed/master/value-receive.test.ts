@@ -8,7 +8,7 @@ import {
   encodeIntegerValue, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -16,7 +16,7 @@ import {
 } from './validator-input.js';
 
 /**
- * Value received by a per-call master (spec 4b): `receive()` and payable entries, driven through the real entry.
+ * Value received by a framed master (spec 4b): `receive()` and payable entries, driven through the real entry.
  *
  * A frame's value is credited only when the contract's satoshi containers grow by at least that much, so the
  * cases put container outputs and inputs around a compiled master and mutate one fact at a time. A body that is
@@ -71,7 +71,7 @@ const compiledBySource = new Map<string, Artifact>();
 const compile = (source: string): Artifact => {
   let artifact = compiledBySource.get(source);
   if (artifact === undefined) {
-    artifact = compileString(source, { composition: 'per-call' });
+    artifact = compileString(source, { composition: 'framed' });
     compiledBySource.set(source, artifact);
   }
   return artifact;
@@ -190,7 +190,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }
 
-describe('receive(), compiled per-call', () => {
+describe('receive(), compiled framed', () => {
   it('is an entry of the master, published under its selector', () => {
     const artifact = compile(RECEIVE_SOURCE);
     expect(artifact.composition!.refusedEntries ?? []).toStrictEqual([]);
@@ -242,7 +242,7 @@ describe('receive(), compiled per-call', () => {
   });
 });
 
-describe('payable and non-payable entries behind one dispatcher, compiled per-call', () => {
+describe('payable and non-payable entries behind one dispatcher, compiled framed', () => {
   const call = (entry: string, value: bigint, args: readonly Uint8Array[] = []): { accepted: boolean } => verdict({
     source: MIXED_SOURCE,
     value,
@@ -266,7 +266,7 @@ describe('payable and non-payable entries behind one dispatcher, compiled per-ca
   });
 });
 
-describe('a contract with no payable body, compiled per-call', () => {
+describe('a contract with no payable body, compiled framed', () => {
   it('refuses any value', () => {
     const spend = { source: PLAIN_SOURCE, argumentPushes: encodeArgumentList([encodeIntegerValue(1n)]) };
     expect(verdict({ ...spend, value: AMOUNT, containersOut: [AMOUNT] }).accepted).toBe(false);
@@ -274,7 +274,7 @@ describe('a contract with no payable body, compiled per-call', () => {
   });
 });
 
-describe('receive() that books the value in a record, compiled per-call', () => {
+describe('receive() that books the value in a record, compiled framed', () => {
   const ledger = deploy(LEDGER_SOURCE);
   const commitment = (received: bigint): Uint8Array =>
     new Uint8Array(Buffer.from(buildPushdataCommitment(ledger.artifact.stateLayout!, { received }, 0), 'hex'));

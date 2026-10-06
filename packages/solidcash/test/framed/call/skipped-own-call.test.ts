@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { parsePushdataCommitment, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -32,10 +32,10 @@ const SOURCE = 'pragma solidity ^0.8.0;'
 
 describe('an entry whose own argument guards a call away, on the plain call path', () => {
   it('settles the calls each argument makes, one record per call the execution made', async () => {
-    const compiled = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+    const compiled = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
     const artifacts: Readonly<Record<string, Artifact>> = { A: compiled.A!, B: compiled.B! };
-    const { perCallValidator } = await import('solidc');
-    const validatorProgram = perCallValidator.buildValidatorProgram();
+    const { framedValidator } = await import('solidc');
+    const validatorProgram = framedValidator.buildValidatorProgram();
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
     await fundShippedFacets(provider);
@@ -54,10 +54,10 @@ describe('an entry whose own argument guards a call away, on the plain call path
     const externals = Object.fromEntries([...categories]
       .map(([name, categoryId]) => [name, { artifact: artifacts[name]!, categoryId }]));
     const user = encodeLockingBytecodeP2pkh(alicePkh);
-    const enter = async (flag: boolean, coin: number): Promise<Awaited<ReturnType<typeof callPerCallEntry>>> => {
+    const enter = async (flag: boolean, coin: number): Promise<Awaited<ReturnType<typeof callFramedEntry>>> => {
       const callerUtxo = { txid: `${'74'.repeat(31)}${coin.toString(16).padStart(2, '0')}`, vout: 0, satoshis: 300_000n };
       await provider.addUtxo(binToHex(user), callerUtxo);
-      return callPerCallEntry({
+      return callFramedEntry({
         provider, artifact: artifacts.A!, categoryId: categories.get('A')!, functionName: 'run', args: [5n, flag],
         callerUtxo, callerLockingBytecode: user, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
         vm: compositionMachine(), externals,
@@ -65,7 +65,7 @@ describe('an entry whose own argument guards a call away, on the plain call path
     };
     const last = async (): Promise<unknown> => {
       const layout = artifacts.A!.stateLayout!;
-      const set = await readPerCallDeployment(provider, categories.get('A')!, layout);
+      const set = await readFramedDeployment(provider, categories.get('A')!, layout);
       return parsePushdataCommitment(set.records[0]!.token!.nft!.commitment, layout, 0).last;
     };
 

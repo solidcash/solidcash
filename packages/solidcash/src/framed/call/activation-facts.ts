@@ -8,13 +8,13 @@
 
 import { hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import type { PerCallDeploymentSet } from '../deploy/index.js';
+import type { FramedDeploymentSet } from '../deploy/index.js';
 import { deploymentStateValues, liveMappingValueReader } from '../proxy/external-calls.js';
 import type { WriteActivationFacts } from '../proxy/write-activation.js';
 
 /** The facts a frame of `artifact` decides its guarded writes from, on the deployment it runs on at `selfAddress`. */
 export function deploymentActivationFacts(
-  artifact: Artifact, categoryId: string, deployment: PerCallDeploymentSet, selfAddress: Uint8Array,
+  artifact: Artifact, categoryId: string, deployment: FramedDeploymentSet, selfAddress: Uint8Array,
 ): WriteActivationFacts {
   const layout = artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
   return {

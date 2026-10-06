@@ -3,7 +3,7 @@ import { FrameKind, computeFunctionSelector, computeFunctionSignature, validator
 import { compileStringMulti } from 'solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import {
   assertCompositionAccepted,
   createComposedDerivationHost,
@@ -11,11 +11,11 @@ import {
   reportCompositionRefusal,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend }
-  from '../../../../solidc/test/per-call/master/validator-input.js';
+  from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * The reason a refused composition reports, attributed to the innermost frame.
@@ -99,7 +99,7 @@ interface Composition {
  * machine about a frame whose callee has not been derived yet.
  */
 function build(calleeBody: string, callerBody: string, callerBeforeCall = '', derive = true): Composition {
-  const artifacts = compileStringMulti(source(calleeBody, callerBody, callerBeforeCall), { composition: 'per-call' });
+  const artifacts = compileStringMulti(source(calleeBody, callerBody, callerBeforeCall), { composition: 'framed' });
   const caller = deployMaster(artifacts.Caller!, CATEGORY_CALLER, VALIDATOR_PROGRAM);
   const callee = deployMaster(artifacts.Callee!, CATEGORY_CALLEE, VALIDATOR_PROGRAM);
   const validator = validatorSpend(CATEGORY_CALLER, { roots: [0], masters: [0, 2], settles: [] });
@@ -221,7 +221,7 @@ function buildThree(): {
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 } {
-  const artifacts = compileStringMulti(sourceThree(), { composition: 'per-call' });
+  const artifacts = compileStringMulti(sourceThree(), { composition: 'framed' });
   const caller = deployMaster(artifacts.Caller!, CATEGORY_CALLER, VALIDATOR_PROGRAM);
   const callee = deployMaster(artifacts.Callee!, CATEGORY_CALLEE, VALIDATOR_PROGRAM);
   const inner = deployMaster(artifacts.Inner!, CATEGORY_INNER, VALIDATOR_PROGRAM);
@@ -325,7 +325,7 @@ describe('a refused composition reports its innermost frame reason', () => {
 
     // What the shipped derivation reports on its own: a stall that names the frame and its site but not the reason
     // the frame refused. The machine is never asked, so the report below is what recovers the actual reason.
-    expect((derivationError as { code?: string }).code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect((derivationError as { code?: string }).code).toBe('FRAMED_DERIVATION_STALLED');
     expect(derivationError!.message).not.toContain('InsufficientBalance');
 
     let report: ReturnType<typeof reportCompositionRefusal> | undefined;

@@ -9,7 +9,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -18,7 +18,7 @@ import {
 } from './validator-input.js';
 
 /**
- * A typed call carrying value, `IWrapper(w).deposit{value: amount}()`, compiled per-call (spec 4b).
+ * A typed call carrying value, `IWrapper(w).deposit{value: amount}()`, compiled framed (spec 4b).
  *
  * The call's record carries the amount: the payer's own site holds the record's `value` to the amount its code
  * computed, the validator holds the callee's frame value to the record (V5), the payer's containers give up at most
@@ -49,7 +49,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Payer { function forward(int amount) {'
   + `   IWrapper(0x${toHex(ADDRESS_WRAPPER)}).deposit{value: amount}(); require(true); } }`;
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -176,7 +176,7 @@ function verdicts(deposit: Deposit = {}): Record<'payer' | 'wrapper' | 'validato
   };
 }
 
-describe('a typed call carrying value, compiled per-call', () => {
+describe('a typed call carrying value, compiled framed', () => {
   it('is served: the payer\'s entry is not refused', () => {
     expect(artifacts.Payer!.composition?.refusedEntries ?? []).toStrictEqual([]);
   });

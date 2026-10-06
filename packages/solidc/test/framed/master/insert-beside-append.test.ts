@@ -9,7 +9,7 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import {
   encodeEntryCommitment, headSentinelCommitment, keyToSlot,
 } from '../../../../solidcash/src/stateful/SortedList.js';
@@ -19,7 +19,7 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose entry inserts a mapping target the live list does not hold, beside a dynamic append.
+ * A framed master whose entry inserts a mapping target the live list does not hold, beside a dynamic append.
  *
  * The segment's declared record list is the frame's own state record, then the batch's group, then the dynamic
  * value's run. An insert's group is two records — the relinked head sentinel and the created node — where an
@@ -62,7 +62,7 @@ const CREATED_INDEX = 5;
 const UPDATE_NODE_INDEX = 3;
 const UPDATE_CHUNK_INDEX = 4;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = encodeLockingBytecodeP2sh32(hash256(deployed.script));
@@ -372,8 +372,8 @@ function evaluateCreatedHead(options: SpendOptions = {}): { accepted: boolean; o
   });
 }
 
-describe('a per-call master whose entry inserts a mapping target beside a dynamic append', () => {  it('publishes a per-call master whose layout puts the dynamic run past the batch group', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+describe('a framed master whose entry inserts a mapping target beside a dynamic append', () => {  it('publishes a framed master whose layout puts the dynamic run past the batch group', () => {
+    expect(artifact.composition?.convention).toBe('framed');
     expect(deployed.script.length).toBeGreaterThan(0);
   });
 

@@ -297,7 +297,7 @@ function installCachedP2shEvaluator(
 /** Two lowercase hex digits per byte value, as libauth's `binToHex` writes them. */
 const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, '0'));
 
-/** A function table key: `binToHex` of the identifier, without its per-call allocations for the usual 1-2 bytes. */
+/** A function table key: `binToHex` of the identifier, without its framed allocations for the usual 1-2 bytes. */
 function functionTableKeyOf(identifier: Uint8Array): string {
   if (identifier.length === 1) return BYTE_HEX[identifier[0]!]!;
   if (identifier.length === 2) return BYTE_HEX[identifier[0]!]! + BYTE_HEX[identifier[1]!]!;
@@ -985,7 +985,7 @@ function buildVirtualMachineBch2026ForProvider(
   let runPhases: NonNullable<typeof instructionSet.evaluate> | undefined;
   let closes: { last: FailedClose | undefined } | undefined;
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
-    // The kernel lane's fast `every` goes first; the per-call operation-limit check installed below replaces it with
+    // The kernel lane's fast `every` goes first; the framed operation-limit check installed below replaces it with
     // the same libauth-equivalent check, and this one stays in effect wherever that check declines to install.
     installFastBch2026Every(instructionSet, consensus, standard);
     runPhases = installCachedP2shEvaluator(

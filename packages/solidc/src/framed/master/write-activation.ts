@@ -1,5 +1,5 @@
 /**
- * The condition a per-call body's verified-mapping write runs under, published on its entry access as `activation`.
+ * The condition a framed body's verified-mapping write runs under, published on its entry access as `activation`.
  *
  * A write a branch guards is skipped whenever the branch is not taken, and a frame that skips it declares no write: a
  * node the list holds is kept, and a key it does not hold is proved absent by its kept predecessor. A builder decides
@@ -467,8 +467,8 @@ class ActivationSerializer {
   }
 }
 
-/** The write node of a per-call body's entry slot, when the body itself holds it rather than a helper it calls. */
-function perCallSlotWrite(entry: FunctionDefinitionNode, slotIndex: number): Node | undefined {
+/** The write node of a framed body's entry slot, when the body itself holds it rather than a helper it calls. */
+function framedSlotWrite(entry: FunctionDefinitionNode, slotIndex: number): Node | undefined {
   let found: Node | undefined;
   walkInvocationAst(entry.body, (node) => {
     if (found !== undefined) return;
@@ -479,26 +479,26 @@ function perCallSlotWrite(entry: FunctionDefinitionNode, slotIndex: number): Nod
 }
 
 /**
- * The activation of a per-call body's write of `slotIndex`, a write some branch arm guards: the conjunction of the
+ * The activation of a framed body's write of `slotIndex`, a write some branch arm guards: the conjunction of the
  * predicates on its path, `true` where they hold wherever the body reaches the write (`isAlwaysActive`), or
  * `UNDECIDED_WRITE_ACTIVATION` when one is not the frame's to decide.
  */
-export function perCallWriteActivation(
+export function framedWriteActivation(
   entry: FunctionDefinitionNode,
   slotIndex: number,
   constants: ReadonlyMap<string, ExpressionNode>,
 ): ExternalCallExpression {
-  const write = perCallSlotWrite(entry, slotIndex);
+  const write = framedSlotWrite(entry, slotIndex);
   const activation = write === undefined ? undefined : new ActivationSerializer(entry, constants).activationOf(write);
   return activation ?? UNDECIDED_WRITE_ACTIVATION;
 }
 
 /**
- * The activation of a per-call body's emit at `emitIndex`, an emit some branch arm guards: the disjunction of the
+ * The activation of a framed body's emit at `emitIndex`, an emit some branch arm guards: the disjunction of the
  * conditions the slot's emits run under, since exclusive arms may emit into one slot, `true` where they hold wherever
  * the body reaches the slot (`isAlwaysActive`), or `UNDECIDED_WRITE_ACTIVATION` when one is not the frame's to decide.
  */
-export function perCallEmitActivation(
+export function framedEmitActivation(
   entry: FunctionDefinitionNode,
   emitIndex: number,
   constants: ReadonlyMap<string, ExpressionNode>,

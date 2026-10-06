@@ -55,9 +55,9 @@ const PLAIN_SOURCE = [
   '}',
 ].join('\n');
 
-function compilePerCall(source: string, name: string): ArtifactMap {
+function compileFramed(source: string, name: string): ArtifactMap {
   return compileStringMulti(source, {
-    composition: 'per-call',
+    composition: 'framed',
     solidityImportCompat: true,
     importResolver: resolveImport,
     rootFileId: `/${name}.sol`,
@@ -79,11 +79,11 @@ const writesOf = (genesis: AbiFunction): unknown[] => (genesis.entryAccesses ?? 
 }));
 
 describe('a minting constructor behind a base that makes library calls', () => {
-  const permit = compilePerCall(PERMIT_SOURCE, 'PermitToken');
-  const plain = compilePerCall(PLAIN_SOURCE, 'PlainToken');
+  const permit = compileFramed(PERMIT_SOURCE, 'PermitToken');
+  const plain = compileFramed(PLAIN_SOURCE, 'PlainToken');
 
-  it('compiles the permit token per-call without a refusal', () => {
-    expect(permit.PermitToken?.composition?.convention).toBe('per-call');
+  it('compiles the permit token framed without a refusal', () => {
+    expect(permit.PermitToken?.composition?.convention).toBe('framed');
     expect(publishedRefusals(permit)).toEqual([]);
   });
 
@@ -94,7 +94,7 @@ describe('a minting constructor behind a base that makes library calls', () => {
   });
 
   it('still compiles the plain token, whose genesis publishes the same mint', () => {
-    expect(plain.PlainToken?.composition?.convention).toBe('per-call');
+    expect(plain.PlainToken?.composition?.convention).toBe('framed');
     expect(publishedRefusals(plain)).toEqual([]);
     expect(writesOf(genesisOf(plain, 'PlainToken'))).toEqual(MINT);
   });

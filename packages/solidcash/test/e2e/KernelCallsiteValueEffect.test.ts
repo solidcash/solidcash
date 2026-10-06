@@ -14,7 +14,7 @@ const OPTIONS = { forceStateful: true, solidityImportCompat: true, messageBus: t
   messageBusKernel: true, messageBusGraphContext: true, suppressWarnings: true,
   maximumInputBytes: 1_000_000 } as const;
 
-describe('kernel per-callsite value effects', () => {
+describe('kernel framedsite value effects', () => {
   it.each([false, true])('keeps getter and raw sibling value-free with mapping payment %s', async (enabled) => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface IReader { function read(uint key) external view returns (uint); }
@@ -123,7 +123,7 @@ describe('kernel per-callsite value effects', () => {
     const stale = structuredClone(artifacts.Payer);
     delete stale.abi.find((fn) => fn.name === 'pay')!.externalCalls![0].callValueEffect;
     expect(() => messageBus.planCompiledGraph([{ ...participants[0], artifact: stale }, participants[1]], invocations))
-      .toThrow(/omits per-callsite value metadata/);
+      .toThrow(/omits framedsite value metadata/);
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({ preparedCalls: calls, funder,
       changeAddress: funder.unlocker.generateLockingBytecode() });

@@ -5,7 +5,7 @@ import {
   recordChainIssues, RecordChainError,
   type OutputOccupancy,
   type SettlementFacts,
-} from '../../../src/per-call/composer/settlement.js';
+} from '../../../src/framed/composer/settlement.js';
 
 /**
  * The record chain a settlement has to satisfy, driven through the shipped check.

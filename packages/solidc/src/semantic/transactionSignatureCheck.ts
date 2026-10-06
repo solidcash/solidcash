@@ -48,10 +48,10 @@ export function checksTransactionSignature(
 /**
  * Whether the helper inliners keep transaction-signature checks in the entry point, which is what the SDK signs.
  * A message-bus build does not: it keeps such a helper behind OP_INVOKE and publishes that body for each signature
- * its route takes. A per-call artifact carries no route, so its helpers are inlined as in a direct build.
+ * its route takes. A framed artifact carries no route, so its helpers are inlined as in a direct build.
  */
 export function inlinesSignatureChecks(options: CompilerOptions): boolean {
-  return options.messageBus !== true || options.composition === 'per-call';
+  return options.messageBus !== true || options.composition === 'framed';
 }
 
 /** The names that the given bodies call directly. */

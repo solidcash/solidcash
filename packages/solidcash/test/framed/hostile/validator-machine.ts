@@ -8,10 +8,10 @@ import {
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
-  type PerCallTransaction as ModelledTransaction,
+  type FramedTransaction as ModelledTransaction,
   type TokenShape,
   type ValidatorReasonName,
-} from '../../../../solidc/src/per-call/validator/index.js';
+} from '../../../../solidc/src/framed/validator/index.js';
 import { materialise, planComposition, type Composition, type CompositionPlan } from '../validator/fixture.js';
 import { abbaPlan } from '../validator/plans.js';
 

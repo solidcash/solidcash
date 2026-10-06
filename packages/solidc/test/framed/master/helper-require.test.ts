@@ -7,9 +7,9 @@ import {
   validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
-import { buildValidatorProgram } from '../../../src/per-call/validator/index.js';
-import { frameRevertReason } from '../../../../solidcash/src/per-call/composer/refusal.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
+import { buildValidatorProgram } from '../../../src/framed/validator/index.js';
+import { frameRevertReason } from '../../../../solidcash/src/framed/composer/refusal.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 
@@ -44,7 +44,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 const HELPER_LINE = 3;
 const HELPER_MESSAGE = 'key must be 33 bytes';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Vault!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Vault!;
 const program = fillPlaceholders(
   scriptToBytecode(asmToScript(artifact.bytecode)),
   artifact.composition!.placeholders,

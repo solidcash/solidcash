@@ -21,11 +21,11 @@ run is `fef851fee`: a contract's data records are placed side by side in data-re
 its record base plus its layout offset. That matches the `setClaimed` signature (`declared=01 computed=02`): the frame
 read its neighbour's record. Landed since and not yet under a full run: `d2bf005a8`, `4999f7211`, `43d12a9f9`,
 `cf5f83e48`, `6e2626e48` (compiler: an entry cache ends at each call between two accesses), `f5f41861d`, `5f452f80b`,
-`e77cf6109`, `2534b954b`; the full compiler and SDK suites at `cf5f83e48` show no per-call regression beyond one
+`e77cf6109`, `2534b954b`; the full compiler and SDK suites at `cf5f83e48` show no framed regression beyond one
 stale publication pin (fixed in `2534b954b`). Log: `{SCRATCH}/mkt-logs/h4.txt`.
 
 Measured at `055833fb4`: a full 66-title run (44 passed, the set unchanged since 04:48), the walls-ahead replicas under
-`PER_CALL_AHEAD=1` (9 of 142 cases off their pins), a census of the compiled marketplace's entries (calls, kinds,
+`FRAMED_AHEAD=1` (9 of 142 cases off their pins), a census of the compiled marketplace's entries (calls, kinds,
 guards, loops, side-cars, write segments), and the sources in `.marketplace/contracts/`. Each wall names its owner;
 "in progress" marks work started ahead of the ladder in the composer lane. Updated after `27a60158f`: the full
 66-title run of 2026-10-03 reads **50 passed | 16 failed (66)**, the scoreboard's ticked set is exactly that passing
@@ -54,7 +54,7 @@ source, so the claim frame settles and the execution moves one frame deeper: `-t
 `frame "callee-master-10" of Unicrow.setClaimed() at line 96` with `reading … declared=01 computed=02`, and the
 signature is the published write facts - the `segment:"last"` release write that `Unicrow.refund()` and
 `Unicrow.pay()` publish is absent for that entry. The claim replica is
-`test/per-call/edges/dynamic-struct-return-edge.test.ts` (3 passed) and a six-title regression batch
+`test/framed/edges/dynamic-struct-return-edge.test.ts` (3 passed) and a six-title regression batch
 (`read mece tag`, `post job 1`, `post job with whitelist`, `withdraw collateral`, `close job before timeout`,
 `take job take job`) is 6 passed, so the compiler change broke none of the measured green set.
 
@@ -62,7 +62,7 @@ signature is the published write facts - the `segment:"last"` release write that
 
 | Titles | Wall at HEAD | Next walls predicted from the code | Owner |
 | --- | --- | --- | --- |
-| #51 approve result, #52 refund sanity, #59 arbitrate sanity, #60 80-20, #61 0-100, #62 100-0, #66 integration test | the claim frame is served (`92c6cf9bc`); the execution now enters `Unicrow.setClaimed()`, which refuses at its `onlyUnicrowClaim` check (`Unicrow.sol:96`) with an unattributed `OP_VERIFY`. The hop trace names the comparison: `declared=01 computed=02` (`_status` 1 vs 2, a 1-byte record) | measured: the artifact publishes `[{record:0,segment:0,_status}]` for this entry but not the `{record:0,segment:"last",_status}` release fact that `Unicrow.refund()` and `Unicrow.pay()` publish, so segment 0 declares the spent `_status` where the body computed the entered one. Behind it: the `escrows` element write (`claimed = 1` on a 13-field struct with a dynamic `string`) and its chunk run | hop + compiler; `solidc/src/per-call/master/support.ts` read with the artifact |
+| #51 approve result, #52 refund sanity, #59 arbitrate sanity, #60 80-20, #61 0-100, #62 100-0, #66 integration test | the claim frame is served (`92c6cf9bc`); the execution now enters `Unicrow.setClaimed()`, which refuses at its `onlyUnicrowClaim` check (`Unicrow.sol:96`) with an unattributed `OP_VERIFY`. The hop trace names the comparison: `declared=01 computed=02` (`_status` 1 vs 2, a 1-byte record) | measured: the artifact publishes `[{record:0,segment:0,_status}]` for this entry but not the `{record:0,segment:"last",_status}` release fact that `Unicrow.refund()` and `Unicrow.pay()` publish, so segment 0 declares the spent `_status` where the body computed the entered one. Behind it: the `escrows` element write (`claimed = 1` on a 13-field struct with a dynamic `string`) and its chunk run | hop + compiler; `solidc/src/framed/master/support.ts` read with the artifact |
 | #50 approve sanity | the entry's own revert reason is not attributed where the transaction reverts (`expected revert reason Review text too long, but the contract's own reason was "no source message"`) | the wall above, once the execution reaches the entry's own checks | attribution (`composer/refusal.ts`) |
 
 Served on 2026-10-03, each confirmed by its own title run: #53 refund and #65 refuse arbitration job taken
@@ -92,7 +92,7 @@ plans one frame per calling loop turn); #46 post thread message sanity (`384859f
   the shares, amounts, reason and worker decode as the test expects, zero shares included. Not a wall.
 - `ahead/fan-in.test.ts`: the second append to one job's chunked notes chains, so its `take` case asserts the
   settlement instead of the refusal.
-- The whole directory is green again: 16 files / 143 cases. The `ahead/` files run only under `PER_CALL_AHEAD=1`, so a
+- The whole directory is green again: 16 files / 143 cases. The `ahead/` files run only under `FRAMED_AHEAD=1`, so a
   moved wall goes unnoticed by the focused suites; a run per landing that touches the hop or the composer keeps them
   honest.
 
@@ -106,7 +106,7 @@ plans one frame per calling loop turn); #46 post thread message sanity (`384859f
   each transaction.
 - The kernel lane's 822f3001a (a call condition reads `msg.sender` from the authenticated executing frame) was lost
   in the 2026-09-24 module extraction: `ExternalCallPredicate` fails its two cases on this branch. Not a marketplace
-  wall today; the per-call path passes its own sender to the resolver.
+  wall today; the framed path passes its own sender to the resolver.
 - A self-referential mapping update `m[k] = m[k] + x` publishes its write one segment after its source position
   (`m[k] = lit` and struct field writes publish their own); a re-entered reader would see the earlier view. The
   marketplace's writes are not affected.

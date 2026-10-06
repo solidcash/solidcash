@@ -3,19 +3,19 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bita
 import {
   buildPushdataCommitment, bytesToHex, parsePushdataCommitment, sha256, validatorAddress, type RecordEntry,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { readComputedDeclaration } from '../../../src/per-call/deploy/declaration.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { readComputedDeclaration } from '../../../src/framed/deploy/declaration.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { deploymentStateValues } from '../../../src/per-call/proxy/external-calls.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { participant, type CompositionDraft } from '../../../src/per-call/composer/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { deploymentStateValues } from '../../../src/framed/proxy/external-calls.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { participant, type CompositionDraft } from '../../../src/framed/composer/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -91,14 +91,14 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const compiled = compileStringMulti(SOURCE, FIXTURE_OPTIONS as never);
 const { Sink, Ledger } = compiled as Required<typeof compiled>;
 const ledgerProxy = buildProxyArtifact(Ledger!);
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const SINK = validatorAddress(hexToBin(SINK_CATEGORY), VALIDATOR_PROGRAM);
 
 /** A coin a genesis or a hop is funded from; a genesis's txid becomes the category it mints. */
@@ -117,7 +117,7 @@ interface World {
 
 /** One entered call: the hop it settled or the error it was refused with, and the coin the caller paid with. */
 interface Entered {
-  readonly result?: PerCallProxyCallResult;
+  readonly result?: FramedProxyCallResult;
   readonly error?: Error;
   readonly coin: Utxo;
 }
@@ -137,7 +137,7 @@ async function deployWorld(): Promise<World> {
   const [implementationId, proxyId, initTxid] = ['implementation', 'proxy', 'initialize coin'].map(idOf);
   for (const id of [implementationId!, proxyId!]) await network.addUtxo(wallet.address, funding(id));
   await network.addUtxo(binToHex(ALICE_LOCK), funding(initTxid!));
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: Ledger!,
     proxyArtifact: ledgerProxy,
@@ -158,7 +158,7 @@ async function deployWorld(): Promise<World> {
     try {
       return {
         coin,
-        result: await callPerCallProxyEntry({
+        result: await callFramedProxyEntry({
           provider: network,
           implementationArtifact: Ledger!,
           proxyArtifact: ledgerProxy,
@@ -194,7 +194,7 @@ async function deployed(): Promise<World> {
 /** Enters one call and requires it to settle every participant and broadcast; hands back the hop. */
 async function settle(
   world: World, functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const { result, error } = await world.enter(functionName, args);
   expect(error).toBeUndefined();
   expect(result!.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -204,12 +204,12 @@ async function settle(
 }
 
 /** The sink entries a hop ran, in the order the derivation completed them. */
-const sinkFrames = (result: PerCallProxyCallResult): readonly string[] => result.completed
+const sinkFrames = (result: FramedProxyCallResult): readonly string[] => result.completed
   .map((frame) => frame.functionName).filter((name) => name.startsWith(`${Sink!.contractName}.`));
 
 /** What the sink's view reads from its live record. */
 async function sinkTaken(world: World): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: Sink!, categoryId: SINK_CATEGORY, functionName: 'taken', args: [],
     vm: compositionMachine(),
   });
@@ -221,7 +221,7 @@ async function sinkTaken(world: World): Promise<unknown> {
 async function ledgerTotal(world: World): Promise<unknown> {
   const layout = ledgerProxy.stateLayout!;
   return deploymentStateValues(layout, world.proxyCategoryId,
-    await readPerCallDeployment(world.network, world.proxyCategoryId, layout)).total;
+    await readFramedDeployment(world.network, world.proxyCategoryId, layout)).total;
 }
 
 /** Settles one guarded entry and reads back the ledger's field and the sink's, naming the sink frames the hop ran. */

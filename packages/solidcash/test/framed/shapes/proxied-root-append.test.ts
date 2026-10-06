@@ -14,20 +14,20 @@ import {
   type StateLayout,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/framed/master/validator-input.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
 import {
   chunkRecordId, createComposedDerivationHost, layOutChunkRun, participant,
   planChunkRun, reportCompositionRefusal,
   type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { layoutWithFacets } from './harness.js';
 import {
   EMPTY,
@@ -135,7 +135,7 @@ const STORE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const STORE_ARTIFACT = compileStringMulti(STORE_SOURCE, { composition: 'per-call' }).Store!;
+const STORE_ARTIFACT = compileStringMulti(STORE_SOURCE, { composition: 'framed' }).Store!;
 const STORE_PROXY_ARTIFACT = buildProxyArtifact(STORE_ARTIFACT);
 const STORE_CONTRACT = STORE_ARTIFACT.contractName;
 const STORE_PROXY_CONTRACT = STORE_PROXY_ARTIFACT.contractName;
@@ -207,7 +207,7 @@ interface ImplSetup {
 
 /** Compiles an implementation, generates its proxy, and deploys both at the shape's one pair of addresses. */
 function setupImpl(source: string, entry: string, args: readonly Uint8Array[]): ImplSetup {
-  const artifact = compileStringMulti(source, { composition: 'per-call' }).RootImpl!;
+  const artifact = compileStringMulti(source, { composition: 'framed' }).RootImpl!;
   const proxyArtifact = buildProxyArtifact(artifact);
   const implDeployed = deployMaster(artifact, ROOT_IMPL_CATEGORY, REAL_VALIDATOR_PROGRAM);
   const proxyDeployed = deployMaster(proxyArtifact, ROOT_PROXY_CATEGORY, REAL_VALIDATOR_PROGRAM);
@@ -610,7 +610,7 @@ describe('the store\'s caller check through its proxy', () => {
       stalled = error as Error;
     }
     expect(stalled?.message)
-      .toMatch(/PER_CALL_DERIVATION_STALLED: master "store-impl-1" of Store\.append\(\)/);
+      .toMatch(/FRAMED_DERIVATION_STALLED: master "store-impl-1" of Store\.append\(\)/);
 
     const report = reportCompositionRefusal({
       draft: createComposedDerivationHost({
@@ -670,7 +670,7 @@ const READ_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function tag(int id) view returns (int) { return this.n + id; }'
   + ' }';
 
-const READ_ARTIFACTS = compileStringMulti(READ_SOURCE, { composition: 'per-call' });
+const READ_ARTIFACTS = compileStringMulti(READ_SOURCE, { composition: 'framed' });
 const READ_IMPL_ARTIFACT = READ_ARTIFACTS.RootRead!;
 const READ_PROXY_ARTIFACT = buildProxyArtifact(READ_IMPL_ARTIFACT);
 const READER_ARTIFACT = READ_ARTIFACTS.Reader!;

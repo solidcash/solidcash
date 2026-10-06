@@ -3,14 +3,14 @@ import {
   FrameKind, computeFunctionSelector, computeFunctionSignature, validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant,
   type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend } from '../../../../solidc/test/framed/master/validator-input.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 
 /**
  * A chain of calls deeper than one hop.
@@ -62,7 +62,7 @@ const LINKS: readonly Link[] = [
 
 describe('a chain of four contracts, each calling the next', () => {
   it('settles every master in the chain, accepted by the machine', () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const selectorOf = (link: Link): Uint8Array =>
       computeFunctionSelector(computeFunctionSignature(link.entry, []));
     const programOf = (link: Link): Uint8Array =>

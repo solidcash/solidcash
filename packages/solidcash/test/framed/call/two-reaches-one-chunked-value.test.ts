@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -65,7 +65,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const log = artifacts.Log!;
 const root = artifacts.Root!;
 
@@ -105,7 +105,7 @@ async function deployWorld(): Promise<World> {
   for (const coin of [logInitCoin, rootInitCoin, callCoin]) await network.addUtxo(binToHex(callerLock), coin);
   await fundShippedFacets(network);
 
-  const logDeployment = await deployPerCallProxy({
+  const logDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: log,
     proxyArtifact: buildProxyArtifact(log),
@@ -117,7 +117,7 @@ async function deployWorld(): Promise<World> {
     vm: compositionMachine(),
   });
   expect(logDeployment.initialize.broadcast).toBeDefined();
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -154,8 +154,8 @@ async function deployed(): Promise<World> {
 }
 
 /** One call of the root's entry through its proxy, the log reached behind its own. */
-function callRoot(world: World, functionName: string, args: readonly bigint[]): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+function callRoot(world: World, functionName: string, args: readonly bigint[]): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -181,7 +181,7 @@ function callRoot(world: World, functionName: string, args: readonly bigint[]): 
 
 /** One view entry of the log, read from the live records its proxy holds. */
 async function readLog(world: World, functionName: string, args: readonly bigint[]): Promise<unknown> {
-  const answered = await readPerCallEntry({
+  const answered = await readFramedEntry({
     provider: world.network,
     artifact: log,
     categoryId: world.logProxyCategoryId,

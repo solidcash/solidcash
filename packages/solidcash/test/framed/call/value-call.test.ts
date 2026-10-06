@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import type { SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { satoshiContainerLockingBytecode, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { satoshiContainerLockingBytecode, stateRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
-  PerCallCallError, callPerCallEntry, sendPerCallValue, type PerCallCallResult,
-} from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  FramedCallError, callFramedEntry, sendFramedValue, type FramedCallResult,
+} from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
   addressOf, callerOf, containerValue, currentCaller, deploy, deployBeside, type Deployed,
 } from './value-harness.js';
 
 /**
- * Value carried by a call into a deployed per-call contract (spec 4b), through the shipped path.
+ * Value carried by a call into a deployed framed contract (spec 4b), through the shipped path.
  *
  * A value send runs the contract's `receive()`, and a call to a payable entry carries value the same way: the caller
  * pays it into a satoshi container of the contract, and the entry reads it as `msg.value`. The SDK refuses by name
@@ -38,8 +38,8 @@ const PLAIN_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function touch(int by) { this.count = this.count + by; }'
   + ' }';
 
-const vault = compileStringMulti(SOURCE, { composition: 'per-call' }).Vault!;
-const plain = compileStringMulti(PLAIN_SOURCE, { composition: 'per-call' }).Plain!;
+const vault = compileStringMulti(SOURCE, { composition: 'framed' }).Vault!;
+const plain = compileStringMulti(PLAIN_SOURCE, { composition: 'framed' }).Plain!;
 
 /** The record commitment the shipped encoder materializes for one balance. */
 function received(value: bigint): string {
@@ -65,10 +65,10 @@ function sharedDeployment(artifact: Artifact): () => Promise<Deployed> {
 
 const deployedVault = sharedDeployment(vault);
 
-describe('a value send to a deployed per-call contract', () => {
+describe('a value send to a deployed framed contract', () => {
   it('runs receive() with the value, paid into a container of the contract', async () => {
     const deployed = await deployedVault();
-    const result = await sendPerCallValue({ ...callerOf(deployed), value: AMOUNT });
+    const result = await sendFramedValue({ ...callerOf(deployed), value: AMOUNT });
 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Vault.__receive()']);
@@ -78,7 +78,7 @@ describe('a value send to a deployed per-call contract', () => {
 
   it('is refused by name for a contract with no receive()', async () => {
     const deployed = await deploy(plain);
-    await expect(sendPerCallValue({ ...callerOf(deployed), value: AMOUNT }))
+    await expect(sendFramedValue({ ...callerOf(deployed), value: AMOUNT }))
       .rejects.toThrow(/contract "Plain" has no receive\(\)/);
   });
 });
@@ -86,7 +86,7 @@ describe('a value send to a deployed per-call contract', () => {
 describe('a call to a payable entry carrying value', () => {
   it('reads the value as msg.value, paid into a container of the contract', async () => {
     const deployed = await deployedVault();
-    const result = await callPerCallEntry({ ...callerOf(deployed), functionName: 'deposit', value: AMOUNT });
+    const result = await callFramedEntry({ ...callerOf(deployed), functionName: 'deposit', value: AMOUNT });
 
     expect(result.accepted).toBe(true);
     expect(bytesToHex(result.writtenCommitments[0]!)).toBe(received(AMOUNT));
@@ -95,12 +95,12 @@ describe('a call to a payable entry carrying value', () => {
 
   it('is refused by name for an entry that is not payable', async () => {
     const deployed = await deployedVault();
-    await expect(callPerCallEntry({ ...callerOf(deployed), functionName: 'touch', args: [1n], value: AMOUNT }))
-      .rejects.toThrow(PerCallCallError);
-    await expect(callPerCallEntry({ ...callerOf(deployed), functionName: 'touch', args: [1n], value: AMOUNT }))
+    await expect(callFramedEntry({ ...callerOf(deployed), functionName: 'touch', args: [1n], value: AMOUNT }))
+      .rejects.toThrow(FramedCallError);
+    await expect(callFramedEntry({ ...callerOf(deployed), functionName: 'touch', args: [1n], value: AMOUNT }))
       .rejects.toThrow(/entry "touch" is not payable/);
     // The control: the same entry without value is served.
-    const plainCall = await callPerCallEntry({ ...callerOf(deployed), functionName: 'touch', args: [1n] });
+    const plainCall = await callFramedEntry({ ...callerOf(deployed), functionName: 'touch', args: [1n] });
     expect(plainCall.accepted).toBe(true);
   });
 });
@@ -113,11 +113,11 @@ const WALLET_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function forward() payable { this.paid = this.paid + msg.value; this.transfer(msg.sender, msg.value); }'
   + ' }';
 
-const wallet = compileStringMulti(WALLET_SOURCE, { composition: 'per-call' }).Wallet!;
+const wallet = compileStringMulti(WALLET_SOURCE, { composition: 'framed' }).Wallet!;
 const deployedWallet = sharedDeployment(wallet);
 
 /** The value the broadcast pays to the caller's own lock outside its change, which is the last output. */
-function paidToCaller(result: PerCallCallResult, callerLock: Uint8Array): bigint {
+function paidToCaller(result: FramedCallResult, callerLock: Uint8Array): bigint {
   const outputs = result.broadcast?.outputs ?? [];
   return outputs.slice(0, -1)
     .filter((output) => binToHex(output.lockingBytecode) === binToHex(callerLock))
@@ -127,10 +127,10 @@ function paidToCaller(result: PerCallCallResult, callerLock: Uint8Array): bigint
 describe('an entry that sends, paid from the contract\'s containers', () => {
   it('withdraws what a deposit put in, and keeps the change in a container', async () => {
     const deployed = await deployedWallet();
-    const deposit = await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const deposit = await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
     expect(deposit.accepted).toBe(true);
 
-    const withdrawal = await callPerCallEntry({
+    const withdrawal = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'withdraw', args: [15_000n],
     });
     expect(withdrawal.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -146,14 +146,14 @@ describe('an entry that sends, paid from the contract\'s containers', () => {
 
   it('is refused by name when the containers cannot cover the send', async () => {
     const deployed = await deployedWallet();
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 5_000n });
-    await expect(callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'withdraw', args: [10_000n] }))
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 5_000n });
+    await expect(callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'withdraw', args: [10_000n] }))
       .rejects.toThrow(/contract "Wallet" holds 5000 satoshis in its containers, and entry "withdraw" sends 10000 more/);
   });
 
   it('forwards the value a payable entry receives without touching the containers', async () => {
     const deployed = await deployedWallet();
-    const forward = await callPerCallEntry({
+    const forward = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'forward', value: 7_000n,
     });
     expect(forward.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -184,51 +184,51 @@ const READING_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function pay(int amount) { require(amount <= this.limits[msg.sender]); this.transfer(msg.sender, amount); }'
   + ' }';
 
-const reading = compileStringMulti(READING_SOURCE, { composition: 'per-call' });
+const reading = compileStringMulti(READING_SOURCE, { composition: 'framed' });
 
 describe('an entry that sends what its state allows', () => {
   it('pays up to the cap its record holds, a record it reads and does not write', async () => {
     const deployed = await deploy(reading.Capped!);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-    const cap = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'setCap', args: [15_000n] });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const cap = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'setCap', args: [15_000n] });
     expect(cap.accepted).toBe(true);
 
-    const over = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_001n] });
+    const over = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_001n] });
     expect(over.accepted).toBe(false);
     expect(over.broadcast).toBeUndefined();
-    const paid = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_000n] });
+    const paid = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_000n] });
     expect(paid.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(paid, deployed.callerLock)).toBe(15_000n);
   });
 
   it('withdraws what its mapping credits the sender, debiting the entry it reads', async () => {
     const deployed = await deploy(reading.Ledger!);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
-    const withdrawal = await callPerCallEntry({
+    const withdrawal = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'withdraw', args: [15_000n],
     });
     expect(withdrawal.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(withdrawal, deployed.callerLock)).toBe(15_000n);
     expect(containerValue(withdrawal, deployed.categoryId)).toBe(5_000n);
     // The entry now credits 5,000, so a larger withdrawal is refused.
-    const over = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'withdraw', args: [6_000n] });
+    const over = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'withdraw', args: [6_000n] });
     expect(over.accepted).toBe(false);
     expect(over.broadcast).toBeUndefined();
   });
 
   it('pays up to the limit its mapping grants the sender, a key it reads and does not write', async () => {
     const deployed = await deploy(reading.Allowance!);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-    const limit = await callPerCallEntry({
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const limit = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'setLimit', args: [15_000n],
     });
     expect(limit.accepted).toBe(true);
 
-    const over = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_001n] });
+    const over = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_001n] });
     expect(over.accepted).toBe(false);
     expect(over.broadcast).toBeUndefined();
-    const paid = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_000n] });
+    const paid = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_000n] });
     expect(paid.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(paid, deployed.callerLock)).toBe(15_000n);
   });
@@ -249,16 +249,16 @@ const PAYMENTS_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function touch(int by) { this.count = this.count + by; }'
   + ' }';
 
-const payments = compileStringMulti(PAYMENTS_SOURCE, { composition: 'per-call' });
+const payments = compileStringMulti(PAYMENTS_SOURCE, { composition: 'framed' });
 const deployedPayer = sharedDeployment(payments.Payer!);
 
 describe('an entry that pays a contract through its receive()', () => {
   it('runs the recipient\'s receive() with the value, paid from the payer\'s containers', async () => {
     const deployed = await deployedPayer();
     const vaultCategory = await deployBeside(deployed, payments.Vault!, '47'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(payments.Vault!, vaultCategory), 7_000n],
@@ -281,13 +281,13 @@ describe('an entry that pays a contract through its receive()', () => {
     const deployed = await deployedPayer();
     // Both are refused from the artifacts and the call's externals, before any recipient deployment is read.
     const closedCategory = '48'.repeat(32);
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(payments.Closed!, closedCategory), 7_000n],
       externals: { Closed: { artifact: payments.Closed!, categoryId: closedCategory } },
     })).rejects.toThrow(/contract "Closed" has no receive\(\), so the value entry "pay" sends it has no body to run/);
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(payments.Vault!, '49'.repeat(32)), 7_000n],
@@ -303,22 +303,22 @@ const TILL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function empty() { this.emptied = this.emptied + 1; this.transfer(msg.sender, address(this).balance); }'
   + ' }';
 
-const till = compileStringMulti(TILL_SOURCE, { composition: 'per-call' }).Till!;
+const till = compileStringMulti(TILL_SOURCE, { composition: 'framed' }).Till!;
 
 describe('an entry that reads its own balance', () => {
   it('reads every container the contract holds, and pays all of it out', async () => {
     const deployed = await deploy(till);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 5_000n });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 5_000n });
 
-    const read = await readPerCallEntry({
+    const read = await readFramedEntry({
       provider: deployed.provider, artifact: till, categoryId: deployed.categoryId, functionName: 'holding',
       vm: compositionMachine(),
     });
     expect(read.accepted).toBe(true);
     expect(read.value).toBe(25_000n);
 
-    const emptied = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'empty' });
+    const emptied = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'empty' });
     expect(emptied.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(emptied, deployed.callerLock)).toBe(25_000n);
     // Both containers are spent; the one the send follows keeps only what the caller put in to stand it up.
@@ -343,12 +343,12 @@ const FALLBACK_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
   + ' }';
 
-const fallbacks = compileStringMulti(FALLBACK_SOURCE, { composition: 'per-call' });
+const fallbacks = compileStringMulti(FALLBACK_SOURCE, { composition: 'framed' });
 
 describe('a value send to a contract whose fallback() takes it', () => {
   it('runs a payable fallback() when the contract has no receive(), as the EVM picks the body', async () => {
     const deployed = await deploy(fallbacks.Tip!);
-    const result = await sendPerCallValue({ ...callerOf(deployed), value: AMOUNT });
+    const result = await sendFramedValue({ ...callerOf(deployed), value: AMOUNT });
 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Tip.__fallback()']);
@@ -361,15 +361,15 @@ describe('a value send to a contract whose fallback() takes it', () => {
   it('is refused by name when the fallback() is not payable', async () => {
     const deployed = await deploy(fallbacks.Shut!);
     const refusal = 'contract "Shut" has no receive() and its fallback() is not payable, so it refuses a value sent to it';
-    await expect(sendPerCallValue({ ...callerOf(deployed), value: AMOUNT })).rejects.toThrow(refusal);
+    await expect(sendFramedValue({ ...callerOf(deployed), value: AMOUNT })).rejects.toThrow(refusal);
   });
 
   it('runs the recipient\'s payable fallback() for an entry that pays it', async () => {
     const deployed = await deploy(fallbacks.Payer!);
     const tipCategory = await deployBeside(deployed, fallbacks.Tip!, '4a'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(fallbacks.Tip!, tipCategory), 7_000n],
@@ -417,7 +417,7 @@ const BRANCH_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   receive() external payable { this.received = this.received + msg.value; }'
   + ' }';
 
-const branch = compileStringMulti(BRANCH_SOURCE, { composition: 'per-call' });
+const branch = compileStringMulti(BRANCH_SOURCE, { composition: 'framed' });
 
 /** The Till the branch cases share, and the Vault and the Jar deployed beside it. */
 interface Branching {
@@ -438,7 +438,7 @@ function branchingTill(): Promise<Branching> {
     await deployed.provider.addUtxo(binToHex(deployed.callerLock), {
       txid: '46'.repeat(31) + 'c1', vout: 0, satoshis: 500_000n,
     });
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 30_000n });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 30_000n });
     return { deployed, vaultCategory, jarCategory };
   })();
   return branching;
@@ -449,7 +449,7 @@ describe('an entry that sends on a branch', () => {
     const { deployed } = await branchingTill();
 
     // A send on a branch taken is the control of the refusal case below.
-    const skipped = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'payIf', args: [0n] });
+    const skipped = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'payIf', args: [0n] });
     expect(skipped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(skipped, deployed.callerLock)).toBe(0n);
     // No send, so no container is spent or kept.
@@ -459,13 +459,13 @@ describe('an entry that sends on a branch', () => {
   it('reports the body\'s own refusal when it stops before any send', async () => {
     const { deployed } = await branchingTill();
 
-    const refused = await callPerCallEntry({
+    const refused = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'payCapped', args: [60_000n],
     });
     expect(refused.accepted).toBe(false);
     expect(refused.broadcast).toBeUndefined();
     // The control: an amount the body admits is paid.
-    const paid = await callPerCallEntry({
+    const paid = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'payCapped', args: [9_000n],
     });
     expect(paid.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -475,13 +475,13 @@ describe('an entry that sends on a branch', () => {
   it('lists the sends made in order when an earlier one is on a branch not taken', async () => {
     const { deployed } = await branchingTill();
 
-    const one = await callPerCallEntry({
+    const one = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'split', args: [0n, 5_000n],
     });
     expect(one.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(one, deployed.callerLock)).toBe(5_000n);
 
-    const both = await callPerCallEntry({
+    const both = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'split', args: [3_000n, 4_000n],
     });
     expect(both.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -494,7 +494,7 @@ describe('an entry that sends on a branch', () => {
     const to = addressOf(branch.Vault!, vaultCategory);
 
     // A contract paid on a branch taken is paid as the unconditional case pays one.
-    const skipped = await callPerCallEntry({
+    const skipped = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'payTo', args: [to, 0n], externals,
     });
     expect(skipped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -505,7 +505,7 @@ describe('an entry that sends on a branch', () => {
   it('pays the contract whose call the body made when an earlier contract\'s is on a branch not taken', async () => {
     const { deployed, vaultCategory, jarCategory } = await branchingTill();
 
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       ...(await currentCaller(deployed)),
       functionName: 'payEither',
       args: [addressOf(branch.Vault!, vaultCategory), addressOf(branch.Jar!, jarCategory), 8_000n],

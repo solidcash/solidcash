@@ -4,12 +4,12 @@ import {
   asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from '../frames/caller-input.js';
 
 /**
@@ -47,7 +47,7 @@ const RELAXED_LIMITS = {
   hashDigestIterationsPerByte: 3,
 };
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 
 /** The master program with the reserved address slot filled, exactly as a deployment fills it. */
 function masterProgram(): Uint8Array {

@@ -4,10 +4,10 @@ import { encodeEventCommitment } from '@solidcash/utils';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { fundShippedFacets, hexOf, seededAddress } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -17,7 +17,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * The row names an event whose payload crosses the direct convention's 128-byte commitment size, emitted from a
  * nested frame. The compiler accepts the payload: five 32-byte fields encode to 160 bytes. The shipped call path
- * (`callPerCallEntry`) plans the callee frame an entry's call reaches, and the row's caller calls an emitter at an
+ * (`callFramedEntry`) plans the callee frame an entry's call reaches, and the row's caller calls an emitter at an
  * address no deployment holds, so the transaction cannot even be assembled for the row, and the refusal it meets
  * is pinned by name (a deployed emitting callee is served: `call/plain-callees.test.ts`). The control beside it
  * drives the identical >128-byte event through the same path emitted by the root frame itself, which settles, and
@@ -78,7 +78,7 @@ const ROOT_SOURCE = 'pragma solidcash ^0.13.0;'
 describe('spec section 23 row 13: events above 128 bytes from nested frames', () => {
   it('refuses the nested-frame entry by name, unable to plan the callee frame', async () => {
     const artifacts = compileStringMulti(
-      NESTED_SOURCE, { composition: 'per-call', solidityImportCompat: true } as never,
+      NESTED_SOURCE, { composition: 'framed', solidityImportCompat: true } as never,
     );
     const root = artifacts.Root!;
     const emitter = artifacts.Emitter!;
@@ -103,7 +103,7 @@ describe('spec section 23 row 13: events above 128 bytes from nested frames', ()
     await provider.addUtxo(binToHex(user), callerUtxo);
 
     // The entry's one external call reaches an address no deployment holds, so the path refuses before assembling.
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       provider,
       artifact: root,
       categoryId: deployment.categoryId,
@@ -121,7 +121,7 @@ describe('spec section 23 row 13: events above 128 bytes from nested frames', ()
 
   it('serves and decodes the same payload emitted by the root frame, the control for the size', async () => {
     const artifact = compileStringMulti(
-      ROOT_SOURCE, { composition: 'per-call', solidityImportCompat: true } as never,
+      ROOT_SOURCE, { composition: 'framed', solidityImportCompat: true } as never,
     ).Solo!;
 
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -139,7 +139,7 @@ describe('spec section 23 row 13: events above 128 bytes from nested frames', ()
     const callerUtxo = { txid: outpointHash(0x51), vout: 0, satoshis: 300_000n };
     await provider.addUtxo(binToHex(user), callerUtxo);
 
-    const answered = await callPerCallEntry({
+    const answered = await callFramedEntry({
       provider,
       artifact,
       categoryId: deployment.categoryId,

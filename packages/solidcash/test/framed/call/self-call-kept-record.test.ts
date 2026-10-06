@@ -4,19 +4,19 @@ import {
 } from '@solidcash/utils';
 import {
   entryRecordReadUnlock, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import type { CompositionDraftPlan, DraftRecordEntry } from '../../../src/per-call/composer/index.js';
+import type { CompositionDraftPlan, DraftRecordEntry } from '../../../src/framed/composer/index.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, hexOf, master, masterInput, rootOf, seededAddress, selectorOf,
   token, userInput,
 } from '../shapes/harness.js';
 
 /**
- * A per-call frame that keeps a sorted-mapping node record and writes a data record, entered by a user.
+ * A framed frame that keeps a sorted-mapping node record and writes a data record, entered by a user.
  *
  * Two bodies read the same mapping node. `readThrough` passes the read as an argument of a self-call
- * (`this.onlySelfRecord(this.bal[k])`), which the per-call lowering keeps as an `OP_DEFINE` subroutine that runs
+ * (`this.onlySelfRecord(this.bal[k])`), which the framed lowering keeps as an `OP_DEFINE` subroutine that runs
  * as the contract; the control holds the read in a local and writes the scalar itself. The frame's witness block
  * declares the kept node and the written data record in both cases, and the whole shipped path runs: the source
  * through the shipped compiler, both programs through the shipped deployment, the composer laying the frame out,

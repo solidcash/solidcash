@@ -1,12 +1,12 @@
 /**
- * Which contract shapes a per-call master program can be emitted for.
+ * Which contract shapes a framed master program can be emitted for.
  *
  * A master's head is one prefix that runs before the entry bodies. When the contract has a single entry point the
  * whole program is the head followed by that inlined body; with several, the head is followed by a selector
  * dispatcher that OP_DEFINEs each entry body with its four-byte selector and OP_INVOKEs the one the unlocking
  * bytecode's leading selector names.
  *
- * Everything else is refused with a named reason rather than compiled into a program that claims the per-call
+ * Everything else is refused with a named reason rather than compiled into a program that claims the framed
  * convention while violating its frame rules.
  */
 
@@ -105,7 +105,7 @@ import { bodyLoopEffects, loopEffectKinds } from './loop-effects.js';
 /**
  * Synthetic parameters that carry the direct path's transaction-level sender category.
  *
- * A per-call master takes `msg.sender` from its witness block instead, so these parameters are not part of its
+ * A framed master takes `msg.sender` from its witness block instead, so these parameters are not part of its
  * frame and must not be expected on the stack (nor offered to the SDK as inputs).
  */
 const FRAME_PARAMETERS = new Set(['__internal__msgSenderCategory', '__internal__msgSenderAnchorIdx']);
@@ -113,7 +113,7 @@ const FRAME_PARAMETERS = new Set(['__internal__msgSenderCategory', '__internal__
 /**
  * The direct path's return-event output index.
  *
- * A per-call master settles the value its entry computed against the witness `retval` field, not against a
+ * A framed master settles the value its entry computed against the witness `retval` field, not against a
  * return-event output, so this operand is not part of its frame and must not be expected on the stack.
  */
 const RETURN_EVENT_PARAMETERS = new Set(['__internal__returnOutputIdx']);
@@ -127,7 +127,7 @@ const RETURN_EVENT_PARAMETERS = new Set(['__internal__returnOutputIdx']);
  */
 const EXTERNAL_CALL_PARAMETERS = new Set([
   '__internal__externalCallInputBase',
-  // The direct path pins a delegate call to a co-spent delegate master through this operand. A per-call body binds
+  // The direct path pins a delegate call to a co-spent delegate master through this operand. A framed body binds
   // its delegate record against the witness block instead, so the operand is neither supplied nor read.
   '__internal__delegateInputIndex',
 ]);
@@ -139,7 +139,7 @@ const VALUE_WITNESS_PARAMETER = /^__internal__valueWitness_(\d+)$/;
  * The direct convention's operand for the co-spent proxy master's input index.
  *
  * Solidity-compatible upgradeable contracts mark their entries `delegate` by initializer inference, which injects
- * this operand. A per-call delegate frame runs on the records its own witness block declares, so the operand names
+ * this operand. A framed delegate frame runs on the records its own witness block declares, so the operand names
  * an input the head never reads and never leaves: the body that carries it is refused as the shape it is.
  */
 const PROXY_MASTER_WITNESS_PARAMETER = '__internal__proxyMasterIndex';
@@ -149,7 +149,7 @@ const MESSAGE_CONTEXT_PARAMETERS = new Set(['__internal__msgSig', '__internal__m
 
 /**
  * The direct convention's fold operands: pushes earlier rows made, their complete form, and the first output of a
- * written long value's chunks. A per-call frame reads an entry's current value itself and finds its chunk outputs by
+ * written long value's chunks. A framed frame reads an entry's current value itself and finds its chunk outputs by
  * address, so the body neither receives nor reads them.
  */
 function isFoldParameter(name: string): boolean {
@@ -160,7 +160,7 @@ function isFoldParameter(name: string): boolean {
 
 /** The value-witness slots a body reads: one past the highest slot its parameters name. */
 export function valueWitnessSlotsOf(fn: FunctionDefinitionNode): number {
-  return Math.max(fn.perCallValueWitnessSlots ?? 0, valueWitnessSlotsInParameters(fn));
+  return Math.max(fn.framedValueWitnessSlots ?? 0, valueWitnessSlotsInParameters(fn));
 }
 
 /**
@@ -198,7 +198,7 @@ export function stripFrameParameters(
     // for values it cannot know. A long value the body reads comes from the frame's block the same way.
     const derived = derivableBatchWitnessNames(fn, constants);
     const derivedDynamic = derivableDynamicChunkNames(fn);
-    fn.perCallValueWitnessSlots = valueWitnessSlotsOf(fn);
+    fn.framedValueWitnessSlots = valueWitnessSlotsOf(fn);
     const kept = (parameter: ParameterNode): boolean =>
       !(derived?.has(parameter.name) ?? false) && !(derivedDynamic?.has(parameter.name) ?? false)
       && !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
@@ -211,7 +211,7 @@ export function stripFrameParameters(
       stripped.set(fn, new Map([[fn.parameters.length, lostAt(fn.parameters)], [passed.length, lostAt(passed)]]));
     }
     fn.parameters = fn.parameters.filter(kept);
-    // A multi-target batch is classified as a dense linear row batch for the direct convention. The per-call master
+    // A multi-target batch is classified as a dense linear row batch for the direct convention. The framed master
     // derives the operands itself and settles the batch through the general per-target arm, which reads no rank or
     // row, so a derivable batch is reclassified here before the body is emitted.
     if (derived !== undefined) {
@@ -247,12 +247,12 @@ function isExternalCallParameter(name: string): boolean {
     || /^__internal__loopTargets\d+$/.test(name)
     // The direct path names the output that carries a call's return event through this operand, one per returning
     // slot (the bare name when there is one, an indexed name per slot when there are several). It reads the value
-    // back from that output, which a per-call master does not write: its frame records the returned value in
+    // back from that output, which a framed master does not write: its frame records the returned value in
     // `retval`, and the body takes the call's result from its own witness record, so the operand is neither
     // supplied nor read and is stripped from the published interface like the others.
     || /^__internal__externalReturnOutputIdx\d*$/.test(name)
     // The direct path authenticates a result longer than a return event holds through this operand, the preimage
-    // of the digest the event commits, one per returning slot. A per-call body takes the result from its own
+    // of the digest the event commits, one per returning slot. A framed body takes the result from its own
     // witness record, so the operand is neither supplied nor read either.
     || /^__internal__externalReturnPreimage\d*$/.test(name)
     // The direct path checks the co-spent callee's selector through this operand. A site checks its record's
@@ -284,7 +284,7 @@ export const ORIGIN_FRAME_SLOT = '__internal__frameOrigin';
  * only computes later. A read of the frame's own record is held as the record the frame declares, which the master
  * reads in the segment the body reads it in.
  */
-export interface PerCallBatchKey {
+export interface FramedBatchKey {
   /** A parameter the body holds, read at its own stack depth. */
   readonly paramName?: string;
   /** A tracked frame value the head left: the frame's sender for `msg.sender`, the origin for `tx.origin`. */
@@ -298,7 +298,7 @@ export interface PerCallBatchKey {
   readonly stateSegment?: number;
   /**
    * The batch targets, by slot, whose node the expression reads: such a node is read through the operands its own
-   * group yields, so the derivation emits the key once that target is derived (`perCallBatchDerivationRounds`).
+   * group yields, so the derivation emits the key once that target is derived (`framedBatchDerivationRounds`).
    */
   readonly targetReads?: readonly number[];
 }
@@ -315,12 +315,12 @@ function constantNames(
 
 /** A target key the master can hold where it derives the slot, or the fact that stops it from holding one. */
 type BatchKeyResolution =
-  | { readonly kind: 'key'; readonly key: PerCallBatchKey }
+  | { readonly kind: 'key'; readonly key: FramedBatchKey }
   | { readonly kind: 'refusal'; readonly reason: string };
 
 /** Every key of one target's write, in source order, or the fact that stops the master from holding one. */
 type BatchKeysResolution =
-  | { readonly kind: 'keys'; readonly keys: readonly PerCallBatchKey[] }
+  | { readonly kind: 'keys'; readonly keys: readonly FramedBatchKey[] }
   | { readonly kind: 'refusal'; readonly reason: string };
 
 /**
@@ -432,7 +432,7 @@ function resolveBatchKeys(
   if (keyCount === 0) {
     return { kind: 'refusal', reason: `the body writes a mapping at slot ${slot} with no key source to read` };
   }
-  const keys: PerCallBatchKey[] = [];
+  const keys: FramedBatchKey[] = [];
   for (let keyIndex = 0; keyIndex < keyCount; keyIndex += 1) {
     const resolved = resolveBatchKey(entry, slot, keyIndex, keyCount, constants);
     if (resolved.kind === 'refusal') return resolved;
@@ -753,7 +753,7 @@ function deriveKeyExpression(
   };
   // The body reads the node where its batch's writes land, before it writes the node: its own read takes the view
   // the target's group begins with there, which is the view the derivation reads.
-  const writeSegment = perCallBatchWriteSegment(entry);
+  const writeSegment = framedBatchWriteSegment(entry);
   const targetReadUnavailable = (read: MappingAccessNode): string | undefined => {
     const value = `the mapping entry '${read.name}' at a node the body also writes`;
     const position = places.order.get(read);
@@ -1148,11 +1148,11 @@ function batchDerivationOrder(entry: FunctionDefinitionNode, constants: Readonly
 }
 
 /**
- * The rounds a per-call master derives a body's batch targets in, by slot, or undefined for a body it derives none
+ * The rounds a framed master derives a body's batch targets in, by slot, or undefined for a body it derives none
  * for. The batches are declared in the derivation's order by then (`stripFrameParameters`), so each round is a run of
  * the declared targets.
  */
-export function perCallBatchDerivationRounds(
+export function framedBatchDerivationRounds(
   entry: FunctionDefinitionNode,
   constants: ReadonlySet<string>,
 ): readonly (readonly number[])[] | undefined {
@@ -1211,17 +1211,17 @@ function isOneWrite(operations: readonly string[]): boolean {
  * The emission uses the same resolution the admission does, so the values it emits and the emittability decision
  * cannot drift apart.
  */
-export function perCallBatchKeys(
+export function framedBatchKeys(
   entry: FunctionDefinitionNode,
   slot: number,
   constants: ReadonlySet<string>,
-): readonly PerCallBatchKey[] | undefined {
+): readonly FramedBatchKey[] | undefined {
   const resolved = resolveBatchKeys(entry, slot, constants);
   return resolved.kind === 'keys' ? resolved.keys : undefined;
 }
 
 /**
- * The sorted-batch operands a per-call master derives from its own frame, or undefined for a shape it cannot.
+ * The sorted-batch operands a framed master derives from its own frame, or undefined for a shape it cannot.
  *
  * The derivation reads the master's witness block back and leaves, per target, the four operands the sorted-batch
  * verification consumes and, once, the trailing count. It covers one collection whose every entry is one write to a
@@ -1257,7 +1257,7 @@ export function derivableBatchWitnessNames(
 /**
  * Why a body's sorted-batch writes cannot be settled from its own frame, or undefined when they can.
  *
- * A body that writes a mapping carries the direct convention's batch operands. A per-call master derives those
+ * A body that writes a mapping carries the direct convention's batch operands. A framed master derives those
  * from the records its own frame declares, which it can do for every collection the body writes when each entry is
  * one write to a distinct target whose key the body holds where the derivation runs, with at most the read of that
  * same target beside it, and every other entry a key it only reads at a fixed slot. Anything wider (a batched or
@@ -1386,7 +1386,7 @@ function callFreeNestedBlocks(statement: Node): readonly BlockNode[] | undefined
  * contributes none, so a body whose only branches reach no call keeps the fixed segment its (absent) calls name
  * rather than being left open by a branch the count walk cannot descend through.
  */
-export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number | undefined {
+export function framedBatchWriteSegment(entry: FunctionDefinitionNode): number | undefined {
   const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
   if (slots.size === 0) return undefined;
   let segment: number | undefined;
@@ -1446,7 +1446,7 @@ export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number 
  * and past the calls the earlier sends to contracts made, which only the recipients a builder resolves can tell. A
  * statement that both sends and calls, and a send in a loop or a switch, leave the number open.
  */
-export function perCallSendCallsBefore(entry: FunctionDefinitionNode): readonly number[] | undefined {
+export function framedSendCallsBefore(entry: FunctionDefinitionNode): readonly number[] | undefined {
   const count = entry.transferInfos?.length ?? 0;
   if (count === 0) return undefined;
   const before = new Map<number, number>();
@@ -1508,7 +1508,7 @@ export function perCallSendCallsBefore(entry: FunctionDefinitionNode): readonly 
  * time. A write in a loop is refused elsewhere, so the walk order decides this. A value send is a call where its
  * recipient is a contract, so it counts as one.
  */
-export function perCallBatchWriteFollowsEveryCall(entry: FunctionDefinitionNode): boolean {
+export function framedBatchWriteFollowsEveryCall(entry: FunctionDefinitionNode): boolean {
   const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
   if (slots.size === 0) return false;
   let order = 0;
@@ -1539,8 +1539,8 @@ export function perCallBatchWriteFollowsEveryCall(entry: FunctionDefinitionNode)
  * loop's nodes, or an input the frame does not declare as a record, keep the body on the shared segment, as does a
  * second dynamic value, whose run a builder lays beside the batch's records.
  */
-export function perCallRunApartFromBatch(entry: FunctionDefinitionNode): boolean {
-  if (perCallBatchWriteSegment(entry) === undefined || perCallBatchWriteFollowsEveryCall(entry)) return false;
+export function framedRunApartFromBatch(entry: FunctionDefinitionNode): boolean {
+  if (framedBatchWriteSegment(entry) === undefined || framedBatchWriteFollowsEveryCall(entry)) return false;
   if ((entry.sortedUpsertLoopInfo?.length ?? 0) > 0) return false;
   if ((entry.entryAccesses ?? []).some((access) => access.inLoop === true)) return false;
   const layout = entry.blockLayout;
@@ -1548,7 +1548,7 @@ export function perCallRunApartFromBatch(entry: FunctionDefinitionNode): boolean
   if (layout === undefined || layout.slots.some((slot) => !isOutputOnlyBlockSlot(slot) && !declared.has(slot.kind))) {
     return false;
   }
-  const grown = new Set(perCallWriteSteps(entry, perCallBatchSlots(entry))
+  const grown = new Set(framedWriteSteps(entry, framedBatchSlots(entry))
     .filter((step) => writesSizedField(step.statement))
     .map((step) => (step.statement as { readonly stateVariable?: StateVariableNode }).stateVariable?.name));
   return grown.size === 1;
@@ -1562,7 +1562,7 @@ export function perCallRunApartFromBatch(entry: FunctionDefinitionNode): boolean
  * only sizes lands whatever the source order. A builder reads the same fact code generation does and declares the
  * write's records in that one segment rather than refusing the entry.
  */
-export type PerCallWriteSegment = number | 'last';
+export type FramedWriteSegment = number | 'last';
 
 /**
  * True for a write to a record the entry's own frame holds: a data-NFT field, a dynamic value's record, or a
@@ -1622,9 +1622,9 @@ function entryRecordWritesFollowEveryCall(entry: FunctionDefinitionNode, batchSl
  * follows lands in none of them, so it stays unstated and the entry is refused rather than declared in a guessed
  * segment.
  */
-export function perCallWriteSegment(entry: FunctionDefinitionNode): PerCallWriteSegment | undefined {
-  const batchSlots = perCallBatchSlots(entry);
-  const facts = perCallWriteSteps(entry, batchSlots).map(writeStepSegment);
+export function framedWriteSegment(entry: FunctionDefinitionNode): FramedWriteSegment | undefined {
+  const batchSlots = framedBatchSlots(entry);
+  const facts = framedWriteSteps(entry, batchSlots).map(writeStepSegment);
   if (facts.length === 0) return undefined;
   if (facts.every((fact) => fact !== undefined && fact === facts[0])) return facts[0];
   // The write's own segment is not fixed: every call has to precede it for the run's last segment to be the answer.
@@ -1632,12 +1632,12 @@ export function perCallWriteSegment(entry: FunctionDefinitionNode): PerCallWrite
 }
 
 /** The record slots the entry's verified mapping batch writes: the only mapping writes its own frame declares. */
-function perCallBatchSlots(entry: FunctionDefinitionNode): ReadonlySet<number> {
+function framedBatchSlots(entry: FunctionDefinitionNode): ReadonlySet<number> {
   return new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
 }
 
 /** One record write the entry's own source makes, with the calls its own path made before it. */
-interface PerCallWriteStep {
+interface FramedWriteStep {
   readonly statement: Node;
   /** The calls the path that reaches this write made before it, or undefined when the source does not fix them. */
   readonly calls: CallRange;
@@ -1736,11 +1736,11 @@ function writeFollowsEveryCall(entry: FunctionDefinitionNode, target: Node): boo
 }
 
 /** The record writes the entry's own source makes, in the order the walk reaches them. */
-function perCallWriteSteps(
+function framedWriteSteps(
   entry: FunctionDefinitionNode,
   batchSlots: ReadonlySet<number>,
-): readonly PerCallWriteStep[] {
-  const steps: PerCallWriteStep[] = [];
+): readonly FramedWriteStep[] {
+  const steps: FramedWriteStep[] = [];
   // The most calls any one path makes: a write the walk reaches with every one of them behind it follows them all.
   const mostCalls = callCountRange(entry.body, true)?.most;
   // `held` is where the outermost construct around the statement started, which pre-allocates the writes inside it.
@@ -1797,7 +1797,7 @@ function perCallWriteSteps(
 }
 
 /** The segment one write lands in: the calls before a sized field's write past, or where that write's run is. */
-function writeStepSegment(step: PerCallWriteStep): PerCallWriteSegment | undefined {
+function writeStepSegment(step: FramedWriteStep): FramedWriteSegment | undefined {
   if (writesSizedField(step.statement)) return 'last';
   if (step.calls !== undefined && step.calls.least === step.calls.most) return step.calls.least;
   // The calls before the write vary with the arms taken, but no call site follows it: it lands in the segment the
@@ -1813,14 +1813,14 @@ function writeStepSegment(step: PerCallWriteStep): PerCallWriteSegment | undefin
  * chunk records a write occupies, and `turns` is a mapping write a run-time loop makes once per turn. A builder
  * declares each write's records in its own segment.
  */
-export interface PerCallWriteSegmentFact {
+export interface FramedWriteSegmentFact {
   readonly record?: number;
   readonly collection?: string;
   readonly variable?: string;
   /** For a fact with `turns`, the calls a turn makes before its write. */
-  readonly segment: PerCallWriteSegment;
-  /** A run-time loop's write, whose turns land where the loop's own calls move them (`perCallTurnWrites`). */
-  readonly turns?: PerCallWriteTurns;
+  readonly segment: FramedWriteSegment;
+  /** A run-time loop's write, whose turns land where the loop's own calls move them (`framedTurnWrites`). */
+  readonly turns?: FramedWriteTurns;
   /**
    * For a write to a dynamic value's element, the fields the write provably copies back unchanged.
    *
@@ -1840,7 +1840,7 @@ export interface PerCallWriteSegmentFact {
   readonly writtenVariables?: readonly string[];
   /**
    * For a dynamic value's run, true when the frame addresses the run in its own segment apart from the entry's
-   * batch (`perCallRunApartFromBatch`): a builder declares the run in that segment alone, with no batch record kept
+   * batch (`framedRunApartFromBatch`): a builder declares the run in that segment alone, with no batch record kept
    * there, so the run's segment and the batch's may differ. Absent means the run is read past the batch's groups.
    */
   readonly apart?: true;
@@ -1879,22 +1879,22 @@ function writesOwnRecord(entry: FunctionDefinitionNode): boolean {
   return reached;
 }
 
-export function perCallWriteSegments(
+export function framedWriteSegments(
   entry: FunctionDefinitionNode,
-): readonly PerCallWriteSegmentFact[] | undefined {
-  const facts: PerCallWriteSegmentFact[] = [];
-  const admit = (identity: string, fact: PerCallWriteSegmentFact): boolean => {
+): readonly FramedWriteSegmentFact[] | undefined {
+  const facts: FramedWriteSegmentFact[] = [];
+  const admit = (identity: string, fact: FramedWriteSegmentFact): boolean => {
     const known = facts.find((candidate) => identityOfWrite(candidate) === identity);
     if (known !== undefined) return known.segment === fact.segment;
     facts.push(fact);
     return true;
   };
-  const steps = perCallWriteSteps(entry, perCallBatchSlots(entry));
+  const steps = framedWriteSteps(entry, framedBatchSlots(entry));
   // The sorted batch is one write however many targets it names: the derivation reads one segment for all of
   // them, so a body whose batches the walk does not place in one segment publishes no fact rather than a wrong one.
   const collections = [...new Set((entry.sortedBatchInfo ?? []).map((batch) => batch.collection))];
-  const batchSegment = perCallBatchWriteSegment(entry)
-    ?? (perCallBatchWriteFollowsEveryCall(entry) ? 'last' : undefined);
+  const batchSegment = framedBatchWriteSegment(entry)
+    ?? (framedBatchWriteFollowsEveryCall(entry) ? 'last' : undefined);
   if (collections.length > 0 && (batchSegment === undefined
     || !collections.every((collection) => admit(`mapping:${collection}`, { collection, segment: batchSegment })))) {
     return undefined;
@@ -1904,8 +1904,8 @@ export function perCallWriteSegments(
   const reached = new Set(steps
     .filter((step) => step.statement instanceof MappingAssignNode || step.statement instanceof MappingDeleteNode)
     .map((step) => (step.statement as MappingAssignNode | MappingDeleteNode).entrySlotIndex));
-  if ([...perCallBatchSlots(entry)].some((slot) => !reached.has(slot))) return undefined;
-  const records = perCallRecordWriteSegments(steps, entry);
+  if ([...framedBatchSlots(entry)].some((slot) => !reached.has(slot))) return undefined;
+  const records = framedRecordWriteSegments(steps, entry);
   if (records === undefined) return undefined;
   for (const [record, list] of records.segments) {
     for (const segment of list) {
@@ -1919,7 +1919,7 @@ export function perCallWriteSegments(
   }
   // A dynamic value's bytes live in the run of chunk records the epilogue pins in the last segment, whatever the
   // source position of the write that grows it.
-  const apart = collections.length > 0 && perCallRunApartFromBatch(entry);
+  const apart = collections.length > 0 && framedRunApartFromBatch(entry);
   for (const variable of records.variables) {
     if (!admit(`dynamic:${variable.name}`, {
       variable: variable.name,
@@ -1929,14 +1929,14 @@ export function perCallWriteSegments(
     })) return undefined;
   }
   // A run-time loop's write is not a step the walk places: its turns land where the loop's own calls move them.
-  for (const { offset, ...turns } of perCallTurnWrites(entry)) {
+  for (const { offset, ...turns } of framedTurnWrites(entry)) {
     if (!admit(`turns:${turns.slot}`, { segment: offset, turns })) return undefined;
   }
   return facts.length > 0 ? facts : (writesOwnRecord(entry) ? undefined : []);
 }
 
-/** The identity one published write is keyed by, as `perCallWriteSegments` builds it. */
-function identityOfWrite(fact: PerCallWriteSegmentFact): string {
+/** The identity one published write is keyed by, as `framedWriteSegments` builds it. */
+function identityOfWrite(fact: FramedWriteSegmentFact): string {
   if (fact.record !== undefined) return `record:${fact.record}@${String(fact.segment)}`;
   if (fact.collection !== undefined) return `mapping:${fact.collection}`;
   if (fact.turns !== undefined) return `turns:${fact.turns.slot}`;
@@ -1944,7 +1944,7 @@ function identityOfWrite(fact: PerCallWriteSegmentFact): string {
 }
 
 /** Where the turns of a run-time loop that makes calls land its mapping write, as `PublishedWriteTurns` states it. */
-export interface PerCallWriteTurns {
+export interface FramedWriteTurns {
   readonly collection: string;
   /** The entry slot the loop's write names. */
   readonly slot: number;
@@ -1954,8 +1954,8 @@ export interface PerCallWriteTurns {
   readonly stride: number;
 }
 
-/** One loop write `perCallTurnWrites` places, with the calls a turn makes before it. */
-interface PerCallTurnWrite extends PerCallWriteTurns {
+/** One loop write `framedTurnWrites` places, with the calls a turn makes before it. */
+interface FramedTurnWrite extends FramedWriteTurns {
   readonly offset: number;
 }
 
@@ -2045,13 +2045,13 @@ function callsBeforeWriteInTurn(block: BlockNode, write: Node): number | undefin
  *
  * A collection two loops write is one run only when the loops are statements of one block and no other loop writes
  * it: each loop's teardown counts the transaction's nodes of the collection, which code generation chains across
- * such loops (`perCallLoopChains`). A collection written any other way beside a loop is left unplaced.
+ * such loops (`framedLoopChains`). A collection written any other way beside a loop is left unplaced.
  */
-export function perCallTurnWrites(entry: FunctionDefinitionNode): readonly PerCallTurnWrite[] {
+export function framedTurnWrites(entry: FunctionDefinitionNode): readonly FramedTurnWrite[] {
   const accesses = entry.entryAccesses ?? [];
   const sites = entry.externalCalls ?? [];
   const inLoop = (slot: number): boolean => accesses.find((access) => access.slotIndex === slot)?.inLoop === true;
-  const placed: (PerCallTurnWrite & OuterLoop & { readonly index: number })[] = [];
+  const placed: (FramedTurnWrite & OuterLoop & { readonly index: number })[] = [];
   const writers = new Map<string, number>();
   for (const outer of outerLoops(entry.body)) {
     const { loop } = outer;
@@ -2120,11 +2120,11 @@ export function perCallTurnWrites(entry: FunctionDefinitionNode): readonly PerCa
  * Code generation keeps such loops' counters across them and counts the collection's nodes once, at the last
  * loop's teardown, and every loop of the run addresses its records from the first loop's position.
  */
-export function perCallLoopChains(
+export function framedLoopChains(
   entry: FunctionDefinitionNode,
 ): ReadonlyMap<number, { readonly first: number; readonly last: boolean }> {
   const chains = new Map<number, { readonly first: number; readonly last: boolean }>();
-  const turns = perCallTurnWrites(entry);
+  const turns = framedTurnWrites(entry);
   for (const write of turns) {
     const run = turns.filter((candidate) => candidate.collection === write.collection);
     if (run.length < 2) continue;
@@ -2134,17 +2134,17 @@ export function perCallLoopChains(
 }
 
 /** The segments each written data record is declared in, and the dynamic values the entry's writes grow. */
-interface PerCallRecordWriteSegments {
+interface FramedRecordWriteSegments {
   /** Every segment each written data record is declared in, in segment order. */
-  readonly segments: ReadonlyMap<number, readonly PerCallWriteSegment[]>;
+  readonly segments: ReadonlyMap<number, readonly FramedWriteSegment[]>;
   /** The state variables whose write rebuilt each data record, per segment. */
-  readonly writtenVariables: ReadonlyMap<number, ReadonlyMap<PerCallWriteSegment, readonly string[]>>;
+  readonly writtenVariables: ReadonlyMap<number, ReadonlyMap<FramedWriteSegment, readonly string[]>>;
   /** The dynamic values a write grows, whose run of chunk records the epilogue pins. */
-  readonly variables: readonly PerCallDynamicWrite[];
+  readonly variables: readonly FramedDynamicWrite[];
 }
 
 /** Segment order: the counted segments first, then the run's own last one. */
-function segmentOrder(left: PerCallWriteSegment, right: PerCallWriteSegment): number {
+function segmentOrder(left: FramedWriteSegment, right: FramedWriteSegment): number {
   if (left === right) return 0;
   if (left === 'last') return 1;
   if (right === 'last') return -1;
@@ -2152,7 +2152,7 @@ function segmentOrder(left: PerCallWriteSegment, right: PerCallWriteSegment): nu
 }
 
 /** One dynamic value an entry writes, with the element fields every write to it provably leaves unchanged. */
-interface PerCallDynamicWrite {
+interface FramedDynamicWrite {
   readonly name: string;
   /** The intersection of the fields the writes preserve; absent when any write's effect is unknown. */
   readonly preservedFields?: readonly string[];
@@ -2256,17 +2256,17 @@ function preservedElementFields(entry: FunctionDefinitionNode, variableName: str
  * declared written in each segment one of those writes lands in before the frame first holds a dynamic field, and
  * in the last. A write the source does not locate leaves the whole entry unstated, which the builder refuses by name.
  */
-function perCallRecordWriteSegments(
-  steps: readonly PerCallWriteStep[],
+function framedRecordWriteSegments(
+  steps: readonly FramedWriteStep[],
   entry: FunctionDefinitionNode,
-): PerCallRecordWriteSegments | undefined {
+): FramedRecordWriteSegments | undefined {
   const sized = new Set<number>();
   // The fewest calls any path makes before the frame holds one of a record's dynamic fields; undefined where the
   // place a dynamic write is held from is not fixed.
   const dynamicHeld = new Map<number, number | undefined>();
   const variables = new Map<string, Set<string> | null>();
-  const segments = new Map<number, Set<PerCallWriteSegment>>();
-  const writtenVariables = new Map<number, Map<PerCallWriteSegment, Set<string>>>();
+  const segments = new Map<number, Set<FramedWriteSegment>>();
+  const writtenVariables = new Map<number, Map<FramedWriteSegment, Set<string>>>();
   for (const step of steps) {
     if (step.statement instanceof MappingAssignNode || step.statement instanceof MappingDeleteNode) continue;
     const stateVariable = (step.statement as { readonly stateVariable?: StateVariableNode }).stateVariable;
@@ -2278,7 +2278,7 @@ function perCallRecordWriteSegments(
         ? dynamicHeld.get(stateVariable.nftIndex) : Number.POSITIVE_INFINITY;
       dynamicHeld.set(stateVariable.nftIndex,
         held === undefined || before === undefined ? undefined : Math.min(before, held));
-      const names = writtenVariables.get(stateVariable.nftIndex) ?? new Map<PerCallWriteSegment, Set<string>>();
+      const names = writtenVariables.get(stateVariable.nftIndex) ?? new Map<FramedWriteSegment, Set<string>>();
       const lastName = names.get('last') ?? new Set<string>();
       lastName.add(stateVariable.name);
       names.set('last', lastName);
@@ -2293,16 +2293,16 @@ function perCallRecordWriteSegments(
     }
     const segment = writeStepSegment(step);
     if (segment === undefined) return undefined;
-    const forRecord = segments.get(stateVariable.nftIndex) ?? new Set<PerCallWriteSegment>();
+    const forRecord = segments.get(stateVariable.nftIndex) ?? new Set<FramedWriteSegment>();
     forRecord.add(segment);
     segments.set(stateVariable.nftIndex, forRecord);
-    const names = writtenVariables.get(stateVariable.nftIndex) ?? new Map<PerCallWriteSegment, Set<string>>();
+    const names = writtenVariables.get(stateVariable.nftIndex) ?? new Map<FramedWriteSegment, Set<string>>();
     const atSegment = names.get(segment) ?? new Set<string>();
     atSegment.add(stateVariable.name);
     names.set(segment, atSegment);
     writtenVariables.set(stateVariable.nftIndex, names);
   }
-  const written = new Map<number, readonly PerCallWriteSegment[]>();
+  const written = new Map<number, readonly FramedWriteSegment[]>();
   for (const [record, at] of segments) {
     // Every segment the record's own writes land in is published, in segment order: the emitter closes a written
     // record in each of them, so a builder places a record's declarations in all of them rather than in one. A sized
@@ -2314,9 +2314,9 @@ function perCallRecordWriteSegments(
       : [...at].sort(segmentOrder));
   }
   for (const record of sized) if (!written.has(record)) written.set(record, ['last']);
-  const dynamicWrites: PerCallDynamicWrite[] = [...variables].map(([name, fields]) =>
+  const dynamicWrites: FramedDynamicWrite[] = [...variables].map(([name, fields]) =>
     (fields === null ? { name } : { name, preservedFields: [...fields] }));
-  const recordWriters = new Map<number, ReadonlyMap<PerCallWriteSegment, readonly string[]>>();
+  const recordWriters = new Map<number, ReadonlyMap<FramedWriteSegment, readonly string[]>>();
   for (const [record, perSegment] of writtenVariables) {
     recordWriters.set(record, new Map([...perSegment].map(([segment, names]) => [segment, [...names]] as const)));
   }
@@ -2352,7 +2352,7 @@ export const DYNAMIC_CHUNK_BASE_PARAMETER = '__internal__dynamicChunkInputBase';
  * The operand the head derives for a body that reads or writes dynamic state, or undefined for a body that does not.
  *
  * The direct convention's SDK computes the run's first coordinate from the entry's physical block layout and hands
- * it to the body as an argument. A per-call master takes no such argument list: its frame declares where the
+ * it to the body as an argument. A framed master takes no such argument list: its frame declares where the
  * contract's records are, and the run sits a fixed width past that declaration, so the head derives the coordinate
  * from the frame and leaves it where the body reads it.
  */
@@ -2360,7 +2360,7 @@ export function derivableDynamicChunkNames(fn: FunctionDefinitionNode): Set<stri
   return fn.usesDynamicChunkInputBase === true ? new Set([DYNAMIC_CHUNK_BASE_PARAMETER]) : undefined;
 }
 
-export interface PerCallMasterShapeInput {
+export interface FramedMasterShapeInput {
   readonly contract: ContractNode;
   /** The options the unit compiles with, which bound the recurrence a loop's effects are counted by. */
   readonly compilerOptions?: CompilerOptions;
@@ -2383,7 +2383,7 @@ export interface PerCallMasterShapeInput {
 }
 
 /** One entry's external calls, in execution order, which that entry's own sites bind. */
-export interface PerCallEntryCallSites {
+export interface FramedEntryCallSites {
   readonly entryName: string;
   readonly calls: readonly MasterCallSite[];
   /** How many calls the entry's execution makes, which is the same on every path or the entry is refused. */
@@ -2396,7 +2396,7 @@ export interface PerCallEntryCallSites {
    * A builder declares the write's records in that one segment; absent means the entry writes no record, or writes
    * one whose segment the source does not fix.
    */
-  readonly writeSegment?: PerCallWriteSegment;
+  readonly writeSegment?: FramedWriteSegment;
   /**
    * The segment each of the entry's own writes is declared in, one fact per write.
    *
@@ -2405,19 +2405,19 @@ export interface PerCallEntryCallSites {
    * generation places them in. An empty list is a body that writes no record of its own, and absent means a write's
    * segment is not fixed, which the builder refuses by name.
    */
-  readonly writeSegments?: readonly PerCallWriteSegmentFact[];
+  readonly writeSegments?: readonly FramedWriteSegmentFact[];
   /** For each value send, in transfer order, how many external calls the entry makes before it, when fixed. */
   readonly sendCallsBefore?: readonly number[];
   /** The effects the entry makes once per turn of a loop, as runs a builder expands by the turns. */
   readonly loopEffects?: PublishedLoopEffects;
 }
 
-export interface PerCallMasterShapeAssessment {
+export interface FramedMasterShapeAssessment {
   readonly supported: boolean;
   /** Why the whole contract is refused, phrased as a fact about the master rather than about one body. */
   readonly reason?: string;
   /** One descriptor list per entry, in entry order; each entry's sites resolve against its own list. */
-  readonly entryCalls?: readonly PerCallEntryCallSites[];
+  readonly entryCalls?: readonly FramedEntryCallSites[];
   /** The largest number of calls any entry makes on every path, which bounds the tail the head walks. */
   readonly callCount?: number;
   /** The event-region size and send count the master's tail fixes, which the master head checks. */
@@ -2499,7 +2499,7 @@ function constructorBalanceReads(
  *
  * The body's own source fixes the answer, so it is read from the access nodes here. The footprint analysis cannot
  * answer at this point: collection and dynamic lowering value-thread those accesses through ordinary locals before
- * a per-call master is assessed, so the accesses are no longer state reads even though the nodes remain.
+ * a framed master is assessed, so the accesses are no longer state reads even though the nodes remain.
  */
 function markDynamicStateBodies(contract: ContractNode): void {
   const dynamic = new Set(contract.stateVariables
@@ -2531,12 +2531,12 @@ function touchesDynamicState(body: BlockNode, dynamic: ReadonlySet<string>): boo
   return found;
 }
 
-/** Assesses whether the contract can be emitted as a per-call master program. */
-export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCallMasterShapeAssessment {
+/** Assesses whether the contract can be emitted as a framed master program. */
+export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMasterShapeAssessment {
   const { contract } = input;
   markDynamicStateBodies(contract);
   const constants = constantNames(contract, input.fileConstants ?? []);
-  const refuse = (reason: string): PerCallMasterShapeAssessment => ({ supported: false, reason });
+  const refuse = (reason: string): FramedMasterShapeAssessment => ({ supported: false, reason });
   if (contract.constructorDef) {
     // The constructor runs as one more selector-dispatched body behind the same head, so it is admitted exactly when
     // its body asks the head for nothing the head does not already carry: it makes no external call (the head's call
@@ -2545,7 +2545,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     const refusal = unsupportedConstructorShape(contract.constructorDef, constants);
     if (refusal !== undefined) return refuse(refusal);
   }
-  // receive() is an entry like any other: a per-call frame always carries call data, and a value send's carries the
+  // receive() is an entry like any other: a framed frame always carries call data, and a value send's carries the
   // selector of receive().
   const entryFunctions = [
     ...contract.functions.filter((fn) => fn.isEntryPoint),
@@ -2600,7 +2600,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     // The reasons are asked in the order the whole-contract refusal used to ask them, so the one a reader sees
     // names the shape that decides the body rather than an operand that shape injects.
     if (input.assemblyBodies.has(fn.name)) {
-      refuseBody(fn, 'inline assembly is not composed per-call');
+      refuseBody(fn, 'inline assembly is not composed framed');
     }
     const forward = forwardDelegateCalls(fn, stateVariableNames);
     if ('reason' in forward) refuseBody(fn, forward.reason);
@@ -2617,7 +2617,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       (parameter) => parameter.name === PROXY_MASTER_WITNESS_PARAMETER);
     if (proxyMasterWitness !== undefined) {
       refuseBody(fn, 'a proxy implementation\'s entry: the direct convention hands it the co-spent proxy master\'s '
-        + `input index through the hidden parameter '${proxyMasterWitness.name}', and a per-call master serves a `
+        + `input index through the hidden parameter '${proxyMasterWitness.name}', and a framed master serves a `
         + 'delegate frame from the records its own frame declares instead');
     }
     const hidden = fn.parameters.filter((parameter) =>
@@ -2652,7 +2652,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       refuseBody(fn, 'a blockhash read needs a co-spent oracle input the master head does not locate');
     }
     // A recovery loop reads its pair per iteration from a run-time counter, which the head would have to place a
-    // variable number of inputs for; the straight-line per-call pair is what the head locates.
+    // variable number of inputs for; the straight-line framed pair is what the head locates.
     if (fn.ecrecoverLoopReads === true) {
       refuseBody(fn, 'an ecrecover loop reads one recovery side-car pair per iteration, which the master head does '
         + 'not locate a run-time number of');
@@ -2753,7 +2753,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   }
   const served = entryPoints.filter((entry) => !refusals.has(entry.name));
 
-  const calls = derivePerCallMasterCallSites(input.interfaces, served, stateVariableNames);
+  const calls = deriveFramedMasterCallSites(input.interfaces, served, stateVariableNames);
   for (const [entryName, reason] of calls.refusals) refuseBody(
     entryPoints.find((entry) => entry.name === entryName)!, reason,
   );
@@ -2765,8 +2765,8 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (calls.callCount > 0) {
     for (const fn of [...servedWithCalls, ...(contract.constructorDef ? [contract.constructorDef] : [])]) {
       if (derivableBatchWitnessNames(fn, constants) === undefined) continue;
-      if (perCallBatchWriteSegment(fn) !== undefined) continue;
-      if (perCallBatchWriteFollowsEveryCall(fn)) continue;
+      if (framedBatchWriteSegment(fn) !== undefined) continue;
+      if (framedBatchWriteFollowsEveryCall(fn)) continue;
       refuseBody(fn, 'a verified-mapping write is derived from the segment its own code runs in, but the master '
         + 'makes external calls and the write does not precede them, so the segment the write lands in is a fact '
         + 'the derivation does not read');
@@ -2779,7 +2779,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   // The bodies the master serves still have to agree on one tail shape: the head fixes the event region's size and
   // one send count for every body behind its dispatcher. A body whose own counts vary is refused above, so what
   // remains here is the count the served bodies share.
-  const tail = derivePerCallTailShape(
+  const tail = deriveFramedTailShape(
     bodies,
     undefined,
     // An emit the survey found belongs to a body; the bodies the master serves are the ones whose emits it has to
@@ -2999,7 +2999,7 @@ function compositeTypeName(type: Type): string {
 }
 
 /** The event-region size and send count a master's tail carries, or why a compiled body cannot fix them. */
-export interface PerCallTailDerivation {
+export interface FramedTailDerivation {
   readonly tail?: MasterTailShape;
   readonly reason?: string;
 }
@@ -3028,11 +3028,11 @@ function bodySendSlots(body: FunctionDefinitionNode): number {
  * stream journals its effects for the direct convention, which no head reads. Segments are not fixed here: the
  * records a segment touches are decided by settlement, so the head walks each segment's declared count.
  */
-export function derivePerCallTailShape(
+export function deriveFramedTailShape(
   entryPoints: readonly FunctionDefinitionNode[],
   constructorDef: FunctionDefinitionNode | undefined,
   emitsEvent: boolean,
-): PerCallTailDerivation {
+): FramedTailDerivation {
   const bodies = constructorDef === undefined ? entryPoints : [...entryPoints, constructorDef];
   let maxEventCount = 0;
   for (const body of bodies) {
@@ -3065,7 +3065,7 @@ export function derivePerCallTailShape(
 /** The call sites each entry makes, or why the head cannot check them. */
 type CallSitesDerivation = {
   readonly supported: true;
-  readonly entryCalls: readonly PerCallEntryCallSites[];
+  readonly entryCalls: readonly FramedEntryCallSites[];
   readonly callCount: number;
   /** The entries whose calls the head cannot check, by name, each with the reason. */
   readonly refusals: ReadonlyMap<string, string>;
@@ -3083,12 +3083,12 @@ type CallSitesDerivation = {
  * code can hash, and whose frame kind is one the head admits: a message call or a read-only call. Anything else is
  * refused by name, because the site would have to check a shape it cannot describe.
  */
-function derivePerCallMasterCallSites(
+function deriveFramedMasterCallSites(
   interfaces: readonly InterfaceNode[],
   entryPoints: readonly FunctionDefinitionNode[],
   stateVariables: ReadonlySet<string>,
 ): CallSitesDerivation {
-  const entryCalls: PerCallEntryCallSites[] = [];
+  const entryCalls: FramedEntryCallSites[] = [];
   const refusals = new Map<string, string>();
   for (const entry of entryPoints) {
     const derived = deriveEntryCallSites(interfaces, entry, stateVariables);
@@ -3096,9 +3096,9 @@ function derivePerCallMasterCallSites(
       refusals.set(entry.name, derived.reason);
       continue;
     }
-    const writeSegment = perCallWriteSegment(entry);
-    const writeSegments = perCallWriteSegments(entry);
-    const sendCallsBefore = perCallSendCallsBefore(entry);
+    const writeSegment = framedWriteSegment(entry);
+    const writeSegments = framedWriteSegments(entry);
+    const sendCallsBefore = framedSendCallsBefore(entry);
     entryCalls.push({
       entryName: entry.name,
       calls: derived.calls,
@@ -3409,7 +3409,7 @@ interface ForwardDelegateCall {
   readonly callIndex: number;
 }
 
-/** Why a low-level call whose shape a per-call master does not bind is refused. */
+/** Why a low-level call whose shape a framed master does not bind is refused. */
 const LOW_LEVEL_CALL_REFUSAL =
   'a low-level call needs the witness `calls[]` checks, which are not emitted yet';
 
@@ -3553,8 +3553,8 @@ function deriveEntryCallSites(
   // precedes every write rather than deriving the operands from another segment.
   // A value send is such a call where its recipient is a contract.
   if ((entry.sortedBatchInfo?.length ?? 0) > 0 && (varying || (entry.transferInfos?.length ?? 0) > 0)
-    && perCallBatchWriteSegment(entry) === undefined
-    && !perCallBatchWriteFollowsEveryCall(entry)) {
+    && framedBatchWriteSegment(entry) === undefined
+    && !framedBatchWriteFollowsEveryCall(entry)) {
     return { calls: [], reason: 'the body writes a verified mapping behind a call whose occurrence the source '
       + 'does not fix, and the derived operands cannot follow the segment the write lands in' };
   }
@@ -3598,10 +3598,10 @@ function deriveEntryCallSites(
     // The data-NFT inputs the direct convention co-spends for a callee are not part of the shape the site checks: a
     // site reads the callee's record out of the witness block, and the records the callee's own frame declares are
     // settled by the segments rather than by a co-spent input this master locates. An opaque return is the direct
-    // path's own machinery, which a per-call body does not emit.
+    // path's own machinery, which a framed body does not emit.
     if (slot.opaqueReturn === true) {
       return { calls: [], reason: `the call to '${slot.functionName}' takes the direct path's return-event or `
-        + 'value-transfer machinery, which a per-call body does not emit' };
+        + 'value-transfer machinery, which a framed body does not emit' };
     }
     // A call value is carried by the site's own record, not by a transfer of the body's: the caller's code computes
     // the amount where it calls and the site holds the record's `value` to it, the validator holds the callee's frame
@@ -3620,7 +3620,7 @@ function deriveEntryCallSites(
     }
     if (carriesValue && (entry.transferInfos?.length ?? 0) > 0) {
       return { calls: [], reason: `the call to '${slot.functionName}' carries a value beside a value send of the `
-        + 'body\'s own, whose numbering a per-call body does not reconcile with the call\'s yet' };
+        + 'body\'s own, whose numbering a framed body does not reconcile with the call\'s yet' };
     }
     const target = siteTarget(slot);
     if ('reason' in target) return { calls: [], reason: target.reason };

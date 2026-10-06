@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
   callerFields, edgeDeployment, eventsOnChain, expectRefusedEdge, readCallee, settleEdge, type EdgeRun,
 } from './edge-harness.js';
@@ -62,14 +62,14 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const deployed = edgeDeployment({
   scope: 'string argument edge', callee: artifacts.Notebook!, caller: artifacts.Editor!, interfaceName: 'INotebook',
 });
 
 /** The value chunks the notebook holds beside its nodes: the shipped reader files them apart from any collection. */
 async function valueChunks(run: EdgeRun): Promise<number> {
-  const pools = await readPerCallDeployment(run.network, run.calleeCategoryId, run.callee.stateLayout!);
+  const pools = await readFramedDeployment(run.network, run.calleeCategoryId, run.callee.stateLayout!);
   return pools.collectionNodes.length - (pools.nodesByCollection.get('texts')?.length ?? 0);
 }
 

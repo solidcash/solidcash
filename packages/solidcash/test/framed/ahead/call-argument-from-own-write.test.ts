@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { decodePushdataValue, validatorAddress, type StateValue } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import * as composer from '../../../src/per-call/composer/index.js';
-import * as resolution from '../../../src/per-call/proxy/call-resolution.js';
+import * as composer from '../../../src/framed/composer/index.js';
+import * as resolution from '../../../src/framed/proxy/call-resolution.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../../fixture/vars.js';
@@ -20,7 +20,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Walls ahead: a store call whose argument reads a value the entry wrote earlier in the same entry, through the
- * shipped hop (`callPerCallProxyEntry`).
+ * shipped hop (`callFramedProxyEntry`).
  *
  * The post (18, 20) writes `jobPost.whitelistWorkers` through a storage pointer and then publishes its event with
  * `abi.encodePacked(jobPost.whitelistWorkers)`. `Desk` (a proxied root) replays that on a task array and calls the
@@ -29,7 +29,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * this is not the post's wall (`job-threads-and-refusals.test.ts` pins those). A plain state variable written
  * earlier is forwarded the same way, to the value its write leaves, so the plan states the gate or the key the entry
  * wrote and the store keeps it, whatever the deployment held. A packed `int` the compiler publishes without a width
- * is refused, beside its typed controls. The file runs only under `PER_CALL_AHEAD=1`.
+ * is refused, beside its typed controls. The file runs only under `FRAMED_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -43,7 +43,7 @@ const JOURNAL_PROXY_CATEGORY = category('2b');
 const DESK_IMPL_CATEGORY = category('3c');
 const DESK_PROXY_CATEGORY = category('4d');
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
@@ -182,7 +182,7 @@ type ArtifactMap = ReturnType<typeof compileStringMulti>;
 let compiledRun: ArtifactMap | undefined;
 /** The contracts, compiled once and only when the file runs. */
 function compiled(): ArtifactMap {
-  compiledRun ??= compileStringMulti(SOURCE, { composition: 'per-call' });
+  compiledRun ??= compileStringMulti(SOURCE, { composition: 'framed' });
   return compiledRun;
 }
 
@@ -232,7 +232,7 @@ interface World {
   readonly network: MockNetworkProvider;
   readonly desk: { readonly proxy: string; readonly implementation: string };
   readonly journal: { readonly proxy: string; readonly implementation: string };
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   /** Hands out a fresh coin id per hop, distinct from every category. */
   readonly nextCoin: () => Utxo;
@@ -240,7 +240,7 @@ interface World {
 
 /** What a hop left: its result or error, the stalls the settle caught, and the call arguments its plan stated. */
 interface Outcome {
-  readonly result?: PerCallProxyCallResult;
+  readonly result?: FramedProxyCallResult;
   readonly error?: Error;
   readonly stalls: readonly string[];
   /** The argument values each planned call states, in parameter order. */
@@ -256,10 +256,10 @@ async function enter(world: World, functionName: string, args: readonly Function
   await world.network.addUtxo(binToHex(CREATOR.lock), coin);
   const derivations = vi.spyOn(composer, 'deriveComposition');
   const resolved = vi.spyOn(resolution, 'resolvePublishedCall');
-  let result: PerCallProxyCallResult | undefined;
+  let result: FramedProxyCallResult | undefined;
   let error: Error | undefined;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -297,7 +297,7 @@ async function enter(world: World, functionName: string, args: readonly Function
 interface Stored { readonly id: bigint; readonly data: string }
 
 /** The notes the store emitted in a settled hop: its outputs that decode exactly as the event's declared payload. */
-function storedNotes(world: World, result: PerCallProxyCallResult): Stored[] {
+function storedNotes(world: World, result: FramedProxyCallResult): Stored[] {
   const journal = compiled().Journal!;
   const [idType, noteType] = journal.events![0]!.parameters.map((parameter) => parameter.type);
   const structs = journal.structs ?? journal.stateLayout?.structs;
@@ -332,11 +332,11 @@ function expectStored(world: World, outcome: Outcome, expected: Stored): void {
  * a check with no source message reported at the entry's line, after the settle stalled on it.
  */
 function expectDigestRefused(outcome: Outcome, entry: string): void {
-  expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
+  expect(outcome.error).toBeInstanceOf(FramedProxyDeployError);
   expect(outcome.error!.message).toBe(`the implementation's "${entry}" entry did not settle through the proxy: frame `
     + `"implementation-master" of Desk.${entry}() at line ${lineOf(`function ${entry}(`)}: no source message (Program `
     + 'failed an OP_VERIFY operation.)');
-  expect(outcome.stalls).toStrictEqual([`PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.${entry}() `
+  expect(outcome.stalls).toStrictEqual([`FRAMED_DERIVATION_STALLED: master "implementation-master" of Desk.${entry}() `
     + 'filled no witness at site 1 (close of segment 0)']);
   expect(outcome.coinLive).toBe(true);
 }
@@ -372,7 +372,7 @@ async function deployWorld(): Promise<World> {
   await fundShippedFacets(network);
   const journalInit = nextCoin();
   await network.addUtxo(binToHex(ALICE_LOCK), journalInit);
-  const journal = await deployPerCallProxy({
+  const journal = await deployFramedProxy({
     provider: network,
     implementationArtifact: Journal!,
     proxyArtifact: buildProxyArtifact(Journal!),
@@ -386,7 +386,7 @@ async function deployWorld(): Promise<World> {
   expect(journal.initialize.broadcast).toBeDefined();
   const deskInit = nextCoin();
   await network.addUtxo(binToHex(ALICE_LOCK), deskInit);
-  const desk = await deployPerCallProxy({
+  const desk = await deployFramedProxy({
     provider: network,
     implementationArtifact: Desk!,
     proxyArtifact: buildProxyArtifact(Desk!),
@@ -416,12 +416,12 @@ async function deployWorld(): Promise<World> {
   };
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a call argument read from the entry\'s own write', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: a call argument read from the entry\'s own write', () => {
   it('publishes a written struct field and a written state variable as the values written', () => {
     const { Desk } = compiled();
     expect(Desk!.composition!.refusedEntries ?? []).toStrictEqual([]);
     // The post's own spelling: the storage-pointer field is published as `allowedWorkers_.length > 0`.
-    const post = compileStringMulti(POST_SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+    const post = compileStringMulti(POST_SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
     expect(noteData(post.Post, 'publishJobPost').args![1]).toStrictEqual(forwardedGate(1));
     expect(noteData(Desk, 'openConcat').args![1]).toStrictEqual(forwardedGate(2));
     expect(noteData(Desk, 'openPointer').args![1]).toStrictEqual(forwardedGate(1));

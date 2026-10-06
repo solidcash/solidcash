@@ -11,15 +11,15 @@ import type { FrameRequest } from './derivation.js';
 
 /** The refusal codes the composer raises before it builds anything. */
 export type ComposerRefusalCode =
-  | 'PER_CALL_POOL_EXHAUSTED'
-  | 'PER_CALL_DERIVATION_STALLED'
-  | 'PER_CALL_MAPPING_UNPLANNABLE'
-  | 'PER_CALL_CHUNK_UNPLANNABLE'
-  | 'PER_CALL_VIEW_UNLEARNED';
+  | 'FRAMED_POOL_EXHAUSTED'
+  | 'FRAMED_DERIVATION_STALLED'
+  | 'FRAMED_MAPPING_UNPLANNABLE'
+  | 'FRAMED_CHUNK_UNPLANNABLE'
+  | 'FRAMED_VIEW_UNLEARNED';
 
 /** A refusal the composer raises before it builds anything. */
-export class PerCallComposerError extends Error {
-  public readonly name = 'PerCallComposerError';
+export class FramedComposerError extends Error {
+  public readonly name = 'FramedComposerError';
 
   public constructor(
     public readonly code: ComposerRefusalCode,
@@ -33,10 +33,10 @@ export class PerCallComposerError extends Error {
  * A contract was asked for more entries than its master pool holds. A master covers exactly one entry, so the
  * count is the entries the composition needs so far.
  */
-export function masterPoolExhausted(contract: string, entriesNeeded: number, poolSize: number): PerCallComposerError {
+export function masterPoolExhausted(contract: string, entriesNeeded: number, poolSize: number): FramedComposerError {
   const noun = entriesNeeded === 1 ? 'entry' : 'entries';
-  return new PerCallComposerError(
-    'PER_CALL_POOL_EXHAUSTED',
+  return new FramedComposerError(
+    'FRAMED_POOL_EXHAUSTED',
     `contract "${contract}" needs ${entriesNeeded} master ${noun} but its pool holds ${poolSize}`,
   );
 }
@@ -45,9 +45,9 @@ export function masterPoolExhausted(contract: string, entriesNeeded: number, poo
  * A contract was asked for a validator and its pool has none left. This is the first root's category having no
  * validator, which no other contract's validator can cover, seen after a disjoint group took the last one.
  */
-export function rootWithoutValidator(contract: string): PerCallComposerError {
-  return new PerCallComposerError(
-    'PER_CALL_POOL_EXHAUSTED',
+export function rootWithoutValidator(contract: string): FramedComposerError {
+  return new FramedComposerError(
+    'FRAMED_POOL_EXHAUSTED',
     `contract "${contract}" roots this composition but has no validator`,
   );
 }
@@ -60,11 +60,11 @@ export function rootWithoutValidator(contract: string): PerCallComposerError {
  */
 export function viewUnlearned(
   views: readonly { readonly master: string; readonly segmentIndex: number; readonly entryIndex: number }[],
-): PerCallComposerError {
+): FramedComposerError {
   const named = views.slice(0, 3).map((view) => `"${view.master}" segment ${view.segmentIndex} entry ${view.entryIndex}`);
   const more = views.length > 3 ? ` and ${views.length - 3} more` : '';
-  return new PerCallComposerError(
-    'PER_CALL_VIEW_UNLEARNED',
+  return new FramedComposerError(
+    'FRAMED_VIEW_UNLEARNED',
     `no run learned the view the plan left unstated at ${named.join(', ')}${more}, so its placeholder would reach `
     + 'the transaction',
   );
@@ -77,12 +77,12 @@ export function viewUnlearned(
  * site is named once and the execution reaches it as often as the loop turns, so a run that has moved past the
  * witnesses the table lists stops here, and the refusal says which statement the driver's sequence ran out on.
  */
-export function derivationStalled(frame: FrameRequest, site: StopSite): PerCallComposerError {
+export function derivationStalled(frame: FrameRequest, site: StopSite): FramedComposerError {
   const repeats = site.kind === 'call' && site.repeated === true
     ? ' (the call runs in a loop, so the published sites describe the source rather than this execution)'
     : '';
-  return new PerCallComposerError(
-    'PER_CALL_DERIVATION_STALLED',
+  return new FramedComposerError(
+    'FRAMED_DERIVATION_STALLED',
     `master "${frame.master}" of ${frame.functionName} filled no witness at site ${site.site} `
     + `(${describeStopSite(site)})${repeats}`,
   );
@@ -92,9 +92,9 @@ export function derivationStalled(frame: FrameRequest, site: StopSite): PerCallC
  * A mapping write needs a bracketing predecessor the inventory does not hold, so the node it creates cannot be
  * spliced between that predecessor and the successor the predecessor currently points at.
  */
-export function mappingPredecessorMissing(slot: Uint8Array): PerCallComposerError {
-  return new PerCallComposerError(
-    'PER_CALL_MAPPING_UNPLANNABLE',
+export function mappingPredecessorMissing(slot: Uint8Array): FramedComposerError {
+  return new FramedComposerError(
+    'FRAMED_MAPPING_UNPLANNABLE',
     `a mapping write targets slot ${bytesToHex(slot)} but its inventory holds no predecessor below it`,
   );
 }
@@ -103,9 +103,9 @@ export function mappingPredecessorMissing(slot: Uint8Array): PerCallComposerErro
  * A sorted batch writes one slot twice. The body's batch verifies each target once, so the two writes do not
  * compose into one transition; the plan is refused rather than keeping either value.
  */
-export function mappingBatchRepeatsSlot(slot: Uint8Array): PerCallComposerError {
-  return new PerCallComposerError(
-    'PER_CALL_MAPPING_UNPLANNABLE',
+export function mappingBatchRepeatsSlot(slot: Uint8Array): FramedComposerError {
+  return new FramedComposerError(
+    'FRAMED_MAPPING_UNPLANNABLE',
     `a sorted batch writes slot ${bytesToHex(slot)} more than once`,
   );
 }
@@ -115,18 +115,18 @@ export function mappingBatchRepeatsSlot(slot: Uint8Array): PerCallComposerError 
  * which decides every predecessor against the list it started from, so laying them out one after another declares
  * the node created twice.
  */
-export function mappingBatchWritesCreatedNode(slot: Uint8Array): PerCallComposerError {
-  return new PerCallComposerError(
-    'PER_CALL_MAPPING_UNPLANNABLE',
+export function mappingBatchWritesCreatedNode(slot: Uint8Array): FramedComposerError {
+  return new FramedComposerError(
+    'FRAMED_MAPPING_UNPLANNABLE',
     `the mapping node at slot ${bytesToHex(slot)} is written again in the segment that created it; plan the `
     + 'segment\'s writes as one sorted batch (planMappingBatch)',
   );
 }
 
 /** A long value's chunk has no output in the layout to be created at. */
-export function mappingChunkOutputUnavailable(slot: Uint8Array, index: number): PerCallComposerError {
-  return new PerCallComposerError(
-    'PER_CALL_MAPPING_UNPLANNABLE',
+export function mappingChunkOutputUnavailable(slot: Uint8Array, index: number): FramedComposerError {
+  return new FramedComposerError(
+    'FRAMED_MAPPING_UNPLANNABLE',
     `value chunk ${index} of the mapping node at slot ${bytesToHex(slot)} needs an output index the layout `
     + 'gives it none of',
   );
@@ -136,9 +136,9 @@ export function mappingChunkOutputUnavailable(slot: Uint8Array, index: number): 
  * A node the mapping plan must declare has no coordinate in the layout: an input to spend it at, or an output to
  * recreate or create it at. Which side is missing decides the message.
  */
-export function mappingIndexUnavailable(slot: Uint8Array, side: 'input' | 'output'): PerCallComposerError {
-  return new PerCallComposerError(
-    'PER_CALL_MAPPING_UNPLANNABLE',
+export function mappingIndexUnavailable(slot: Uint8Array, side: 'input' | 'output'): FramedComposerError {
+  return new FramedComposerError(
+    'FRAMED_MAPPING_UNPLANNABLE',
     `the mapping node at slot ${bytesToHex(slot)} needs an ${side} index the layout gives it none of`,
   );
 }
@@ -147,9 +147,9 @@ export function mappingIndexUnavailable(slot: Uint8Array, side: 'input' | 'outpu
  * A write to a dynamic value cannot be laid out as chunk records: the variable is not one of the layout's dynamic
  * variables, or the write changes how many chunks the value occupies.
  */
-export function chunkRunUnplannable(variable: string, reason: string): PerCallComposerError {
-  return new PerCallComposerError(
-    'PER_CALL_CHUNK_UNPLANNABLE',
+export function chunkRunUnplannable(variable: string, reason: string): FramedComposerError {
+  return new FramedComposerError(
+    'FRAMED_CHUNK_UNPLANNABLE',
     `the dynamic value "${variable}" cannot be planned: ${reason}`,
   );
 }

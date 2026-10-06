@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator/index.js';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { buildValidatorProgram } from '../../../../solidc/src/framed/validator/index.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { Signer, StatefulContract } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { selectGenesisFundingUtxo } from '../../../src/stateful/ContractFactory.js';
 import {
   CreateAddressError, CreateLookahead, deployMaster,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 
 /**
  * Predicting the address of a contract another contract creates.
@@ -27,7 +27,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   constructor(int seed) { this.total = seed + 1; }'
   + '   function check(int v) { require(this.total == v); }'
   + ' }';
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 
 const key = (utxo: { txid: string; vout: number }): string => `${utxo.txid}:${utxo.vout}`;
 

@@ -12,11 +12,11 @@ import {
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import {
   ValidatorReason, decideValidator, tokenShape,
-  type PerCallTransaction, type TokenShape,
-} from '../../../src/per-call/validator/index.js';
+  type FramedTransaction, type TokenShape,
+} from '../../../src/framed/validator/index.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -25,7 +25,7 @@ import {
 } from './validator-input.js';
 
 /**
- * A read admitted under the per-call convention: the caller records the call as a static frame, the callee runs
+ * A read admitted under the framed convention: the caller records the call as a static frame, the callee runs
  * one, and the validator's static-frame rules cover both.
  *
  * The read is written two ways — an explicit `.staticcall()` and a plain `view` method read — and both compile to
@@ -197,7 +197,7 @@ function buildRead(
 
 /** Compiles a reader source, deploys it and its callee, and assembles the co-spend. */
 function readComposition(readerSource: string, options: ReadOptions = {}): ReadComposition {
-  const artifacts = compileStringMulti(readerSource, { composition: 'per-call' });
+  const artifacts = compileStringMulti(readerSource, { composition: 'framed' });
   const calleeProgram = deploy(artifacts, 'Answer', CATEGORY_CALLEE, ADDRESS_CALLEE);
   const readerProgram = deploy(artifacts, 'Reader', CATEGORY_CALLER, ADDRESS_CALLER);
   return buildRead(readerProgram, calleeProgram, selectorOf(artifacts, 'Answer', 'peek'), options);
@@ -227,7 +227,7 @@ const VIEW_READ = 'pragma solidcash ^0.13.0;'
   + ' contract Reader { function readIt() {'
   + `   int r = IReader(0x${toHex(ADDRESS_CALLEE)}).peek(); require(r == ${ANSWER}); require(true); } }`;
 
-describe('a read under the per-call convention', () => {
+describe('a read under the framed convention', () => {
   it('is accepted at the caller, the callee and the validator when written as a .staticcall', () => {
     expect(readVerdicts(EXPLICIT_READ)).toStrictEqual({
       [CALLER_INDEX]: true, [CALLEE_INDEX]: true, [VALIDATOR_INDEX]: true,
@@ -267,7 +267,7 @@ const MUTANT_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Reader { function readIt() {'
   + `   IMutant(0x${toHex(ADDRESS_MUTANT)}).bump.staticcall(); require(true); } }`;
 
-const mutantArtifacts = compileStringMulti(MUTANT_SOURCE, { composition: 'per-call' });
+const mutantArtifacts = compileStringMulti(MUTANT_SOURCE, { composition: 'framed' });
 const mutantProgram = deploy(mutantArtifacts, 'Mutant', CATEGORY_MUTANT, ADDRESS_MUTANT);
 const mutantReaderProgram = deploy(mutantArtifacts, 'Reader', CATEGORY_CALLER, ADDRESS_CALLER);
 const BUMP_SELECTOR = selectorOf(mutantArtifacts, 'Mutant', 'bump');
@@ -394,7 +394,7 @@ interface VmToken {
 }
 
 /** The transaction as the validator derivation reads it, built from the same bytes the machine evaluates. */
-function validatorModel(composition: MutantComposition): PerCallTransaction {
+function validatorModel(composition: MutantComposition): FramedTransaction {
   const shape = (held: { readonly token?: VmToken }): TokenShape => {
     const spent = held.token;
     if (spent === undefined) return tokenShape(new Uint8Array(0), TokenCapability.NONE, false);
@@ -466,7 +466,7 @@ const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
 const CATEGORY_STATEFUL = seededCategory('read-only frame stateful caller');
 const ADDRESS_STATEFUL = validatorAddress(CATEGORY_STATEFUL, VALIDATOR_PROGRAM);
 
-const statefulArtifacts = compileStringMulti(STATEFUL_SOURCE, { composition: 'per-call' });
+const statefulArtifacts = compileStringMulti(STATEFUL_SOURCE, { composition: 'framed' });
 const counterProgram = deploy(statefulArtifacts, 'Counter', CATEGORY_STATEFUL, ADDRESS_STATEFUL);
 const answerProgram = deploy(statefulArtifacts, 'Answer', CATEGORY_CALLEE, ADDRESS_CALLEE);
 const PEEK_SELECTOR = selectorOf(statefulArtifacts, 'Answer', 'peek');

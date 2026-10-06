@@ -112,7 +112,7 @@ export default class Signer {
     if (!this._createWindowReserved) {
       this._createWindowReserved = true;
       try {
-        const { topUpCreateLookahead } = await import('./per-call/deploy/create-lookahead-session.js');
+        const { topUpCreateLookahead } = await import('./framed/deploy/create-lookahead-session.js');
         await topUpCreateLookahead(this, CREATE_LOOKAHEAD_WINDOW);
       } catch {
         // Best-effort: a nonce read is not always followed by a create, and the pool may be short.

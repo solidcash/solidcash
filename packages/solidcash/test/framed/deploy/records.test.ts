@@ -5,17 +5,17 @@ import {
 } from '@solidcash/utils';
 import type { Utxo } from '../../../src/interfaces.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
-import { mappingValueChunkLock } from '../../../src/per-call/composer/mapping-plan.js';
+import { mappingValueChunkLock } from '../../../src/framed/composer/mapping-plan.js';
 import {
-  PerCallRecordError, classifyPerCallDeployment, readPerCallDeployment, readPerCallState,
+  FramedRecordError, classifyFramedDeployment, readFramedDeployment, readFramedState,
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/records.js';
+} from '../../../src/framed/deploy/records.js';
 import { scriptToLockingBytecode } from '../../../src/utils.js';
 
 /**
- * Classifying a per-call deployment's live UTXOs, and what makes its records findable.
+ * Classifying a framed deployment's live UTXOs, and what makes its records findable.
  *
- * A per-call genesis mints its records at the data-NFT covenant its category derives, but a reader reaches every
+ * A framed genesis mints its records at the data-NFT covenant its category derives, but a reader reaches every
  * pool the same way: by enumerating the contract's category. A master is the category's minting NFT, a validator
  * is a mutable NFT with no commitment, and a record is a mutable NFT at the data-NFT covenant whose commitment
  * decodes as the layout's state encoding. These cases pin that classification, and the refusal when a provider
@@ -47,7 +47,7 @@ function categoryProvider(utxos: readonly Utxo[]): NetworkProvider {
   } as unknown as NetworkProvider;
 }
 
-describe('a per-call state record\'s lock and spend', () => {
+describe('a framed state record\'s lock and spend', () => {
   it('derives the lock from the data-NFT covenant the category seeds', () => {
     const covenant = scriptToBytecode(buildDataNftCovenantScript(hexToBin(CATEGORY)));
     expect([...stateRecordLockingBytecode(CATEGORY)])
@@ -57,9 +57,9 @@ describe('a per-call state record\'s lock and spend', () => {
   });
 });
 
-describe('classifying a per-call deployment by category', () => {
+describe('classifying a framed deployment by category', () => {
   it('separates the master pool, the validator pool and the state records', () => {
-    const set = classifyPerCallDeployment([
+    const set = classifyFramedDeployment([
       utxo(0, nft(CATEGORY, 'minting', '')),
       utxo(1, nft(CATEGORY, 'mutable', '')),
       utxo(2, nft(CATEGORY, 'mutable', RECORD_COMMITMENT)),
@@ -84,7 +84,7 @@ describe('classifying a per-call deployment by category', () => {
     const one = buildPushdataCommitment(multi, { b: 0n }, 1);
 
     // The tags are what disambiguate the two records, so outpoint order must not decide the index.
-    const set = classifyPerCallDeployment([
+    const set = classifyFramedDeployment([
       utxo(9, nft(CATEGORY, 'mutable', one)),
       utxo(2, nft(CATEGORY, 'mutable', zero)),
     ], multi);
@@ -112,7 +112,7 @@ describe('classifying a per-call deployment by category', () => {
     const recordLock = stateRecordLockingBytecode(CATEGORY);
     const owners = { owner: key('owner').slice(0, 20), judge: key('judge').slice(0, 20), count: 3n };
 
-    const set = classifyPerCallDeployment([
+    const set = classifyFramedDeployment([
       at(4, recordLock, buildPushdataCommitment(store, owners, 0)),
       at(2, mappingValueChunkLock(hexToBin(CATEGORY), 'notes', { slot: key('notes 7'), root: key('root') }), chunk),
       at(7, recordLock, buildPushdataCommitment(store, { total: 5n }, 1)),
@@ -124,13 +124,13 @@ describe('classifying a per-call deployment by category', () => {
 
   it('refuses when the provider cannot enumerate the category the records are found by', async () => {
     const addressOnly = { getUtxos: async () => [] } as unknown as NetworkProvider;
-    await expect(readPerCallDeployment(addressOnly, CATEGORY, LAYOUT)).rejects.toBeInstanceOf(PerCallRecordError);
+    await expect(readFramedDeployment(addressOnly, CATEGORY, LAYOUT)).rejects.toBeInstanceOf(FramedRecordError);
   });
 });
 
-describe('reading a per-call deployment\'s state by category', () => {
+describe('reading a framed deployment\'s state by category', () => {
   it('decodes each data NFT through the shipped decoder', async () => {
-    const state = await readPerCallState(categoryProvider([
+    const state = await readFramedState(categoryProvider([
       utxo(2, nft(CATEGORY, 'mutable', RECORD_COMMITMENT)),
     ]), CATEGORY, LAYOUT);
 
@@ -139,7 +139,7 @@ describe('reading a per-call deployment\'s state by category', () => {
   });
 
   it('refuses rather than defaulting when a record is missing', async () => {
-    await expect(readPerCallState(categoryProvider([]), CATEGORY, LAYOUT)).rejects
-      .toBeInstanceOf(PerCallRecordError);
+    await expect(readFramedState(categoryProvider([]), CATEGORY, LAYOUT)).rejects
+      .toBeInstanceOf(FramedRecordError);
   });
 });

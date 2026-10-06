@@ -33,9 +33,9 @@ import { encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32
 import type {
   InputView,
   OutputView,
-  PerCallTransaction,
+  FramedTransaction,
   TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
+} from '../../../../solidc/src/framed/validator/index.js';
 
 /** The validator program fixtures run against. Only its bytes matter: every contract address derives from it. */
 export const VALIDATOR_TEMPLATE: Uint8Array = sha256(new TextEncoder().encode('V_TEMPLATE v1 fixture'));
@@ -671,7 +671,7 @@ export function planComposition(plan: CompositionPlan): Composition {
 }
 
 /** Encodes a composition into the transaction shape the derivation reads. */
-export function materialise(composition: Composition): PerCallTransaction {
+export function materialise(composition: Composition): FramedTransaction {
   const inputs: InputView[] = composition.inputs.map((input, index) => {
     let unlockingBytecode: Uint8Array = EMPTY;
     if (input.master !== undefined) {

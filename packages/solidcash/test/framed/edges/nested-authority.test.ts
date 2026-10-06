@@ -4,7 +4,7 @@ import {
   compileAndDeploy, composeAndDerive, entryName, hexOf, rootOf, seededAddress, token, userInput, USER_LOCK,
   selectorOf, validatorFor,
 } from '../shapes/harness.js';
-import type { CompositionDraftPlan, DraftMaster } from '../../../src/per-call/composer/index.js';
+import type { CompositionDraftPlan, DraftMaster } from '../../../src/framed/composer/index.js';
 
 /**
  * A callee that authorizes its caller from the frame it was reached in.

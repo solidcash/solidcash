@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { bytesToHex } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { makeCallResolver, resolveCallTarget } from '../../../src/per-call/proxy/call-resolution.js';
-import { planHopExternalCalls, routingOf } from '../../../src/per-call/proxy/external-calls.js';
+import { makeCallResolver, resolveCallTarget } from '../../../src/framed/proxy/call-resolution.js';
+import { planHopExternalCalls, routingOf } from '../../../src/framed/proxy/external-calls.js';
 import { addressPayloadToLockingBytecode } from '../../../src/utils.js';
 
 /**
@@ -21,14 +21,14 @@ import { addressPayloadToLockingBytecode } from '../../../src/utils.js';
  * the hop runs rather than by a reimplementation here.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ISink { function ping(); }'
   + ' contract Sink { int public hits; function ping() { this.hits = this.hits + 1; require(true); } }'
   + ' contract Caller { function go(address target) { ISink(target).ping(); require(true); } }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const caller = artifacts.Caller!;
 const sink = artifacts.Sink!;
 

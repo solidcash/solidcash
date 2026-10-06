@@ -15,7 +15,7 @@ import {
   describeFrameReason, describeInnermost, frameMadeCall, frameStopOf, readsUnfilledReference, reportCompositionRefusal,
   type CompositionDraft, type CompositionRefusal, type FrameStop, type RefusedFrame,
 } from '../composer/index.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 import type { HopCallee } from './external-calls.js';
 
 type Machine = ReturnType<typeof createVirtualMachineBch2026>;
@@ -119,13 +119,13 @@ export function stalledCalleeRefusal(options: {
   readonly artifacts: readonly Artifact[];
   /** The frame whose derivation stalled. */
   readonly callee: HopCallee;
-}): { readonly failure: PerCallProxyDeployError; readonly innermost: RefusedFrame } | undefined {
+}): { readonly failure: FramedProxyDeployError; readonly innermost: RefusedFrame } | undefined {
   const { draft, callee } = options;
   const { innermost } = reportCompositionRefusal({
     draft, artifacts: options.artifacts, vm: options.vm, reached: [callee.master],
   });
   if (innermost === undefined || describeFrameReason(innermost.reason) === undefined) return undefined;
-  const failure = new PerCallProxyDeployError(
+  const failure = new FramedProxyDeployError(
     `the call's callee "${callee.functionName}" did not settle through the proxy: ${describeInnermost(innermost)}`,
     innermost.reason.arguments,
   );

@@ -40,15 +40,15 @@ import {
   witnessKindOf,
   type Artifact,
   type PublishedEntryStopSites,
-  type PublishedPerCallStopSites,
+  type PublishedFramedStopSites,
   type StopSite,
   type StopSiteMetadata,
   type WitnessBlock,
 } from '@solidcash/utils';
 import type { DerivationHost, FrameRequest, StepOutcome } from './derivation.js';
 
-// The table a per-call artifact publishes on `artifact.composition.stopSites`.
-export type { PublishedCallSite, PublishedEntryStopSites, PublishedPerCallStopSites } from '@solidcash/utils';
+// The table a framed artifact publishes on `artifact.composition.stopSites`.
+export type { PublishedCallSite, PublishedEntryStopSites, PublishedFramedStopSites } from '@solidcash/utils';
 
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
 
@@ -68,22 +68,22 @@ export class ShippedHostError extends Error {
 }
 
 /** Reads and validates the stop-site table an artifact publishes. */
-export function readPublishedStopSites(artifact: Pick<Artifact, 'composition'>): PublishedPerCallStopSites {
+export function readPublishedStopSites(artifact: Pick<Artifact, 'composition'>): PublishedFramedStopSites {
   const published = artifact.composition?.stopSites;
   if (published === undefined || typeof published !== 'object') {
     throw new ShippedHostError(
-      'PER_CALL_HOST_STOP_SITES_UNPUBLISHED',
-      'the artifact publishes no per-call stop-site table',
+      'FRAMED_HOST_STOP_SITES_UNPUBLISHED',
+      'the artifact publishes no framed stop-site table',
     );
   }
   if (published.version !== 1) {
     throw new ShippedHostError(
-      'PER_CALL_HOST_STOP_SITES_VERSION',
+      'FRAMED_HOST_STOP_SITES_VERSION',
       `unsupported stop-site table version: ${String(published.version)}`,
     );
   }
   if (!Array.isArray(published.entries)) {
-    throw new ShippedHostError('PER_CALL_HOST_STOP_SITES_SHAPE', 'the stop-site table has no entries array');
+    throw new ShippedHostError('FRAMED_HOST_STOP_SITES_SHAPE', 'the stop-site table has no entries array');
   }
   for (const entry of published.entries) {
     validateStopSiteMetadata(entry.sites);
@@ -264,7 +264,7 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
   const runs = new Map<string, ShippedMasterRun>();
   for (const run of options.runs) {
     if (runs.has(run.master)) {
-      throw new ShippedHostError('PER_CALL_HOST_DUPLICATE_RUN', `two runs share the master "${run.master}"`);
+      throw new ShippedHostError('FRAMED_HOST_DUPLICATE_RUN', `two runs share the master "${run.master}"`);
     }
     runs.set(run.master, run);
   }
@@ -293,14 +293,14 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
       const refusal = refused.get(functionName);
       if (refusal !== undefined) {
         throw new ShippedHostError(
-          'PER_CALL_HOST_ENTRY_REFUSED',
+          'FRAMED_HOST_ENTRY_REFUSED',
           `${functionName} is refused by the compiler: ${refusal}`,
         );
       }
       const entry = entries.get(functionName);
       if (entry === undefined) {
         throw new ShippedHostError(
-          'PER_CALL_HOST_ENTRY_UNPUBLISHED',
+          'FRAMED_HOST_ENTRY_UNPUBLISHED',
           `no stop sites are published for "${functionName}"`,
         );
       }
@@ -311,13 +311,13 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
       const run = runs.get(request.master);
       if (run === undefined) {
         throw new ShippedHostError(
-          'PER_CALL_HOST_RUN_UNKNOWN',
+          'FRAMED_HOST_RUN_UNKNOWN',
           `no run is registered for master "${request.master}" of ${request.functionName}`,
         );
       }
       if (run.functionName !== request.functionName) {
         throw new ShippedHostError(
-          'PER_CALL_HOST_RUN_MISMATCH',
+          'FRAMED_HOST_RUN_MISMATCH',
           `master "${request.master}" runs ${run.functionName}, not ${request.functionName}`,
         );
       }
@@ -364,7 +364,7 @@ export function publishedCallee(
   const call = entry.calls.find((candidate) => candidate.callIndex === callIndex);
   if (call === undefined) {
     throw new ShippedHostError(
-      'PER_CALL_HOST_CALL_UNPUBLISHED',
+      'FRAMED_HOST_CALL_UNPUBLISHED',
       `${entry.functionName} publishes no call site ${callIndex}`,
     );
   }

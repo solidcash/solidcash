@@ -139,7 +139,7 @@ export interface UnstatedView {
  * the chain the plan states carries the learned value on from the segment that learned it.
  */
 export function unstatedViewPlaceholder(master: string, segmentIndex: number, entryIndex: number): Uint8Array {
-  const tag = new TextEncoder().encode(`per-call unstated view\u0000${master}\u0000${segmentIndex}\u0000${entryIndex}`);
+  const tag = new TextEncoder().encode(`framed unstated view\u0000${master}\u0000${segmentIndex}\u0000${entryIndex}`);
   return sha256(tag);
 }
 

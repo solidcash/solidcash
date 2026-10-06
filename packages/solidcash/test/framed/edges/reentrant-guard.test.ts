@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind, buildPushdataCommitment, type RecordEntry } from '@solidcash/utils';
 import { compileAndDeploy, entryName, hexOf, seededAddress, userInput, USER_LOCK } from '../shapes/harness.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../src/framed/composer/index.js';
+import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/framed/master/validator-input.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { layoutWithFacets } from '../shapes/harness.js';
 
 /**
@@ -45,7 +45,7 @@ const GUARDED = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(GUARDED, { composition: 'per-call' });
+const artifacts = compileStringMulti(GUARDED, { composition: 'framed' });
 const guardedArtifact = artifacts.Guarded!;
 const commitment = (locked: bigint, counter: bigint): Uint8Array =>
   new Uint8Array(Buffer.from(buildPushdataCommitment(guardedArtifact.stateLayout!, { locked, counter }, 0), 'hex'));
@@ -162,8 +162,8 @@ describe('a guard a callee re-enters', () => {
       + `   function outer() { this.locked = 1; ICallee(0x${hexOf(CALLEE)}).hop.call(); this.locked = 0; require(true); }`
       + '   function inner() { require(this.locked == 0); }'
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
-    expect(artifacts.Guarded?.composition?.convention).toBe('per-call');
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
+    expect(artifacts.Guarded?.composition?.convention).toBe('framed');
     expect(artifacts.Guarded?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'outer']);
   });
 });

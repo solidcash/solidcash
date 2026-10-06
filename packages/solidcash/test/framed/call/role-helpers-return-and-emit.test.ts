@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, encodeEventCommitment, sha256 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { eventLockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { eventLockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -79,7 +79,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const roles = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never).Roles!;
+const roles = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never).Roles!;
 const eventOf = (name: string): NonNullable<typeof roles.events>[number] =>
   roles.events!.find((definition) => definition.name === name)!;
 const GRANTED = eventOf('RoleGranted');
@@ -133,7 +133,7 @@ async function deployWorld(): Promise<World> {
   const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const funder = wallet.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
   await fundShippedFacets(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: roles,
     proxyArtifact: buildProxyArtifact(roles),
@@ -171,9 +171,9 @@ async function deployed(): Promise<World> {
 /** One call through the proxy from a fresh coin of the admin's. */
 async function enter(
   world: World, functionName: string, args: readonly FunctionArgument[],
-): Promise<{ readonly coin: Utxo; readonly call: Promise<PerCallProxyCallResult> }> {
+): Promise<{ readonly coin: Utxo; readonly call: Promise<FramedProxyCallResult> }> {
   const coin = await coinAt(world.network, binToHex(ADMIN), functionName);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: roles,
     proxyArtifact: buildProxyArtifact(roles),
@@ -193,7 +193,7 @@ async function enter(
 /** Enters one call and requires every participant to accept it and the transaction to broadcast. */
 async function settle(
   world: World, functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const result = await (await enter(world, functionName, args)).call;
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -202,7 +202,7 @@ async function settle(
 
 /** Whether `account` holds `role`, read from the proxy's records through the read path. */
 async function holds(world: World, role: Uint8Array, account: Uint8Array): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: roles, categoryId: world.proxy, functionName: 'hasRole', args: [role, account],
   });
   expect(read.accepted).toBe(true);
@@ -214,7 +214,7 @@ const payload = (event: typeof GRANTED, role: Uint8Array, account: Uint8Array): 
   bytesToHex(encodeEventCommitment(event.parameters, [role, account, ADMIN]));
 
 /** Each event output the implementation frame lists in the broadcast, as `<lock>:<commitment>`. */
-function listedEvents(result: PerCallProxyCallResult): readonly string[] {
+function listedEvents(result: FramedProxyCallResult): readonly string[] {
   return result.draft.blockOf('implementation-master').events.map((index) => {
     const output = result.broadcast!.outputs[index]!;
     return `${bytesToHex(output.lockingBytecode)}:${bytesToHex(output.token!.nft!.commitment)}`;

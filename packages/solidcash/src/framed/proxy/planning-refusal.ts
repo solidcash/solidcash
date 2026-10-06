@@ -19,7 +19,7 @@ import {
   UNFILLED_CALLEE_REF, frameReadsCallRecord, frameStopOf, readPublishedStopSites, readsUnfilledReference,
   type CompositionDraft, type CompositionRefusal,
 } from '../composer/index.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 import { requireSatisfiableReachWrites, type HopExternalPlan } from './external-calls.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
 
@@ -51,7 +51,7 @@ export async function planBeforeRefusedSite(
       requireSatisfiableReachWrites(next.callees);
       before = next;
     } catch (error) {
-      if (!(error instanceof PerCallProxyDeployError)) return undefined;
+      if (!(error instanceof FramedProxyDeployError)) return undefined;
       if (hopTraceOn()) hopTrace(`planning-refusal site=${site} reason=${hopTraceError(error)}`);
       return { ...before, blocked: { ...stopped, refusal } };
     }

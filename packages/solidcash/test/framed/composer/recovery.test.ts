@@ -8,24 +8,24 @@ import {
 } from '@solidcash/utils';
 import { ethers } from 'ethers';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
 import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   buildKeccakSideCars, buildRecoverySideCars, composeDraft, keccakPreimagesOf, participant,
   recoveryCallsOf, type CompositionDraftPlan, type DraftMaster, type RecoverySideCars,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, master as shapeMaster, masterInput, rootOf, token, userInput, userInputs,
   validatorFor,
 } from '../shapes/harness.js';
 
 /**
- * A per-call master that recovers a signer, composed and derived by the shipped composer.
+ * A framed master that recovers a signer, composed and derived by the shipped composer.
  *
  * The entry takes the four scalars as arguments and compares the recovered key against a compile-time owner. The
  * master dispatches over two entries, so a user enters it with the call data `selector || h || v || r || s`; the
@@ -136,7 +136,7 @@ function compiled(source: string): {
   readonly program: Uint8Array;
   readonly abiFunction: ReturnType<typeof compileStringMulti>[string]['abi'][number];
 } {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const artifact = artifacts.Auth!;
   const program = fillPlaceholders(
     scriptToBytecode(asmToScript(artifact.bytecode)),
@@ -227,7 +227,7 @@ function verdictsOf(test: RecoveryCase): Record<string, { accepted: boolean; obj
   }]));
 }
 
-describe('a composed per-call recovery', () => {
+describe('a composed framed recovery', () => {
   it('is accepted when the EVM projection reads its address from a keccak side-car', () => {
     // A trailing output, as an event or a send adds: the side-car must recreate at its own index, not at an offset
     // from the end of the outputs.
@@ -260,7 +260,7 @@ describe('a composed per-call recovery', () => {
   });
 });
 
-describe('a composed per-call recovery in a frame that runs on its caller\'s records', () => {
+describe('a composed framed recovery in a frame that runs on its caller\'s records', () => {
   it('reads every side-car after its own input, not after the records\' owner', () => {
     // A proxy delegates into an implementation entry that hashes and recovers: the frame's records are the proxy's,
     // and its recovery pair, the projection's keccak side-car and its own keccak side-car follow its own input.

@@ -3495,7 +3495,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // keccak256 is the compute-and-commit result-NFT model (co-spent side-cars compute the hashes and return
     // them in NFT commitments; there is no inline keccak). EVERY keccak256 uses it: N calls -> N side-cars
-    // (slot-per-call). Direct-parameter args are co-spent from the call args; complex/nested args (recorded as
+    // (slot-framed). Direct-parameter args are co-spent from the call args; complex/nested args (recorded as
     // `null` in keccakPreimageParams by codegen) are resolved by the SDK via a VM probe. Stateless contracts
     // read the side-cars count-relative (the last N in/outputs); stateful contracts read a block-layout slot
     // (sibling of blockhashOracle, positioned absolutely). See docs/keccak-result-nft.md.
@@ -3508,7 +3508,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // ecrecoverPubKey (+ its p2pkh/evm projections) recovers a secp256k1 pubkey via a co-spent recovery side-car
-    // PAIR (A checkpoints, B finishes -> pubkey) per call. Slot-per-call: N calls -> 2N side-cars. See docs/ecrecover.md.
+    // PAIR (A checkpoints, B finishes -> pubkey) per call. Slot-framed: N calls -> 2N side-cars. See docs/ecrecover.md.
     const recovery = bodySurvey.recovery;
     if (recovery.total >= 1) {
       node.ecrecoverCompute = true; node.ecrecoverCallCount = recovery.total;
@@ -4028,10 +4028,10 @@ export default class SymbolTableTraversal extends AstTraversal {
               { functionName: node.name, callChains: chains, option: 'messageBus' },
             );
           }
-          // V1 permits exactly one repeated callee group in a root invocation. A per-call master carries one call
+          // V1 permits exactly one repeated callee group in a root invocation. A framed master carries one call
           // record per call and gives each call its own frame, so it has nothing to collapse: its sites are the
           // calls themselves and each binds its own descriptor.
-          if (repeated.length === 1 && this.compilerOptions.composition !== 'per-call') {
+          if (repeated.length === 1 && this.compilerOptions.composition !== 'framed') {
             const group = repeated[0];
             const hasCompleteSourceEffectOrder = group.every(
               (slot) => slot.sourceEffectOrdinal !== undefined,
@@ -4575,11 +4575,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
 
-    // Emit statement pre-scan: collect all emit statements and assign sequential indices. The per-call convention
+    // Emit statement pre-scan: collect all emit statements and assign sequential indices. The framed convention
     // keeps the numbering its witness blocks were built on; the direct convention places each slot by path.
     if (this.eventMap.size > 0) {
       const emitInfos: EmitInfo[] = [];
-      if (this.compilerOptions.composition === 'per-call') this.collectEmitStatements(node.body, emitInfos, 0);
+      if (this.compilerOptions.composition === 'framed') this.collectEmitStatements(node.body, emitInfos, 0);
       else emitInfos.push(...this.allocateEmitSlots(node.body));
 
       if (emitInfos.length > 0) {
@@ -4620,7 +4620,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }));
         // A Solidity-compat call/staticcall site pins its co-spent callee to the call's target (see
         // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.
-        if (this.compilerOptions.solidityImportCompat && this.compilerOptions.composition !== 'per-call') {
+        if (this.compilerOptions.solidityImportCompat && this.compilerOptions.composition !== 'framed') {
           this.publishLowLevelCallSources(node);
         }
 
@@ -4913,13 +4913,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   /**
    * True for a typed call whose `{value:}` its own call record carries, rather than a transfer of the body's.
    *
-   * In a per-call compile the caller's site holds the record's `value` to the amount its code computes, the validator
+   * In a framed compile the caller's site holds the record's `value` to the amount its code computes, the validator
    * holds the callee's frame value to the record (V5), and the value rule charges the caller's containers and credits
    * the callee's (V7). The direct and message-bus conventions pay a call value as a transfer, and every convention
    * pays a raw call's value and an empty-calldata value call that way, since those are sends.
    */
   private recordCarriesCallValue(node: Node | undefined): boolean {
-    return node instanceof ExternalFunctionCallNode && this.compilerOptions.composition === 'per-call'
+    return node instanceof ExternalFunctionCallNode && this.compilerOptions.composition === 'framed'
       && !node.rawValueTransferOnly && node.interfaceName !== '__raw__'
       && hasEffectiveCallValue(node.callOptions?.value);
   }
@@ -4994,7 +4994,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof BranchNode && node.branchOps && node.branchOps.transferCount > 0) {
       const startIndex = transferInfos.length;
-      if (this.compilerOptions.composition !== 'per-call') {
+      if (this.compilerOptions.composition !== 'framed') {
         // Direct convention: each arm is numbered from the branch's first slot, as switch arms are, and the branch
         // spans its longest arm. Per-call value sends keep the numbering below.
         let maximumEnd = startIndex;
@@ -5243,7 +5243,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    *    keep their source order;
    *  - exclusive arms share a slot only for the same event, since a slot's output is placed under its event's
    *    own locking bytecode and another event there could not settle.
-   * Wherever the earlier numbering (`collectEmitStatements`, kept for the per-call convention) compiled and met both
+   * Wherever the earlier numbering (`collectEmitStatements`, kept for the framed convention) compiled and met both
    * rules, this reproduces it slot for slot. That numbering took the if arm as the reference whenever it held at
    * least half the else arm's events, so an else arm with two events beside one in the if arm ran past the slots
    * the reference reserved; a nested branch in the other arm ended at its if arm's count, so a longer else arm
@@ -7682,7 +7682,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // Count, per bare-local name, how many external calls use it as their RECEIVER (`local.m()`). Restricts the
   // loop-body local-receiver rewrite to single-use locals: a multi-use receiver (`pair.getReserves(); pair.swap()`)
-  // would need ONE co-spend to serve several calls (a read + a write on the same UTXO), which the per-call witness
+  // would need ONE co-spend to serve several calls (a read + a write on the same UTXO), which the framed witness
   // model cannot express - left to fail closed. Snapshotted before any rewrite so the count is order-independent.
   private buildExtCallReceiverCounts(node: Node | undefined, acc: Map<string, number> = new Map(),
     seen: Set<Node> = new Set()): Map<string, number> {
@@ -8272,7 +8272,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         && this.interfaceMap.get(callInfo.interfaceName)?.functions.some(
           (fn) => fn.name === callInfo.functionName,
         );
-      // A per-call low-level call routed to the callee's fallback reaches that body, which is no function of it.
+      // A framed low-level call routed to the callee's fallback reaches that body, which is no function of it.
       const routedFallback = node.lowLevelRoute?.fallback !== undefined && concreteCallee?.fallbackDef !== undefined;
       if (concreteCallee && !splitLogicalGetter && !routedFallback && (stateMemberHidden
         || !concreteCallee.functions.some((f) => f.name === callInfo.functionName))) {
@@ -8521,7 +8521,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const addressIsMsgSender = node.addressExpression instanceof NullaryOpNode
         && node.addressExpression.operator === NullaryOperator.MSG_SENDER;
       // `IFoo(address(this)).m()` and `IFoo(this).m()`: the callee is a master of the calling contract. The
-      // caller's own code holds its address as the frame's `self`, so a per-call site binds its record to that
+      // caller's own code holds its address as the frame's `self`, so a framed site binds its record to that
       // value exactly as it does a computed target.
       const isOwnAddress = (expression: ExpressionNode | undefined): boolean => {
         if (expression === undefined) return false;
@@ -8854,10 +8854,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         return value;
       };
       const followable = (identifier: IdentifierNode): boolean => {
-        // Only the per-call composition follows: its call-site check binds every argument, so a followed source is a
+        // Only the framed composition follows: its call-site check binds every argument, so a followed source is a
         // plan. The other compositions authenticate a call result's alias from these sources, by their resolvers'
         // exact rules (a dominating assignment, an exact two-arm join), which a follow would bypass.
-        if (this.compilerOptions.composition !== 'per-call') return false;
+        if (this.compilerOptions.composition !== 'framed') return false;
         if (identifier.name.startsWith('__dlcache_') || identifier.name.startsWith('__vmapcache_')) return false;
         const definition = identifier.definition?.definition;
         return !(definition instanceof VariableDefinitionNode
@@ -9070,12 +9070,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         loopsAroundCall = loops;
         return loops;
       };
-      // What a scalar state variable holds where it is read, under the per-call composition: `undefined` when no
+      // What a scalar state variable holds where it is read, under the framed composition: `undefined` when no
       // statement dominating the read writes it (the value the frame starts with, which a hop reads from the
       // deployment), the value the dominating writes leave it at, or a `writtenState` node when a write cannot be
       // followed, which a hop refuses by name rather than plan a call from a value the body has overwritten.
       const followState = (read: StateAccessNode): ExternalCallExpression | undefined => {
-        if (this.compilerOptions.composition !== 'per-call') return undefined;
+        if (this.compilerOptions.composition !== 'framed') return undefined;
         const variable = read.stateVariable;
         const type = variable?.type;
         if (variable === undefined || variable.isDynamic || type instanceof StructType || type instanceof ArrayType
@@ -9253,10 +9253,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         seen.add(expression);
         const preservedLocal = expression instanceof IdentifierNode
           && serializedProgramLocals?.has(expression.name) === true;
-        // Outside per-call, a local array (or a returned aggregate mutated in place) is published as an explicit
+        // Outside framed, a local array (or a returned aggregate mutated in place) is published as an explicit
         // snapshot of the statements that build it (`external-call-local-array.ts`). Per-call reads every written
         // local through `followLocal` below, which its hop resolver evaluates; other locals follow it everywhere.
-        if (this.compilerOptions.composition !== 'per-call'
+        if (this.compilerOptions.composition !== 'framed'
           && !serializedProgramLocals && expression instanceof IdentifierNode && priorStatements) {
           const initializer = resolveInitializer(expression);
           const returnedAggregate = initializer instanceof ExternalFunctionCallNode
@@ -10026,7 +10026,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         : branchConditions && branchConditions.length >= node.sourceActivationConditions.length
           ? branchConditions.slice(0, node.sourceActivationConditions.length)
           : node.sourceActivationConditions;
-      const perCall = this.compilerOptions.composition === 'per-call';
+      const framed = this.compilerOptions.composition === 'framed';
       // A short-circuit RHS is reached only after its LHS succeeds (&&) or fails (||). Source activation
       // snapshots count enclosing statements, so preserve this expression-local predicate separately.
       // Lowering can also clone that same predicate into the source snapshot. Deduplicate only an
@@ -10076,9 +10076,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // prefix for a predicate that owns no branch; elsewhere it is read from what dominates the predicate itself.
         const owner = branchOwning(expression);
         const atBranch = owner !== undefined ? dominatingStatements(owner)
-          : perCall ? undefined : dominatingStatements(expression);
+          : framed ? undefined : dominatingStatements(expression);
         const atCall = priorStatements;
-        if (atBranch !== undefined || !perCall) priorStatements = atBranch;
+        if (atBranch !== undefined || !framed) priorStatements = atBranch;
         let serialized: ExternalCallExpression;
         try {
           serialized = serializeExpression(expression) ?? { kind: 'missing', name: expression.constructor.name };
@@ -10097,7 +10097,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           .some((child) => child !== undefined && containsUnresolvedConditionNode(child));
       };
       // A return lowered to a flag (ConfineReturns, or a modifier region) runs what follows it in a gate on the flag
-      // being clear, which is the compiler's own local. Under the per-call composition the gate is published as what
+      // being clear, which is the compiler's own local. Under the framed composition the gate is published as what
       // it stands for: no write of the flag before it ran, each write named by its own predicates (a nested gate's
       // in turn). A gate whose writes cannot be named so is left out, as an early return's unpublishable guard is.
       const serializeGate = (
@@ -10125,15 +10125,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         return unset;
       };
-      const serializedConditions = perCall
+      const serializedConditions = framed
         ? (sourceConditions ?? []).flatMap((guard) => (readsReturnFlag(guard.expression)
           ? serializeGate(guard) ?? [] : [serializeGuard(guard)]))
         : activeConditions.map(serializeGuard);
-      // A per-call body binds its call records in execution order, so a call an earlier `return` skips makes no
+      // A framed body binds its call records in execution order, so a call an earlier `return` skips makes no
       // record, and its site is published with the condition it runs under: no earlier return taken, then the
       // call's own predicates. Returns are nested only after this pass, so their guards are read from the source;
       // a guard that cannot be published as it is leaves the call's condition as it was.
-      const returnGuards = perCall && this.currentFunction?.body
+      const returnGuards = framed && this.currentFunction?.body
         ? returnGuardsOf(this.currentFunction, node).map(serializeGuard)
         : [];
       const activation = returnGuards.length > 0 && !returnGuards.some(containsUnresolvedConditionNode)
@@ -10296,7 +10296,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
         needsSelectorVerification,
-        // A foreign fn-ptr call (synthesized `__FnPtr_` interface): the callee master input index is a per-call
+        // A foreign fn-ptr call (synthesized `__FnPtr_` interface): the callee master input index is a framed
         // runtime param the SDK fills, not a fixed block offset (the callee's layout is unknown at compile time).
         ...(node.callInfo.interfaceName.startsWith('__FnPtr_') && { fnPtrCall: true }),
         ...(node.runtimeSelector && { runtimeSelector: node.runtimeSelector }),
@@ -16173,7 +16173,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitMethodCall(node: MethodCallNode): Node {
     const resolved = this.resolveMethodCall(node);
-    // A per-call low-level call lowered to this typed call keeps the frame kind its spelling chose, whatever the
+    // A framed low-level call lowered to this typed call keeps the frame kind its spelling chose, whatever the
     // method's mutability: `staticcall` a static frame, `call` a message frame.
     const route = node.lowLevelRoute;
     if (route !== undefined && resolved instanceof ExternalFunctionCallNode && resolved.callInfo !== undefined) {
@@ -17505,10 +17505,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Entries. A loop-write entry (inLoop) has NO fixed slot - its runtime-variable count of outputs sits in the
     // trailing region [blockSize, blockSize+N), indexed by the covenant's runtime counter (emitLoopEntryWrite).
     if (node.entryAccesses) {
-      const perCallLayout = this.compilerOptions.composition === 'per-call';
+      const framedLayout = this.compilerOptions.composition === 'framed';
       for (let i = 0; i < node.entryAccesses.length; i++) {
         const inLoop = node.entryAccesses[i].inLoop === true;
-        if (inLoop && !perCallLayout) continue;
+        if (inLoop && !framedLayout) continue;
         slots.push({ kind: 'entry', offset: offset++, slotIndex: i, ...(inLoop ? { conditional: true } : {}) });
       }
     }
@@ -17856,7 +17856,7 @@ function isEmptyBytesLiteral(expr: ExpressionNode): boolean {
   return expr instanceof HexLiteralNode && expr.value.byteLength === 0;
 }
 
-/** The method a per-call low-level call routed to its target's fallback names, which no interface declares. */
+/** The method a framed low-level call routed to its target's fallback names, which no interface declares. */
 function routedFallbackFunction(node: MethodCallNode): InterfaceFunctionNode | undefined {
   return node.lowLevelRoute?.fallback === undefined
     ? undefined : new InterfaceFunctionNode(node.methodName, [], [], 'payable');

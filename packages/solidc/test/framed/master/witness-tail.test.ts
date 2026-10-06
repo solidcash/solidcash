@@ -7,10 +7,10 @@ import {
   ByteWriter, WITNESS_BLOCK_MAGIC, WITNESS_BLOCK_VERSION, buildSatoshiContainerCovenantScript, encodeWitnessBlock,
   scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
-import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-call/master/master-head.js';
-import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
-import type { MasterTailShape } from '../../../src/per-call/master/frame-tail.js';
+import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/framed/master/master-head.js';
+import { findPlaceholderOffsets } from '../../../src/framed/master/master-program.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
+import type { MasterTailShape } from '../../../src/framed/master/frame-tail.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';

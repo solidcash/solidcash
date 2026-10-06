@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { FramedProxyDeployError, buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -103,7 +103,7 @@ const OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const artifacts = compileStringMulti(SOURCE, OPTIONS as never);
@@ -122,7 +122,7 @@ function reasonTail(entry: string, needle: string, reason: string): RegExp {
 
 interface World {
   readonly network: MockNetworkProvider;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   readonly funder: Unlocker;
   readonly nextCoin: () => Utxo;
@@ -153,7 +153,7 @@ async function deployWorld(): Promise<World> {
   });
   const storeInit = nextCoin();
   await network.addUtxo(binToHex(CALLER_LOCK), storeInit);
-  const store = await deployPerCallProxy({
+  const store = await deployFramedProxy({
     provider: network,
     implementationArtifact: Store!,
     proxyArtifact: buildProxyArtifact(Store!),
@@ -167,7 +167,7 @@ async function deployWorld(): Promise<World> {
   expect(store.initialize.broadcast).toBeDefined();
   const deskInit = nextCoin();
   await network.addUtxo(binToHex(CALLER_LOCK), deskInit);
-  const desk = await deployPerCallProxy({
+  const desk = await deployFramedProxy({
     provider: network,
     implementationArtifact: Desk!,
     proxyArtifact: buildProxyArtifact(Desk!),
@@ -210,13 +210,13 @@ async function deployed(): Promise<World> {
 /** One call of a desk entry through its proxy; a refusal is returned with the coin it left unspent. */
 async function enter(
   world: World, functionName: string, score: bigint,
-): Promise<{ result?: PerCallProxyCallResult; error?: Error; coinLive: boolean }> {
+): Promise<{ result?: FramedProxyCallResult; error?: Error; coinLive: boolean }> {
   const coin = world.nextCoin();
   await world.network.addUtxo(binToHex(CALLER_LOCK), coin);
-  let outcome: { result?: PerCallProxyCallResult; error?: Error };
+  let outcome: { result?: FramedProxyCallResult; error?: Error };
   try {
     outcome = {
-      result: await callPerCallProxyEntry({
+      result: await callFramedProxyEntry({
         provider: world.network,
         implementationArtifact: artifacts.Desk!,
         proxyArtifact: buildProxyArtifact(artifacts.Desk!),
@@ -249,7 +249,7 @@ describe('a require inside a callee reached through its proxy', () => {
 
     const refused = await enter(world, 'rate', 6n);
     expect(refused.result).toBeUndefined();
-    expect(refused.error).toBeInstanceOf(PerCallProxyDeployError);
+    expect(refused.error).toBeInstanceOf(FramedProxyDeployError);
     expect(refused.error!.message).toMatch(reasonTail('Store.rate()', '"Invalid score"', 'Invalid score'));
     expect(refused.coinLive).toBe(true);
   }, 600_000);
@@ -264,7 +264,7 @@ describe('a require inside a callee reached through its proxy', () => {
 
     const refused = await enter(world, 'relay', 6n);
     expect(refused.result).toBeUndefined();
-    expect(refused.error).toBeInstanceOf(PerCallProxyDeployError);
+    expect(refused.error).toBeInstanceOf(FramedProxyDeployError);
     expect(refused.error!.message)
       .toMatch(reasonTail('Store.relay()', '"Invalid relayed score"', 'Invalid relayed score'));
     expect(refused.coinLive).toBe(true);
@@ -274,7 +274,7 @@ describe('a require inside a callee reached through its proxy', () => {
     // The ghost call is refused while the hop plans it, but the execution meets the store's refusal first.
     const world = await deployed();
     const refused = await enter(world, 'rateThenPing', 6n);
-    expect(refused.error).toBeInstanceOf(PerCallProxyDeployError);
+    expect(refused.error).toBeInstanceOf(FramedProxyDeployError);
     expect(refused.error!.message).toMatch(reasonTail('Store.rate()', '"Invalid score"', 'Invalid score'));
     expect(refused.coinLive).toBe(true);
 

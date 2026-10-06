@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { refusalMessageOf } from './refused-entry.js';
 
 /**
- * The call shapes the per-call convention serves across a helper, and the inline-assembly boundary.
+ * The call shapes the framed convention serves across a helper, and the inline-assembly boundary.
  *
  * A low-level call whose payload names an interface method is lowered to the typed call it denotes. The lowering
  * follows the payload as a local, so a payload handed to a helper whose own body makes the call is served once the
  * helper is inlined into the entry before the lowering runs - a helper that RETURNS included, which the inliners do
- * under the per-call convention exactly so the payload is one the lowering can follow. A payload that names no method
+ * under the framed convention exactly so the payload is one the lowering can follow. A payload that names no method
  * is refused in `low-level-token-calls.test.ts`, and a verified-mapping write beside a call the source does not fix
  * in `refused-entry-shapes.test.ts`.
  *
@@ -20,7 +20,7 @@ import { refusalMessageOf } from './refused-entry.js';
  */
 
 /** The reason a body that reaches an assembly block the lowering left in place is refused. */
-const INLINE_ASSEMBLY_REASON = 'inline assembly is not composed per-call';
+const INLINE_ASSEMBLY_REASON = 'inline assembly is not composed framed';
 
 const HEAD = 'pragma solidcash ^0.13.0;'
   + ' interface IToken { function transfer(address to, int amount) returns (bool); }';

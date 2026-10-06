@@ -1,23 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
   MockNetworkProvider, Signer, getContractFactory, deployProxy, ProxyContract,
-  type PerCallArtifact, type PerCallProxyHandle,
+  type FramedArtifact, type FramedProxyHandle,
 } from '../../../src/index.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * The ordinary `deployProxy` entry point reached with a per-call implementation.
+ * The ordinary `deployProxy` entry point reached with a framed implementation.
  *
- * A per-call artifact is a master program, not a direct-convention contract: its entries read their frame from a
+ * A framed artifact is a master program, not a direct-convention contract: its entries read their frame from a
  * witness block, and it runs behind the fallback-only proxy the convention compiles. The direct builder therefore
  * has nothing to spend, and `deployProxy` routes the whole deployment - both geneses and the `initialize` hop -
- * through the per-call path, generating the proxy from the implementation's own declaration. What it returns is
+ * through the framed path, generating the proxy from the implementation's own declaration. What it returns is
  * the contract handle, whose bare names are the implementation's entries, with the deployment's own record nested
  * under it: the proxy's category and address, the implementation it forwards to, the derived hop and the machine's
  * verdict on every participant.
@@ -64,7 +64,7 @@ async function fundedSigner(network: MockNetworkProvider, fill: number): Promise
 interface Routed {
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly deployerLock: Uint8Array;
-  readonly routed: PerCallProxyHandle;
+  readonly routed: FramedProxyHandle;
 }
 
 let routedRun: Promise<Routed> | undefined;
@@ -72,20 +72,20 @@ let routedRun: Promise<Routed> | undefined;
 /** The routed deployment the first two cases read; the second's re-entered initialize broadcasts nothing. */
 function routedDeployment(): Promise<Routed> {
   routedRun ??= (async (): Promise<Routed> => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const network = provider();
     const signer = await fundedSigner(network, 0x51);
     const deployerLock = signer.getLockingBytecode();
-    const routed: PerCallProxyHandle = await deployProxy(
-      getContractFactory(artifacts.Impl! as PerCallArtifact, signer), [deployerLock],
+    const routed: FramedProxyHandle = await deployProxy(
+      getContractFactory(artifacts.Impl! as FramedArtifact, signer), [deployerLock],
     );
     return { artifacts, deployerLock, routed };
   })();
   return routedRun;
 }
 
-describe('deployProxy with a per-call implementation', () => {
-  it('routes to the per-call deployment and settles the initialize hop', async () => {
+describe('deployProxy with a framed implementation', () => {
+  it('routes to the framed deployment and settles the initialize hop', async () => {
     const { artifacts, routed } = await routedDeployment();
     const deployment = routed.proxyDeployment;
 
@@ -127,7 +127,7 @@ describe('deployProxy with a per-call implementation', () => {
     const handle = await deployProxy(getContractFactory(artifacts.Counter!, signer), []);
 
     expect(handle).toBeInstanceOf(ProxyContract);
-    // The direct handle forwards through a pinned delegatecall; a per-call deployment has no such method.
+    // The direct handle forwards through a pinned delegatecall; a framed deployment has no such method.
     expect(typeof handle.forward).toBe('function');
     expect(handle.forwardShape.mode).toBe('baked');
     expect(await handle.getAddress()).toMatch(/^[a-z]+:/);

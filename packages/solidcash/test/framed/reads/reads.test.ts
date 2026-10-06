@@ -10,33 +10,33 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
-  readPerCallDeployment,
-  readPerCallState,
+  readFramedDeployment,
+  readFramedState,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
   decideReference, type ReferenceTransaction, type ReferenceToken,
-} from '../../../src/per-call/validator/reference/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/validator/reference/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
- * Reading a deployed per-call contract's record off chain.
+ * Reading a deployed framed contract's record off chain.
  *
  * The record a read resolves is one an earlier composition actually wrote: a `bump` entry runs through the whole
  * shipped path (compile, deploy, composer, derivation), the machine accepts its master and the record's own
@@ -60,7 +60,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function scaled(int factor) view returns (int) { return this.counter * factor; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const counter = artifacts.Counter!;
 /** The entry's own selector, taken from the compiled artifact's ABI (its signature carries the parameter type). */
 const BUMP_SELECTOR = new Uint8Array(Buffer.from(counter.abi.find((row) => row.name === 'bump')!.selector!, 'hex'));
@@ -211,7 +211,7 @@ function toModel(program: Parameters<ReturnType<typeof compositionMachine>['eval
   };
 }
 
-describe('reading a per-call record the contract already wrote', () => {
+describe('reading a framed record the contract already wrote', () => {
   it('reads back the value an earlier accepted composition wrote', async () => {
     const { written, verdicts } = writeComposition(7n);
     expect(verdicts).toStrictEqual(['accepted', 'accepted']);
@@ -219,7 +219,7 @@ describe('reading a per-call record the contract already wrote', () => {
     const provider = new MockNetworkProvider();
     await chain(provider, written);
 
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider, artifact: counter, categoryId: CATEGORY_HEX, functionName: 'current', vm: compositionMachine(),
     });
 
@@ -242,10 +242,10 @@ describe('reading a per-call record the contract already wrote', () => {
     const provider = new MockNetworkProvider();
     await chain(provider, commitment(41n));
 
-    const state = await readPerCallState(provider, CATEGORY_HEX, counter.stateLayout!);
+    const state = await readFramedState(provider, CATEGORY_HEX, counter.stateLayout!);
     expect(state.byNft[0]!.counter).toBe(41n);
 
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider, artifact: counter, categoryId: CATEGORY_HEX, functionName: 'current', vm: compositionMachine(),
     });
     expect(result.accepted).toBe(true);
@@ -257,7 +257,7 @@ describe('reading a per-call record the contract already wrote', () => {
     const provider = new MockNetworkProvider();
     await chain(provider, commitment(7n));
 
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider, artifact: counter, categoryId: CATEGORY_HEX, functionName: 'scaled', args: [3n],
       vm: compositionMachine(),
     });
@@ -268,11 +268,11 @@ describe('reading a per-call record the contract already wrote', () => {
   it('broadcasts nothing: the provider\'s transaction count is unchanged', async () => {
     const provider = new MockNetworkProvider();
     await chain(provider, commitment(7n));
-    const discovery = await readPerCallDeployment(provider, CATEGORY_HEX, counter.stateLayout!);
+    const discovery = await readFramedDeployment(provider, CATEGORY_HEX, counter.stateLayout!);
     expect(discovery.records).toHaveLength(1);
 
     const before = transactionCount(provider);
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider, artifact: counter, categoryId: CATEGORY_HEX, functionName: 'current', vm: compositionMachine(),
     });
     expect(result.accepted).toBe(true);
@@ -284,7 +284,7 @@ describe('reading a per-call record the contract already wrote', () => {
     // is a root frame no user entered. It lands on the root's caller not being a covered master.
     const provider = new MockNetworkProvider();
     await chain(provider, commitment(7n));
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider, artifact: counter, categoryId: CATEGORY_HEX, functionName: 'current', vm: compositionMachine(),
     });
     const program = result.draft.programFor('read');
@@ -307,7 +307,7 @@ describe('reading a per-call record the contract already wrote', () => {
       + '     return this.counter;\n'
       + '   }\n'
       + ' }';
-    const guarded = compileStringMulti(refusing, { composition: 'per-call' }).Guarded!;
+    const guarded = compileStringMulti(refusing, { composition: 'framed' }).Guarded!;
     const deployed = deployMaster(guarded, CATEGORY, VALIDATOR_PROGRAM);
     // The record holds zero, which is what the entry's own guard refuses.
     const zero = new Uint8Array(Buffer.from(buildPushdataCommitment(guarded.stateLayout!, { counter: 0n }, 0), 'hex'));
@@ -321,7 +321,7 @@ describe('reading a per-call record the contract already wrote', () => {
     await provider.addUtxo(bytesToHex(deployed.address), utxo('22'.repeat(32), 'mutable', empty));
     await provider.addUtxo(bytesToHex(stateRecordLockingBytecode(CATEGORY_HEX)), utxo('33'.repeat(32), 'mutable', zero));
 
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider, artifact: guarded as Artifact, categoryId: CATEGORY_HEX, functionName: 'current',
       vm: compositionMachine(),
     });

@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin } from '@bitauth/libauth';
 import { INDEX_NONE, bytesToHex, validatorAddress } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { participant } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { participant } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { dynamicChunkId } from '../../../src/per-call/proxy/entry-writes.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { dynamicChunkId } from '../../../src/framed/proxy/entry-writes.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -31,7 +31,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * census alone would admit there: the segment that held the chunk kept named that index.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const category = (seed: number): string => binToHex(Uint8Array.from({ length: 32 }, (_unused, index) =>
   (seed * 31 + index * 13) & 0xff));
 const JOURNAL_CATEGORY = category(0x29);
@@ -72,7 +72,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 const DESK = ARTIFACTS.Desk!;
 const JOURNAL = ARTIFACTS.Journal!;
 const CALLER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
@@ -82,11 +82,11 @@ const AGENT = encodeLockingBytecodeP2sh32(new Uint8Array(32).fill(0x5a));
 const TICKET = 2n ** 200n + 12_345n;
 
 type Machine = ReturnType<typeof compositionMachine>;
-type Outputs = PerCallProxyCallResult['transaction']['outputs'];
+type Outputs = FramedProxyCallResult['transaction']['outputs'];
 
 /** The desk deployed behind its generated proxy, a function that calls one of its entries, and its live run. */
 async function proxiedDesk(seed: number): Promise<{
-  readonly call: (entry: string, args: readonly unknown[]) => Promise<PerCallProxyCallResult>;
+  readonly call: (entry: string, args: readonly unknown[]) => Promise<FramedProxyCallResult>;
   readonly read: (entry: string, args: readonly unknown[]) => Promise<unknown>;
   readonly liveChunks: () => Promise<number>;
 }> {
@@ -110,7 +110,7 @@ async function proxiedDesk(seed: number): Promise<{
   const proxyFunding = { txid: category(seed + 101), vout: 0, satoshis: 500_000n };
   for (const utxo of [implementationFunding, proxyFunding]) await network.addUtxo(wallet.address, utxo);
   const signature = new SignatureTemplate(alicePriv);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: DESK,
     proxyArtifact: buildProxyArtifact(DESK),
@@ -124,7 +124,7 @@ async function proxiedDesk(seed: number): Promise<{
   expect(deployment.initialize.broadcast).toBeDefined();
   const proxyCategoryId = deployment.proxy.categoryId;
   return {
-    call: async (entry, args) => callPerCallProxyEntry({
+    call: async (entry, args) => callFramedProxyEntry({
       provider: network,
       implementationArtifact: DESK,
       proxyArtifact: buildProxyArtifact(DESK),
@@ -140,7 +140,7 @@ async function proxiedDesk(seed: number): Promise<{
       vm: compositionMachine(),
     }),
     read: async (entry, args) => {
-      const answered = await readPerCallEntry({
+      const answered = await readFramedEntry({
         provider: network, artifact: DESK, categoryId: proxyCategoryId, functionName: entry, args: [...args] as never,
         vm: compositionMachine(),
       });
@@ -148,7 +148,7 @@ async function proxiedDesk(seed: number): Promise<{
       return answered.value;
     },
     // The desk holds no mapping, so every chunk its proxy's category holds is one of the run's.
-    liveChunks: async () => (await readPerCallDeployment(network, proxyCategoryId, DESK.stateLayout!)).chunks.length,
+    liveChunks: async () => (await readFramedDeployment(network, proxyCategoryId, DESK.stateLayout!)).chunks.length,
   };
 }
 
@@ -157,7 +157,7 @@ const refusals = (verdicts: readonly { id: string; accepted: boolean; objection?
   verdicts.filter((verdict) => !verdict.accepted).map((verdict) => `${verdict.id}: ${verdict.objection ?? ''}`);
 
 /** The machine's verdict on one participant's input of a settled hop, with its outputs optionally rewritten. */
-function verdictOf(result: PerCallProxyCallResult, id: string, mutate?: (outputs: Outputs) => Outputs): string {
+function verdictOf(result: FramedProxyCallResult, id: string, mutate?: (outputs: Outputs) => Outputs): string {
   const machine: Machine = compositionMachine();
   const state = machine.evaluate({
     inputIndex: participant(result.draft.layout, id).index,

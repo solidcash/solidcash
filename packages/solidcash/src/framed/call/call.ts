@@ -1,5 +1,5 @@
 /**
- * A call into a deployed per-call contract.
+ * A call into a deployed framed contract.
  *
  * A call is a composition whose root frame is `ROOT`: a user's own signed coin enters the contract's entry, the
  * entry runs over the contract's live records, and the whole thing is broadcast. It is the read path's machinery
@@ -23,7 +23,7 @@
  *
  * A call to a payable entry may carry value: the frame's `msg.value`, paid by the caller into a satoshi container
  * of the contract, whose growth the master requires to cover it (spec 4b). A value send is a call to `receive()`
- * (`sendPerCallValue`), or to a payable `fallback()` when the contract has no `receive()`, as the EVM picks the
+ * (`sendFramedValue`), or to a payable `fallback()` when the contract has no `receive()`, as the EVM picks the
  * body; a contract with neither is refused by name. An entry that sends pays from the contract's
  * containers: each send's lock and amount are learned from the body's own pin, the containers cover what the call
  * does not bring, and one of them, keeping the change, precedes the sends, which binds them to the frame. A send
@@ -58,7 +58,7 @@
  * What is not covered: a returning entry reached through a proxy hop whose forwarded call records no result. The
  * generated closure shape forwards with a bare `delegatecall(input)` and drops the result, so the hop cannot express
  * the value in that call record (a proxy whose fallback carries the delegated result does carry it; that hop is
- * `callPerCallProxyEntry`).
+ * `callFramedProxyEntry`).
  */
 
 import {
@@ -97,13 +97,13 @@ import {
   eventLockingBytecode,
   eventSentinel,
   readComputedDeclaration,
-  readPerCallDeployment,
+  readFramedDeployment,
   readSatoshiContainers,
   satoshiContainerLockingBytecode,
   satoshiContainerUnlockingBytecode,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-  type PerCallDeploymentSet,
+  type FramedDeploymentSet,
 } from '../deploy/index.js';
 import {
   chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, withChainEnds,
@@ -112,28 +112,28 @@ import {
 import {
   declaredRunWidth, hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites,
 } from '../proxy/entry-writes.js';
-import { PerCallProxyDeployError } from '../proxy/errors.js';
+import { FramedProxyDeployError } from '../proxy/errors.js';
 import { declareUnstatedCalls } from '../proxy/planning-refusal.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
 import { deploymentActivationFacts } from './activation-facts.js';
 import {
-  PerCallCallRecordError, adjacentRecordOrder, callEntryReads, frameDataRecordIndices, loopRecordSpans,
+  FramedCallRecordError, adjacentRecordOrder, callEntryReads, frameDataRecordIndices, loopRecordSpans,
   namedDataRecordIndices, orderLoopKeyArgs, placeRecordsBySpan, requireDistinctNodes, type CallLoopWritePlan,
   type LoopRecordMint, type LoopRecordSpan,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import {
-  PerCallLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
+  FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from './loop-turns.js';
 import {
-  NO_CALLEE_VALUES, PerCallCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, deriveThroughFrame,
+  NO_CALLEE_VALUES, FramedCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, deriveThroughFrame,
   learnCalleeValue, planEntryCallees, scopedCalleeFrame, type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { deploymentStateValues } from '../proxy/external-calls.js';
-import { PerCallReadError, decodeReturnValues } from '../read/index.js';
+import { FramedReadError, decodeReturnValues } from '../read/index.js';
 import {
-  PerCallComposerError,
+  FramedComposerError,
   UNFILLED_CALLEE_REF,
   createComposedDerivationHost,
   deploymentBlockId,
@@ -164,8 +164,8 @@ import {
 type CallMachine = ReturnType<typeof createVirtualMachineBch2026>;
 
 /** Raised when a call cannot be planned or driven from what the caller supplied. */
-export class PerCallCallError extends Error {
-  public readonly name = 'PerCallCallError';
+export class FramedCallError extends Error {
+  public readonly name = 'FramedCallError';
 
   public constructor(message: string) {
     super(message);
@@ -173,9 +173,9 @@ export class PerCallCallError extends Error {
 }
 
 /** What the caller asks a call for. */
-export interface PerCallCallOptions {
+export interface FramedCallOptions {
   readonly provider: NetworkProvider;
-  /** The deployed contract's per-call artifact. */
+  /** The deployed contract's framed artifact. */
   readonly artifact: Artifact;
   /** The deployed contract's token category, as hex. */
   readonly categoryId: string;
@@ -194,17 +194,17 @@ export interface PerCallCallOptions {
   /** The value the call carries, in satoshis: the frame's `msg.value`. Only a payable entry takes one. */
   readonly value?: bigint;
   /** The contracts the entry's value sends may pay, each found by the address its category derives. */
-  readonly externals?: Readonly<Record<string, PerCallExternal>>;
+  readonly externals?: Readonly<Record<string, FramedExternal>>;
 }
 
-/** A deployed contract a call may pay: its per-call artifact and its category, as hex. */
-export interface PerCallExternal {
+/** A deployed contract a call may pay: its framed artifact and its category, as hex. */
+export interface FramedExternal {
   readonly artifact: Artifact;
   readonly categoryId: string;
 }
 
 /** One participant's verdict, as the machine returned it. */
-export interface PerCallCallVerdict {
+export interface FramedCallVerdict {
   readonly id: string;
   readonly index: number;
   readonly accepted: boolean;
@@ -212,7 +212,7 @@ export interface PerCallCallVerdict {
 }
 
 /** What a call produced, and whether the machine accepted it. */
-export interface PerCallCallResult {
+export interface FramedCallResult {
   /** The derived transaction the machine was asked about. */
   readonly transaction: NonNullable<ShippedVmProgram['transaction']>;
   /** The output each input spends, in input order. */
@@ -221,7 +221,7 @@ export interface PerCallCallResult {
   /** The frames the derivation completed, callee before caller. */
   readonly completed: readonly FrameRequest[];
   /** Every participant's verdict, in input order. */
-  readonly verdicts: readonly PerCallCallVerdict[];
+  readonly verdicts: readonly FramedCallVerdict[];
   /** True only when every participant was accepted. */
   readonly accepted: boolean;
   /**
@@ -311,7 +311,7 @@ function recordId(nftIndex: number): string {
  * lets the failing close name the operand that is the answer.
  */
 function retvalPlaceholder(contract: string, functionName: string): Uint8Array {
-  return sha256(new TextEncoder().encode(`per-call call retval\u0000${contract}\u0000${functionName}`));
+  return sha256(new TextEncoder().encode(`framed call retval\u0000${contract}\u0000${functionName}`));
 }
 
 /** The ABI row a call names, with the fields a frame is built from. */
@@ -348,10 +348,10 @@ function valueEntryOf(artifact: Artifact, what: string): Artifact['abi'][number]
   if (receive !== undefined) return receive;
   const fallback = artifact.abi.find((candidate) => candidate.name === FALLBACK_ENTRY);
   if (fallback === undefined) {
-    throw new PerCallCallError(`contract "${artifact.contractName}" has no receive(), so ${what} has no body to run`);
+    throw new FramedCallError(`contract "${artifact.contractName}" has no receive(), so ${what} has no body to run`);
   }
   if (!(fallback.modifiers ?? []).includes('payable')) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `contract "${artifact.contractName}" has no receive() and its fallback() is not payable, so it refuses ${what}`,
     );
   }
@@ -362,10 +362,10 @@ function valueEntryOf(artifact: Artifact, what: string): Artifact['abi'][number]
 function requireEntry(artifact: Artifact, functionName: string): CallEntry {
   const entry = artifact.abi.find((candidate) => candidate.name === functionName);
   if (entry === undefined) {
-    throw new PerCallCallError(`artifact "${artifact.contractName}" publishes no entry "${functionName}"`);
+    throw new FramedCallError(`artifact "${artifact.contractName}" publishes no entry "${functionName}"`);
   }
   if (entry.selector === undefined) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `entry "${functionName}" publishes no selector, so its frame cannot be dispatched to`,
     );
   }
@@ -400,7 +400,7 @@ function entryArgumentPushes(
     new Uint8Array(hexToBin(entry.selector)),
     ...args.map((value, index) => {
       const input = entry.inputs[index];
-      if (input === undefined) throw new PerCallCallError(`entry "${functionName}" has no parameter ${index}`);
+      if (input === undefined) throw new FramedCallError(`entry "${functionName}" has no parameter ${index}`);
       return encodeFunctionArgument(value, input.type, structs) as Uint8Array;
     }).reverse(),
   ];
@@ -516,7 +516,7 @@ interface EntryMappingRequest {
   /** The frame's `msg.sender`, as the lock it is. */
   readonly senderLockingBytecode: Uint8Array;
   readonly categoryId: string;
-  readonly deployment: PerCallDeploymentSet;
+  readonly deployment: FramedDeploymentSet;
   /** The frame's state, `address(this)` and nodes' values, which its keys and guarded writes are decided from. */
   readonly facts: WriteActivationFacts;
   /** The lock the chunks a write leaves past its value's width are paid to: the user's, whose coin enters. */
@@ -542,8 +542,8 @@ function writtenNodeId(slot: Uint8Array, collection?: string): string {
  * entry as the implementation's, and a frame here runs its own contract's entry.
  */
 function asCallRefusal(error: unknown, functionName: string): unknown {
-  if (!(error instanceof PerCallProxyDeployError)) return error;
-  return new PerCallCallRecordError(error.message
+  if (!(error instanceof FramedProxyDeployError)) return error;
+  return new FramedCallRecordError(error.message
     .replaceAll(`the implementation's "${functionName}" entry`, `entry "${functionName}"`)
     .replaceAll('this hop', 'this call'));
 }
@@ -605,7 +605,7 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
   }
   if (writes?.awaitsValue === true) {
     const chunking = writes.reachWrites.find((write) => write.chunkable)?.collection ?? writes.collection;
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${functionName}" writes mapping "${chunking ?? ''}", whose values chunk, a value its artifact does not `
       + 'state, so the run of chunk records the write takes cannot be sized from the call alone',
     );
@@ -686,8 +686,8 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
   };
 }
 
-/** Calls an entry on a deployed per-call contract, evaluates it, and broadcasts it when every participant agrees. */
-export async function callPerCallEntry(options: PerCallCallOptions): Promise<PerCallCallResult> {
+/** Calls an entry on a deployed framed contract, evaluates it, and broadcasts it when every participant agrees. */
+export async function callFramedEntry(options: FramedCallOptions): Promise<FramedCallResult> {
   return callInShape(options, { listedSends: undefined, skippedPayees: new Set(), payeeListedSends: new Map() });
 }
 
@@ -728,26 +728,26 @@ const NO_EARLIER_RESULTS: EarlierResults = { reached: new Map(), returns: new Ma
 
 /** A call planned with the sends `shape` declares, and from the results `prior` holds. */
 async function callInShape(
-  options: PerCallCallOptions, shape: SendShape, prior: EarlierResults = NO_EARLIER_RESULTS,
-): Promise<PerCallCallResult> {
+  options: FramedCallOptions, shape: SendShape, prior: EarlierResults = NO_EARLIER_RESULTS,
+): Promise<FramedCallResult> {
   const { provider, artifact, categoryId, functionName } = options;
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
-    throw new PerCallCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
+    throw new FramedCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
   }
   if (options.callerLockingBytecode.length !== 25) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `a root frame's caller is a 25-byte P2PKH lock; got ${options.callerLockingBytecode.length} bytes`,
     );
   }
   const entry = requireEntry(artifact, functionName);
   const value = options.value ?? 0n;
-  if (value < 0n) throw new PerCallCallError(`a call carries no negative value; got ${value}`);
+  if (value < 0n) throw new FramedCallError(`a call carries no negative value; got ${value}`);
   if (value > 0n && !entry.payable) {
-    throw new PerCallCallError(`entry "${functionName}" is not payable, so a call to it carries no value`);
+    throw new FramedCallError(`entry "${functionName}" is not payable, so a call to it carries no value`);
   }
   if (entry.name === FALLBACK_ENTRY && (options.args ?? []).length > 0) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `a call to the fallback() of "${artifact.contractName}" carries a value send's empty call data, so it takes no `
       + 'argument',
     );
@@ -773,32 +773,32 @@ async function callInShape(
     + (artifact.abi.some((candidate) => candidate.name === '__construct') ? 1 : 0);
   const hasFallback = artifact.abi.some((candidate) => candidate.name === FALLBACK_ENTRY);
   if (dispatchedBodies <= 1 && !hasFallback) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `contract "${artifact.contractName}" has ${dispatchedBodies} dispatched body(ies), so a user's frame to it `
       + 'carries no selector, which this call path does not plan yet',
     );
   }
   const published = publishedEntryOf(artifact, functionName);
 
-  const { perCallValidator } = await import('solidc');
-  const validatorProgram = options.validatorProgram ?? perCallValidator.buildValidatorProgram();
+  const { framedValidator } = await import('solidc');
+  const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
   const category = new Uint8Array(hexToBin(categoryId));
   const deployed = deployMaster(artifact, category, validatorProgram);
   const structs = structDefinitionsOf(artifact);
 
   // The deployment's live pools and records, classified by category and ordered by data-NFT index.
-  const deployment = await readPerCallDeployment(provider, categoryId, stateLayout);
+  const deployment = await readFramedDeployment(provider, categoryId, stateLayout);
   const master = deployment.masters[0];
   if (master === undefined) {
-    throw new PerCallCallError(`category ${categoryId} holds no master, which a root frame runs on`);
+    throw new FramedCallError(`category ${categoryId} holds no master, which a root frame runs on`);
   }
   const validator = deployment.validators[0];
   if (validator === undefined) {
-    throw new PerCallCallError(`category ${categoryId} holds no validator, which a root frame needs to be admitted`);
+    throw new FramedCallError(`category ${categoryId} holds no validator, which a root frame needs to be admitted`);
   }
   if (deployment.records.length < stateLayout.dataNftCount) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `category ${categoryId} holds ${deployment.records.length} data-NFT record(s), and the layout names `
       + `${stateLayout.dataNftCount}`,
     );
@@ -807,7 +807,7 @@ async function callInShape(
     const utxo = deployment.records[nftIndex]!;
     const commitment = utxo.token?.nft?.commitment;
     if (commitment === undefined) {
-      throw new PerCallCallError(`the record at data-NFT index ${nftIndex} carries no commitment`);
+      throw new FramedCallError(`the record at data-NFT index ${nftIndex} carries no commitment`);
     }
     return { id: recordId(nftIndex), commitment: new Uint8Array(hexToBin(commitment)), utxo };
   });
@@ -850,7 +850,7 @@ async function callInShape(
         ...(prior.writeValues.size === 0 ? {} : { calleeWriteValues: prior.writeValues }),
       });
     } catch (error) {
-      if (error instanceof PerCallCalleeError) throw new PerCallCallError(error.message);
+      if (error instanceof FramedCalleeError) throw new FramedCallError(error.message);
       throw error;
     }
   };
@@ -868,7 +868,7 @@ async function callInShape(
       selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
     });
   } catch (error) {
-    if (error instanceof PerCallLoopTurnsError) throw new PerCallCallError(error.message);
+    if (error instanceof FramedLoopTurnsError) throw new FramedCallError(error.message);
     throw error;
   }
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
@@ -906,7 +906,7 @@ async function callInShape(
         validatorAddress(hexToBin(external.categoryId), validatorProgram), lock,
       ));
       if (found === undefined) {
-        throw new PerCallCallError(
+        throw new FramedCallError(
           `entry "${functionName}" sends to the contract at ${binToHex(lock)}, which the call's externals do not name`,
         );
       }
@@ -917,14 +917,14 @@ async function callInShape(
       const bodyLabel = `contract "${external.artifact.contractName}"'s `
         + `${body.name === RECEIVE_ENTRY ? 'receive' : 'fallback'}()`;
       if (layout === undefined || (bodySites?.calls.length ?? 0) > 0) {
-        throw new PerCallCallError(`${bodyLabel} makes a call, which this call path does not plan yet`);
+        throw new FramedCallError(`${bodyLabel} makes a call, which this call path does not plan yet`);
       }
       if (publishedLoopEffects(external.artifact, body.name) !== undefined) {
-        throw new PerCallCallError(`${bodyLabel} emits, sends or hashes once per turn of a loop, which this call `
+        throw new FramedCallError(`${bodyLabel} emits, sends or hashes once per turn of a loop, which this call `
           + 'path does not plan for a paid contract yet');
       }
       const recipientCategory = hexToBin(external.categoryId);
-      const set = await readPerCallDeployment(provider, external.categoryId, layout);
+      const set = await readFramedDeployment(provider, external.categoryId, layout);
       // The frames the entry's calls run on the same contract: its masters are theirs to run, so the payment takes
       // one they leave, and its records are theirs.
       const shared = calleePlan?.callees.filter((callee) => callee.categoryId === external.categoryId) ?? [];
@@ -932,7 +932,7 @@ async function callInShape(
       const taken = new Set(shared.flatMap((callee) => [...callee.utxos.values()].map(outpoint)));
       const recipientMaster = set.masters.find((utxo) => !taken.has(outpoint(utxo)));
       if (recipientMaster === undefined || set.records.length < layout.dataNftCount) {
-        throw new PerCallCallError(
+        throw new FramedCallError(
           `contract "${external.artifact.contractName}" at category ${external.categoryId} holds no master or not every `
           + 'record its layout names',
         );
@@ -949,7 +949,7 @@ async function callInShape(
           parsePushdataCommitment(utxo.token?.nft?.commitment ?? '', layout, nftIndex)),
       }));
       if (bodyRecipients.some((recipient) => recipient !== undefined && recipient.length !== 25)) {
-        throw new PerCallCallError(`${bodyLabel} sends to a contract, which this call path does not plan yet`);
+        throw new FramedCallError(`${bodyLabel} sends to a contract, which this call path does not plan yet`);
       }
       return {
         lock,
@@ -986,14 +986,14 @@ async function callInShape(
   }));
   const payees = payable.filter((_payee, position) => !shape.skippedPayees.has(position));
   if (new Set(payees.map((payee) => payee.categoryId)).size !== payees.length) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `entry "${functionName}" pays one contract through two calls, which would need two of its masters to take value`,
     );
   }
   // A value call into a contract is a call made where the entry sends, so a mapping write beside it would need its
   // segments placed, as one beside any call does.
   if (payees.length > 0 && mappingRecords !== undefined) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `entry "${functionName}" writes ${mappingRecords.label} and makes `
       + `${(calleePlan?.calls.length ?? 0) + payees.length} external call(s), whose segments this call path does not `
       + 'place its writes in yet',
@@ -1003,7 +1003,7 @@ async function callInShape(
   // send, and after the value calls of the earlier sends to contracts (spec 4b).
   const sendCallsBefore = published?.sendCallsBefore;
   if (calleePlan !== undefined && payees.length > 0 && sendCallsBefore === undefined) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `entry "${functionName}" sends value to a contract and makes ${calleePlan.calls.length} external call(s), and `
       + 'its artifact does not place the sends among the calls, so this call path does not plan both in one call yet',
     );
@@ -1032,11 +1032,11 @@ async function callInShape(
     if (payee.shared.length === 0) continue;
     const label = `entry "${functionName}" pays "${payee.artifact.contractName}", which its calls also reach,`;
     if (payee.mapping !== undefined || payee.sendCount > 0 || payee.emits.length > 0) {
-      throw new PerCallCallError(`${label} and the paid body writes a mapping, sends or emits, which this call path `
+      throw new FramedCallError(`${label} and the paid body writes a mapping, sends or emits, which this call path `
         + 'does not plan beside the callee frames yet');
     }
     if (payee.shared.some(calleeWrites)) {
-      throw new PerCallCallError(`${label} and a callee frame of it writes its records, whose views beside the paid `
+      throw new FramedCallError(`${label} and a callee frame of it writes its records, whose views beside the paid `
         + 'body this call path does not chain yet');
     }
   }
@@ -1087,7 +1087,7 @@ async function callInShape(
         .map((nftIndex) => contractRecords[nftIndex]?.id).filter((id): id is string => id !== undefined)),
       new Map(contractRecords.map((record, nftIndex) => [record.id, nftIndex])),
       (split) => {
-        throw new PerCallCallError(`entry "${functionName}" pays "${block.contract}", which its calls also reach, and `
+        throw new FramedCallError(`entry "${functionName}" pays "${block.contract}", which its calls also reach, and `
           + `the frame "${frames[split]!.functionName}" reads its data records of it side by side, and no order of `
           + 'the records the other frames of that contract name keeps them so');
       },
@@ -1136,7 +1136,7 @@ async function callInShape(
     ? [...entry.emits].sort((left, right) => left.emitIndex - right.emitIndex)
     : loopTurns.emits.map((emitIndex) => {
       const emit = entry.emits.find((candidate) => candidate.emitIndex === emitIndex);
-      if (emit === undefined) throw new PerCallCallError(`entry "${functionName}" publishes no emit ${emitIndex}`);
+      if (emit === undefined) throw new FramedCallError(`entry "${functionName}" publishes no emit ${emitIndex}`);
       return emit;
     });
   const maximumCommitmentBytes = Math.max(
@@ -1175,7 +1175,7 @@ async function callInShape(
     + payees.reduce((count, payee) => count + payee.emits.length, 0);
   const sendIndices = Array.from({ length: sendCount }, (_unused, position) => markerIndex + 1 + position);
   const sendLockSentinels = sendIndices.map((_index, position) => encodeLockingBytecodeP2pkh(sha256(
-    new TextEncoder().encode(`per-call send lock\u0000${artifact.contractName}\u0000${entry.name}\u0000${position}`),
+    new TextEncoder().encode(`framed send lock\u0000${artifact.contractName}\u0000${entry.name}\u0000${position}`),
   ).slice(0, 20)));
   const sendAmountSentinels = sendIndices.map((_index, position) => bigIntToVmNumber(SEND_AMOUNT_SENTINEL
     + BigInt(position)));
@@ -1187,7 +1187,7 @@ async function callInShape(
     Array.from({ length: payee.sendCount }, (_unused, position) => payeeMarkers[index]! + 1 + position));
   const payeeSendLockSentinels = payees.map((payee) => Array.from({ length: payee.sendCount }, (_unused, position) =>
     encodeLockingBytecodeP2pkh(sha256(new TextEncoder().encode(
-      `per-call send lock\u0000${payee.artifact.contractName}\u0000${payee.entryName}\u0000${position}`,
+      `framed send lock\u0000${payee.artifact.contractName}\u0000${payee.entryName}\u0000${position}`,
     )).slice(0, 20))));
   const payeeSendAmountSentinels = payees.map((payee, index) => Array.from({ length: payee.sendCount },
     (_unused, position) => SEND_AMOUNT_SENTINEL + BigInt(1_000 * (index + 1) + position)));
@@ -1211,7 +1211,7 @@ async function callInShape(
     const need = amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n) - value;
     if (readsBalance) {
       if (everyTotal < need) {
-        throw new PerCallCallError(
+        throw new FramedCallError(
           `contract "${artifact.contractName}" holds ${everyTotal} satoshis in its containers, and entry `
           + `"${functionName}" sends ${need} more than the call brings`,
         );
@@ -1227,7 +1227,7 @@ async function callInShape(
       total += utxo.satoshis;
     }
     if (total < need) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `contract "${artifact.contractName}" holds ${total} satoshis in its containers, and entry "${functionName}" `
         + `sends ${need} more than the call brings`,
       );
@@ -1257,7 +1257,7 @@ async function callInShape(
       total += utxo.satoshis;
     }
     if (total < need) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `contract "${payee.artifact.contractName}" holds ${total} satoshis in its containers, and the body entry `
         + `"${functionName}" pays sends ${need} more than it receives`,
       );
@@ -1302,7 +1302,7 @@ async function callInShape(
       callBases,
       calls: segmentCount - 1,
     });
-    if (typeof spans === 'string') throw new PerCallCallError(`entry "${functionName}": ${spans}`);
+    if (typeof spans === 'string') throw new FramedCallError(`entry "${functionName}": ${spans}`);
     let next = 0;
     return mints.map((mint) => (mint === undefined ? undefined : spans[next++]));
   })();
@@ -1741,7 +1741,7 @@ async function callInShape(
   let settled = false;
   // The decoder's refusal of a result only a frame the derivation never entered recorded (`decodedCalleeResults`): the
   // plan is settled as it stands and the refusal stands only when the verdicts name no contract reason.
-  let unlearnedResult: PerCallReadError | undefined;
+  let unlearnedResult: FramedReadError | undefined;
   // A record's end view is learned up to the commitment the deployment itself holds: a contract compiled for a wider
   // commitment keeps a record past the composer's default of 128 bytes, and a view the composer would not learn leaves
   // the record's close comparing the body's commitment with a placeholder.
@@ -1820,7 +1820,7 @@ async function callInShape(
       // A body that refuses before its segment closes never hands the derivation a record view, so the driver stops.
       // The machine is asked about the draft as it stands below, and the refusing participant's verdict carries the
       // objection.
-      if (!(error instanceof PerCallComposerError) || error.code !== 'PER_CALL_DERIVATION_STALLED') throw error;
+      if (!(error instanceof FramedComposerError) || error.code !== 'FRAMED_DERIVATION_STALLED') throw error;
       stalled = true;
     }
     // A callee answers before the frame that reads its result: its own close hands back what it returned, each
@@ -1859,7 +1859,7 @@ async function callInShape(
         }
         const { results } = reached;
         if ([...results.keys()].every((key) => prior.reached.has(key))) {
-          throw new PerCallCallError(
+          throw new FramedCallError(
             `entry "${functionName}": ${stop.where} reads the result of the earlier call(s) `
             + `${stop.producers.join(', ')}, and settling them returned nothing the call could decode, so the call `
             + 'cannot be planned from it',
@@ -1886,7 +1886,7 @@ async function callInShape(
           armsDecided = true;
         } else {
           if (prior.passes >= calleePlan.conditionalProducers.length) {
-            throw new PerCallCallError(
+            throw new FramedCallError(
               `entry "${functionName}": the calls an earlier call's result guards did not settle: the call was planned `
               + `${prior.passes + 1} time(s) without its sites stopping`,
             );
@@ -2057,7 +2057,7 @@ async function callInShape(
     break;
   }
   if (draft === undefined) {
-    throw new PerCallCallError('the composer built no draft for the call frame');
+    throw new FramedCallError('the composer built no draft for the call frame');
   }
   const owed = learnedViews.some((view) => view === undefined)
     || (returnsValue && learnedRetval === undefined)
@@ -2069,36 +2069,36 @@ async function callInShape(
   if (!settled && owed) {
     if (learnedPayees.some((learned) => [...learned.events, ...learned.views].some((known) => known === undefined)
       || learned.sends.some((send) => send.lock === undefined || send.amount === undefined))) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `a contract entry "${functionName}" pays did not hand back every event payload and node it writes, so its `
         + 'frame cannot declare them',
       );
     }
     if (mappingRecords !== undefined && learnedViews.some((view) => view === undefined)) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `the call's write to ${mappingRecords.label} did not hand back every record it rewrites, so the frame cannot `
         + 'declare their commitments',
       );
     }
     if (learnedEvents.some((view) => view === undefined)) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `entry "${functionName}" did not hand back every event payload it emits, so its frame cannot declare its `
         + 'event outputs',
       );
     }
     if (learnedCallAmounts.some((amount) => amount === undefined)) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `entry "${functionName}" did not hand back the amount of every value it sends to a contract, so its frame `
         + 'cannot record the calls',
       );
     }
     if (learnedSends.some((send) => send.lock === undefined || send.amount === undefined)) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `entry "${functionName}" did not hand back the lock and amount of every send it makes, so its frame `
         + 'cannot list its send outputs',
       );
     }
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `entry "${functionName}" did not hand back the value it returns, so its frame's \`retval\` cannot be stated`,
     );
   }
@@ -2106,7 +2106,7 @@ async function callInShape(
   const program = draft.programFor(MASTER_ID);
   const transaction = program.transaction;
   if (transaction === undefined) {
-    throw new PerCallCallError('the composer built no transaction for the call frame');
+    throw new FramedCallError('the composer built no transaction for the call frame');
   }
   // The containers the sends are paid from sit after the caller's coin, and the machine is asked about them too.
   const rootSpent = payFromContainers([
@@ -2120,7 +2120,7 @@ async function callInShape(
     ...rootSpent.map((utxo, position) => ({ id: containerInputId(position), utxo })),
     ...payeeSpentFinal,
   ].map((spent, position) => ({ ...spent, index: draft!.layout.participantCount + 1 + position }));
-  const rawVerdicts: PerCallCallVerdict[] = [...draft.layout.participants, ...containerInputs].map((placed) => {
+  const rawVerdicts: FramedCallVerdict[] = [...draft.layout.participants, ...containerInputs].map((placed) => {
     const state = machine.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction,
     });
@@ -2145,7 +2145,7 @@ async function callInShape(
   const reasons = new Map(
     (refusal?.refusals ?? []).map((frame) => [frame.master, describeRefusedFrame(frame)]),
   );
-  const verdicts: PerCallCallVerdict[] = rawVerdicts.map((verdict) => {
+  const verdicts: FramedCallVerdict[] = rawVerdicts.map((verdict) => {
     const reason = verdict.accepted ? undefined : reasons.get(verdict.id);
     return reason === undefined ? verdict : { ...verdict, objection: reason };
   });
@@ -2167,7 +2167,7 @@ async function callInShape(
       values = decodeReturnValues(retval, entry.outputs, structs, entry.resultEncoding, artifact.enums);
     }
   } catch (error) {
-    if (!(error instanceof PerCallReadError) || !reverted) throw error;
+    if (!(error instanceof FramedReadError) || !reverted) throw error;
   }
 
   // A record the entry does not declare is not spent, so it holds what it held.
@@ -2175,7 +2175,7 @@ async function callInShape(
     if (!declared.includes(record)) return record.commitment;
     const commitment = transaction.outputs[recordIndex(record.id)]?.token?.nft?.commitment;
     if (commitment === undefined) {
-      throw new PerCallCallError(`the call's output for record "${record.id}" carries no commitment`);
+      throw new FramedCallError(`the call's output for record "${record.id}" carries no commitment`);
     }
     return Uint8Array.from(commitment);
   });
@@ -2237,11 +2237,11 @@ function decodedCalleeResults<T>(
   draft: CompositionDraft,
   retvals: ReadonlyMap<string, Uint8Array>,
   decode: (retvals: ReadonlyMap<string, Uint8Array>) => T,
-): { readonly results: T } | { readonly unlearned: PerCallReadError } {
+): { readonly results: T } | { readonly unlearned: FramedReadError } {
   try {
     return { results: decode(retvals) };
   } catch (error) {
-    if (!(error instanceof PerCallReadError)) throw error;
+    if (!(error instanceof FramedReadError)) throw error;
     const entered = new Map([...retvals].filter(([master]) => frameEntered(draft, master)));
     if (entered.size === retvals.size) throw error;
     decode(entered);
@@ -2250,18 +2250,18 @@ function decodedCalleeResults<T>(
 }
 
 /** What a value send takes: a call's options without an entry or arguments, and the value it sends. */
-export type PerCallValueSendOptions = Omit<PerCallCallOptions, 'functionName' | 'args' | 'value'> & {
+export type FramedValueSendOptions = Omit<FramedCallOptions, 'functionName' | 'args' | 'value'> & {
   readonly value: bigint;
 };
 
 /**
- * Sends value to a deployed per-call contract, as a plain EVM transfer does: the contract's `receive()` runs with
+ * Sends value to a deployed framed contract, as a plain EVM transfer does: the contract's `receive()` runs with
  * the value as `msg.value`, or its payable `fallback()` when it has none. A contract with neither has no body to
  * run, and a fallback that is not payable refuses the value, so both are refused by name.
  */
-export async function sendPerCallValue(options: PerCallValueSendOptions): Promise<PerCallCallResult> {
+export async function sendFramedValue(options: FramedValueSendOptions): Promise<FramedCallResult> {
   const body = valueEntryOf(options.artifact, 'a value sent to it');
-  return callPerCallEntry({ ...options, functionName: body.name, args: [] });
+  return callFramedEntry({ ...options, functionName: body.name, args: [] });
 }
 
 /** Everything the call's rebuild reads: the derived specification, the deployment's pools and the caller's coin. */
@@ -2297,7 +2297,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   const { provider, program, draft } = options;
   const callerLock = options.funder.generateLockingBytecode();
   if (!bytesEqual(callerLock, options.callerLockingBytecode)) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       'the caller funding unlocker signs for a lock that is not the call\'s caller lock, so the root frame\'s '
       + '`msg.sender` binding would not hold',
     );
@@ -2323,7 +2323,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = derivedInputs[placed.index]?.unlockingBytecode;
     if (source === undefined || unlockingBytecode === undefined) {
-      throw new PerCallCallError(`the derived call carries no input for participant "${placed.id}"`);
+      throw new FramedCallError(`the derived call carries no input for participant "${placed.id}"`);
     }
     // A facet holds no token and pins no category, so any live UTXO at its lock serves the input.
     const facetUtxos = placed.kind === 'facet'
@@ -2333,10 +2333,10 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
       ?? facetUtxos.find((utxo) => utxo.satoshis === source.valueSatoshis)
       ?? facetUtxos[0];
     if (real === undefined) {
-      throw new PerCallCallError(`the deployment holds no live UTXO for the call's "${placed.id}"`);
+      throw new FramedCallError(`the deployment holds no live UTXO for the call's "${placed.id}"`);
     }
     if (real.satoshis !== source.valueSatoshis) {
-      throw new PerCallCallError(
+      throw new FramedCallError(
         `the call's "${placed.id}" holds ${real.satoshis} satoshis, but the derived call spends `
         + `${source.valueSatoshis}`,
       );
@@ -2356,7 +2356,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     const source = program.sourceOutputs[index];
     const unlockingBytecode = derivedInputs[index]?.unlockingBytecode;
     if (source === undefined || unlockingBytecode === undefined) {
-      throw new PerCallCallError(`the derived call carries no container input at ${index}`);
+      throw new FramedCallError(`the derived call carries no container input at ${index}`);
     }
     builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode));
   }
@@ -2382,7 +2382,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     : await provider.sendRawTransaction(rawHex);
   const expected = binToHex(hash256(rawBytes).reverse());
   if (txid !== expected) {
-    throw new PerCallCallError(
+    throw new FramedCallError(
       `the provider returned txid ${txid} for the call, not the ${expected} its bytes hash to`,
     );
   }

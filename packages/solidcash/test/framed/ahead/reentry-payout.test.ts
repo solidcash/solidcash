@@ -1,25 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { FrameKind, bytesToHex, encodePushdataValue, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import {
-  deploymentStateValues, planHopExternalCalls, type HopCallee, type PerCallProxyExternal,
-} from '../../../src/per-call/proxy/external-calls.js';
+  deploymentStateValues, planHopExternalCalls, type HopCallee, type FramedProxyExternal,
+} from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Ahead of the ladder, MS4: a rated completion that releases an escrow, whose claimer re-enters it and pays out in
- * a loop, driven through the shipped proxy hop (`callPerCallProxyEntry`).
+ * a loop, driven through the shipped proxy hop (`callFramedProxyEntry`).
  *
  * The call structure is the marketplace's rated `approveResult` (19 calls: store 5, token 4, escrow 8, claimer 1,
  * judge 1; depth 4 below the root): the root, behind a generated proxy, calls `Escrow.release`, which sets the
@@ -175,7 +175,7 @@ function artifactsFor(bound: 'count' | 'this.turns', turns = TURNS): ArtifactMap
   const variant = `${bound}/${turns}`;
   let found = compiled.get(variant);
   if (found === undefined) {
-    found = compileStringMulti(source(bound, turns), { composition: 'per-call' });
+    found = compileStringMulti(source(bound, turns), { composition: 'framed' });
     compiled.set(variant, found);
   }
   return found;
@@ -194,7 +194,7 @@ interface Deployed {
   readonly changeAddress: string;
   readonly callCoin: { txid: string; vout: number; satoshis: bigint };
   readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
-  readonly externals: Record<string, PerCallProxyExternal>;
+  readonly externals: Record<string, FramedProxyExternal>;
 }
 
 /** Deploys the plain contracts at the pool's default size, then the store and the root behind their proxies. */
@@ -228,7 +228,7 @@ async function deployAll(network: MockNetworkProvider, artifacts: ArtifactMap): 
   await fundShippedFacets(network);
 
   // The store gates on the root proxy's address, which its category fixes before the root is deployed.
-  const storeDeployment = await deployPerCallProxy({
+  const storeDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: store,
     proxyArtifact: buildProxyArtifact(store),
@@ -241,7 +241,7 @@ async function deployAll(network: MockNetworkProvider, artifacts: ArtifactMap): 
   });
   expect(storeDeployment.initialize.broadcast).toBeDefined();
 
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -284,8 +284,8 @@ async function deployAll(network: MockNetworkProvider, artifacts: ArtifactMap): 
 /** The user's rated completion, entered on the root's proxy. */
 async function complete(
   network: MockNetworkProvider, deployed: Deployed, artifacts: ArtifactMap,
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: network,
     implementationArtifact: artifacts.Root!,
     proxyArtifact: buildProxyArtifact(artifacts.Root!),
@@ -307,7 +307,7 @@ async function rootRecords(
   network: MockNetworkProvider, deployed: Deployed, artifacts: ArtifactMap,
 ): Promise<readonly (string | undefined)[]> {
   const layout = buildProxyArtifact(artifacts.Root!).stateLayout!;
-  const pools = await readPerCallDeployment(network, deployed.rootProxyCategoryId, layout);
+  const pools = await readFramedDeployment(network, deployed.rootProxyCategoryId, layout);
   return pools.records.map((record) => record.token?.nft?.commitment);
 }
 
@@ -323,12 +323,12 @@ async function fieldsOf(
   network: MockNetworkProvider, artifact: Artifact, categoryId: string, proxied = false,
 ): Promise<Record<string, unknown>> {
   const layout = (proxied ? buildProxyArtifact(artifact) : artifact).stateLayout!;
-  return deploymentStateValues(layout, categoryId, await readPerCallDeployment(network, categoryId, layout));
+  return deploymentStateValues(layout, categoryId, await readFramedDeployment(network, categoryId, layout));
 }
 
 /** The values the token's live nodes hold for the user: one node, however many turns credited it. */
 async function userBalances(network: MockNetworkProvider, artifacts: ArtifactMap): Promise<readonly string[]> {
-  const deployment = await readPerCallDeployment(network, TOKEN_CATEGORY, artifacts.Token!.stateLayout!);
+  const deployment = await readFramedDeployment(network, TOKEN_CATEGORY, artifacts.Token!.stateLayout!);
   const slot = bytesToHex(keyToSlotMulti([hexToBin(USER)]));
   return (deployment.nodesByCollection.get('balances') ?? [])
     .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
@@ -342,7 +342,7 @@ async function userBalances(network: MockNetworkProvider, artifacts: ArtifactMap
  * root's stage and the store's ratings, review and delivery.
  */
 async function expectSettled(
-  network: MockNetworkProvider, deployed: Deployed, artifacts: ArtifactMap, result: PerCallProxyCallResult,
+  network: MockNetworkProvider, deployed: Deployed, artifacts: ArtifactMap, result: FramedProxyCallResult,
   turns: number,
 ): Promise<void> {
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -355,7 +355,7 @@ async function expectSettled(
   expect([store.ratings, store.reviews, store.delivered]).toStrictEqual([RATING, RATING, 1n]);
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release with a re-entrant payout', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (MS4): a rated release with a re-entrant payout', () => {
   it('plans the payout loop from the count an earlier call returned, and settles', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const flow = artifactsFor('count');
@@ -363,7 +363,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release
     const before = await rootRecords(network, deployed, flow);
 
     // The loop's bound is the escrow's `readRecord` result, so the hop plans in execution order: it stops before the
-    // loop, settles the read's frame alone, learns the count (`PER_CALL_HOP_TRACE=1`: `stop-plan ... reads=loop-bound`,
+    // loop, settles the read's frame alone, learns the count (`FRAMED_HOP_TRACE=1`: `stop-plan ... reads=loop-bound`,
     // `learned=[/0.0/0.0|0:4]`) and plans the four turns from it. The turns credit one holder and each later transfer
     // continues the node the one before it created; the re-entered frames start from the view `release` left, and
     // its own segment after the call carries on from the claim `setClaimed` wrote, so the hop settles.
@@ -389,7 +389,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release
       externals: deployed.externals,
       validatorProgram: VALIDATOR_PROGRAM,
       stateValues: deploymentStateValues(rootLayout, deployed.rootProxyCategoryId,
-        await readPerCallDeployment(network, deployed.rootProxyCategoryId, rootLayout)),
+        await readFramedDeployment(network, deployed.rootProxyCategoryId, rootLayout)),
       selfAddress: deployed.rootProxyAddress,
       senderAddress: deployed.deployerLock,
     });

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { readPerCallEntry, type PerCallReadResult } from '../../../src/per-call/read/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { readFramedEntry, type FramedReadResult } from '../../../src/framed/read/index.js';
 import {
   callerFields, deployBeside, edgeDeployment, eventsOnChain, expectRefusedEdge, settleEdge, type EdgeRun,
 } from './edge-harness.js';
@@ -71,7 +71,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const deployed = edgeDeployment({
   scope: 'string array return edge', callee: artifacts.Shelf!, caller: artifacts.Front!, interfaceName: 'IShelf',
 });
@@ -83,7 +83,7 @@ const deployed = edgeDeployment({
  * the shelf's address as a literal once the shelf is deployed, beside only the struct and the interface it reads
  * through: the shelf and the front are deployed already, and compiling them again took most of the case's time.
  */
-async function deployReader(run: EdgeRun): Promise<{ readonly read: (entry: string) => Promise<PerCallReadResult> }> {
+async function deployReader(run: EdgeRun): Promise<{ readonly read: (entry: string) => Promise<FramedReadResult> }> {
   const shelf = `IShelf(0x${binToHex(run.calleeAddress)})`;
   const reader = compileStringMulti(SOURCE.slice(0, SOURCE.indexOf(' contract Shelf {'))
     + ' contract Reader {'
@@ -92,10 +92,10 @@ async function deployReader(run: EdgeRun): Promise<{ readonly read: (entry: stri
     + '     return (l.tags[l.tags.length - 1], l.tags.length); }'
     + `   function lastTag() view returns (string) { string[] tags = ${shelf}.catalogTags(); return tags[1]; }`
     + `   function headline() view returns (string) { Listing l = ${shelf}.listing(); return l.title; }`
-    + ' }', { composition: 'per-call' }).Reader!;
+    + ' }', { composition: 'framed' }).Reader!;
   const categoryId = await deployBeside(run, reader, 'reader');
   return {
-    read: (entry) => readPerCallEntry({
+    read: (entry) => readFramedEntry({
       provider: run.network, artifact: reader, categoryId, functionName: entry, externals: run.externals,
       vm: compositionMachine(),
     }),

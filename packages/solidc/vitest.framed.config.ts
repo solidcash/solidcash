@@ -1,12 +1,12 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
-// Focused per-call suites (packages/solidcash/test/per-call/MANIFEST.md). Each worker loads the compiler's source
+// Focused framed suites (packages/solidcash/test/framed/MANIFEST.md). Each worker loads the compiler's source
 // graph once, so the on-disk module cache, not parallelism, is what shortens a rerun.
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['test/per-call/**/*.test.ts'],
+    include: ['test/framed/**/*.test.ts'],
     globals: true,
     isolate: false,
     maxWorkers: 3,

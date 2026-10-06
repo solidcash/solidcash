@@ -184,7 +184,7 @@ density overruns of a few *bytes'* worth of budget on input 0, where the budget 
 
 The two established density-reserve mechanisms do not cover these frames: `kernelRouteDensityReserveBytes`
 (`Contract.ts`) is gated on `__internal__kernelJournalAccessStreams` and the SDK pushes a zero-length reserve for
-every other compiler route, and `PER_CALL_MASTER_PADDING_BYTES` pads only the per-call master script. Neither is
+every other compiler route, and `FRAMED_MASTER_PADDING_BYTES` pads only the framed master script. Neither is
 available to a kernel row-loop route, and adding a blanket padding block to every kernel route would move the
 bytecode sizes pinned across the kernel test corpus, so this needs a shape-scoped compiler decision rather than an
 SDK patch.

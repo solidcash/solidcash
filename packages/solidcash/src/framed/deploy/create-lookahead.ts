@@ -15,7 +15,7 @@
 
 import { hexToBin } from '@bitauth/libauth';
 import { validatorAddress, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import type { Utxo } from '../../interfaces.js';
 import type Signer from '../../Signer.js';
 import { selectGenesisFundingUtxo, selectGenesisFundingUtxoForCost } from '../../stateful/ContractFactory.js';
@@ -44,7 +44,7 @@ export interface CreateLookaheadOptions {
    */
   readonly artifact?: Artifact;
   /**
-   * The validator program every address is derived under. Defaults to the shipped per-call validator, which is what
+   * The validator program every address is derived under. Defaults to the shipped framed validator, which is what
    * the deployment path fills a master with, so a prediction and a deployment cannot disagree.
    */
   readonly validatorProgram?: Uint8Array;
@@ -73,7 +73,7 @@ export class CreateLookahead {
   private constructor(options: CreateLookaheadOptions) {
     this.signer = options.signer;
     this.artifact = options.artifact;
-    this.validatorProgram = options.validatorProgram ?? perCallValidator.buildValidatorProgram();
+    this.validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   }
 
   /** Opens a look-ahead over an account and a child master. */

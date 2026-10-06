@@ -11,7 +11,7 @@ already COMPILES via alias + the shipped deploy-then-call fold; store_function's
 - **#1 Foreign fn-ptr STATE storage of a RECEIVED value** (`x = y`, method carried in the value) - 50766c59.
   `LowerForeignFunctionPointerStorage` flattens the fn-ptr state var to an `address` field + a `bytes4
   __fnsel_<name>` companion; a store copies both parts; `x(args)` dispatches through the synth `__FnPtr_S<n>`
-  interface + the per-call master index + a runtime selector sourced from the companion (reduces to the audited
+  interface + the framed master index + a runtime selector sourced from the companion (reduces to the audited
   state-address external call). `LowerForeignFunctionPointerParams` also lowers a fn-ptr param STORED into such a
   var (not only called ones). VM: seeded call-from-storage, save->run across txs, and a RETURN value captured back
   via the return-event NFT (`ForeignFunctionPointerForms.test.ts`).
@@ -63,7 +63,7 @@ transient/Yul/parse). The next fn-ptr work is architectural: the unified BLOB va
   callee always has the `0x04` prefix).
 
 The blob CALL desugar hoists `bytes __b = <blob>; bytes __a = __b.split(4)[1]; bytes4 __s = bytes4(__b.split(4)
-[0]);` and dispatches `__FnPtr_B(__a).__call(args)` with runtime selector `__s` + the per-call master index -
+[0]);` and dispatches `__FnPtr_B(__a).__call(args)` with runtime selector `__s` + the framed master index -
 reusing the shipped external-call framework. VM-verified: blob struct field (seed + store->run), blob return
 (public getPtr -> local -> co-spend).
 
@@ -118,9 +118,9 @@ is itself 4 bytes. Not corpus-unblocking alone (store_function also needs #2). D
 
 ## SHIPPED: foreign fn-ptr parameters via the PER-CALL master index (5096dba6)
 
-The per-call-index design below is IMPLEMENTED + VM-verified. A called `function(P) external returns(R)` param
+The framed-index design below is IMPLEMENTED + VM-verified. A called `function(P) external returns(R)` param
 lowers (LowerForeignFunctionPointerParams) to an external call on a synthesized `__FnPtr_N` interface with an
-`address` param + a `bytes4` selector param (runtime selector). The co-spend MASTER INDEX is a per-call param
+`address` param + a `bytes4` selector param (runtime selector). The co-spend MASTER INDEX is a framed param
 `__internal__extcallMasterIdx<i>` the SDK fills from the real callee layout it co-spends (StatefulContract loop),
 and codegen (GTT, `slot.fnPtrCall`) reads the master at that index + runs identity + runtime-selector +
 preservation. UNAMBIGUOUS across many calls (each reads its own index) - VM-verified with TWO calls to different
@@ -242,16 +242,16 @@ selectors). "require exactly one match" breaks the moment two calls co-spend two
 input with a given (address, selector) binds a call to the wrong callee. The covenant must pin EACH call to ITS
 proper co-spent callee.
 
-### The correct design (per-call binding, not a global scan)
+### The correct design (framed binding, not a global scan)
 
 Bind each fn-ptr call to a SPECIFIC co-spent callee via a PER-CALL master-index parameter that the SDK fills from
 the real callee layout it co-spends (it already knows the callee + its position from withExternalCall). The
 covenant then reads the master at THAT index and runs the normal identity + selector + preservation checks -
 unambiguous across many calls, and layout-independent (the index is SDK-computed, not derived from a compile-time
 synth data-NFT count). This reuses `emitExternalCallVerification` almost verbatim; only the index SOURCE changes
-(a per-call `__internal__fnptr_master_idx_N` param instead of `externalCallInputBase + computedOffset`). The
+(a framed `__internal__fnptr_master_idx_N` param instead of `externalCallInputBase + computedOffset`). The
 category/scan can still be a runtime CHECK (assert the input at that index is the target's minting master) for
-defense-in-depth, but the INDEX itself comes from the SDK per call. Remaining pieces: (1) the per-call index
+defense-in-depth, but the INDEX itself comes from the SDK per call. Remaining pieces: (1) the framed index
 param + covenant read; (2) the SDK auto-derivation to fill each fn-ptr call's callee master index; (3) the
 duality (a self-ref param is a functionId, handled by a size/tag branch). This is a bounded covenant + SDK build,
 now fully specified.

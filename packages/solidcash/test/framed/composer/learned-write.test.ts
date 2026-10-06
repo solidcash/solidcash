@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, bytesToHex } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, compileAndDeploy, entryName, hexOf, master, masterInput, rootOf, seededAddress, selectorOfSignature,
   token, userInput, userInputs, validatorFor,
@@ -10,7 +10,7 @@ import {
 import {
   createComposedDerivationHost, deriveDepthFirst, participant, requireLearnedViews,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster, type DraftRecordEntry,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * Learning a record write the plan does not state.
@@ -131,7 +131,7 @@ describe('a plan that leaves a record write unstated', () => {
     expect(bytesToHex(declared)).not.toBe(bytesToHex(commitment(WRITTEN)));
     // Until a run learns it the draft names the view and cannot be handed on to be signed.
     expect(draft.unlearnedViews()).toStrictEqual([{ master: MASTER_ID, segmentIndex: 0, entryIndex: 0 }]);
-    expect(() => requireLearnedViews(draft)).toThrowError(/PER_CALL_VIEW_UNLEARNED/);
+    expect(() => requireLearnedViews(draft)).toThrowError(/FRAMED_VIEW_UNLEARNED/);
   });
 
   it('learns the written view the body computed, and settles every participant', () => {
@@ -157,7 +157,7 @@ describe('a plan that leaves a record write unstated', () => {
     const { host } = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [COMPILED.artifacts.Vault!], plan: buildPlan(commitment(7n)) });
     expect(() => deriveDepthFirst(rootOf('Vault', 'bump', MASTER_ID), host))
-      .toThrowError(/PER_CALL_DERIVATION_STALLED/);
+      .toThrowError(/FRAMED_DERIVATION_STALLED/);
   });
 });
 

@@ -30,7 +30,7 @@ import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { accessKeySlot, planCallLoopWrites, type CallLoopWritePlan } from '../call/entry-records.js';
 import type { MappingValueReader } from './call-resolution.js';
 import { isWholeNodeValue, type HopEntryWrites } from './entry-writes.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 import { writeRuns } from './write-activation.js';
 
 /** One mapping write a frame's own entry makes, with the node it targets and the bytes it leaves there. */
@@ -54,7 +54,7 @@ export function entryWriteValueKey(collection: string, slot: Uint8Array): string
  * A site of the hop's own entry reads a node the entry's own write before it leaves at bytes no published fact states,
  * at a key the facts determine: the refusal the hop reports when the entry's settle up to the site learns none.
  */
-export class EntryWriteValueAwaited extends PerCallProxyDeployError {
+export class EntryWriteValueAwaited extends FramedProxyDeployError {
   public constructor(
     message: string,
     /** The entry's own site, by its published position. */
@@ -106,7 +106,7 @@ function accessValue(
   artifact: Artifact, fn: AbiFunction, args: readonly FunctionArgument[], access: WriteAccess,
 ): Uint8Array | undefined {
   const written = access.operations.filter((operation) => operation !== 'read');
-  // A per-call body compiles a deletion as a write of the type's default, which a node holds as the empty item.
+  // A framed body compiles a deletion as a write of the type's default, which a node holds as the empty item.
   if (written.length === 1 && written[0] === 'delete') return new Uint8Array(0);
   if (written.length !== 1 || written[0] !== 'write') return undefined;
   const parameter = access.valueParam ?? access.valueSource?.match(/^id:([A-Za-z_$][\w$]*)$/)?.[1];

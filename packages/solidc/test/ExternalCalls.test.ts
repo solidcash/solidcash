@@ -1283,8 +1283,8 @@ describe('an interface method named split is called as the interface method', ()
     { solidityImportCompat: true })).toThrow(StructFieldExternalCallError);
   });
 
-  it('serves the entry under the per-call convention, publishing the call site as IScale.split', () => {
-    const composition = compileStringMulti(NATIVE, { composition: 'per-call' }).Payer!.composition!;
+  it('serves the entry under the framed convention, publishing the call site as IScale.split', () => {
+    const composition = compileStringMulti(NATIVE, { composition: 'framed' }).Payer!.composition!;
     expect(composition.refusedEntries).toBeUndefined();
     const pay = composition.stopSites!.entries.find((entry) => entry.functionName === 'Payer.pay()')!;
     expect(pay.calls.map((call) => `${call.interfaceName}.${call.functionName}`)).toEqual(['IScale.split']);
@@ -1561,7 +1561,7 @@ describe('interface methods named like the token and code members are called as 
   });
 });
 
-describe('built-in member names on a contract receiver under the per-call convention', () => {
+describe('built-in member names on a contract receiver under the framed convention', () => {
   it('publishes each call site as the interface method', () => {
     const composition = compileStringMulti(`pragma solidcash ^0.13.0;
       interface IBox {
@@ -1578,7 +1578,7 @@ describe('built-in member names on a contract receiver under the per-call conven
           IBox(target).transfer(v);
           require(r > 0);
         }
-      }`, { composition: 'per-call' }).Payer!.composition!;
+      }`, { composition: 'framed' }).Payer!.composition!;
     expect(composition.refusedEntries).toBeUndefined();
     const pay = composition.stopSites!.entries.find((entry) => entry.functionName === 'Payer.pay()')!;
     expect(pay.calls.map((call) => `${call.interfaceName}.${call.functionName}`))

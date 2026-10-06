@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { parsePushdataCommitment, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -81,13 +81,13 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const compiled = compileStringMulti(SOURCE, FIXTURE_OPTIONS as never);
 const { Store, Root } = compiled as Required<typeof compiled>;
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 /** A coin a genesis or a hop is funded from; a genesis's txid becomes the category it mints. */
@@ -98,7 +98,7 @@ function funding(txid: string): Utxo {
 /** The store plain, the root behind its proxy, the record opened through the root, and the hop that writes it twice. */
 async function openThenBoth(note: string): Promise<{
   readonly network: MockNetworkProvider;
-  readonly both: () => Promise<PerCallProxyCallResult>;
+  readonly both: () => Promise<FramedProxyCallResult>;
 }> {
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -112,7 +112,7 @@ async function openThenBoth(note: string): Promise<{
   for (const id of [ROOT_IMPL_CATEGORY, ROOT_PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(id));
   for (const txid of [OPEN_TXID, ROOT_INIT_TXID, CALL_TXID]) await network.addUtxo(binToHex(ALICE_LOCK), funding(txid));
   await fundShippedFacets(network);
-  const root = await deployPerCallProxy({
+  const root = await deployFramedProxy({
     provider: network,
     implementationArtifact: Root!,
     proxyArtifact: buildProxyArtifact(Root!),
@@ -124,8 +124,8 @@ async function openThenBoth(note: string): Promise<{
     vm: compositionMachine(),
   });
   expect(root.initialize.broadcast).toBeDefined();
-  const enter = (functionName: string, args: readonly (bigint | string)[], coin: Utxo): Promise<PerCallProxyCallResult> =>
-    callPerCallProxyEntry({
+  const enter = (functionName: string, args: readonly (bigint | string)[], coin: Utxo): Promise<FramedProxyCallResult> =>
+    callFramedProxyEntry({
       provider: network,
       implementationArtifact: Root!,
       proxyArtifact: buildProxyArtifact(Root!),
@@ -152,7 +152,7 @@ describe('one mapping value written twice in one hop by two sibling reaches', ()
       const result = await both();
       expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
       expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-      const read = await readPerCallEntry({
+      const read = await readFramedEntry({
         provider: network, artifact: Store!, categoryId: STORE_CATEGORY, functionName: 'rec', args: [ID],
         vm: compositionMachine(),
       });

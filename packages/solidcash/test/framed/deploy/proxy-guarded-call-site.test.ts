@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -30,7 +30,7 @@ const OUTER_CATEGORY = '55'.repeat(31) + 'aa';
 const INNER_CATEGORY = '66'.repeat(31) + 'bb';
 const CALLER_TXID = '33'.repeat(31) + 'cc';
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const OUTER_ADDRESS = validatorAddress(hexToBin(OUTER_CATEGORY), VALIDATOR_PROGRAM);
 const INNER_ADDRESS = validatorAddress(hexToBin(INNER_CATEGORY), VALIDATOR_PROGRAM);
 
@@ -95,7 +95,7 @@ async function deploy(source: string = sourceOf()): Promise<{
   readonly signature: SignatureTemplate;
   readonly initialized: boolean;
 }> {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -123,7 +123,7 @@ async function deploy(source: string = sourceOf()): Promise<{
     fundingUtxo: outerFunding, funder: funderUnlock, changeAddress: funder.address,
     provider: network, threadCount: 4,
   });
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Ledger!,
     implementationDeploy: { fundingUtxo: implFunding, funder: funderUnlock, changeAddress: funder.address },
@@ -148,7 +148,7 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
     expect((callee.externalCalls ?? []).map((call) => call.functionName))
       .toStrictEqual(['probe', 'probe', 'probe']);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Ledger!,
       proxyArtifact: buildProxyArtifact(artifacts.Ledger!),
@@ -194,7 +194,7 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
     expect((entry.externalCalls ?? []).map((call) => call.functionName))
       .toStrictEqual(['run', 'run', 'run']);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Ledger!,
       proxyArtifact: buildProxyArtifact(artifacts.Ledger!),

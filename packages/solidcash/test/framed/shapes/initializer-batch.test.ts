@@ -14,13 +14,13 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/framed/master/validator-input.js';
 import {
   deployMaster,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   layOutMappingBatch,
   participant,
@@ -28,7 +28,7 @@ import {
   type CompositionDraftPlan,
   type DraftMaster,
   type MappingNodePlacement,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   composeAndDerive,
   entryName,
@@ -98,7 +98,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function tag(string k) view returns (string) { return this.tags[k]; }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Registry!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Registry!;
 const deployed = deployMaster(artifact, CATEGORY, REAL_VALIDATOR_PROGRAM);
 const DEPLOYED: DeployedContract = {
   name: artifact.contractName, category: CATEGORY, address: deployed.address,
@@ -264,7 +264,7 @@ describe('an initializer that writes its record, inserts eight keys into an empt
   it('refuses a chain whose lowest node skips the other seven', () => {
     const built = buildPlan({ relinkLowest: new Uint8Array(32) });
     expect(() => composeAndDerive(built.plan, [artifact], [ROOT]))
-      .toThrow('PER_CALL_DERIVATION_STALLED: master "registry-1" of Registry.initialize()');
+      .toThrow('FRAMED_DERIVATION_STALLED: master "registry-1" of Registry.initialize()');
   });
 
   it('refuses a created record no write made, declared after the groups or between them', () => {
@@ -272,7 +272,7 @@ describe('an initializer that writes its record, inserts eight keys into an empt
     // wrote: its state records, then one record per update and two per insert.
     for (const forged of ['after', 'between'] as const) {
       expect(() => composeAndDerive(buildPlan({ forged }).plan, [artifact], [ROOT]))
-        .toThrow('PER_CALL_DERIVATION_STALLED: master "registry-1" of Registry.initialize()');
+        .toThrow('FRAMED_DERIVATION_STALLED: master "registry-1" of Registry.initialize()');
     }
   });
 });

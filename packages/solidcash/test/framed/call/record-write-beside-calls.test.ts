@@ -3,14 +3,14 @@ import {
   binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin, utf8ToBin,
 } from '@bitauth/libauth';
 import { bytesToHex, encodeIntegerValue, hash256, validatorAddress, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -21,11 +21,11 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * A call closes the witness segment the code before it runs in, so the entry's write lands in one segment of the
  * frame's many. The compiler knows which and publishes it for the entry — the count of calls before the write, or
  * the run's last segment when every call precedes it — so the hop declares the write's records in that one segment
- * instead of refusing the entry. The whole shipped path runs: the deployment through `deployPerCallProxy`, the call
- * through `callPerCallProxyEntry`, and the machine's verdict on every participant is the assertion.
+ * instead of refusing the entry. The whole shipped path runs: the deployment through `deployFramedProxy`, the call
+ * through `callFramedProxyEntry`, and the machine's verdict on every participant is the assertion.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const IMPL_CATEGORY = '11'.repeat(32);
 const PROXY_CATEGORY = '22'.repeat(32);
 const ORACLE_CATEGORY = '55'.repeat(32);
@@ -65,7 +65,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 /** The key a first call writes, so a later `record(ID)` splices in beside a node the collection holds. */
 const HELD_ID = 1n;
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const impl = artifacts.Impl!;
 const oracle = artifacts.Oracle!;
 const escrow = artifacts.Escrow!;
@@ -124,7 +124,7 @@ async function deployedWithCallees(network: MockNetworkProvider): Promise<{
 
   // The validator runs as a head plus one input per facet, each locked by its own code and holding no token, so
   // any live UTXO at the facet's lock serves it.
-  const facets = perCallValidator.buildValidatorFacets();
+  const facets = framedValidator.buildValidatorFacets();
   for (const [index, code] of facets.entries()) {
     await network.addUtxo(hexOf(encodeLockingBytecodeP2sh32(hash256(code))), {
       txid: (0x70 + index).toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: FACET_SATOSHIS,
@@ -138,7 +138,7 @@ async function deployedWithCallees(network: MockNetworkProvider): Promise<{
   for (const coin of [implFunding, proxyFunding]) await network.addUtxo(source.address, coin);
   for (const coin of [hopCoin, callCoin]) await network.addUtxo(hexOf(deployerLock), coin);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     proxyArtifact: buildProxyArtifact(impl),
@@ -183,8 +183,8 @@ async function deployed(): Promise<World> {
 /** Enters `record(id)` through the hop with the caller's coin. */
 function record(
   network: MockNetworkProvider, funded: Funded, id: bigint, callerUtxo: Funded['callCoin'] = funded.callCoin,
-): ReturnType<typeof callPerCallProxyEntry> {
-  return callPerCallProxyEntry({
+): ReturnType<typeof callFramedProxyEntry> {
+  return callFramedProxyEntry({
     provider: network,
     implementationArtifact: impl,
     proxyArtifact: buildProxyArtifact(impl),

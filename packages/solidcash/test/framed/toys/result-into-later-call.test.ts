@@ -7,7 +7,7 @@ import {
   USER_LOCK, compileAndDeploy, composeAndDerive, hexOf, masterInput, rootOf, seededAddress, selectorOf,
   token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
-import { type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
+import { type CompositionDraftPlan, type DraftMaster } from '../../../src/framed/composer/index.js';
 
 /**
  * A read's result feeding a later call: `Claimer.f` reads a fee from `Fee.fee` and passes it to `Pay.pay`.

@@ -27,7 +27,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const ledger: Artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Ledger!;
+const ledger: Artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Ledger!;
 
 /** The write facts the artifact publishes for one entry, by the identity a builder looks one up by. */
 function writeFacts(entryName: string): readonly PublishedWriteSegment[] {

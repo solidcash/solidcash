@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../../../src/compiler.js';
 
 /**
- * The element source a per-call entry's append to a dynamic array publishes.
+ * The element source a framed entry's append to a dynamic array publishes.
  *
- * A per-call body holds a dynamic value in a run of chunk NFTs, and an append grows that run by exactly the
+ * A framed body holds a dynamic value in a run of chunk NFTs, and an append grows that run by exactly the
  * element it pushes. The hop has to state that element before the body runs, so the entry's own append publishes
  * it in `dynamicWriteSources`, the same map a constructor's whole-value write uses, resolved against the entry's
  * call data. Only an append on every completing path is published; every other write shape stays absent and is
@@ -12,7 +12,7 @@ import { compileString } from '../../../src/compiler.js';
  */
 
 const sourcesOf = (source: string): Record<string, unknown> | undefined => compileString(
-  source, { composition: 'per-call' },
+  source, { composition: 'framed' },
 ).abi.find((entry) => entry.name === 'add')?.dynamicWriteSources as Record<string, unknown> | undefined;
 
 describe('an entry append publishes the element it pushes', () => {
@@ -469,7 +469,7 @@ describe('an entry append publishes the element it pushes', () => {
   });
 
   it('stays absent under a convention that does not consume the entry shape', () => {
-    // The direct convention has its own element-source publication; only the per-call hop reads this one.
+    // The direct convention has its own element-source publication; only the framed hop reads this one.
     const artifact = compileString(`
       contract Impl {
         address public implementation;

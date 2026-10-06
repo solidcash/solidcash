@@ -8,7 +8,7 @@ import {
   type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -19,7 +19,7 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * Which witness segment declares the records of a run-time-loop mapping upsert, asked of the shipped machine.
  *
  * The entry upserts a mapping in a loop whose trip count the execution decides, and makes one external call beside
- * the loop rather than inside it. The compiler serves the body, the per-call block layout declares the collection's
+ * the loop rather than inside it. The compiler serves the body, the framed block layout declares the collection's
  * own `entry` slot and the artifact publishes the in-loop access beside it, and no write-segment fact is published:
  * the write follows a loop whose trip count the execution decides, so no one segment the run opens is the answer.
  * This suite puts the question to the machine: the same compiled master is asked for a verdict
@@ -27,20 +27,20 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * again with it in the last segment the run opens.
  *
  * The controls fix the harness: the same head with the loop removed is accepted, and the head's non-loop
- * counterpart - one mapping write beside the same call, which the per-call batch path does serve - is accepted with
+ * counterpart - one mapping write beside the same call, which the framed batch path does serve - is accepted with
  * its record in the segment the write lands in and refused with it in the last segment, so the segment the machine
  * reads for a mapping record is decided by the machine and not assumed here.
  *
- * The run-time-loop upsert's per-turn nodes are the per-call lane's own protocol: the row's first turn reads the
+ * The run-time-loop upsert's per-turn nodes are the framed lane's own protocol: the row's first turn reads the
  * record the frame declares at the slot's offset from its base and a later turn reads the node the turn before
  * created, named by its position in the declaration. So the frame that declares the rewritten node in the segment
  * before the call is accepted, while one that declares it in the last segment the run opens parks the no-record
  * sentinel and is refused. The run-time-loop upsert whose *key the frame holds* is the same row with a different
  * key source: its well-formed spend is settled, with the record it wrote changed refused beside it, on the shipped
- * path in `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` - the first case asserts
+ * path in `solidcash/test/framed/conformance/loop-upsert-settlement.test.ts` - the first case asserts
  * `{ accepted: true, objections: '' }` and refuses the record it wrote being changed; the second does the same for
  * the array element key - and the same shape through the proxy path is at
- * `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`. This file's verdicts are the machine's own
+ * `solidcash/test/framed/conformance/loop-upsert-beside-call.test.ts`. This file's verdicts are the machine's own
  * on a hand-built witness, taken so the segment question is answered without the plan in between.
  */
 
@@ -103,10 +103,10 @@ const BATCH_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
   + '   }'
   + ' }';
 
-const insideArtifacts = compileStringMulti(LOOP_CALL_INSIDE_SOURCE, { composition: 'per-call' });
-const loopArtifacts = compileStringMulti(LOOP_SOURCE, { composition: 'per-call' });
-const plainArtifacts = compileStringMulti(PLAIN_SOURCE, { composition: 'per-call' });
-const batchArtifacts = compileStringMulti(BATCH_SOURCE, { composition: 'per-call' });
+const insideArtifacts = compileStringMulti(LOOP_CALL_INSIDE_SOURCE, { composition: 'framed' });
+const loopArtifacts = compileStringMulti(LOOP_SOURCE, { composition: 'framed' });
+const plainArtifacts = compileStringMulti(PLAIN_SOURCE, { composition: 'framed' });
+const batchArtifacts = compileStringMulti(BATCH_SOURCE, { composition: 'framed' });
 const ledger = loopArtifacts.Ledger!;
 const PING_SELECTOR = new Uint8Array(Buffer.from(
   loopArtifacts.Other!.abi.find((entry) => entry.name === 'ping')!.selector!, 'hex',
@@ -288,9 +288,9 @@ const WRITE_SEGMENT = 0;
 /** The last segment the run opens, one past the call. */
 const LAST_SEGMENT = 1;
 
-describe('a per-call master whose entry upserts a mapping in a run-time loop beside a call', () => {
+describe('a framed master whose entry upserts a mapping in a run-time loop beside a call', () => {
   it('serves the body, declares the collection its entry slot and publishes the access, with the segment unstated', () => {
-    expect(ledger.composition?.convention).toBe('per-call');
+    expect(ledger.composition?.convention).toBe('framed');
     const composition = ledger.composition;
     expect(composition?.refusedEntries).toBeUndefined();
     const entry = composition!.stopSites!.entries.find(
@@ -299,7 +299,7 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
     // No write fact is published for the upsert today, so a builder has no segment to declare its records in.
     expect(entry.writeSegment).toBeUndefined();
     expect(entry.writeSegments).toBeUndefined();
-    // The per-call layout declares the collection's own slot, which the frame's per-turn nodes are placed from, and
+    // The framed layout declares the collection's own slot, which the frame's per-turn nodes are placed from, and
     // the artifact publishes the in-loop access beside it - the coordinate the SDK's per-turn planning reads. The
     // direct convention keeps this access out of the fixed slots and carries it in the trailing band instead.
     const move = ledger.abi.find((candidate) => candidate.name === 'move')!;
@@ -345,7 +345,7 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
 /**
  * The head's non-loop counterpart, as the machine's own control for the segment a mapping record belongs in.
  *
- * The write is not in a loop, so the per-call batch path derives its operands from the segment the write lands in.
+ * The write is not in a loop, so the framed batch path derives its operands from the segment the write lands in.
  * The machine accepts the declaration there and refuses the same declaration one segment later, which is what fixes
  * the segment the machine reads for a mapping node record rather than leaving it to this suite.
  */
@@ -357,7 +357,7 @@ describe('the fixture\'s own shape: the loop body both upserts the mapping and m
       (candidate) => candidate.functionName === 'Ledger.move()',
     )!;
     // A varying key is not one write the walk places, so no single segment is published; each turn writes where its
-    // own call closes, which the write's turns state. The collection's slot is the coordinate a per-call frame's
+    // own call closes, which the write's turns state. The collection's slot is the coordinate a framed frame's
     // per-turn nodes are placed from.
     expect(entry.writeSegment).toBeUndefined();
     expect(entry.writeSegments).toStrictEqual([

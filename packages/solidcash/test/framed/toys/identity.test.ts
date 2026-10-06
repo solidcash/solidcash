@@ -8,27 +8,27 @@ import { scriptToLockingBytecode } from '../../../src/utils.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
-  deployMaster, eventLockingBytecode, readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
+  deployMaster, eventLockingBytecode, readFramedDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../../../src/framed/deploy/index.js';
+import { publishedRefusals } from '../../../../solidc/test/framed/master/refused-entry.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { deploymentStateValues, planHopExternalCalls } from '../../../src/per-call/proxy/external-calls.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { deploymentStateValues, planHopExternalCalls } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv } from '../../fixture/vars.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, fundShippedFacets, hexOf, master,
   masterInput, rootOf, seededAddress, selectorOf, token, userInput, validatorFor, type DeployedContract,
 } from '../shapes/harness.js';
-import type { CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
+import type { CompositionDraftPlan } from '../../../src/framed/composer/index.js';
 import {
   layOutMappingBatch, planMappingBatch, type MappingNodePlacement,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /** The empty successor a single-node list carries. */
 const ZERO_SLOT = new Uint8Array(32);
@@ -109,9 +109,9 @@ function sweepOutcome(): { readonly code?: string; readonly message: string; rea
  * In Solidity a call through `this.f()` starts a new message call, so `msg.sender` inside `f` is `address(this)`;
  * a bare `f()` is an internal call that keeps the caller. Every case below is driven through the shipped compile,
  * the shipped composer and the shipped derivation, with the machine asked for a verdict where a plan settles. The
- * comment on each case states the EVM result of the same Solidity source and whether the per-call answer agrees.
+ * comment on each case states the EVM result of the same Solidity source and whether the framed answer agrees.
  *
- * The per-call path lowers `this.f()` to an inlined subroutine. It runs that subroutine with the contract's own
+ * The framed path lowers `this.f()` to an inlined subroutine. It runs that subroutine with the contract's own
  * address as `msg.sender` and as `address(this)`, so a self-call agrees with the EVM; a bare internal call keeps
  * the caller. The cases pin that agreement, and they still pin the divergences the self-call rule does not reach:
  * a self-called body that writes a mapping is refused at compile time, and a user-entered entry takes no
@@ -243,18 +243,18 @@ function refusalOf(run: () => unknown): { readonly name?: string; readonly code?
     const refusal = error as { name?: string; code?: string; message: string };
     return { name: refusal.name, code: refusal.code, message: refusal.message };
   }
-  throw new Error('the shipped per-call path accepted the composition, so there is no refusal to record');
+  throw new Error('the shipped framed path accepted the composition, so there is no refusal to record');
 }
 
 /** The refusals a compile publishes, or the error it throws, as one record. */
 function compileRefusal(source: string): { readonly name?: string; readonly code?: string; readonly message: string } {
   try {
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }));
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'framed' }));
     if (refusals.length === 0) {
-      throw new Error('the shipped per-call compiler served the source, so there is no refusal to record');
+      throw new Error('the shipped framed compiler served the source, so there is no refusal to record');
     }
     return {
-      code: 'PER_CALL_CODEGEN_UNAVAILABLE',
+      code: 'FRAMED_CODEGEN_UNAVAILABLE',
       message: refusals.map((refused) => `${refused.functionName}: ${refused.reason}`).join(' | '),
     };
   } catch (error) {
@@ -348,7 +348,7 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
       / }$/, ' function h(int x) private returns (int) { return x + 1; } }',
     );
     for (const source of [MAPPING_SWEEP_SOURCE, withHelper]) {
-      const artifacts = compileStringMulti(source, { composition: 'per-call' });
+      const artifacts = compileStringMulti(source, { composition: 'framed' });
       expect(publishedRefusals(artifacts)).toStrictEqual([
         { functionName: 'Tok.transfer()', reason: transfer },
         { functionName: 'Tok.sweep()', reason: sweep },
@@ -360,11 +360,11 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
   it('gives the read a block-layout slot: the published access and the frame\'s layout carry the call argument', () => {
     // The argument is `this.bal[<address>]`, a read the caller's own code performs before the self-call. A call
     // statement holds its call in a field the entry-access walk did not descend into, so the read entered no entry
-    // access and no block layout allocated it a slot: the per-call master and the direct path both refused the
+    // access and no block layout allocated it a slot: the framed master and the direct path both refused the
     // whole contract with `The verified-mapping read on 'bal' in 'readThrough' has no allocated entry slot`. The
     // read is now collected like any other access of the body, so the published ABI names it, the layout gives it a
     // slot, and the frame reads the node a plan declares for it.
-    for (const composition of ['per-call', 'direct'] as const) {
+    for (const composition of ['framed', 'direct'] as const) {
       const artifacts = compileStringMulti(READ_THROUGH_SELF_SOURCE, { composition }) as
         Record<string, {
           bytecode?: string;
@@ -380,11 +380,11 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
   it('refuses to settle the literal sweep: the self-called writer is refused before layout', () => {
     // The literal sweep is the same sorted-mapping writer reached by a self-call, so the compiler refuses `sweep`
     // because it runs `transfer`. The host reports that published reason and never reaches the old layout stall
-    // (the frame used to fail an OP_VERIFY before the segment close, read as PER_CALL_DERIVATION_STALLED). The
+    // (the frame used to fail an OP_VERIFY before the segment close, read as FRAMED_DERIVATION_STALLED). The
     // honest batch the plan still declares, so the refusal is the missing transition, not a missing record.
     const refusal = sweepOutcome();
-    expect(refusal.code).toBe('PER_CALL_HOST_ENTRY_REFUSED');
-    expect(refusal.message).toBe('PER_CALL_HOST_ENTRY_REFUSED: Tok.sweep() is refused by the compiler: it runs '
+    expect(refusal.code).toBe('FRAMED_HOST_ENTRY_REFUSED');
+    expect(refusal.message).toBe('FRAMED_HOST_ENTRY_REFUSED: Tok.sweep() is refused by the compiler: it runs '
       + '\'transfer\', which the master cannot serve: the body derives a sorted-mapping write and is run as a '
       + 'subroutine by a self-call, whose frame never emits the batch transition that proves the write\'s '
       + 'topology (the predecessor relink, the distinct-target check and the node count); call it directly so '
@@ -434,7 +434,7 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     const plan = singlePlan(artifacts, tok, 'sweep', USER_LOCK, [[kept]]);
 
     const refusal = refusalOf(() => settlePlan(plan, artifacts, 'Tok', 'sweep'));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
     expect(refusal.message).toMatch(/master "tok-1" of Tok.sweep\(\) filled no witness at site 0/);
   });
 
@@ -471,7 +471,7 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     expect(rejected).toStrictEqual([]);
 
     const refusal = refusalOf(() => settlePlan(plan(OWNER), artifacts, 'Tok', 'sweep'));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
   });
 });
 
@@ -505,11 +505,11 @@ describe('onlySelf and ownerOnly: a self-call runs as the contract, as the EVM d
     expect(accepted.rejected).toStrictEqual([]);
     const refusal = refusalOf(() => settlePlan(singlePlan(artifacts, contracts.Tok!, 'onlySelf', USER_LOCK),
       artifacts, 'Tok', 'onlySelf'));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
   });
 
   it('accepts this.onlySelf() with the guard written as the contract address', () => {
-    // The same rule with the self-lock spelled out rather than read: the per-call self-call supplies the
+    // The same rule with the self-lock spelled out rather than read: the framed self-call supplies the
     // contract's address as the callee's msg.sender, so the literal comparison holds.
     const { artifacts, contracts } = compileAndDeploy(LITERAL_SELF_SOURCE, { Tok: TOK_LABEL });
     const { outcome, rejected } = settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOnlySelf', USER_LOCK),
@@ -530,7 +530,7 @@ describe('onlySelf and ownerOnly: a self-call runs as the contract, as the EVM d
     const { artifacts, contracts } = compileAndDeploy(OWNER_SOURCE, { Tok: TOK_LABEL });
     const refusal = refusalOf(() => settlePlan(singlePlan(artifacts, contracts.Tok!, 'ownerOnly', NON_OWNER),
       artifacts, 'Tok', 'ownerOnly'));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
   });
 
   it('refuses this.ownerOnly() called by the owner, as the EVM does', () => {
@@ -540,7 +540,7 @@ describe('onlySelf and ownerOnly: a self-call runs as the contract, as the EVM d
     const { artifacts, contracts } = compileAndDeploy(OWNER_SOURCE, { Tok: TOK_LABEL });
     const refusal = refusalOf(() => settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOwnerOnly', OWNER),
       artifacts, 'Tok', 'callOwnerOnly'));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
   });
 
   it('refuses this.ownerOnly() called by a non-owner, for the same reason', () => {
@@ -549,7 +549,7 @@ describe('onlySelf and ownerOnly: a self-call runs as the contract, as the EVM d
     const { artifacts, contracts } = compileAndDeploy(OWNER_SOURCE, { Tok: TOK_LABEL });
     const refusal = refusalOf(() => settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOwnerOnly', NON_OWNER),
       artifacts, 'Tok', 'callOwnerOnly'));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
   });
 });
 
@@ -603,7 +603,7 @@ describe('Escrow.refund reached through Market.refund sees the root user in tx.o
 
   it('accepts a refund gated on tx.origin == the root user, reached through the intermediate contract', () => {
     // The EVM keeps tx.origin unchanged across calls, so Escrow sees the user who signed the transaction, not
-    // Market. The per-call frame carries the root user as the callee's origin, and every contract input is accepted.
+    // Market. The framed frame carries the root user as the callee's origin, and every contract input is accepted.
     const outcome = marketCallsEscrow(`require(tx.origin == 0x${hexOf(USER_LOCK)});`);
     const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
@@ -616,7 +616,7 @@ describe('Escrow.refund reached through Market.refund sees the root user in tx.o
     // The same call topology with Escrow expecting the caller instead of the user: the frame's origin is the root
     // user, so the guard fails and the callee's frame is refused.
     const refusal = refusalOf(() => marketCallsEscrow(`require(tx.origin == 0x${hexOf(seededAddress(MARKET_LABEL))});`));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
     expect(refusal.message).toMatch(/master "escrow-1" of Escrow.refund\(\) filled no witness/);
   });
 
@@ -626,7 +626,7 @@ describe('Escrow.refund reached through Market.refund sees the root user in tx.o
     // callee's frame is refused. The self-addressed call therefore agrees only because the callee is a master of
     // the caller's own contract.
     const refusal = refusalOf(() => marketCallsEscrow('require(msg.sender == address(this));'));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
     expect(refusal.message).toMatch(/master "escrow-1" of Escrow.refund\(\) filled no witness/);
   });
 });
@@ -698,7 +698,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
   /** One deployment serves both cases; each rewinds the chain to it first. */
   async function deployed(): Promise<Deployed> {
     deployedRun ??= (async (): Promise<Deployed> => {
-      const artifacts = compileStringMulti(REFUND_SOURCE, { composition: 'per-call' });
+      const artifacts = compileStringMulti(REFUND_SOURCE, { composition: 'framed' });
       const escrow = artifacts.Escrow!;
       const market = artifacts.Market!;
       const marketProxy = buildProxyArtifact(market);
@@ -717,7 +717,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
       }
       const initCoin = funding(idOf('initialize coin'));
       await network.addUtxo(binToHex(PAYER), initCoin);
-      const deployment = await deployPerCallProxy({
+      const deployment = await deployFramedProxy({
         provider: network,
         implementationArtifact: market,
         proxyArtifact: marketProxy,
@@ -749,7 +749,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
   interface Entered {
     readonly coin: { txid: string; vout: number; satoshis: bigint };
     readonly lock: Uint8Array;
-    readonly call: Promise<PerCallProxyCallResult>;
+    readonly call: Promise<FramedProxyCallResult>;
   }
 
   /** Funds a coin of the payer's or the other user's and runs one `Market` entry through the shipped proxy hop. */
@@ -757,7 +757,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
     const lock = caller === 'payer' ? PAYER : OTHER;
     const coin = funding(idOf(`${caller} ${functionName} coin`));
     await run.network.addUtxo(binToHex(lock), coin);
-    const call = callPerCallProxyEntry({
+    const call = callFramedProxyEntry({
       provider: run.network,
       implementationArtifact: run.market,
       proxyArtifact: run.marketProxy,
@@ -790,7 +790,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
 
   /** The nodes of the escrow's `refunded` mapping, the head left out, as slots. */
   async function refundedSlots(run: Deployed): Promise<readonly string[]> {
-    const pools = await readPerCallDeployment(run.network, REFUND_ESCROW_CATEGORY, run.escrow.stateLayout!);
+    const pools = await readFramedDeployment(run.network, REFUND_ESCROW_CATEGORY, run.escrow.stateLayout!);
     return (pools.nodesByCollection.get('refunded') ?? [])
       .map((utxo) => bytesToHex(decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)).slot))
       .filter((slot) => slot !== bytesToHex(new Uint8Array(32)));
@@ -799,7 +799,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
   /** The market's refund count, as its proxy's records hold it. */
   async function refundsCounted(run: Deployed): Promise<unknown> {
     const layout = run.marketProxy.stateLayout!;
-    const pools = await readPerCallDeployment(run.network, run.proxyCategoryId, layout);
+    const pools = await readFramedDeployment(run.network, run.proxyCategoryId, layout);
     return (Object.assign({}, ...pools.records.map((record, nftIndex) =>
       parsePushdataCommitment(record.token!.nft!.commitment, layout, nftIndex))) as Record<string, unknown>).refunds;
   }
@@ -863,7 +863,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
       externals: { IEscrow: { artifact: run.escrow, categoryId: REFUND_ESCROW_CATEGORY } },
       validatorProgram: VALIDATOR_PROGRAM,
       stateValues: deploymentStateValues(layout, run.proxyCategoryId,
-        await readPerCallDeployment(run.network, run.proxyCategoryId, layout)),
+        await readFramedDeployment(run.network, run.proxyCategoryId, layout)),
       selfAddress: run.proxyAddress, senderAddress: PAYER,
     });
     const planned = plan.callees[0]!.entryWrites!.reachWrites.flatMap((write) => write.targets)
@@ -970,7 +970,7 @@ describe('a call to the contract\'s own address on a second master runs as the c
     const tok = contracts.Tok!;
     const refusal = refusalOf(() => composeAndDerive(selfCallPlan(artifacts, tok, ESCROW_ADDRESS), [artifacts.Tok!],
       [rootOf('Tok', 'callG', 'tok-1')]));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
     expect(refusal.message).toMatch(/master "tok-1" of Tok\.callG\(\) filled no witness/);
   });
 });

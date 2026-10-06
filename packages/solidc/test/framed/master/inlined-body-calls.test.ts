@@ -10,7 +10,7 @@ import { publishedRefusals } from './refused-entry.js';
  * A body the lowering folded into its callers carries no definition of its own.
  *
  * Lowering an internal call that crosses into another contract folds the callee's statements into each call site,
- * so the callee survives as a declaration rather than as an invocation. A per-call master emits the definitions its
+ * so the callee survives as a declaration rather than as an invocation. A framed master emits the definitions its
  * own program can reach, so that declaration is left out: emitting it would compile its calls against a frame no
  * entry assembles, and the call sites that actually run belong to the entries the fold placed them in.
  *
@@ -47,13 +47,13 @@ interface PublishedEntry {
   readonly sites: { readonly sites: readonly PublishedSite[] };
 }
 
-/** Compiles one `.sol` source through the shipped multi-contract entry, in the per-call convention. */
+/** Compiles one `.sol` source through the shipped multi-contract entry, in the framed convention. */
 function compileSol(source: string, name = 'Helper'): ArtifactMap {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'percall-sol-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'framed-sol-'));
   const file = path.join(dir, `${name}.sol`);
   fs.writeFileSync(file, source);
   try {
-    return compileFileMulti(file, { composition: 'per-call', solidityImportCompat: true } as never);
+    return compileFileMulti(file, { composition: 'framed', solidityImportCompat: true } as never);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

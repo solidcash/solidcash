@@ -7,7 +7,7 @@ import {
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
@@ -80,7 +80,7 @@ function multiEntrySource(entries: readonly string[]): string {
 
 /** Evaluates the compiled caller's own input, and reports the machine's verdict. */
 function verdictOf(sourceText: string, spend: Spend): { accepted: boolean; objection?: string; ip?: number } {
-  const artifacts = compileStringMulti(sourceText, { composition: 'per-call' });
+  const artifacts = compileStringMulti(sourceText, { composition: 'framed' });
   const programFor = (name: string, category: Uint8Array, address: Uint8Array): Uint8Array => {
     const artifact = artifacts[name]!;
     return fillPlaceholders(
@@ -212,7 +212,7 @@ describe('a master with two entries, one that calls and one that does not', () =
     `function call() { ${CALL} require(true); }`,
     'function quiet() { require(true); }',
   ]);
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const selectorOf = (name: string): Uint8Array =>
     new Uint8Array(Buffer.from(artifacts.Caller!.abi.find((entry) => entry.name === name)!.selector!, 'hex'));
 

@@ -412,7 +412,7 @@ The properties that stop the growth are:
 None of these requires removing the batch entry point. The route could keep dispatching rows while handlers look
 records up at runtime and the flush does all the physical work.
 
-The per-call form is cleaner on three points:
+The framed form is cleaner on three points:
 - re-entry is extra links rather than nested dispatch from inside a handler;
 - the SDK can compute the settlement's outputs directly from explicit claims, instead of learning them from failing
   comparisons;
@@ -420,7 +420,7 @@ The per-call form is cleaner on three points:
 
 The in-route form reuses more of what exists: the route, the manifest plumbing and the verifier binding.
 
-For the wall this project is actually stuck on, the per-call form fits better. Fan-in and re-entry are just more
+For the wall this project is actually stuck on, the framed form fits better. Fan-in and re-entry are just more
 links in the owner's chain. In the in-route form they need nested dispatch from inside a running handler, which is
 the machinery the kernel has struggled with for five weeks (section 2.5). The spike below should confirm this
 before anything is built. Either way, the core is the actual work.
@@ -429,7 +429,7 @@ before anything is built. Either way, the core is the actual work.
 
 - **Continuing the current path:** on the record, it saturates at about 43 full-run titles, and the fan-in and
   re-entry class has not closed on either bus design.
-- **The stricter per-call design:** it is aimed at exactly that class, but it is a rewrite of the composition
+- **The stricter framed design:** it is aimed at exactly that class, but it is a rewrite of the composition
   layer. My rough estimate is 6-10 weeks of focused work after a successful spike before the ladder is mostly
   green. The spike exists to replace that guess with a measurement.
 - **What it changes is the slope.** Today each new title tends to need a new representation. With the stricter
@@ -517,7 +517,7 @@ T2 and T6 are the deciding toys. They are the class that has never stayed green 
 
 ### Phase 2: build beside the kernel (if Go; weeks)
 
-1. **Make it opt-in.** Add a new compile option and SDK composer, e.g. `composition: 'per-call'`. The kernel stays
+1. **Make it opt-in.** Add a new compile option and SDK composer, e.g. `composition: 'framed'`. The kernel stays
    untouched and stays the default everywhere else until the marketplace passes on the new path.
 2. **Build in this order:**
    1. Record kinds with physical load and flush in the settlement: scalar field, sorted entry with predecessor,
@@ -554,7 +554,7 @@ T2 and T6 are the deciding toys. They are the class that has never stayed green 
 
 ### Phase R: real-chain deployability (separate track, not on the 66/66 path)
 
-The per-call form helps here, because each slot carries only its own handler. But 75 KB entry closures and
+The framed form helps here, because each slot carries only its own handler. But 75 KB entry closures and
 90-200 KB contracts still need facet splitting, and multi-megabyte transactions need a different shape. Only take
 this on as its own goal, with its own harness at real limits.
 
@@ -563,11 +563,11 @@ this on as its own goal, with its own harness at real limits.
 ## 6. Decisions needed from you
 
 1. **The goal text.** It currently requires `artifact.messageBus.convention === 'kernel-row-loop'` and the
-   `OP_INVOKE` graph boundary (`HANDOFF_KERNEL_BETA_CURRENT.md`). A per-call model needs that requirement lifted,
+   `OP_INVOKE` graph boundary (`HANDOFF_KERNEL_BETA_CURRENT.md`). A framed model needs that requirement lifted,
    or re-scoped to "the kernel stays as-is; a new path is added beside it".
 2. **Canonical harness:** the root config with the upstream test, or the `examples/` copy that drops one line?
 3. **Real-chain deployability:** is it part of this goal? If not, the route-size gates come off the critical path.
-4. **Spike form:** per-call, in-route, or both, time-boxed? My recommendation is per-call, because fan-in and
+4. **Spike form:** framed, in-route, or both, time-boxed? My recommendation is framed, because fan-in and
    re-entry are the wall (sections 2.5, 4.4).
 5. **Codex WIP (43 files):** keep, or revert before the baseline?
 6. **Call-slot provisioning for the spike:** a just-in-time funding transaction (simplest on mock) or a

@@ -1,7 +1,7 @@
 /**
  * Planning the external calls an implementation frame makes through the proxy hop.
  *
- * A per-call body binds each external call to the k-th record of its own witness block, and that record has to
+ * A framed body binds each external call to the k-th record of its own witness block, and that record has to
  * carry the callee's frame kind, its target, its argument digest and its result. The hop's delegate frame is a
  * body like any other, so when the entry it runs makes calls the plan states the same records a call the composer
  * builds for itself does — the calls, and the callee frames they reach. A callee frame is a body too, so a callee
@@ -82,8 +82,8 @@ import type { DraftCall } from '../composer/draft.js';
 import { deploymentBlockId, readPublishedStopSites } from '../composer/index.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
-  chunkRecordLockingBytecode, readPerCallDeployment, stateRecordLockingBytecode,
-  type PerCallDeploymentSet,
+  chunkRecordLockingBytecode, readFramedDeployment, stateRecordLockingBytecode,
+  type FramedDeploymentSet,
 } from '../deploy/records.js';
 import {
   entryRowOf, makeCallResolver, resolveCallTarget, resolvePublishedCall,
@@ -98,7 +98,7 @@ import { entrySideCars } from '../call/side-cars.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { chainsEnclosedTouch } from './enclosed-reads.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 import { reachedNodeValue } from './reached-values.js';
 import { lockOfIdentity } from './address-identity.js';
 import {
@@ -107,7 +107,7 @@ import {
 import { skippedEmits, skippedSends, takenSends, type WriteActivationFacts } from './write-activation.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
-export interface PerCallProxyExternal {
+export interface FramedProxyExternal {
   /** The artifact whose entries the call names, i.e. the implementation behind the address the call reaches. */
   readonly artifact: Artifact;
   /** The category whose address the calling entry's own code computes, which is the proxy's when one sits there. */
@@ -115,7 +115,7 @@ export interface PerCallProxyExternal {
   /**
    * The proxy the callee sits behind, when the address the call reaches names a proxy rather than the artifact.
    *
-   * A per-call deployment places a proxy whose fallback forwards the call data it received to the address it holds,
+   * A framed deployment places a proxy whose fallback forwards the call data it received to the address it holds,
    * and the implementation's entry runs as the delegate frame that follows. A callee reached at a proxy's address
    * therefore has to be placed as that same chain, which needs the proxy's artifact and its implementation's
    * category beside the implementation's own artifact.
@@ -566,7 +566,7 @@ function unfollowedStateRead(expression: unknown): string | undefined {
 function refuseUnfollowedState(condition: ExternalCallExpression | null | undefined, where: string): void {
   const name = unfollowedStateRead(condition);
   if (name === undefined) return;
-  throw new PerCallProxyDeployError(
+  throw new FramedProxyDeployError(
     `${where} is guarded by "${name}", which the entry's own body writes before the call in a way its published `
     + 'facts do not state, so the hop cannot decide whether the call is made',
   );
@@ -675,12 +675,12 @@ export function occurrenceCountOf(
   const step = resolver.evaluate(domain.stepValue, 0, undefined, returnsOf(domain.stepValue));
   const continueReturns = returnsOf(domain.continueCondition);
   if (typeof initial !== 'bigint' || typeof step !== 'bigint') {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${where} runs a loop whose counter the caller's own arguments do not fix`,
     );
   }
   if (step === 0n) {
-    throw new PerCallProxyDeployError(`${where} runs a loop whose counter never advances`);
+    throw new FramedProxyDeployError(`${where} runs a loop whose counter never advances`);
   }
   let count = 0;
   let counter = initial;
@@ -688,7 +688,7 @@ export function occurrenceCountOf(
     const bindings = new Map<string, FunctionArgument>([[domain.counterName, counter]]);
     const keep = resolver.evaluate(domain.continueCondition, 0, bindings, continueReturns);
     if (keep === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `${where} runs a loop whose bound is not fixed by the caller's own arguments, so the hop cannot state how `
         + 'many records its visits fill',
       );
@@ -780,7 +780,7 @@ function derivedOccurrenceCountOf(
     width = width === undefined ? visits : Math.min(width, visits);
   }
   if (width === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${where} runs a loop whose bound is not fixed by the caller's own arguments, so the hop cannot state how `
       + 'many records its visits fill',
     );
@@ -802,7 +802,7 @@ const MAXIMUM_DYNAMIC_CHUNKS = 1 << 15;
  * guessed at, so a site that reads it is refused by name.
  */
 export function deploymentStateValues(
-  layout: StateLayout, categoryId: string, deployment: PerCallDeploymentSet,
+  layout: StateLayout, categoryId: string, deployment: FramedDeploymentSet,
 ): Record<string, unknown> {
   const values: Record<string, unknown> = {};
   deployment.records.forEach((record, nftIndex) => {
@@ -906,7 +906,7 @@ export function liveMappingValueReader(
     const left = (reached: NonNullable<HopLiveDeployment['rewrittenNodes']>[number]): FunctionArgument | undefined => {
       if (reached.value !== undefined) return held(reached.value);
       if (collection.chunkableValue === true) return held(joinedNodeValue(collection, reached.commitment, live));
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `a call is routed through mapping "${name}" at a node an earlier reach of the hop leaves at a value its body `
         + 'computes, which the hop has not learned, so the call cannot be stated from it',
       );
@@ -1003,7 +1003,7 @@ function readerPastOwnWrites(
         && written.every((write) => write.slot !== undefined && bytesEqual(write.slot, slot))) {
         throw new EntryWriteValueAwaited(refusal, site, name, slot);
       }
-      throw new PerCallProxyDeployError(refusal);
+      throw new FramedProxyDeployError(refusal);
     }
     return mappingValueOf(collection.valueType, value, artifact, artifact.structs);
   };
@@ -1011,7 +1011,7 @@ function readerPastOwnWrites(
 
 /** One dynamic field's value, joined from its chunk records and decoded as the field's own type declares. */
 function dynamicFieldValue(
-  deployment: PerCallDeploymentSet, layout: StateLayout, categoryId: string,
+  deployment: FramedDeploymentSet, layout: StateLayout, categoryId: string,
   field: StateVariableInfo, values: Readonly<Record<string, unknown>>,
 ): StateValue | undefined {
   const header = values[dynamicLenKey(field.name)];
@@ -1056,17 +1056,17 @@ function dynamicFieldValue(
 /** The live deployment a registered contract names, read from its artifact and category. */
 function externalOfRegistered(registered: {
   readonly contract: unknown;
-}): PerCallProxyExternal | undefined {
+}): FramedProxyExternal | undefined {
   const contract = registered.contract as {
     readonly artifact?: Artifact;
     readonly inner?: { readonly artifact?: Artifact };
     readonly categoryId?: string;
     readonly proxy?: { readonly categoryId?: string };
-    readonly perCallProxy?: { readonly artifact?: Artifact; readonly implementationCategoryId?: string };
+    readonly framedProxy?: { readonly artifact?: Artifact; readonly implementationCategoryId?: string };
   };
   const artifact = contract.inner?.artifact ?? contract.artifact;
   const categoryId = contract.proxy?.categoryId ?? contract.categoryId;
-  const proxy = contract.perCallProxy;
+  const proxy = contract.framedProxy;
   return artifact === undefined || categoryId === undefined ? undefined : {
     artifact,
     categoryId,
@@ -1077,14 +1077,14 @@ function externalOfRegistered(registered: {
 }
 
 /** The deployment one call's target address names, from the provider's registrations. */
-function externalOfAddress(provider: NetworkProvider, target: Uint8Array): PerCallProxyExternal | undefined {
+function externalOfAddress(provider: NetworkProvider, target: Uint8Array): FramedProxyExternal | undefined {
   const registered = findDeploymentByLockingBytecode(provider, binToHex(target))
     ?? findDeploymentByAddress(provider, binToHex(target));
   return registered === undefined ? undefined : externalOfRegistered(registered);
 }
 
 /** The deployment a call's interface names, stripping the Solidity interface's leading `I`. */
-function externalOfName(provider: NetworkProvider, interfaceName: string): PerCallProxyExternal | undefined {
+function externalOfName(provider: NetworkProvider, interfaceName: string): FramedProxyExternal | undefined {
   for (const name of [interfaceName, interfaceName.replace(/^I/, '')]) {
     const registered = findDeploymentByName(provider, name);
     if (registered === undefined) continue;
@@ -1103,7 +1103,7 @@ function externalOfName(provider: NetworkProvider, interfaceName: string): PerCa
  */
 export function registeredExternalFor(
   provider: NetworkProvider, target: Uint8Array, interfaceName: string,
-): PerCallProxyExternal | undefined {
+): FramedProxyExternal | undefined {
   return (target.length === 0 ? undefined : externalOfAddress(provider, target))
     ?? externalOfName(provider, interfaceName);
 }
@@ -1120,7 +1120,7 @@ interface ReentrantRoot {
   /** The address the root runs as, its proxy's, which a call back to it targets. */
   readonly address: Uint8Array;
   /** The root's deployment as a callee behind its proxy. */
-  readonly external: PerCallProxyExternal;
+  readonly external: FramedProxyExternal;
   /** The entry the root runs. */
   readonly functionName: string;
 }
@@ -1128,7 +1128,7 @@ interface ReentrantRoot {
 /** The planner's running state: the live deployments it resolves against and the frames it has placed. */
 interface PlanContext {
   readonly provider: NetworkProvider;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly validatorProgram: Uint8Array;
   /** The contracts the hop's own root fixes at one master: its implementation, entered by its proxy. */
   readonly fixed: Set<string>;
@@ -1139,7 +1139,7 @@ interface PlanContext {
   /** The block each callee category's frames and records sit in, by category id (`deploymentBlockId`). */
   readonly blocks: Map<string, string>;
   /** The live deployments already read, keyed by category id. */
-  readonly deployments: Map<string, PerCallDeploymentSet>;
+  readonly deployments: Map<string, FramedDeploymentSet>;
   /** The records of each callee category, shared by every master the hop places for that deployment. */
   readonly records: Map<string, readonly HopCalleeRecord[]>;
   /**
@@ -1220,8 +1220,8 @@ function* reachableAddresses(ctx: PlanContext): Generator<Uint8Array> {
 }
 
 /** The deployment a call reaches: the caller's named externals first, then the provider's registrations. */
-function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Array): PerCallProxyExternal {
-  const expected = (external: PerCallProxyExternal): string =>
+function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Array): FramedProxyExternal {
+  const expected = (external: FramedProxyExternal): string =>
     binToHex(validatorAddress(hexToBin(external.categoryId), ctx.validatorProgram)).slice(-16);
   const named = ctx.externals[row.interfaceName];
   if (hopTraceOn()) {
@@ -1240,7 +1240,7 @@ function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Ar
     hopTrace(`resolve provider ${external.artifact.contractName}@${expected(external)}`);
   }
   if (external === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the call to "${row.interfaceName}.${row.functionName}" targets ${binToHex(target)}, and none of the `
       + "deployment's contracts sits at that address",
     );
@@ -1337,7 +1337,7 @@ export function waitingProducers(
 /** What one published site was resolved to in pass one, before any of its frames is placed. */
 interface ResolvedSite {
   readonly entry: AbiEntryRow;
-  readonly external: PerCallProxyExternal;
+  readonly external: FramedProxyExternal;
   readonly resolved: readonly ResolvedCall[];
   readonly where: string;
   /** The turn each resolved call runs in, parallel to `resolved`: a guarded loop's skipped turns are left out. */
@@ -1426,7 +1426,7 @@ async function planEntryCalls(
     const row = routing[index];
     if (row === undefined || row.interfaceName !== call.interfaceName
       || row.functionName !== call.functionName) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the entry "${caller.functionName}" publishes call ${index} to `
         + `"${call.interfaceName}.${call.functionName}", which its ABI routing does not describe`,
       );
@@ -1494,7 +1494,7 @@ async function planEntryCalls(
     // placed, exactly as the hop names a refused entry of its own.
     const refusal = refusedEntryReason(external.artifact, row.functionName);
     if (refusal !== undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `${where} reaches "${external.artifact.contractName}.${row.functionName}()", which the compiler refused: `
         + refusal,
       );
@@ -1512,7 +1512,7 @@ async function planEntryCalls(
       : [external.proxyArtifact.contractName, external.artifact.contractName];
     for (const name of placedNames) {
       if (ctx.fixed.has(name) && !reentry) {
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `${where} reaches "${name}", which this hop already places; a contract that reaches itself below `
           + 'itself cannot be given a second block in the hop',
         );
@@ -1538,7 +1538,7 @@ async function planEntryCalls(
     callBases.push(calls.length);
     const { external, entry, resolved, where, turns } = site;
     const reach: CalleeReach = { callerPath: path, site: index, callsiteId, turns };
-    // A callee whose address names a per-call proxy is placed as the same chain the root hop places for its own
+    // A callee whose address names a framed proxy is placed as the same chain the root hop places for its own
     // proxy: the proxy's fallback frame, then the implementation entry it delegates to on the proxy's records.
     if (external.proxyArtifact !== undefined && external.implementationCategoryId !== undefined) {
       await placeProxiedCallee(ctx, caller, enteredBy, external, entry, resolved, calls, where, reach);
@@ -1553,10 +1553,10 @@ async function planEntryCalls(
 /** The live deployment a category names, read once however many sites reach it. */
 async function deploymentOf(
   ctx: PlanContext, categoryId: string, layout: StateLayout,
-): Promise<PerCallDeploymentSet> {
+): Promise<FramedDeploymentSet> {
   const cached = ctx.deployments.get(categoryId);
   if (cached !== undefined) return cached;
-  const read = await readPerCallDeployment(ctx.provider, categoryId, layout);
+  const read = await readFramedDeployment(ctx.provider, categoryId, layout);
   ctx.deployments.set(categoryId, read);
   return read;
 }
@@ -1566,7 +1566,7 @@ async function deploymentOf(
  * placed before it wrote there.
  */
 function reachedDeploymentOf(
-  ctx: PlanContext, categoryId: string, deployment: PerCallDeploymentSet, layout: StateLayout,
+  ctx: PlanContext, categoryId: string, deployment: FramedDeploymentSet, layout: StateLayout,
 ): HopLiveDeployment {
   return liveDeploymentOf(categoryId, deployment, layout, ctx.writtenNodes.get(categoryId) ?? [],
     ctx.rewrittenNodes.get(categoryId) ?? [], [...(ctx.reachedLinks.get(categoryId)?.values() ?? [])]);
@@ -1574,7 +1574,7 @@ function reachedDeploymentOf(
 
 /** The live deployment a frame's own writes are planned against, as `hopEntryWrites` states it. */
 function liveDeploymentOf(
-  categoryId: string, deployment: PerCallDeploymentSet, layout: StateLayout,
+  categoryId: string, deployment: FramedDeploymentSet, layout: StateLayout,
   written: readonly {
     readonly collection: string;
     readonly slot: Uint8Array;
@@ -1604,7 +1604,7 @@ function liveDeploymentOf(
     recordCommitments: deployment.records.map((record) => {
       const commitment = record.token?.nft?.commitment;
       if (commitment === undefined) {
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `the callee's category ${categoryId} holds a record with no commitment`,
         );
       }
@@ -1822,7 +1822,7 @@ function calleeEntryWrites(
   } catch (error) {
     const fn = artifact.abi.find((candidate) => candidate.name === functionName);
     if ((fn?.sortedBatchInfo ?? []).length === 0) return undefined;
-    throw new PerCallProxyDeployError(`the callee "${callee}" writes records this hop cannot declare: `
+    throw new FramedProxyDeployError(`the callee "${callee}" writes records this hop cannot declare: `
       + `${error instanceof Error ? error.message : String(error)}`);
   }
   // A node the batch spends and the entry also reads, an allowance a token reads before it rewrites it, is one input
@@ -1838,7 +1838,7 @@ function calleeEntryWrites(
     return !readNamesWrittenKey(fn?.entryAccesses, node);
   });
   if (shared !== undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the callee "${callee}" reads mapping "${shared.collection}" at a node its batch also spends, which one `
       + 'transaction cannot spend twice',
     );
@@ -1862,7 +1862,7 @@ async function calleeSideCars(
 ): Promise<void> {
   const abiFunction = artifact.abi.find((candidate) => candidate.name === entryName);
   if (abiFunction === undefined) return;
-  // A recovery call is published either by its argument sources or, when the sources are absent, by its per-call
+  // A recovery call is published either by its argument sources or, when the sources are absent, by its framed
   // flag, so both have to be absent for the frame to read no side-car.
   const hashes = (abiFunction.keccakPreimageParams ?? []).length > 0;
   const recovers = (abiFunction.ecrecoverArgParams ?? []).length > 0
@@ -1896,7 +1896,7 @@ export function planCalleeWrites(callee: HopCallee, learnedValue?: Uint8Array): 
 /**
  * The mapping nodes one callee frame's entry only reads, in the order its own code reads them.
  *
- * A per-call body that touches a sorted mapping does not read one value in place: the mapping is a chain of entry
+ * A framed body that touches a sorted mapping does not read one value in place: the mapping is a chain of entry
  * NFTs, so the frame's segment has to carry the node each key's group walk reads. An entry that rewrites no record
  * still reads one, so those nodes are planned here rather than folded into a write: the body reads them at fixed
  * positions past the data records its block layout names, and each is spent on the entry covenant's read-only path.
@@ -1911,7 +1911,7 @@ function calleeReadNodes(options: {
   readonly args: readonly FunctionArgument[];
   readonly senderAddress: Uint8Array | undefined;
   readonly categoryId: string;
-  readonly deployment: PerCallDeploymentSet;
+  readonly deployment: FramedDeploymentSet;
   /**
    * The nodes reaches placed earlier in this hop created, keyed by collection and slot.
    *
@@ -1965,7 +1965,7 @@ function calleeReadNodes(options: {
   // a record the plan never declared: refused by name rather than dropped from the plan.
   const frame = options.frameLabel ?? `the callee "${options.artifact.contractName}.${options.functionName}()"`;
   if (reads.some((access) => !slots.some((slot) => slot.slotIndex === access.slotIndex))) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${frame} reads a mapping key at no fixed entry slot, which this hop does not declare a node for`,
     );
   }
@@ -1993,7 +1993,7 @@ function calleeReadNodes(options: {
         readMappingValue,
       });
     } catch (error) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `${frame} reads a mapping node this hop cannot declare: `
         + `${error instanceof Error ? error.message : String(error)}`,
       );
@@ -2029,7 +2029,7 @@ function calleeReadNodes(options: {
       } else if (node.present && collection?.chunkableValue === true && length > VALUE_INLINE_LIMIT) {
         value = joinedNodeValue(collection, node.commitment, live);
         if (value === undefined) {
-          throw new PerCallProxyDeployError(
+          throw new FramedProxyDeployError(
             `${frame} reads a mapping node of collection "${node.collection}" whose ${length}-byte value this hop `
             + "cannot reassemble from the deployment's chunk records, so it cannot witness the body's read",
           );
@@ -2103,7 +2103,7 @@ function calleeRecordSet(
   block: string,
   categoryId: string,
   layout: StateLayout,
-  deployment: PerCallDeploymentSet,
+  deployment: FramedDeploymentSet,
 ): readonly HopCalleeRecord[] {
   const cached = ctx.records.get(categoryId);
   if (cached !== undefined) return cached;
@@ -2111,7 +2111,7 @@ function calleeRecordSet(
     const utxo = deployment.records[nftIndex];
     const commitment = utxo?.token?.nft?.commitment;
     if (utxo === undefined || commitment === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the callee's category ${categoryId} holds no record at data NFT ${nftIndex}`,
       );
     }
@@ -2171,7 +2171,7 @@ async function placeCalleeMasters(
   ctx: PlanContext,
   caller: HopCallInputs,
   enteredBy: number | null,
-  external: PerCallProxyExternal,
+  external: FramedProxyExternal,
   entry: AbiEntryRow,
   resolved: readonly ResolvedCall[],
   calls: DraftCall[],
@@ -2185,7 +2185,7 @@ async function placeCalleeMasters(
   const base = ctx.masterSlots.get(categoryId) ?? 0;
   const needed = base + resolved.length;
   if (deployment.masters.length < needed) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${where} reaches "${contract}", which this hop already places; its category ${categoryId} holds `
       + `${deployment.masters.length} master(s), so it cannot be entered ${needed} time(s)`,
     );
@@ -2308,7 +2308,7 @@ async function placeProxiedCallee(
   ctx: PlanContext,
   caller: HopCallInputs,
   enteredBy: number | null,
-  external: PerCallProxyExternal,
+  external: FramedProxyExternal,
   entry: AbiEntryRow,
   resolved: readonly ResolvedCall[],
   calls: DraftCall[],
@@ -2336,13 +2336,13 @@ async function placeProxiedCallee(
   const implementationBase = ctx.masterSlots.get(implementationCategoryId) ?? 0;
   const needed = resolved.length;
   if (proxyDeployment.masters.length < proxyBase + needed) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${where} reaches "${proxyContract}", which this hop already places; its category ${external.categoryId} `
       + `holds ${proxyDeployment.masters.length} master(s), so it cannot be entered ${proxyBase + needed} time(s)`,
     );
   }
   if (implementationDeployment.masters.length < implementationBase + needed) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${where} reaches "${implementationContract}", which this hop already places; its category `
       + `${implementationCategoryId} holds ${implementationDeployment.masters.length} master(s), so it cannot be `
       + `entered ${implementationBase + needed} time(s)`,
@@ -2607,7 +2607,7 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
           const chained = first.createdSlots.has(bytesToHex(sharedKey.slot))
             && second.continuedSlots.has(bytesToHex(sharedKey.slot));
           if (!chained) {
-            throw new PerCallProxyDeployError(
+            throw new FramedProxyDeployError(
               `${where}, and ${group.reaches.filter((reach) => reach.targets.some((target) =>
                 bytesEqual(target.slot, sharedKey.slot))).length} of them write collection `
               + `"${group.collection}" at the same key, which the list does not hold, so each reach inserts it; a `
@@ -2711,7 +2711,7 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
         if (!entersFrame(callees, outer.frame, inner.frame) && !entersFrame(callees, inner.frame, outer.frame)) continue;
         // A read or rewrite of a node a frame it runs inside wrote before entering it chains (`enclosed-reads.ts`).
         if (chainsEnclosedTouch(callees, outer, inner, collection, id)) continue;
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `the hop's reaches "${outer.functionName}" and "${inner.functionName}" touch one node of collection `
           + `"${collection}", and one of them enters the other, so their segments interleave in an order this hop `
           + 'does not settle',
@@ -2725,10 +2725,10 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
         const pair = `the hop's reach "${touch.functionName}" touches a node of collection "${collection}" that an `
           + `earlier reach "${written.functionName}"`;
         if (written.kind === 'relink') {
-          throw new PerCallProxyDeployError(`${pair} relinks to insert a key; ${CHUNKED_RELINK}`);
+          throw new FramedProxyDeployError(`${pair} relinks to insert a key; ${CHUNKED_RELINK}`);
         }
         if (touch.kind === 'relink') {
-          throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHUNKED_RELINK}`);
+          throw new FramedProxyDeployError(`${pair} writes, and inserts through it; ${CHUNKED_RELINK}`);
         }
       }
       if (touch.kind !== 'read') written = touch;
@@ -2758,14 +2758,14 @@ export function requireSettledNodeChains(callees: readonly HopCallee[]): void {
         + `an earlier reach "${earlier.functionName}"`;
       // A relink of a chunking node states no bytes to continue from, as `requireChainableNodes` names it.
       if (earlier.kind === 'relink') {
-        throw new PerCallProxyDeployError(`${pair} relinks to insert a key; ${CHUNKED_RELINK}`);
+        throw new FramedProxyDeployError(`${pair} relinks to insert a key; ${CHUNKED_RELINK}`);
       }
       if (later.kind === 'relink') {
-        throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHUNKED_RELINK}`);
+        throw new FramedProxyDeployError(`${pair} writes, and inserts through it; ${CHUNKED_RELINK}`);
       }
       if (earlier.kind === 'read') continue;
       if (!leavesValueForLaterReach(callees, earlier, id)) {
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `${pair} writes, and its values chunk: the reach before it states no value a later reach can continue `
           + 'from, so the run of chunk records the later reach takes cannot be sized',
         );
@@ -2858,7 +2858,7 @@ export interface HopExternalPlanOptions {
   readonly functionName: string;
   readonly args: readonly FunctionArgument[];
   /** The caller's named deployments, keyed by the interface each call reaches. */
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly validatorProgram: Uint8Array;
   /** The caller's own state, keyed by field name, as its body reads it. Defaults to empty. */
   readonly stateValues?: Readonly<Record<string, unknown>>;
@@ -2872,7 +2872,7 @@ export interface HopExternalPlanOptions {
    */
   readonly entryDeployment?: {
     readonly categoryId: string;
-    readonly deployment: PerCallDeploymentSet;
+    readonly deployment: FramedDeploymentSet;
     readonly layout: StateLayout;
   };
   /**

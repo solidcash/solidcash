@@ -12,7 +12,7 @@
 
 import {
   INDEX_NONE,
-  PerCallEncodingError,
+  FramedEncodingError,
   SELECTOR_LENGTH,
   VALIDATOR_PIN_PUSH_LENGTH,
   argsHash,
@@ -23,7 +23,7 @@ import {
   type RecordEntry,
   type Transcript,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import { assertValidatorCoverage, type EntryFacts } from './need-test.js';
 import {
   allocateOutputRegions,
@@ -161,8 +161,8 @@ export function declaredValidators(plan: { readonly validator?: PlannedValidator
  * A plan states its validator by its redeem script, so recognising the shipped program is what lets the facets it
  * binds be composed without every plan restating them.
  */
-const SHIPPED_VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
-const SHIPPED_VALIDATOR_FACETS = perCallValidator.buildValidatorFacets();
+const SHIPPED_VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
+const SHIPPED_VALIDATOR_FACETS = framedValidator.buildValidatorFacets();
 
 /**
  * The facets a validator's plan composes.
@@ -209,14 +209,14 @@ export function bindContractValidators(plan: {
     if (block.validator === undefined) continue;
     const validator = byId.get(block.validator.id);
     if (validator === undefined) {
-      throw new PerCallEncodingError(
+      throw new FramedEncodingError(
         `the block for "${block.contract}" hosts validator "${block.validator.id}", which the plan does not name`,
       );
     }
     if (!hosted.includes(validator)) hosted.push(validator);
     for (const covered of [block.contract, ...validator.covers]) {
       if (byContract.has(covered)) {
-        throw new PerCallEncodingError(`"${covered}" is covered by more than one validator`);
+        throw new FramedEncodingError(`"${covered}" is covered by more than one validator`);
       }
       byContract.set(covered, validator);
     }
@@ -311,13 +311,13 @@ function resolveOutputRegions(
     created: created.length,
   });
   if (!sameIndices(declaredEvents, regions.eventIndices)) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `the plan lists events at [${declaredEvents.join(', ')}], and the trailing region puts them at `
       + `[${regions.eventIndices.join(', ')}]`,
     );
   }
   if (!sameIndices(declaredSends, regions.sendIndices)) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `the plan lists sends at [${declaredSends.join(', ')}], and the trailing region puts them at `
       + `[${regions.sendIndices.join(', ')}]`,
     );
@@ -325,7 +325,7 @@ function resolveOutputRegions(
   // The created region is a set: a record's landing is the pair of the record and its output, and no consumer reads
   // the list's order, so the plan may name the allocated outputs in the order its own walk reaches them.
   if (!sameIndexSet(created, regions.createdIndices)) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `the plan creates records at [${created.join(', ')}], and the trailing region puts them at `
       + `[${regions.createdIndices.join(', ')}]`,
     );
@@ -345,7 +345,7 @@ function requireCreatedOutputs(settled: PlannedSettlement, outputs: OutputRegion
   const created = new Set(outputs.createdIndices);
   for (const index of declared) {
     if (!created.has(index)) {
-      throw new PerCallEncodingError(
+      throw new FramedEncodingError(
         `a settlement lists created output ${index}, which the plan's trailing region does not create`,
       );
     }
@@ -376,17 +376,17 @@ function assertCallDataAgrees(plan: CompositionPlan): void {
   for (const master of plan.masters) {
     for (const call of master.calls) {
       if (call.callee === master.master) {
-        throw new PerCallEncodingError(`master "${master.master}" calls itself, which the format refuses`);
+        throw new FramedEncodingError(`master "${master.master}" calls itself, which the format refuses`);
       }
       const selector = call.argumentPushes[0];
       if (selector === undefined || selector.length !== SELECTOR_LENGTH) {
-        throw new PerCallEncodingError(
+        throw new FramedEncodingError(
           `the call from "${master.master}" to "${call.callee}" does not begin with a ${SELECTOR_LENGTH}-byte selector`,
         );
       }
       const previous = recorded.get(call.callee);
       if (previous !== undefined && !samePushes(previous, call.argumentPushes)) {
-        throw new PerCallEncodingError(
+        throw new FramedEncodingError(
           `"${call.callee}" is called with different arguments by more than one caller, `
           + 'so its single input cannot carry both',
         );
@@ -401,14 +401,14 @@ function assertCallDataAgrees(plan: CompositionPlan): void {
       // A user's entry carries no call data unless the program dispatches over several entries, in which case the
       // selector the user's call data leads with is what picks the entry the user asked for.
       if (master.argumentPushes.length > 0 && master.dispatches !== true) {
-        throw new PerCallEncodingError(
+        throw new FramedEncodingError(
           `"${master.master}" is entered by a user, so it carries no call data`,
         );
       }
       continue;
     }
     if (!samePushes(committed, master.argumentPushes)) {
-      throw new PerCallEncodingError(
+      throw new FramedEncodingError(
         `"${master.master}" carries call data its caller did not record`,
       );
     }
@@ -439,7 +439,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
   for (const participant of layout.participants) indexOf.set(participant.id, participant.index);
   for (const user of plan.userInputs) {
     if (indexOf.has(user.id)) {
-      throw new PerCallEncodingError(`"${user.id}" is both a participant and a user input`);
+      throw new FramedEncodingError(`"${user.id}" is both a participant and a user input`);
     }
     indexOf.set(user.id, user.index);
   }
@@ -465,7 +465,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
     const calls = master.calls.map((call) => {
       const calleeRef = resolve(call.callee, 'callee');
       if (calleeRef === resolve(master.master, 'master')) {
-        throw new PerCallEncodingError(`master "${master.master}" calls itself, which the format refuses`);
+        throw new FramedEncodingError(`master "${master.master}" calls itself, which the format refuses`);
       }
       const hashed = argsHashOf(call);
       resolvedCalls.push({ from: master.master, callee: call.callee, calleeRef, argsHash: hashed });
@@ -542,7 +542,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
 function argsHashOf(call: PlannedCall): Uint8Array {
   const pushes = call.argumentPushes;
   if (pushes.length === 0) {
-    throw new PerCallEncodingError('a call carries at least its selector');
+    throw new FramedEncodingError('a call carries at least its selector');
   }
   const [selector, ...args] = pushes;
   return argsHash(selector!, encodeArgumentList(args));
@@ -554,7 +554,7 @@ function ordered(layout: TransactionLayout, assembled: readonly AssembledInput[]
   const participants = new Set(layout.participants.map((participant) => participant.index));
   for (const input of byIndex) {
     if (!participants.has(input.index)) {
-      throw new PerCallEncodingError(`input "${input.id}" sits at ${input.index}, outside the layout's participants`);
+      throw new FramedEncodingError(`input "${input.id}" sits at ${input.index}, outside the layout's participants`);
     }
   }
   return byIndex;

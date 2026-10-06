@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
- * A plain callee whose value send the call's own facts do not decide, on the plain call path (`callPerCallEntry`).
+ * A plain callee whose value send the call's own facts do not decide, on the plain call path (`callFramedEntry`).
  *
  * `Vault.share` pays the native coin through a low-level call when the token it is named is the zero address, and
  * otherwise moves the token. `Vault.refund` reads a deal into memory and branches on the deal's token the same way:
@@ -62,7 +62,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 /** The zero address, which the compiler spells as the empty byte string. */
 const ZERO_ADDRESS = new Uint8Array(0);
@@ -106,7 +106,7 @@ function chain(): Promise<Chain> {
 /** One entry of the desk, which reaches the vault and, for a real token, the token. */
 function enterDesk(
   c: Chain, functionName: string, args: readonly FunctionArgument[],
-): Promise<Outcome<PerCallCallResult>> {
+): Promise<Outcome<FramedCallResult>> {
   return enterPlain(c.world, c.desk, functionName, args, {
     Vault: { artifact: c.vault.artifact, categoryId: c.vault.categoryId },
     Token: { artifact: c.token.artifact, categoryId: c.token.categoryId },
@@ -115,7 +115,7 @@ function enterDesk(
 
 /** One holder's token balance, read from the token's nodes through the read path. */
 async function balanceOf(c: Chain, holder: Uint8Array): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: c.world.network, artifact: c.token.artifact, categoryId: c.token.categoryId, functionName: 'balanceOf',
     args: [holder], vm: compositionMachine(),
   });
@@ -125,7 +125,7 @@ async function balanceOf(c: Chain, holder: Uint8Array): Promise<unknown> {
 
 /** A settled call through the root, the vault entry and the token, which pays `lock` no native output. */
 function expectTokenBranch(
-  paid: Outcome<PerCallCallResult>, root: string, vault: string, lock: Uint8Array,
+  paid: Outcome<FramedCallResult>, root: string, vault: string, lock: Uint8Array,
 ): void {
   expect(paid.error?.message).toBeUndefined();
   expect(refusedVerdicts(paid.result!)).toBeUndefined();
@@ -140,7 +140,7 @@ function expectTokenBranch(
 }
 
 /** A call refused before anything is spent: by name, or by the verdict of the frame whose body reached the send. */
-function expectRefused(refused: Outcome<PerCallCallResult>): void {
+function expectRefused(refused: Outcome<FramedCallResult>): void {
   expect(refused.result?.broadcast).toBeUndefined();
   expect(refused.error !== undefined || refusedVerdicts(refused.result!) !== undefined).toBe(true);
   expect(refused.coinSpent).toBe(false);

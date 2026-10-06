@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind, buildPushdataCommitment, computeFunctionSelector, computeFunctionSignature, type RecordEntry } from '@solidcash/utils';
 import { compileAndDeploy, entryName, hexOf, seededAddress, userInput, USER_LOCK } from '../shapes/harness.js';
-import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/framed/master/validator-input.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { layoutWithFacets } from '../shapes/harness.js';
 
 /**
@@ -47,7 +47,7 @@ const REVERTING = stateful('require(this.counter < 0);');
 
 const ledgerLabel = 'writes after call ledger';
 const calleeLabel = 'writes after call callee';
-const artifacts = compileStringMulti(FAITHFUL, { composition: 'per-call' });
+const artifacts = compileStringMulti(FAITHFUL, { composition: 'framed' });
 const ledgerArtifact = artifacts.Ledger!;
 
 const commitment = (counter: bigint): Uint8Array =>
@@ -169,7 +169,7 @@ describe('an assertion that fails after a state-changing call', () => {
   it('is refused: no derived step fills its witness, so the execution never settles', () => {
     // The record is written before the call, then the body reverts, so the close of its second segment is not a
     // state the machine accepts and the derivation reports the stalled step by name.
-    expect(() => derive(REVERTING)).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => derive(REVERTING)).toThrow(/FRAMED_DERIVATION_STALLED/);
     // The faithful body settles above, so the refusal is the failed assertion and not the composition.
   });
 });

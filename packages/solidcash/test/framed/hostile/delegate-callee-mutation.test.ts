@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, type Artifact } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
-  VALIDATOR_PROGRAM_REASONS, decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
-import { decideReference } from '../../../src/per-call/validator/reference/index.js';
+  VALIDATOR_PROGRAM_REASONS, decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
+import { decideReference } from '../../../src/framed/validator/reference/index.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, master, masterInput,
   rootOf, selectorOf, token, userInput, userInputs, validatorFor,
@@ -16,14 +16,14 @@ import {
 import {
   participant,
   type CompositionDraftPlan, type ContractBlock, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * The delegated callee must be the implementation the proxy's record names.
  *
  * A proxy holds its implementation's address in a state record, and its fallback forwards the call data it
  * received to that address with `delegatecall`. The forwarded hop is driven here exactly as the toy does: the
- * proxy and two implementations compile through `compileStringMulti` with the per-call convention, deploy at their
+ * proxy and two implementations compile through `compileStringMulti` with the framed convention, deploy at their
  * own seeded categories, and a plan the shipped composer lays out and assembles is derived and judged by the
  * BCH-2026 machine.
  *
@@ -160,7 +160,7 @@ function planFor(
 
 interface Composed {
   readonly outcome: ReturnType<typeof composeAndDerive>;
-  readonly transaction: PerCallTransaction;
+  readonly transaction: FramedTransaction;
   readonly validatorIndex: number;
 }
 
@@ -181,7 +181,7 @@ function composeHop(hop: Hop): Composed {
 }
 
 /** The assembled transaction restated in the shape the derivation reads; nothing here decides anything. */
-function modelOf(outcome: ReturnType<typeof composeAndDerive>): PerCallTransaction {
+function modelOf(outcome: ReturnType<typeof composeAndDerive>): FramedTransaction {
   const program = outcome.draft.programFor(PROXY_MASTER);
   type VmToken = { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
   const shape = (holder: { readonly token?: VmToken }): TokenShape => (holder.token === undefined

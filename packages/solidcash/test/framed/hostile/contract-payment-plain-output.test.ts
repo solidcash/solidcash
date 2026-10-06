@@ -7,13 +7,13 @@ import {
   INDEX_NONE, computeFunctionSelector, computeFunctionSignature, concatBytes, decodeTranscript, decodeWitnessBlock,
   encodeTranscript, encodeWitnessBlock, sha256, splitFirstPush, type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { satoshiContainerLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry, sendPerCallValue, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { satoshiContainerLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry, sendFramedValue, type FramedCallResult } from '../../../src/framed/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -49,7 +49,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function deposit() payable { this.received = this.received + msg.value; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const AMOUNT = 7_000n;
 const DEPOSIT = 20_000n;
 const RECEIVE_SELECTOR = computeFunctionSelector(computeFunctionSignature('__receive', []));
@@ -72,7 +72,7 @@ interface Spend {
 
 interface Payment {
   readonly spend: Spend;
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
   readonly payerCategory: string;
   readonly vaultCategory: string;
 }
@@ -101,7 +101,7 @@ beforeAll(async () => {
   const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
   await provider.addUtxo(binToHex(callerLock), { txid: txidOf('caller coin'), vout: 0, satoshis: 300_000n });
   await fundShippedFacets(provider);
-  const caller = async (): Promise<Parameters<typeof sendPerCallValue>[0]> => {
+  const caller = async (): Promise<Parameters<typeof sendFramedValue>[0]> => {
     const coins = (await provider.getUtxosForLockingBytecode(callerLock))
       .filter((utxo) => utxo.token === undefined)
       .sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
@@ -111,11 +111,11 @@ beforeAll(async () => {
       vm: compositionMachine(), value: 0n,
     };
   };
-  await sendPerCallValue({ ...(await caller()), value: DEPOSIT });
+  await sendFramedValue({ ...(await caller()), value: DEPOSIT });
   const snapshot = await provider.takeSnapshot();
   const pay = async (vaultCategory: string): Promise<Payment> => {
     await snapshot.restore();
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       ...(await caller()),
       functionName: 'pay',
       args: [addressOf(artifacts.Vault!, vaultCategory), AMOUNT],

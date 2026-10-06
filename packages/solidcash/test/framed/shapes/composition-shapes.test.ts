@@ -4,7 +4,7 @@ import { FrameKind } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
   composeDraft, participant, type CompositionDraftPlan,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   USER_LOCK, composeAndDerive, compileAndDeploy, entryName, hexOf, master, masterInput,
   rootOf, seededAddress, selectorOf, selectorOfSignature, token, userInput, userInputs, validatorFor,
@@ -12,7 +12,7 @@ import {
 } from './harness.js';
 
 /**
- * The composition shapes the per-call composer has to lay out.
+ * The composition shapes the framed composer has to lay out.
  *
  * A shape is which contracts a transaction enters and how they call each other. Each supported shape below is run
  * through the same shipped functions — one compile, one deployment, one composer, one derivation, one machine — and
@@ -290,8 +290,8 @@ describe('one contract entering another of its own entries', () => {
       + '   function start() { IOwn(address(this)).inner.call(); require(true); }'
       + '   function inner() { require(true); }'
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
-    expect(artifacts.Own?.composition?.convention).toBe('per-call');
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
+    expect(artifacts.Own?.composition?.convention).toBe('framed');
     expect(artifacts.Own?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'start']);
   });
 });
@@ -313,7 +313,7 @@ describe('a call and a return call between two contracts', () => {
       + ' contract Second {'
       + `   function respond() { IFirst(0x${hexOf(firstAddress)}).finish.call(); require(true); }`
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     expect(artifacts.First?.abi.map((entry) => entry.name).sort()).toEqual(['begin', 'finish']);
     expect(artifacts.Second?.abi.map((entry) => entry.name)).toEqual(['respond']);
   });
@@ -478,7 +478,7 @@ describe('a three-contract chain that calls back to the first', () => {
     });
     expect(() => composeAndDerive(planFor(built, { rootSelector: false }), [
       built.artifacts.First!, built.artifacts.Second!, built.artifacts.Third!,
-    ], [rootOf('First', 'begin', 'first-1')])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    ], [rootOf('First', 'begin', 'first-1')])).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });
 
@@ -706,7 +706,7 @@ describe('two independent pairs that each need their own validator', () => {
     // The left pair's validator also claims `Right`, which the right pair's own validator hosts.
     const refusal = shippedRefusal(() => composeDraft(planFor(built, { leftCovers: ['LeftCallee', 'Right'] })));
 
-    expect(refusal.name).toBe('PerCallEncodingError');
+    expect(refusal.name).toBe('FramedEncodingError');
     expect(refusal.message).toBe('"Right" is covered by more than one validator');
   });
 });

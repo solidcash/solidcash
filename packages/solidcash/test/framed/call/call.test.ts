@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { participant } from '../../../src/per-call/composer/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { deployMaster, stateRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { participant } from '../../../src/framed/composer/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
 /**
- * Calling an entry on a deployed per-call contract.
+ * Calling an entry on a deployed framed contract.
  *
  * The call runs the whole shipped path: compile, deploy through the shipped deployment entry point, classify the
  * live pools and records, plan a `ROOT` frame entered by the caller's own coin, derive it with the shipped
@@ -43,9 +43,9 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function current() view returns (int) { return this.counter; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const counter = artifacts.Counter!;
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const CATEGORY = new Uint8Array(Buffer.from(CATEGORY_HEX, 'hex'));
 const DEPLOYED_MASTER = deployMaster(counter, CATEGORY, VALIDATOR_PROGRAM);
 
@@ -103,8 +103,8 @@ function sharedDeployment(): Promise<Deployed> {
 }
 
 /** Calls `bump` with one argument through the shipped call path. */
-async function bump(deployed: Deployed, by: bigint): ReturnType<typeof callPerCallEntry> {
-  return callPerCallEntry({
+async function bump(deployed: Deployed, by: bigint): ReturnType<typeof callFramedEntry> {
+  return callFramedEntry({
     provider: deployed.provider,
     artifact: counter,
     categoryId: deployed.categoryId,
@@ -117,7 +117,7 @@ async function bump(deployed: Deployed, by: bigint): ReturnType<typeof callPerCa
   });
 }
 
-describe('calling an entry on a deployed per-call contract', () => {
+describe('calling an entry on a deployed framed contract', () => {
   it('derives the root frame, accepts every participant and broadcasts the write', async () => {
     const deployed = await sharedDeployment();
     const result = await bump(deployed, 3n);

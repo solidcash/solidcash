@@ -32,7 +32,7 @@ import { cloneNode } from '../ast/clone.js';
  *
  * A `function(P) external returns(R) x;` is flattened to TWO state fields - an `address x` (the callee locking
  * bytecode) plus a companion `bytes4 __fnsel_x` (the runtime selector). A store copies both parts; a call
- * dispatches through the same synthesized `__FnPtr_N` interface + per-call master index the PARAM lowering uses
+ * dispatches through the same synthesized `__FnPtr_N` interface + framed master index the PARAM lowering uses
  * (slot.fnPtrCall), with the runtime selector sourced from the companion field. So `x(args)` reduces to the
  * audited state-address external call `__FnPtr_N(x).__call(args)` with a runtime selector - the proven co-spend.
  *

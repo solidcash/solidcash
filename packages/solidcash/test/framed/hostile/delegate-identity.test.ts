@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { layoutWithFacets } from '../shapes/harness.js';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, type Artifact } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
-  VALIDATOR_PROGRAM_REASONS, decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
-import { decideReference } from '../../../src/per-call/validator/reference/index.js';
+  VALIDATOR_PROGRAM_REASONS, decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
+import { decideReference } from '../../../src/framed/validator/reference/index.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, master, masterInput,
   rootOf, selectorOf, token, userInput, userInputs, validatorFor,
@@ -17,7 +17,7 @@ import {
 import {
   participant,
   type CompositionDraftPlan, type ContractBlock, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A DELEGATE frame's identity is its caller's: it borrows the caller's `msg.sender` and `address(this)`.
@@ -170,7 +170,7 @@ function planFor(
 
 interface Composed {
   readonly outcome: ReturnType<typeof composeAndDerive>;
-  readonly transaction: PerCallTransaction;
+  readonly transaction: FramedTransaction;
   readonly validatorIndex: number;
 }
 
@@ -190,7 +190,7 @@ function composeHop(identity: Identity, fixture: Fixture = setup()): Composed {
 }
 
 /** The assembled transaction restated in the shape the derivation reads; nothing here decides anything. */
-function modelOf(outcome: ReturnType<typeof composeAndDerive>): PerCallTransaction {
+function modelOf(outcome: ReturnType<typeof composeAndDerive>): FramedTransaction {
   const program = outcome.draft.programFor(PROXY_MASTER);
   type VmToken = { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
   const shape = (holder: { readonly token?: VmToken }): TokenShape => (holder.token === undefined

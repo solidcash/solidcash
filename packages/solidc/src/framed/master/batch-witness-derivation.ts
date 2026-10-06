@@ -3,7 +3,7 @@
  *
  * The direct convention receives the sorted-batch operands from its SDK: per target, the masked slot, the input
  * index the write proves against, the successor the written node carries and the output the rewritten predecessor
- * is recreated at, and once how many records the execution creates. A per-call master has no such SDK operand list,
+ * is recreated at, and once how many records the execution creates. A framed master has no such SDK operand list,
  * but its own witness block already declares, per segment, every record the execution touches as
  * `{ in, out, viewIn, viewOut }`. This builder reads that block back and leaves the operands the existing
  * verification already consumes, so no verification check changes.
@@ -72,7 +72,7 @@ export interface BatchTargetsDerivationOptions {
   /**
    * How many records a segment declares at the head of its record list for the frame's own contract state.
    *
-   * A per-call frame declares its own data-NFT state records before any mapping target's group, so the walk steps
+   * A framed frame declares its own data-NFT state records before any mapping target's group, so the walk steps
    * over that many records before reading the first group. Absent means none.
    */
   readonly leadingRecords?: number;

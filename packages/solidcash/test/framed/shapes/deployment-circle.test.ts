@@ -3,9 +3,9 @@ import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import {
   FrameKind, buildPushdataCommitment, type Artifact, type StateValue,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Signer, StatefulContract, TransactionBuilder } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
@@ -15,14 +15,14 @@ import {
 } from '../../../src/utils.js';
 import { encodeFunctionArgument, type FunctionArgument } from '../../../src/Argument.js';
 import {
-  CreateLookahead, deployMaster, readPerCallDeployment, readPerCallState,
+  CreateLookahead, deployMaster, readFramedDeployment, readFramedState,
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { DEFAULT_MASTER_POOL_SIZE } from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { DEFAULT_MASTER_POOL_SIZE } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost, deriveComposition, participant,
   type CompositionDraft, type CompositionDraftPlan,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { master, token as tokenOf } from './harness.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import { layoutWithFacets } from './harness.js';
@@ -35,12 +35,12 @@ import { layoutWithFacets } from './harness.js';
  * shape's proxy pair, deployed behind the built-in forwarder, is `deploy/proxy-initialize-broadcast.test.ts`'s.
  *
  * Everything runs the shipped path: the addresses are reserved and predicted through `CreateLookahead`, the
- * deployments are `StatefulContract.deploy` (which routes a per-call artifact to the per-call genesis), the calls
+ * deployments are `StatefulContract.deploy` (which routes a framed artifact to the framed genesis), the calls
  * are the shipped composer plus derivation rebuilt on the outpoints the chain holds, and every state read is
- * `readPerCallState`/`readPerCallDeployment`.
+ * `readFramedState`/`readFramedDeployment`.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const VALUE = 20_000n;
 
 /** No constructors: the initial state is the initializer, so each contract serves one entry and needs no dispatch. */
@@ -116,8 +116,8 @@ async function fundedSigner(count: number, fill: number): Promise<{
 /** Compiles the circle and token units once, reserves five genesis coins, and deploys everything. */
 async function setUp(): Promise<Deployment> {
   const { provider, signer } = await fundedSigner(5, 0xc1);
-  const circleArtifacts = compileStringMulti(CIRCLE_SOURCE, { composition: 'per-call' });
-  const tokenUnit = compileStringMulti(TOKEN_SOURCE, { composition: 'per-call' });
+  const circleArtifacts = compileStringMulti(CIRCLE_SOURCE, { composition: 'framed' });
+  const tokenUnit = compileStringMulti(TOKEN_SOURCE, { composition: 'framed' });
   const tokenArtifact = tokenUnit.Token!;
 
   const lookahead = CreateLookahead.open({ signer, artifact: circleArtifacts.Alpha! });
@@ -242,7 +242,7 @@ async function statefulCallPlan(options: {
   const layout = options.artifact.stateLayout!;
   const category = hexToBin(options.categoryId);
   const deployed = deployMaster(options.artifact, category, VALIDATOR_PROGRAM);
-  const pools = await readPerCallDeployment(options.provider, options.categoryId, layout);
+  const pools = await readFramedDeployment(options.provider, options.categoryId, layout);
   const masterUtxo = pools.masters[0]!;
   const recordUtxo = pools.records[0]!;
   const currentCommitment = hexToBin(recordUtxo.token!.nft!.commitment);
@@ -388,7 +388,7 @@ async function sendEntry(options: {
 async function readState(
   provider: MockNetworkProvider, categoryId: string, artifact: Artifact,
 ): Promise<Record<string, StateValue>> {
-  const state = await readPerCallState(provider, categoryId, artifact.stateLayout!);
+  const state = await readFramedState(provider, categoryId, artifact.stateLayout!);
   return state.byNft[0]!;
 }
 
@@ -402,7 +402,7 @@ describe('a deployment whose addresses are predicted before anything is deployed
       expect(d.categories[index]).toBe(d.reserved[index]!.txid);
       // ...so the address read back from that category is the predicted one.
       expect([...d.addresses[index]!]).toStrictEqual([...d.predicted[index]!]);
-      const found = await readPerCallDeployment(d.provider, d.categories[index]!, layout);
+      const found = await readFramedDeployment(d.provider, d.categories[index]!, layout);
       // The genesis funds the contract's default pools, so the live geometry is the default one.
       expect(found.masters.length).toBe(DEFAULT_MASTER_POOL_SIZE.masters);
       expect(found.validators.length).toBe(DEFAULT_MASTER_POOL_SIZE.validators);

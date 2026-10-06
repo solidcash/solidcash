@@ -61,26 +61,26 @@ import { clearDefineFrameValidations } from './define-frame-validation.js';
 import {
   assertCompositionConventionSupported,
   resolveCompositionConvention,
-} from './per-call/master/composition.js';
-import { assessPerCallMasterShape, directRefusedEntries, stripFrameParameters } from './per-call/master/support.js';
-import { requireUpgradeLayouts, type UpgradesFrom } from './per-call/upgrade-layout.js';
-import type { MasterCallSite } from './per-call/master/frame-tail.js';
+} from './framed/master/composition.js';
+import { assessFramedMasterShape, directRefusedEntries, stripFrameParameters } from './framed/master/support.js';
+import { requireUpgradeLayouts, type UpgradesFrom } from './framed/upgrade-layout.js';
+import type { MasterCallSite } from './framed/master/frame-tail.js';
 import {
-  extractPerCallLifecycle, perCallLifecycleFunctions, publishLifecycle, wrapLifecycleArm,
-  type PerCallLifecycleEntry,
-} from './per-call/master/lifecycle.js';
+  extractFramedLifecycle, framedLifecycleFunctions, publishLifecycle, wrapLifecycleArm,
+  type FramedLifecycleEntry,
+} from './framed/master/lifecycle.js';
 import {
   entryFunctionName,
-  publishPerCallStopSites,
-  type PublishedPerCallStopSites,
-} from './per-call/master/stop-sites.js';
+  publishFramedStopSites,
+  type PublishedFramedStopSites,
+} from './framed/master/stop-sites.js';
 import {
   alignCensusAddressOffset,
-  padPerCallMasterScript,
+  padFramedMasterScript,
   findPlaceholderOffsets,
-  isPerCallMaster,
-  setPerCallMaster,
-} from './per-call/master/master-program.js';
+  isFramedMaster,
+  setFramedMaster,
+} from './framed/master/master-program.js';
 import {
   admittedHandlerNamesFromAnalysis,
   assertPublishedHandlersMatchAdmission,
@@ -620,23 +620,23 @@ type InternalCompilerOptions = CompilerOptions & {
   __internalAttemptFailureState?: InternalAttemptFailureState;
   /** Compiler-private completed-ABI authority crossing only the pristine verifier-binding boundary. */
   __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
-  /** Set once the parsed contract is admitted as a shape this compiler can emit a per-call master for. */
-  __perCallMaster?: boolean;
+  /** Set once the parsed contract is admitted as a shape this compiler can emit a framed master for. */
+  __framedMaster?: boolean;
   /** Each entry's own external calls, in execution order, keyed by entry name, as that entry's sites bind them. */
-  __perCallEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
+  __framedEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
-  __perCallCallCount?: number;
-  __perCallRefusedEntries?: Map<string, string>;
+  __framedCallCount?: number;
+  __framedRefusedEntries?: Map<string, string>;
   /** Refused bodies no selector reaches whose definitions are emitted as refusal stubs; never published. */
-  __perCallStubbedDefinitions?: Map<string, string>;
-  __perCallBalanceReaders?: readonly string[];
-  __perCallEntryCallRepeats?: Map<string, boolean>;
+  __framedStubbedDefinitions?: Map<string, string>;
+  __framedBalanceReaders?: readonly string[];
+  __framedEntryCallRepeats?: Map<string, boolean>;
   /** The stop-site table a driver derives the master from, one entry per entry point. */
-  __perCallStopSites?: PublishedPerCallStopSites;
+  __framedStopSites?: PublishedFramedStopSites;
   /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
-  __perCallReservesValidatorHash?: boolean;
+  __framedReservesValidatorHash?: boolean;
   /** The source's `split(n)` and `merge(n)`, served by the master's lifecycle arm rather than its head. */
-  __perCallLifecycle?: readonly PerCallLifecycleEntry[];
+  __framedLifecycle?: readonly FramedLifecycleEntry[];
   /**
    * Functions refused for a loop guard their published recipe cannot carry, by name, with the published reason. Set
    * by `compileStringUnchecked` after code generation reached the loop; never seeded by a caller.
@@ -793,7 +793,7 @@ function assertNoInternalAttemptRecovery(options: InternalCompilerOptions): void
 
 interface OptionalLoweringFeatures {
   hasFunctionPointers: boolean;
-  // A function type outside a declaration's written type: the narrower question the per-call shape check asks.
+  // A function type outside a declaration's written type: the narrower question the framed shape check asks.
   functionTypeOutsideDeclarations: boolean;
   needsBlockOracle: boolean;
   needsMsgDataContext: boolean;
@@ -1172,8 +1172,8 @@ export interface CompileOptions extends CompilerOptions {
    */
   compileDeclarations?: readonly string[];
   /**
-   * Per contract name, the state layout of the implementation the contract replaces behind a per-call proxy. The
-   * compile refuses, by name, a contract that would read those records differently (`per-call/upgrade-layout.ts`).
+   * Per contract name, the state layout of the implementation the contract replaces behind a framed proxy. The
+   * compile refuses, by name, a contract that would read those records differently (`framed/upgrade-layout.ts`).
    */
   upgradesFrom?: UpgradesFrom;
 }
@@ -2939,11 +2939,11 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
   // the shipped proxy artifact.
   delete mergedCompilerOptions.__cheapAdmissionCodegen;
   assertNoInternalAttemptRecovery(mergedCompilerOptions);
-  // A per-call artifact carries no route: its program is the contract's own bodies behind one head, and the bus's
+  // A framed artifact carries no route: its program is the contract's own bodies behind one head, and the bus's
   // bodies are not emitted into it, so the invariants that compare a published route's verifier lock with the
   // emitted program are questions about a program this convention did not build. They are asked on the paths that
   // emit a route.
-  if (mergedCompilerOptions.composition !== 'per-call') {
+  if (mergedCompilerOptions.composition !== 'framed') {
     const finalVerifierProgram = artifact.messageBus?.verifierProgram;
     const finalVerifierBound = artifact.messageBus?.route.inputs.some((input) =>
       input.name === '__internal__activeVerifierIndex') === true;
@@ -3050,8 +3050,10 @@ function attachDelegateVariant(
 ): void {
   if (mergedCompilerOptions.autoDelegate || artifact.isLibrary) return;
   // A master program runs at the contract's own address and is never selected as a proxy implementation, so a
-  // second delegate-mode compile of the same source would only produce an unusable artifact.
-  if (artifact.composition?.convention === 'per-call') return;
+  // second delegate-mode compile of the same source would only produce an unusable artifact. `per-call` is the
+  // deprecated name of `framed`, so an artifact compiled by an earlier version is recognised too.
+  if (artifact.composition?.convention === 'framed'
+    || artifact.composition?.convention === 'per-call') return;
   // Solidity initializer inference marks the primary artifact itself as a proxy implementation. Do not attach a
   // second delegate pass to that already-delegate artifact: synthetic ABI helpers such as __updateBlockOracle
   // have no visibility modifier and previously looked like another candidate, producing a much larger hybrid
@@ -3458,7 +3460,7 @@ function compileDetachedMessageBusVerifierUncached(
   ast = ast.accept(new ValidateDataLocations(false)) as Ast;
   ast = ast.accept(new SymbolTableTraversal({ ...compilerOptions, messageBus: false })) as Ast;
   ast = ast.accept(new TypeCheckTraversal(
-    true, false, compilerOptions.rootFileId, compilerOptions.composition === 'per-call',
+    true, false, compilerOptions.rootFileId, compilerOptions.composition === 'framed',
   )) as Ast;
   ast = ast.accept(new EnsureFinalRequireTraversal(false, true)) as Ast;
   const traversal = new GenerateTargetTraversal({
@@ -4225,14 +4227,14 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
 }
 
 /**
- * Auto-narrowing is a direct compile, including its lowering and source-error policy. A per-call composition lays
+ * Auto-narrowing is a direct compile, including its lowering and source-error policy. A framed composition lays
  * its frames from the contract's own bodies behind one head and emits no route, so it builds none whatever its call
  * graph; it keeps the kernel convention the rest of its lowering reads (a loop's iteration ceiling among them).
  */
 function narrowGraphFreeAutoMessageBus(ast: Ast, options: CompilerOptions): void {
   const internal = options as InternalCompilerOptions;
   if (internal.__messageBusMode !== 'auto' || options.messageBusGraphContext) return;
-  if (options.composition === 'per-call') {
+  if (options.composition === 'framed') {
     options.messageBus = false;
     return;
   }
@@ -9370,7 +9372,7 @@ function synthesizeMessageBusRoute(
         // separately authenticated effect frame. Its result is committed by
         // the invocation row while events/value are committed by child effect
         // rows, so returning and producing an effect are independent here.
-        // Flattened handlers have no per-callsite effect frame and retain the
+        // Flattened handlers have no framedsite effect frame and retain the
         // fail-closed restriction.
         const continuationEffect = graphTailHandlers.has(fn)
           || eligibleFootprint(fn).effects.every((effect) => ['events', 'value'].includes(effect));
@@ -9776,7 +9778,7 @@ function synthesizeMessageBusRoute(
   // reached repeatedly through a deeper call DAG (approve -> balanceOf -> transferFrom -> balanceOf).
   // message-bus batch graph handlers share one physical route. Plan blockhash reads before SynthesizeBlockOracle runs:
   // every row gets a fixed band whose width is the widest selectable handler, so a different selector cannot
-  // shift any later owner's inputs. Computed reads retain the same stable per-call-site keys as the oracle pass.
+  // shift any later owner's inputs. Computed reads retain the same stable framed-site keys as the oracle pass.
   const graphBlockhashReads = new Map<FunctionDefinitionNode, string[]>();
   for (const fn of eligible.filter((candidate) => graphTailHandlers.has(candidate))) {
     const reads: string[] = [];
@@ -14316,9 +14318,9 @@ function compileResolvedAst(
   let currentPhase = 'start';
   const contractName = ast.contract?.name;
   // The inline-assembly blocks each body reaches are read from the program as it arrived. A later pass rewrites
-  // the blocks the lowering supports, and the admission rungs prune entry bodies, so the reachability a per-call
+  // the blocks the lowering supports, and the admission rungs prune entry bodies, so the reachability a framed
   // body is refused by is taken here and matched against what the lowering left in place further down.
-  const perCallBodyAssembly = mergedCompilerOptions.composition === 'per-call'
+  const framedBodyAssembly = mergedCompilerOptions.composition === 'framed'
     ? captureBodyAssemblyBlocks(ast.contract, ast.freeFunctions)
     : undefined;
   const mark = (phase: string): void => {
@@ -14370,7 +14372,7 @@ function compileResolvedAst(
         ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
         ast = ast.accept(new TypeCheckTraversal(
           true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
-          mergedCompilerOptions.composition === 'per-call',
+          mergedCompilerOptions.composition === 'framed',
         )) as Ast;
       }
       // Emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
@@ -14542,10 +14544,10 @@ function compileResolvedAst(
   // synthesized public-state getters above) is intended to execute in the proxy's state context. Mark that surface
   // before modifier expansion consumes the custom-modifier metadata. Native SolidCash sources remain explicit.
   // The direct convention expresses that context by handing the entry the co-spent proxy master's input index as
-  // `__internal__proxyMasterIndex`. A per-call master reads its frames' blocks instead, and a DELEGATE frame is a
+  // `__internal__proxyMasterIndex`. A framed master reads its frames' blocks instead, and a DELEGATE frame is a
   // frame kind the head establishes rather than a property of a body, so the marking and its operand do not apply
   // to this convention.
-  if (mergedCompilerOptions.solidityImportCompat && mergedCompilerOptions.composition !== 'per-call'
+  if (mergedCompilerOptions.solidityImportCompat && mergedCompilerOptions.composition !== 'framed'
     && ast.contract.functions.some((fn) => fn.customModifiers.some(
       (modifier) => modifier.name === 'initializer' || modifier.name === 'reinitializer',
     ))) {
@@ -14816,12 +14818,12 @@ function compileResolvedAst(
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
-      mergedCompilerOptions.composition === 'per-call',
+      mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
     )) as Ast;
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
-      mergedCompilerOptions.composition === 'per-call',
+      mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
     )) as Ast;
     // Returning-helper reduction can expose scalar state inside a previously context-only void wrapper
@@ -14831,7 +14833,7 @@ function compileResolvedAst(
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
-      mergedCompilerOptions.composition === 'per-call',
+      mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
     )) as Ast;
     if (earlyEntryFeatures?.needsExternalCallLowering) {
@@ -14851,7 +14853,7 @@ function compileResolvedAst(
     // default composition's bus admits the body as written, publishing a compile-time-dead call among the entry's
     // external calls and the argument keys of a dead helper arm's write. Its publication drops the provisional
     // computed key such an arm leaves, and PruneInlinedConstantBranches removes the arm before slot discovery.
-    if (mergedCompilerOptions.composition === 'per-call') ast = ast.accept(new FoldConstantBoolBranches()) as Ast;
+    if (mergedCompilerOptions.composition === 'framed') ast = ast.accept(new FoldConstantBoolBranches()) as Ast;
   }
 
   // Kernel admission must classify the program the compiler will actually execute. Supported Yul is already
@@ -14914,7 +14916,7 @@ function compileResolvedAst(
     ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
     // Counter-keyed `m[i]` must expose `__internal__vmapCounterPerm_*` on the source handler before
     // admission clones it, so the route can pass that hidden witness into the DEFINE body.
-    ast = ast.accept(new LowerVMapCounterLoops(true, mergedCompilerOptions.composition === 'per-call')) as Ast;
+    ast = ast.accept(new LowerVMapCounterLoops(true, mergedCompilerOptions.composition === 'framed')) as Ast;
     // Single `m[k].field = v` writes become a whole-entry MappingAssign so kernel admission sees a
     // parameter-keyed journal slot instead of a field-update layout gap.
     ast = ast.accept(new CoalesceMappingEntryFieldWrites(true)) as Ast;
@@ -14924,9 +14926,9 @@ function compileResolvedAst(
     // Route synthesis below snapshots collection-bearing handlers. Cache invariant entries before that snapshot
     // so a computed key (for example totals[sha256(owner)]) is represented identically in the source handler and
     // its row-loop clone: one authenticated read, local mutations, and one fixed-entry flush. The later pass is
-    // idempotent and still covers shapes exposed by intervening desugaring. A per-call body keeps each cache inside
+    // idempotent and still covers shapes exposed by intervening desugaring. A framed body keeps each cache inside
     // the segments its own accesses run in, as the later pass does.
-    ast = ast.accept(new CacheMappingEntryInLoop(true, mergedCompilerOptions.composition === 'per-call')) as Ast;
+    ast = ast.accept(new CacheMappingEntryInLoop(true, mergedCompilerOptions.composition === 'framed')) as Ast;
     injectCollectionIterationWitnesses(ast);
     injectChunkableEntryWitnesses(ast);
   }
@@ -15040,10 +15042,10 @@ function compileResolvedAst(
     statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
   // The survey above answers for the whole unit, which for a multi-artifact compile is every sibling contract as
-  // well. A statefulness question is about one contract's own declarations and bodies, so under the per-call
+  // well. A statefulness question is about one contract's own declarations and bodies, so under the framed
   // convention — where each contract becomes one master program — the hint is taken from the contract being
   // compiled rather than from its siblings beside it.
-  const statefulnessHintSource = mergedCompilerOptions.composition === 'per-call'
+  const statefulnessHintSource = mergedCompilerOptions.composition === 'framed'
     ? surveyOptionalLowerings(ast.contract)
     : { hasContractInstantiation, deploysWithValue, emitsEvent };
   const contractStatefulnessHint = statefulnessSurveyComplete && ast.freeFunctions.length === 0
@@ -15085,7 +15087,7 @@ function compileResolvedAst(
   // or an empty body (needsReturnDesugaring), since the pass also supplies Solidity's fall-through defaults and
   // empty void bodies. Per-call runs it only where a function names its returns and does those two steps alone
   // otherwise (below), so every other function keeps the lowering its pinned codegen has.
-  const runsReturnDesugaring = mergedCompilerOptions.composition === 'per-call'
+  const runsReturnDesugaring = mergedCompilerOptions.composition === 'framed'
     ? needsNamedReturns
     : needsReturnDesugaring;
   if (runsReturnDesugaring) ast = ast.accept(new NamedReturnTransformation()) as Ast;
@@ -15224,36 +15226,36 @@ function compileResolvedAst(
   // A payload handed to a helper whose own body makes the low-level call (`Address.functionCall`, and the
   // `SafeERC20` chain behind it) names a method only once that helper is inlined into its caller: the payload
   // local the lowering follows is the helper's parameter, which becomes a caller local when the body is spliced
-  // in. The helper inliners run later in the ordinary pipeline, so under the per-call convention they run once
+  // in. The helper inliners run later in the ordinary pipeline, so under the framed convention they run once
   // here, before the lowering, and a namable payload across such a helper is served as its typed call.
   // Sampled before the inliner below deletes the helpers it splices in. The later fold decides from this,
   // because the definitions are already gone by the time the ordinary helper survey runs.
-  let perCallInlinedHelpers = false;
-  if (mergedCompilerOptions.composition === 'per-call' && needsExternalCallLowering) {
-    const perCallHasHelpers = ast.freeFunctions.length > 0
+  let framedInlinedHelpers = false;
+  if (mergedCompilerOptions.composition === 'framed' && needsExternalCallLowering) {
+    const framedHasHelpers = ast.freeFunctions.length > 0
       || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.INTERNAL)
         || fn.modifiers.includes(FunctionModifier.PRIVATE));
-    if (perCallHasHelpers) {
-      perCallInlinedHelpers = true;
+    if (framedHasHelpers) {
+      framedInlinedHelpers = true;
       ast = ast.accept(new InlineStoragePointerCalls(
         mergedCompilerOptions.solidityImportCompat ?? false,
         inlineDelegateStateHelpers,
-        mergedCompilerOptions.composition === 'per-call',
+        mergedCompilerOptions.composition === 'framed',
         signatureChecksInlined,
       )) as Ast;
       ast = ast.accept(new InlineReturningStateHelpers(
         mergedCompilerOptions.solidityImportCompat ?? false,
-        mergedCompilerOptions.composition === 'per-call',
+        mergedCompilerOptions.composition === 'framed',
         signatureChecksInlined,
       )) as Ast;
     }
   }
   // A low-level call whose payload names an interface method (`addr.call(abi.encodeCall(I.f, (args)))`, or the
   // selector or signature spelling) denotes the typed call `I(addr).f(args)`, or the target's fallback for a
-  // signature none of its methods has. It is rewritten to that call before semantic analysis, so the per-call
+  // signature none of its methods has. It is rewritten to that call before semantic analysis, so the framed
   // convention - which compiles typed calls but refuses the raw calldata form - serves it as the call its spelling
   // denotes. After LowerSelfLowLevelCalls, so a self-call has already been lowered.
-  if (mergedCompilerOptions.composition === 'per-call' && needsExternalCallLowering) {
+  if (mergedCompilerOptions.composition === 'framed' && needsExternalCallLowering) {
     ast = ast.accept(new LowerStaticLowLevelCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
     // A value-carrying low-level call with no payload (`to.call{value: v}("")`) denotes the send it pays, which the
     // convention pins at a listed output only a P2PKH lock can hold (W2).
@@ -15264,11 +15266,11 @@ function compileResolvedAst(
   if (needsMsgDataContext) ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
   // Internal/private msg.data readers receive the originating entry calldata through a compiler-only parameter.
   if (needsMsgDataContext) {
-    ast = ast.accept(new LowerInternalMsgDataContext(mergedCompilerOptions.composition === 'per-call')) as Ast;
+    ast = ast.accept(new LowerInternalMsgDataContext(mergedCompilerOptions.composition === 'framed')) as Ast;
   }
   // msg.sig retains the originating public/external selector across internal/private OP_INVOKE calls.
   if (needsMsgSigContext) {
-    ast = ast.accept(new LowerInternalMsgSigContext(mergedCompilerOptions.composition === 'per-call')) as Ast;
+    ast = ast.accept(new LowerInternalMsgSigContext(mergedCompilerOptions.composition === 'framed')) as Ast;
   }
 
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
@@ -15287,7 +15289,7 @@ function compileResolvedAst(
   // the callee still has its source arity; journal lowering below appends private witness parameters to its
   // dispatched definition, which an ordinary source call cannot supply.
   if (!mergedCompilerOptions.messageBus && needsCollectionJournal
-    && mergedCompilerOptions.composition !== 'per-call') {
+    && mergedCompilerOptions.composition !== 'framed') {
     const publicNames = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name));
     const callsPublic = ast.contract.functions.some((fn) => {
       let found = false;
@@ -15336,11 +15338,11 @@ function compileResolvedAst(
   // An entry another body calls by name is inlined there too (callsOwnFunction, which leaves a self-call to the
   // recursion lowering). The public-entry survey above is the default composition's.
   const inlinesOwnCalls = hasInternalHelpers || callsOwnFunction(ast.contract)
-    || (mergedCompilerOptions.composition !== 'per-call' && hasInternallyCalledPublicEntry);
+    || (mergedCompilerOptions.composition !== 'framed' && hasInternallyCalledPublicEntry);
   if (inlinesOwnCalls) {
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
-      mergedCompilerOptions.composition === 'per-call',
+      mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
     )) as Ast;
   }
@@ -15362,7 +15364,7 @@ function compileResolvedAst(
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
-      mergedCompilerOptions.composition === 'per-call',
+      mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
     )) as Ast;
   }
@@ -15382,13 +15384,13 @@ function compileResolvedAst(
 
   // A boolean literal substituted for a bool param at an inline site (`_refund(jobId, false)`) leaves an arm of the
   // branch on it that never runs; drop it, so a write in that arm never reaches the entry's write analysis. Per-call
-  // entries keep the arms only literals decide; a per-call constructor folds them too, as its genesis refuses a read
+  // entries keep the arms only literals decide; a framed constructor folds them too, as its genesis refuses a read
   // after a branch arm's write to an entry the read may name (`_mint` inlines `_update(address(0), to, v)`). A
   // message-bus compile of the default composition keeps them (see the fold on the message-bus path above).
-  if ((hasInternalHelpers || perCallInlinedHelpers)
-    && (mergedCompilerOptions.composition === 'per-call' || !mergedCompilerOptions.messageBus)) {
+  if ((hasInternalHelpers || framedInlinedHelpers)
+    && (mergedCompilerOptions.composition === 'framed' || !mergedCompilerOptions.messageBus)) {
     ast = ast.accept(new FoldConstantBoolBranches(
-      mergedCompilerOptions.composition === 'per-call' ? 'constructor' : true,
+      mergedCompilerOptions.composition === 'framed' ? 'constructor' : true,
     )) as Ast;
   }
 
@@ -15414,10 +15416,10 @@ function compileResolvedAst(
   }
   // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
-  // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache. A per-call body keeps the
+  // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache. A framed body keeps the
   // cache inside the segments its own accesses run in, so the upsert lands where the source writes the entry.
   if (needsLoop || needsCollectionJournal) {
-    ast = ast.accept(new CacheMappingEntryInLoop(false, mergedCompilerOptions.composition === 'per-call')) as Ast;
+    ast = ast.accept(new CacheMappingEntryInLoop(false, mergedCompilerOptions.composition === 'framed')) as Ast;
   }
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
@@ -16077,7 +16079,7 @@ function compileResolvedAst(
   const typeCheckStarted = Date.now();
   ast = ast.accept(new TypeCheckTraversal(
     true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
-    mergedCompilerOptions.composition === 'per-call',
+    mergedCompilerOptions.composition === 'framed',
   )) as Ast;
   profileLog('resolved:typecheck', typeCheckStarted, { contract: contractName });
   publishStoredValueSources(ast.contract, ast.structDefinitions);
@@ -16259,23 +16261,23 @@ function compileResolvedAst(
     delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
   }
   // Code generation
-  if (mergedCompilerOptions.composition === 'per-call') {
+  if (mergedCompilerOptions.composition === 'framed') {
     // The route is built for the lowering it performs on the source's own bodies — a low-level call becomes an
     // authenticated call, an assembly block is lowered — and that lowering stays. The bodies the route adds are the
-    // other convention's program, which this one does not carry: a per-call master dispatches the contract's own
+    // other convention's program, which this one does not carry: a framed master dispatches the contract's own
     // bodies. They are dropped here, before code generation reads the unit, so nothing downstream is asked to
     // compile a body this convention does not serve.
     ast.contract.functions = ast.contract.functions.filter(
       (fn) => !(fn.messageBusRoute === true || fn.name.startsWith('__message_bus')),
     );
     // `split(n)` and `merge(n)` resize the master pool in an arm beside the head, so the head never serves them.
-    const lifecycle = extractPerCallLifecycle(ast.contract);
+    const lifecycle = extractFramedLifecycle(ast.contract);
     if (lifecycle.length > 0) {
-      const lifecycleFunctions = new Set(perCallLifecycleFunctions(ast.contract));
+      const lifecycleFunctions = new Set(framedLifecycleFunctions(ast.contract));
       ast.contract.functions = ast.contract.functions.filter((fn) => !lifecycleFunctions.has(fn));
-      (mergedCompilerOptions as InternalCompilerOptions).__perCallLifecycle = lifecycle;
+      (mergedCompilerOptions as InternalCompilerOptions).__framedLifecycle = lifecycle;
     }
-    // A per-call compile emits one master program per contract. The shapes that program can carry are checked here,
+    // A framed compile emits one master program per contract. The shapes that program can carry are checked here,
     // after semantic analysis, so a contract whose frame the head cannot supply refuses by name instead of
     // compiling into a master that would violate its own frame rules.
     // The unit-wide survey above answers for every contract at once, so a sibling's emit would refuse a contract
@@ -16290,7 +16292,7 @@ function compileResolvedAst(
     const survivingAssembly = survivingAssemblyBlocks(ast);
     const assemblyBodies = new Set<string>();
     let assemblyInReachedDefinition = false;
-    for (const [name, blocks] of perCallBodyAssembly ?? []) {
+    for (const [name, blocks] of framedBodyAssembly ?? []) {
       for (const block of blocks) {
         if (survivingAssembly.inBodies.has(block)) assemblyBodies.add(name);
         else if (survivingAssembly.inFreeFunctions.has(block)) assemblyInReachedDefinition = true;
@@ -16298,13 +16300,13 @@ function compileResolvedAst(
     }
     if (assemblyInReachedDefinition) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        'the per-call composition convention does not support this contract: inline assembly is not composed '
-        + 'per-call',
-        { requested: 'per-call', reason: 'inline assembly is not composed per-call', contract: ast.contract.name },
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        'the framed composition convention does not support this contract: inline assembly is not composed '
+        + 'framed',
+        { requested: 'framed', reason: 'inline assembly is not composed framed', contract: ast.contract.name },
       );
     }
-    const assessment = assessPerCallMasterShape({
+    const assessment = assessFramedMasterShape({
       contract: ast.contract,
       compilerOptions: mergedCompilerOptions,
       interfaces: ast.interfaceDefinitions,
@@ -16319,9 +16321,9 @@ function compileResolvedAst(
     });
     if (!assessment.supported) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call composition convention does not support this contract: ${assessment.reason}`,
-        { requested: 'per-call', reason: assessment.reason, contract: ast.contract.name },
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed composition convention does not support this contract: ${assessment.reason}`,
+        { requested: 'framed', reason: assessment.reason, contract: ast.contract.name },
       );
     }
     stripFrameParameters(ast.contract, ast.constantDefinitions);
@@ -16331,30 +16333,30 @@ function compileResolvedAst(
     // descriptor list per entry, because the records are bound where each entry's own source makes the call; only
     // the count the head fixes is shared, so the entries must declare the same number of calls.
     const entryCalls = assessment.entryCalls ?? [];
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallEntryCallSites = new Map(
+    (mergedCompilerOptions as InternalCompilerOptions).__framedEntryCallSites = new Map(
       entryCalls.map((entry) => [entry.entryName, entry.calls]),
     );
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallEntryCallRepeats = new Map(
+    (mergedCompilerOptions as InternalCompilerOptions).__framedEntryCallRepeats = new Map(
       entryCalls.map((entry) => [entry.entryName, entry.repeats === true]),
     );
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallCallCount = assessment.callCount ?? 0;
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallRefusedEntries = new Map(
+    (mergedCompilerOptions as InternalCompilerOptions).__framedCallCount = assessment.callCount ?? 0;
+    (mergedCompilerOptions as InternalCompilerOptions).__framedRefusedEntries = new Map(
       (assessment.refusedEntries ?? []).map((entry) => [entry.entryName, entry.reason]),
     );
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallStubbedDefinitions = new Map(
+    (mergedCompilerOptions as InternalCompilerOptions).__framedStubbedDefinitions = new Map(
       (assessment.stubbedDefinitions ?? []).map((body) => [body.name, body.reason]),
     );
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallBalanceReaders = assessment.balanceReaders ?? [];
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = true;
+    (mergedCompilerOptions as InternalCompilerOptions).__framedBalanceReaders = assessment.balanceReaders ?? [];
+    (mergedCompilerOptions as InternalCompilerOptions).__framedReservesValidatorHash = true;
     // The stop sites a builder resumes from, published per entry so a driver can look one up by the identity its
     // `FrameRequest.functionName` carries. Each entry publishes its own calls, so a driver names the callees that
     // entry's sites bind. No `read` site is published: the compiler does not hold the record identity a read
     // resolves to.
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallStopSites = publishPerCallStopSites(
+    (mergedCompilerOptions as InternalCompilerOptions).__framedStopSites = publishFramedStopSites(
       ast.contract.name,
       entryCalls,
     );
-    setPerCallMaster(mergedCompilerOptions as InternalCompilerOptions);
+    setFramedMaster(mergedCompilerOptions as InternalCompilerOptions);
   }
   if (mergedCompilerOptions.messageBus) {
     // Both semantic analysis and late resource-fold preparation append compiler-owned route inputs. Invoked
@@ -16410,17 +16412,17 @@ function compileResolvedAst(
 
   // The census baked its address offset before this rewrite. Point it at the slot the finished script contains.
   // The comparison above is the two optimisers against each other, so the retarget stays outside it.
-  if (isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)) {
+  if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
-      .__perCallReservesValidatorHash === true;
+      .__framedReservesValidatorHash === true;
     // The lifecycle arm wraps the optimised master, so the census is retargeted after it moves the master's bytes.
-    const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__perCallLifecycle;
+    const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__framedLifecycle;
     if (lifecycle !== undefined) {
       Object.assign(optimisationResult, wrapLifecycleArm(optimisationResult, lifecycle, ast.contract.location));
     }
     // The padding comes after the census retarget: it is appended, so no earlier offset moves, and the artefact,
     // the published slots and the fingerprint are all built from the padded script.
-    optimisationResult.script = padPerCallMasterScript(
+    optimisationResult.script = padFramedMasterScript(
       alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash),
     );
   }
@@ -16437,7 +16439,7 @@ function compileResolvedAst(
   // under `invokeDebug` and never on the emitted program's own `requires`. A refusal report reads `requires` at
   // the failing frame's pointer, so republish those pointers beside the program's own, at the same relative
   // positions, and a failure inside the helper names the helper's message and line.
-  const requires = isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)
+  const requires = isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)
     ? [...optimisationResult.requires, ...[...traversal.invokeDebugInfo.values()].flatMap((info) => info.requires)]
     : optimisationResult.requires;
 
@@ -16471,23 +16473,23 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
-  if (isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)) {
+  if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     // The slots are located in the finished script, after the optimiser: emission records them, but only the
     // emitted bytes say where they survived. A master that can be reached through a call reserves the third slot
     // for the validator program's hash; one that stands alone reserves two.
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
-      .__perCallReservesValidatorHash === true;
+      .__framedReservesValidatorHash === true;
     const offsets = findPlaceholderOffsets(scriptToBytecode(optimisationResult.script), reservesValidatorHash);
     const composition: NonNullable<Artifact['composition']> = {
-      convention: 'per-call',
+      convention: 'framed',
       placeholders: { version: 1, ...offsets },
     };
     // The stop sites a builder resumes each served entry from.
-    const stopSites = (mergedCompilerOptions as InternalCompilerOptions).__perCallStopSites;
+    const stopSites = (mergedCompilerOptions as InternalCompilerOptions).__framedStopSites;
     if (stopSites !== undefined) composition.stopSites = stopSites;
     // The bodies the master cannot serve are published beside the table: the entry stays callable by selector, its
     // program refuses every frame, and a builder reads why here rather than guessing from a failed spend.
-    const refused = (mergedCompilerOptions as InternalCompilerOptions).__perCallRefusedEntries;
+    const refused = (mergedCompilerOptions as InternalCompilerOptions).__framedRefusedEntries;
     if (refused !== undefined && refused.size > 0) {
       composition.refusedEntries = [...refused].map(([name, reason]) => ({
         functionName: entryFunctionName(ast.contract.name, name),
@@ -16495,11 +16497,11 @@ function compileResolvedAst(
       }));
     }
     // The entries that read their own balance: a builder spends every container of the contract for them.
-    const balanceReaders = (mergedCompilerOptions as InternalCompilerOptions).__perCallBalanceReaders ?? [];
+    const balanceReaders = (mergedCompilerOptions as InternalCompilerOptions).__framedBalanceReaders ?? [];
     if (balanceReaders.length > 0) {
       composition.balanceReaders = balanceReaders.map((name) => entryFunctionName(ast.contract.name, name));
     }
-    const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__perCallLifecycle;
+    const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__framedLifecycle;
     if (lifecycle !== undefined) composition.lifecycle = publishLifecycle(lifecycle);
     artifact.composition = composition;
   } else {
@@ -19389,7 +19391,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers(
       compilerOptions.solidityImportCompat ?? false,
-      compilerOptions.composition === 'per-call',
+      compilerOptions.composition === 'framed',
       inlinesSignatureChecks(compilerOptions),
     )) as Ast;
     singleAst = singleAst.accept(new LowerDynamicStateJournalHelpers()) as Ast;
@@ -19397,7 +19399,7 @@ function compileReferencedContracts(
       compilerOptions.messageBusKernel === true,
     )) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls(
-      compilerOptions.solidityImportCompat ?? false, false, compilerOptions.composition === 'per-call',
+      compilerOptions.solidityImportCompat ?? false, false, compilerOptions.composition === 'framed',
       inlinesSignatureChecks(compilerOptions),
     )) as Ast;
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
@@ -19405,7 +19407,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
-    singleAst = singleAst.accept(new CacheMappingEntryInLoop(false, compilerOptions.composition === 'per-call')) as Ast;
+    singleAst = singleAst.accept(new CacheMappingEntryInLoop(false, compilerOptions.composition === 'framed')) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.messageBusKernel === true,
     )) as Ast;
@@ -19434,7 +19436,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal(
       true, compilerOptions.solidityImportCompat ?? false, compilerOptions.rootFileId,
-      compilerOptions.composition === 'per-call',
+      compilerOptions.composition === 'framed',
     )) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
       compilerOptions.enforceFinalRequire, compilerOptions.allowUnsafeOperations,
@@ -19628,7 +19630,7 @@ function reachedFileFunctions(
   return freeFunctions.filter((fn) => reached.has(fn));
 }
 
-/** The bodies a per-call master can run, in declaration order: the constructor, fallback, receive and entries. */
+/** The bodies a framed master can run, in declaration order: the constructor, fallback, receive and entries. */
 function contractBodyFunctions(contract: ContractNode): FunctionDefinitionNode[] {
   return [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]
     .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
@@ -19639,7 +19641,7 @@ function contractBodyFunctions(contract: ContractNode): FunctionDefinitionNode[]
  *
  * A block the assembly lowering supports is replaced by the statements it lowers to, so the captured node leaves
  * the program; a block it does not support - native `assembly { OP_* }` has no Yul tree - survives as the same
- * node. A body is therefore refused per-call only when a block it was captured reaching is still in the program
+ * node. A body is therefore refused framed only when a block it was captured reaching is still in the program
  * the master is built from, which serves a body whose assembly the convention can lower and refuses one whose
  * assembly it cannot.
  */

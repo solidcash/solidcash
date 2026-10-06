@@ -10,5 +10,5 @@
     "declaration": false,
     "declarationMap": false
   },
-  "include": ["packages/solidcash/test/per-call/**/*.ts", "packages/solidc/test/per-call/**/*.ts"]
+  "include": ["packages/solidcash/test/framed/**/*.ts", "packages/solidc/test/framed/**/*.ts"]
 }

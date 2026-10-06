@@ -8,16 +8,16 @@ import {
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
- * A compiled per-call entry that emits an event, driven through the real entry point.
+ * A compiled framed entry that emits an event, driven through the real entry point.
  *
  * The head walks the witness block's event list and leaves each listed output index as a tracked slot, so the body
- * checks the payload it computed against the output the witness listed instead of a block-layout offset a per-call
+ * checks the payload it computed against the output the witness listed instead of a block-layout offset a framed
  * master does not have. The event output is the contract's own event covenant: the body recomputes the lock from
  * the master's category and the event signature, so every case below builds that lock the way the compiler does.
  *
@@ -63,7 +63,7 @@ const compiledBySource = new Map<string, Artifact>();
 const compile = (source: string): Artifact => {
   let artifact = compiledBySource.get(source);
   if (artifact === undefined) {
-    artifact = compileString(source, { composition: 'per-call' });
+    artifact = compileString(source, { composition: 'framed' });
     compiledBySource.set(source, artifact);
   }
   return artifact;
@@ -228,7 +228,7 @@ const spendEmitter = (overrides: Partial<Spend> = {}): { accepted: boolean; obje
   ...overrides,
 });
 
-describe('an entry that emits an event, compiled per-call', () => {
+describe('an entry that emits an event, compiled framed', () => {
   it('is accepted with the event at the output the witness lists', () => {
     // The listed index is 2, past a filler output. A block-layout read would land on output 1 (the active input's
     // index plus this shape's event offset), where no token sits, so the accept is the body reading the slot.
@@ -296,7 +296,7 @@ describe('an entry that emits an event, compiled per-call', () => {
 });
 
 /**
- * A stateful per-call entry that emits an event: its settlement and its event walk run on one input.
+ * A stateful framed entry that emits an event: its settlement and its event walk run on one input.
  *
  * The settlement parks its chain registers on the alternate stack, and the event walk parks each listed output
  * index there before the settlement runs, so the two have to keep out of each other's way. The record sits right
@@ -313,7 +313,7 @@ const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-describe('a stateful entry that emits an event, compiled per-call', () => {
+describe('a stateful entry that emits an event, compiled framed', () => {
   const stateful = deploy(STATEFUL_SOURCE);
   const statefulLock = eventCovenantLock(stateful.artifact.events![0]!.signature);
   const commitment = (counter: bigint): Uint8Array =>
@@ -378,7 +378,7 @@ describe('a compiled master with no event', () => {
   });
 
   it('publishes the address slot a standalone master checks its self against', () => {
-    expect(quiet.artifact.composition?.convention).toBe('per-call');
+    expect(quiet.artifact.composition?.convention).toBe('framed');
     expect(quiet.artifact.composition!.placeholders.addressOffset).toBeTypeOf('number');
   });
 });
@@ -396,7 +396,7 @@ function selectorOf(artifact: Artifact, name: string): Uint8Array {
   return new Uint8Array(Buffer.from(artifact.abi.find((entry) => entry.name === name)!.selector!, 'hex'));
 }
 
-describe('a per-call master whose entries are dispatched by a selector', () => {
+describe('a framed master whose entries are dispatched by a selector', () => {
   const twoEntry = deploy(TWO_ENTRY_SOURCE);
   const twoEntryLock = eventCovenantLock(twoEntry.artifact.events![0]!.signature);
 

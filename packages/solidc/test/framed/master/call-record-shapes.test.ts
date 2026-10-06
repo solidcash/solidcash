@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { isServed, refusalOf as publishedRefusalOf } from './refused-entry.js';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { hexOf, seededAddress } from '../../../../solidcash/test/per-call/shapes/harness.js';
+import { hexOf, seededAddress } from '../../../../solidcash/test/framed/shapes/harness.js';
 
 /**
  * Why a call the head cannot bind is refused, and what the refusal says.
  *
- * A per-call body binds one record per call where the source makes it, so the head needs the call set fixed by the
+ * A framed body binds one record per call where the source makes it, so the head needs the call set fixed by the
  * source. A call whose occurrence the source does not fix — one in a loop, or in a branch whose arms make
  * different numbers of calls — is served by the run-time position mode, which carries how many calls the execution
  * has made. The shapes that stay refused are the ones the walk cannot count through (a switch, or a branch or loop
@@ -77,7 +77,7 @@ const SWITCH_CALL = HEAD + INTERFACES
   + '   }'
   + ' }';
 
-/** A caller whose raw low-level call runs only in one branch, over a result the per-call body does not settle. */
+/** A caller whose raw low-level call runs only in one branch, over a result the framed body does not settle. */
 const RAW_CONDITIONAL_CALL = HEAD + INTERFACES
   + ' contract Caller {'
   + '   function go(bool take, address target, bytes data) {'
@@ -113,8 +113,8 @@ describe('a helper whose arms each call out, reached from an entry', () => {
   it('is admitted, which is the shape a claim entry has', () => {
     // The helper is inlined into the entry, so its arms are the entry's: every path makes one call, the record is
     // the first on either arm, and the segment the code after the branch reads is the same one.
-    const artifacts = compileStringMulti(HELPER_WITH_ARMS, { composition: 'per-call' });
-    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
+    const artifacts = compileStringMulti(HELPER_WITH_ARMS, { composition: 'framed' });
+    expect(artifacts.Caller?.composition?.convention).toBe('framed');
     expect(artifacts.Caller?.abi.some((entry) => entry.name === 'go')).toBe(true);
   });
 
@@ -130,8 +130,8 @@ describe('a call whose occurrence the source does not fix', () => {
     // The body makes zero or one call, a number its source does not fix, so it carries how many it has made and
     // binds the record that number names. The machine's own cases for the shape live in
     // `master/conditional-call-entry.test.ts`.
-    const artifacts = compileStringMulti(CONDITIONAL_CALL, { composition: 'per-call' });
-    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
+    const artifacts = compileStringMulti(CONDITIONAL_CALL, { composition: 'framed' });
+    expect(artifacts.Caller?.composition?.convention).toBe('framed');
     const sites = artifacts.Caller!.composition!.stopSites!.entries[0]!.sites.sites;
     // The site is marked conditional — the arm may skip it — but not repeated: nothing turns.
     expect(sites[0]).toStrictEqual({
@@ -141,16 +141,16 @@ describe('a call whose occurrence the source does not fix', () => {
 
   it('is refused from a switch, whose arms the call walk cannot count through', () => {
     const refusal = refusalOf(SWITCH_CALL);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('is in a body that switches');
     expect(refusal.message).not.toContain('resolves its callee');
   });
 
-  it('is refused for a raw low-level call, whose result the per-call body does not settle', () => {
+  it('is refused for a raw low-level call, whose result the framed body does not settle', () => {
     // The branch no longer decides admission, so the raw call's own reason is what a reader sees: its returning
-    // form takes the direct path's return-event machinery, which a per-call body does not emit.
+    // form takes the direct path's return-event machinery, which a framed body does not emit.
     const refusal = refusalOf(RAW_CONDITIONAL_CALL);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('return-event or value-transfer machinery');
     expect(refusal.message).not.toContain('runs conditionally');
   });
@@ -160,7 +160,7 @@ describe('a call whose occurrence the source does not fix', () => {
     // the forwarded site is emitted at a position the descriptor list fixes.
     expect(isServed(FORWARDING_PROXY)).toBe(true);
     const refusal = refusalOf(CONDITIONAL_FORWARDING_PROXY);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('forwards its own call data conditionally');
   });
 
@@ -168,8 +168,8 @@ describe('a call whose occurrence the source does not fix', () => {
     // The walk stops at the loop, so neither the count nor the occurrence is a single value: the body binds the
     // record the number of calls it has made names and pins the count it ended at, which is what makes the shape
     // expressible. The machine's own cases for it live in `master/looped-call-entry.test.ts`.
-    const artifacts = compileStringMulti(BRANCHED_IN_LOOP_CALL, { composition: 'per-call' });
-    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
+    const artifacts = compileStringMulti(BRANCHED_IN_LOOP_CALL, { composition: 'framed' });
+    expect(artifacts.Caller?.composition?.convention).toBe('framed');
     const sites = artifacts.Caller!.composition!.stopSites!.entries[0]!.sites.sites;
     // The site is marked both ways: the arm can skip an iteration, and the loop decides how many iterations there
     // are, so neither the occurrence nor the number of records is a fact the table can enumerate.

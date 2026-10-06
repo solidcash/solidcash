@@ -8,16 +8,16 @@ import {
   packFixedWidthArray, scriptToBytecode, sha256, validatorAddress,
   type RecordEntry, type StateValue, type WitnessBlock,
 } from '@solidcash/utils';
-import { stateRecordLockingBytecode } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { stateRecordLockingBytecode } from '../../../../solidcash/src/framed/deploy/index.js';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { deployChunkRunContract, evaluateChunkRuns, type ChunkRunContract } from './chunk-run-input.js';
 import {
-  USER_LOCK, created, deployPerCallMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
+  USER_LOCK, created, deployFramedMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
   type DeployedMaster, type PlacedRecord,
 } from './record-spend.js';
 import {
@@ -25,7 +25,7 @@ import {
 } from './validator-input.js';
 
 /**
- * A per-call body that reads a verified-mapping entry after writing it, settled on the BCH-2026 machine.
+ * A framed body that reads a verified-mapping entry after writing it, settled on the BCH-2026 machine.
  *
  * `logs` keeps one node per key, whose value is the whole `bytes4[]`. A push, a pop, a delete, an element write or a
  * whole-value write rewrites the node and closes it against the view its segment declares after the write; a read
@@ -43,7 +43,7 @@ const PRAGMA = 'pragma solidcash ^0.13.0;';
 const STATE = ' uint public count; bytes4 public lastKind; mapping(uint => bytes4[]) logs;';
 
 /** The bodies that push, each reading the entry after its push. */
-const JOURNAL = deployPerCallMaster(`${PRAGMA} contract Journal {${STATE}`
+const JOURNAL = deployFramedMaster(`${PRAGMA} contract Journal {${STATE}`
   + ' function add(uint id, bytes4 k) { this.logs[id].push(k); this.count = this.logs[id].length; }'
   + ' function addAndReturn(uint id, bytes4 k) returns (uint) { this.logs[id].push(k); return this.logs[id].length; }'
   + ' function addAndTakeLast(uint id, bytes4 k) {'
@@ -51,20 +51,20 @@ const JOURNAL = deployPerCallMaster(`${PRAGMA} contract Journal {${STATE}`
   + ' }', 'read after push journal');
 
 /** The same element read with the length read nested in its index rather than held in a local. */
-const NESTED = deployPerCallMaster(`${PRAGMA} contract Nested {${STATE}`
+const NESTED = deployFramedMaster(`${PRAGMA} contract Nested {${STATE}`
   + ' function addAndTakeNested(uint id, bytes4 k) {'
   + '   this.logs[id].push(k); this.lastKind = this.logs[id][this.logs[id].length - 1]; }'
   + ' }', 'read after push nested');
 
 /** The bodies that pop, delete, or rewrite one element, each reading the entry after it. */
-const LEDGER = deployPerCallMaster(`${PRAGMA} contract Ledger {${STATE}`
+const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger {${STATE}`
   + ' function drop(uint id) { this.logs[id].pop(); this.count = this.logs[id].length; }'
   + ' function clear(uint id) { delete this.logs[id]; this.count = this.logs[id].length; }'
   + ' function put(uint id, bytes4 k) { this.logs[id][0] = k; this.lastKind = this.logs[id][0]; }'
   + ' }', 'read after push ledger');
 
 /** A body that rewrites the whole value and reads it back, and one that reads the entry before its push. */
-const REWRITE = deployPerCallMaster(`${PRAGMA} contract Rewrite {${STATE}`
+const REWRITE = deployFramedMaster(`${PRAGMA} contract Rewrite {${STATE}`
   + ' function replace(uint id, bytes4[] kinds) { this.logs[id] = kinds; this.lastKind = this.logs[id][0]; }'
   + ' function countThenAdd(uint id, bytes4 k) { this.count = this.logs[id].length; this.logs[id].push(k); }'
   + ' }', 'read after push rewrite');
@@ -118,15 +118,15 @@ function spender(master: DeployedMaster): {
   };
 }
 
-describe('a per-call body that reads a mapping entry after writing it', () => {
+describe('a framed body that reads a mapping entry after writing it', () => {
   const journal = spender(JOURNAL);
   const ledger = spender(LEDGER);
   const rewrite = spender(REWRITE);
   const nested = spender(NESTED);
 
-  it('publishes every body as a per-call master within the input-script limit and with no refused entry', () => {
+  it('publishes every body as a framed master within the input-script limit and with no refused entry', () => {
     for (const master of [JOURNAL, LEDGER, REWRITE, NESTED]) {
-      expect(master.artifact.composition?.convention).toBe('per-call');
+      expect(master.artifact.composition?.convention).toBe('framed');
       expect(master.artifact.composition!.refusedEntries).toBeUndefined();
       expect(master.script.length).toBeLessThanOrEqual(10_000);
     }
@@ -222,7 +222,7 @@ describe('a per-call body that reads a mapping entry after writing it', () => {
  * frames between them left; the caller's block declares the node written in the first segment and kept in the
  * second, and the machine's verdict is the caller's own input.
  */
-describe('a per-call body that reads a mapping entry after a call that follows its write', () => {
+describe('a framed body that reads a mapping entry after a call that follows its write', () => {
   const category = seededCategory('read after push across a call');
   const templateHash = sha256(REAL_VALIDATOR_PROGRAM);
   const address = validatorAddress(category, REAL_VALIDATOR_PROGRAM);
@@ -237,7 +237,7 @@ describe('a per-call body that reads a mapping entry after a call that follows i
     + '     this.count = this.logs[id].length;'
     + '   }'
     + '   function ping() { require(true); }'
-    + ' }', { composition: 'per-call' });
+    + ' }', { composition: 'framed' });
   const program = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders,
     { category: categorySlotValue(category), contractAddress: address, templateHash });
   const selectorOf = (name: string): Uint8Array => hexToBin(artifact.abi.find((row) => row.name === name)!.selector!);
@@ -375,10 +375,10 @@ describe('a per-call body that reads a mapping entry after a call that follows i
  * their write in the same body was already the written value. The body requires what it read, so the honest value is
  * accepted and the value from before the write is refused.
  */
-describe('a per-call body that reads a chunk-run state value after writing it', () => {
+describe('a framed body that reads a chunk-run state value after writing it', () => {
   const deploy = (state: string, entry: string, label: string): ChunkRunContract =>
     deployChunkRunContract(compileString(`${PRAGMA} contract Ledger { ${state} ${entry} }`,
-      { composition: 'per-call' }), `read after push ${label}`);
+      { composition: 'framed' }), `read after push ${label}`);
   const values = [5n, 600n, 70_000n];
   const packed = (held: readonly bigint[]): Uint8Array => packFixedWidthArray([...held], 'uint256');
   const grow = deploy('uint[] public items;', 'function add(uint v, uint expected) { this.items.push(v);'

@@ -3,19 +3,19 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bita
 import {
   bytesToHex, decodeIntegerValue, parsePushdataCommitment, sha256, validatorAddress, type Artifact, type RecordEntry,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { deploymentStateValues } from '../../../src/per-call/proxy/external-calls.js';
-import { participant } from '../../../src/per-call/composer/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { deploymentStateValues } from '../../../src/framed/proxy/external-calls.js';
+import { participant } from '../../../src/framed/composer/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -90,7 +90,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const tokenArtifact = artifacts.Token!;
 const callbackArtifact = artifacts.CallbackToken!;
 const vaultArtifact = artifacts.Vault!;
@@ -109,7 +109,7 @@ function coin(label: string): Utxo {
   return { txid: idOf(label), vout: 0, satoshis: 5_000_000n };
 }
 
-/** A per-call contract's address, which its category fixes. */
+/** A framed contract's address, which its category fixes. */
 const addressOf = (categoryId: string): Uint8Array => validatorAddress(hexToBin(categoryId), VALIDATOR_PROGRAM);
 
 interface Vault {
@@ -153,7 +153,7 @@ function chain(): Promise<Chain> {
         .map((part) => coin(`${label} ${part}`));
       for (const utxo of [implementation!, proxy!]) await network.addUtxo(wallet.address, utxo);
       await network.addUtxo(binToHex(USER_LOCK), init!);
-      const deployment = await deployPerCallProxy({
+      const deployment = await deployFramedProxy({
         provider: network,
         implementationArtifact: vaultArtifact,
         proxyArtifact: vaultProxy,
@@ -177,7 +177,7 @@ function chain(): Promise<Chain> {
     const calledBack = await proxied('called back vault', callbackCategoryId);
     const mintCoin = coin('mint');
     await network.addUtxo(binToHex(USER_LOCK), mintCoin);
-    const minted = await callPerCallEntry({
+    const minted = await callFramedEntry({
       provider: network, artifact: tokenArtifact, categoryId: tokenCategoryId, functionName: 'mint',
       args: [USER_LOCK, MINTED], callerUtxo: mintCoin, callerLockingBytecode: USER_LOCK, funder: callerFunder,
       changeAddress, vm: compositionMachine(),
@@ -190,7 +190,7 @@ function chain(): Promise<Chain> {
 
 /** What one entered call left: its result or its error, and whether the caller's coin is still unspent. */
 interface Outcome {
-  readonly result?: PerCallProxyCallResult;
+  readonly result?: FramedProxyCallResult;
   readonly error?: Error;
   readonly coinLive: boolean;
 }
@@ -200,10 +200,10 @@ async function enter(run: Chain, vault: Vault, functionName: string): Promise<Ou
   calls += 1;
   const callerUtxo = coin(`call ${calls}`);
   await run.network.addUtxo(binToHex(USER_LOCK), callerUtxo);
-  let result: PerCallProxyCallResult | undefined;
+  let result: FramedProxyCallResult | undefined;
   let error: Error | undefined;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: run.network,
       implementationArtifact: vaultArtifact,
       proxyArtifact: vaultProxy,
@@ -232,7 +232,7 @@ async function enter(run: Chain, vault: Vault, functionName: string): Promise<Ou
 async function heldAt(
   run: Chain, artifact: Artifact, categoryId: string, collection: string, key: Uint8Array,
 ): Promise<bigint> {
-  const pools = await readPerCallDeployment(run.network, categoryId, artifact.stateLayout!);
+  const pools = await readFramedDeployment(run.network, categoryId, artifact.stateLayout!);
   const slot = bytesToHex(keyToSlotMulti([key]));
   const node = (pools.nodesByCollection.get(collection) ?? [])
     .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
@@ -244,7 +244,7 @@ async function heldAt(
 async function ledger(run: Chain, vault: Vault): Promise<readonly [bigint, bigint, bigint, unknown]> {
   const layout = vaultProxy.stateLayout!;
   const state = deploymentStateValues(layout, vault.proxyCategoryId,
-    await readPerCallDeployment(run.network, vault.proxyCategoryId, layout));
+    await readFramedDeployment(run.network, vault.proxyCategoryId, layout));
   return [
     await heldAt(run, tokenArtifact, run.tokenCategoryId, 'balances', USER_LOCK),
     await heldAt(run, tokenArtifact, run.tokenCategoryId, 'balances', vault.address),
@@ -254,7 +254,7 @@ async function ledger(run: Chain, vault: Vault): Promise<readonly [bigint, bigin
 }
 
 /** The guard's value at both ends of each segment a frame declares the guard's record in. */
-function guardViews(result: PerCallProxyCallResult, master: string): readonly (readonly unknown[])[] {
+function guardViews(result: FramedProxyCallResult, master: string): readonly (readonly unknown[])[] {
   const layout = vaultProxy.stateLayout!;
   const field = layout.variables.find((variable) => variable.name === 'status')!;
   const index = participant(result.draft.layout, `proxy-record-${field.nftIndex}`).index;
@@ -266,7 +266,7 @@ function guardViews(result: PerCallProxyCallResult, master: string): readonly (r
   });
 }
 
-function expectSettled(outcome: Outcome): PerCallProxyCallResult {
+function expectSettled(outcome: Outcome): FramedProxyCallResult {
   expect(outcome.error).toBeUndefined();
   expect(outcome.result!.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);

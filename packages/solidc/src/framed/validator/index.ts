@@ -21,7 +21,7 @@ export {
   tokenShape,
   type InputView,
   type OutputView,
-  type PerCallTransaction,
+  type FramedTransaction,
   type TokenShape,
   type ValidatorContext,
 } from './model.js';

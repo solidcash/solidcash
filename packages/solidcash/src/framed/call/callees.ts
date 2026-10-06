@@ -63,23 +63,23 @@ import {
 } from '../composer/index.js';
 import {
   entryRecordReadUnlock, eventCloseOf, eventLockingBytecode, eventSentinel, readComputedDeclaration,
-  stateRecordUnlockingBytecode, type PerCallDeploymentSet,
+  stateRecordUnlockingBytecode, type FramedDeploymentSet,
 } from '../deploy/index.js';
 import { calleeSettleOrder, calleeValueWitnesses, learnedValueFromClose, placeOwnWrites } from '../proxy/deploy.js';
 import { EnclosingValueLearned, learnEnclosingValues } from '../proxy/enclosed-values.js';
 import { sharedNodeId } from '../proxy/entry-writes.js';
-import { PerCallProxyDeployError } from '../proxy/errors.js';
+import { FramedProxyDeployError } from '../proxy/errors.js';
 import {
   chainedNodeIds, deploymentStateValues, planHopExternalCalls, requireSatisfiableReachWrites, routingOf,
   sharedNodeWritersBefore,
-  type HopCallee, type HopCalleeRecord, type HopExternalPlan, type HopPlanBlock, type PerCallProxyExternal,
+  type HopCallee, type HopCalleeRecord, type HopExternalPlan, type HopPlanBlock, type FramedProxyExternal,
 } from '../proxy/external-calls.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
 import { publishedLoopEffects } from './loop-turns.js';
 
 /** Raised when an entry's callee frames cannot be planned; `call.ts` rethrows it as the call's own error. */
-export class PerCallCalleeError extends Error {
-  public readonly name = 'PerCallCalleeError';
+export class FramedCalleeError extends Error {
+  public readonly name = 'FramedCalleeError';
 
   public constructor(message: string) {
     super(message);
@@ -147,10 +147,10 @@ export interface CalleePlanOptions {
   readonly functionName: string;
   readonly args: readonly FunctionArgument[];
   /** The deployments the entry may reach, each found by the address its category derives. */
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly validatorProgram: Uint8Array;
   readonly categoryId: string;
-  readonly deployment: PerCallDeploymentSet;
+  readonly deployment: FramedDeploymentSet;
   /** The root's own address, `address(this)`, and its caller's lock, `msg.sender`. */
   readonly selfAddress: Uint8Array;
   readonly senderAddress: Uint8Array;
@@ -373,7 +373,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   const count = published?.calls.length ?? 0;
   if (count === 0) return undefined;
   const refuse = (why: string): never => {
-    throw new PerCallCalleeError(`entry "${options.functionName}" makes ${count} external call(s): ${why}`);
+    throw new FramedCalleeError(`entry "${options.functionName}" makes ${count} external call(s): ${why}`);
   };
   const layout = options.artifact.stateLayout!;
   // Every deployment the caller names, and the root itself, is found by the address its category derives: the
@@ -401,7 +401,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       ...(options.calleeWriteValues === undefined ? {} : { calleeWriteValues: options.calleeWriteValues }),
     });
   } catch (error) {
-    if (!(error instanceof PerCallProxyDeployError)) throw error;
+    if (!(error instanceof FramedProxyDeployError)) throw error;
     return refuse(error.message);
   }
   plan = withSpelledCalls(plan, options.artifact, options.functionName);
@@ -420,7 +420,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   try {
     requireSatisfiableReachWrites(plan.callees);
   } catch (error) {
-    if (!(error instanceof PerCallProxyDeployError)) throw error;
+    if (!(error instanceof FramedProxyDeployError)) throw error;
     refuse(error.message);
   }
   const byBlock = new Map<string, HopCallee[]>();
@@ -464,7 +464,7 @@ export function calleeWrites(callee: HopCallee): boolean {
 
 /** The candidate a callee's `retval` starts from: a value its own return comparison fails against. */
 export function calleeRetvalPlaceholder(callee: HopCallee): Uint8Array {
-  return sha256(new TextEncoder().encode(`per-call callee retval\u0000${callee.master}\u0000${callee.functionName}`));
+  return sha256(new TextEncoder().encode(`framed callee retval\u0000${callee.master}\u0000${callee.functionName}`));
 }
 
 /** What the callee frames add to a plan once every coordinate is laid out. */
@@ -648,7 +648,7 @@ export function calleeFrames(options: {
       if (node.createdSlot !== undefined) {
         const out = createdElsewhere.get(createdNodeKey(callee.category, node.collection, node.createdSlot));
         if (out === undefined) {
-          throw new PerCallCalleeError(`the callee "${callee.functionName}" reads a mapping node an earlier frame of `
+          throw new FramedCalleeError(`the callee "${callee.functionName}" reads a mapping node an earlier frame of `
             + 'its contract created, but no frame of the call places an output for it');
         }
         return { in: INDEX_NONE, out, viewIn: node.commitment, viewOut: node.commitment };
@@ -701,8 +701,8 @@ export function calleeFrames(options: {
           ...(callee.truncated === true ? { truncated: true } : {}),
         });
       } catch (error) {
-        if (!(error instanceof PerCallProxyDeployError)) throw error;
-        throw new PerCallCalleeError(error.message);
+        if (!(error instanceof FramedProxyDeployError)) throw error;
+        throw new FramedCalleeError(error.message);
       }
     }
     // A node the frame reads and its batch also spends is one input (`calleeEntryWrites`): the read keeps the view the
@@ -1087,7 +1087,7 @@ function enclosingWriterValues(
     if (error instanceof EnclosingValueLearned) {
       return { ...values, writeValues: new Map([...writeValues, [error.master, error.value]]) };
     }
-    if (error instanceof PerCallProxyDeployError) throw new PerCallCalleeError(error.message);
+    if (error instanceof FramedProxyDeployError) throw new FramedCalleeError(error.message);
     throw error;
   }
 }

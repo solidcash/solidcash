@@ -6,7 +6,7 @@ import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { publishedRefusals } from './refused-entry.js';
 
 /**
- * The token-call shapes OpenZeppelin's SafeERC20 uses, compiled per-call.
+ * The token-call shapes OpenZeppelin's SafeERC20 uses, compiled framed.
  *
  * SafeERC20 writes its token calls as call data built by `abi.encodeCall` (5.x) or `abi.encodeWithSelector` (the
  * vendored 4.9.3) and then invokes them through `address(token).call(data)`. The convention's intent is that such a
@@ -17,7 +17,7 @@ import { publishedRefusals } from './refused-entry.js';
  * whether the method is named through the interface (`abi.encodeCall(IERC20.f, ..)`) or through an interface-typed
  * variable (`abi.encodeCall(token.f, ..)`). A payload the compiler cannot name - a raw selector literal, a selector
  * it only holds at run time, or a payload passed into a helper as opaque `bytes` - leaves the call on the direct
- * path's opaque-return machinery, which a per-call body does not emit, so that body is refused by name. The
+ * path's opaque-return machinery, which a framed body does not emit, so that body is refused by name. The
  * `code.length` gate the helper uses beside the call is served.
  *
  * Each case drives a real source through the shipped compile entry point and reads the refusal the compile
@@ -26,12 +26,12 @@ import { publishedRefusals } from './refused-entry.js';
 
 /** The reason a result-binding `abi.encode*` low-level call refuses its body. */
 const OPAQUE_RETURN_REFUSAL = "the call to '__raw__' takes the direct path's return-event or value-transfer "
-  + 'machinery, which a per-call body does not emit';
+  + 'machinery, which a framed body does not emit';
 
 /**
- * The P2SH test the per-call `.code` extractor emits, with `17` and `23` the P2SH20 and P2SH32 lengths.
+ * The P2SH test the framed `.code` extractor emits, with `17` and `23` the P2SH20 and P2SH32 lengths.
  *
- * The per-call gate takes this extractor, not the boolean "is a contract" fold the message-bus graph path uses: a
+ * The framed gate takes this extractor, not the boolean "is a contract" fold the message-bus graph path uses: a
  * target that is no P2SH lock, a plain account or the zero address, answers empty code, as the EVM answers an
  * account without code, and a P2SH contract target answers its script.
  */
@@ -106,7 +106,7 @@ const HELPER_PARAMETER_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const compile = (source: string): ArtifactMap => compileStringMulti(source, { composition: 'per-call' });
+const compile = (source: string): ArtifactMap => compileStringMulti(source, { composition: 'framed' });
 
 /** The refusal a source's compile publishes, as `entry: reason`, or '' when every body is served. */
 const refusalMessage = (source: string): string =>
@@ -127,7 +127,7 @@ function publishedCallSites(artifacts: ArtifactMap, functionName: string): reado
   return entry.calls;
 }
 
-describe('SafeERC20 token-call shapes under per-call', () => {
+describe('SafeERC20 token-call shapes under framed', () => {
   it('compiles a body whose abi.encodeCall payload is invoked through address(token).call, as the typed call', () => {
     // The payload names the method statically, so the body compiles as `IToken(token).transfer(to, amount)` and
     // publishes that call site rather than being refused for the call data's own shape.
@@ -166,7 +166,7 @@ describe('SafeERC20 token-call shapes under per-call', () => {
   });
 
   it('compiles the gate through the .code extractor that answers empty code for a target with none', () => {
-    const artifact = compileString(CODE_LENGTH_SOURCE, { composition: 'per-call' });
+    const artifact = compileString(CODE_LENGTH_SOURCE, { composition: 'framed' });
     expect(artifact.bytecode).toContain(CODE_EXTRACT_TEST);
   });
 
@@ -195,7 +195,7 @@ describe('SafeERC20 token-call shapes under per-call', () => {
   it('refuses a payload passed through a value-returning helper parameter, naming the machinery it lacks', () => {
     // The payload is built at the caller and handed to `Addr.functionCall` as a `bytes` parameter, so the callee's
     // method is not known where the convention rewrites named payloads; the call keeps the direct path's opaque
-    // return machinery, which a per-call body does not emit.
+    // return machinery, which a framed body does not emit.
     expect(refusalMessage(HELPER_PARAMETER_SOURCE)).toBe(`Caller.callIt(): ${OPAQUE_RETURN_REFUSAL}`);
   });
 });

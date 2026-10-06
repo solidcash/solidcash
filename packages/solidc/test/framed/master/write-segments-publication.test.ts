@@ -3,7 +3,7 @@ import type { Artifact, PublishedWriteSegment } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 
 /**
- * The segment each write of a per-call entry lands in, as the artifact publishes it per write.
+ * The segment each write of a framed entry lands in, as the artifact publishes it per write.
  *
  * An entry's writes need not all land in one segment: a write to a field whose bytes the record only sizes is
  * declared in the run's last segment the epilogue pins, while the sorted batch the body plans is declared in the
@@ -80,11 +80,11 @@ const VARYING_LOOP_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + '   }'
   + ' }';
 
-const mappingThenSized = compileStringMulti(MAPPING_THEN_SIZED_SOURCE, { composition: 'per-call' }).Ledger!;
-const sizedThenMapping = compileStringMulti(SIZED_THEN_MAPPING_SOURCE, { composition: 'per-call' }).Ledger!;
-const recordAndMapping = compileStringMulti(RECORD_AND_MAPPING_SOURCE, { composition: 'per-call' }).Ledger!;
-const fixedAndSized = compileStringMulti(FIXED_AND_SIZED_SOURCE, { composition: 'per-call' }).Ledger!;
-const varyingLoop = compileStringMulti(VARYING_LOOP_SOURCE, { composition: 'per-call' }).Ledger!;
+const mappingThenSized = compileStringMulti(MAPPING_THEN_SIZED_SOURCE, { composition: 'framed' }).Ledger!;
+const sizedThenMapping = compileStringMulti(SIZED_THEN_MAPPING_SOURCE, { composition: 'framed' }).Ledger!;
+const recordAndMapping = compileStringMulti(RECORD_AND_MAPPING_SOURCE, { composition: 'framed' }).Ledger!;
+const fixedAndSized = compileStringMulti(FIXED_AND_SIZED_SOURCE, { composition: 'framed' }).Ledger!;
+const varyingLoop = compileStringMulti(VARYING_LOOP_SOURCE, { composition: 'framed' }).Ledger!;
 
 /**
  * A ledger whose body sets a record, calls under a condition, writes a mapping, and restores the record.
@@ -123,9 +123,9 @@ const GUARDED_BETWEEN_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + '   }'
   + ' }';
 
-const guardedOneArm = compileStringMulti(GUARDED_ONE_ARM_SOURCE, { composition: 'per-call' }).Ledger!;
-const guardedTwoArms = compileStringMulti(GUARDED_TWO_ARMS_SOURCE, { composition: 'per-call' }).Ledger!;
-const guardedBetween = compileStringMulti(GUARDED_BETWEEN_SOURCE, { composition: 'per-call' }).Ledger!;
+const guardedOneArm = compileStringMulti(GUARDED_ONE_ARM_SOURCE, { composition: 'framed' }).Ledger!;
+const guardedTwoArms = compileStringMulti(GUARDED_TWO_ARMS_SOURCE, { composition: 'framed' }).Ledger!;
+const guardedBetween = compileStringMulti(GUARDED_BETWEEN_SOURCE, { composition: 'framed' }).Ledger!;
 
 /**
  * A ledger whose body sets a record, calls once per turn of a loop, and restores the record, with `after` past the
@@ -143,8 +143,8 @@ const GUARDED_LOOP_SOURCE = (after: string): string => `pragma solidcash ^0.13.0
   + '   }'
   + ' }';
 
-const guardedLoop = compileStringMulti(GUARDED_LOOP_SOURCE(''), { composition: 'per-call' }).Ledger!;
-const guardedLoopThenCall = compileStringMulti(GUARDED_LOOP_SOURCE(CALL), { composition: 'per-call' }).Ledger!;
+const guardedLoop = compileStringMulti(GUARDED_LOOP_SOURCE(''), { composition: 'framed' }).Ledger!;
+const guardedLoopThenCall = compileStringMulti(GUARDED_LOOP_SOURCE(CALL), { composition: 'framed' }).Ledger!;
 
 /** The write a published fact names, so the facts can be keyed by the identity a builder looks one up by. */
 const identityOf = (write: WriteIdentity): string => (write.record !== undefined ? `record:${write.record}`
@@ -166,7 +166,7 @@ function segmentsOf(
     .map((candidate) => candidate.segment);
 }
 
-describe('the segment each write of a per-call entry lands in, as an artifact publishes it', () => {
+describe('the segment each write of a framed entry lands in, as an artifact publishes it', () => {
   it('names the batch\'s segment and the run\'s last segment for a mapping node and a sized field', () => {
     // The mapping write precedes the entry's one call, and the run the sized field grows is pinned at the end.
     expect(segmentOf(mappingThenSized, { collection: 'balances' })).toBe(0);

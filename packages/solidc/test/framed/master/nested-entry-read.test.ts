@@ -5,11 +5,11 @@ import {
 } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  deployPerCallMaster, distinctBytes, evaluateMasterSpend, node, spent, type DeployedMaster, type PlacedRecord,
+  deployFramedMaster, distinctBytes, evaluateMasterSpend, node, spent, type DeployedMaster, type PlacedRecord,
 } from './record-spend.js';
 
 /**
- * A per-call body whose mapping access reads another entry inside its own element index or key, settled on the
+ * A framed body whose mapping access reads another entry inside its own element index or key, settled on the
  * BCH-2026 machine: `logs[id][logs[id].length - 1]` reads the entry it indexes, `logs[id][at[id]]` another
  * mapping's value, `seen[at[id]]` and `grid[id][at[id]]` name a node by a value read from another node, and a write
  * takes its element index or its key from the same reads. Each inner read is an entry access of its own, so the
@@ -28,25 +28,25 @@ const STATE = ' uint public count; bytes4 public lastKind; mapping(uint => bytes
   + ' mapping(uint => uint) seen; mapping(uint => mapping(uint => uint)) grid;';
 
 /** Bodies that only read, the inner read in an element index. */
-const INDEXED = deployPerCallMaster(`${PRAGMA} contract Indexed {${STATE}`
+const INDEXED = deployFramedMaster(`${PRAGMA} contract Indexed {${STATE}`
   + ' function takeLast(uint id) { this.lastKind = this.logs[id][this.logs[id].length - 1]; }'
   + ' function takeAt(uint id) { this.lastKind = this.logs[id][this.at[id]]; }'
   + ' }', 'nested entry read indexed');
 
 /** Bodies that only read, the inner read in a key. */
-const KEYED = deployPerCallMaster(`${PRAGMA} contract Keyed {${STATE}`
+const KEYED = deployFramedMaster(`${PRAGMA} contract Keyed {${STATE}`
   + ' function takeSeen(uint id) { this.count = this.seen[this.at[id]]; }'
   + ' function takeCell(uint id) { this.count = this.grid[id][this.at[id]]; }'
   + ' }', 'nested entry read keyed');
 
 /** Bodies that write the element an inner read indexes. */
-const WRITTEN = deployPerCallMaster(`${PRAGMA} contract Written {${STATE}`
+const WRITTEN = deployFramedMaster(`${PRAGMA} contract Written {${STATE}`
   + ' function putLast(uint id, bytes4 k) { this.logs[id][this.logs[id].length - 1] = k; }'
   + ' function putAt(uint id, bytes4 k) { this.logs[id][this.at[id]] = k; }'
   + ' }', 'nested entry read written');
 
 /** Bodies that write the node an inner read keys. */
-const KEY_WRITTEN = deployPerCallMaster(`${PRAGMA} contract KeyWritten {${STATE}`
+const KEY_WRITTEN = deployFramedMaster(`${PRAGMA} contract KeyWritten {${STATE}`
   + ' function putSeen(uint id, uint v) { this.seen[this.at[id]] = v; }'
   + ' function putPicked(uint id, uint v) { this.seen[(1 == 1) ? this.at[id] : 0] = v; }'
   + ' }', 'nested entry read key written');
@@ -90,10 +90,10 @@ function spend(master: DeployedMaster, data: [Uint8Array, Uint8Array],
 const accepts = (master: DeployedMaster, entry: string, args: Uint8Array[], records: PlacedRecord[]): boolean =>
   evaluateMasterSpend(master, { entry, args, records }).accepted;
 
-describe('a per-call body whose mapping access reads an entry inside its own element index', () => {
-  it('publishes every body as a per-call master within the input-script limit and with no refused entry', () => {
+describe('a framed body whose mapping access reads an entry inside its own element index', () => {
+  it('publishes every body as a framed master within the input-script limit and with no refused entry', () => {
     for (const master of [INDEXED, KEYED, WRITTEN, KEY_WRITTEN]) {
-      expect(master.artifact.composition?.convention).toBe('per-call');
+      expect(master.artifact.composition?.convention).toBe('framed');
       expect((master.artifact.composition as { refusedEntries?: unknown }).refusedEntries).toBeUndefined();
       expect(master.script.length).toBeLessThanOrEqual(10_000);
     }
@@ -117,7 +117,7 @@ describe('a per-call body whose mapping access reads an entry inside its own ele
   });
 });
 
-describe('a per-call body whose mapping key is a value read from another entry', () => {
+describe('a framed body whose mapping key is a value read from another entry', () => {
   it('reads the node the inner read keys, whose record precedes the inner one', () => {
     const taken = (count: bigint, key: Uint8Array = J): PlacedRecord[] => spend(KEYED, [record(0n), record(count)],
       [['seen', uintOf(keyToSlotMulti([key]), 9n)], ['at', uintOf(SLOT, 5n)]]);
@@ -136,7 +136,7 @@ describe('a per-call body whose mapping key is a value read from another entry',
   });
 });
 
-describe('a per-call write whose element index or key reads an entry', () => {
+describe('a framed write whose element index or key reads an entry', () => {
   const args = [ADDED, ID];
 
   it('writes the last element a length read of the same entry names', () => {

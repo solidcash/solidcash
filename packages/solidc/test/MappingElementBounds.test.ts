@@ -9,8 +9,8 @@ import {
 import { encodeEntryCommitment, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
 import { compileString } from '../src/index.js';
 import {
-  deployPerCallMaster, distinctBytes, evaluateMasterSpend, node, spent,
-} from './per-call/master/record-spend.js';
+  deployFramedMaster, distinctBytes, evaluateMasterSpend, node, spent,
+} from './framed/master/record-spend.js';
 
 /**
  * An element read of a verified-mapping array at or past the array's length fails on the BCH-2026 machine, as the
@@ -18,7 +18,7 @@ import {
  * push earlier in the body left. An index inside the array reads the element the node holds.
  *
  * The direct spend runs the master at 0, the node at 1 and a funder at 2, every input its own program; the node is
- * spent read-only, or updated by the push. The per-call spend is the master's own input against the records its
+ * spent read-only, or updated by the push. The framed spend is the master's own input against the records its
  * frame declares.
  */
 
@@ -129,8 +129,8 @@ describe('a direct element read at or past the array\'s length', () => {
   });
 });
 
-describe('a per-call element read at or past the array\'s length', () => {
-  const master = deployPerCallMaster(SOURCE, 'mapping element bounds');
+describe('a framed element read at or past the array\'s length', () => {
+  const master = deployFramedMaster(SOURCE, 'mapping element bounds');
   const logs = master.collectionLock('logs');
   const held = node(SLOT, undefined, tail([HELD]));
   const at = (i: bigint, e: Uint8Array): boolean =>

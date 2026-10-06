@@ -56,8 +56,8 @@ export type SolidcDiagnosticCode =
   | 'MESSAGE_BUS_RESERVED_SELECTOR_COLLISION'
   | 'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE'
   | 'MESSAGE_BUS_REQUIRED'
-  | 'PER_CALL_CODEGEN_UNAVAILABLE'
-  | 'PER_CALL_UPGRADE_LAYOUT'
+  | 'FRAMED_CODEGEN_UNAVAILABLE'
+  | 'FRAMED_UPGRADE_LAYOUT'
   // A Solidity-compat low-level call whose payload arguments the covenant cannot bind to the co-spent callee.
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
   // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
@@ -835,29 +835,29 @@ export class ChainedEntryElementReadError extends SolidCashError {
 }
 
 /**
- * A per-call body reads a verified-mapping entry, in the segment it wrote it in, after a write whose value the frame
+ * A framed body reads a verified-mapping entry, in the segment it wrote it in, after a write whose value the frame
  * does not keep: the read, or the one a push or a pop makes, would see the view the segment declared before the
  * write.
  */
-export class PerCallStaleReadError extends SolidCashError {
+export class FramedStaleReadError extends SolidCashError {
   constructor(public node: Node, entry: string, shape: string, update?: 'push' | 'pop') {
     super(node, update === undefined
-      ? `a read of \`${entry}\` after its write ${shape} is not supported on the per-call convention: `
+      ? `a read of \`${entry}\` after its write ${shape} is not supported on the framed convention: `
         + 'read it before the write, or into a local'
-      : `a ${update} on \`${entry}\` after its write ${shape} is not supported on the per-call convention: `
+      : `a ${update} on \`${entry}\` after its write ${shape} is not supported on the framed convention: `
         + 'update a local and write the entry once');
   }
 }
 
 /**
- * A per-call body reads a verified-mapping entry, in the segment of a write of its collection under other keys,
+ * A framed body reads a verified-mapping entry, in the segment of a write of its collection under other keys,
  * where the frame holds no slot of the write to compare the read's key with: the keys may name one entry at run time,
  * and the read would see the view the segment declared before the write.
  */
-export class PerCallAliasedReadError extends SolidCashError {
+export class FramedAliasedReadError extends SolidCashError {
   constructor(public node: Node, entry: string, written: string) {
     super(node, `a read of \`${entry}\` after a write of \`${written}\` in its segment is not supported on the `
-      + 'per-call convention, where the two keys may name one entry: read it before the write');
+      + 'framed convention, where the two keys may name one entry: read it before the write');
   }
 }
 

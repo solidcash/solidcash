@@ -7,7 +7,7 @@ Date: 2026-09-25.
 
 **Scope**
 - Today's compiler and SDK at `ea7a48e27`: what runs now, and what Phase 0 of the plan builds on.
-- The per-call design, [`SPEC_PER_CALL_TRANSACTION.md`](./SPEC_PER_CALL_TRANSACTION.md) revision 6, which plan
+- The framed design, [`SPEC_FRAMED_TRANSACTION.md`](./SPEC_FRAMED_TRANSACTION.md) revision 6, which plan
   section 4 builds. Later revisions are listed in the spec's section 0.
 
 **Method**
@@ -125,7 +125,7 @@ rules); **code** = read in the source, not run adversarially.
 - **Rule today.** In the callee, `msg.sender` is the lock of the only co-spent minting NFT of the category named by
   the builder-supplied `__internal__msgSenderCategory` argument (`emitMsgSenderMintingVerification`). Nothing checks
   that this contract made the call. `call-model.md` section 9 says so: "IDENTITY (this master was co-spent), not
-  per-call AUTHORIZATION".
+  framed AUTHORIZATION".
 - **Exploit** (`probes/msg-sender-today/probe4_presence_splice_VM_ACCEPTED.test.ts.txt`):
   - Take the genuine transaction in which A calls `X.privileged()`, guarded by `require(msg.sender == A)`.
   - Replace A's unlocking bytecode with A running `ping()`, which makes no call. The outputs are identical, since

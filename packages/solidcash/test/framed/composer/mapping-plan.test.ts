@@ -3,7 +3,7 @@ import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { INDEX_NONE, bytesToHex, encodePushdataValue, type RecordEntry } from '@solidcash/utils';
 import { SortedList, bytesToSlotValue, encodeEntryCommitment, keyToSlot } from '../../../src/stateful/SortedList.js';
 import {
-  PerCallComposerError,
+  FramedComposerError,
   assertRecordChains,
   layOutMappingBatch,
   layOutMappingWrites,
@@ -12,7 +12,7 @@ import {
   planMappingWrite,
   type MappingNodePlacement,
   type MappingNodePlacements,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 
 /**
@@ -260,7 +260,7 @@ describe('laying the plans out as the record entries each segment declares', () 
 
     // A segment that rewrites the node without an earlier segment's creation has no input either, and is refused.
     expect(() => layOutMappingWrites([[updatePlan]], placements))
-      .toThrow(/PER_CALL_MAPPING_UNPLANNABLE: the mapping node .* needs an input index/);
+      .toThrow(/FRAMED_MAPPING_UNPLANNABLE: the mapping node .* needs an input index/);
   });
 });
 
@@ -305,7 +305,7 @@ describe('planning a sorted batch as the body proves it', () => {
     const { inventory } = twoNodeList();
     expect(() => planMappingBatch({
       writes: [{ keys: [lowKey!], value: 1n }, { keys: [lowKey!], value: 2n }], inventory, encodeValue,
-    })).toThrow(/PER_CALL_MAPPING_UNPLANNABLE: a sorted batch writes slot .* more than once/);
+    })).toThrow(/FRAMED_MAPPING_UNPLANNABLE: a sorted batch writes slot .* more than once/);
 
     // Planned one after another, the second insert relinks the node the first just created.
     const first = planMappingWrite({ keys: [lowKey!], value: 1n, inventory, encodeValue });
@@ -329,9 +329,9 @@ describe('what the mapping plan refuses', () => {
     } catch (error) {
       raised = error;
     }
-    expect(raised).toBeInstanceOf(PerCallComposerError);
-    expect((raised as PerCallComposerError).code).toBe('PER_CALL_MAPPING_UNPLANNABLE');
-    expect((raised as PerCallComposerError).message).toMatch(/holds no predecessor below it/);
+    expect(raised).toBeInstanceOf(FramedComposerError);
+    expect((raised as FramedComposerError).code).toBe('FRAMED_MAPPING_UNPLANNABLE');
+    expect((raised as FramedComposerError).message).toMatch(/holds no predecessor below it/);
   });
 
   it('refuses a write whose node has no index the layout placed', () => {
@@ -341,11 +341,11 @@ describe('what the mapping plan refuses', () => {
     // The created node was given no output, so the insert has nowhere to put it.
     const noCreatedOutput = placementsOf(new Map([[bytesToHex(ZERO_SLOT), { in: 1, out: 1 }]]));
     expect(() => layOutMappingWrites([[insertPlan]], noCreatedOutput))
-      .toThrow(/PER_CALL_MAPPING_UNPLANNABLE: the mapping node .* needs an output index/);
+      .toThrow(/FRAMED_MAPPING_UNPLANNABLE: the mapping node .* needs an output index/);
 
     // The predecessor was given no input, so the execution cannot spend the node it must relink.
     const noPredecessorInput = placementsOf(new Map([[bytesToHex(lower.slot), { out: 5 }]]));
     expect(() => layOutMappingWrites([[insertPlan]], noPredecessorInput))
-      .toThrow(/PER_CALL_MAPPING_UNPLANNABLE: the mapping node .* needs an input index/);
+      .toThrow(/FRAMED_MAPPING_UNPLANNABLE: the mapping node .* needs an input index/);
   });
 });

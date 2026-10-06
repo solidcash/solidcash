@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * An owner-guarded setter that writes a contract-typed field and emits, on the plain call path (`callPerCallEntry`).
+ * An owner-guarded setter that writes a contract-typed field and emits, on the plain call path (`callFramedEntry`).
  *
  * The owner is the deployer, set by the constructor from `msg.sender`, and the setter checks it before it writes the
  * field and emits. The owner's call settles, the field and the owner read back, and the event output carries the
@@ -48,7 +48,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 
 /** The owner: the user who deploys and calls the setter. */
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
@@ -93,8 +93,8 @@ function chain(): Promise<Chain> {
 /** One call of the setter, entered by the given user's own coin. */
 async function enter(
   world: Chain, callerLock: Uint8Array, callerPriv: Uint8Array, args: readonly FunctionArgument[],
-): Promise<PerCallCallResult> {
-  return callPerCallEntry({
+): Promise<FramedCallResult> {
+  return callFramedEntry({
     provider: world.provider,
     artifact: world.artifact,
     categoryId: world.categoryId,
@@ -115,7 +115,7 @@ function hashOf(lock: Uint8Array): string {
 
 /** A view's value, read from the deployment's records through the read path, as hex. */
 async function viewHex(world: Chain, functionName: string): Promise<string> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.provider, artifact: world.artifact, categoryId: world.categoryId, functionName, args: [],
     vm: compositionMachine(),
   });
@@ -127,7 +127,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,

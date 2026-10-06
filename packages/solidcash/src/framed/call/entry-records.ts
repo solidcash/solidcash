@@ -1,10 +1,10 @@
 /**
  * The mapping nodes a user-entered call reads, and the facts its writes are planned from.
  *
- * A per-call body that touches a sorted mapping does not read one value in place: the mapping is a chain of entry
+ * A framed body that touches a sorted mapping does not read one value in place: the mapping is a chain of entry
  * NFTs, so the frame's segment has to declare every node the body's group walk reads. A key an entry only reads is
  * declared as its node, kept in place, ahead of the records its writes touch (`callEntryReads`). The nodes come from
- * the deployment's own classification (`readPerCallDeployment`): the collection a read touches is the one its access
+ * the deployment's own classification (`readFramedDeployment`): the collection a read touches is the one its access
  * names, and the lock every node is spent under is the entry covenant the collection's signature derives.
  *
  * The writes are not planned here. The call path plans them with the hop's own planner (`hopEntryWrites`): one
@@ -42,8 +42,8 @@ import type { DraftInput, DraftRecordEntry, DraftToken } from '../composer/draft
 import { entryRecordReadUnlock } from '../deploy/records.js';
 
 /** Raised when a call's mapping records cannot be planned from the artifact and the deployment. */
-export class PerCallCallRecordError extends Error {
-  public readonly name = 'PerCallCallRecordError';
+export class FramedCallRecordError extends Error {
+  public readonly name = 'FramedCallRecordError';
 
   public constructor(message: string) {
     super(message);
@@ -205,7 +205,7 @@ function resolveKeys(
     if (evaluated !== undefined) return evaluated;
     const byName = encodedArgument(fn, args, label ?? '', structs);
     if (byName !== undefined) return byName;
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${request.functionName}" touches mapping "${access.collection}" at a key the frame's arguments do `
       + `not determine (${label ?? '<unnamed>'})`,
     );
@@ -297,7 +297,7 @@ export function planCallLoopWrites(
     }))).filter((key) => key.label.includes(`id:${arrayName}`));
     const varying = marked.find((key) => key.label.includes(`arridx(id:${arrayName},`));
     if (varying === undefined) {
-      throw new PerCallCallRecordError(
+      throw new FramedCallRecordError(
         `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop over "${arrayName}", `
         + 'whose key the artifact does not publish as an element of that array',
       );
@@ -305,7 +305,7 @@ export function planCallLoopWrites(
     const operands = [...varying.label.matchAll(/id:([A-Za-z_$][\w$]*)/g)].map((match) => match[1]!);
     const counter = operands.find((name) => name !== arrayName);
     if (counter === undefined) {
-      throw new PerCallCallRecordError(
+      throw new FramedCallRecordError(
         `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop whose key names no `
         + 'counter to walk it with',
       );
@@ -313,7 +313,7 @@ export function planCallLoopWrites(
     const arrayIndex = visible.findIndex((input) => input.name === arrayName);
     const elements = arrayIndex < 0 ? undefined : args[arrayIndex];
     if (!Array.isArray(elements)) {
-      throw new PerCallCallRecordError(
+      throw new FramedCallRecordError(
         `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop over "${arrayName}", `
         + "which the frame's arguments do not carry as an array",
       );
@@ -343,7 +343,7 @@ export function planCallLoopWrites(
         // arguments carry directly, exactly as a batch's target key is resolved by its declared name.
         const byName = encodedArgument(fn, frameArgs, label, structs);
         if (byName !== undefined) return byName;
-        throw new PerCallCallRecordError(
+        throw new FramedCallRecordError(
           `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${source} of "${arrayName}" `
           + `under a key the frame's arguments do not determine (${label})`,
         );
@@ -365,7 +365,7 @@ export function planCallLoopWrites(
       || (info.valueScalarParam ?? '') !== '';
     const calling = turnsOfLoop(request.artifact, request.functionName, info.collection, arrayName) !== undefined;
     if (calling && selected.length !== derived.length) {
-      throw new PerCallCallRecordError(
+      throw new FramedCallRecordError(
         `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop over "${arrayName}" `
         + 'whose turns make calls and whose guard skips an element, and a skipped turn\'s segments are not planned',
       );
@@ -382,7 +382,7 @@ export function planCallLoopWrites(
     for (const entry of ordered) {
       const value = bytesToSlotValue(keyToSlotMulti([...entry.keys]));
       if (previous !== undefined && value < previous) {
-        throw new PerCallCallRecordError(
+        throw new FramedCallRecordError(
           `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${entry.source} of `
           + `"${arrayName}" under a key that does not sit above the turn before it, and a loop whose value comes `
           + `per key${calling ? ' or whose turns make calls' : ''} keeps the caller's order, which the run-time loop `
@@ -438,7 +438,7 @@ function selectedTurns<T extends { readonly source: number }>(
   const guardIndex = visible.findIndex((input) => input.name === guardName);
   const guard = guardIndex < 0 ? undefined : args[guardIndex];
   if (!Array.isArray(guard) || guard.length < derived.length) {
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop over `
       + `"${info.varyingArrayParam}" guarded by "${guardName}", which the frame's arguments do not carry as an array `
       + 'as long as the one the loop walks',
@@ -448,7 +448,7 @@ function selectedTurns<T extends { readonly source: number }>(
   return derived.filter((entry) => {
     const element = integerElement(guard[entry.source]);
     if (element === undefined) {
-      throw new PerCallCallRecordError(
+      throw new FramedCallRecordError(
         `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop guarded by `
         + `"${guardName}", whose element ${entry.source} is not an integer`,
       );
@@ -458,7 +458,7 @@ function selectedTurns<T extends { readonly source: number }>(
 }
 
 /**
- * The arguments a per-call call must carry, with each run-time loop's key array in the order the body walks it.
+ * The arguments a framed call must carry, with each run-time loop's key array in the order the body walks it.
  *
  * The plan declares the loop's per-turn nodes in the collection's slot order, and the emitted body builds its chain
  * by linking each turn's node to the next turn's key. The two agree only while the keys arrive ascending, so an
@@ -600,7 +600,7 @@ export function loopRecordMints(
     if (held !== undefined) mints.push({ loop: index, turn: loop.turns.length, slot: held.slot });
   });
   if (mints.length !== written.length || mints.some((mint, at) => !bytesEqual(mint.slot, written[at]!.slot))) {
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${functionName}" writes mapping "${run[0]?.collection ?? ''}" in ${run.length} run-time loop(s) whose `
       + 'turns touch one node twice, which one run of their records cannot declare',
     );
@@ -715,20 +715,20 @@ export function readEntryNode(request: KeyResolutionContext & {
 }): ReadEntryNode {
   const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
   if (fn === undefined) {
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `artifact "${request.artifact.contractName}" publishes no entry "${request.functionName}"`,
     );
   }
   const access = fn.entryAccesses?.find((candidate) => candidate.slotIndex === request.slotIndex);
   if (access === undefined) {
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${request.functionName}" publishes no mapping access at entry slot ${request.slotIndex}`,
     );
   }
   const collection = request.artifact.stateLayout?.collections
     ?.find((candidate) => candidate.name === access.collection);
   if (collection === undefined) {
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${request.functionName}" reads mapping "${access.collection}", which the artifact does not publish `
       + 'as a collection',
     );
@@ -738,7 +738,7 @@ export function readEntryNode(request: KeyResolutionContext & {
   const nodes = (request.nodesByCollection.get(collection.name) ?? []).map((utxo) => {
     const commitment = utxo.token?.nft?.commitment;
     if (commitment === undefined) {
-      throw new PerCallCallRecordError(
+      throw new FramedCallRecordError(
         `category ${request.categoryId} holds a node of collection "${collection.name}" with no commitment`,
       );
     }
@@ -753,7 +753,7 @@ export function readEntryNode(request: KeyResolutionContext & {
       > bytesToSlotValue(decodeEntryCommitment(best.commitment).slot) ? candidate : best;
   }, undefined);
   if (node === undefined) {
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `category ${request.categoryId} holds no node of collection "${collection.name}" whose slot is the key's `
       + 'or the key\'s bracketing predecessor, so the read cannot locate what it reads',
     );
@@ -803,12 +803,12 @@ function planReadNodes(
     const loop = planCallLoopWrites(request)
       ?.find((candidate) => candidate.collection === written.collection);
     if (loop !== undefined) {
-      throw new PerCallCallRecordError(
+      throw new FramedCallRecordError(
         `entry "${request.functionName}" writes mapping "${written.collection}" at ${loop.turns.length} turn(s) of `
         + `"${loop.varyingArrayParam}", a run-time loop whose per-turn records a call does not declare yet`,
       );
     }
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${request.functionName}" touches mapping "${written.collection}" as ${written.operations.join('/')} `
       + 'outside a sorted batch, which a call does not plan',
     );
@@ -821,7 +821,7 @@ function planReadNodes(
     .filter((slot) => !coveredSlots.has(slot.slotIndex))
     .sort((left, right) => left.offset - right.offset);
   if (reads.some((access) => !slots.some((slot) => slot.slotIndex === access.slotIndex))) {
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${request.functionName}" reads a mapping key at no fixed entry slot, which a call does not declare `
       + 'a node for',
     );
@@ -835,7 +835,7 @@ function planReadNodes(
     const length = collectionChunksValue(request.artifact, node.collection) && tail.length >= 4
       ? new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true) : 0;
     if (node.present && length > VALUE_INLINE_LIMIT) {
-      throw new PerCallCallRecordError(
+      throw new FramedCallRecordError(
         `entry "${request.functionName}" reads a ${length}-byte value of mapping "${node.collection}" whose bytes sit `
         + 'in chunk records, which a call does not declare',
       );
@@ -871,7 +871,7 @@ function layReadNodes(
 export function requireDistinctNodes(functionName: string, utxos: readonly Utxo[]): void {
   const outpoints = utxos.map((utxo) => `${utxo.txid}:${utxo.vout}`);
   if (new Set(outpoints).size !== outpoints.length) {
-    throw new PerCallCallRecordError(
+    throw new FramedCallRecordError(
       `entry "${functionName}" reads a key at a mapping node it also spends for another key, which a call `
       + 'cannot spend twice',
     );

@@ -22,7 +22,7 @@ function makeGroup(overrides: Record<string, unknown> = {}): PhysicalReturnGroup
   } as unknown as PhysicalReturnGroup;
 }
 
-describe('per-callsite return channel for a callsite aliased onto a shared participant', () => {
+describe('framedsite return channel for a callsite aliased onto a shared participant', () => {
   it('seats two distinct logical tail families on distinct return outputs', () => {
     // A shared participant's owner view and an aliased view of another method both plan output 28. A band right
     // after it sends the packer back to the plans; the covenant reads each callsite at its own

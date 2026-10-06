@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -15,8 +15,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * spec section 23 row 12: struct and array arguments and returns with dynamic members, `uint16[5]` and
  * `uint256[5]`.
  *
- * Every entry is driven through the shipped call path: the shipped compiler under the per-call convention, the
- * shipped deployment, the shipped `callPerCallEntry` (which encodes each argument with the shipped
+ * Every entry is driven through the shipped call path: the shipped compiler under the framed convention, the
+ * shipped deployment, the shipped `callFramedEntry` (which encodes each argument with the shipped
  * `encodeFunctionArgument` and decodes the entry's answer with the shipped `decodeReturnValues`), and the
  * BCH-2026 machine's verdict on every participant. A shape the path does not serve is pinned by the refusal it
  * meets, so a case is a regression guard either way. Each shape is its own contract, so a refused shape leaves
@@ -64,7 +64,7 @@ interface Entered {
 async function enter(source: string, functionName: string, args: readonly unknown[]): Promise<Entered> {
   let artifact: Artifact;
   try {
-    artifact = compileStringMulti(source, { composition: 'per-call' }).Answer!;
+    artifact = compileStringMulti(source, { composition: 'framed' }).Answer!;
   } catch (error) {
     return { refusal: String((error as Error).message) };
   }
@@ -76,7 +76,7 @@ async function enter(source: string, functionName: string, args: readonly unknow
   nonce += 1;
   const callerUtxo = { txid: `${nonce.toString(16).padStart(2, '0')}`.repeat(32), vout: 0, satoshis: 300_000n };
   await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
-  const result = await callPerCallEntry({
+  const result = await callFramedEntry({
     provider: deployed.provider,
     artifact,
     categoryId: deployed.categoryId,

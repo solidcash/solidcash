@@ -90,8 +90,8 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
 export default class LowerVMapCounterLoops extends AstTraversal {
   constructor(
     private readonly publishJournalAccessStreams = false,
-    // A per-call master head supplies no route witness, so a per-call composition publishes no fallback count.
-    private readonly perCallComposition = false,
+    // A framed master head supplies no route witness, so a framed composition publishes no fallback count.
+    private readonly framedComposition = false,
   ) {
     super();
   }
@@ -6178,7 +6178,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // cannot distinguish the other loop's legitimate entries from orphans. Publish only the count witnesses
     // here; these loops do not use the compact journal-access carrier owned by the full permutation lowering.
     const fallbackRuntimeCountCollections = new Set<string>();
-    if (!allSafe && this.publishJournalAccessStreams && !this.perCallComposition) {
+    if (!allSafe && this.publishJournalAccessStreams && !this.framedComposition) {
       const loopCounts = new Map<string, number>();
       for (const [loop, canonical] of counterWorkLoops) {
         const collections = new Set<string>();

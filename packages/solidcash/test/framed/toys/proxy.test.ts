@@ -5,10 +5,10 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, master, masterInput, rootOf, selectorOf,
   token, userInput, userInputs, validatorFor,
@@ -16,10 +16,10 @@ import {
 import {
   createComposedDerivationHost, participant,
   type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
- * A proxy's shape under the per-call convention.
+ * A proxy's shape under the framed convention.
  *
  * The proxy is ordinary source: a state field holding the implementation's address and a `fallback` that
  * delegatecalls it with the call data it received. Its master is entered by a user's root frame; the fallback
@@ -187,16 +187,16 @@ const RECEIVE_SOURCE = PROLOGUE
 function refusalOf(source: string, options: Record<string, unknown> = {}): { code?: string; message: string } {
   let artifact: Artifact;
   try {
-    artifact = compileString(source, { composition: 'per-call', ...options } as never);
+    artifact = compileString(source, { composition: 'framed', ...options } as never);
   } catch (error) {
     return { code: (error as { code?: string }).code, message: (error as Error).message };
   }
   const refused = artifact.composition?.refusedEntries ?? [];
   if (refused.length === 0) {
-    throw new Error('the shipped per-call compiler served the source, so there is no refusal to record');
+    throw new Error('the shipped framed compiler served the source, so there is no refusal to record');
   }
   return {
-    code: 'PER_CALL_CODEGEN_UNAVAILABLE',
+    code: 'FRAMED_CODEGEN_UNAVAILABLE',
     message: refused.map((entry) => `${entry.functionName}: ${entry.reason}`).join(' | '),
   };
 }
@@ -204,7 +204,7 @@ function refusalOf(source: string, options: Record<string, unknown> = {}): { cod
 /** True when the shipped compile serves the source, i.e. throws nothing and publishes no refusal. */
 function isServed(source: string): boolean {
   try {
-    const artifact = compileString(source, { composition: 'per-call' });
+    const artifact = compileString(source, { composition: 'framed' });
     return (artifact.composition?.refusedEntries ?? []).length === 0;
   } catch {
     return false;
@@ -215,20 +215,20 @@ const LOW_LEVEL_REFUSAL = 'a low-level call needs the witness `calls[]` checks, 
 
 // Constant call data and a target the contract does not hold are refused in `hostile/proxy-binding.test.ts`, and a
 // non-delegate low-level call in `edges/refused-contract-shapes.test.ts`.
-describe('the delegate shapes a per-call master admits', () => {
+describe('the delegate shapes a framed master admits', () => {
   it('serves the fallback that forwards its own received call data to an address it holds', () => {
     expect(isServed(FORWARDED_SOURCE)).toBe(true);
   });
 
   it('refuses a delegatecall of a local computed from a parameter, by name', () => {
     const refusal = refusalOf(LOCAL_SLICE_SOURCE, { allowUnsafeOperations: true });
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
   });
 
   it('refuses a delegatecall whose data operand is a parameter that is not the entry\'s own call data', () => {
     const refusal = refusalOf(PARAMETER_DATA_SOURCE, { allowUnsafeOperations: true });
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
   });
 
@@ -291,10 +291,10 @@ describe('the proxied hop settles end to end', () => {
 });
 
 describe('a proxy whose fallback forwards its call data to its implementation', () => {
-  it('serves the proxy and its implementation under the per-call convention', () => {
+  it('serves the proxy and its implementation under the framed convention', () => {
     const { artifacts } = compileAndDeploy(SOURCE, { Proxy: PROXY_LABEL, Impl: IMPL_LABEL });
-    expect(artifacts.Proxy?.composition?.convention).toBe('per-call');
-    expect(artifacts.Impl?.composition?.convention).toBe('per-call');
+    expect(artifacts.Proxy?.composition?.convention).toBe('framed');
+    expect(artifacts.Impl?.composition?.convention).toBe('framed');
     // The fallback is the proxy's only entry, so it is served rather than refused.
     expect(artifacts.Proxy?.composition?.refusedEntries).toBeUndefined();
     expect(artifacts.Proxy?.composition?.stopSites).toBeTruthy();

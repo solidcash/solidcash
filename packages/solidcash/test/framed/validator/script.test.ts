@@ -28,16 +28,16 @@ import {
 } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
-import { decideReference } from '../../../src/per-call/validator/reference/index.js';
+import { decideReference } from '../../../src/framed/validator/reference/index.js';
 import {
   VALIDATOR_INPUT_PADDING_BYTES,
   VALIDATOR_PROGRAM_REASONS,
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
-  type PerCallTransaction as ModelledTransaction,
+  type FramedTransaction as ModelledTransaction,
   type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
+} from '../../../../solidc/src/framed/validator/index.js';
 import {
   categoryOf,
   contractLockOf,
@@ -406,9 +406,9 @@ describe('the validator program as a script', () => {
 
 /**
  * Cases in the generated run. They cycle through the mutation catalogue, so three rounds apply every mutation to
- * three different plans; `PER_CALL_FULL=1` restores the 400-case sample for milestone runs.
+ * three different plans; `FRAMED_FULL=1` restores the 400-case sample for milestone runs.
  */
-const GENERATED_CASES = process.env.PER_CALL_FULL === '1' ? 400 : 3 * MUTATION_COUNT;
+const GENERATED_CASES = process.env.FRAMED_FULL === '1' ? 400 : 3 * MUTATION_COUNT;
 
 describe('the validator program against the derivation, over generated compositions', () => {
   // Generating a case draws plans until one lays out and both models accept it, and every case is then decided by
@@ -1398,8 +1398,8 @@ describe('the validator program refuses each rule it enforces', () => {
     console.log('padding', VALIDATOR_INPUT_PADDING_BYTES);
   });
 
-  // A measurement rather than a gate, so it runs at milestones (`PER_CALL_FULL=1`).
-  const measuring = process.env.PER_CALL_FULL === '1';
+  // A measurement rather than a gate, so it runs at milestones (`FRAMED_FULL=1`).
+  const measuring = process.env.FRAMED_FULL === '1';
   test.runIf(measuring)('measures the widest compositions the fixture can lay out at the published density', () => {
     // The densest case the suites build is the twenty-four-master composition of `primitives/many-masters.test.ts`,
     // which runs under the relaxed profile. This builds the same width from the fixture — three contracts entering

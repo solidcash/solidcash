@@ -8,7 +8,7 @@ import {
   type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -50,7 +50,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const COMPILED = compileStringMulti(SOURCE, { composition: 'per-call' });
+const COMPILED = compileStringMulti(SOURCE, { composition: 'framed' });
 const LEDGER_ARTIFACT = COMPILED.Ledger!;
 const PING_SELECTOR = new Uint8Array(Buffer.from(
   COMPILED.Other!.abi.find((entry) => entry.name === 'ping')!.selector!, 'hex',

@@ -40,7 +40,7 @@ export interface OutputView {
 }
 
 /** The transaction description the validator decides over. */
-export interface PerCallTransaction {
+export interface FramedTransaction {
   readonly inputs: readonly InputView[];
   readonly outputs: readonly OutputView[];
 }
@@ -120,11 +120,11 @@ export function sameCategory(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 /** Whether an input index names a real input. */
-export function inputAt(transaction: PerCallTransaction, index: number): InputView | undefined {
+export function inputAt(transaction: FramedTransaction, index: number): InputView | undefined {
   return index >= 0 && index < transaction.inputs.length ? transaction.inputs[index] : undefined;
 }
 
 /** Whether an output index names a real output. */
-export function outputAt(transaction: PerCallTransaction, index: number): OutputView | undefined {
+export function outputAt(transaction: FramedTransaction, index: number): OutputView | undefined {
   return index >= 0 && index < transaction.outputs.length ? transaction.outputs[index] : undefined;
 }

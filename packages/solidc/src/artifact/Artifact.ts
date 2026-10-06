@@ -566,7 +566,7 @@ export const occurrenceInfoOf = (
  * already-assigned physical result identity; this metadata never clones an executable call node.
  *
  * `targets`, when given, names the nodes whose loops are read instead of the external calls, each by its own key:
- * a per-call body's effects repeated per turn are counted by the same recurrence (`per-call/master/loop-effects.ts`).
+ * a framed body's effects repeated per turn are counted by the same recurrence (`framed/master/loop-effects.ts`).
  */
 const externalCallIterationDomainLists = (
   fn: FunctionDefinitionNode, compilerOptions: CompilerOptions,
@@ -1110,8 +1110,8 @@ const externalCallIterationDomainLists = (
 };
 
 /**
- * The single-loop recurrence of each key `externalCallIterationDomainLists` counts, as one domain: what a per-call
- * body's loop effects publish (`per-call/master/loop-effects.ts`, which passes `targets`). A key inside nested loops
+ * The single-loop recurrence of each key `externalCallIterationDomainLists` counts, as one domain: what a framed
+ * body's loop effects publish (`framed/master/loop-effects.ts`, which passes `targets`). A key inside nested loops
  * has no single domain and is left out.
  */
 export const externalCallIterationDomains = (
@@ -1212,7 +1212,7 @@ const GLOBAL_BUILTIN_CALLS = new Set<string>(Object.values(GlobalFunction));
  * machine's own clock (`block.timestamp`), which is published as a read of the register it desugars to, so an
  * element a body stamps with the transaction's time is the element the consumer states. The run's
  * width is the live value's plus that element, so the element is what a consumer has to state; the same
- * one-write-per-path proof applies. Only the per-call convention
+ * one-write-per-path proof applies. Only the framed convention
  * reads this entry shape, so the other conventions' artifacts are unchanged.
  */
 const dynamicWriteSourcesOf = (
@@ -1221,7 +1221,7 @@ const dynamicWriteSourcesOf = (
 ): Readonly<Record<string, ExternalCallExpression>> => {
   const appendMode = func.name !== '__construct';
   if (!func.body) return {};
-  if (appendMode && compilerOptions.composition !== 'per-call') return {};
+  if (appendMode && compilerOptions.composition !== 'framed') return {};
   const dynamicNames = new Set(func.dynamicWrites ?? []);
   if (dynamicNames.size === 0) return {};
   // This replay deliberately models only terminating straight-line/if control flow. An abrupt completion that can
@@ -1742,9 +1742,9 @@ const dynamicWriteSourcesOf = (
 };
 
 /**
- * Publish how many elements a per-call entry's own write appends to each dynamic value it writes.
+ * Publish how many elements a framed entry's own write appends to each dynamic value it writes.
  *
- * A per-call body holds a dynamic value in a run of chunk records at the value's own collection covenant, and an
+ * A framed body holds a dynamic value in a run of chunk records at the value's own collection covenant, and an
  * append grows that run. The hop has to state the run's width before the body runs, and the width is the value the
  * deployment holds plus the elements the write appends. The element's own bytes are published separately, in
  * `dynamicWriteSources`, whenever the artifact's vocabulary can state them; this map is what remains when it cannot
@@ -1757,14 +1757,14 @@ const dynamicWriteSourcesOf = (
  * call parameter, so a consumer refuses that shape by name rather than guessing a width. A variable whose write the
  * body also performs the other way - an assignment, a pop, or a straight push beside a loop - is left absent.
  *
- * Only the per-call convention reads this fact; the other conventions' artifacts are unchanged.
+ * Only the framed convention reads this fact; the other conventions' artifacts are unchanged.
  */
 const dynamicWriteGrowthOf = (
   func: FunctionDefinitionNode,
   _contract: ContractNode | undefined,
   compilerOptions: CompilerOptions = {},
 ): Readonly<Record<string, DynamicWriteGrowthAbi>> => {
-  if (compilerOptions.composition !== 'per-call' || func.name === '__construct' || !func.body) return {};
+  if (compilerOptions.composition !== 'framed' || func.name === '__construct' || !func.body) return {};
   const names = new Set(func.dynamicWrites ?? []);
   if (names.size === 0) return {};
   const parameterNames = new Set(func.parameters
@@ -2034,7 +2034,7 @@ const dynamicWriteGrowthOf = (
 };
 
 /**
- * Publish the order a per-call frame declares the runs of chunk records its dynamic writes occupy.
+ * Publish the order a framed frame declares the runs of chunk records its dynamic writes occupy.
  *
  * The frame's write segment declares, past its own state records, every sorted batch's groups in `sortedBatchInfo`
  * order and then one run per written dynamic value, in state declaration order: the order code generation pins the
@@ -2048,7 +2048,7 @@ const dynamicWriteOrderOf = (
   contract: ContractNode | undefined,
   compilerOptions: CompilerOptions = {},
 ): readonly string[] => {
-  if (compilerOptions.composition !== 'per-call' || contract === undefined || func.name === '__construct') return [];
+  if (compilerOptions.composition !== 'framed' || contract === undefined || func.name === '__construct') return [];
   const written = new Set(func.dynamicWrites ?? []);
   if (written.size === 0 || (written.size === 1 && (func.sortedBatchInfo?.length ?? 0) <= 1)) return [];
   return contract.stateVariables.filter((variable) => written.has(variable.name)).map((variable) => variable.name);
@@ -3669,13 +3669,13 @@ function buildFunctionAbiMetadata(
       })),
     }),
     ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop
-      || compilerOptions.composition === 'per-call') && {
+      || compilerOptions.composition === 'framed') && {
       // Loop mapping writes (inLoop) are surfaced via entryLoopWrites, not as fixed entry slots; exclude them
-      // here so the SDK's static-entry path does not allocate a slot / derive them positionally. A per-call frame
+      // here so the SDK's static-entry path does not allocate a slot / derive them positionally. A framed frame
       // declares its records in its witness block instead, where the slot's slotIndex is the coordinate the frame
       // plans the loop's per-turn nodes from.
       entryAccesses: func.entryAccesses.filter((ea) => !ea.inLoop
-        || compilerOptions.composition === 'per-call').map((ea) => ({
+        || compilerOptions.composition === 'framed').map((ea) => ({
         slotIndex: ea.slotIndex,
         collection: ea.collection,
         keyParams: ea.keyParams,
@@ -4413,7 +4413,7 @@ export function generateArtifact(
           keyType: keyEncodingTypeString(coll.keyType),
           valueType: coll.innermostValueType.toString(),
           ...(coll.sorted && (compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
-            && compilerOptions.composition !== 'per-call'
+            && compilerOptions.composition !== 'framed'
             && coll.allKeyTypes.some((type) => /^address(?: payable)?$/.test(keyEncodingTypeString(type)))
             && { addressKeyEncoding: 'identity20' as const }),
           ...(coll.depth > 1 && {
@@ -4440,7 +4440,7 @@ export function generateArtifact(
             keyType: keyEncodingTypeString(coll.keyType),
             valueType: coll.innermostValueType.toString(),
             ...(coll.sorted && (compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
-              && compilerOptions.composition !== 'per-call'
+              && compilerOptions.composition !== 'framed'
               && coll.allKeyTypes.some((type) => /^address(?: payable)?$/.test(keyEncodingTypeString(type)))
               && { addressKeyEncoding: 'identity20' as const }),
             ...(coll.depth > 1 && {

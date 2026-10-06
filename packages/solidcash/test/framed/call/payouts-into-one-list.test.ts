@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress, type RecordEntry } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/framed/proxy/entry-writes.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -80,7 +80,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const token = artifacts.Token!;
 const payer = artifacts.Payer!;
 const TOKEN_ADDRESS = deployMaster(token, hexToBin(TOKEN_CATEGORY), VALIDATOR_PROGRAM).address;
@@ -121,7 +121,7 @@ async function deployWorld(): Promise<World> {
   for (const coin of [initCoin, callCoin]) await network.addUtxo(binToHex(CALLER), coin);
   await fundShippedFacets(network);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: payer,
     proxyArtifact: buildProxyArtifact(payer),
@@ -160,8 +160,8 @@ async function deployed(): Promise<World> {
 /** The payer's `payEach`, entered on its proxy by the caller, paying each payee the amount beside it. */
 function payEach(
   world: World, payees: readonly Uint8Array[], amounts: readonly bigint[],
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: payer,
     proxyArtifact: buildProxyArtifact(payer),
@@ -183,7 +183,7 @@ const balance = (amount: bigint): string => bytesToHex(bigIntToVmNumber(amount))
 
 /** The token's list as the chain holds it, walked from the head along each node's link, by slot and value. */
 async function liveList(world: World): Promise<readonly (readonly [bigint, string])[]> {
-  const deployment = await readPerCallDeployment(world.network, TOKEN_CATEGORY, token.stateLayout!);
+  const deployment = await readFramedDeployment(world.network, TOKEN_CATEGORY, token.stateLayout!);
   const nodes = new Map((deployment.nodesByCollection.get('balances') ?? []).map((utxo) => {
     const node = decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment));
     return [bytesToSlotValue(node.slot), node] as const;
@@ -208,7 +208,7 @@ function listOf(holders: readonly (readonly [Uint8Array, bigint])[]): readonly (
 
 /** Each declaration a token frame makes of one holder's node, in segment order, as `viewIn -> viewOut` values. */
 function declarationsOf(
-  result: PerCallProxyCallResult, master: string, who: Uint8Array,
+  result: FramedProxyCallResult, master: string, who: Uint8Array,
 ): readonly (readonly [string, string])[] {
   const id = sharedNodeId(TOKEN_CATEGORY, 'balances', keyToSlotMulti([who]));
   const index = result.draft.layout.participants.find((placed) => placed.id === id)!.index;
@@ -219,7 +219,7 @@ function declarationsOf(
 }
 
 /** The token frames the hop placed, one per turn, in the order the turns run. */
-function transferFrames(result: PerCallProxyCallResult): readonly string[] {
+function transferFrames(result: FramedProxyCallResult): readonly string[] {
   return result.draft.layout.participants.map((placed) => placed.id)
     .filter((id) => /^callee-master-\d+$/.test(id));
 }

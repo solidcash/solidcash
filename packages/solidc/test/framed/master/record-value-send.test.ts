@@ -8,7 +8,7 @@ import {
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
@@ -53,7 +53,7 @@ type VmOutput = VmTransaction['outputs'][number];
 
 /** The master's verdict on a frame that declares the record and writes it back holding `recordOut`. */
 function verdict(access: Access, sends: boolean, recordOut: bigint): boolean {
-  const artifact = compileString(source(access, sends), { composition: 'per-call' });
+  const artifact = compileString(source(access, sends), { composition: 'framed' });
   const program = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
     category: categorySlotValue(CATEGORY), contractAddress: ADDRESS, templateHash: sha256(REAL_VALIDATOR_PROGRAM),
   });

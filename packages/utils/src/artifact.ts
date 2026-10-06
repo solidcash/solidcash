@@ -1,4 +1,4 @@
-import type { StopSiteMetadata } from './per-call/stop-site.js';
+import type { StopSiteMetadata } from './framed/stop-site.js';
 
 export interface ResolvedImport {
   source: string;  // The source code of the imported file
@@ -164,11 +164,13 @@ export interface CompilerOptions {
   messageBusKernel?: boolean;
   /**
    * Composition convention to compile for. `direct` (default) gives every entry point its own top-level function and
-   * block layout. `per-call` compiles each entry point as a master program that recreates itself unchanged, so one
+   * block layout. `framed` compiles each entry point as a master program that recreates itself unchanged, so one
    * contract's state settles once per transaction however many times the transaction enters it. The resolved
    * convention is published on `artifact.composition`.
+   *
+   * `per-call` is the deprecated previous name of `framed`, accepted for one release and resolved to `framed`.
    */
-  composition?: 'direct' | 'per-call';
+  composition?: 'direct' | 'framed' | 'per-call';
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];
@@ -185,7 +187,7 @@ export interface EmitAbi {
   eventSignature: string;
   emitIndex: number;
   /**
-   * The condition a per-call emit a branch guards runs under, in a call site's `condition` language; absent for one
+   * The condition a framed emit a branch guards runs under, in a call site's `condition` language; absent for one
    * the body makes wherever it reaches it. The frame lists the event's output either way: a builder decides it from
    * the frame's facts and states a skipped emit's output with the empty commitment its not-taken arm closes against.
    * `{ kind: 'unsupported' }` marks an emit whose condition those facts do not decide, learned from that close.
@@ -512,9 +514,9 @@ export interface DelegateForwardingAbi {
 }
 
 /**
- * How much a per-call entry's own write grows one dynamic value's run, in elements.
+ * How much a framed entry's own write grows one dynamic value's run, in elements.
  *
- * A per-call body holds a dynamic value in a run of chunk records, and an append grows that run by the elements it
+ * A framed body holds a dynamic value in a run of chunk records, and an append grows that run by the elements it
  * pushes. `dynamicWriteSources` states the element itself when the artifact's vocabulary can name it; this fact
  * states the count that holds when it cannot, so a consumer can still size the run.
  */
@@ -731,7 +733,7 @@ export interface AbiFunction {
    */
   dynamicWriteGrowth?: Readonly<Record<string, DynamicWriteGrowthAbi>>;
   /**
-   * The order a per-call frame declares the runs of chunk records its dynamic writes occupy: past every sorted
+   * The order a framed frame declares the runs of chunk records its dynamic writes occupy: past every sorted
    * batch's groups, one run per written value, in state declaration order, which `dynamicWrites` (the order the
    * writes were emitted) need not follow. Published for an entry that writes several dynamic values, or one beside
    * several sorted batches; one run beside at most one batch sits past that batch's groups and publishes none.
@@ -1180,7 +1182,7 @@ export interface EntryAccessAbi {
    * Optional fixed entry-mutation activation recipe. Absent means the write is unconditional. When present, the
    * SDK evaluates it against authenticated row arguments and omits inactive write planning (including bands).
    *
-   * A per-call body publishes one for a write a branch guards, which its frame lets the body skip: the predicates
+   * A framed body publishes one for a write a branch guards, which its frame lets the body skip: the predicates
    * on the write's path, read where each branch starts, in a call site's `condition` language. A builder decides it
    * from the frame's own facts and declares the write only where it runs; a skipped write keeps its node, or its
    * absent key's predecessor. `{ kind: 'unsupported' }` marks a write the frame may skip under a condition those
@@ -1463,7 +1465,7 @@ export interface ExternalCallAbi {
   possibleTargets?: readonly { functionName: string; selector: string }[];
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
   addressSource?: ArgSource; // SDK-resolvable origin for computed/local target addresses
-  // Foreign fn-ptr call: the SDK fills a per-call master-index witness.
+  // Foreign fn-ptr call: the SDK fills a framed master-index witness.
   fnPtrCall?: boolean;
   // A regular direct call needs a selector witness unless the callee has only one method.
   needsSelectorVerification?: boolean;
@@ -1579,7 +1581,7 @@ export interface ExternalLibraryAbi {
   resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns the hash in
   // its NFT commitment (the contract reads it), rather than the contract running the blob
   minInstances?: number; // (resultNft) minimum side-car instances to deploy at creation: the max keccak256 call
-  // count across the contract's functions (each function co-spends its own per-call side-cars)
+  // count across the contract's functions (each function co-spends its own framed side-cars)
   unbounded?: boolean;   // (resultNft) some function hashes inside a loop -> minInstances is a LOWER BOUND; the
   // real need is the loop's runtime count, so provision extra side-cars
 }
@@ -1838,7 +1840,7 @@ export interface CompositionPlaceholders {
   templateHashOffset?: number;
 }
 
-/** One external call of a per-call entry, as published: the call's index and what it targets. */
+/** One external call of a framed entry, as published: the call's index and what it targets. */
 export interface PublishedCallSite {
   /**
    * The call's position in the entry's own call list, which a call site's `descriptor` names. Two exclusive arms
@@ -1857,7 +1859,7 @@ export interface PublishedCallSite {
 }
 
 /**
- * One write of a per-call entry, and the segment its records are declared in.
+ * One write of a framed entry, and the segment its records are declared in.
  *
  * Exactly one identity field is set: `record` names one of the entry's own data-NFT records by its record index,
  * `collection` names the verified mapping a batch write targets, `variable` names the dynamic value whose run
@@ -1918,7 +1920,7 @@ export interface PublishedWriteTurns {
   readonly stride: number;
 }
 
-/** One run of a per-call entry's effects of one kind: see `PublishedLoopEffects`. */
+/** One run of a framed entry's effects of one kind: see `PublishedLoopEffects`. */
 export interface PublishedLoopEffectRun {
   /**
    * The effects the run makes, in source order: emit indices for events, transfer indices for sends, and each
@@ -1930,7 +1932,7 @@ export interface PublishedLoopEffectRun {
 }
 
 /**
- * The effects a per-call entry makes once per turn of a loop, as runs of each kind in execution order.
+ * The effects a framed entry makes once per turn of a loop, as runs of each kind in execution order.
  *
  * The body binds each such effect where it makes it: the k-th event at the k-th event output its frame lists, the
  * k-th send at the k-th send output, and the k-th hash at the k-th side-car after its own input. A builder expands
@@ -1943,7 +1945,7 @@ export interface PublishedLoopEffects {
   readonly hashes?: readonly PublishedLoopEffectRun[];
 }
 
-/** One per-call entry's stop sites, plus the call facts a driver resolves a callee through. */
+/** One framed entry's stop sites, plus the call facts a driver resolves a callee through. */
 export interface PublishedEntryStopSites {
   /** The entry's identity, `Contract.entry()`, which a `FrameRequest.functionName` matches. */
   readonly functionName: string;
@@ -1984,14 +1986,14 @@ export interface PublishedEntryStopSites {
   readonly sites: StopSiteMetadata;
 }
 
-/** The stop-site table a per-call artifact publishes on `composition.stopSites`: one entry per served entry. */
-export interface PublishedPerCallStopSites {
+/** The stop-site table a framed artifact publishes on `composition.stopSites`: one entry per served entry. */
+export interface PublishedFramedStopSites {
   readonly version: 1;
   readonly entries: readonly PublishedEntryStopSites[];
 }
 
 /**
- * A body a per-call master cannot serve, published on `composition.refusedEntries` (`refusedFunctions` on a direct
+ * A body a framed master cannot serve, published on `composition.refusedEntries` (`refusedFunctions` on a direct
  * artifact).
  *
  * The entry stays in the ABI and the dispatcher, its program fails whenever it is reached, and `reason` is the fact
@@ -2003,7 +2005,7 @@ export interface PublishedRefusedEntry {
   readonly reason: string;
 }
 
-/** A `split(n)` or `merge(n)` function a per-call master serves outside its ABI. */
+/** A `split(n)` or `merge(n)` function a framed master serves outside its ABI. */
 export interface PublishedLifecycleEntry {
   readonly name: string;
   readonly inputs: readonly AbiInput[];
@@ -2011,8 +2013,8 @@ export interface PublishedLifecycleEntry {
   readonly countParameter: string;
 }
 
-/** The pool resizes a per-call master serves: unlocked by `<1|2> <n> <sig>`, a retired master by `<3>`. */
-export interface PublishedPerCallLifecycle {
+/** The pool resizes a framed master serves: unlocked by `<1|2> <n> <sig>`, a retired master by `<3>`. */
+export interface PublishedFramedLifecycle {
   readonly split?: PublishedLifecycleEntry;
   readonly merge?: PublishedLifecycleEntry;
 }
@@ -2058,14 +2060,18 @@ export interface Artifact {
    */
   /**
    * The direct convention's refused functions: each stays in the ABI and the dispatcher, its program fails whenever it
-   * is reached, and `reason` names why, as `composition.refusedEntries` does for a per-call master.
+   * is reached, and `reason` names why, as `composition.refusedEntries` does for a framed master.
    */
   refusedFunctions?: readonly PublishedRefusedEntry[];
   composition?: {
-    convention: 'per-call';
+    /**
+     * The convention the artifact was compiled for. A compiler at this version publishes `framed`; `per-call` is
+     * the deprecated previous name, still accepted by every reader for one release.
+     */
+    convention: 'framed' | 'per-call';
     placeholders: CompositionPlaceholders;
     /** The stop sites a builder resumes each served entry from; absent on a master compiled before the table. */
-    stopSites?: PublishedPerCallStopSites;
+    stopSites?: PublishedFramedStopSites;
     /** The bodies the master refuses; absent when it serves every body. */
     refusedEntries?: readonly PublishedRefusedEntry[];
     /**
@@ -2074,7 +2080,7 @@ export interface Artifact {
      */
     balanceReaders?: readonly string[];
     /** The source's pool resizes, served beside the head (spec R2b); absent when it declares none. */
-    lifecycle?: PublishedPerCallLifecycle;
+    lifecycle?: PublishedFramedLifecycle;
   };
   messageBus?: {
     version: 1;

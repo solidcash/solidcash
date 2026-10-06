@@ -6,8 +6,8 @@ import {
 import {
   encodeWitnessBlock, sha256, validatorAddress, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
-import { ADDRESS_SLOT_LENGTH, placeholderPrefixLength } from '../../../src/per-call/master/placeholders.js';
-import { selfSettlementScript, type SelfSettlementShape } from '../../../src/per-call/master/frame-tail.js';
+import { ADDRESS_SLOT_LENGTH, placeholderPrefixLength } from '../../../src/framed/master/placeholders.js';
+import { selfSettlementScript, type SelfSettlementShape } from '../../../src/framed/master/frame-tail.js';
 import { compositionMachine } from '../machine.js';
 
 /**

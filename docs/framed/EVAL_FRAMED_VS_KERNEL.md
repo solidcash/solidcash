@@ -3,13 +3,13 @@
 Date: 2026-09-25.
 
 **Questions (user):**
-- Is the worked-out per-call spec still a win over the message bus with the kernel, or will it fail?
+- Is the worked-out framed spec still a win over the message bus with the kernel, or will it fail?
 - Do compilation and SDK derivation get faster?
 
 **Method:**
 - Measurements on `ea7a48e27` (`.worktrees/kernel-baseline-ea7a48e27`).
 - The kernel's own performance records (`PERF_FINDINGS.md`, `PERF_HANDOFF_KERNEL_BETA.md`).
-- The spec, [`SPEC_PER_CALL_TRANSACTION.md`](./SPEC_PER_CALL_TRANSACTION.md). The estimates were made on revision 9
+- The spec, [`SPEC_FRAMED_TRANSACTION.md`](./SPEC_FRAMED_TRANSACTION.md). The estimates were made on revision 9
   and rechecked on revisions 10 to 12: the review fixes leave them unchanged, except that B14 and B15 add test code.
 
 Per-call sizes are estimates, and are marked as such.
@@ -35,7 +35,7 @@ Per-call sizes are estimates, and are marked as such.
     admission, 18 refusal codes fed by dozens of free-form admission reasons, and two full compiles per contract.
     It still stands at 0/66 at HEAD, with a best full run of 43/66; `arbitrate` and the integration test never
     passed.
-  - The per-call spec has a fixed set of mechanisms (masters, frames, one generic validator, views over today's
+  - The framed spec has a fixed set of mechanisms (masters, frames, one generic validator, views over today's
     record formats), and none of them depends on the transaction's shape.
   - Its risk sits in one place: compiler "view mode", which reads and writes records through witness views. Scoped
     to the record kinds of spec section 20, and reusing today's encoders, it is bounded. If it tries to carry every
@@ -73,7 +73,7 @@ Per-call sizes are estimates, and are marked as such.
 - static footprint planning with per-shape admission, which is the growth driver (EVAL 2.3);
 - two full compiles per contract.
 
-## 3. What the per-call path needs (spec revision 9, unchanged in 10; estimates)
+## 3. What the framed path needs (spec revision 9, unchanged in 10; estimates)
 
 | Component | Content | Reuse | Estimate |
 | --- | --- | --- | --- |
@@ -90,9 +90,9 @@ Per-call sizes are estimates, and are marked as such.
   - The kernel has more than a dozen interlocking ones: routes, handlers, verifiers, manifests, participant tables,
     caller vectors, footprints, admission, resource folding, value-chunk lanes, journals, read carriers and
     lifecycle topology.
-  - The per-call path has four: masters, frames, the validator, and views over existing records.
+  - The framed path has four: masters, frames, the validator, and views over existing records.
 
-## 4. Where the per-call path could still fail
+## 4. Where the framed path could still fail
 
 1. **Compiler view mode** (largest risk).
    - Today's state codegen assumes block-layout slots. Composed frames need the same record logic, fed from witness
@@ -110,7 +110,7 @@ Per-call sizes are estimates, and are marked as such.
    - libauth pins the limits: per input, 10,000 B is consensus; per transaction, 100,000 B is the relay limit
      (policy) and 1,000,000 B the consensus limit. The largest titles would be non-standard but consensus-valid.
    - The kernel has the mirror problem: its routes exceeded the 10,000 B per-input consensus limit. Neither path is
-     real-chain ready, so 66/66 is a mock result either way. Plan item A9 measures the per-call numbers.
+     real-chain ready, so 66/66 is a mock result either way. Plan item A9 measures the framed numbers.
    - **The lever** (third review): load the code instead of carrying it (spec 12, mitigation 1). Each unlocking byte
      funds 8 instructions, so most masters need little padding, but one copy per distinct code remains: about 3x
      fewer copies for `arbitrate`. Witnesses and padding stay, so the total improves about 2x: about 64 KB at 4 KB
@@ -137,7 +137,7 @@ Per-call sizes are estimates, and are marked as such.
   without the bus, out of memory above 4 GB with it (`PERF_FINDINGS.md`).
 - **Warm cache:** unchanged, at about a 0.9 s floor.
 - **Also:** today's direct path cannot compile the marketplace contracts at all. Only the bus accepts a repeated
-  callee, and per-call handles it natively.
+  callee, and framed handles it natively.
 
 ### SDK derivation
 

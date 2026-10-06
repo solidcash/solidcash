@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -57,7 +57,7 @@ const SOURCE = (plainGateway: boolean): string => [
   '}',
 ].join('\n');
 
-const OPTIONS = { solidityImportCompat: true, composition: 'per-call' } as never;
+const OPTIONS = { solidityImportCompat: true, composition: 'framed' } as never;
 const proxiedUnit = compileStringMulti(SOURCE(false), OPTIONS);
 const plainUnit = compileStringMulti(SOURCE(true), OPTIONS);
 const REGISTRY = proxiedUnit.Registry!;
@@ -72,7 +72,7 @@ function idOf(label: string): string {
   return bytesToHex(sha256(utf8ToBin(`callee guarded mapping write ${label}`)));
 }
 
-type Entered = PerCallProxyCallResult | PerCallCallResult;
+type Entered = FramedProxyCallResult | FramedCallResult;
 
 /** One gateway and the registry it reaches, and the chain as it stood once both were deployed. */
 interface World {
@@ -101,7 +101,7 @@ async function deployWorld(gatewayBehindProxy: boolean, registryBehindProxy: boo
   const proxied = async (artifact: Artifact, args: readonly FunctionArgument[]): Promise<{
     readonly proxy: string; readonly implementation: string; readonly address: Uint8Array;
   }> => {
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -127,7 +127,7 @@ async function deployWorld(gatewayBehindProxy: boolean, registryBehindProxy: boo
     };
   };
 
-  let registry: PerCallProxyExternal;
+  let registry: FramedProxyExternal;
   let registryAddress: Uint8Array;
   if (registryBehindProxy) {
     const deployment = await proxied(REGISTRY, []);
@@ -149,7 +149,7 @@ async function deployWorld(gatewayBehindProxy: boolean, registryBehindProxy: boo
   if (gatewayBehindProxy) {
     const gateway = proxiedUnit.Gateway!;
     const deployment = await proxied(gateway, [registryAddress]);
-    enter = async (functionName, args) => callPerCallProxyEntry({
+    enter = async (functionName, args) => callFramedProxyEntry({
       provider: network,
       implementationArtifact: gateway,
       proxyArtifact: buildProxyArtifact(gateway),
@@ -169,7 +169,7 @@ async function deployWorld(gatewayBehindProxy: boolean, registryBehindProxy: boo
     const deployment = await deployStatefulContract(gateway, [registryAddress], {
       provider: network, fundingUtxo: await coinAt(network, wallet.address, 'gateway'), funder, changeAddress,
     });
-    enter = async (functionName, args) => callPerCallEntry({
+    enter = async (functionName, args) => callFramedEntry({
       provider: network,
       artifact: gateway,
       categoryId: deployment.categoryId,
@@ -194,7 +194,7 @@ async function settle(shared: World, functionName: string, args: readonly Functi
 
 /** A registry view, read from its records through the read path. */
 async function view(shared: World, functionName: string, args: readonly FunctionArgument[] = []): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: shared.network, artifact: REGISTRY, categoryId: shared.registryRecords, functionName, args,
   });
   expect(read.accepted).toBe(true);
@@ -282,7 +282,7 @@ describe('a callee frame whose verified-mapping write a branch guards', () => {
       provider: network, fundingUtxo: await coinAt(network, wallet.address, 'token'), funder, changeAddress,
     });
     const tokenAddress = validatorAddress(hexToBin(tokenDeployment.categoryId), VALIDATOR_PROGRAM);
-    const pullerDeployment = await deployPerCallProxy({
+    const pullerDeployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: puller,
       proxyArtifact: buildProxyArtifact(puller),
@@ -303,12 +303,12 @@ describe('a callee frame whose verified-mapping write a branch guards', () => {
       expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
       expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     };
-    const approve = async (value: bigint): Promise<void> => settled(await callPerCallEntry({
+    const approve = async (value: bigint): Promise<void> => settled(await callFramedEntry({
       provider: network, artifact: token, categoryId: tokenDeployment.categoryId, functionName: 'approve',
       args: [pullerAddress, value], callerUtxo: await coinAt(network, binToHex(USER), 'approve'),
       callerLockingBytecode: USER, funder: USER_FUNDER, vm: compositionMachine(),
     }));
-    const pull = async (value: bigint): Promise<void> => settled(await callPerCallProxyEntry({
+    const pull = async (value: bigint): Promise<void> => settled(await callFramedProxyEntry({
       provider: network,
       implementationArtifact: puller,
       proxyArtifact: buildProxyArtifact(puller),
@@ -324,7 +324,7 @@ describe('a callee frame whose verified-mapping write a branch guards', () => {
       vm: compositionMachine(),
     }));
     const read = async (functionName: string, args: readonly FunctionArgument[]): Promise<unknown> => {
-      const answered = await readPerCallEntry({
+      const answered = await readFramedEntry({
         provider: network, artifact: token, categoryId: tokenDeployment.categoryId, functionName, args,
       });
       expect(answered.accepted).toBe(true);

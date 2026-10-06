@@ -1,7 +1,7 @@
 /**
  * Claim 6: composite keys for nested mappings, and one collection per nested mapping.
  *
- * Spec: docs/per-call/SPEC_PER_CALL_TRANSACTION.md
+ * Spec: docs/framed/SPEC_FRAMED_TRANSACTION.md
  *   1474-1477 - "`mapping(K0 => mapping(K1 => V))` is one collection, not one per outer key. The slot for keys
  *          `k0, k1, ...` is `mask(sha256(sha256(k0) || sha256(k1) || ...))`. A single key gives
  *          `mask(sha256(k0))`. Each `ki` is the key's canonical encoding; `mask` clears the top bit of the last

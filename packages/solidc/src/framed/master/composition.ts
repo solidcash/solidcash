@@ -5,7 +5,7 @@
  *
  *   - `direct`: every entry point is its own top-level function with its own block layout, and a transaction that
  *     reaches the same contract twice spends it twice. This is the shipped convention.
- *   - `per-call`: every entry point is compiled as a *master* program that recreates itself unchanged, so several
+ *   - `framed`: every entry point is compiled as a *master* program that recreates itself unchanged, so several
  *     entries into one contract can share a transaction while the contract's state settles exactly once.
  *
  * The convention is an explicit, published choice. Requesting one whose code generation is not present fails closed
@@ -16,26 +16,34 @@
 import { SolidcDiagnosticError } from '../../Errors.js';
 
 /** The composition convention a compile targets. */
-export type CompositionConvention = 'direct' | 'per-call';
+export type CompositionConvention = 'direct' | 'framed';
+
+/**
+ * @deprecated The previous name of `framed`, accepted for one release so an existing caller does not break.
+ * It resolves to `framed`; artifacts never publish it.
+ */
+export const DEPRECATED_COMPOSITION_CONVENTIONS: readonly string[] = ['per-call'];
 
 /** The convention used when a compile does not ask for one. */
 export const DEFAULT_COMPOSITION_CONVENTION: CompositionConvention = 'direct';
 
 /** Every convention a compile may name. */
-export const COMPOSITION_CONVENTIONS: readonly CompositionConvention[] = ['direct', 'per-call'];
+export const COMPOSITION_CONVENTIONS: readonly CompositionConvention[] = ['direct', 'framed'];
 
 /**
  * Resolves the requested convention. An absent value selects the default; anything a caller does supply must name a
- * convention, so a typo cannot silently fall back.
+ * convention, so a typo cannot silently fall back. The deprecated name resolves to `framed`.
  */
 export function resolveCompositionConvention(requested: string | undefined): CompositionConvention {
   if (requested === undefined) return DEFAULT_COMPOSITION_CONVENTION;
+  if (DEPRECATED_COMPOSITION_CONVENTIONS.includes(requested)) return 'framed';
   if ((COMPOSITION_CONVENTIONS as readonly string[]).includes(requested)) {
     return requested as CompositionConvention;
   }
   throw new SolidcDiagnosticError(
-    'PER_CALL_CODEGEN_UNAVAILABLE',
-    `unknown composition convention '${requested}'; expected one of ${COMPOSITION_CONVENTIONS.join(', ')}`,
+    'FRAMED_CODEGEN_UNAVAILABLE',
+    `unknown composition convention '${requested}'; expected one of `
+    + `${[...COMPOSITION_CONVENTIONS, ...DEPRECATED_COMPOSITION_CONVENTIONS].join(', ')}`,
     { requested, supported: COMPOSITION_CONVENTIONS },
   );
 }
@@ -43,7 +51,7 @@ export function resolveCompositionConvention(requested: string | undefined): Com
 /**
  * Fails closed when a requested convention has no code generation in this compiler.
  *
- * `per-call` is emitted for the contract shapes `assessPerCallMasterShape` admits; the shape itself is only known
+ * `framed` is emitted for the contract shapes `assessFramedMasterShape` admits; the shape itself is only known
  * once the AST exists, so the per-shape refusal happens there rather than here. An unknown convention is refused
  * by `resolveCompositionConvention`, and an artifact compiled for the wrong convention has a different address and
  * unlocking bytecode, so publishing one would be worse than not compiling.
@@ -51,7 +59,7 @@ export function resolveCompositionConvention(requested: string | undefined): Com
 export function assertCompositionConventionSupported(convention: CompositionConvention): void {
   if (COMPOSITION_CONVENTIONS.includes(convention)) return;
   throw new SolidcDiagnosticError(
-    'PER_CALL_CODEGEN_UNAVAILABLE',
+    'FRAMED_CODEGEN_UNAVAILABLE',
     `unknown composition convention '${String(convention)}'; expected one of ${COMPOSITION_CONVENTIONS.join(', ')}`,
     { requested: convention, supported: COMPOSITION_CONVENTIONS },
   );

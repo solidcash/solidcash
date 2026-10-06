@@ -3,12 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../../../src/compiler.js';
 
 /**
- * The `direct` convention is the shipped one, and the per-call work must not fork it. Every case compiles once
+ * The `direct` convention is the shipped one, and the framed work must not fork it. Every case compiles once
  * with the option omitted and once with `composition: 'direct'`, and those two artifacts must be the same bytecode.
  * The hashes are that bytecode. They moved once when an integer literal beside a bounded operand took its type, so
  * `x + 1` carries the range check Solidity gives it, and again after later direct-convention fixes: a signature
  * check stays at the front of the entry the SDK signs, and `msg.sender` is read from the authenticated execution
- * frame. A per-call compile may add artifacts, but it may not make these two directs disagree.
+ * frame. A framed compile may add artifacts, but it may not make these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');

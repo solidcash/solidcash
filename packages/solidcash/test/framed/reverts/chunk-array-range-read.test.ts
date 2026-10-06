@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { bytesToHex, encodeIntegerValue, encodePushdataValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode,
   deployMaster,
   entryRecordLockingBytecode,
-  readPerCallDeployment,
+  readFramedDeployment,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { dynamicValueRecords, planMappingBatch } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { dynamicValueRecords, planMappingBatch } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * A paged mapping read whose key is an element of a chunk-backed state array, asked for an index past the array.
@@ -54,11 +54,11 @@ function source(guard: boolean): string {
 
 /** The getter that refuses a start past the array, and the one that computes an empty page for it. */
 const GUARDED = {
-  artifact: compileStringMulti(source(true), { composition: 'per-call', solidityImportCompat: true }).Registry!,
+  artifact: compileStringMulti(source(true), { composition: 'framed', solidityImportCompat: true }).Registry!,
   category: seededCategory('chunk array guard read'),
 };
 const PLAIN = {
-  artifact: compileStringMulti(source(false), { composition: 'per-call', solidityImportCompat: true }).Registry!,
+  artifact: compileStringMulti(source(false), { composition: 'framed', solidityImportCompat: true }).Registry!,
   category: seededCategory('chunk array plain read'),
 };
 
@@ -121,8 +121,8 @@ async function chain(fixture: Fixture, items: readonly Uint8Array[]): Promise<Mo
 
 function read(
   fixture: Fixture, provider: MockNetworkProvider, start: bigint, count: bigint,
-): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider, artifact: fixture.artifact, categoryId: fixture.categoryHex, functionName: 'get',
     args: [start, count], vm: compositionMachine(),
   });
@@ -137,7 +137,7 @@ describe('a paged read over a chunk-backed array asked past its live end', () =>
   it('serves a one-turn page whose start is inside the array', async () => {
     const provider = await chain(GUARDED_FIXTURE, ITEMS);
     // The deployment's classification finds the array's record and its chunk run.
-    const deployment = await readPerCallDeployment(provider, GUARDED_FIXTURE.categoryHex, GUARDED.artifact.stateLayout!);
+    const deployment = await readFramedDeployment(provider, GUARDED_FIXTURE.categoryHex, GUARDED.artifact.stateLayout!);
     expect(deployment.records).toHaveLength(1);
 
     const result = await read(GUARDED_FIXTURE, provider, 1n, 1n);

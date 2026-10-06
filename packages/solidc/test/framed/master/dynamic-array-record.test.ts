@@ -10,7 +10,7 @@ import {
 } from './chunk-run-input.js';
 
 /**
- * A per-call master whose state is a dynamic array, settled on the BCH-2026 machine.
+ * A framed master whose state is a dynamic array, settled on the BCH-2026 machine.
  *
  * An unbounded `T[]` state variable is chunk-packed: the data NFT carries the byte length of the array's encoding and
  * the encoding lives in a run of 120-byte chunk records at the array's own collection address. A fixed-width element
@@ -73,9 +73,9 @@ const source = (kind: ElementKind, entry: string): string => 'pragma solidcash ^
 
 const chunk = (index: number, bytes: Uint8Array): Uint8Array => hexToBin(buildChunkCommitment(index, bytes));
 
-describe.each(KINDS)('a per-call master whose state is $type', (kind) => {
+describe.each(KINDS)('a framed master whose state is $type', (kind) => {
   const deploy = (entry: string, label: string): ChunkRunContract =>
-    deployChunkRunContract(compileString(source(kind, entry), { composition: 'per-call' }), `${kind.label} ${label}`);
+    deployChunkRunContract(compileString(source(kind, entry), { composition: 'framed' }), `${kind.label} ${label}`);
   const push = deploy(`function add(${kind.element} value) { this.items.push(value); }`, 'push');
   const put = deploy(`function put(uint index, ${kind.element} value) { this.items[index] = value; }`, 'put');
   const pop = deploy('function drop() { this.items.pop(); }', 'pop');
@@ -122,9 +122,9 @@ describe.each(KINDS)('a per-call master whose state is $type', (kind) => {
       runs: [run([first!, second!, third!], [first!, second!, third!])],
     }, mutation);
 
-  it('is emitted as a chunk-packed per-call master for every entry', () => {
+  it('is emitted as a chunk-packed framed master for every entry', () => {
     for (const contract of [push, put, pop, check, elementOnly]) {
-      expect(contract.artifact.composition?.convention).toBe('per-call');
+      expect(contract.artifact.composition?.convention).toBe('framed');
       expect(contract.artifact.composition!.refusedEntries).toBeUndefined();
       expect(contract.artifact.stateLayout?.variables).toStrictEqual([
         { name: 'items', type: kind.type, nftIndex: 0, fieldIndex: 0, dynamic: true },
@@ -206,7 +206,7 @@ describe.each(KINDS)('a per-call master whose state is $type', (kind) => {
   });
 
   it('refuses an element read the body makes through the element alone: the head parks no run coordinate', () => {
-    // Pinned wall: the per-call shape assessment marks a body as touching dynamic state only at a state access site,
+    // Pinned wall: the framed shape assessment marks a body as touching dynamic state only at a state access site,
     // and an element read is not one, so the head parks no chunk-run coordinate for this body and its read lands
     // on the frame's data record. It fails closed; the same read beside a length read is accepted above.
     expect(readAt(2, {}, elementOnly).accepted).toBe(false);

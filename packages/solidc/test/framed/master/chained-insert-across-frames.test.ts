@@ -7,7 +7,7 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import { bytesToSlotValue, encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -42,7 +42,7 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmInput = VmTransaction['inputs'][number];
 type VmOutput = VmTransaction['outputs'][number];
 
-/** A deployed per-call contract with one sorted collection. */
+/** A deployed framed contract with one sorted collection. */
 interface Contract {
   readonly category: Uint8Array;
   readonly script: Uint8Array;
@@ -56,7 +56,7 @@ interface Contract {
 
 function deploy(name: string, source: string): Contract {
   const category = seededCategory(`chained insert ${name}`);
-  const artifact = compileString(source, { composition: 'per-call' });
+  const artifact = compileString(source, { composition: 'framed' });
   const deployed = deployMaster(artifact, category, REAL_VALIDATOR_PROGRAM);
   verifyMasterDeployment(deployed, artifact, category, REAL_VALIDATOR_PROGRAM);
   const signature = artifact.stateLayout!.collections![0]!.signature;
@@ -599,7 +599,7 @@ describe('two transfers that debit one balance and insert beside it', () => {
   const DEBITED = { in: SPENT, out: SPENT, viewIn: node(K1, K2, 90), viewOut: node(K1, K2, 70) };
 
   it('declares the credit\'s group before the debit\'s', () => {
-    const entry = compileString(MOVER_SOURCE, { composition: 'per-call' }).abi.find((fn) => fn.name === 'move')!;
+    const entry = compileString(MOVER_SOURCE, { composition: 'framed' }).abi.find((fn) => fn.name === 'move')!;
     expect(entry.sortedBatchInfo![0]!.slotIndices.map((slot) =>
       entry.entryAccesses!.find((access) => access.slotIndex === slot)!.keyParams)).toStrictEqual([['to'], ['from']]);
   });

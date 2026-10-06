@@ -7,7 +7,7 @@ import {
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -45,7 +45,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     this.counter = this.counter + 1;'
   + '   }'
   + ' }';
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const program = (name: string, category: Uint8Array, address: Uint8Array): Uint8Array => {
   const artifact = artifacts[name]!;
   return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {

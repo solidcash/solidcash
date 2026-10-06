@@ -90,7 +90,7 @@ function reaches(root: Node, test: (node: Node) => boolean): boolean {
  *
  * Calls are resolved by the symbol pass, which runs after this one, so every node of those shapes counts: one that
  * makes no call only has a cache placed as if it did, which keeps the same value. Any other plain-named call is a
- * builtin, a conversion, a construction or an internal function, and none of those calls out of a per-call frame: a
+ * builtin, a conversion, a construction or an internal function, and none of those calls out of a framed frame: a
  * helper that does is inlined before this pass (`InlineExternalCallHelpers`), and a subroutine left making one is
  * refused.
  */
@@ -522,7 +522,7 @@ type CacheableEntry = {
 };
 
 /**
- * A run of top-level statements one of an entry's caches serves under the per-call composition, by index in the body
+ * A run of top-level statements one of an entry's caches serves under the framed composition, by index in the body
  * before any declaration is inserted: the entry is read right before `first`, its accesses up to `last` name the
  * cache, and a run that writes (`lastWrite` >= 0) is written back right after that write when a call follows it.
  */
@@ -545,7 +545,7 @@ type ScalarMappingInfo = { valueType: Type; depth: number };
  * identifier NOT reassigned in the function (else the entry differs - the per-iteration sorted-insert case, left to
  * fail closed), and no whole-entry assignment of that entry (only delete / element / push / pop writes + reads).
  *
- * Under the per-call composition a call closes the segment the code before it runs in, and the callee may read the
+ * Under the framed composition a call closes the segment the code before it runs in, and the callee may read the
  * entry back through the contract's getter or write it by entering the contract again. The cache then keeps to the
  * segments the entry's own accesses run in: a call before the first access puts the read at that access, and a call
  * after the last write puts the flush right after that write, so the one write lands in the segment the source makes
@@ -566,7 +566,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private contractFunctionNames: Set<string> = new Set();
   private counter = 0;
 
-  /** `callsCloseSegments` holds under the per-call composition, whose calls each close a segment. */
+  /** `callsCloseSegments` holds under the framed composition, whose calls each close a segment. */
   constructor(private routeSnapshotKeysOnly = false, private callsCloseSegments = false) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -605,14 +605,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private transformFunction(fn: FunctionDefinitionNode): void {
-    // The kernel's pre-write key recipes; a per-call body plans its keys from its own frame and takes none.
+    // The kernel's pre-write key recipes; a framed body plans its keys from its own frame and takes none.
     if (!this.callsCloseSegments) this.publishStraightLineMappingKeyValues(fn);
     const selected = this.collectCacheableEntries(fn.body).filter((e) => !(this.routeSnapshotKeysOnly
       && e.keys.length === 1
       && !e.keys.some((key) => key.kind === 'expression'
         || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))
       && !e.inLoop));
-    // Under the per-call composition, which top-level statements make a call another contract's code runs in. A call
+    // Under the framed composition, which top-level statements make a call another contract's code runs in. A call
     // of a variable is a call through a pointer, which may lower to one another contract runs.
     const variables = new Set([...this.stateVariableNames, ...fn.parameters.map((parameter) => parameter.name)]);
     let calling: boolean[] = [];
@@ -632,7 +632,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // accesses gets a cache per run of statements (`straddleSpans`), each redirect rewriting its own run alone.
     // Capture source guards before any redirect rewrites a mutation site. Multiple cached entries may share a
     // branch, and a later guard scan must still see the complete source body. The guard plan feeds the kernel's
-    // replayable flush activation; a per-call body publishes its own write activation instead, so it takes none.
+    // replayable flush activation; a framed body publishes its own write activation instead, so it takes none.
     const selectedWithPlans = selected.map((e) => ({
       e, guardPlan: this.callsCloseSegments ? undefined : this.replayableCacheActivation(fn, e),
     }));
@@ -780,7 +780,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   /**
-   * The runs of top-level statements an entry's caches serve under the per-call composition when a call runs between
+   * The runs of top-level statements an entry's caches serve under the framed composition when a call runs between
    * two of its accesses, or undefined when none does and one cache placed around the calls serves the entry.
    *
    * A call closes the segment the code before it runs in, and the callee may read the entry through the contract's

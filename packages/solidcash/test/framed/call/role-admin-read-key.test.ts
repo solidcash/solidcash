@@ -2,17 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, utf8ToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { bytesToHex, sha256, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv, carolPkh, carolPriv } from '../../fixture/vars.js';
@@ -106,7 +106,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const roles = artifacts.Roles!;
 const vault = artifacts.Vault!;
 const halves = artifacts.Halves!;
@@ -174,7 +174,7 @@ async function deployWorld(): Promise<World> {
   const deployments = new Map<Artifact, Deployed>();
   for (const artifact of [roles, vault, halves]) {
     const name = artifact.contractName;
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -214,10 +214,10 @@ async function deployed(): Promise<World> {
 /** One call through a deployment's proxy, from a fresh coin of the caller's. */
 async function enter(
   world: World, artifact: Artifact, functionName: string, args: readonly FunctionArgument[], caller: Caller,
-): Promise<{ readonly coin: Utxo; readonly call: Promise<PerCallProxyCallResult> }> {
+): Promise<{ readonly coin: Utxo; readonly call: Promise<FramedProxyCallResult> }> {
   const target = world.deployments.get(artifact)!;
   const coin = await coinAt(world.network, binToHex(caller.lock), functionName);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: artifact,
     proxyArtifact: buildProxyArtifact(artifact),
@@ -257,7 +257,7 @@ async function expectRefused(
   const before = await outpoints(world, artifact);
   const entry = await enter(world, artifact, functionName, args, caller);
   const error = await entry.call.then(() => undefined, (caught: unknown) => caught);
-  expect(error).toBeInstanceOf(PerCallProxyDeployError);
+  expect(error).toBeInstanceOf(FramedProxyDeployError);
   expect((error as Error).message).toBe(`the implementation's "${functionName}" entry did not settle through the `
     + `proxy: frame "implementation-master" of ${artifact.contractName}.${functionName}() at line `
     + `${lineOf(`"${check}"`, `function ${functionName}(`)}: ${check} (Program failed an OP_VERIFY operation.)`);
@@ -270,7 +270,7 @@ async function expectRefused(
 async function view(
   world: World, artifact: Artifact, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact, categoryId: world.deployments.get(artifact)!.proxy, functionName, args,
   });
   expect(read.accepted).toBe(true);
@@ -398,7 +398,7 @@ describe('a read beside a batch whose key the hop cannot resolve', () => {
     const error = await entry.call.then(() => undefined, (caught: unknown) => caught);
     // The read's key divides an argument, which the hop's key evaluator does not; the refusal names that read rather
     // than leaving the batch planner to report the read as undeclared.
-    expect(error).toBeInstanceOf(PerCallProxyDeployError);
+    expect(error).toBeInstanceOf(FramedProxyDeployError);
     expect((error as Error).message).toBe('the implementation\'s "count" entry reads a mapping node this hop cannot '
       + 'declare: entry "count" touches mapping "used" at a key the frame\'s arguments do not determine '
       + '(binop:/(id:id,lit:2))');

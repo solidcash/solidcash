@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -17,8 +17,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * OpenZeppelin's SafeERC20 `_callOptionalReturn` makes the token call as a low-level `CALL` and, when it failed,
  * bubbles the callee's revert data verbatim through `assembly { revert(add(32, returndata), mload(returndata)) }`;
  * the callee raises a custom error such as `ERC20InsufficientAllowance`. The row is driven through the shipped
- * path: the shipped compiler under the per-call convention, the shipped deployment and the shipped
- * `callPerCallEntry`, whose refusal report is the shipped decoder for the error's name and arguments.
+ * path: the shipped compiler under the framed convention, the shipped deployment and the shipped
+ * `callFramedEntry`, whose refusal report is the shipped decoder for the error's name and arguments.
  *
  * The SafeERC20 spelling that makes the call to *another* contract and carries the assembly re-raise is pinned by
  * the refusal it meets on the plain call path: the path plans the callee frame, and the row's target is no
@@ -77,10 +77,10 @@ async function enter(
   artifact: Artifact,
   functionName: string,
   args: readonly unknown[],
-): Promise<ReturnType<typeof callPerCallEntry>> {
+): Promise<ReturnType<typeof callFramedEntry>> {
   const coin = freshCoin();
   await deployed.provider.addUtxo(binToHex(deployed.callerLock), coin);
-  return callPerCallEntry({
+  return callFramedEntry({
     provider: deployed.provider, artifact, categoryId: deployed.categoryId, functionName, args: args as never,
     callerUtxo: coin, callerLockingBytecode: deployed.callerLock, funder: deployed.funder, vm: compositionMachine(),
   });
@@ -142,7 +142,7 @@ const TO = new Uint8Array(25).fill(0x33);
 
 describe('spec section 23 row 6: custom errors raised in a callee and re-raised', () => {
   it('serves the custom error: its name and the values it was raised with come back through the decoder', async () => {
-    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
+    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'framed', solidityImportCompat: true }).Ledger!;
     expect(ledger.composition?.refusedEntries).toBeUndefined();
     const deployed = await selfDeployed(ledger);
     const result = await enter(deployed, ledger, 'pull', [FROM, TO, 50n]);
@@ -160,7 +160,7 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
   }, 120_000);
 
   it('serves the call the callee admits: the bool it returned is decoded and the entry runs through', async () => {
-    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
+    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'framed', solidityImportCompat: true }).Ledger!;
     const deployed = await selfDeployed(ledger);
     const result = await enter(deployed, ledger, 'pull', [FROM, TO, 5n]);
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -168,7 +168,7 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
   }, 120_000);
 
   it('refuses the cross-contract spelling by name: its target is no deployment\'s', async () => {
-    const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'per-call', solidityImportCompat: true });
+    const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'framed', solidityImportCompat: true });
     // The body compiles and publishes the callee it lowered the low-level call to.
     const callSite = artifacts.Caller!.composition?.stopSites?.entries
       .find((entry) => entry.functionName === 'Caller.pull()')?.calls[0];

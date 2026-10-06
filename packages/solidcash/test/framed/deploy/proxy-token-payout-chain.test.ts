@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, deployProxied, enterPlain, enterProxied, newWorld, refusedVerdicts,
+  compileFramed, deployPlain, deployProxied, enterPlain, enterProxied, newWorld, refusedVerdicts,
   type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
@@ -72,7 +72,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const units = compilePerCall(SOURCE);
+const units = compileFramed(SOURCE);
 
 /** Three payees, each holding a balance before the payout, so each payment rewrites its node in place. */
 const PAYEES = [0x31, 0x32, 0x33].map((fill) => encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(fill)));
@@ -88,7 +88,7 @@ Promise<void> {
 /** A view's value, read from the token's records and nodes through the read path. */
 async function view(world: World, token: PlainDeployment, functionName: string, args: readonly FunctionArgument[]):
 Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: token.artifact, categoryId: token.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });

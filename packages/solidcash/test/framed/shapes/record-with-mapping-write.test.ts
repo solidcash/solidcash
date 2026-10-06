@@ -13,14 +13,14 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/framed/master/validator-input.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveComposition,
@@ -29,7 +29,7 @@ import {
   planMappingWrite,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   composeAndDerive,
   entryName,
@@ -94,7 +94,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function currentCount() view returns (int) { return this.count; }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Impl!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Impl!;
 const deployed = deployMaster(artifact, CATEGORY, REAL_VALIDATOR_PROGRAM);
 const DEPLOYED: DeployedContract = {
   name: artifact.contractName, category: CATEGORY, address: deployed.address,
@@ -311,6 +311,6 @@ describe('an entry that keeps its record and writes a mapping batch', () => {
     // The state record is what the frame's state sites read and what the block base derives from, so a plan that
     // declares it behind the mapping groups hands the block a base at the wrong coordinate.
     const built = buildPlan({ recordLast: true });
-    expect(() => composeAndDerive(built.plan, [artifact], [ROOT])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => composeAndDerive(built.plan, [artifact], [ROOT])).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });

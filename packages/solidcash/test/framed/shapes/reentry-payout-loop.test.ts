@@ -9,16 +9,16 @@ import {
   type CallStopSite,
   type RecordEntry,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+} from '../../../src/framed/composer/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import { layoutWithFacets } from './harness.js';
 import {
   USER_LOCK,

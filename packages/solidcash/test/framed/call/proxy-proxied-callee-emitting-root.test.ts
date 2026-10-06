@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -19,7 +19,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * the delegated implementation entry emits sits at that entry's own block offset instead, which the generated
  * proxy cannot mirror, so the pin refuses it and the hop stalls at the proxy frame's first segment close.
  *
- * Both root entry points are driven: `deployPerCallProxy`'s `initialize`, and a later `callPerCallProxyEntry`.
+ * Both root entry points are driven: `deployFramedProxy`'s `initialize`, and a later `callFramedProxyEntry`.
  * The implementation below has one returning entry (`total`) so the generated fallback publishes a return, and one
  * void emitting entry (`note`) that is the shape that stalls.
  */
@@ -39,7 +39,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function publish(int v) public returns (int) { emit Noted(v); return v + 1; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const ledger = artifacts.Ledger!;
 
 /** A coin a genesis is funded from; its txid becomes the category it mints. */
@@ -80,7 +80,7 @@ async function deployEntering(
     await setup_.network.addUtxo(source.address, funding(txid));
   }
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: setup_.network,
     implementationArtifact: ledger,
     proxyArtifact: buildProxyArtifact(ledger),
@@ -107,10 +107,10 @@ async function callRoot(
   setup_: Setup,
   deployed: { readonly proxyCategoryId: string; readonly implementationCategoryId: string },
   entry: string, args: readonly (bigint | Uint8Array | string | boolean)[], fundingTxid: string,
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const coin = funding(fundingTxid);
   await setup_.network.addUtxo(binToHex(setup_.deployerLock), coin);
-  return callPerCallProxyEntry({
+  return callFramedProxyEntry({
     provider: setup_.network,
     implementationArtifact: ledger,
     proxyArtifact: buildProxyArtifact(ledger),
@@ -170,7 +170,7 @@ describe('a root proxy frame whose implementation entry records nothing', () => 
 
   // A delegated entry emits at its own block offset while the fallback declares the return that puts it under the
   // pin. The pin holds a proxy's fallback to the offsets its own body declares, which are not the offsets the
-  // delegated event occupies, so a per-call proxy's fallback is not pinned at all: the delegated body's own
+  // delegated event occupies, so a framed proxy's fallback is not pinned at all: the delegated body's own
   // delegate frame is the one pinned, and its layout names the offsets its events sit at.
   it('settles a void emitting entry entered as the user\'s own initialize', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });

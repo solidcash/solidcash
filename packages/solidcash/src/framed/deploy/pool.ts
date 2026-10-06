@@ -1,5 +1,5 @@
 /**
- * The deployment pools of a per-call contract.
+ * The deployment pools of a framed contract.
  *
  * A contract owns a pool of master UTXOs at its master lock, each carrying a minting NFT of its category, and a
  * pool of validator UTXOs at its address, each carrying a mutable NFT. Both are created once and then spent and
@@ -9,7 +9,7 @@
  */
 
 import { TokenCapability, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import { FACET_SATOSHIS } from '../composer/draft.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 
@@ -56,7 +56,7 @@ export function resolveMasterPoolSize(override: Partial<MasterPoolSize> = {}): M
  * funded and a larger pool is not quietly truncated.
  */
 export function poolGenesisSatoshis(size: MasterPoolSize, outputAmount = 1200n): bigint {
-  const facets = BigInt(perCallValidator.buildValidatorFacets().length);
+  const facets = BigInt(framedValidator.buildValidatorFacets().length);
   return BigInt(size.masters + size.validators) * outputAmount + facets * FACET_SATOSHIS;
 }
 

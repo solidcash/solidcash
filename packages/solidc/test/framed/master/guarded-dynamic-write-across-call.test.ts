@@ -4,15 +4,15 @@ import { FrameKind, bytesToHex, encodeIntegerValue } from '@solidcash/utils';
 import {
   createComposedDerivationHost, deriveDepthFirst, layOutChunkRun, participant, planChunkRun, reportCompositionRefusal,
   type CompositionDraftPlan, type CompositionRefusal, type DraftRecordEntry,
-} from '../../../../solidcash/src/per-call/composer/index.js';
+} from '../../../../solidcash/src/framed/composer/index.js';
 import { compositionMachine } from '../machine.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../../solidcash/src/per-call/deploy/index.js';
+} from '../../../../solidcash/src/framed/deploy/index.js';
 import {
   USER_LOCK, compileAndDeploy, entryName, hexOf, layoutWithFacets, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
-} from '../../../../solidcash/test/per-call/shapes/harness.js';
+} from '../../../../solidcash/test/framed/shapes/harness.js';
 
 /**
  * A dynamic value whose write a branch guards, or that the body writes outright, in a frame that makes a call after
@@ -217,7 +217,7 @@ function derive(callee: Callee, c: bigint, lastIn: string, final: string, write:
 
 /** Expects the writer refused, every other participant accepting its own part of the transaction. */
 function expectRefusedAtWriter(outcome: Outcome): void {
-  expect(outcome.code).toBe('PER_CALL_DERIVATION_STALLED');
+  expect(outcome.code).toBe('FRAMED_DERIVATION_STALLED');
   expect(outcome.report.accepted).toBe(false);
   expect(outcome.report.innermost!.master).toBe('set-1');
   expect(outcome.verdicts['set-1']).toBe(false);

@@ -15,12 +15,12 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
-  decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+  decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
@@ -28,12 +28,12 @@ import {
   type CompositionDraft,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * A two-contract round trip in which both contracts keep their state in data-NFT records, driven from source
@@ -45,7 +45,7 @@ import {
  * again in segment 1, and `B` is its own single master, so it settles itself. Because `A` runs on two masters the
  * validator settles it and lists `A`'s record as the state input the transaction spends.
  *
- * Everything is shipped: the sources through `compileStringMulti` with the per-call option, both programs through
+ * Everything is shipped: the sources through `compileStringMulti` with the framed option, both programs through
  * the shipped deployment, the composer laying the two contracts' blocks out and assembling the caller, the masters
  * and the validator, and the derivation walking the call graph depth first. Each frame's code reads its record from
  * its own segment's declaration and closes against the commitment that segment declares, so a record written by
@@ -126,7 +126,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const aArtifact = artifacts.A!;
 const bArtifact = artifacts.B!;
 
@@ -389,7 +389,7 @@ function deriveRoundTrip(): ReturnType<typeof deriveFresh> {
  * The machine reads a program, the derivation reads inputs and outputs. Nothing here decides anything; it only
  * re-states what the machine was handed, so the derivation can be asked about the bytes the machine ran.
  */
-function toModel(program: VmProgram): PerCallTransaction {
+function toModel(program: VmProgram): FramedTransaction {
   const shape = (token: VmToken | undefined): TokenShape => (token === undefined
     ? { category: empty, capability: 0, hasNft: false, nftCommitment: empty, amount: 0n }
     : {
@@ -423,9 +423,9 @@ function capabilityOf(token: VmToken): number {
 }
 
 describe('a two-contract round trip where both contracts keep records', () => {
-  it('publishes a state layout and a per-call descriptor for both contracts', () => {
-    expect(aArtifact.composition?.convention).toBe('per-call');
-    expect(bArtifact.composition?.convention).toBe('per-call');
+  it('publishes a state layout and a framed descriptor for both contracts', () => {
+    expect(aArtifact.composition?.convention).toBe('framed');
+    expect(bArtifact.composition?.convention).toBe('framed');
     expect(aArtifact.stateLayout).toBeTruthy();
     expect(bArtifact.stateLayout).toBeTruthy();
     expect(deployMaster(aArtifact, CATEGORY_A, VALIDATOR_PROGRAM).script.length).toBeGreaterThan(0);
@@ -509,7 +509,7 @@ describe('a two-contract round trip where both contracts keep records', () => {
     const { plan, artifacts: compiled } = buildComposition({ event: false });
     const { host } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
-    expect(() => deriveDepthFirst(ROOT, host)).toThrowError(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => deriveDepthFirst(ROOT, host)).toThrowError(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('recreates every participant and leaves each record where its last declaration wrote it', () => {

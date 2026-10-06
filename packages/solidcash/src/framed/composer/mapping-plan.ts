@@ -5,7 +5,7 @@
  * carries, and its slot is the key's (or composite keys') hash. An execution that writes a key therefore touches
  * whole node records rather than one value in place: an update rewrites one node's value, an insert splices a new
  * node between the predecessor and the successor the predecessor pointed at, and a delete either relinks the
- * predecessor around the removed node or, as a per-call body compiles it, rewrites the node's value to the type's
+ * predecessor around the removed node or, as a framed body compiles it, rewrites the node's value to the type's
  * default (`planMappingDelete`).
  *
  * This module derives, for one write against the state the transaction spends, the node commitments the execution
@@ -201,7 +201,7 @@ export interface MappingDeleteRequest {
  * Plans a delete as the body performs it: the target rewritten in place with the value type's default.
  *
  * This is the delete-side counterpart of `planMappingWrite`. A write of `undefined` removes a key by relinking the
- * predecessor around it — the list removal the direct convention performs — while a per-call body never unlinks a
+ * predecessor around it — the list removal the direct convention performs — while a framed body never unlinks a
  * node, so the plan that agrees with the emitted bytes is an in-place write of the default tail. An absent key is
  * an insert of the default node, exactly as the upsert's absent branch does. The returned plan's `removed` is
  * therefore always false: the node stays.

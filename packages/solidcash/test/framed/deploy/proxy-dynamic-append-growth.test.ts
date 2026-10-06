@@ -4,15 +4,15 @@ import {
   buildChunkCommitment, bytesToHex, decodePushdataValue, encodePushdataValue, parseChunkCommitment,
   type StateValue,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  chunkRecordLockingBytecode, readPerCallDeployment, readPerCallState,
-} from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+  chunkRecordLockingBytecode, readFramedDeployment, readFramedState,
+} from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -20,7 +20,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 /**
  * A proxied entry that appends an element the artifact does not state, alone and inside a run-time loop.
  *
- * A per-call body holds a dynamic value in a run of chunk records, and the hop has to lay that run at the width
+ * A framed body holds a dynamic value in a run of chunk records, and the hop has to lay that run at the width
  * the body's own write produces. When the artifact can state the appended element, the width is the live value
  * plus that element; when it cannot - a body that pushes the element type's default and then fills its fields with
  * values the artifact's vocabulary has no word for - the artifact states how many elements the write appends, and
@@ -147,16 +147,16 @@ async function deploy(
   source: string,
   args: readonly unknown[] = [],
 ): Promise<{
-  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
   readonly network: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>;
   readonly funding: Funding;
 }> {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: {
@@ -182,7 +182,7 @@ async function liveChunks(
   layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>,
   lock: Uint8Array,
 ): Promise<readonly { readonly index: number; readonly data: Uint8Array }[]> {
-  const pools = await readPerCallDeployment(network, categoryId, layout);
+  const pools = await readFramedDeployment(network, categoryId, layout);
   return [...pools.chunks, ...pools.collectionNodes]
     .filter((utxo) => utxo.lockingBytecode !== undefined
       && bytesToHex(utxo.lockingBytecode) === bytesToHex(lock))
@@ -193,7 +193,7 @@ async function liveChunks(
 
 describe('a proxied entry that appends an element the artifact does not state', () => {
   it('publishes the element count a bare push grows and settles it through the shipped hop', async () => {
-    const artifacts = compileStringMulti(UNSET_ELEMENT_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(UNSET_ELEMENT_SOURCE, { composition: 'framed' });
     const entry = artifacts.Impl!.abi.find((candidate) => candidate.name === 'add')!;
     // The element's field is filled from state, so the artifact states no element; it states the count instead.
     expect(entry.dynamicWriteSources).toBeUndefined();
@@ -202,7 +202,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
     const { deployment, network, artifacts: compiled, layout, funding } = await deploy(UNSET_ELEMENT_SOURCE, []);
     expect(deployment.initialize.accepted).toBe(true);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -228,7 +228,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
     expect(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment)
       .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, value))));
 
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const state = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
     const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
     expect(chunks.map((chunk) => bytesToHex(chunk.data))).toStrictEqual([bytesToHex(value)]);
@@ -236,7 +236,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
   });
 
   it('settles a push inside a loop over the call\'s array, the run grown by the loop\'s width', async () => {
-    const artifacts = compileStringMulti(LOOP_APPEND_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(LOOP_APPEND_SOURCE, { composition: 'framed' });
     const entry = artifacts.Impl!.abi.find((candidate) => candidate.name === 'add')!;
     expect(entry.dynamicWriteSources).toBeUndefined();
     expect(entry.dynamicWriteGrowth).toStrictEqual({ items: { elements: 1, varyingArrayParam: 'who' } });
@@ -244,7 +244,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
     const { deployment, network, artifacts: compiled, layout, funding } = await deploy(LOOP_APPEND_SOURCE, [OWNER]);
     expect(deployment.initialize.accepted).toBe(true);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -269,13 +269,13 @@ describe('a proxied entry that appends an element the artifact does not state', 
     const lock = chunkRecordLockingBytecode(deployment.proxy.categoryId, 'items', 'Detail[]');
     const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
     expect(chunks.map((chunk) => bytesToHex(chunk.data))).toStrictEqual([bytesToHex(value)]);
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const state = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
   it('reconstructs the fixture element from its in-place writes, a run of several chunks and all', async () => {
-    const artifacts = compileStringMulti(FIXTURE_SHAPED_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(FIXTURE_SHAPED_SOURCE, { composition: 'framed' });
     const entry = artifacts.Impl!.abi.find((candidate) => candidate.name === 'publish')!;
     // The clock field is a read of the machine's own register, so the whole element the body fills is published
     // and the hop sizes the run from it rather than from an element count.
@@ -285,7 +285,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
     const { deployment, network, layout, funding } = await deploy(FIXTURE_SHAPED_SOURCE, []);
     expect(deployment.initialize.accepted).toBe(true);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -310,7 +310,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
     const value = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.data.length, 0));
     let offset = 0;
     for (const chunk of chunks) { value.set(chunk.data, offset); offset += chunk.data.length; }
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    const state = await readFramedState(network, deployment.proxy.categoryId, layout);
     expect(state.byNft[0]!['jobs$len']).toBe(BigInt(value.length));
 
     const decoded = decodePushdataValue(value, 0, 'JobPost[]', artifacts.Impl!.structs).value as StateValue[];
@@ -324,14 +324,14 @@ describe('a proxied entry that appends an element the artifact does not state', 
   });
 
   it('refuses a push in a loop whose width no call fact carries, naming the loop', async () => {
-    const artifacts = compileStringMulti(UNRESOLVED_LOOP_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(UNRESOLVED_LOOP_SOURCE, { composition: 'framed' });
     const entry = artifacts.Impl!.abi.find((candidate) => candidate.name === 'grow')!;
     expect(entry.dynamicWriteGrowth).toStrictEqual({ items: { elements: 1, looping: true } });
 
     const { deployment, network, funding } = await deploy(UNRESOLVED_LOOP_SOURCE, []);
     expect(deployment.initialize.accepted).toBe(true);
 
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,

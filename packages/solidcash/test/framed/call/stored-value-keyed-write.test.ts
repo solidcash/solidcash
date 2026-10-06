@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, utf8ToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, sha256, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
@@ -9,12 +9,12 @@ import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import type { CompositionDraft } from '../../../src/per-call/composer/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import type { CompositionDraft } from '../../../src/framed/composer/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv, carolPkh } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -25,7 +25,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * "Credit the party the record names": `owed[deals[id].payee] += deals[id].amount`, in its direct spelling and
  * through a memory copy of the record (`Deal memory d = deals[id]; owed[d.payee] += d.amount`), and the same credit
  * keyed by an address one mapping holds per id (`credits[holders[id]] += amount`). The artifact publishes the key as
- * the read (`field:payee(map:deals(id:id))`, `map:holders(id:id)`); the per-call master derives the write's target
+ * the read (`field:payee(map:deals(id:id))`, `map:holders(id:id)`); the framed master derives the write's target
  * slot from the node its frame declares for that read, which the read proves is the node at the key, and the hop and
  * the plain call path plan the written node at the same key from the node the deployment holds for the read. Each
  * write settles and is read back through the views. A plan that credits a party the record does not name is refused
@@ -74,15 +74,15 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const escrow = artifacts.Escrow!;
 const ledger = artifacts.Ledger!;
 
-/** The options a per-call project build compiles with, a message-bus route among them, which it then discards. */
+/** The options a framed project build compiles with, a message-bus route among them, which it then discards. */
 const PROJECT_OPTIONS = {
   solidityImportCompat: true, commitmentLimit: 128, maximumInputBytes: 10_000_000, messageBus: true,
   optimizeForCompilationSpeed: true, suppressWarnings: true, ecrecover: 'p2pkh', sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 interface Caller { readonly lock: Uint8Array; readonly funder: Unlocker }
@@ -130,7 +130,7 @@ async function deployWorld(): Promise<World> {
   await fundShippedFacets(network);
   const proxied = async (artifact: Artifact, args: readonly FunctionArgument[]): Promise<Proxied> => {
     const name = artifact.contractName;
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -177,9 +177,9 @@ async function deployed(): Promise<World> {
 /** One call through a proxy, from a fresh coin of the caller's; it has to settle. */
 async function settleProxied(
   world: World, artifact: Artifact, functionName: string, args: readonly FunctionArgument[], caller: Caller = ALICE,
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const deployment = artifact === escrow ? world.escrow : world.ledger;
-  const result = await callPerCallProxyEntry({
+  const result = await callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: artifact,
     proxyArtifact: buildProxyArtifact(artifact),
@@ -202,7 +202,7 @@ async function settleProxied(
 async function settlePlain(
   world: World, functionName: string, args: readonly FunctionArgument[], caller: Caller = ALICE,
 ): Promise<void> {
-  const result = await callPerCallEntry({
+  const result = await callFramedEntry({
     provider: world.network,
     artifact: ledger,
     categoryId: world.plainLedger,
@@ -222,7 +222,7 @@ async function settlePlain(
 async function view(
   world: World, categoryId: string, artifact: Artifact, functionName: string, args: readonly FunctionArgument[] = [],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact, categoryId, functionName, args: [...args], vm: compositionMachine(),
   });
   expect(read.accepted, read.objection).toBe(true);

@@ -12,8 +12,8 @@ import {
   sha256,
   type RecordEntry,
 } from '@solidcash/utils';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { publishedRefusals } from '../../../../solidc/test/framed/master/refused-entry.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -42,7 +42,7 @@ import {
   planMappingWrite,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A `mapping(string => string)` set, and a long value read from the frame's witness block.
@@ -277,7 +277,7 @@ describe('a string-keyed string mapping set', () => {
   it('refuses a close the body did not compute', () => {
     const built = buildPlan(shape(encodeEntryCommitment(SLOT, ZERO_SLOT, encodeChunkableValueTail(FIRST))));
     expect(() => composeAndDerive(built.plan, [artifacts.SetHub!, artifacts.Tags!], [rootOf('SetHub', 'run', HUB_MASTER)]))
-      .toThrow('PER_CALL_DERIVATION_STALLED: master "entry-1" of Tags.put()');
+      .toThrow('FRAMED_DERIVATION_STALLED: master "entry-1" of Tags.put()');
   });
 });
 
@@ -292,7 +292,7 @@ describe('a long mapping value read from the frame\'s block', () => {
   );
 
   /** The read's own frame stops at the close of its one segment when the value it reads is not the one hashed. */
-  const STALL = 'PER_CALL_DERIVATION_STALLED: master "entry-1" of Notes.check() filled no witness at site 0 '
+  const STALL = 'FRAMED_DERIVATION_STALLED: master "entry-1" of Notes.check() filled no witness at site 0 '
     + '(close of segment 0)';
 
   it('keeps the value out of the node: the tail holds its hash', () => {
@@ -332,7 +332,7 @@ describe('a long mapping value read from a contract with several entries', () =>
   );
 
   /** The read's own frame stops at the close of its one segment when the value it reads is not the one hashed. */
-  const STALL = 'PER_CALL_DERIVATION_STALLED: master "entry-1" of Ledger.check() filled no witness at site 0 '
+  const STALL = 'FRAMED_DERIVATION_STALLED: master "entry-1" of Ledger.check() filled no witness at site 0 '
     + '(close of segment 0)';
 
   it('compiles both entries, the reader taking the head\'s value slot', () => {
@@ -423,7 +423,7 @@ describe('a long mapping value written with its value chunks', () => {
 
   it('refuses a chunk whose bytes are not the value\'s, and a record declared past the chunks it pinned', () => {
     for (const control of ['altered chunk', 'extra record'] as const) {
-      expect(() => compose(control)).toThrow('PER_CALL_DERIVATION_STALLED: master "entry-1" of Tags.put()');
+      expect(() => compose(control)).toThrow('FRAMED_DERIVATION_STALLED: master "entry-1" of Tags.put()');
     }
   });
 });

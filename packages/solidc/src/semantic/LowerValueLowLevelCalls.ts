@@ -31,7 +31,7 @@ interface ValueSend {
 }
 
 /**
- * Rewrites a value-carrying low-level call with no payload into the send it denotes, under the per-call convention.
+ * Rewrites a value-carrying low-level call with no payload into the send it denotes, under the framed convention.
  *
  * `to.call{value: v}("")` pays `v` to `to`. A send to a P2PKH lock is a listed send the body pins at its output
  * (W2); a value for a contract is a `CALL` into its `receive()`, which the convention does not compose yet, and the

@@ -308,7 +308,7 @@ export interface EntryAccessInfo {
   /**
    * Optional fixed entry-mutation activation recipe. Absent means the write is unconditional. When present, the
    * SDK evaluates it against authenticated row arguments and omits inactive write planning (including bands).
-   * A per-call write a branch guards publishes the condition it runs under (`per-call/master/write-activation.ts`).
+   * A framed write a branch guards publishes the condition it runs under (`framed/master/write-activation.ts`).
    */
   activation?: ExternalCallExpression;
 }
@@ -961,7 +961,7 @@ export class FunctionDefinitionNode extends Node implements Named {
    * the function's maximum block width. */
   usesDynamicChunkInputBase?: boolean;
   /** Per-call: the value-witness slots the body reads, recorded when the head takes over their parameters. */
-  perCallValueWitnessSlots?: number;
+  framedValueWitnessSlots?: number;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
   graphRuntimeEmissionHandler?: boolean;
   /** Runtime emission vector is returned and threaded across this route's repeated local rows. */
@@ -2739,7 +2739,7 @@ export enum ExternalCallMode {
 }
 
 /**
- * How a per-call low-level call whose payload names its call statically was lowered to a typed call.
+ * How a framed low-level call whose payload names its call statically was lowered to a typed call.
  *
  * `mode` is the low-level spelling, which fixes the frame kind: `staticcall` a static frame, `call` a message frame.
  * `fallback` is set for a payload no function of the target's interface has: the call runs the target's fallback,
@@ -2800,7 +2800,7 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // Foreign fn-ptr ARRAY dispatch table with per-element methods: the parallel `bytes4[]` state array of
   // per-element selectors; the array-call loop asserts the co-spent callee's selector == sel[i].
   selectorArrayVar?: string;
-  // Set for a per-call low-level call lowered to this typed call (LowerStaticLowLevelCalls).
+  // Set for a framed low-level call lowered to this typed call (LowerStaticLowLevelCalls).
   lowLevelRoute?: LowLevelRoute;
 
   constructor(
@@ -3070,7 +3070,7 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
-  // Set by LowerStaticLowLevelCalls for a per-call low-level call it lowered to this typed call; threaded to the
+  // Set by LowerStaticLowLevelCalls for a framed low-level call it lowered to this typed call; threaded to the
   // external call node in semantic analysis.
   lowLevelRoute?: LowLevelRoute;
   // A fixed-method pointer table still broadcasts across every table element even without a selector sidecar.
@@ -3165,7 +3165,7 @@ export interface EmitInfo {
   // itself (an inherited internal helper such as OpenZeppelin's `_approve`), leaving this metadata as the only
   // surviving record that the handler really emits the event. Overload resolution replaces it in TypeCheck.
   eventDefinition?: EventDefinitionNode;
-  /** The condition a per-call emit a branch guards runs under (`per-call/master/write-activation.ts`). */
+  /** The condition a framed emit a branch guards runs under (`framed/master/write-activation.ts`). */
   activation?: ExternalCallExpression;
 }
 

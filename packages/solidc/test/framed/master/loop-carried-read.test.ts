@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeChunkableValueTail, encodeIntegerValue, encodePushdataValue } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  deployPerCallMaster, evaluateMasterSpend, node, spent, type PlacedRecord,
+  deployFramedMaster, evaluateMasterSpend, node, spent, type PlacedRecord,
 } from './record-spend.js';
 
 /**
@@ -15,11 +15,11 @@ import {
  * declaring `[5, 1, 1]`, what turns reading the entry from before the loop would push, is refused. `growAll(ks)`
  * does the same over an array of keys, where the cache does not reach: the compiler publishes it as a refused body,
  * since each turn would read the array value the frame declares once per slot. The shipped hop names both
- * (`solidcash/test/per-call/edges/aliased-keys-edge.test.ts`).
+ * (`solidcash/test/framed/edges/aliased-keys-edge.test.ts`).
  */
 
 const PRAGMA = 'pragma solidcash ^0.13.0;';
-const GROWER = deployPerCallMaster(`${PRAGMA} contract Grower { uint public count; mapping(uint => uint8[]) logs;`
+const GROWER = deployFramedMaster(`${PRAGMA} contract Grower { uint public count; mapping(uint => uint8[]) logs;`
   + ' function grow(uint k, uint t) { for (uint i = 0; i < t; i++) { uint n = this.logs[k].length;'
   + '   this.logs[k].push(uint8(n)); } }'
   + ' function growAll(uint[] ks) { for (uint i = 0; i < ks.length; i++) { uint n = this.logs[ks[i]].length;'

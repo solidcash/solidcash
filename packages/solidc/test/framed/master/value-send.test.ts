@@ -8,13 +8,13 @@ import {
   scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
 /**
- * A per-call contract paying its sends from its satoshi containers (spec 4b), driven through the real entry.
+ * A framed contract paying its sends from its satoshi containers (spec 4b), driven through the real entry.
  *
  * A frame that settles alone may spend the contract's containers: their growth plus the value its listed sends pay
  * must cover the value it receives, so the containers shrink by at most what the contract's own code sends. The
@@ -60,7 +60,7 @@ const compiledBySource = new Map<string, Artifact>();
 const compile = (source: string): Artifact => {
   let artifact = compiledBySource.get(source);
   if (artifact === undefined) {
-    artifact = compileString(source, { composition: 'per-call' });
+    artifact = compileString(source, { composition: 'framed' });
     compiledBySource.set(source, artifact);
   }
   return artifact;
@@ -167,7 +167,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }
 
-describe('a send paid from the contract\'s containers, compiled per-call', () => {
+describe('a send paid from the contract\'s containers, compiled framed', () => {
   const pay = (overrides: Partial<Spend> = {}): { accepted: boolean } => verdict({
     source: PAY_SOURCE,
     argumentPushes: encodeArgumentList([encodeIntegerValue(AMOUNT)]),
@@ -199,7 +199,7 @@ describe('a send paid from the contract\'s containers, compiled per-call', () =>
   });
 });
 
-describe('two sends paid from the contract\'s containers, compiled per-call', () => {
+describe('two sends paid from the contract\'s containers, compiled framed', () => {
   const pay = (sends: number[], trailing: VmOutput[]): { accepted: boolean } => verdict({
     source: PAY_TWO_SOURCE,
     argumentPushes: encodeArgumentList([encodeIntegerValue(AMOUNT), encodeIntegerValue(AMOUNT)]),
@@ -224,7 +224,7 @@ describe('two sends paid from the contract\'s containers, compiled per-call', ()
   });
 });
 
-describe('an escrow that takes a deposit and pays it out, compiled per-call', () => {
+describe('an escrow that takes a deposit and pays it out, compiled framed', () => {
   const call = (entry: string, args: readonly Uint8Array[], spend: Partial<Spend>): { accepted: boolean } => verdict({
     source: ESCROW_SOURCE,
     argumentPushes: encodeArgumentList([selectorOf(ESCROW_SOURCE, entry), ...args]),

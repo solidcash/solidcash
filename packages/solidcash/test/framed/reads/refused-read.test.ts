@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { HDSigner } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import type { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
+import type { FramedFunctionCall } from '../../../src/framed/call/index.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 
 /**
@@ -35,12 +35,12 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     require(this.balances[who] > 0); return this.balances[who]; }'
   + ' }';
 
-const ledger = compileStringMulti(SOURCE, { composition: 'per-call' }).Ledger!;
+const ledger = compileStringMulti(SOURCE, { composition: 'framed' }).Ledger!;
 
-/** The view entries the handle's call namespace exposes, as the class the per-call path returns. */
+/** The view entries the handle's call namespace exposes, as the class the framed path returns. */
 interface LedgerCalls {
-  readonly balanceOf: (who: Uint8Array) => PerCallFunctionCall;
-  readonly guarded: (who: Uint8Array) => PerCallFunctionCall;
+  readonly balanceOf: (who: Uint8Array) => FramedFunctionCall;
+  readonly guarded: (who: Uint8Array) => FramedFunctionCall;
 }
 
 /** Deploys the contract through the shipped deployment, seeding one mapping key, and connects a signer. */

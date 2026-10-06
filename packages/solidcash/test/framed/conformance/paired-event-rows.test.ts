@@ -3,10 +3,10 @@ import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -16,7 +16,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * A contract's one entry emits two events, each a token NFT at its own event covenant in the transaction's trailing
  * region. The transaction is driven through the shipped path: the shipped compiler compiles the source for the
- * per-call convention, the shipped deploy publishes it, and `callPerCallEntry` enters the entry from a user's coin,
+ * framed convention, the shipped deploy publishes it, and `callFramedEntry` enters the entry from a user's coin,
  * derives the composition and asks the shipped machine. The two logs are read back with the shipped receipt
  * (`compositionEventLogs`), which decodes each commitment with the artifact's own event ABI, so both events are
  * asserted against the arguments the entry emitted rather than against a re-encoded payload.
@@ -45,7 +45,7 @@ function outpointHash(seed: number): string {
 
 describe('spec section 23 row 14: two events in one transaction', () => {
   it('emits two events from one entry and reads both decoded logs back', async () => {
-    const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never)
+    const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never)
       .Ledger!;
 
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -66,7 +66,7 @@ describe('spec section 23 row 14: two events in one transaction', () => {
     const callerUtxo = { txid: outpointHash(0x51), vout: 0, satoshis: 300_000n };
     await provider.addUtxo(binToHex(user), callerUtxo);
 
-    const answered = await callPerCallEntry({
+    const answered = await callFramedEntry({
       provider,
       artifact,
       categoryId: deployment.categoryId,

@@ -2,18 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { FrameKind, validatorAddress } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster, derivePerCallGenesis } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { deployMaster, deriveFramedGenesis } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 import { MockNetworkProvider, providerUnixLocktime } from '../../../src/index.js';
 
 /**
@@ -97,7 +97,7 @@ function buildComposition(gate: number, locktime: number): {
   readonly plan: CompositionDraftPlan;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
 } {
-  const artifacts = compileStringMulti(sourceFor(gate), { composition: 'per-call' });
+  const artifacts = compileStringMulti(sourceFor(gate), { composition: 'framed' });
   const caller = deployMaster(artifacts.Caller!, CATEGORY_CALLER, VALIDATOR_PROGRAM);
   const callee = deployMaster(artifacts.Callee!, CATEGORY_CALLEE, VALIDATOR_PROGRAM);
   // The callee's dispatcher selector, which the caller's interface resolves its call site to.
@@ -212,7 +212,7 @@ function verdict(vm: Vm, transaction: VmTransaction, sourceOutputs: VmSourceOutp
 // The caller, the validator, the facet it binds and the callee.
 const CONTRACT_INPUTS = [0, 1, 2, 3];
 
-describe('a per-call composition whose rule is strictly after the payment block', () => {
+describe('a framed composition whose rule is strictly after the payment block', () => {
   it('advances the mock clock strictly, so a later block time exists', () => {
     const clock = freshClock();
     const first = clock.getBlockTime();
@@ -307,7 +307,7 @@ describe('a per-call composition whose rule is strictly after the payment block'
     // too-early transaction never becomes a transaction to broadcast.
     const clock = freshClock();
     const paymentTime = clock.getBlockTime();
-    expect(() => derive(paymentTime + 1, paymentTime)).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => derive(paymentTime + 1, paymentTime)).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('cannot derive a plan that leaves the sequence final, which disables the gate outright', () => {
@@ -322,7 +322,7 @@ describe('a per-call composition whose rule is strictly after the payment block'
     const { host } = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan: finalSequence,
     });
-    expect(() => deriveDepthFirst(ROOT, host)).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => deriveDepthFirst(ROOT, host)).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('cannot derive a genesis whose constructor gates on time, so the deployment boundary is measured', () => {
@@ -338,11 +338,11 @@ describe('a per-call composition whose rule is strictly after the payment block'
       + `   constructor() { require(tx.time >= ${gate}); this.total = 1; }`
       + '   function check() { require(this.total == 1); }'
       + ' }',
-      { composition: 'per-call' },
+      { composition: 'framed' },
     ).Vault!;
     const category = seededCategory('time gated genesis');
 
-    const attempt = (): unknown => derivePerCallGenesis({
+    const attempt = (): unknown => deriveFramedGenesis({
       artifact, category, validatorProgram: VALIDATOR_PROGRAM, provider: clock, constructorArgs: [],
     });
     let message = '';

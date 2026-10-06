@@ -3,7 +3,7 @@ import type { Artifact } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 
 /**
- * The segment a per-call entry's mapping write lands in, whichever form the source spells it in.
+ * The segment a framed entry's mapping write lands in, whichever form the source spells it in.
  *
  * A call closes the segment the code before it runs in, so a write is declared in the segment its own source position
  * names: the one the frame opens with when it precedes every call, the one between two calls when it sits there, and
@@ -61,10 +61,10 @@ function published(artifact: Artifact, collection: string): { segment: unknown; 
 }
 
 const compile = (body: string): Artifact => compileStringMulti(LEDGER(body), {
-  composition: 'per-call', suppressWarnings: true,
+  composition: 'framed', suppressWarnings: true,
 }).Ledger!;
 
-describe('the segment a per-call mapping write lands in, for every form the source spells it in', () => {
+describe('the segment a framed mapping write lands in, for every form the source spells it in', () => {
   for (const [form, write, collection] of FORMS) {
     it(`publishes ${form} in the segment the source makes it in`, () => {
       const segments = PLACES.map(([, body]) => published(compile(body(write)), collection));

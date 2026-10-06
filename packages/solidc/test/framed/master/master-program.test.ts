@@ -7,16 +7,16 @@ import {
   asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { mastersRecreatedInPlaceScript } from '../../../src/per-call/master/lifecycle.js';
+import { mastersRecreatedInPlaceScript } from '../../../src/framed/master/lifecycle.js';
 import {
   ADDRESS_SLOT_LENGTH, CATEGORY_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, assertPlaceholders, fillPlaceholders,
-} from '../../../src/per-call/master/placeholders.js';
+} from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, SIGHASH_UTXOS_ALL, callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
- * A compiled per-call master, driven through the real entry point.
+ * A compiled framed master, driven through the real entry point.
  *
  * The structural half asserts what the artifact publishes and where the deployment-time slots are. The VM half
  * builds a real transaction that spends the master and asks the BCH-2026 virtual machine, because the ownership,
@@ -39,7 +39,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const compile = (): ReturnType<typeof compileString> => compileString(SOURCE, { composition: 'per-call' });
+const compile = (): ReturnType<typeof compileString> => compileString(SOURCE, { composition: 'framed' });
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
@@ -66,10 +66,10 @@ const offsetsOf = (script: Uint8Array, pattern: Uint8Array): number[] => {
 const reservedPush = (length: number): Uint8Array =>
   new Uint8Array([length, ...new Array<number>(length).fill(0)]);
 
-describe('a compiled per-call master', () => {
+describe('a compiled framed master', () => {
   it('publishes the convention and the deployment-time slots', () => {
     const artifact = compile();
-    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.composition?.convention).toBe('framed');
     const placeholders = artifact.composition!.placeholders;
     expect(placeholders.version).toBe(1);
     // The reserved pushes must be exactly where deployment will fill them.
@@ -152,7 +152,7 @@ describe('a compiled per-call master', () => {
     + ' }';
 
   it('publishes the head\'s slots when a body carries a 32-byte zero push of its own', () => {
-    const artifact = compileString(BODY_ZERO_PUSH_SOURCE, { composition: 'per-call' });
+    const artifact = compileString(BODY_ZERO_PUSH_SOURCE, { composition: 'framed' });
     const script = scriptBytes(artifact);
     const { categoryOffset, addressOffset, templateHashOffset } = artifact.composition!.placeholders;
     expect(templateHashOffset).toBeTypeOf('number');
@@ -294,7 +294,7 @@ function evaluateSpend(options: SpendOptions = {}): boolean {
   return vm.stateSuccess(vm.evaluate({ inputIndex: masterIndex, sourceOutputs, transaction })) === true;
 }
 
-describe('a per-call master evaluated in the BCH-2026 virtual machine', () => {
+describe('a framed master evaluated in the BCH-2026 virtual machine', () => {
   it('accepts a root spend whose frame matches', () => {
     expect(evaluateSpend()).toBe(true);
   });
@@ -345,11 +345,11 @@ describe('a per-call master evaluated in the BCH-2026 virtual machine', () => {
   it('refuses a caller reference that is the master itself', () => {
     expect(evaluateSpend({ callerRef: 1 })).toBe(false);
   });
-  // The recreation refusals are `solidcash/test/per-call/hostile/master-recreation.test.ts`'s, and a nonzero value's
+  // The recreation refusals are `solidcash/test/framed/hostile/master-recreation.test.ts`'s, and a nonzero value's
   // is `value-receive.test.ts`'s.
 });
 
-describe('a stateful per-call master', () => {
+describe('a stateful framed master', () => {
   const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
     + ' contract Vault(address owner) {'
     + '   int public hits;'
@@ -357,13 +357,13 @@ describe('a stateful per-call master', () => {
     + ' }';
 
   it('compiles to a master with every reserved slot', () => {
-    const artifact = compileString(STATEFUL_SOURCE, { composition: 'per-call' });
-    expect(artifact.composition?.convention).toBe('per-call');
+    const artifact = compileString(STATEFUL_SOURCE, { composition: 'framed' });
+    expect(artifact.composition?.convention).toBe('framed');
     assertPlaceholders(scriptBytes(artifact), artifact.composition!.placeholders);
   });
 
   it('takes msg.sender from the frame rather than from a sender-category argument', () => {
-    const artifact = compileString(STATEFUL_SOURCE, { composition: 'per-call' });
+    const artifact = compileString(STATEFUL_SOURCE, { composition: 'framed' });
     const entry = artifact.abi.find((fn) => fn.name === 'bump');
     // The direct path's synthetic sender-category parameter is not part of a master's frame.
     expect(entry?.inputs.map((input) => input.name)).not.toContain('__internal__msgSenderCategory');

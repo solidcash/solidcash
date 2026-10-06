@@ -1,7 +1,7 @@
 /**
  * The event logs a composed transaction carries.
  *
- * A per-call contract emits an event as a token NFT minted at an event covenant whose category is the emitter's.
+ * A framed contract emits an event as a token NFT minted at an event covenant whose category is the emitter's.
  * Each execution's witness block lists, by output index, the event outputs that execution emitted, and the
  * composer allocates those outputs in the transaction's trailing region. The covenant a listed output carries is
  * rebuilt from the emitting contract's category and the event's signature, so the output says which of the
@@ -31,7 +31,7 @@ import {
   type StateValue,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import { tryParseEventCommitment } from '../../stateful/StateReader.js';
 import { blockContractName, type CompositionDraft } from '../composer/index.js';
 
@@ -73,7 +73,7 @@ export interface CompositionEventOutput {
 
 /** Options for reading a composition's event logs. */
 export interface CompositionEventLogOptions {
-  /** The validator program the emitter's address derives from. Defaults to the shipped per-call validator's. */
+  /** The validator program the emitter's address derives from. Defaults to the shipped framed validator's. */
   readonly validatorProgram?: Uint8Array;
   /** The derived transaction's outputs, when they are not read from the draft. */
   readonly outputs?: readonly (CompositionEventOutput | undefined)[];
@@ -139,7 +139,7 @@ export function compositionEventLogs(
   if (sample === undefined) return [];
   const program = draft.programFor(sample.id);
   const outputs = options.outputs ?? program.transaction.outputs;
-  const validatorProgram = options.validatorProgram ?? perCallValidator.buildValidatorProgram();
+  const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
 
   const logs: CompositionEventLog[] = [];
   for (const placed of emitters) {

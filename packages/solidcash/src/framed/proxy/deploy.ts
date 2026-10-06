@@ -1,5 +1,5 @@
 /**
- * Deploying a per-call contract behind a proxy, in three transactions, none of which calls another contract.
+ * Deploying a framed contract behind a proxy, in three transactions, none of which calls another contract.
  *
  *   1. the implementation's genesis: its category, master pool and validator pool (and the records its own
  *      constructor frame computed);
@@ -15,7 +15,7 @@
  * other shape is refused by name rather than guessing where the implementation's address lives or what a body
  * forwards.
  *
- * The first two transactions are broadcast through the shipped deployment entry point, which selects the per-call
+ * The first two transactions are broadcast through the shipped deployment entry point, which selects the framed
  * genesis from the artifact. The third is built by the shipped composer: the plan names the deployed masters, the
  * proxy's record and validator, and the delegate edge, and the shipped derivation resolves the callee reference
  * and fills the witnesses. That derived transaction is the specification of the hop. When the caller supplies its
@@ -24,7 +24,7 @@
  * the deployment comes out as three broadcast transactions. When it does not, the hop is only derived, which is
  * what a caller that wants the shape without broadcasting it takes.
  *
- * A later call by anyone is the same hop on the same live pools: `callPerCallProxyEntry` names the entry and the
+ * A later call by anyone is the same hop on the same live pools: `callFramedProxyEntry` names the entry and the
  * caller's coin and runs the identical plan, derivation, evaluation and broadcast. The delegation is one
  * participant graph with two kinds of caller, so an entry a deployment ran and an entry a user calls settle the
  * same way.
@@ -40,7 +40,7 @@ import {
   validatorRedeemScript,
   type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
 } from '../../Argument.js';
@@ -53,7 +53,7 @@ import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails, scriptToLockingBytecode } from '../../utils.js';
 import {
-  PerCallComposerError, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition, describeInnermost,
+  FramedComposerError, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition, describeInnermost,
   facetId, findParticipant, layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews,
   unstatedViewPlaceholder, validatorFacetsOf,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
@@ -66,16 +66,16 @@ import {
 } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import {
-  PerCallLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
+  FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from '../call/loop-turns.js';
 import type { HopCallInputs } from './call-resolution.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
-  readPerCallDeployment, entryRecordReadUnlock, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+  readFramedDeployment, entryRecordReadUnlock, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
 import { decodeReturnValues } from '../read/index.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
 import { learnedReachedValue } from './reached-values.js';
 import { skippedEmits, type WriteActivationFacts } from './write-activation.js';
@@ -101,7 +101,7 @@ import {
   type HopCalleeRecord,
   type HopExternalPlan,
   type HopPlanBlock,
-  type PerCallProxyExternal,
+  type FramedProxyExternal,
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 import {
@@ -123,10 +123,10 @@ import {
 } from './written-values.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
-export type PerCallProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
+export type FramedProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
 
 /** The caller's own funding for a hop: the coin the root frame's caller input spends. */
-export interface PerCallProxyCallerFunding {
+export interface FramedProxyCallerFunding {
   /** A UTXO at `callerLockingBytecode`; a root frame binds `msg.sender` to the lock of the input it names. */
   readonly utxo: Utxo;
   /** The caller's own unlocker over `callerLockingBytecode`, which signs the hop over the real transaction. */
@@ -137,12 +137,12 @@ export interface PerCallProxyCallerFunding {
 
 type Machine = ReturnType<typeof createVirtualMachineBch2026>;
 
-export interface PerCallProxyDeployOptions {
+export interface FramedProxyDeployOptions {
   readonly provider: NetworkProvider;
   readonly implementationArtifact: Artifact;
   /** The implementation's constructor arguments, in parameter order. */
   readonly implementationArgs?: readonly ConstructorArgument[];
-  readonly implementationDeploy: PerCallProxyDeployHalf;
+  readonly implementationDeploy: FramedProxyDeployHalf;
   /**
    * The proxy to run behind, or absent to generate one from the implementation's own declaration.
    *
@@ -152,7 +152,7 @@ export interface PerCallProxyDeployOptions {
    * checked against the implementation's.
    */
   readonly proxyArtifact?: Artifact;
-  readonly proxyDeploy: PerCallProxyDeployHalf;
+  readonly proxyDeploy: FramedProxyDeployHalf;
   /** The entry to call through the proxy, and its arguments in parameter order. */
   readonly initialize: { readonly functionName: string; readonly args?: readonly FunctionArgument[] };
   /** The deployer's own 25-byte P2PKH lock: the root frame's caller, and the `initialize` frame's `msg.sender`. */
@@ -165,7 +165,7 @@ export interface PerCallProxyDeployOptions {
    * deployment comes out as three broadcast transactions. The caller's input is the deployer's own — the frame's
    * root caller — so the UTXO must sit at `callerLockingBytecode`, the same lock the witness sender is bound to.
    */
-  readonly callerFunding?: PerCallProxyCallerFunding;
+  readonly callerFunding?: FramedProxyCallerFunding;
   /**
    * The contracts the entry's published call sites reach, keyed by the interface the site calls.
    *
@@ -173,16 +173,16 @@ export interface PerCallProxyDeployOptions {
    * and runs its callee as a frame of its own. A call whose callee is not named here has nowhere to run and is
    * refused by name.
    */
-  readonly externals?: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals?: Readonly<Record<string, FramedProxyExternal>>;
   /** The machine the initialize transaction is evaluated on. Defaults to the provider's BCH-2026 machine. */
   readonly vm?: Machine;
 }
 
 /** One deployed contract, with the address its masters and validators sit under. */
-export interface PerCallProxyHalf {
+export interface FramedProxyHalf {
   readonly contract: DeployResult['contract'];
   readonly categoryId: string;
-  /** `addrV(category)`, the address the contract presents, which `Contract.address` does not report per-call. */
+  /** `addrV(category)`, the address the contract presents, which `Contract.address` does not report framed. */
   readonly address: Uint8Array;
   readonly tx: DeployResult['tx'];
 }
@@ -195,9 +195,9 @@ export interface InitializeVerdict {
   readonly objection?: string;
 }
 
-export interface PerCallProxyDeployment {
-  readonly implementation: PerCallProxyHalf;
-  readonly proxy: PerCallProxyHalf;
+export interface FramedProxyDeployment {
+  readonly implementation: FramedProxyHalf;
+  readonly proxy: FramedProxyHalf;
   readonly initialize: {
     /** The derived transaction the machine was asked about. */
     readonly transaction: NonNullable<ShippedVmProgram['transaction']>;
@@ -275,7 +275,7 @@ function recordIndexOfRecord(id: string): number | undefined {
 function selectorOf(artifact: Artifact, functionName: string): Uint8Array {
   const entry = artifact.abi.find((candidate) => candidate.name === functionName);
   if (entry?.selector === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `contract "${artifact.contractName}" publishes no selector for "${functionName}"`,
     );
   }
@@ -483,7 +483,7 @@ function resolvedWriteSegment(options: {
   if (published === undefined) {
     // An entry that makes no call has one segment, so a write inside it can only land there.
     if (options.calls === 0) return { least: 0, most: 0 };
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${options.label} ${options.what} beside an external call, and the segment that write lands in is not fixed `
       + 'by the entry\'s own source, so the hop cannot declare it',
     );
@@ -506,7 +506,7 @@ function resolvedWriteSegment(options: {
   const at = published === 'last' ? options.calls : published;
   if (options.truncated === true && at > options.calls) return { least: options.calls, most: options.calls };
   if (at < 0 || at > options.calls) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${options.label} publishes segment ${String(at)} for ${options.what}, which the hop's `
       + `${options.calls + 1} segment(s) do not hold`,
     );
@@ -593,7 +593,7 @@ function laidWriteRecords(options: {
       ? runIndices.get(entry.in)
       : runAt(laid.trailingOutputs[entry.out - options.createdBase]?.lockingBytecode);
     if (spent && variable === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         'the entry lays a run of chunk records and the artifact publishes no dynamic value for it',
       );
     }
@@ -700,7 +700,7 @@ function resolveLaidWriteSegments(
   // has to land inside the segments the batch beside it lands in: a batch whose records another segment holds
   // leaves the run where the frame's own close refuses it, unless the artifact publishes the frame reads it apart.
   if (batchAt >= 0 && runAt >= 0 && !servesApart && !spansWithin(placed[runAt]!.span, placed[batchAt]!.span)) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${label} declares its mapping's records in segment ${placed[batchAt]!.span.least} and the run of chunk `
       + `records its dynamic write grows in segment ${placed[runAt]!.span.least}, and a frame reads the run past `
       + 'the records its own block declares, so a batch whose records another segment holds leaves the run unreadable',
@@ -751,7 +751,7 @@ function hopLoopSpans(options: {
   });
   if (typeof spans !== 'string') return spans;
   if (options.truncated === true) return loopMints.map(() => ({ least: options.calls, most: options.calls }));
-  throw new PerCallProxyDeployError(`${options.label} cannot declare its loop's records: ${spans}`);
+  throw new FramedProxyDeployError(`${options.label} cannot declare its loop's records: ${spans}`);
 }
 
 /** What one frame's own laid writes are declared in its segments from. */
@@ -817,7 +817,7 @@ export function placeOwnWrites(
  * plan carries, which is what lets the failing close name the answer.
  */
 function hopRetvalPlaceholder(contract: string, functionName: string): Uint8Array {
-  return sha256(new TextEncoder().encode(`per-call hop retval\u0000${contract}\u0000${functionName}`));
+  return sha256(new TextEncoder().encode(`framed hop retval\u0000${contract}\u0000${functionName}`));
 }
 
 /** The struct definitions a hop decodes an implementation entry's returned values against. */
@@ -828,7 +828,7 @@ function structDefinitionsOf(artifact: Artifact): readonly StructDefinitionInfo[
 /**
  * Refuses a hop whose entry the compiler did not emit, naming the entry and the shape that refused it.
  *
- * A body a per-call master cannot serve is emitted as a body that fails whenever the dispatcher reaches it, so a
+ * A body a framed master cannot serve is emitted as a body that fails whenever the dispatcher reaches it, so a
  * frame that runs one stops on that stub and the hop would report the opcode rather than the shape. The artifact
  * publishes the reason beside the stop sites, keyed by the same identity, which is what a caller reads instead.
  *
@@ -842,7 +842,7 @@ function requireServedEntry(artifact: Artifact, functionName: string, role: stri
   } | undefined)?.refusedEntries ?? [];
   const reason = listed.find((entry) => entry.functionName === identity)?.reason;
   if (reason !== undefined) {
-    throw new PerCallProxyDeployError(`${role} is refused by the compiler (${identity}): ${reason}`);
+    throw new FramedProxyDeployError(`${role} is refused by the compiler (${identity}): ${reason}`);
   }
 }
 
@@ -861,18 +861,18 @@ function entryLabelFor(functionName: string): string {
  */
 function requireProxyShape(proxyArtifact: Artifact): void {
   if (proxyArtifact.stateLayout === undefined) {
-    throw new PerCallProxyDeployError(`proxy "${proxyArtifact.contractName}" is not a stateful contract`);
+    throw new FramedProxyDeployError(`proxy "${proxyArtifact.contractName}" is not a stateful contract`);
   }
   const layout = proxyArtifact.stateLayout;
   const field = (layout.variables ?? []).find((candidate) => candidate.name === 'implementation');
   if (field === undefined || field.type !== 'address') {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `proxy "${proxyArtifact.contractName}" declares no address field named "implementation", so there is `
       + 'nothing for its fallback to forward the call data it received to',
     );
   }
   if (!proxyArtifact.abi.some((entry) => entry.name === '__fallback')) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `proxy "${proxyArtifact.contractName}" has no fallback, so it cannot forward the call data it received`,
     );
   }
@@ -889,7 +889,7 @@ function requireProxyShape(proxyArtifact: Artifact): void {
  */
 function requireSharedLayout(implementationArtifact: Artifact, proxyArtifact: Artifact): LayoutAgreement {
   const agreement = readLayoutAgreement(implementationArtifact, proxyArtifact);
-  if (!agreement.ok) throw new PerCallProxyDeployError(agreement.reason);
+  if (!agreement.ok) throw new FramedProxyDeployError(agreement.reason);
   return agreement;
 }
 
@@ -926,7 +926,7 @@ function callPushes(
 ): readonly Uint8Array[] {
   const abi = artifact.abi.find((candidate) => candidate.name === functionName);
   if (abi === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `implementation "${artifact.contractName}" publishes no entry "${functionName}"`,
     );
   }
@@ -935,7 +935,7 @@ function callPushes(
     abi, [...args], encodeFunctionArgument, artifact.structs,
   ) as Uint8Array[];
   if (encoded.length !== visible.length) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `"${functionName}" takes ${visible.length} argument(s), but ${encoded.length} were supplied`,
     );
   }
@@ -955,7 +955,7 @@ async function implementationFrameSideCars(
 ): Promise<ReadonlyMap<string, RecoverySideCars>> {
   const abiFunction = artifact.abi.find((candidate) => candidate.name === functionName);
   if (abiFunction === undefined) return new Map();
-  // A recovery call is published either by its argument sources or, when the sources are absent, by its per-call
+  // A recovery call is published either by its argument sources or, when the sources are absent, by its framed
   // flag, so both have to be absent for the entry to read no side-car.
   const hashes = (abiFunction.keccakPreimageParams ?? []).length > 0;
   const recovers = (abiFunction.ecrecoverArgParams ?? []).length > 0
@@ -1020,9 +1020,9 @@ function callerUnlocking(): Uint8Array {
  * reports for a placeholder program — so the proxy's fallback delegates to the master the implementation actually
  * runs on.
  */
-export async function deployPerCallProxy(
-  options: PerCallProxyDeployOptions,
-): Promise<PerCallProxyDeployment> {
+export async function deployFramedProxy(
+  options: FramedProxyDeployOptions,
+): Promise<FramedProxyDeployment> {
   const { provider, implementationArtifact } = options;
   const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(implementationArtifact);
   requireProxyShape(proxyArtifact);
@@ -1031,17 +1031,17 @@ export async function deployPerCallProxy(
     `the implementation's ${entryLabelFor(options.initialize.functionName)}`);
   requireServedEntry(proxyArtifact, '__fallback', "the proxy's fallback");
   if (options.callerLockingBytecode.length !== 25) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `a root frame's caller is a 25-byte P2PKH lock; got ${options.callerLockingBytecode.length} bytes`,
     );
   }
   for (const half of [options.implementationDeploy, options.proxyDeploy]) {
     if (half.fundingUtxo.vout !== 0) {
-      throw new PerCallProxyDeployError('each genesis funding UTXO must be at vout 0 to create a token category');
+      throw new FramedProxyDeployError('each genesis funding UTXO must be at vout 0 to create a token category');
     }
   }
 
-  const validatorProgram = perCallValidator.buildValidatorProgram();
+  const validatorProgram = framedValidator.buildValidatorProgram();
   const implementationCategory = hexToBin(options.implementationDeploy.fundingUtxo.txid);
   const proxyCategory = hexToBin(options.proxyDeploy.fundingUtxo.txid);
   const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
@@ -1109,7 +1109,7 @@ export async function deployPerCallProxy(
   // rather than searching the provider for it: a facet holds no token and pins no category, so any UTXO of its code
   // serves.
   const facetSpends = new Map<string, Utxo>();
-  const facetLocks = perCallValidator.buildValidatorFacets()
+  const facetLocks = framedValidator.buildValidatorFacets()
     .map((code) => binToHex(encodeLockingBytecodeP2sh32(hash256(code))));
   for (const [at, lock] of facetLocks.entries()) {
     for (const genesis of [implementation.tx, proxy.tx]) {
@@ -1126,9 +1126,9 @@ export async function deployPerCallProxy(
   // The proxy's records are read back by enumerating the proxy's category and decoding each commitment through the
   // shipped pushdata decoder: one record per data NFT of the proxy's layout, in data-NFT order.
   const layout = proxyArtifact.stateLayout!;
-  const deployment = await readPerCallDeployment(provider, proxy.categoryId, layout);
+  const deployment = await readFramedDeployment(provider, proxy.categoryId, layout);
   if (deployment.records.length !== layout.dataNftCount) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the proxy's genesis published ${deployment.records.length} record(s) for category ${proxy.categoryId}, but `
       + `its layout declares ${layout.dataNftCount} data NFT(s)`,
     );
@@ -1136,7 +1136,7 @@ export async function deployPerCallProxy(
   const recordCommitments = deployment.records.map((record, nftIndex) => {
     const commitment = record.token?.nft?.commitment;
     if (commitment === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the proxy's genesis published no commitment for the record at data NFT ${nftIndex} of category `
         + proxy.categoryId,
       );
@@ -1165,7 +1165,7 @@ export async function deployPerCallProxy(
   });
   // A deployment's hop carries no value, and the proxy it just minted holds no container to pay a send from.
   if ((loopTurns.sends ?? 0) > 0) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's ${entryLabelFor(options.initialize.functionName)} sends value from a loop, and the hop `
       + 'lists no send for the implementation\'s frame',
     );
@@ -1290,7 +1290,7 @@ export async function deployPerCallProxy(
     contract: {
       inner: { artifact: implementationArtifact },
       proxy: { categoryId: proxy.categoryId },
-      perCallProxy: { artifact: proxyArtifact, implementationCategoryId: implementation.categoryId },
+      framedProxy: { artifact: proxyArtifact, implementationCategoryId: implementation.categoryId },
     },
   });
 
@@ -1512,7 +1512,7 @@ export function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: r
   while (remaining.length > 0) {
     const at = remaining.findIndex(ready);
     if (at < 0) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         'the hop\'s callee frames have no settle order that answers each frame\'s callees before it and each '
         + 'shared node\'s writes before the frames that declare the views they left',
       );
@@ -1777,7 +1777,7 @@ async function settleCallees(options: {
         }
         // The body computed a chunkable value the close did not expose, so the run's width stays unstated: refuse
         // by name rather than lay a run the body's own pin would not address.
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `the call's callee "${callee.functionName}" writes mapping `
           + `"${callee.entryWrites.collection ?? '<unnamed>'}" a value whose source the artifact does not publish, `
           + 'so this hop cannot tell whether the write needs value chunks',
@@ -1823,7 +1823,7 @@ async function settleCallees(options: {
         hopTrace(`callee-stop ${callee.master} ${traceStopInstructions(options.vm, program)}`);
       }
       // The refusal carries the values the reported frame's custom error was raised with, as the entry's own does.
-      const failure = new PerCallProxyDeployError(
+      const failure = new FramedProxyDeployError(
         `the call's callee "${callee.functionName}" did not settle through the proxy: ${failing}`,
         refusal.innermost?.reason.arguments,
       );
@@ -2208,7 +2208,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       }
       // The body computed a chunkable value the close did not expose, so the run's width stays unstated: refuse by
       // name rather than lay a run the body's own pin would not address.
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's ${options.entryLabel} writes mapping "${entryWrites.collection ?? '<unnamed>'}" a `
         + 'value whose source the artifact does not publish, so this hop cannot tell whether the write needs value '
         + 'chunks',
@@ -2262,7 +2262,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
         hopTrace(`close entry=${IMPLEMENTATION_MASTER_ID} reason=${attributed}`);
         hopTrace(`reading entry=${IMPLEMENTATION_MASTER_ID} ${traceReading(reading)}`);
       }
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's ${options.entryLabel} did not settle through the proxy: ${failing}`
         + sizedRunClause(entryWrites),
         refusal.innermost?.reason.arguments,
@@ -2293,7 +2293,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       throw firstDeferredRefusal(options.callees ?? [], calleeSettlement.deferredFrames) ?? deferredCalleeFailure;
     }
     if (options.refusedSite !== undefined) throw options.refusedSite;
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's ${options.entryLabel} did not settle through the proxy in `
       + `${maximumAttempts} attempts${sizedRunClause(entryWrites)}`,
     );
@@ -2317,9 +2317,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   } else try {
     derived = deriveComposition([options.root], host);
   } catch (error) {
-    if (options.retvalPlaceholder !== undefined && error instanceof PerCallComposerError
-      && error.code === 'PER_CALL_DERIVATION_STALLED') {
-      throw new PerCallProxyDeployError(
+    if (options.retvalPlaceholder !== undefined && error instanceof FramedComposerError
+      && error.code === 'FRAMED_DERIVATION_STALLED') {
+      throw new FramedProxyDeployError(
         `the implementation's ${options.entryLabel} returns a value, which a call through this proxy hop does not `
         + 'carry: the proxy\'s fallback records the delegated call without a result, so the hop binds that record\'s '
         + 'result to empty while the implementation frame records the value it computed. A proxy whose fallback '
@@ -2631,7 +2631,7 @@ async function planAndSettleHop(options: {
   };
   /** What a planning refusal leaves to report, settled before the first site whose frames the planner refuses. */
   const refusalMetFirst = async (refusal: unknown, heldContinuations?: boolean): Promise<unknown> => {
-    if (!(refusal instanceof PerCallProxyDeployError)) return refusal;
+    if (!(refusal instanceof FramedProxyDeployError)) return refusal;
     return settledBefore(refusal, await planBeforeRefusedSite(planStopped(heldContinuations), refusal));
   };
   /**
@@ -2738,7 +2738,7 @@ async function planAndSettleHop(options: {
   /** The hop planned again from the bytes a settle learned an enclosing writer leaves (`enclosed-values.ts`). */
   const planFromEnclosingValue = async (learned: EnclosingValueLearned): Promise<HopExternalPlan> => {
     if (learning.writeValues.has(learned.master)) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the frame "${learned.master}" still leaves its write unstated after the hop learned the value its own run `
         + 'exposed, so the frames it encloses cannot start from it',
       );
@@ -2754,7 +2754,7 @@ async function planAndSettleHop(options: {
     const block = externalPlan.blocked;
     if (block !== undefined) {
       if (stops >= MAXIMUM_PLAN_STOPS) {
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `the hop stopped its plan ${stops} time(s) to learn earlier calls' results and still waits on `
           + `${block.where}, so the plan does not complete`,
         );
@@ -2824,7 +2824,7 @@ async function planAndSettleHop(options: {
           .map(([key, value]) => `${key}:${traceResultValue(value)}`).join(' ')}]`);
       }
       if (reached.size === before) {
-        const failure = new PerCallProxyDeployError(
+        const failure = new FramedProxyDeployError(
           `${block.where} reads the result of the earlier call(s) ${block.producers.join(', ')}, and settling them `
           + 'returned nothing the hop could decode, so the call cannot be planned from it',
         );
@@ -2872,7 +2872,7 @@ async function planAndSettleHop(options: {
       return settledHop(final.externalPlan, final.settled);
     }
     if (pass >= externalPlan.conditionalProducers.length) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the entry's arms an earlier call's result decides did not settle: the hop re-planned `
         + `${pass + 1} time(s) without its sites stopping`,
       );
@@ -2914,7 +2914,7 @@ interface HopPlanOptions {
   /**
    * The external calls the entry's own body makes, in the order it reaches them, and the callee frames they reach.
    *
-   * A per-call body binds each external call to its own frame's k-th record, so the delegate frame states one
+   * A framed body binds each external call to its own frame's k-th record, so the delegate frame states one
    * record per call and runs each callee as a frame of its own.
    */
   readonly calls?: readonly DraftCall[];
@@ -3054,7 +3054,7 @@ function hopEmits(
   const rows = artifact.abi.find((candidate) => candidate.name === functionName)?.emits ?? [];
   if (emits === undefined) {
     if (publishedLoopEffects(artifact, functionName)?.events !== undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the ${entryLabelFor(functionName)} of "${artifact.contractName}" emits from a loop, whose turns the hop counts `
         + 'for the implementation\'s own entry only',
       );
@@ -3064,7 +3064,7 @@ function hopEmits(
   return emits.map((emitIndex) => {
     const row = rows.find((candidate) => candidate.emitIndex === emitIndex);
     if (row === undefined) {
-      throw new PerCallProxyDeployError(`the ${entryLabelFor(functionName)} publishes no emit ${emitIndex}`);
+      throw new FramedProxyDeployError(`the ${entryLabelFor(functionName)} publishes no emit ${emitIndex}`);
     }
     return row;
   });
@@ -3078,8 +3078,8 @@ function implementationLoopTurns(inputs: HopCallInputs): EntryLoopTurns {
   try {
     return entryLoopTurns(inputs);
   } catch (error) {
-    if (error instanceof PerCallLoopTurnsError) {
-      throw new PerCallProxyDeployError(`the implementation's ${error.message}`);
+    if (error instanceof FramedLoopTurnsError) {
+      throw new FramedProxyDeployError(`the implementation's ${error.message}`);
     }
     throw error;
   }
@@ -3144,7 +3144,7 @@ function adjacentRecordState(
     (callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!).block === block);
   return adjacentRecordOrder(state, frames.map((callee) => calleeNamedRecordIds(callees, callee)), recordIndex,
     (split) => {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the callee "${frames[split]!.functionName}" reads its data records of "${block}" side by side, and no `
         + 'order of the records the hop\'s other frames of that contract name keeps them so',
       );
@@ -3419,7 +3419,7 @@ function requireSeparateRootValues(
     const shared = [...touchedValues(callee.artifact, callee.entry, callee.readNodes, writesOf(callee))]
       .find((value) => root.has(value));
     if (shared !== undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's ${entryLabelFor(functionName)} is called back by "${callee.functionName}", and both `
         + `read or write ${shared}, which the hop plans for each frame against the deployment alone, so neither `
         + 'would see what the other spends or leaves',
@@ -3557,7 +3557,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   ];
   // The validator runs as a head plus its facet inputs, so the hop's own layout has to place the same facets the
   // composer places; otherwise the indices the plan states and the ones the assembled transaction uses would differ.
-  const validatorRedeem = validatorRedeemScript(options.proxyCategory, perCallValidator.buildValidatorProgram());
+  const validatorRedeem = validatorRedeemScript(options.proxyCategory, framedValidator.buildValidatorProgram());
   const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
   const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
   // The events the delegate frame lists sit in the trailing region, which starts past the participants. The
@@ -3980,7 +3980,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         const category = (callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!).category;
         const out = createdElsewhere.get(createdNodeKey(category, node.collection, node.createdSlot));
         if (out === undefined) {
-          throw new PerCallProxyDeployError(
+          throw new FramedProxyDeployError(
             `the callee's "${callee.functionName}" entry reads a mapping node an earlier reach created, but the `
             + 'hop places no output for it',
           );
@@ -4309,7 +4309,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       covers: [...new Set([implementationArtifact.contractName, ...callees.map((callee) => callee.block)])]
         .filter((contract) => contract !== proxyArtifact.contractName),
       settles,
-      redeemScript: validatorRedeemScript(options.proxyCategory, perCallValidator.buildValidatorProgram()),
+      redeemScript: validatorRedeemScript(options.proxyCategory, framedValidator.buildValidatorProgram()),
     },
     // The event outputs fill the trailing region in emit order, each an immutable token of the proxy's category at
     // the covenant the body rebuilds, carrying the payload the entry computed. A created mapping node follows them.
@@ -4381,7 +4381,7 @@ function rawUnlocker(lockingBytecode: Uint8Array, unlockingBytecode: Uint8Array)
 /** Everything the hop's rebuild reads: the derived specification, the deployment's pools and the caller's coin. */
 interface BroadcastHopOptions {
   readonly provider: NetworkProvider;
-  readonly callerFunding: PerCallProxyCallerFunding;
+  readonly callerFunding: FramedProxyCallerFunding;
   readonly callerLockingBytecode: Uint8Array;
   readonly proxyArtifact: Artifact;
   readonly implementationArtifact: Artifact;
@@ -4584,7 +4584,7 @@ async function traceAssembledHop(
             index: position, value: output.valueSatoshis, lockingBytecode: output.lockingBytecode,
             token: shape(output as Holder),
           })),
-        }, { validatorTemplate: perCallValidator.buildValidatorProgram(), validatorInputIndex: validatorIndex });
+        }, { validatorTemplate: framedValidator.buildValidatorProgram(), validatorInputIndex: validatorIndex });
         hopTrace(`reference ${index} accepted=${String(decision.accepted)} check=${String(decision.check)} `
           + `reason=${String(decision.reason)} at=${String(decision.index)}`);
       }
@@ -4677,17 +4677,17 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   const { provider, callerFunding, program, draft } = options;
   const callerLock = callerFunding.funder.generateLockingBytecode();
   if (!bytesEqual(callerLock, options.callerLockingBytecode)) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       'the caller funding unlocker signs for a lock that is not the hop\'s caller lock, so the root frame\'s '
       + '`msg.sender` binding would not hold',
     );
   }
 
-  // The pools the two geneses published, read back by category and classified the way a per-call deployment mints
+  // The pools the two geneses published, read back by category and classified the way a framed deployment mints
   // them, so a participant is placed on the outpoint it actually sits on rather than a genesis output index.
-  const proxyPools = await readPerCallDeployment(
+  const proxyPools = await readFramedDeployment(
     provider, options.proxyCategoryId, options.proxyArtifact.stateLayout!);
-  const implementationPools = await readPerCallDeployment(
+  const implementationPools = await readFramedDeployment(
     provider, options.implementationCategoryId, options.implementationArtifact.stateLayout!);
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
@@ -4712,7 +4712,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = program.transaction.inputs[placed.index]?.unlockingBytecode;
     if (source === undefined || unlockingBytecode === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the derived hop carries no input for participant "${placed.id}"`);
     }
     // A validator's facet holds no token and pins no category, so any live UTXO of its code serves the input; the
@@ -4726,11 +4726,11 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
       ?? facetUtxos.find((utxo) => utxo.satoshis === source.valueSatoshis)
       ?? facetUtxos[0];
     if (real === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the deployment holds no live UTXO for the hop's "${placed.id}"`);
     }
     if (real.satoshis !== source.valueSatoshis) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the hop's "${placed.id}" holds ${real.satoshis} satoshis, but the derived hop spends `
         + `${source.valueSatoshis}`,
       );
@@ -4772,7 +4772,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     const source = program.sourceOutputs[index];
     const unlockingBytecode = program.transaction.inputs[index]?.unlockingBytecode;
     if (source === undefined || unlockingBytecode === undefined) {
-      throw new PerCallProxyDeployError(`the derived hop carries no container input at ${index}`);
+      throw new FramedProxyDeployError(`the derived hop carries no container input at ${index}`);
     }
     builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode));
   }
@@ -4803,7 +4803,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     : await provider.sendRawTransaction(rawHex);
   const expected = binToHex(hash256(rawBytes).reverse());
   if (txid !== expected) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the provider returned txid ${txid} for the hop, not the ${expected} its bytes hash to`,
     );
   }
@@ -4811,8 +4811,8 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   return attachWait({ ...transaction, txid, hex: rawHex } as TransactionDetails, provider);
 }
 
-/** What a caller asks a proxied per-call contract for, and what the call produced. */
-export interface PerCallProxyCallOptions {
+/** What a caller asks a proxied framed contract for, and what the call produced. */
+export interface FramedProxyCallOptions {
   readonly provider: NetworkProvider;
   /** The implementation behind the proxy: the artifact whose entries the call names. */
   readonly implementationArtifact: Artifact;
@@ -4830,7 +4830,7 @@ export interface PerCallProxyCallOptions {
   readonly funder: Unlocker;
   readonly changeAddress?: string | Uint8Array;
   /** The contracts the entry's published call sites reach, keyed by the interface the site calls. */
-  readonly externals?: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals?: Readonly<Record<string, FramedProxyExternal>>;
   readonly vm?: Machine;
   /**
    * The value the call carries, in satoshis: the proxy's root frame's, paid by the caller into a container of the
@@ -4840,7 +4840,7 @@ export interface PerCallProxyCallOptions {
 }
 
 /** A proxied call's outcome, shaped the way the direct call path's is so a handle can treat them alike. */
-export interface PerCallProxyCallResult {
+export interface FramedProxyCallResult {
   readonly transaction: NonNullable<ShippedVmProgram['transaction']>;
   readonly sourceOutputs: ShippedVmProgram['sourceOutputs'];
   readonly draft: CompositionDraft;
@@ -4865,7 +4865,7 @@ export interface PerCallProxyCallResult {
 }
 
 /**
- * Calls an entry of a per-call implementation through the proxy in front of it.
+ * Calls an entry of a framed implementation through the proxy in front of it.
  *
  * The caller's coin enters the proxy's fallback frame, which forwards the call data to the address its own record
  * holds; the implementation's entry runs as a delegate frame on the proxy's records. The hop is planned exactly the
@@ -4883,15 +4883,15 @@ export interface PerCallProxyCallResult {
  * frame takes it, paid into a container of the proxy, and the delegate frame sees it as `msg.value`. An entry that
  * sends pays from the proxy's containers, the address that holds the balance (`hop-value.ts`).
  */
-export async function callPerCallProxyEntry(
-  options: PerCallProxyCallOptions,
-): Promise<PerCallProxyCallResult> {
+export async function callFramedProxyEntry(
+  options: FramedProxyCallOptions,
+): Promise<FramedProxyCallResult> {
   const { provider, implementationArtifact } = options;
   const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(implementationArtifact);
   requireProxyShape(proxyArtifact);
   requireSharedLayout(implementationArtifact, proxyArtifact);
   if (!implementationArtifact.abi.some((entry) => entry.name === options.functionName)) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `implementation "${implementationArtifact.contractName}" publishes no entry "${options.functionName}"`,
     );
   }
@@ -4906,7 +4906,7 @@ export async function callPerCallProxyEntry(
     `the implementation's ${entryLabelFor(options.functionName)}`);
   requireServedEntry(proxyArtifact, '__fallback', "the proxy's fallback");
   if (options.callerLockingBytecode.length !== 25) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `a root frame's caller is a 25-byte P2PKH lock; got ${options.callerLockingBytecode.length} bytes`,
     );
   }
@@ -4917,9 +4917,9 @@ export async function callPerCallProxyEntry(
   const proxyLayout = proxyArtifact.stateLayout!;
   const classificationLayout = implementationArtifact.stateLayout?.collections === undefined ? proxyLayout
     : { ...proxyLayout, collections: implementationArtifact.stateLayout.collections };
-  const proxyPools = await readPerCallDeployment(provider, options.proxyCategoryId, classificationLayout);
+  const proxyPools = await readFramedDeployment(provider, options.proxyCategoryId, classificationLayout);
   if (proxyPools.records.length !== proxyLayout.dataNftCount) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `category ${options.proxyCategoryId} holds ${proxyPools.records.length} record(s) for a proxy whose layout `
       + `declares ${proxyLayout.dataNftCount} data NFT(s)`,
     );
@@ -4927,7 +4927,7 @@ export async function callPerCallProxyEntry(
   const proxyMasterUtxo = proxyPools.masters[0];
   const validatorUtxo = proxyPools.validators[0];
   if (proxyMasterUtxo === undefined || validatorUtxo === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `category ${options.proxyCategoryId} holds no proxy master or no validator, which a call is admitted by`,
     );
   }
@@ -4943,11 +4943,11 @@ export async function callPerCallProxyEntry(
     state: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools) as
       Readonly<Record<string, StateValue>>,
   });
-  const implementationPools = await readPerCallDeployment(
+  const implementationPools = await readFramedDeployment(
     provider, options.implementationCategoryId, implementationArtifact.stateLayout!);
   const implementationMasterUtxo = implementationPools.masters[0];
   if (implementationMasterUtxo === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `category ${options.implementationCategoryId} holds no implementation master, which the forwarded frame `
       + 'runs from',
     );
@@ -4955,14 +4955,14 @@ export async function callPerCallProxyEntry(
   const recordCommitments = proxyPools.records.map((record, nftIndex) => {
     const commitment = record.token?.nft?.commitment;
     if (commitment === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the record at data NFT ${nftIndex} of category ${options.proxyCategoryId} carries no commitment`,
       );
     }
     return hexToBin(commitment);
   });
 
-  const validatorProgram = perCallValidator.buildValidatorProgram();
+  const validatorProgram = framedValidator.buildValidatorProgram();
   const proxyCategory = hexToBin(options.proxyCategoryId);
   const implementationCategory = hexToBin(options.implementationCategoryId);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
@@ -5033,7 +5033,7 @@ export async function callPerCallProxyEntry(
       write.targets.map((target) => `${write.collection}:${bytesToHex(target.slot)}`)));
     const aliased = readNodes.find((node) => written.has(`${node.collection}:${bytesToHex(node.keySlot)}`));
     if (aliased !== undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's ${entryLabelFor(options.functionName)} reads mapping "${aliased.collection}" under a `
         + 'key its batch also writes, which its frame reads as the segment began, before the write, whichever '
         + 'comes first in the source',
@@ -5062,7 +5062,7 @@ export async function callPerCallProxyEntry(
   });
   if ((hopValue?.value ?? 0n) > 0n
     && !(proxyArtifact.abi.find((entry) => entry.name === '__fallback')?.modifiers ?? []).includes('payable')) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the fallback of proxy "${proxyArtifact.contractName}" is not payable, so a call through it carries no value`,
     );
   }

@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { callPerCallEntry, sendPerCallValue, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { callFramedEntry, sendFramedValue, type FramedCallResult } from '../../../src/framed/call/index.js';
 import {
   addressOf, containerValue, currentCaller, deploy, deployBeside, deployBesideWith, type Deployed,
 } from './value-harness.js';
 
 /**
- * A recipient's paid body, composed by `callPerCallEntry` (spec 4b): a `receive()` that emits, writes its own mapping
+ * A recipient's paid body, composed by `callFramedEntry` (spec 4b): a `receive()` that emits, writes its own mapping
  * or sends to users' locks when another contract pays it. The recipient lists a run of its own after the payer's, and
  * the SDK learns what the paid body emits, writes and sends from the body's own program.
  */
@@ -29,7 +29,7 @@ const PAID_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
   + ' }';
 
-const paidBodies = compileStringMulti(PAID_BODIES_SOURCE, { composition: 'per-call' });
+const paidBodies = compileStringMulti(PAID_BODIES_SOURCE, { composition: 'framed' });
 
 let payerRun: Promise<Deployed> | undefined;
 
@@ -41,7 +41,7 @@ function payer(): Promise<Deployed> {
     await deployed.provider.addUtxo(binToHex(deployed.callerLock), {
       txid: '46'.repeat(31) + 'c1', vout: 0, satoshis: 500_000n,
     });
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 32_000n });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 32_000n });
     return deployed;
   })();
   return payerRun;
@@ -52,7 +52,7 @@ describe('a paid receive() that emits or writes a mapping', () => {
     const deployed = await payer();
     const tippedCategory = await deployBeside(deployed, paidBodies.Tipped!, '4e'.repeat(32));
 
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(paidBodies.Tipped!, tippedCategory), 6_000n],
@@ -73,13 +73,13 @@ describe('a paid receive() that emits or writes a mapping', () => {
     const externals = { Bank: { artifact: paidBodies.Bank!, categoryId: bankCategory } };
     const to = addressOf(paidBodies.Bank!, bankCategory);
 
-    const first = await callPerCallEntry({
+    const first = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 7_000n], externals,
     });
     expect(first.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(containerValue(first, bankCategory)).toBe(7_000n);
 
-    const second = await callPerCallEntry({
+    const second = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
     });
     expect(second.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -114,12 +114,12 @@ const SENDING_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const sendingBodies = compileStringMulti(SENDING_BODIES_SOURCE, { composition: 'per-call' });
+const sendingBodies = compileStringMulti(SENDING_BODIES_SOURCE, { composition: 'framed' });
 const FIRST_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x31));
 const SECOND_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x32));
 
 /** The value the broadcast pays to one lock. */
-function paidTo(result: PerCallCallResult, lock: Uint8Array): bigint {
+function paidTo(result: FramedCallResult, lock: Uint8Array): bigint {
   return (result.broadcast?.outputs ?? [])
     .filter((output) => binToHex(output.lockingBytecode) === binToHex(lock))
     .reduce((sum, output) => sum + output.valueSatoshis, 0n);
@@ -132,7 +132,7 @@ describe('a paid receive() that sends', () => {
       deployed, sendingBodies.Splitter!, [FIRST_LOCK, SECOND_LOCK], '50'.repeat(32),
     );
 
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(sendingBodies.Splitter!, splitterCategory), 9_001n],
@@ -149,15 +149,15 @@ describe('a paid receive() that sends', () => {
     const externals = { Doubler: { artifact: sendingBodies.Doubler!, categoryId: doublerCategory } };
     const to = addressOf(sendingBodies.Doubler!, doublerCategory);
     // Before its deposit it holds nothing, so what it sends beyond what it receives has no container to come from.
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
     })).rejects.toThrow(/contract "Doubler" holds 0 satoshis in its containers/);
     const doubler = { ...deployed, artifact: sendingBodies.Doubler!, categoryId: doublerCategory };
-    const deposit = await callPerCallEntry({ ...(await currentCaller(doubler)), functionName: 'deposit', value: 8_000n });
+    const deposit = await callFramedEntry({ ...(await currentCaller(doubler)), functionName: 'deposit', value: 8_000n });
     expect(deposit.accepted).toBe(true);
 
     // As the EVM pays from its balance.
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
     });
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -175,7 +175,7 @@ describe('a paid receive() that sends', () => {
     const to = addressOf(sendingBodies.Tipper!, tipperCategory);
 
     // A branch taken makes every send, as the splitter's do.
-    const skipped = await callPerCallEntry({
+    const skipped = await callFramedEntry({
       ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
     });
     expect(skipped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);

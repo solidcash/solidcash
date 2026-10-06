@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, compileAndDeploy, master, masterInput, rootOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
   createComposedDerivationHost, deriveComposition, participant,
   type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A record that holds more fields than the frame writes.

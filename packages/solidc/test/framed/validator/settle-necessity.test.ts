@@ -15,7 +15,7 @@ import {
   type PlannedSettlement,
   type PlannedValidator,
   type ShippedVmProgram,
-} from '../../../../solidcash/src/per-call/composer/index.js';
+} from '../../../../solidcash/src/framed/composer/index.js';
 import {
   USER_LOCK,
   compileAndDeploy,
@@ -27,14 +27,14 @@ import {
   selectorOf,
   token,
   userInput,
-} from '../../../../solidcash/test/per-call/shapes/harness.js';
+} from '../../../../solidcash/test/framed/shapes/harness.js';
 import {
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
-  type PerCallTransaction,
+  type FramedTransaction,
   type TokenShape,
-} from '../../../src/per-call/validator/index.js';
+} from '../../../src/framed/validator/index.js';
 import { compositionMachine } from '../machine.js';
 import { validatorSpend } from '../master/validator-input.js';
 
@@ -104,7 +104,7 @@ function modelToken(tokenShape: VmSourceOutput['token']): TokenShape {
 }
 
 /** The composed transaction as the derivation's model: every spent output stated with its input. */
-function toModel(program: ShippedVmProgram): PerCallTransaction {
+function toModel(program: ShippedVmProgram): FramedTransaction {
   const transaction = program.transaction!;
   return {
     inputs: transaction.inputs.map((input, index) => {

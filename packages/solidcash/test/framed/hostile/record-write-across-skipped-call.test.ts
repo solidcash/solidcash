@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { encodeIntegerValue, buildPushdataCommitment, bytesToHex, FrameKind, type RecordEntry } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { readComputedDeclaration } from '../../../src/per-call/deploy/declaration.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
+import { readComputedDeclaration } from '../../../src/framed/deploy/declaration.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant, reportCompositionRefusal,
   type CompositionDraftPlan, type CompositionRefusal,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   USER_LOCK, compileAndDeploy, entryName, hexOf, layoutWithFacets, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
@@ -184,7 +184,7 @@ describe('a record written before a guarded call, changed by a frame that re-ent
     const { code, report, close } = derive(11n, {
       set: [[BEFORE, WRITTEN], [BUMPED, WRITTEN]], bump: [WRITTEN, BUMPED],
     });
-    expect(code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(code).toBe('FRAMED_DERIVATION_STALLED');
     expect(report.accepted).toBe(false);
     expect(report.innermost!.master).toBe('set-1');
     expect(report.refusals.map((refusal) => refusal.master)).not.toContain('bump-1');
@@ -196,7 +196,7 @@ describe('a record written before a guarded call, changed by a frame that re-ent
     const { code, report, close } = derive(11n, {
       set: [[BEFORE, WRITTEN], [BUMPED, BUMPED]], bump: [WRITTEN, BUMPED],
     });
-    expect(code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(code).toBe('FRAMED_DERIVATION_STALLED');
     expect(report.accepted).toBe(false);
     expect(report.innermost!.master).toBe('set-1');
     expect(report.refusals.map((refusal) => refusal.master)).not.toContain('bump-1');

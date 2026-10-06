@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { TokenCapability, validatorAddress } from '@solidcash/utils';
-import { MasterPoolDeployment } from '../../../src/per-call/deploy/index.js';
+import { MasterPoolDeployment } from '../../../src/framed/deploy/index.js';
 import {
   artifactFixture,
   programBytesOf,
 } from './fixture.js';
 
 /**
- * The deployment pools of a per-call contract.
+ * The deployment pools of a framed contract.
  *
  * Deployment funds a pool of master UTXOs at the master lock and a pool of validator UTXOs at the contract's
  * address, and the address it presents is `addrV(category)`. This drives the shipped geometry; creating the

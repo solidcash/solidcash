@@ -14,13 +14,13 @@ import {
   type StateLayout,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode, type DeployedMaster,
-} from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, generateProxySource } from '../../../src/per-call/proxy/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, generateProxySource } from '../../../src/framed/proxy/index.js';
 import {
   EMPTY, USER_LOCK, VALIDATOR_PROGRAM, composeAndDerive, entryName, master, masterInput, rootOf, selectorOf, token,
   userInput, userInputs, validatorFor, type DeployedContract,
@@ -28,13 +28,13 @@ import {
 import {
   chunkRecordId, createComposedDerivationHost, layOutChunkRun, participant,
   planChunkRun, type ChunkRecordPlacement, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * An append-shape entry driven behind a proxy.
  *
  * The implementation declares the address its proxy forwards to beside a dynamic `int[]`, and its `append` pushes
- * onto that array and emits an event. A per-call write rebuilds the record commitment from the fields the
+ * onto that array and emits an event. A framed write rebuilds the record commitment from the fields the
  * *writer's* own source declares, so the proxy has to declare the implementation's fields exactly;
  * `buildProxyArtifact` generates it from the implementation's published layout, so the two records carry the same
  * bytes and the deployment's shared-layout rule holds by construction.
@@ -121,7 +121,7 @@ function deployed(name: string, category: Uint8Array, held: DeployedMaster): Dep
 function buildProxyFromSource(implementationArtifact: NonNullable<ReturnType<typeof compileStringMulti>['Impl']>):
 ReturnType<typeof buildProxyArtifact> {
   const generated = compileStringMulti(generateProxySource(implementationArtifact), {
-    composition: 'per-call', commitmentLimit: implementationArtifact.stateLayout!.commitmentLimit,
+    composition: 'framed', commitmentLimit: implementationArtifact.stateLayout!.commitmentLimit,
   });
   const artifact = generated[`${implementationArtifact.contractName}Proxy`];
   if (artifact === undefined) throw new Error('the generated proxy source did not compile to a contract');
@@ -135,7 +135,7 @@ function compileAndDeployHalf(): {
   readonly proxy: DeployedContract;
   readonly impl: DeployedContract;
 } {
-  const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'framed' });
   const implementationArtifact = artifacts.Impl!;
   // The generated proxy source, compiled by the same compiler this suite imports, so the composition, the
   // implementation it drives and the generated proxy are one build. `buildProxyArtifact` compiles exactly this
@@ -338,7 +338,7 @@ function rootRequest(built: Built): ReturnType<typeof rootOf> {
 
 describe('an append-shape entry entered through a proxy\'s fallback', () => {
   it('generates the proxy from the implementation\'s own layout, and both contracts are served', () => {
-    const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'framed' });
     const proxy = buildProxyArtifact(artifacts.Impl!);
 
     // The write rebuilds the record from the writer's declaration, so the two layouts must be the same geometry.
@@ -352,7 +352,7 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     // The proxy is the forwarder shape, so it is served rather than refused. The implementation's entry touches a
     // dynamic value but makes no call of its own, so it too is served: the delegate hop is the proxy's body, and it
     // does not count as the implementation's own call.
-    expect(proxy.composition?.convention).toBe('per-call');
+    expect(proxy.composition?.convention).toBe('framed');
     expect(proxy.composition?.refusedEntries).toBeUndefined();
     expect(artifacts.Impl!.composition?.refusedEntries).toBeUndefined();
   });
@@ -369,8 +369,8 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
       + `   function append(int id, int item) { this.items.push(item); IPing(0x${'11'.repeat(35)}).ping();`
       + ' require(true); }'
       + ' }';
-    const artifact = compileStringMulti(source, { composition: 'per-call' }).Impl!;
-    expect(artifact.composition?.convention).toBe('per-call');
+    const artifact = compileStringMulti(source, { composition: 'framed' }).Impl!;
+    expect(artifact.composition?.convention).toBe('framed');
     expect(artifact.composition?.refusedEntries).toBeUndefined();
     expect(artifact.abi.map((entry) => entry.name)).toStrictEqual(['append']);
   });

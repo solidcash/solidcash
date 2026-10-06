@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -73,7 +73,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-/** The options an imported Solidity project compiles with under the per-call composition. */
+/** The options an imported Solidity project compiles with under the framed composition. */
 const OPTIONS = {
   solidityImportCompat: true,
   commitmentLimit: 128,
@@ -83,7 +83,7 @@ const OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 interface Caller { readonly lock: Uint8Array; readonly funder: Unlocker }
@@ -120,7 +120,7 @@ async function deployWorld(): Promise<World> {
   await fundShippedFacets(network);
   const init = nextCoin();
   await network.addUtxo(binToHex(OWNER_LOCK), init);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifact,
     implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
@@ -141,10 +141,10 @@ async function deployWorld(): Promise<World> {
 /** Enters one root entry through the proxy with a fresh coin of the caller's. */
 async function enter(
   world: World, functionName: string, args: readonly FunctionArgument[], caller: Caller,
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const coin = world.nextCoin();
   await world.network.addUtxo(binToHex(caller.lock), coin);
-  return callPerCallProxyEntry({
+  return callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: world.artifact,
     proxyCategoryId: world.proxy,
@@ -161,7 +161,7 @@ async function enter(
 
 /** The flag the proxy's records hold for `who` on the post, read through the getter. */
 async function allowed(world: World, who: Uint8Array): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: world.artifact, categoryId: world.proxy,
     functionName: 'allowed', args: [POST, who],
   });
@@ -170,7 +170,7 @@ async function allowed(world: World, who: Uint8Array): Promise<unknown> {
 }
 
 /** The hop settled: every frame accepted and the transaction broadcast. */
-function expectSettled(result: PerCallProxyCallResult): void {
+function expectSettled(result: FramedProxyCallResult): void {
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.accepted).toBe(true);
   expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);

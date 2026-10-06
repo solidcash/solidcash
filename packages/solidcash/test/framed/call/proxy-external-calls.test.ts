@@ -3,30 +3,30 @@ import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexT
 import {
   bytesToHex, hash256, parsePushdataCommitment, validatorAddress, type Artifact,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import { planHopExternalCalls } from '../../../src/per-call/proxy/external-calls.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
+import { planHopExternalCalls } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
 /**
  * A proxied entry whose own body makes external calls.
  *
- * A per-call body binds each external call to its own frame's k-th call record, so a hop that runs such an entry
+ * A framed body binds each external call to its own frame's k-th call record, so a hop that runs such an entry
  * has to state the calls the entry makes and run each callee as a frame of its own. The deployment is driven only
  * through the shipped deploy/compose/derive/machine/broadcast path, and the state is read back through the
  * shipped deployment reader.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const IMPL_CATEGORY = '11'.repeat(32);
 const PROXY_CATEGORY = '22'.repeat(32);
 const ORACLE_CATEGORY = '55'.repeat(32);
@@ -95,7 +95,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function ledger(int id, address author, address subject, bytes32 reference, string memo) { ILedger(0x${hexOf(LEDGER_ADDRESS)}).record(id, author, subject, reference, memo); require(this.total >= 0); }`
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const impl = artifacts.Impl!;
 const oracle = artifacts.Oracle!;
 const escrow = artifacts.Escrow!;
@@ -123,7 +123,7 @@ const UNFIXED = compileStringMulti('pragma solidcash ^0.13.0;'
   + `     for (int i = 0; i < n; i = i + 1) { require(IOracle(this.sink).amountOf() > 0); }`
   + '     require(true);'
   + '   }'
-  + ' }', { composition: 'per-call' });
+  + ' }', { composition: 'framed' });
 
 // Two entries that call each other, each at an address baked into the other's code, so the planner is asked to
 // place a contract it already placed when it recurses.
@@ -136,11 +136,11 @@ const CYCLE = compileStringMulti('pragma solidcash ^0.13.0;'
   + ' interface ICycleA { function x(); }'
   + ` contract CycleA { int public seen; function x() { ICycleB(0x${hexOf(CYCLE_B_ADDRESS)}).y(); require(true); } }`
   + ` contract CycleB { int public seen; function y() { ICycleA(0x${hexOf(CYCLE_A_ADDRESS)}).x(); require(true); } }`,
-  { composition: 'per-call' });
+  { composition: 'framed' });
 
 /** The record's own state, read back through the shipped deployment reader and decoded as a field map. */
 async function recordState(network: MockNetworkProvider, categoryId: string): Promise<string> {
-  const deployment = await readPerCallDeployment(network, categoryId, impl.stateLayout!);
+  const deployment = await readFramedDeployment(network, categoryId, impl.stateLayout!);
   return bytesToHex(new Uint8Array(hexToBin(deployment.records[0]!.token!.nft!.commitment)));
 }
 
@@ -148,7 +148,7 @@ async function recordState(network: MockNetworkProvider, categoryId: string): Pr
 async function recordCount(
   network: MockNetworkProvider, artifact: Artifact, categoryId: string,
 ): Promise<bigint> {
-  const deployment = await readPerCallDeployment(network, categoryId, artifact.stateLayout!);
+  const deployment = await readFramedDeployment(network, categoryId, artifact.stateLayout!);
   const commitment = bytesToHex(new Uint8Array(hexToBin(deployment.records[0]!.token!.nft!.commitment)));
   return parsePushdataCommitment(commitment, artifact.stateLayout!, 0).count as bigint;
 }
@@ -165,7 +165,7 @@ function guardCount(network: MockNetworkProvider): Promise<bigint> {
 
 /** The fields the ledger callee's own record carries, decoded with the shipped state decoder. */
 async function ledgerFields(network: MockNetworkProvider): Promise<Record<string, unknown>> {
-  const deployment = await readPerCallDeployment(network, LEDGER_CATEGORY, ledger.stateLayout!);
+  const deployment = await readFramedDeployment(network, LEDGER_CATEGORY, ledger.stateLayout!);
   const commitment = bytesToHex(new Uint8Array(hexToBin(deployment.records[0]!.token!.nft!.commitment)));
   return parsePushdataCommitment(commitment, ledger.stateLayout!, 0);
 }
@@ -226,7 +226,7 @@ async function deployedWithCallees(network: MockNetworkProvider): Promise<{
 
   // The validator runs as a head plus one input per facet, each locked by its own code and holding no token, so
   // any live UTXO at the facet's lock serves it.
-  const facets = perCallValidator.buildValidatorFacets();
+  const facets = framedValidator.buildValidatorFacets();
   for (const [index, code] of facets.entries()) {
     const lock = encodeLockingBytecodeP2sh32(hash256(code));
     await network.addUtxo(hexOf(lock), {
@@ -243,7 +243,7 @@ async function deployedWithCallees(network: MockNetworkProvider): Promise<{
   for (const coin of [implFunding, proxyFunding]) await network.addUtxo(source.address, coin);
   for (const coin of [hopCoin, callCoin]) await network.addUtxo(hexOf(deployerLock), coin);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     proxyArtifact: buildProxyArtifact(impl),
@@ -291,7 +291,7 @@ describe('a proxied entry that calls another deployed contract', () => {
     const { network, funded } = await sharedDeployment();
     const afterInitialize = await recordState(network, funded.proxyCategoryId);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -321,7 +321,7 @@ describe('a proxied entry that calls another deployed contract', () => {
     const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c2');
     const before = await recordState(network, funded.proxyCategoryId);
 
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -343,7 +343,7 @@ describe('a proxied entry that calls another deployed contract', () => {
     const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c3');
     expect(await writerCount(network)).toBe(0n);
 
-    const outcome = await callPerCallProxyEntry({
+    const outcome = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -370,7 +370,7 @@ describe('a proxied entry that calls another deployed contract', () => {
     const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c4');
     expect(await guardCount(network)).toBe(0n);
 
-    const outcome = await callPerCallProxyEntry({
+    const outcome = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -399,7 +399,7 @@ describe('a proxied entry that calls another deployed contract', () => {
     const MEMO = 'a note long enough that the node cannot hold its value inline';
     const NOTE_ID = 1n;
 
-    const outcome = await callPerCallProxyEntry({
+    const outcome = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -422,7 +422,7 @@ describe('a proxied entry that calls another deployed contract', () => {
     expect(outcome.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     expect(await ledgerFields(network)).toMatchObject({ written: NOTE_ID + 1n });
     // The value the node holds is the whole struct, read back through the shipped read path.
-    const read = await readPerCallEntry({
+    const read = await readFramedEntry({
       provider: network, artifact: ledger, categoryId: LEDGER_CATEGORY, functionName: 'noteOf',
       args: [NOTE_ID], externals: externals(), vm: compositionMachine(),
     });

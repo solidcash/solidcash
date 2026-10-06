@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { FrameKind, hash160, parsePushdataCommitment, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -65,10 +65,10 @@ let run: Promise<Deployed> | undefined;
 /** C, a second C, B and A, A holding B and the first C; each case rewinds the chain to them first. */
 async function deployed(): Promise<Deployed> {
   run ??= (async (): Promise<Deployed> => {
-    const compiled = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+    const compiled = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
     const artifacts = { A: compiled.A!, B: compiled.B!, C: compiled.C!, C2: compiled.C! };
-    const { perCallValidator } = await import('solidc');
-    const validatorProgram = perCallValidator.buildValidatorProgram();
+    const { framedValidator } = await import('solidc');
+    const validatorProgram = framedValidator.buildValidatorProgram();
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
     await fundShippedFacets(provider);
@@ -97,14 +97,14 @@ let coins = 0;
 /** Enters one of A's entries with a fresh coin of the user's, naming every deployment as a call may reach it. */
 async function enter(
   chain: Deployed, functionName: string, args: readonly (bigint | Uint8Array)[] = [],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   coins += 1;
   const user = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: `${'72'.repeat(31)}${coins.toString(16).padStart(2, '0')}`, vout: 0, satoshis: 300_000n };
   await chain.provider.addUtxo(binToHex(user), callerUtxo);
   const externals = Object.fromEntries([...chain.categories]
     .map(([name, categoryId]) => [name, { artifact: chain.artifacts[name]!, categoryId }]));
-  return callPerCallEntry({
+  return callFramedEntry({
     provider: chain.provider, artifact: chain.artifacts.A!, categoryId: chain.categories.get('A')!, functionName,
     args, callerUtxo, callerLockingBytecode: user, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
     vm: compositionMachine(), externals,
@@ -114,7 +114,7 @@ async function enter(
 /** A contract's records as its own layout decodes them, read back from the chain. */
 async function recordOf(chain: Deployed, name: string): Promise<Record<string, unknown>> {
   const layout = chain.artifacts[name]!.stateLayout!;
-  const set = await readPerCallDeployment(chain.provider, chain.categories.get(name)!, layout);
+  const set = await readFramedDeployment(chain.provider, chain.categories.get(name)!, layout);
   return Object.assign({}, ...set.records.slice(0, layout.dataNftCount)
     .map((record, nftIndex) => parsePushdataCommitment(record.token!.nft!.commitment, layout, nftIndex)));
 }

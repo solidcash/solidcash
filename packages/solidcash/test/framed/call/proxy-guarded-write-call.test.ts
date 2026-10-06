@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, sha256 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import { planHopExternalCalls } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster, stateRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
+import { planHopExternalCalls } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -38,7 +38,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const callerArtifact = artifacts.Caller!;
 const pingArtifact = artifacts.Ping!;
 
@@ -72,7 +72,7 @@ async function deployShape(network: MockNetworkProvider): Promise<{
   const callerProxyCategoryId = categoryFor('guarded-write-caller-proxy');
   const callerImplementationCategoryId = categoryFor('guarded-write-caller-implementation');
 
-  // The callee is a plain per-call contract reached at the address the caller's own record holds.
+  // The callee is a plain framed contract reached at the address the caller's own record holds.
   const pingFunding = funding(pingCategoryId);
   await network.addUtxo(source.address, pingFunding);
   await deployStatefulContract(pingArtifact, [], {
@@ -89,7 +89,7 @@ async function deployShape(network: MockNetworkProvider): Promise<{
 
   const pingMaster = deployMaster(pingArtifact, hexToBin(pingCategoryId), VALIDATOR_PROGRAM);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: callerArtifact,
     proxyArtifact: buildProxyArtifact(callerArtifact),
@@ -154,7 +154,7 @@ describe('a frame that rewrites a field and then guards a call on it', () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployShape(network);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: callerArtifact,
       proxyArtifact: buildProxyArtifact(callerArtifact),

@@ -4,7 +4,7 @@ import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 
 /**
- * A per-call master's source map has one entry per instruction.
+ * A framed master's source map has one entry per instruction.
  *
  * The head, the sorted batch's derivation and the census counter are scripts a site emits whole. Emitted byte by
  * byte they gave every byte of a push its own entry, so the map ran ahead of the program past the first of them,
@@ -24,9 +24,9 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function balanceOf(address who) view returns (uint) { return this.balances[who]; }'
   + ' }';
 
-describe('a per-call master\'s source map', () => {
+describe('a framed master\'s source map', () => {
   it('has one entry for every instruction before the trailing padding', () => {
-    const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Ledger!;
+    const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Ledger!;
     const instructions = decodeAuthenticationInstructions(scriptToBytecode(asmToScript(artifact.bytecode)));
     // The padding is a run of zero pushes, each dropped, appended once the map is built.
     let padding = 0;

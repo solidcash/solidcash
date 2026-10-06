@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, parsePushdataCommitment, sha256, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { deployMaster, eventLockingBytecode, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import * as composer from '../../../src/per-call/composer/index.js';
-import { PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster, eventLockingBytecode, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import * as composer from '../../../src/framed/composer/index.js';
+import { FramedProxyDeployError, buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -142,7 +142,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const ledger = artifacts.Ledger!;
 const desk = artifacts.Desk!;
 const deskProxy = buildProxyArtifact(desk);
@@ -165,7 +165,7 @@ interface Deployed {
   readonly implementationCategoryId: string;
   readonly proxyAddress: Uint8Array;
   readonly changeAddress: string;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly snapshot: SnapshotRestorer;
 }
 
@@ -187,7 +187,7 @@ async function deployed(): Promise<Deployed> {
     for (const txid of [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(txid));
     const initCoin = funding(idOf('initialize coin'));
     await network.addUtxo(binToHex(MEMBER_LOCK), initCoin);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: desk,
       proxyArtifact: deskProxy,
@@ -203,7 +203,7 @@ async function deployed(): Promise<Deployed> {
     // ledger holds, as the row's store write does; an outsider's first mark inserts one.
     const markCoin = funding(idOf('seed mark coin'));
     await network.addUtxo(binToHex(MEMBER_LOCK), markCoin);
-    const seeded = await callPerCallEntry({
+    const seeded = await callFramedEntry({
       provider: network, artifact: ledger, categoryId: LEDGER_CATEGORY, functionName: 'mark', args: [MEMBER_LOCK],
       callerUtxo: markCoin, callerLockingBytecode: MEMBER_LOCK, funder: signature.unlockP2PKH(),
       changeAddress: wallet.address, vm: compositionMachine(),
@@ -238,7 +238,7 @@ type Argument = bigint | Uint8Array;
 interface Entered {
   readonly coin: { txid: string; vout: number; satoshis: bigint };
   readonly lock: Uint8Array;
-  readonly call: Promise<PerCallProxyCallResult>;
+  readonly call: Promise<FramedProxyCallResult>;
 }
 
 /** Funds the caller's coin and runs one desk entry through the shipped proxy hop. */
@@ -247,7 +247,7 @@ async function enter(
 ): Promise<Entered> {
   const coin = funding(idOf(`${label} coin`));
   await run.network.addUtxo(binToHex(caller.lock), coin);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider: run.network,
     implementationArtifact: desk,
     proxyArtifact: deskProxy,
@@ -268,7 +268,7 @@ async function enter(
 /** Runs a desk entry the hop must settle and broadcast. */
 async function settled(
   run: Deployed, caller: Caller, functionName: string, args: readonly Argument[], label: string,
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const result = await (await enter(run, caller, functionName, args, label)).call;
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.accepted).toBe(true);
@@ -294,8 +294,8 @@ async function chainState(run: Deployed): Promise<ChainState> {
   const held = await Promise.all([LEDGER_CATEGORY, run.proxyCategoryId, run.implementationCategoryId]
     .map((categoryId) => network.getUtxosByTokenCategory(categoryId)));
   const proxyLayout = deskProxy.stateLayout!;
-  const proxyPools = await readPerCallDeployment(network, run.proxyCategoryId, proxyLayout);
-  const ledgerPools = await readPerCallDeployment(network, LEDGER_CATEGORY, ledger.stateLayout!);
+  const proxyPools = await readFramedDeployment(network, run.proxyCategoryId, proxyLayout);
+  const ledgerPools = await readFramedDeployment(network, LEDGER_CATEGORY, ledger.stateLayout!);
   const head = bytesToHex(new Uint8Array(32));
   const nodes = Object.fromEntries([...ledgerPools.nodesByCollection].map(([collection, utxos]) => [
     collection,
@@ -335,12 +335,12 @@ const ENTRY_FRAME = 'implementation-master';
 
 /** The stall the settle catches when the entry's frame stops before the stop site `site`. */
 function stalledAt(functionName: string, site: string): string {
-  return `PER_CALL_DERIVATION_STALLED: master "${ENTRY_FRAME}" of Desk.${functionName}() filled no witness at ${site}`;
+  return `FRAMED_DERIVATION_STALLED: master "${ENTRY_FRAME}" of Desk.${functionName}() filled no witness at ${site}`;
 }
 
 /** What a refused call left: the thrown refusal, the stalls the settle caught and the last draft it built. */
 interface Refused {
-  readonly error: PerCallProxyDeployError;
+  readonly error: FramedProxyDeployError;
   readonly stalls: readonly string[];
   readonly draft: composer.CompositionDraft;
 }
@@ -362,7 +362,7 @@ async function expectRefused(
   try {
     const entered = await enter(run, caller, functionName, args, label);
     const error = await entered.call.then(() => undefined, (thrown: unknown) => thrown);
-    expect(error).toBeInstanceOf(PerCallProxyDeployError);
+    expect(error).toBeInstanceOf(FramedProxyDeployError);
     expect(raw.mock.calls.length + prepared.mock.calls.length).toBe(0);
     // The caller's coin is unspent, and every outpoint, field, node and event output is as it was.
     expect((await run.network.getUtxosForLockingBytecode(entered.lock))
@@ -371,7 +371,7 @@ async function expectRefused(
     const last = hosts.mock.results.at(-1);
     if (last?.type !== 'return') throw new Error(`Desk.${functionName} built no draft`);
     return {
-      error: error as PerCallProxyDeployError,
+      error: error as FramedProxyDeployError,
       stalls: derivations.mock.results.filter((result) => result.type === 'throw')
         .map((result) => String((result.value as Error).message)),
       draft: last.value.draft,
@@ -499,11 +499,11 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
         expect(refused.error.message).toBe(refusalOf(`the call's callee "${check.callee.functionName}"`,
           check.callee.master, check.callee.functionName, check.needle, check.reason));
         expect(refused.stalls).toStrictEqual([
-          'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.close() filled no witness at '
+          'FRAMED_DERIVATION_STALLED: master "implementation-master" of Desk.close() filled no witness at '
           + 'site 1 (call 1)',
-          'PER_CALL_DERIVATION_STALLED: master "callee-master-2" of Ledger.rate() filled no witness at '
+          'FRAMED_DERIVATION_STALLED: master "callee-master-2" of Ledger.rate() filled no witness at '
           + 'site 0 (close of segment 0)',
-          'PER_CALL_DERIVATION_STALLED: master "callee-master-2" of Ledger.rate() filled no witness at '
+          'FRAMED_DERIVATION_STALLED: master "callee-master-2" of Ledger.rate() filled no witness at '
           + 'site 0 (close of segment 0)',
         ]);
       }
@@ -516,13 +516,13 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
       'Ledger.transferFrom()', 'revert ShortBalance', 'revert ShortBalance(address, int256, int256)'));
     // Deriving the entry's own frame (to see whether it names a reason) stalls at the refusing callee each attempt.
     expect(refused.stalls).toStrictEqual([
-      'PER_CALL_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
+      'FRAMED_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
       + 'site 0 (close of segment 0)',
-      'PER_CALL_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
+      'FRAMED_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
       + 'site 0 (close of segment 0)',
-      'PER_CALL_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
+      'FRAMED_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
       + 'site 0 (close of segment 0)',
-      'PER_CALL_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
+      'FRAMED_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
       + 'site 0 (close of segment 0)',
     ]);
   });
@@ -578,7 +578,7 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
     const run = await deployed();
     const coin = funding(idOf('plain path coin'));
     await run.network.addUtxo(binToHex(MEMBER_LOCK), coin);
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       provider: run.network, artifact: desk, categoryId: run.implementationCategoryId, functionName: 'post',
       args: [7n, AMOUNT], callerUtxo: coin, callerLockingBytecode: MEMBER_LOCK,
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),

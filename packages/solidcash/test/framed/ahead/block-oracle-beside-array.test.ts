@@ -1,21 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { FrameKind, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
-  decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
+  decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import * as composer from '../../../src/per-call/composer/index.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import * as composer from '../../../src/framed/composer/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -38,10 +38,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the store's proxy as a STATIC frame whose fallback forwards as a DELEGATE leg, which V10 refused; since PW10 the
  * validator admits that leg and the read settles, as its non-`view` control does. What that refusal also showed
  * stands untested here: the hop broadcasts without reading its own verdicts (`proxy/deploy.ts`,
- * `callPerCallProxyEntry`), so a refused derivation reaches the network as a raw script failure.
+ * `callFramedProxyEntry`), so a refused derivation reaches the network as a raw script failure.
  *
  * Each case is pinned where it stands today, beside a control that settles. The file runs only under
- * `PER_CALL_AHEAD=1`.
+ * `FRAMED_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -55,7 +55,7 @@ const JOURNAL_PROXY_CATEGORY = category('30');
 const DESK_IMPL_CATEGORY = category('41');
 const DESK_PROXY_CATEGORY = category('52');
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
@@ -188,7 +188,7 @@ const compiledRuns = new Map<string, ArtifactMap>();
 function compiled(source: string): ArtifactMap {
   let artifacts = compiledRuns.get(source);
   if (artifacts === undefined) {
-    artifacts = compileStringMulti(source, { composition: 'per-call' });
+    artifacts = compileStringMulti(source, { composition: 'framed' });
     compiledRuns.set(source, artifacts);
   }
   return artifacts;
@@ -241,7 +241,7 @@ interface Proxied {
 async function deployProxied(
   chain: Chain, artifact: Artifact, ids: readonly [string, string], args: readonly FunctionArgument[],
 ): Promise<Proxied> {
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: chain.network,
     implementationArtifact: artifact,
     proxyArtifact: buildProxyArtifact(artifact),
@@ -262,7 +262,7 @@ async function deployProxied(
 }
 
 /** The store as the root's externals name it: its proxy category, with the implementation it runs behind it. */
-function externalOf(store: Proxied): PerCallProxyExternal {
+function externalOf(store: Proxied): FramedProxyExternal {
   return {
     artifact: store.artifact,
     categoryId: store.proxy,
@@ -273,7 +273,7 @@ function externalOf(store: Proxied): PerCallProxyExternal {
 
 /** What a hop left: its result, or its error with the last draft built and the stalls the settle caught. */
 interface Outcome {
-  readonly result?: PerCallProxyCallResult | PerCallCallResult;
+  readonly result?: FramedProxyCallResult | FramedCallResult;
   readonly error?: Error;
   readonly draft?: composer.CompositionDraft;
   readonly stalls: readonly string[];
@@ -311,9 +311,9 @@ async function observe(chain: Chain, call: (coin: Utxo) => Promise<Outcome['resu
 /** Enters an entry of a proxied contract through the shipped hop. */
 function enter(
   chain: Chain, target: Proxied, functionName: string, args: readonly FunctionArgument[],
-  externals?: Readonly<Record<string, PerCallProxyExternal>>,
+  externals?: Readonly<Record<string, FramedProxyExternal>>,
 ): Promise<Outcome> {
-  return observe(chain, (coin) => callPerCallProxyEntry({
+  return observe(chain, (coin) => callFramedProxyEntry({
     provider: chain.network,
     implementationArtifact: target.artifact,
     proxyArtifact: buildProxyArtifact(target.artifact),
@@ -340,7 +340,7 @@ function expectSettled(outcome: Outcome): void {
 
 /** The proxy records the settled hop's delegate frame declared ahead of anything else. */
 function settledRecords(outcome: Outcome): string[] {
-  return declaredRecords((outcome.result as PerCallProxyCallResult).draft);
+  return declaredRecords((outcome.result as FramedProxyCallResult).draft);
 }
 
 /** The data-NFT indices the entry's published block layout names, in the order its body reads them. */
@@ -359,7 +359,7 @@ function declaredRecords(draft: composer.CompositionDraft): string[] {
 }
 
 /** The assembled transaction restated in the shape the validator's decision model reads; it decides nothing. */
-function modelOf(draft: composer.CompositionDraft): PerCallTransaction {
+function modelOf(draft: composer.CompositionDraft): FramedTransaction {
   const program = draft.programFor(draft.layout.participants.find((placed) => placed.kind === 'master')!.id);
   type Holder = {
     readonly token?: { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
@@ -389,7 +389,7 @@ function modelOf(draft: composer.CompositionDraft): PerCallTransaction {
   };
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: block-oracle state beside a task array', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: block-oracle state beside a task array', () => {
   it('publishes what the wall stands on: the oracle key alone in the last record, the append naming the first', () => {
     const desk = compiled(postSource(true)).Desk!;
     const layout = desk.stateLayout!;
@@ -482,7 +482,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: block-oracle state be
       provider: chain.network, fundingUtxo: funding(DESK_IMPL_CATEGORY), funder: chain.funder,
       changeAddress: chain.changeAddress,
     });
-    const outcome = await observe(chain, (coin) => callPerCallEntry({
+    const outcome = await observe(chain, (coin) => callFramedEntry({
       provider: chain.network, artifact, categoryId: deployment.categoryId, functionName: 'open', args: [],
       callerUtxo: coin, callerLockingBytecode: ALICE_LOCK, funder: chain.caller, changeAddress: chain.changeAddress,
       vm: compositionMachine(),
@@ -494,7 +494,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: block-oracle state be
   }, 300_000);
 });
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a proxied store read whose value is ignored', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: a proxied store read whose value is ignored', () => {
   /** Deploys the store and the root behind generated proxies and registers the caller in the store. */
   async function readWorld(view: boolean): Promise<{ chain: Chain; journal: Proxied; desk: Proxied }> {
     const { Journal, Desk } = compiled(readSource(view));
@@ -511,7 +511,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a proxied store read 
     const { chain, journal, desk } = await readWorld(true);
     const outcome = await enter(chain, desk, 'peek', [ALICE_LOCK], { IJournal: externalOf(journal) });
     // V10 admits a DELEGATE leg under a STATIC frame and keeps the read-only rule on its subtree (PW10:
-    // `solidc/src/per-call/validator/checks.ts`, `checkV10`, and the emitted program's reachability gate).
+    // `solidc/src/framed/validator/checks.ts`, `checkV10`, and the emitted program's reachability gate).
     expectSettled(outcome);
     const draft = outcome.result!.draft;
     const staticFrame = draft.layout.participants.find((placed) => placed.kind === 'master'

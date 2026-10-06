@@ -11,20 +11,20 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { decideValidator, type PerCallTransaction, type TokenShape } from '../../../../solidc/src/per-call/validator/index.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { decideValidator, type FramedTransaction, type TokenShape } from '../../../../solidc/src/framed/validator/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * A contract entered twice in one transaction, driven from source to a machine verdict.
@@ -35,7 +35,7 @@ import {
  * source makes.
  *
  * Everything the transaction is comes from the shipped path: the sources through `compileStringMulti` with the
- * per-call option, both programs through the shipped deployment, the composer laying the two contracts' blocks out
+ * framed option, both programs through the shipped deployment, the composer laying the two contracts' blocks out
  * and assembling the caller, the two `A` masters, `B`'s master and the validator, and the derivation walking the
  * call graph depth first. The machine is asked for a verdict on every contract input, and each control mutates one
  * thing the derivation got right.
@@ -86,7 +86,7 @@ const token = (
 
 /** The compiled, deployed and planned round trip. */
 function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType<typeof compileStringMulti> } {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const a = deployMaster(artifacts.A!, CATEGORY_A, VALIDATOR_PROGRAM);
   const b = deployMaster(artifacts.B!, CATEGORY_B, VALIDATOR_PROGRAM);
 
@@ -202,7 +202,7 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
  * derivation reads inputs and outputs. Nothing here decides anything; it only re-states what the machine was
  * handed, so the derivation can be asked about the bytes the machine ran.
  */
-function toModel(program: VmProgram): PerCallTransaction {
+function toModel(program: VmProgram): FramedTransaction {
   const shape = (token: VmToken | undefined): TokenShape => (token === undefined
     ? { category: empty, capability: 0, hasNft: false, nftCommitment: empty, amount: 0n }
     : {

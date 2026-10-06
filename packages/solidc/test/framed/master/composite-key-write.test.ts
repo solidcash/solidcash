@@ -9,7 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -17,19 +17,19 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose entry writes a nested mapping, keyed by two values.
+ * A framed master whose entry writes a nested mapping, keyed by two values.
  *
  * `allowances[owner][spender] = amount` names one node under a composite slot: the slot is the masked hash of the
  * per-key hashes concatenated, which is the value the body's own key hash computes and the SDK's `keyToSlotMulti`
  * derives. The derivation is what this file drives — the target's slot has to be computed in script from the two
  * keys the body holds, and the record group the frame declares is the one node that slot names.
  *
- * The shipped path runs whole: the source through `compileString` with the per-call convention, the program through
+ * The shipped path runs whole: the source through `compileString` with the framed convention, the program through
  * `deployMaster`, and the BCH-2026 machine is asked for a verdict on the master's own input. The controls below
  * pin the order the two keys hash in, the value the node carries, and the group the segment declares.
  */
 
-const CATEGORY = seededCategory('composite key write per-call');
+const CATEGORY = seededCategory('composite key write framed');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** The two keys, in the order the write names them: the outer key first. */
@@ -63,7 +63,7 @@ const SENTINEL_INDEX = 2;
 /** The created node's output index, which the entry slot's block offset fixes. */
 const CREATED_INDEX = MASTER_INDEX + 1;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = encodeLockingBytecodeP2sh32(hash256(deployed.script));
@@ -180,9 +180,9 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry writes a two-key mapping target', () => {
-  it('publishes a per-call master carrying both keys as parameters', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+describe('a framed master whose entry writes a two-key mapping target', () => {
+  it('publishes a framed master carrying both keys as parameters', () => {
+    expect(artifact.composition?.convention).toBe('framed');
     const declared = artifact.abi.find((entry) => entry.name === 'approve');
     expect(declared?.inputs?.map((input) => input.name)).toStrictEqual(['owner', 'spender', 'amount']);
   });
@@ -339,7 +339,7 @@ describe('the composite target rewritten in place by a plain write', () => {
 });
 
 describe('the composite target written from the value it holds', () => {
-  const readWrite = compileString(READ_WRITE_SOURCE, { composition: 'per-call' });
+  const readWrite = compileString(READ_WRITE_SOURCE, { composition: 'framed' });
   const readWriteDeployed = deployMaster(readWrite, CATEGORY, VALIDATOR_PROGRAM);
   const readWriteLock = encodeLockingBytecodeP2sh32(hash256(readWriteDeployed.script));
   const readWriteEntryLock = entryLockOf(readWrite);

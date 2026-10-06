@@ -3,17 +3,17 @@ import { encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { FrameKind, asmToScript, scriptToBytecode, sha256, validatorAddress } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 import {
   buildKeccakSideCars, keccakPreimagesOf, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { USER_LOCK, composeAndDerive, rootOf, userInput } from '../shapes/harness.js';
 
 /**
- * A per-call master that hashes through keccak256 compute side-cars, composed and derived by the shipped composer.
+ * A framed master that hashes through keccak256 compute side-cars, composed and derived by the shipped composer.
  *
  * `check` hashes two of its arguments and compares each digest with a third: the composer reads each call's preimage
  * from the argument pushes. `digest` hashes values it computes, one call nested in the other as a signed-message
@@ -40,7 +40,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function idle() { require(true); }'
   + ' }';
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 const ARTIFACT = ARTIFACTS.Hasher!;
 const PROGRAM = fillPlaceholders(
   scriptToBytecode(asmToScript(ARTIFACT.bytecode)),
@@ -93,9 +93,9 @@ const verdictsOf = (entry: string, plan: CompositionDraftPlan): readonly string[
 
 const ACCEPTED = [`${MASTER_ID}:accepted`, `${MASTER_ID}/keccak-0:accepted`, `${MASTER_ID}/keccak-1:accepted`];
 
-describe('a per-call master hashing through keccak256 compute side-cars', () => {
-  const LEFT = utf8('per-call keccak left');
-  const RIGHT = utf8('per-call keccak right');
+describe('a framed master hashing through keccak256 compute side-cars', () => {
+  const LEFT = utf8('framed keccak left');
+  const RIGHT = utf8('framed keccak right');
   const EXPECTED = keccak_256(LEFT);
 
   it('reads one side-car per call after its input, and every input accepts', () => {
@@ -104,13 +104,13 @@ describe('a per-call master hashing through keccak256 compute side-cars', () => 
 
   it('refuses side-cars that hash other bytes than the body binds, or in another order', () => {
     expect(() => verdictsOf('check', planOf('check', [LEFT, RIGHT, EXPECTED], [LEFT, LEFT])))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+      .toThrow(/FRAMED_DERIVATION_STALLED/);
     expect(() => verdictsOf('check', planOf('check', [LEFT, RIGHT, EXPECTED], [RIGHT, LEFT])))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+      .toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   describe('with preimages the body computes', () => {
-    const PREFIX = utf8('per-call signed digest:');
+    const PREFIX = utf8('framed signed digest:');
     const INNER = keccak_256(Uint8Array.from([...LEFT, ...RIGHT]));
     const DIGEST = keccak_256(Uint8Array.from([...PREFIX, ...INNER]));
 

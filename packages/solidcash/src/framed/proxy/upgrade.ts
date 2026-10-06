@@ -1,5 +1,5 @@
 /**
- * Checking an upgrade behind a per-call proxy before it is built (spec 20, plan 4.7).
+ * Checking an upgrade behind a framed proxy before it is built (spec 20, plan 4.7).
  *
  * An upgrade changes only the code a proxy's delegate frames run; the records stay. So the new implementation is
  * checked, by name, against the records the proxy holds: `readUpgradeLayoutVerdict` against the implementation the
@@ -10,12 +10,12 @@
  */
 
 import { readUpgradeLayoutVerdict, type Artifact } from '@solidcash/utils';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 import { readLayoutAgreement } from './generate.js';
 
 /** A refusal naming the proxy and the implementation an upgrade was asked for. */
 function refuse(proxy: Artifact, next: Artifact, reason: string): never {
-  throw new PerCallProxyDeployError(
+  throw new FramedProxyDeployError(
     `cannot upgrade proxy "${proxy.contractName}" to "${next.contractName}": ${reason}`,
   );
 }
@@ -32,9 +32,9 @@ function callable(entry: Artifact['abi'][number]): boolean {
  * (`readUpgradeLayoutVerdict`), agree with the proxy field for field, own no selector of the proxy's own entries,
  * and return nothing through a fallback that carries no result.
  */
-export function requirePerCallUpgrade(proxy: Artifact, current: Artifact, next: Artifact): void {
-  if (next.composition?.convention !== 'per-call' || next.stateLayout === undefined) {
-    refuse(proxy, next, 'the new implementation is not a stateful contract compiled per-call');
+export function requireFramedUpgrade(proxy: Artifact, current: Artifact, next: Artifact): void {
+  if (next.composition?.convention !== 'framed' || next.stateLayout === undefined) {
+    refuse(proxy, next, 'the new implementation is not a stateful contract compiled framed');
   }
   const fronted = readLayoutAgreement(current, proxy);
   if (!fronted.ok) {

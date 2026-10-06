@@ -63,7 +63,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const deployed = edgeDeployment({
   scope: 'dynamic struct return edge', callee: artifacts.Ledger!, caller: artifacts.Vault!,
   interfaceName: 'ILedger',

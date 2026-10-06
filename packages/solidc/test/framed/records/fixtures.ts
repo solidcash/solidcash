@@ -1,5 +1,5 @@
 /**
- * Shared fixtures for the section-20 record proofs (`docs/per-call/SPEC_PER_CALL_TRANSACTION.md`).
+ * Shared fixtures for the section-20 record proofs (`docs/framed/SPEC_FRAMED_TRANSACTION.md`).
  *
  * Commitments are assembled here with a plain byte concatenation, never with the codec under test, so a test that
  * compares a shipped encoder against `entryCommitment`/`splitCommitment` compares it against an independent

@@ -9,7 +9,7 @@ import {
 } from '@solidcash/utils';
 import { ethers } from 'ethers';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { buildKeccakComputeSidecar } from '../../../../solidcash/src/keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, probeEcrecoverSplit }
   from '../../../../solidcash/src/ecrecover/ecrecoverComputeSidecar.js';
@@ -21,14 +21,14 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './val
 import { publishedRefusals } from './refused-entry.js';
 
 /**
- * `ecrecover` and the EVM's invalid-input rule, on the per-call path.
+ * `ecrecover` and the EVM's invalid-input rule, on the framed path.
  *
  * The EVM's `ecrecover(hash, v, r, s)` returns `address(0)` for every invalid input - an empty or malformed
  * signature, an out-of-range `s`, a `v` that is not 27/28 - and only aborts on a genuine execution failure. A
  * source that ports `require(ecrecover(...) == expected)` therefore relies on the zero result to make the require
  * evaluate false rather than halt the script.
  *
- * On the per-call path the recovery value comes from a co-spent side-car pair: A checkpoints the GLV ladder and B
+ * On the framed path the recovery value comes from a co-spent side-car pair: A checkpoints the GLV ladder and B
  * commits the recovered compressed key, and the master reads that key from B's output. The pair is placed
  * immediately after the master's own input, so the body locates A at `OP_INPUTINDEX + 1` and B at `+ 2` (a
  * `ecrecoverEvm` keccak side-car rides at `+ 3`) rather than through an SDK operand. The cases below compile each
@@ -37,14 +37,14 @@ import { publishedRefusals } from './refused-entry.js';
  * The side-car is signature-independent and self-verifying: as docs/ecrecover.md records, it commits whatever key
  * its witnessed `(hash, v, r, s)` recover, and the master compares that key against the source's. No pair recovers
  * from the arguments the precompile refuses (a `v` outside 27/28 fails the checkpoint covenant's parity binding, an
- * `r` of 0 has no square root), so the per-call body tests them itself: for a `v` outside 27/28, or an `r` or `s`
+ * `r` of 0 has no square root), so the framed body tests them itself: for a `v` outside 27/28, or an `r` or `s`
  * outside [1, n), it answers the zero address, empty as `address(0)` is, without reading the pair the composer
  * co-spends there. An `r` in range but off the curve has no pair either: side-car A's pad then opens with w, whose
  * square is -(r^3 + 7) mod p, which the body checks before it answers the zero address. A recovery at infinity is
  * still open.
  *
  * The direct-convention control compiles the same valid source, where the call is served and marked as recovery
- * compute - so what the per-call cases below show is the per-call convention's own behaviour.
+ * compute - so what the framed cases below show is the framed convention's own behaviour.
  */
 
 /** A standard compressed pubkey the recovery result is compared against. */
@@ -92,17 +92,17 @@ const BARE_NAME_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const compilePerCall = (source: string, options: Record<string, unknown> = {}): ArtifactMap =>
-  compileStringMulti(source, { composition: 'per-call', ...options } as never);
+const compileFramed = (source: string, options: Record<string, unknown> = {}): ArtifactMap =>
+  compileStringMulti(source, { composition: 'framed', ...options } as never);
 
-/** The refusal a per-call compile publishes, as `entry: reason`, or '' when every body is served. */
+/** The refusal a framed compile publishes, as `entry: reason`, or '' when every body is served. */
 const refusalMessage = (source: string, options: Record<string, unknown> = {}): string =>
-  publishedRefusals(compilePerCall(source, options))
+  publishedRefusals(compileFramed(source, options))
     .map((refused) => `${refused.functionName}: ${refused.reason}`).join(' | ');
 
 /** True when the contract's entry is marked as a recovery compute. */
 const marksRecoveryCompute = (source: string, options: Record<string, unknown> = {}): boolean => {
-  const artifacts = compilePerCall(source, options);
+  const artifacts = compileFramed(source, options);
   return Object.values(artifacts).some((artifact) =>
     (artifact.abi ?? []).some((entry) => entry.ecrecoverCompute === true));
 };
@@ -114,7 +114,7 @@ const CASES = [
   { name: 'the bare name in P2PKH mode', source: BARE_NAME_SOURCE, options: { ecrecover: 'p2pkh' } },
 ] as const;
 
-describe('ecrecover on the per-call path is admitted for every input shape', () => {
+describe('ecrecover on the framed path is admitted for every input shape', () => {
   for (const { name, source, options } of CASES) {
     it(`emits the body for ${name}`, () => {
       expect(refusalMessage(source, options)).toBe('');
@@ -147,7 +147,7 @@ describe('the admission is a property of the body that makes the call', () => {
       + `     require(ecrecoverPubKey(h, v, r, s) == pubkey(${SIGNER}));`
       + '   }'
       + ' }';
-    expect(publishedRefusals(compilePerCall(source))).toStrictEqual([]);
+    expect(publishedRefusals(compileFramed(source))).toStrictEqual([]);
   });
 });
 
@@ -159,7 +159,7 @@ describe('the admission is a property of the body that makes the call', () => {
  * body reads it; every verdict below is the BCH-2026 machine's own.
  */
 
-const CATEGORY = seededCategory('per-call ecrecover recovery');
+const CATEGORY = seededCategory('framed ecrecover recovery');
 const CONTRACT_ADDRESS = validatorAddress(CATEGORY, REAL_VALIDATOR_PROGRAM);
 const TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
 const SIDECAR_CAT = hexToBin('ee'.repeat(31) + '11');
@@ -211,8 +211,8 @@ const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).sl
 async function splittableSigner(): Promise<Recovery> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const wallet = attempt === 0
-      ? new ethers.Wallet(ethers.sha256(ethers.toUtf8Bytes('per-call ecrecover key 1'))) : ethers.Wallet.createRandom();
-    const message = `per-call ecrecover ${attempt}`;
+      ? new ethers.Wallet(ethers.sha256(ethers.toUtf8Bytes('framed ecrecover key 1'))) : ethers.Wallet.createRandom();
+    const message = `framed ecrecover ${attempt}`;
     const signature = await wallet.signMessage(message);
     const digest = ethers.hashMessage(message);
     const { r, s, v } = ethers.Signature.from(signature);
@@ -293,7 +293,7 @@ function pairAt(
   };
 }
 
-/** The keccak side-car the EVM projection reads its address from, on the stateful covenant a per-call frame checks. */
+/** The keccak side-car the EVM projection reads its address from, on the stateful covenant a framed frame checks. */
 function keccakCar(preimage: Uint8Array): SideCar {
   const { unlocker, recreate } = buildKeccakComputeSidecar(
     preimage, SHARED_LIBRARY_SALT, dummySideCar(false) as never, true,
@@ -364,7 +364,7 @@ function compileRecoverySource(args: { h: Uint8Array; v: number; r: Uint8Array; 
     + `bytes32(0x${binToHex(args.r)}), bytes32(0x${binToHex(args.s)})) == ${comparison});`
     + '   }'
     + ' }';
-  const artifacts = compilePerCall(source);
+  const artifacts = compileFramed(source);
   expect(publishedRefusals(artifacts)).toStrictEqual([]);
   return masterProgram(artifacts, 'Auth');
 }
@@ -380,7 +380,7 @@ let signerPair: { readonly a: SideCar; readonly b: SideCar } | undefined;
 const signerPairOnce = (): { readonly a: SideCar; readonly b: SideCar } =>
   (signerPair ??= recoveryPair(signer));
 
-describe('a per-call body that recovers a signer', () => {
+describe('a framed body that recovers a signer', () => {
   it('is accepted at every input when the co-spent pair recovers the expected key', () => {
     const program = compileRecoverySource(signer, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
     const { a, b } = signerPairOnce();
@@ -427,7 +427,7 @@ function leWord(value: bigint): Uint8Array {
 const zeroProgram = (args: { h: Uint8Array; v: number; r: Uint8Array; s: Uint8Array }): Uint8Array =>
   compileRecoverySource(args, 'pubkey(0x)', 'pubkey');
 
-describe('the EVM invalid-input rule on the per-call path', () => {
+describe('the EVM invalid-input rule on the framed path', () => {
   it('answers the zero address for a recovery id outside 27/28, binding no pair', () => {
     // The body reads no pair here, so the signer's own pair holds the place, unbound, and accepts on its own.
     const { a, b } = signerPairOnce();
@@ -465,7 +465,7 @@ describe('the EVM invalid-input rule on the per-call path', () => {
 
   it('answers address(0) through the bare name in P2PKH mode, as a Solidity port compares it', () => {
     const word = `bytes32(0x${'11'.repeat(31) + 'ee'})`;
-    const artifacts = compilePerCall('pragma solidity ^0.8.0;'
+    const artifacts = compileFramed('pragma solidity ^0.8.0;'
       + ' contract Auth {'
       + '   function check() public pure {'
       + `     require(ecrecover(${word}, 0, ${word}, ${word}) == address(0));`

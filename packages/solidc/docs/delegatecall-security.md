@@ -230,7 +230,7 @@ the three things that actually hold there, each measured at compile time on the 
   function's body. Only the `__message_bus_graph_*` clone (`graphEmissionHandler`) and the `__message_bus1` route are excluded.
 - The **route never skips its own state covenant.** `__message_bus1` issues no delegatecall itself (it `OP_INVOKE`s
   handlers), so `functionHasDelegatecall` is false for it and it runs the ordinary data-NFT covenant. Rule D's
-  hazard is precisely "the per-function skip is wider than the per-callsite pin"; with no skip there is no gap.
+  hazard is precisely "the per-function skip is wider than the framedsite pin"; with no skip there is no gap.
 - A **state-writing batch contract with a delegate row does not compile at all**: the route inlines the row
   bodies, so it has both a delegatecall and a state write and rule B rejects it. (Identical on 05412a58 — this
   is pre-existing, not a consequence of rule E.)

@@ -1,9 +1,9 @@
 /**
- * The refusal a per-call proxy deployment raises: a proxy that is not the shape the convention compiles, an
+ * The refusal a framed proxy deployment raises: a proxy that is not the shape the convention compiles, an
  * implementation whose declaration the generated proxy cannot mirror, or a pair whose records do not agree.
  */
-export class PerCallProxyDeployError extends Error {
-  public readonly name = 'PerCallProxyDeployError';
+export class FramedProxyDeployError extends Error {
+  public readonly name = 'FramedProxyDeployError';
 
   /**
    * `errorArgs` are the values the refusing frame's custom error was raised with, when the refusal report could

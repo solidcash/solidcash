@@ -9,9 +9,9 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-call/master/master-head.js';
-import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/framed/master/master-head.js';
+import { findPlaceholderOffsets } from '../../../src/framed/master/master-program.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -77,7 +77,7 @@ const CALLER_SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function b() { ICallee(0x${Buffer.from(ADDRESS_C).toString('hex')}).pong.call(); require(true); }`
   + ' }';
 
-const COMPILED_CALLER_ARTIFACT = compileString(CALLER_SOURCE, { composition: 'per-call' });
+const COMPILED_CALLER_ARTIFACT = compileString(CALLER_SOURCE, { composition: 'framed' });
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
 const COMPILED_CALLER_PROGRAM = fillPlaceholders(

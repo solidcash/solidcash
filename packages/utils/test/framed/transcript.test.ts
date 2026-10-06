@@ -5,9 +5,9 @@ import {
   TRANSCRIPT_VERSION,
   decodeTranscript,
   encodeTranscript,
-} from '../../src/per-call/index.js';
-import { concatBytes, hexToBytes } from '../../src/per-call/primitives.js';
-import { expectPerCallRejection, toBytes, toHex } from './helpers.js';
+} from '../../src/framed/index.js';
+import { concatBytes, hexToBytes } from '../../src/framed/primitives.js';
+import { expectFramedRejection, toBytes, toHex } from './helpers.js';
 import { TRANSCRIPT_ABBA } from './vectors/witness-block.js';
 import { CATEGORY_A } from './vectors/identity.js';
 
@@ -48,27 +48,27 @@ describe('transcript rejection', () => {
   it('rejects a bad magic', () => {
     const bytes = toBytes(TRANSCRIPT_ABBA.hex);
     bytes[0] = 0x51;
-    expectPerCallRejection(() => decodeTranscript(bytes), /not a transcript/);
+    expectFramedRejection(() => decodeTranscript(bytes), /not a transcript/);
   });
 
   it('rejects an unknown version', () => {
     const bytes = toBytes(TRANSCRIPT_ABBA.hex);
     bytes[3] = 0x03;
-    expectPerCallRejection(() => decodeTranscript(bytes), /unsupported transcript version/);
+    expectFramedRejection(() => decodeTranscript(bytes), /unsupported transcript version/);
   });
 
   it('rejects a trailing byte', () => {
     const bytes = concatBytes([toBytes(TRANSCRIPT_ABBA.hex), Uint8Array.of(0x00)]);
-    expectPerCallRejection(() => decodeTranscript(bytes), /trailing byte/);
+    expectFramedRejection(() => decodeTranscript(bytes), /trailing byte/);
   });
 
   it('rejects a truncated field', () => {
     const bytes = toBytes(TRANSCRIPT_ABBA.hex).subarray(0, 40);
-    expectPerCallRejection(() => decodeTranscript(bytes), /truncated/);
+    expectFramedRejection(() => decodeTranscript(bytes), /truncated/);
   });
 
   it('rejects a settled category that is not 32 bytes', () => {
-    expectPerCallRejection(
+    expectFramedRejection(
       () => encodeTranscript({ roots: [], masters: [], settles: [{ category: new Uint8Array(31), stateInputs: [0] }] }),
       /category/,
     );

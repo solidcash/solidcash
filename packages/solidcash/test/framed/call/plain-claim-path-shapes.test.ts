@@ -3,18 +3,18 @@ import { encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import {
   concatBytes, encodeWitnessBlock, splitFirstPush, type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * The shapes a claim path takes past a plain callee's loop of conditional calls, on the plain call path
- * (`callPerCallEntry`): a re-entered write before the loop, a returned array the caller emits, and an arbitration
+ * (`callFramedEntry`): a re-entered write before the loop, a returned array the caller emits, and an arbitration
  * whose claimer reads the arbiter's own record back through the arbiter while the arbiter's frame is open.
  *
  * A claimer reads the fee an arbiter owes for a deal, has the vault compute the deal's three shares from it, calls
@@ -155,7 +155,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 const ARTIFACTS = Object.values(artifacts).filter((artifact): artifact is Artifact => artifact !== undefined);
 
 /** A deal released by its holder: 100 split 60 to the first payee, its fee of 5 unpaid, so shares of 60, 40, 0. */
@@ -169,7 +169,7 @@ const PAYEES = [0x51, 0x52, 0x53].map((fill) => encodeLockingBytecodeP2pkh(new U
 async function enter(
   world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
   reached: readonly PlainDeployment[] = [],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
     [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
   expect(outcome.error?.message).toBeUndefined();
@@ -181,7 +181,7 @@ async function enter(
 async function view(
   world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -220,20 +220,20 @@ function deployed(): Promise<Deployed> {
   return deployRun;
 }
 
-let releaseRun: Promise<PerCallCallResult> | undefined;
+let releaseRun: Promise<FramedCallResult> | undefined;
 /** The desk releasing the first deal. */
-function released(): Promise<PerCallCallResult> {
-  releaseRun ??= (async (): Promise<PerCallCallResult> => {
+function released(): Promise<FramedCallResult> {
+  releaseRun ??= (async (): Promise<FramedCallResult> => {
     const { world, token, claimer, vault, arbiter, desk } = await deployed();
     return enter(world, desk, 'release', [RELEASED], [vault, claimer, arbiter, token]);
   })();
   return releaseRun;
 }
 
-let arbitrationRun: Promise<PerCallCallResult> | undefined;
+let arbitrationRun: Promise<FramedCallResult> | undefined;
 /** The desk having the arbiter rule the second deal all to the first payee, after the release settled. */
-function arbitrated(): Promise<PerCallCallResult> {
-  arbitrationRun ??= (async (): Promise<PerCallCallResult> => {
+function arbitrated(): Promise<FramedCallResult> {
+  arbitrationRun ??= (async (): Promise<FramedCallResult> => {
     await released().catch(() => undefined);
     const { world, token, claimer, vault, arbiter, desk } = await deployed();
     return enter(world, desk, 'arbitrate', [RULED, 100n], [arbiter, vault, claimer, token]);
@@ -245,7 +245,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -254,7 +254,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 
 /** `base` (the settled transaction by default) with one master's witness block replaced by `block`. */
 function withBlock(
-  result: PerCallCallResult, master: string, block: WitnessBlock,
+  result: FramedCallResult, master: string, block: WitnessBlock,
   base: VmTransaction = result.transaction as VmTransaction,
 ): VmTransaction {
   const forged = structuredClone(base);
@@ -268,14 +268,14 @@ function withBlock(
 }
 
 /** The master of the one frame of `result` that ran `identity`. */
-function frameOf(result: PerCallCallResult, identity: string): string {
+function frameOf(result: FramedCallResult, identity: string): string {
   const frames = result.completed.filter((frame) => frame.functionName === identity);
   expect(frames).toHaveLength(1);
   return frames[0]!.master;
 }
 
 /** The logs of `result` named `eventName`, each as its fields printed with their integers in decimal. */
-function logsNamed(result: PerCallCallResult, eventName: string): readonly string[] {
+function logsNamed(result: FramedCallResult, eventName: string): readonly string[] {
   return compositionEventLogs(result.draft, ARTIFACTS, { outputs: result.transaction.outputs })
     .filter((log) => log.eventName === eventName)
     .map((log) => JSON.stringify(log.values, (_key, value: unknown) =>
@@ -283,7 +283,7 @@ function logsNamed(result: PerCallCallResult, eventName: string): readonly strin
 }
 
 /** `result`'s settled transaction with the commitment of the first event `master` lists changed in its last byte. */
-function withForgedEvent(result: PerCallCallResult, master: string): VmTransaction {
+function withForgedEvent(result: FramedCallResult, master: string): VmTransaction {
   const transaction = structuredClone(result.transaction) as VmTransaction;
   const index = result.draft.blockOf(master).events[0]!;
   const output = transaction.outputs[index]!;

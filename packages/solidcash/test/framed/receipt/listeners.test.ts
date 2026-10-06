@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind, encodeEventCommitment } from '@solidcash/utils';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import type { CompositionDraftPlan, DraftInput } from '../../../src/per-call/composer/index.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import type { CompositionDraftPlan, DraftInput } from '../../../src/framed/composer/index.js';
 import {
   compositionLogListeners, type CompositionEventLog,
-} from '../../../src/per-call/receipt/index.js';
+} from '../../../src/framed/receipt/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, composeAndDerive, compileAndDeploy, hexOf, master, masterInput,
   rootOf, seededAddress, selectorOf, token, userInput, validatorFor,

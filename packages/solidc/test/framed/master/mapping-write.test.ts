@@ -9,7 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import {
   encodeEntryCommitment, keyToSlot,
 } from '../../../../solidcash/src/stateful/SortedList.js';
@@ -19,21 +19,21 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose entry writes a verified mapping, deployed and spent on chain.
+ * A framed master whose entry writes a verified mapping, deployed and spent on chain.
  *
  * The entry's sorted-batch operands are not supplied by any SDK: they are derived, in script, from the record
  * declarations the master's own witness block carries, and the existing batch verification then consumes them
  * unchanged. The five derived values are the target's masked slot, the proof record's input offset, the successor
  * the written node carries, the predecessor's recreated output and the created-record count.
  *
- * The whole shipped path runs: the source through `compileString` with the per-call convention, the program
+ * The whole shipped path runs: the source through `compileString` with the framed convention, the program
  * through `deployMaster`, and the BCH-2026 machine is asked for a verdict on the master's own input. The write is
  * an INSERT, so the segment declares the head sentinel as the predecessor (rewritten in place) and the created
  * node as a trailing output. A control that declares no records is refused, and one that writes a different value
  * than the code computed is refused.
  */
 
-const CATEGORY = seededCategory('mapping write per-call');
+const CATEGORY = seededCategory('mapping write framed');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** Where the written key's value lands: the CREATED node, and the head sentinel recreated beside it. */
@@ -56,7 +56,7 @@ const PRED_INDEX = 2;
 /** The created node's output index, which the compiler's block layout fixes at the entry slot's offset. */
 const NODE_INDEX = 1;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = encodeLockingBytecodeP2sh32(hash256(deployed.script));
@@ -262,9 +262,9 @@ function evaluateUpdate(options: {
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry writes a verified mapping', () => {
-  it('publishes a per-call master that derives the write witness from its own frame', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+describe('a framed master whose entry writes a verified mapping', () => {
+  it('publishes a framed master that derives the write witness from its own frame', () => {
+    expect(artifact.composition?.convention).toBe('framed');
     expect(deployed.script.length).toBeGreaterThan(0);
   });
 
@@ -310,6 +310,6 @@ describe('a per-call master whose entry writes a verified mapping', () => {
       + ' }';
     expect(refusalMessageOf(stateKey)).toContain("reads the state value 'owner' after the body writes it");
     // The one-target shape compiles, so the refusal is the state key and nothing else.
-    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.composition?.convention).toBe('framed');
   });
 });

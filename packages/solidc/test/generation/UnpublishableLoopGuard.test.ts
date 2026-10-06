@@ -4,7 +4,7 @@ import { compileString, compileStringMulti } from '../../src/compiler.js';
 // A varying-key upsert loop's published recipe tells iterations apart only by an `array[i] == literal` predicate or a
 // lowered path condition. A write under any other guard refuses its function by name and the compile runs again, so
 // the contract's other functions still compile: on `refusedFunctions` for the direct convention, and on
-// `composition.refusedEntries` for a per-call master.
+// `composition.refusedEntries` for a framed master.
 const contract = (body: string): string => `contract C() {
   mapping(int => int) part; mapping(int => int) share;
   function seed(int k, int p, pubkey pk, sig s) { require(checkSig(s, pk)); part[k] = p; share[k] = p; }
@@ -51,7 +51,7 @@ describe('a loop guard the published upsert recipe cannot carry', () => {
         ),
       }]);
     }
-    const master = compileStringMulti(contract(body), { ...quiet, composition: 'per-call' }).C;
+    const master = compileStringMulti(contract(body), { ...quiet, composition: 'framed' }).C;
     expect(master.composition?.refusedEntries).toEqual([
       { functionName: 'C.apply()', reason: expect.stringMatching(/^KERNEL_LAYOUT: the guard at Line 7/) },
     ]);

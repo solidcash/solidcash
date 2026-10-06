@@ -32,7 +32,7 @@ import {
 import {
   addressPayloadToLockingBytecode, addressToLockScript, lockingBytecodeToSolidityAddressPayload,
 } from '../../utils.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 
 /** The ABI fields one entry is read from, on the caller or the callee side. */
 export interface AbiEntryRow {
@@ -48,7 +48,7 @@ export interface AbiEntryRow {
 export function entryRowOf(artifact: Artifact, functionName: string): AbiEntryRow {
   const row = artifact.abi.find((candidate) => candidate.name === functionName);
   if (row === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `contract "${artifact.contractName}" publishes no entry "${functionName}"`,
     );
   }
@@ -288,7 +288,7 @@ export function resolveCallTarget(
   if (row.addressStateVar !== undefined) {
     const bytes = addressBytes(inputs.stateValues[row.addressStateVar] as FunctionArgument | undefined);
     if (bytes !== undefined) return bytes;
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${where} targets the state field "${row.addressStateVar}", which the caller's own state does not hold as `
       + 'an address',
     );
@@ -298,7 +298,7 @@ export function resolveCallTarget(
     if (isZeroAddress(resolved)) return undefined;
     const bytes = addressBytes(resolved);
     if (bytes !== undefined) return bytes;
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${where} computes its target from a "${row.addressSource.kind}" source the hop cannot resolve to an address`,
     );
   }
@@ -308,7 +308,7 @@ export function resolveCallTarget(
     const bytes = index < 0 ? undefined : addressBytes(inputs.args[index]);
     if (bytes !== undefined) return bytes;
   }
-  throw new PerCallProxyDeployError(
+  throw new FramedProxyDeployError(
     `${where} publishes no target address the hop can read (no literal, state field or resolvable source)`,
   );
 }
@@ -367,21 +367,21 @@ export function resolveCallArguments(
   const visible = calleeEntry.inputs.filter((input) => !input.name.startsWith('__internal__'));
   const sources = row.argSources ?? [];
   if (sources.length !== visible.length) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `${where} takes ${visible.length} argument(s), but the artifact publishes sources for ${sources.length}, so `
       + 'the hop cannot state their digest',
     );
   }
   const selector = calleeEntry.selector;
   if (selector === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the callee entry "${calleeEntry.name}" publishes no selector, so the call carries no call data`,
     );
   }
   const values = sources.map((source, index): FunctionArgument => {
     const value = resolver.resolveArgument(source, occurrence);
     if (value === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `${where} passes argument ${index} from a "${source.kind}"${source.expression === undefined ? '' : ` `
           + `expression of kind "${source.expression.kind}"`}, which the hop cannot resolve from the caller's own `
         + 'arguments and state',
@@ -392,7 +392,7 @@ export function resolveCallArguments(
   const encoded = values.map((value, index): Uint8Array => {
     const push = encodeFunctionArgument(value, visible[index]!.type, calleeArtifact.structs);
     if (!(push instanceof Uint8Array)) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `${where} passes a signature as argument ${index}, which a record's digest cannot state`,
       );
     }
@@ -421,7 +421,7 @@ export function resolvePublishedCall(
   const target = resolveCallTarget(row, inputs, resolver, occurrence);
   if (target === undefined) {
     // A site whose target names the zero address is stated for nothing, so no caller reaches here for one.
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the call to "${row.interfaceName}.${row.functionName}" names the zero address, so the hop states no callee`,
     );
   }

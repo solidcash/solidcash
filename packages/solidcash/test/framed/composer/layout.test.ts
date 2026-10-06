@@ -4,7 +4,7 @@ import {
   allocateOutputRegions,
   layoutTransaction,
   participant,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /** The block shapes of spec section 5.4, with the input index each participant gets. */
 interface Shape {

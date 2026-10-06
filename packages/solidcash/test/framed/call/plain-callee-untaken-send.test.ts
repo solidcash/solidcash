@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
 
 /**
  * A plain callee whose artifact counts a value send on a branch its call does not take, on the plain call path
- * (`callPerCallEntry`).
+ * (`callFramedEntry`).
  *
  * `Vault.pay` pays the native coin when the token it is named is the zero address, and otherwise moves the token
  * through `IERC20(token).transfer`. The send's row publishes the branch's condition, which the call's own facts
@@ -55,7 +55,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 /** The zero address, which the compiler spells as the empty byte string. */
 const ZERO_ADDRESS = new Uint8Array(0);
@@ -86,7 +86,7 @@ function chain(): Promise<Chain> {
 }
 
 /** The desk's payout of `amount` of `token` to `to`, which reaches the vault and, for a real token, the token. */
-function payOut(c: Chain, token: Uint8Array, to: Uint8Array, amount: bigint): Promise<Outcome<PerCallCallResult>> {
+function payOut(c: Chain, token: Uint8Array, to: Uint8Array, amount: bigint): Promise<Outcome<FramedCallResult>> {
   return enterPlain(c.world, c.desk, 'payOut', [token, to, amount], {
     Vault: { artifact: c.vault.artifact, categoryId: c.vault.categoryId },
     Token: { artifact: c.token.artifact, categoryId: c.token.categoryId },
@@ -95,7 +95,7 @@ function payOut(c: Chain, token: Uint8Array, to: Uint8Array, amount: bigint): Pr
 
 /** One holder's token balance, read from the token's nodes through the read path. */
 async function balanceOf(c: Chain, holder: Uint8Array): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: c.world.network, artifact: c.token.artifact, categoryId: c.token.categoryId, functionName: 'balanceOf',
     args: [holder], vm: compositionMachine(),
   });

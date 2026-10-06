@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { parsePushdataCommitment } from '@solidcash/utils';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { HDSigner, type TransactionDetails } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import type { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import type { FramedFunctionCall } from '../../../src/framed/call/index.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
@@ -27,10 +27,10 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function current() view returns (int) { return this.total; }'
   + ' }';
 
-const tally = compileStringMulti(SOURCE, { composition: 'per-call' }).Tally!;
+const tally = compileStringMulti(SOURCE, { composition: 'framed' }).Tally!;
 
 interface TallyCalls {
-  readonly add: (by: bigint) => PerCallFunctionCall;
+  readonly add: (by: bigint) => FramedFunctionCall;
 }
 
 /** The outpoints a transaction spends, as `txid:vout`. */
@@ -59,7 +59,7 @@ describe('sends from one caller made without awaiting', () => {
     expect(second!.txid).not.toBe(first!.txid);
     expect(spent(second!).some((outpoint) => outpoint.startsWith(`${first!.txid}:`))).toBe(true);
     expect(spent(second!).filter((outpoint) => spent(first!).includes(outpoint))).toStrictEqual([]);
-    const records = await readPerCallDeployment(provider, handle.categoryId, tally.stateLayout!);
+    const records = await readFramedDeployment(provider, handle.categoryId, tally.stateLayout!);
     expect(parsePushdataCommitment(records.records[0]!.token!.nft!.commitment, tally.stateLayout!, 0).total).toBe(3n);
   });
 });

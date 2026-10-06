@@ -4,16 +4,16 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileStringMulti } from 'solidc';
 import { formatArtifact } from '@solidcash/utils';
-import { HDSigner, perCallDeploy, type PerCallProxyDeployment, type PerCallProxyHandle } from 'solidcash';
+import { HDSigner, framedDeploy, type FramedProxyDeployment, type FramedProxyHandle } from 'solidcash';
 import { upgrades } from '../../src/index.js';
 import { createHardhatRuntimeEnvironment } from '../../src/hre.js';
 import { resolveConfig } from '../../src/config.js';
 
 /**
- * The testing layer drives a per-call implementation through `upgrades.deployProxy`, and calls it afterwards.
+ * The testing layer drives a framed implementation through `upgrades.deployProxy`, and calls it afterwards.
  *
- * The implementation is compiled for the per-call composition convention, so `deployProxy` routes it through the
- * per-call proxy deployment: the implementation's genesis, a proxy generated from the implementation's own record
+ * The implementation is compiled for the framed composition convention, so `deployProxy` routes it through the
+ * framed proxy deployment: the implementation's genesis, a proxy generated from the implementation's own record
  * layout, that proxy's genesis, and one `initialize` hop the deployer enters through the proxy. What comes back is
  * the handle a suite calls through - the implementation's entries, addressed and held by the proxy - with the
  * deployment's own record nested as `proxyDeployment`.
@@ -48,11 +48,11 @@ afterEach(() => {
 
 /** A project directory whose artifacts dir holds the compiled contract, the way `solidcash compile` lays it out. */
 function projectWithCompiledContract(): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solidcash-per-call-proxy-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solidcash-framed-proxy-'));
   temporaryDirectories.push(directory);
   const artifacts = path.join(directory, 'solidcash', 'Counter.scash');
   fs.mkdirSync(artifacts, { recursive: true });
-  for (const [name, artifact] of Object.entries(compileStringMulti(SOURCE, { composition: 'per-call' }))) {
+  for (const [name, artifact] of Object.entries(compileStringMulti(SOURCE, { composition: 'framed' }))) {
     fs.writeFileSync(path.join(artifacts, `${name}.json`), formatArtifact(artifact, 'json'));
   }
   return directory;
@@ -70,13 +70,13 @@ function projectHarness(directory: string): ReturnType<typeof createHardhatRunti
 /** The `total` the proxy's record carries, read back through the shipped reader and state decoder. */
 async function recordTotal(
   provider: ReturnType<typeof createHardhatRuntimeEnvironment>['ethers']['provider'],
-  categoryId: string, layout: NonNullable<PerCallProxyDeployment['proxy']['contract']['inner']['artifact']['stateLayout']>,
+  categoryId: string, layout: NonNullable<FramedProxyDeployment['proxy']['contract']['inner']['artifact']['stateLayout']>,
 ): Promise<bigint> {
-  const state = await perCallDeploy.readPerCallState(provider as never, categoryId, layout);
+  const state = await framedDeploy.readFramedState(provider as never, categoryId, layout);
   return state.byNft[0]!.total as bigint;
 }
 
-describe('the testing layer and a per-call contract behind upgrades.deployProxy', () => {
+describe('the testing layer and a framed contract behind upgrades.deployProxy', () => {
   it('deploys it, settles the initialize hop on chain, and answers a later call through the same handle',
     async () => {
       const hre = projectHarness(projectWithCompiledContract());
@@ -84,7 +84,7 @@ describe('the testing layer and a per-call contract behind upgrades.deployProxy'
 
       const deployment = await upgrades.deployProxy(
         hre.ethers.getContractFactory('Counter', signer) as never, [5n],
-      ) as unknown as PerCallProxyHandle;
+      ) as unknown as FramedProxyHandle;
       const record = deployment.proxyDeployment;
 
       // The handle names the proxy: its own token category and the address its masters and records sit under.
@@ -114,7 +114,7 @@ describe('the testing layer and a per-call contract behind upgrades.deployProxy'
     const [signer] = await hre.ethers.getSigners(1);
     const deployment = await upgrades.deployProxy(
       hre.ethers.getContractFactory('Counter', signer) as never, [5n],
-    ) as unknown as PerCallProxyHandle;
+    ) as unknown as FramedProxyHandle;
     const record = deployment.proxyDeployment;
     const unfunded = HDSigner.fromPhrase(
       'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about', signer.provider,

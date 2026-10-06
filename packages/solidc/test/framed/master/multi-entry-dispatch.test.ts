@@ -8,13 +8,13 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
- * A compiled per-call master with several entry points, driven through the real entry point.
+ * A compiled framed master with several entry points, driven through the real entry point.
  *
  * The head runs once and leaves the frame; the unlocking bytecode's selector then picks the entry, so the body that
  * runs is the one the selector names and not the other. The VM half builds a real transaction per entry and asks
@@ -46,7 +46,7 @@ const ARGUMENT_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const compile = (source: string = SOURCE): ReturnType<typeof compileString> =>
-  compileString(source, { composition: 'per-call' });
+  compileString(source, { composition: 'framed' });
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
 const scriptBytes = (artifact: ReturnType<typeof compileString>): Uint8Array =>
@@ -170,7 +170,7 @@ const spendFrame = ({ owner, expected, ...options }: FrameOptions): boolean => e
   ...options,
 });
 
-describe('a per-call master with two entry points', () => {
+describe('a framed master with two entry points', () => {
   const artifact = compile();
   const selectors = { bump: selectorOf(artifact, 'bump'), nudge: selectorOf(artifact, 'nudge') };
   const missing = computeFunctionSelector('missing()');
@@ -208,7 +208,7 @@ describe('a per-call master with two entry points', () => {
   });
 });
 
-describe('a per-call master whose entries take an argument', () => {
+describe('a framed master whose entries take an argument', () => {
   const artifact = compile(ARGUMENT_SOURCE);
   const selectors = { pick: selectorOf(artifact, 'pick'), drop: selectorOf(artifact, 'drop') };
 

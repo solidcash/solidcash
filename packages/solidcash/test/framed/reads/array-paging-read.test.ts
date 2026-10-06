@@ -2,21 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, encodeIntegerValue, encodePushdataValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode,
   deployMaster,
   entryRecordLockingBytecode,
-  readPerCallDeployment,
+  readFramedDeployment,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { dynamicValueRecords, participant, planMappingBatch } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { dynamicValueRecords, participant, planMappingBatch } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a page whose key is an element of a dynamic state array.
@@ -57,13 +57,13 @@ function source(contract: string, items: string): string {
 const CHUNKED_LABEL = 'array paging read chunked';
 const CHUNKED_CATEGORY = seededCategory(CHUNKED_LABEL);
 const CHUNKED_ARTIFACT = compileStringMulti(source('Chunked', ''), {
-  composition: 'per-call', solidityImportCompat: true,
+  composition: 'framed', solidityImportCompat: true,
 }).Chunked!;
 
 const INLINE_LABEL = 'array paging read inline';
 const INLINE_CATEGORY = seededCategory(INLINE_LABEL);
 const INLINE_ARTIFACT = compileStringMulti(source('Inline', ' packed'), {
-  composition: 'per-call', solidityImportCompat: true,
+  composition: 'framed', solidityImportCompat: true,
 }).Inline!;
 
 /** The addresses the array holds; element `k` is the key of the mapping value `1000 + k`. */
@@ -135,8 +135,8 @@ async function chain(options: {
 function read(
   provider: MockNetworkProvider, artifact: typeof CHUNKED_ARTIFACT, categoryHex: string,
   start: bigint, count: bigint,
-): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider, artifact, categoryId: categoryHex, functionName: 'get', args: [start, count], vm: compositionMachine(),
   });
 }
@@ -153,7 +153,7 @@ function verdict(
 }
 
 /** The records the frame declares for the entry slot's own turns, in declaration order. */
-function entryRecords(result: Awaited<ReturnType<typeof readPerCallEntry>>): readonly string[] {
+function entryRecords(result: Awaited<ReturnType<typeof readFramedEntry>>): readonly string[] {
   return result.draft.layout.participants.map((placed) => placed.id).filter((id) => id.startsWith('read-entry-'));
 }
 
@@ -166,7 +166,7 @@ describe('reading a page whose key is an element of a chunk-backed dynamic array
       category: CHUNKED_CATEGORY, categoryHex: CHUNKED_HEX, artifact: CHUNKED_ARTIFACT,
       items: [ITEMS[0]!], chunked: true,
     });
-    const deployment = await readPerCallDeployment(provider, CHUNKED_HEX, CHUNKED_ARTIFACT.stateLayout!);
+    const deployment = await readFramedDeployment(provider, CHUNKED_HEX, CHUNKED_ARTIFACT.stateLayout!);
     expect(deployment.records).toHaveLength(1);
 
     // `get(0, 5)` names five turns, but the array holds one element, so the loop the entry's own argument fixes

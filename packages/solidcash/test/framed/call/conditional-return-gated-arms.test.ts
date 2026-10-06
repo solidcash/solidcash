@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -63,7 +63,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const token = artifacts.Token!;
 const root = artifacts.Root!;
 
@@ -79,7 +79,7 @@ async function deployChains(network: MockNetworkProvider): Promise<{
   readonly changeAddress: string;
   readonly callCoin: { txid: string; vout: number; satoshis: bigint };
   readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
-  readonly externals: Record<string, PerCallProxyExternal>;
+  readonly externals: Record<string, FramedProxyExternal>;
 }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -105,7 +105,7 @@ async function deployChains(network: MockNetworkProvider): Promise<{
 
   const tokenAddress = deployMaster(token, hexToBin(TOKEN_CATEGORY), VALIDATOR_PROGRAM).address;
 
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -133,8 +133,8 @@ async function deployChains(network: MockNetworkProvider): Promise<{
 async function callRun(
   network: MockNetworkProvider,
   funded: Awaited<ReturnType<typeof deployChains>>,
-): Promise<Awaited<ReturnType<typeof callPerCallProxyEntry>>> {
-  return callPerCallProxyEntry({
+): Promise<Awaited<ReturnType<typeof callFramedProxyEntry>>> {
+  return callFramedProxyEntry({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),

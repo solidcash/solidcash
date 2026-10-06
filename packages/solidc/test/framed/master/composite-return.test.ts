@@ -10,7 +10,7 @@ import {
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { refusalOf } from './refused-entry.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
@@ -97,7 +97,7 @@ const wordList = (values: readonly bigint[]): Uint8Array =>
   new Uint8Array(values.flatMap((value) => [...abiWord(value)]));
 
 const compiling = (source: string): ReturnType<typeof compileString> =>
-  compileString(source, { composition: 'per-call', solidityImportCompat: true } as never);
+  compileString(source, { composition: 'framed', solidityImportCompat: true } as never);
 
 /** Asks the machine whether a master whose filled program is `filled` is accepted with one `retval` recorded. */
 function verdictOf(filled: Uint8Array, retval: Uint8Array): boolean {
@@ -164,7 +164,7 @@ function accepted(retval: Uint8Array, source: string = SOURCE): boolean {
 
 /** Asks the machine whether the native master for `source` is accepted with one `retval` recorded. */
 function nativeAccepted(retval: Uint8Array, source: string): boolean {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   return verdictOf(fillAnswer(artifacts.Answer!), retval);
 }
 
@@ -209,14 +209,14 @@ describe('an entry whose return type is still composite', () => {
   it('refuses a struct the language cannot hold as one value', () => {
     // A mapping is state held by entry NFTs, not a value, so a struct carrying one has no encoding a `return`
     // could leave as the compared blob; the compiler refuses the shape.
-    expect(() => compileStringMulti(MAPPING_MEMBER_SOURCE, { composition: 'per-call' }))
+    expect(() => compileStringMulti(MAPPING_MEMBER_SOURCE, { composition: 'framed' }))
       .toThrow(/return values of an external\/public function/);
   });
 
   it('refuses an entry that returns an external function pointer', () => {
     // A function pointer is an (address, selector) pair, so it is not one item the frame's comparison can hold.
     const refusal = refusalOf(POINTER_SOURCE);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('returns a function pointer');
   });
 });

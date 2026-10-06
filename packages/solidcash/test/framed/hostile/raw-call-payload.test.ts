@@ -10,12 +10,12 @@ import {
   splitFirstPush,
   validatorAddress,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -40,14 +40,14 @@ const SOURCE = 'pragma solidity ^0.8.0;'
 const PAYLOAD_SELECTOR = computeFunctionSelector('nonexistent()');
 const FALLBACK_SELECTOR = computeFunctionSelector('__fallback()');
 
-let run: Promise<PerCallCallResult> | undefined;
+let run: Promise<FramedCallResult> | undefined;
 
 /** B and A deployed, and A's `poke` composed and broadcast once. */
-async function poked(): Promise<PerCallCallResult> {
-  run ??= (async (): Promise<PerCallCallResult> => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
-    const { perCallValidator } = await import('solidc');
-    const validatorProgram = perCallValidator.buildValidatorProgram();
+async function poked(): Promise<FramedCallResult> {
+  run ??= (async (): Promise<FramedCallResult> => {
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+    const { framedValidator } = await import('solidc');
+    const validatorProgram = framedValidator.buildValidatorProgram();
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
     await fundShippedFacets(provider);
@@ -66,7 +66,7 @@ async function poked(): Promise<PerCallCallResult> {
     const user = encodeLockingBytecodeP2pkh(alicePkh);
     const callerUtxo = { txid: `${'74'.repeat(31)}01`, vout: 0, satoshis: 300_000n };
     await provider.addUtxo(binToHex(user), callerUtxo);
-    return callPerCallEntry({
+    return callFramedEntry({
       provider, artifact: artifacts.A!, categoryId: categories.get('A')!, functionName: 'poke', args: [],
       callerUtxo, callerLockingBytecode: user, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
       vm: compositionMachine(),
@@ -78,11 +78,11 @@ async function poked(): Promise<PerCallCallResult> {
 }
 
 /** The input a participant of the composition sits at. */
-const indexOf = (result: PerCallCallResult, id: string): number =>
+const indexOf = (result: FramedCallResult, id: string): number =>
   result.draft.layout.participants.find((placed) => placed.id === id)!.index;
 
 /** The machine's verdict on one input of a transaction. */
-function verdict(result: PerCallCallResult, transaction: PerCallCallResult['transaction'], id: string): string {
+function verdict(result: FramedCallResult, transaction: FramedCallResult['transaction'], id: string): string {
   const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: indexOf(result, id), sourceOutputs: result.sourceOutputs, transaction });
   return vm.stateSuccess(state) === true ? 'accepted' : String((state as { readonly error?: unknown }).error);

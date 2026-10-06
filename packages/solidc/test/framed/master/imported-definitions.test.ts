@@ -7,16 +7,16 @@ import {
   asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
- * What a file-level definition costs a per-call master.
+ * What a file-level definition costs a framed master.
  *
  * A source file is rarely alone: a contract imports an interface it calls through, and that interface is a
- * declaration with no code of its own. A per-call master opens with its head, and a file-level definition (an
+ * declaration with no code of its own. A framed master opens with its head, and a file-level definition (an
  * imported library's function, or one the unit declares itself) is emitted ahead of it. This file measures both
  * sides of that: an import that emits nothing leaves the compiled program byte-identical, and one that emits
  * definitions does too while no body reaches them, because a definition no entry can reach is compiled for
@@ -64,7 +64,7 @@ const resolver = (path: string): { source: string; id: string } | undefined => {
 
 const compiling = (source: string): ReturnType<typeof compileString> =>
   compileString(source, {
-    composition: 'per-call',
+    composition: 'framed',
     solidityImportCompat: true,
     importResolver: resolver,
     rootFileId: '/main.sol',
@@ -194,7 +194,7 @@ describe('an import that declares but emits nothing', () => {
     const imported = compiling(WITH_INTERFACE);
     const plain = compiling(WITHOUT_IMPORT);
 
-    expect(imported.composition?.convention).toBe('per-call');
+    expect(imported.composition?.convention).toBe('framed');
     expect(imported.composition!.placeholders).toBeTruthy();
     expect(scriptBytes(imported)).toStrictEqual(scriptBytes(plain));
     // The slots sit at the same offsets, so a deployment fills the same bytes either way.
@@ -217,7 +217,7 @@ describe('an import that contributes emitted definitions', () => {
     const imported = compiling(WITH_UNUSED_LIBRARY);
     const plain = compiling(WITHOUT_IMPORT);
 
-    expect(imported.composition?.convention).toBe('per-call');
+    expect(imported.composition?.convention).toBe('framed');
     expect(scriptBytes(imported)).toStrictEqual(scriptBytes(plain));
     expect(imported.composition!.placeholders).toStrictEqual(plain.composition!.placeholders);
     // The head still refuses a frame the contract was not deployed at, so the prefix is not what admits it.

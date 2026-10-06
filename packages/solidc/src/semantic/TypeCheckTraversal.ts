@@ -175,10 +175,10 @@ import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
 
 /**
- * A sorted-batch operand of a per-call master's own frame: the masked slot, the proof index, the successor, the
+ * A sorted-batch operand of a framed master's own frame: the masked slot, the proof index, the successor, the
  * predecessor's output, the linear rank and rows, and the created-record count.
  */
-const PER_CALL_DERIVED_BATCH_PARAMETER = /^__internal__vmapBatch/;
+const FRAMED_DERIVED_BATCH_PARAMETER = /^__internal__vmapBatch/;
 
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
@@ -200,33 +200,33 @@ export default class TypeCheckTraversal extends AstTraversal {
     private strictSolidityValidation: boolean = false,
     rootFileId?: string,
     /**
-     * True when the compile emits a per-call master, whose frame derives some operands every call site therefore
+     * True when the compile emits a framed master, whose frame derives some operands every call site therefore
      * leaves out of its argument list.
      */
-    private perCallComposition: boolean = false,
+    private framedComposition: boolean = false,
   ) {
     super();
     this.rootFileId = rootFileId ?? '';
   }
 
   /**
-   * The parameter types a call site supplies, which under the per-call convention is the callee's declared
+   * The parameter types a call site supplies, which under the framed convention is the callee's declared
    * interface.
    *
    * A body that writes a sorted mapping carries the sorted-batch operands, which the direct convention receives
-   * from its SDK. A per-call master derives each operand from its own witness block instead
-   * (`per-call/master/support.ts`, `derivableBatchWitnessNames`), so the operand is not part of the frame a source
+   * from its SDK. A framed master derives each operand from its own witness block instead
+   * (`framed/master/support.ts`, `derivableBatchWitnessNames`), so the operand is not part of the frame a source
    * call pushes, and the call resolves against the parameters left over. A shape whose operands the master cannot
    * derive is refused by name where the master is assessed. A generated route is the exception: it forwards the
    * created-record count it holds at the handler's own position, so its call resolves against every parameter, as
-   * it does under the direct convention; the per-call convention drops the route's bodies before code generation.
+   * it does under the direct convention; the framed convention drops the route's bodies before code generation.
    */
   private callSiteParameterTypes(fn: FunctionDefinitionNode): Type[] {
-    const derivesBatch = this.perCallComposition && this.currentFunction?.messageBusRoute !== true;
+    const derivesBatch = this.framedComposition && this.currentFunction?.messageBusRoute !== true;
     return fn.parameters
       .filter((parameter) => parameter.name !== '__internal__msgSenderCategory'
         && parameter.name !== '__internal__msgSenderAnchorIdx'
-        && !(derivesBatch && PER_CALL_DERIVED_BATCH_PARAMETER.test(parameter.name)))
+        && !(derivesBatch && FRAMED_DERIVED_BATCH_PARAMETER.test(parameter.name)))
       .map((parameter) => parameter.type);
   }
 

@@ -1,20 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import * as composer from '../../../src/per-call/composer/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import * as composer from '../../../src/framed/composer/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { deploymentStateValues, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { deploymentStateValues, type FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../../fixture/vars.js';
@@ -22,7 +22,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Walls ahead: a posted job updated, closed, reopened and its collateral withdrawn (L4, titles 31-40), through the
- * shipped hop, `callPerCallProxyEntry`.
+ * shipped hop, `callFramedProxyEntry`.
  *
  * `Desk` (a proxied root) keeps its jobs in a dynamic array of structs with `string` and `string[]` members and
  * reaches `Journal` (a proxied store) and `Coin` (a plain token) as the marketplace's entries do (MS2 by parameter):
@@ -33,7 +33,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * root's records; `mark` is a job writer without it, as the fixture's `deliverResult` is.
  *
  * The clock is the root's own `block.timestamp` register, as in the fixture: the mock provider syncs the chain's own
- * time into it on every mine a send performs, so it carries that time from the per-call proxy's first block on, and
+ * time into it on every mine a send performs, so it carries that time from the framed proxy's first block on, and
  * the fixture's `evm_increaseTime` and `evm_mine` move it by the day they advance (pinned). A job posted a day before
  * that clock is written by a plain setup entry, `seed`, with a stamp of minus one day; posting itself settles
  * (pinned). Each deployment holds one job, id 0, with its opening entry, and the creator approves the root on the
@@ -41,7 +41,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  *
  * Each entry is pinned where it stands today; one that settles moves its case to every verdict accepted and the
  * broadcast. A last deployment steps the token's allowance read around and pins what stands behind it. The whole
- * file runs only under `PER_CALL_AHEAD=1`.
+ * file runs only under `FRAMED_AHEAD=1`.
  */
 
 /** A 32-byte id with varied bytes, `seed` chosen so each name is distinct. */
@@ -56,7 +56,7 @@ const JOURNAL_PROXY_CATEGORY = category('2e');
 const DESK_IMPL_CATEGORY = category('3f');
 const DESK_PROXY_CATEGORY = category('40');
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 const DAY = 86_400n;
@@ -282,7 +282,7 @@ const compiledRuns = new Map<Pull, ArtifactMap>();
 function compiled(pull: Pull): ArtifactMap {
   let found = compiledRuns.get(pull);
   if (found === undefined) {
-    found = compileStringMulti(source(pull), { composition: 'per-call' });
+    found = compileStringMulti(source(pull), { composition: 'framed' });
     compiledRuns.set(pull, found);
   }
   return found;
@@ -312,7 +312,7 @@ interface World {
   readonly network: MockNetworkProvider;
   readonly desk: { readonly proxy: string; readonly implementation: string };
   readonly journal: { readonly proxy: string; readonly implementation: string };
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly funder: Unlocker;
   readonly changeAddress: string;
   /** Hands out a fresh coin at the creator's lock per hop, distinct from every category. */
@@ -321,7 +321,7 @@ interface World {
 
 /** What a hop left: its result, or its error with the last draft built and the stalls the settle caught. */
 interface Outcome {
-  readonly result?: PerCallProxyCallResult;
+  readonly result?: FramedProxyCallResult;
   readonly error?: Error;
   readonly draft?: composer.CompositionDraft;
   readonly stalls: readonly string[];
@@ -338,10 +338,10 @@ async function enter(
   const coin = await world.nextCoin();
   const hosts = vi.spyOn(composer, 'createComposedDerivationHost');
   const derivations = vi.spyOn(composer, 'deriveComposition');
-  let result: PerCallProxyCallResult | undefined;
+  let result: FramedProxyCallResult | undefined;
   let error: Error | undefined;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -375,7 +375,7 @@ async function enter(
 }
 
 /** The hop settled: every verdict accepted and the transaction broadcast. */
-function expectSettled(outcome: Outcome): PerCallProxyCallResult {
+function expectSettled(outcome: Outcome): FramedProxyCallResult {
   expect(outcome.error).toBeUndefined();
   expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
   expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -386,7 +386,7 @@ function expectSettled(outcome: Outcome): PerCallProxyCallResult {
 /** The root proxy's live state, parsed with the shipped decoder, the jobs joined from their chunk records. */
 async function deskState(world: World): Promise<Record<string, unknown>> {
   const layout = buildProxyArtifact(world.artifacts.Desk!).stateLayout!;
-  const pools = await readPerCallDeployment(world.network, world.desk.proxy, layout);
+  const pools = await readFramedDeployment(world.network, world.desk.proxy, layout);
   return deploymentStateValues(layout, world.desk.proxy, pools);
 }
 
@@ -433,7 +433,7 @@ async function deployWorld(pull: Pull, seeded: readonly FunctionArgument[] | und
   await deployStatefulContract(Coin!, [CREATOR, 900n, addressOf(DESK_PROXY_CATEGORY), 100n], {
     fundingUtxo: funding(COIN_CATEGORY), funder: genesisFunder, changeAddress, provider: network,
   });
-  const approved = await callPerCallEntry({
+  const approved = await callFramedEntry({
     provider: network, artifact: Coin!, categoryId: COIN_CATEGORY, functionName: 'approve',
     args: [addressOf(DESK_PROXY_CATEGORY), 2000n], callerUtxo: await nextCoin(), callerLockingBytecode: CREATOR,
     funder, changeAddress, vm: compositionMachine(),
@@ -441,7 +441,7 @@ async function deployWorld(pull: Pull, seeded: readonly FunctionArgument[] | und
   expect(approved.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
 
   // The store gates on the root proxy's address, which its category fixes before the root is deployed.
-  const journal = await deployPerCallProxy({
+  const journal = await deployFramedProxy({
     provider: network,
     implementationArtifact: Journal!,
     proxyArtifact: buildProxyArtifact(Journal!),
@@ -453,7 +453,7 @@ async function deployWorld(pull: Pull, seeded: readonly FunctionArgument[] | und
     vm: compositionMachine(),
   });
   expect(journal.initialize.broadcast).toBeDefined();
-  const desk = await deployPerCallProxy({
+  const desk = await deployFramedProxy({
     provider: network,
     implementationArtifact: Desk!,
     proxyArtifact: buildProxyArtifact(Desk!),
@@ -500,7 +500,7 @@ async function seedJob(world: World, seeded: readonly FunctionArgument[]): Promi
 
 /** A token balance, read off chain through the shipped read path. */
 async function balanceOf(world: World, who: Uint8Array): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: world.artifacts.Coin!, categoryId: COIN_CATEGORY, functionName: 'balanceOf',
     args: [who], vm: compositionMachine(),
   });
@@ -510,7 +510,7 @@ async function balanceOf(world: World, who: Uint8Array): Promise<unknown> {
 
 /** How many entries the store holds for job 0, read off chain through the store's proxy. */
 async function entries(world: World): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: world.artifacts.Journal!, categoryId: world.journal.proxy,
     functionName: 'count', args: [JOB], vm: compositionMachine(),
   });
@@ -525,7 +525,7 @@ async function job0(world: World): Promise<Record<string, unknown>> {
   return jobs[0]!;
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, closed, reopened and withdrawn', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (L4): a job updated, closed, reopened and withdrawn', () => {
   it('compiles every entry with the call sites, records and writes the fixture publishes', () => {
     for (const artifact of Object.values(compiled('allowance'))) {
       if (artifact.composition === undefined) continue;

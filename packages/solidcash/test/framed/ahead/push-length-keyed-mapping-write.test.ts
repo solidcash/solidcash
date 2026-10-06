@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { bytesToHex, decodePushdataValue } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-} from '../../../src/per-call/proxy/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+} from '../../../src/framed/proxy/index.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -149,8 +149,8 @@ async function appendThroughTheProxy(
 }> {
   const wire = await wired(seed);
   const funded = coins(seed);
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
-  const deployment = await deployPerCallProxy({
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
+  const deployment = await deployFramedProxy({
     provider: wire.network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: {
@@ -169,7 +169,7 @@ async function appendThroughTheProxy(
   const title = 'a title long enough that the element crosses the chunk boundary '.padEnd(72, 'x');
   const note = 'a note long enough that the element crosses the chunk boundary '.padEnd(72, 'y');
   try {
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: wire.network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -203,7 +203,7 @@ async function appendThroughTheProxy(
   }
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a mapping write keyed by the frame\'s own push', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: a mapping write keyed by the frame\'s own push', () => {
   it('settles the same entry with the mapping write removed', async () => {
     const outcome = await appendThroughTheProxy(WITHOUT_THE_WRITE, '1');
     expect(outcome.accepted, outcome.objection).toBe(true);

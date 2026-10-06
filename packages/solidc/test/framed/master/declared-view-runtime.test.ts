@@ -5,7 +5,7 @@ import {
 import { encodeWitnessBlock, type RecordEntry, type WitnessBlock } from '@solidcash/utils';
 import {
   declaredRecordOrdinalViewScript, declaredRecordViewScript,
-} from '../../../src/per-call/master/declared-view.js';
+} from '../../../src/framed/master/declared-view.js';
 import { compositionMachine } from '../machine.js';
 
 /**

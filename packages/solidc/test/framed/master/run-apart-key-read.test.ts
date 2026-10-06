@@ -9,7 +9,7 @@ import {
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
@@ -18,7 +18,7 @@ import {
 } from './validator-input.js';
 
 /**
- * A per-call master that reads its run apart from its batch before the batch's segment closes, through the batch's
+ * A framed master that reads its run apart from its batch before the batch's segment closes, through the batch's
  * own key.
  *
  * The entry inserts a mapping node keyed by an element of its own dynamic array, makes a call, then writes that
@@ -51,7 +51,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const caller = artifacts.Caller!;
 
 type Program = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
@@ -217,7 +217,7 @@ function verdict(segments: readonly RecordEntry[][], extraChunks = 0): { accepte
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose batch key reads its run before the batch\'s segment closes', () => {
+describe('a framed master whose batch key reads its run before the batch\'s segment closes', () => {
   it('resolves the key\'s read of the run in the run\'s own segment, and settles the batch in its own', () => {
     // The artifact publishes the frame reads the run apart from its batch, so a builder declares the run only in the
     // segment the call opens, while the key the batch is derived from is read before that call.

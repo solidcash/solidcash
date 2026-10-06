@@ -9,7 +9,7 @@ const MESSAGE_FIELDS: ReadonlySet<string> = new Set([
  * Whether `fn`, or a function it calls by name, reads a field of its own message.
  *
  * `this.f()` is a message call: its `msg.sender` is the contract and its value, data and signature are the call's
- * own. Inlining that call reads the caller's instead, so a call site the per-call convention inlines must not be
+ * own. Inlining that call reads the caller's instead, so a call site the framed convention inlines must not be
  * one whose callee reads them.
  */
 export function readsMessageField(

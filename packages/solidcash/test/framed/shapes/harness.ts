@@ -1,7 +1,7 @@
 /**
  * Driving the shipped composer for one composition.
  *
- * Every shape here compiles its sources through the shipped `compileStringMulti` with the per-call convention,
+ * Every shape here compiles its sources through the shipped `compileStringMulti` with the framed convention,
  * deploys each contract through the shipped `deployMaster`, hands the resulting plan to the shipped composer,
  * derives it with the shipped derivation, and asks the BCH-2026 machine for a verdict on every contract input.
  * Nothing in this file supplies a coordinate: the layout, the frame references, the callee indices and the
@@ -16,10 +16,10 @@ import {
   validatorAddress,
   type Artifact,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import {
   FACET_SATOSHIS,
   createComposedDerivationHost,
@@ -38,15 +38,15 @@ import {
   type FrameRequest,
   type FrameWitness,
   type TransactionLayout,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 export const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 export const EMPTY = new Uint8Array(0);
-/** A P2PKH lock for the user inputs that enter a composition; its signature is filler, as every per-call test's is. */
+/** A P2PKH lock for the user inputs that enter a composition; its signature is filler, as every framed test's is. */
 export const USER_LOCK = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 
 export type ArtifactMap = ReturnType<typeof compileStringMulti>;
@@ -62,12 +62,12 @@ export interface DeployedContract {
   readonly lockingBytecode: Uint8Array;
 }
 
-/** Compiles a multi-contract source per-call and deploys each named contract at its own seeded category. */
+/** Compiles a multi-contract source framed and deploys each named contract at its own seeded category. */
 export function compileAndDeploy(
   source: string,
   labels: Readonly<Record<string, string>>,
 ): { readonly artifacts: ArtifactMap; readonly contracts: Readonly<Record<string, DeployedContract>> } {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const contracts: Record<string, DeployedContract> = {};
   for (const [name, label] of Object.entries(labels)) {
     const category = seededCategory(label);
@@ -187,7 +187,7 @@ export function validatorFor(category: Uint8Array): ReturnType<typeof validatorS
  * to place the facet the head binds after it; a plan laid out without them composes one participant short.
  */
 export function shippedFacets(blocks: readonly ContractBlock[]): Map<string, readonly Uint8Array[]> {
-  const facets = perCallValidator.buildValidatorFacets();
+  const facets = framedValidator.buildValidatorFacets();
   const map = new Map<string, readonly Uint8Array[]>();
   for (const block of blocks) {
     if (block.validator !== undefined) map.set(block.validator.id, facets);
@@ -215,7 +215,7 @@ export async function fundShippedFacets(provider: {
     readonly txid: string; readonly vout: number; readonly satoshis: bigint;
   }): Promise<unknown>;
 }): Promise<void> {
-  for (const code of perCallValidator.buildValidatorFacets()) {
+  for (const code of framedValidator.buildValidatorFacets()) {
     facetFunding += 1;
     await provider.addUtxo(binToHex(encodeLockingBytecodeP2sh32(hash256(code))), {
       txid: `7e${facetFunding.toString(16).padStart(2, '0')}`.padEnd(64, '0'),

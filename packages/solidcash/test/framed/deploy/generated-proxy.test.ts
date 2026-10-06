@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, encodeEventCommitment, type StateLayout } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { participant } from '../../../src/per-call/composer/index.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { participant } from '../../../src/framed/composer/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy, proxyRecordParticipantId,
-} from '../../../src/per-call/proxy/index.js';
+  FramedProxyDeployError, buildProxyArtifact, deployFramedProxy, proxyRecordParticipantId,
+} from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
@@ -99,7 +99,7 @@ function fieldCoordinates(layout: StateLayout): string {
 
 describe('a generated proxy', () => {
   it('agrees with the implementation field for field, so the record layout is the implementation\'s', () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const proxy = buildProxyArtifact(artifacts.Impl!);
     const implementationLayout = artifacts.Impl!.stateLayout!;
     const proxyLayout = proxy.stateLayout!;
@@ -118,12 +118,12 @@ describe('a generated proxy', () => {
   });
 
   it('settles a writing initialize through the proxy it generated, keeping the implementation\'s address', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
     const proxy = buildProxyArtifact(artifacts.Impl!);
 
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
@@ -154,7 +154,7 @@ describe('a generated proxy', () => {
 
     // The proxy's record still holds what its genesis minted (the implementation's address, nothing initialized),
     // because the derived hop never ran on chain; read back through the shipped decoder.
-    const discovery = await readPerCallDeployment(network, deployment.proxy.categoryId, proxy.stateLayout!);
+    const discovery = await readFramedDeployment(network, deployment.proxy.categoryId, proxy.stateLayout!);
     expect(discovery.records.length).toBe(1);
     const recordState = new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'));
     expect(bytesToHex(recordState)).toBe(bytesToHex(commitment(proxy.stateLayout!, {
@@ -174,12 +174,12 @@ describe('a generated proxy', () => {
       + '     emit Changed(this.initialized);'
       + '   }'
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
     const generated = buildProxyArtifact(artifacts.Impl!);
 
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
@@ -216,7 +216,7 @@ describe('a generated proxy', () => {
       + '   Inner[] packed public items;'
       + '   function initialize(address expected) { require(msg.sender == expected); }'
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const proxy = buildProxyArtifact(artifacts.Impl!);
     const implementationLayout = artifacts.Impl!.stateLayout!;
     const proxyLayout = proxy.stateLayout!;
@@ -239,7 +239,7 @@ describe('a generated proxy', () => {
       + '   pubkey external owner;'
       + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; }'
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const implementationLayout = artifacts.Impl!.stateLayout!;
     expect(implementationLayout.dataNftCount).toBe(2);
     const proxy = buildProxyArtifact(artifacts.Impl!);
@@ -263,12 +263,12 @@ describe('a generated proxy', () => {
       + '     this.version = 7;'
       + '   }'
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
     const generated = buildProxyArtifact(artifacts.Impl!);
 
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
@@ -307,14 +307,14 @@ describe('a generated proxy', () => {
     // on how a commitment leads: an implementation of one record writes it without a leading index, while a proxy
     // that added a record of its own leads every commitment with one, and a delegate frame writes through the
     // implementation's own declaration.
-    const artifacts = compileStringMulti(NO_IMPLEMENTATION_FIELD, { composition: 'per-call' });
+    const artifacts = compileStringMulti(NO_IMPLEMENTATION_FIELD, { composition: 'framed' });
     expect(artifacts.Impl!.stateLayout!.dataNftCount).toBe(1);
     expect(() => buildProxyArtifact(artifacts.Impl!))
       .toThrow(/only one of them leads a commitment with the index it belongs to/);
   });
 
   it('refuses a field whose type it cannot name, naming the field', () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const layout = artifacts.Impl!.stateLayout!;
     const broken = {
       ...artifacts.Impl!,
@@ -324,12 +324,12 @@ describe('a generated proxy', () => {
       },
     };
 
-    expect(() => buildProxyArtifact(broken)).toThrowError(PerCallProxyDeployError);
+    expect(() => buildProxyArtifact(broken)).toThrowError(FramedProxyDeployError);
     expect(() => buildProxyArtifact(broken)).toThrowError(/field "ghost"/);
   });
 
   it('refuses an "implementation" field that is not an address, naming the field and its type', () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const layout = artifacts.Impl!.stateLayout!;
     const broken = {
       ...artifacts.Impl!,

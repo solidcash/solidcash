@@ -7,24 +7,24 @@ import {
   validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * One composed transaction, from source to verdict.
  *
- * The whole shipped path runs here: real source through the shipped compiler with the per-call option, the reserved
+ * The whole shipped path runs here: real source through the shipped compiler with the framed option, the reserved
  * deployment slots filled by the shipped deployment, the composer laying the composition out and assembling it, the
  * shipped derivation filling the call sites, and the BCH-2026 machine asked for a verdict on every input of the
  * assembled transaction. Nothing about the transaction is supplied by the test: the input indices, the frame
@@ -74,7 +74,7 @@ const token = (
  * machine runs is the one a deployment would put on chain, not the artifact's assembly.
  */
 function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType<typeof compileStringMulti> } {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const caller = deployMaster(artifacts.Caller!, CATEGORY_CALLER, VALIDATOR_PROGRAM);
   const callee = deployMaster(artifacts.Callee!, CATEGORY_CALLEE, VALIDATOR_PROGRAM);
 
@@ -176,7 +176,7 @@ const ROOT = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.R
  * The inputs the composition itself is: the caller's master, the validator that covers it and the callee's master.
  *
  * The fourth input is the user's P2PKH, which entered the composition. Its signature is filler in these tests, the
- * way every other per-call test fills it, so the machine would fail it for the signature and not for anything the
+ * way every other framed test fills it, so the machine would fail it for the signature and not for anything the
  * composer built; the composed spend is the three contract inputs.
  */
 // The validator's facet is a participant too, so it is input 2 and the callee follows it.
@@ -223,9 +223,9 @@ function deriveComposition(): ReturnType<typeof deriveFresh> {
 describe('a composed transaction through the shipped compile, deployment and composer', () => {
   it('the composer places the caller, its callee and the validator at the indices it derived', () => {
     const { artifacts } = buildComposition();
-    // The compiled path is what this test drives: the artifacts carry the per-call descriptors the deployment
+    // The compiled path is what this test drives: the artifacts carry the framed descriptors the deployment
     // fills and the stop-site tables the derivation resumes at, not a convention the test supplies.
-    expect(artifacts.Caller!.composition?.convention).toBe('per-call');
+    expect(artifacts.Caller!.composition?.convention).toBe('framed');
     expect(artifacts.Caller!.composition!.placeholders).toBeTruthy();
     expect(artifacts.Caller!.composition!.stopSites).toBeTruthy();
     expect(artifacts.Callee!.composition!.stopSites).toBeTruthy();

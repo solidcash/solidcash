@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { concatBytes, encodeWitnessBlock, splitFirstPush, type RecordEntry, type WitnessBlock } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A plain root that pays three fresh holders through separate frames of one payer, each a call-free token transfer,
- * on the plain call path (`callPerCallEntry`).
+ * on the plain call path (`callFramedEntry`).
  *
  * The token is OpenZeppelin-style: `_update` moves the balances inside `unchecked { }` blocks and keeps the supply in
  * its data record behind the mint and burn guards. Its artifact publishes the transfer's writes, the balances and
@@ -77,7 +77,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const units = compilePerCall(SOURCE);
+const units = compileFramed(SOURCE);
 
 /** The transfer's entry, as the token's artifact publishes its stop sites. */
 const TRANSFER = units.Token!.composition?.stopSites?.entries
@@ -95,7 +95,7 @@ const MINTED = 100n;
 async function enter(
   world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
   reached: readonly PlainDeployment[] = [],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
     [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
   expect(outcome.error?.message).toBeUndefined();
@@ -107,7 +107,7 @@ async function enter(
 async function view(
   world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -119,7 +119,7 @@ interface PaidOut {
   readonly world: World;
   readonly token: PlainDeployment;
   readonly payer: PlainDeployment;
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
 }
 
 let payoutRun: Promise<PaidOut> | undefined;
@@ -141,7 +141,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -149,7 +149,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 }
 
 /** The settled transaction with one master's witness block replaced by `block`. */
-function withBlock(result: PerCallCallResult, master: string, block: WitnessBlock): VmTransaction {
+function withBlock(result: FramedCallResult, master: string, block: WitnessBlock): VmTransaction {
   const forged = structuredClone(result.transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
   const { rest } = splitFirstPush(forged.inputs[index]!.unlockingBytecode);
@@ -161,18 +161,18 @@ function withBlock(result: PerCallCallResult, master: string, block: WitnessBloc
 }
 
 /** The masters of the frames of `result` that ran `functionName`, in the order they completed. */
-function framesOf(result: PerCallCallResult, functionName: string): readonly string[] {
+function framesOf(result: FramedCallResult, functionName: string): readonly string[] {
   return result.completed.filter((frame) => frame.functionName === functionName).map((frame) => frame.master);
 }
 
 /** The input index of each data record the transfer writes, as the call placed it. */
-function supplyRecords(result: PerCallCallResult): readonly number[] {
+function supplyRecords(result: FramedCallResult): readonly number[] {
   return SUPPLY_RECORDS.map((record) => result.draft.layout.participants
     .find((placed) => placed.id === `Token-record-${String(record)}`)!.index);
 }
 
 /** The declarations one frame makes of the spent input at `index`, in segment order. */
-function declarationsOf(result: PerCallCallResult, master: string, index: number): readonly RecordEntry[] {
+function declarationsOf(result: FramedCallResult, master: string, index: number): readonly RecordEntry[] {
   return result.draft.blockOf(master).segments.flat().filter((declared) => declared.in === index);
 }
 

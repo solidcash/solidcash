@@ -8,7 +8,7 @@ import {
   type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -48,7 +48,7 @@ const compile = (parameters: string, body: string): ReturnType<typeof compileStr
     + ' contract Ledger {'
     + '   mapping(address => uint) balances;'
     + `   function move(${parameters}, uint amount) { ${body} }`
-    + ' }', { composition: 'per-call' });
+    + ' }', { composition: 'framed' });
 
 const WRITE_THEN_CALL = compile('address[] workers', loop('workers', `${WRITE} ${CALL}`));
 const CALL_THEN_WRITE = compile('address[] workers', loop('workers', `${CALL} ${WRITE}`));

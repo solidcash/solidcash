@@ -9,13 +9,13 @@ import {
   validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster,
   readComputedDeclaration,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   UNFILLED_CALLEE_REF,
   createComposedDerivationHost,
@@ -25,11 +25,11 @@ import {
   type CompositionDraft,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { layoutWithFacets } from '../shapes/harness.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * A nested read: a `STATIC` root whose entry reads another contract's `view` entry.
@@ -59,7 +59,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function peek() view returns (int) { return IB(0x${Buffer.from(ADDRESS_B).toString('hex')}).value(); }`
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const aArtifact = artifacts.A!;
 const bArtifact = artifacts.B!;
 const VALUE_SELECTOR = new Uint8Array(Buffer.from(bArtifact.abi.find((row) => row.name === 'value')!.selector!, 'hex'));

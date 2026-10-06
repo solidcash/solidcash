@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { bytesToHex, parsePushdataCommitment, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, sendPerCallValue } from '../../../src/per-call/call/index.js';
+import { callFramedEntry, sendFramedValue } from '../../../src/framed/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -17,10 +17,10 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * OpenZeppelin's `Address.functionCall` delegates to `functionCallWithValue(target, data, 0, msg)`, whose body
  * guards `require(address(this).balance >= value, ...)` - with value 0, a comparison of the context contract's own
  * balance with zero - before it makes the value-carrying call. The row is driven through the shipped path: the
- * shipped compiler under the per-call convention, the shipped deployment, the shipped `callPerCallEntry`, and the
+ * shipped compiler under the framed convention, the shipped deployment, the shipped `callFramedEntry`, and the
  * shipped decoder for what the entry returns and writes.
  *
- * Two facts are pinned. The value-0 balance guard is a no-op the per-call path serves: an entry that compares its
+ * Two facts are pinned. The value-0 balance guard is a no-op the framed path serves: an entry that compares its
  * own balance with zero, records the branch it took, and answers the balance runs, with both the answer and the
  * branch read back through the shipped decoders. The full `functionCallWithValue` shape - that guard around a
  * value-carrying call to another contract - is refused by name: the call path plans the callee frame, and the
@@ -90,14 +90,14 @@ const FORWARD_SOURCE = 'pragma solidity ^0.8.0;'
 
 describe('spec section 23 row 10: address(this).balance compared with 0', () => {
   it('serves the value-0 guard: the entry answers its balance and records the branch it took', async () => {
-    const vault = compileStringMulti(VAULT_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Vault!;
+    const vault = compileStringMulti(VAULT_SOURCE, { composition: 'framed', solidityImportCompat: true }).Vault!;
     expect(vault.composition?.balanceReaders)
       .toStrictEqual(['Vault.guarded()']);
     const deployed = await deployedFor(vault);
     // The seed pays the contract's container through its receive(), which is the balance the guard reads.
     const seedCoin = freshCoin();
     await deployed.provider.addUtxo(binToHex(deployed.callerLock), seedCoin);
-    const seeded = await sendPerCallValue({
+    const seeded = await sendFramedValue({
       provider: deployed.provider, artifact: vault, categoryId: deployed.categoryId, callerUtxo: seedCoin,
       callerLockingBytecode: deployed.callerLock, funder: deployed.funder, vm: compositionMachine(), value: SEEDED,
     });
@@ -105,7 +105,7 @@ describe('spec section 23 row 10: address(this).balance compared with 0', () => 
 
     const callCoin = freshCoin();
     await deployed.provider.addUtxo(binToHex(deployed.callerLock), callCoin);
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       provider: deployed.provider, artifact: vault, categoryId: deployed.categoryId, functionName: 'guarded', args: [],
       callerUtxo: callCoin, callerLockingBytecode: deployed.callerLock, funder: deployed.funder,
       vm: compositionMachine(),
@@ -119,14 +119,14 @@ describe('spec section 23 row 10: address(this).balance compared with 0', () => 
   }, 120_000);
 
   it('refuses the functionCallWithValue shape by name: its target is no deployment\'s', async () => {
-    const forwarder = compileStringMulti(FORWARD_SOURCE, { composition: 'per-call', solidityImportCompat: true })
+    const forwarder = compileStringMulti(FORWARD_SOURCE, { composition: 'framed', solidityImportCompat: true })
       .Forwarder!;
     // The body itself compiles: the value-0 call lowers, so the refusal is the call path's, not the compiler's.
     expect(forwarder.composition?.refusedEntries).toBeUndefined();
     const deployed = await deployedFor(forwarder);
     const coin = freshCoin();
     await deployed.provider.addUtxo(binToHex(deployed.callerLock), coin);
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       provider: deployed.provider, artifact: forwarder, categoryId: deployed.categoryId, functionName: 'forwarded',
       args: [new Uint8Array(35).fill(0x11)] as never, callerUtxo: coin, callerLockingBytecode: deployed.callerLock,
       funder: deployed.funder, vm: compositionMachine(),
@@ -160,21 +160,21 @@ const KEPT_CONSTRUCTOR_SOURCE = 'pragma solidcash ^0.13.0;'
 
 describe('a kept subroutine that reads its contract\'s balance', () => {
   it('refuses by name the call of an entry that runs it, and spends nothing', async () => {
-    const till = compileStringMulti(KEPT_ENTRY_SOURCE, { composition: 'per-call' }).Till!;
+    const till = compileStringMulti(KEPT_ENTRY_SOURCE, { composition: 'framed' }).Till!;
     const deployed = await deployedFor(till);
     const coin = freshCoin();
     await deployed.provider.addUtxo(binToHex(deployed.callerLock), coin);
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       provider: deployed.provider, artifact: till, categoryId: deployed.categoryId, functionName: 'f', args: [0n],
       callerUtxo: coin, callerLockingBytecode: deployed.callerLock, funder: deployed.funder, vm: compositionMachine(),
-    })).rejects.toThrow('PER_CALL_HOST_ENTRY_REFUSED: Till.f() is refused by the compiler: it runs \'mine\', which '
+    })).rejects.toThrow('FRAMED_HOST_ENTRY_REFUSED: Till.f() is refused by the compiler: it runs \'mine\', which '
       + 'the master cannot serve: the body reads its contract\'s balance and is invoked as its own subroutine');
     expect((await deployed.provider.getUtxosForLockingBytecode(deployed.callerLock))
       .some((utxo) => utxo.txid === coin.txid)).toBe(true);
   }, 120_000);
 
   it('refuses by name the deployment of a constructor that runs it', async () => {
-    const opening = compileStringMulti(KEPT_CONSTRUCTOR_SOURCE, { composition: 'per-call' }).Opening!;
+    const opening = compileStringMulti(KEPT_CONSTRUCTOR_SOURCE, { composition: 'framed' }).Opening!;
     await expect(deployedFor(opening)).rejects.toThrow('the constructor of "Opening" is refused by the compiler '
       + '(Opening.__construct()): the constructor reads its contract\'s balance, which no genesis shows');
   }, 120_000);

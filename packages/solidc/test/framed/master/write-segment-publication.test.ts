@@ -3,10 +3,10 @@ import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import {
   declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript,
-} from '../../../src/per-call/master/declared-view.js';
+} from '../../../src/framed/master/declared-view.js';
 
 /**
- * The segment a per-call entry's derived mapping write lands in, as the artifact publishes it.
+ * The segment a framed entry's derived mapping write lands in, as the artifact publishes it.
  *
  * A builder declares the write's records in one segment of the frame's many, and the segment the entry's own source
  * fixes is the one code generation reads its records from. The artifact publishes that fact beside the entry's stop
@@ -127,21 +127,21 @@ const SIZED_FIELD_AFTER_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
 
 // Optimisation is off so the emitted bytes carry the derivation's own skip recipe verbatim: the optimiser
 // rewrites equivalent sequences, which would hide the recipe this case matches the published fact against.
-const writeFirst = compileStringMulti(WRITE_FIRST_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+const writeFirst = compileStringMulti(WRITE_FIRST_SOURCE, { composition: 'framed', optimise: false }).Ledger!;
 const writeAfterOneCall =
-  compileStringMulti(WRITE_AFTER_ONE_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+  compileStringMulti(WRITE_AFTER_ONE_CALL_SOURCE, { composition: 'framed', optimise: false }).Ledger!;
 const writeAfterGuardedCall =
-  compileStringMulti(WRITE_AFTER_GUARDED_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+  compileStringMulti(WRITE_AFTER_GUARDED_CALL_SOURCE, { composition: 'framed', optimise: false }).Ledger!;
 const recordWriteFirst =
-  compileStringMulti(RECORD_WRITE_FIRST_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+  compileStringMulti(RECORD_WRITE_FIRST_SOURCE, { composition: 'framed', optimise: false }).Ledger!;
 const recordWriteAfterOneCall =
-  compileStringMulti(RECORD_WRITE_AFTER_ONE_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+  compileStringMulti(RECORD_WRITE_AFTER_ONE_CALL_SOURCE, { composition: 'framed', optimise: false }).Ledger!;
 const recordWriteAfterGuardedCall =
-  compileStringMulti(RECORD_WRITE_AFTER_GUARDED_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+  compileStringMulti(RECORD_WRITE_AFTER_GUARDED_CALL_SOURCE, { composition: 'framed', optimise: false }).Ledger!;
 const sizedFieldBeforeCall =
-  compileStringMulti(SIZED_FIELD_BEFORE_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+  compileStringMulti(SIZED_FIELD_BEFORE_CALL_SOURCE, { composition: 'framed', optimise: false }).Ledger!;
 const sizedFieldAfterCall =
-  compileStringMulti(SIZED_FIELD_AFTER_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+  compileStringMulti(SIZED_FIELD_AFTER_CALL_SOURCE, { composition: 'framed', optimise: false }).Ledger!;
 
 const RUNTIME_SKIP = Buffer.from(declaredSegmentsSkipRuntimeScript()).toString('hex');
 const SKIP_ONE = Buffer.from(declaredSegmentsSkipScript(1)).toString('hex');

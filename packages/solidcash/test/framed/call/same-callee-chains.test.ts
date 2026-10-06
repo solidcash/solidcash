@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -94,7 +94,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const registry = artifacts.Registry!;
 const ledger = artifacts.Ledger!;
 const pay = artifacts.Pay!;
@@ -151,7 +151,7 @@ async function deployChains(network: MockNetworkProvider): Promise<{
   readonly changeAddress: string;
   readonly callCoin: { txid: string; vout: number; satoshis: bigint };
   readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
-  readonly externals: Record<string, PerCallProxyExternal>;
+  readonly externals: Record<string, FramedProxyExternal>;
 }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -182,7 +182,7 @@ async function deployChains(network: MockNetworkProvider): Promise<{
   }
   await fundShippedFacets(network);
 
-  const registryDeployment = await deployPerCallProxy({
+  const registryDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: registry,
     proxyArtifact: buildProxyArtifact(registry),
@@ -198,7 +198,7 @@ async function deployChains(network: MockNetworkProvider): Promise<{
   const ledgerAddress = deployMaster(ledger, hexToBin(LEDGER_CATEGORY), VALIDATOR_PROGRAM).address;
   const payAddress = deployMaster(pay, hexToBin(PAY_CATEGORY), VALIDATOR_PROGRAM).address;
 
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -261,7 +261,7 @@ async function deployedChains(): Promise<Chains> {
 async function heldList(
   network: MockNetworkProvider,
 ): Promise<readonly { readonly slot: bigint; readonly value: string }[]> {
-  const deployment = await readPerCallDeployment(network, LEDGER_CATEGORY, ledger.stateLayout!);
+  const deployment = await readFramedDeployment(network, LEDGER_CATEGORY, ledger.stateLayout!);
   const nodes = new Map((deployment.nodesByCollection.get('held') ?? []).map((utxo) => {
     const node = decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment));
     return [bytesToSlotValue(node.slot), node] as const;
@@ -281,8 +281,8 @@ async function callRun(
   network: MockNetworkProvider,
   funded: Funded,
   args: readonly bigint[],
-): Promise<Awaited<ReturnType<typeof callPerCallProxyEntry>>> {
-  return callPerCallProxyEntry({
+): Promise<Awaited<ReturnType<typeof callFramedProxyEntry>>> {
+  return callFramedProxyEntry({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),

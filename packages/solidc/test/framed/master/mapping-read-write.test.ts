@@ -9,7 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -17,20 +17,20 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose entry reads a verified-mapping entry and writes it back.
+ * A framed master whose entry reads a verified-mapping entry and writes it back.
  *
  * `balances[to] = balances[to] + amount` is one transition on one node: the read takes the value the spent node
- * carries and the write produces the node that value computes to. A per-call master takes no SDK batch plan, so
+ * carries and the write produces the node that value computes to. A framed master takes no SDK batch plan, so
  * the value the read sees has to come from the frame's own declaration of that node, and the same declaration is
  * what the write verification closes against. The whole shipped path runs: the source through `compileString` with
- * the per-call convention, the program through `deployMaster`, and the BCH-2026 machine is asked for a verdict on
+ * the framed convention, the program through `deployMaster`, and the BCH-2026 machine is asked for a verdict on
  * the master's own input.
  *
  * The accept below is what pins the read: the node the machine is shown carries the value the code computes from
  * the spent one, so an accept cannot be reached by reading a default or a value the transaction does not carry.
  */
 
-const CATEGORY = seededCategory('mapping read write per-call');
+const CATEGORY = seededCategory('mapping read write framed');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const TO = new Uint8Array(20).fill(0x33);
@@ -63,7 +63,7 @@ const USER_INDEX = 0;
 /** The target's node sits at the block layout's first state offset, kept in place by the write. */
 const NODE_INDEX = MASTER_INDEX + 1;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = encodeLockingBytecodeP2sh32(hash256(deployed.script));
@@ -173,9 +173,9 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry reads and rewrites one mapping entry', () => {
-  it('publishes a per-call master with the entry point it was asked for', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+describe('a framed master whose entry reads and rewrites one mapping entry', () => {
+  it('publishes a framed master with the entry point it was asked for', () => {
+    expect(artifact.composition?.convention).toBe('framed');
     expect(deployed.script.length).toBeGreaterThan(0);
     const declared = artifact.abi.find((entry) => entry.name === 'add');
     expect(declared?.inputs?.map((input) => input.name)).toStrictEqual(['to', 'amount']);
@@ -219,8 +219,8 @@ describe('a per-call master whose entry reads and rewrites one mapping entry', (
 
   it('admits the read/write entry beside other entry points of the same master', () => {
     // The same admission holds when the program dispatches over several entries.
-    const two = compileString(TWO_ENTRY_SOURCE, { composition: 'per-call' });
-    expect(two.composition?.convention).toBe('per-call');
+    const two = compileString(TWO_ENTRY_SOURCE, { composition: 'framed' });
+    expect(two.composition?.convention).toBe('framed');
     expect(two.abi.filter((entry) => entry.inputs.length === 2).map((entry) => entry.name).sort())
       .toStrictEqual(['add', 'set']);
   });
@@ -249,7 +249,7 @@ const SENTINEL_INDEX = 2;
 /** The created node's output index, which the entry slot's block offset fixes. */
 const CREATED_INDEX = 1;
 
-const insertArtifact = compileString(INSERT_SOURCE, { composition: 'per-call' });
+const insertArtifact = compileString(INSERT_SOURCE, { composition: 'framed' });
 const insertDeployed = deployMaster(insertArtifact, CATEGORY, VALIDATOR_PROGRAM);
 const insertMasterLock = encodeLockingBytecodeP2sh32(hash256(insertDeployed.script));
 const insertEntryLock = scriptToLockingBytecode(

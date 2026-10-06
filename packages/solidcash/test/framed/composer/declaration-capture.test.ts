@@ -11,10 +11,10 @@ import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
 import type { ConsensusLimits } from '../../../src/network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { readComputedDeclaration } from '../../../src/per-call/deploy/declaration.js';
+import { readComputedDeclaration } from '../../../src/framed/deploy/declaration.js';
 
 /**
- * The per-call machine keeps the operands of the failed OP_EQUALVERIFY an evaluation stops on, so reading the
+ * The framed machine keeps the operands of the failed OP_EQUALVERIFY an evaluation stops on, so reading the
  * declaration of a program it has just evaluated needs no second run. Each reading here is compared with the one a
  * fresh machine takes from its bounded re-run and with the one libauth's full trace gives, and the re-runs are
  * counted: a program evaluated to a close is read without one, and every other stop is read from a run as before.

@@ -3,7 +3,7 @@ import type { ExternalCallExpression } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 
 /**
- * The condition a per-call body's guarded verified-mapping write runs under, as its entry access publishes it.
+ * The condition a framed body's guarded verified-mapping write runs under, as its entry access publishes it.
  *
  * The condition is the conjunction of the predicates on the write's path, read where each branch starts, in the
  * language a conditional call site's condition is published in: an argument, `msg.sender`, a state field, a mapping
@@ -59,7 +59,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifact = compileString(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifact = compileString(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 
 /** The activation the entry publishes for its write of `collection`. */
 function activationOf(entry: string, collection: string): ExternalCallExpression | undefined {
@@ -75,7 +75,7 @@ const not = (expression: ExternalCallExpression): ExternalCallExpression => ({ k
 const allowedOf = (who: ExternalCallExpression): ExternalCallExpression =>
   ({ kind: 'stateAccess', name: 'allowed', args: [who], type: 'bool' });
 
-describe('the condition a per-call guarded mapping write publishes', () => {
+describe('the condition a framed guarded mapping write publishes', () => {
   it('serves every entry', () => {
     expect(artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
   });

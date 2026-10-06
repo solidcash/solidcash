@@ -1,30 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import type { StateLayout } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileString, compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, ContractFactory, SignatureTemplate, Signer } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
-import { readPerCallState } from '../../../src/per-call/deploy/index.js';
+import { readFramedState } from '../../../src/framed/deploy/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * The mock chain's clock in a per-call contract's `block.timestamp`.
+ * The mock chain's clock in a framed contract's `block.timestamp`.
  *
  * `block.timestamp` compiles to a register of the contract's own record, `__block_timestamp`, which a keeper
  * refreshes on a live chain. The mock chain has none: its `evm_increaseTime` and `evm_mine` (the Hardhat analogue),
  * and the block it mines for every transaction it accepts, rewrite the register in the records of every registered
- * deployment. A per-call proxy keeps the application state, the register included, in the proxy's own records under
+ * deployment. A framed proxy keeps the application state, the register included, in the proxy's own records under
  * the implementation's layout, so that is where the clock has to land for an entry run through the proxy to read it.
- * A plain per-call deployment the factory registers keeps it in its own records, and a direct contract beside it in
+ * A plain framed deployment the factory registers keeps it in its own records, and a direct contract beside it in
  * its data NFT; one mined block moves both.
  */
 
@@ -45,7 +45,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const clock = compileStringMulti(SOURCE, { composition: 'per-call' }).Clock!;
+const clock = compileStringMulti(SOURCE, { composition: 'framed' }).Clock!;
 const proxyArtifact = buildProxyArtifact(clock);
 
 /** The direct convention's control: the same register, gated the same way. */
@@ -82,7 +82,7 @@ function funding(txid: string): Utxo {
 async function stateOf(
   network: MockNetworkProvider, categoryId: string, layout: StateLayout,
 ): Promise<Record<string, unknown>> {
-  const { byNft } = await readPerCallState(network, categoryId, layout);
+  const { byNft } = await readFramedState(network, categoryId, layout);
   return Object.assign({}, ...byNft) as Record<string, unknown>;
 }
 
@@ -114,7 +114,7 @@ async function deployWorld(): Promise<World> {
   };
   for (const id of [IMPL_CATEGORY, PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(id));
   await fundShippedFacets(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: clock,
     proxyArtifact,
@@ -139,12 +139,12 @@ async function deployWorld(): Promise<World> {
 /** Enters one entry through the proxy as the caller; returns its result or error and whether its coin is unspent. */
 async function enter(
   world: World, functionName: string,
-): Promise<{ readonly result?: PerCallProxyCallResult; readonly error?: Error; readonly coinLive: boolean }> {
+): Promise<{ readonly result?: FramedProxyCallResult; readonly error?: Error; readonly coinLive: boolean }> {
   const coin = await world.nextCoin();
-  let result: PerCallProxyCallResult | undefined;
+  let result: FramedProxyCallResult | undefined;
   let error: Error | undefined;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: clock,
       proxyArtifact,
@@ -174,7 +174,7 @@ function proxyState(world: World): Promise<Record<string, unknown>> {
   return stateOf(world.network, world.proxy, proxyArtifact.stateLayout!);
 }
 
-describe('the mock chain\'s clock in a proxied per-call contract', () => {
+describe('the mock chain\'s clock in a proxied framed contract', () => {
   let world: World;
 
   it('setup: the proxy and its initialize hop settle', async () => {
@@ -203,7 +203,7 @@ describe('the mock chain\'s clock in a proxied per-call contract', () => {
     expect(stamped.__block_timestamp as bigint).toBeGreaterThan(read as bigint);
 
     const early = await enter(world, 'later');
-    expect(early.error).toBeInstanceOf(PerCallProxyDeployError);
+    expect(early.error).toBeInstanceOf(FramedProxyDeployError);
     expect(early.error!.message).toContain('frame "implementation-master" of Clock.later() at line '
       + `${lineOf('"a day has not passed"')}: a day has not passed (Program failed an OP_VERIFY operation.)`);
     expect(early.coinLive).toBe(true);
@@ -223,7 +223,7 @@ describe('the mock chain\'s clock in a proxied per-call contract', () => {
   }, 900_000);
 });
 
-describe('the mock chain\'s clock in a plain per-call contract, with a direct one beside it', () => {
+describe('the mock chain\'s clock in a plain framed contract, with a direct one beside it', () => {
   it('a mined block writes the chain\'s clock into both, and the gated entry settles after the day', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signer = new Signer(alicePriv, network);

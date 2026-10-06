@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -59,7 +59,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const store = artifacts.Store!;
 const outer = artifacts.Outer!;
 
@@ -94,7 +94,7 @@ async function deployAll(network: MockNetworkProvider): Promise<{
   for (const coin of [storeInitCoin, outerInitCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);
   await fundShippedFacets(network);
 
-  const storeDeployment = await deployPerCallProxy({
+  const storeDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: store,
     proxyArtifact: buildProxyArtifact(store),
@@ -111,7 +111,7 @@ async function deployAll(network: MockNetworkProvider): Promise<{
   });
   expect(storeDeployment.initialize.broadcast).toBeDefined();
 
-  const outerDeployment = await deployPerCallProxy({
+  const outerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),
@@ -146,7 +146,7 @@ describe('a hop whose proxied callee appends to a chunked mapping', () => {
     // is settled; each frame checks its relink against the end view it declares and settles, and the settled hop
     // refuses the chain by name. Owner: the SDK hop planner, where reaches that touch one node are to share one
     // participant with their views chained in execution order.
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: outer,
       proxyArtifact: buildProxyArtifact(outer),

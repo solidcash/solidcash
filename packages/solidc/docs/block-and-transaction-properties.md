@@ -330,7 +330,7 @@ feature-complete** for stateful readers, including:
 - **Computed `n` - ANY expression** (`block.number - K`, `x - 1`, arbitrary arithmetic), resolved by the
   **single source of truth**: the auto-derivation probe. The covenant computes `n` on-stack (whatever the
   expression), so the SDK does NOT re-derive it in JS - it reads `n` straight off the probe trace. Codegen
-  records each computed call site as a per-call-site `<computed:i>` key (its own slot); at build time the SDK
+  records each computed call site as a framed-site `<computed:i>` key (its own slot); at build time the SDK
   runs a minimal covenant probe (master + data NFTs + already-resolved lower reads, max-height locktime) and
   extracts `(inputIndex, n)` at the read's `OP_UTXOTOKENCATEGORY` (stack `[n, idx, idx]`; `idx` in the
   reserved slot range identifies it). Reads resolve strictly in slot order so the probe reaches each computed

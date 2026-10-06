@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   FrameKind, bytesEqual, encodeEventCommitment, validatorAddress,
 } from '@solidcash/utils';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import type { CompositionDraftPlan, DraftInput } from '../../../src/per-call/composer/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import type { CompositionDraftPlan, DraftInput } from '../../../src/framed/composer/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, composeAndDerive, compileAndDeploy, hexOf, master, masterInput,
   rootOf, seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
@@ -184,7 +184,7 @@ describe('an event emitted by a nested frame', () => {
     const { plan, artifacts } = buildNested([9n]);
     expect(() => composeAndDerive(plan, [artifacts.Caller!, artifacts.Emitter!], [
       rootOf('Caller', 'start', 'caller-1'),
-    ])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    ])).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });
 

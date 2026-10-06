@@ -3,12 +3,12 @@ import { encodeDataPush } from '@bitauth/libauth';
 import { encodeIntegerValue } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  created, deployPerCallMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
+  created, deployFramedMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
   type DeployedMaster, type PlacedRecord,
 } from './record-spend.js';
 
 /**
- * A per-call master whose entry writes a mapping held inside a struct.
+ * A framed master whose entry writes a mapping held inside a struct.
  *
  * A struct field that is a mapping is flattened into a collection of its own, named `<variable>__<field>`: a state
  * struct's mapping is keyed by the mapping's own keys, and a mapping of such structs prepends the outer key, so
@@ -26,45 +26,45 @@ const V = 42n;
 const OLD = 7n;
 const TOTAL = 5n;
 
-const HOLDER = deployPerCallMaster(`${PRAGMA} contract Holder { ${ACCOUNT} Account acc;`
+const HOLDER = deployFramedMaster(`${PRAGMA} contract Holder { ${ACCOUNT} Account acc;`
   + ' function set(address k, uint v) { acc.parts[k] = v; } }', 'struct mapping holder');
-const TALLY = deployPerCallMaster(`${PRAGMA} contract Tally { ${ACCOUNT} Account acc;`
+const TALLY = deployFramedMaster(`${PRAGMA} contract Tally { ${ACCOUNT} Account acc;`
   + ' function add(address k, uint v) { acc.parts[k] = acc.parts[k] + v; acc.total = acc.total + v; } }',
 'struct mapping tally');
-const LISTS = deployPerCallMaster(`${PRAGMA} contract Lists {`
+const LISTS = deployFramedMaster(`${PRAGMA} contract Lists {`
   + ' struct Access { uint count; mapping(address => uint) allowed; mapping(address => uint) blocked; } Access lists;'
   + ' function allow(address k, uint v) { lists.allowed[k] = v; }'
   + ' function mirror(address k, address j) { lists.allowed[j] = lists.blocked[k]; } }', 'struct mapping lists');
-const ACCOUNTS = deployPerCallMaster(`${PRAGMA} contract Accounts { ${ACCOUNT}`
+const ACCOUNTS = deployFramedMaster(`${PRAGMA} contract Accounts { ${ACCOUNT}`
   + ' mapping(address => Account) accounts;'
   + ' function set(address o, address k, uint v) { accounts[o].parts[k] = v; }'
   + ' function clear(address o, address k) { delete accounts[o].parts[k]; } }', 'struct mapping accounts');
-const LEDGER = deployPerCallMaster(`${PRAGMA} contract Ledger { ${ACCOUNT}`
+const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger { ${ACCOUNT}`
   + ' mapping(address => Account) accounts;'
   + ' function add(address o, address k, uint v) {'
   + '   accounts[o].parts[k] = accounts[o].parts[k] + v; accounts[o].total = accounts[o].total + v; } }',
 'struct mapping ledger');
-const NESTED = deployPerCallMaster(`${PRAGMA} contract Nested {`
+const NESTED = deployFramedMaster(`${PRAGMA} contract Nested {`
   + ' struct Inner { uint y; mapping(address => uint) m; } struct Outer { uint x; Inner inner; } Outer o;'
   + ' function set(address k, uint v) { o.inner.m[k] = v; } }', 'struct mapping nested');
-const DEEP = deployPerCallMaster(`${PRAGMA} contract Deep { ${ACCOUNT}`
+const DEEP = deployFramedMaster(`${PRAGMA} contract Deep { ${ACCOUNT}`
   + ' struct Grid { uint size; mapping(address => mapping(uint => uint)) cells; }'
   + ' mapping(address => mapping(address => Account)) pairs; mapping(address => Grid) grids;'
   + ' function pair(address a, address b, address k, uint v) { pairs[a][b].parts[k] = v; }'
   + ' function cell(address o, address a, uint c, uint v) { grids[o].cells[a][c] = v; } }', 'struct mapping deep');
-const POINTER = deployPerCallMaster(`${PRAGMA} contract Pointer { ${ACCOUNT}`
+const POINTER = deployFramedMaster(`${PRAGMA} contract Pointer { ${ACCOUNT}`
   + ' mapping(address => Account) accounts;'
   + ' function _put(Account storage a, address k, uint v) internal { a.parts[k] = v; }'
   + ' function set(address o, address k, uint v) { _put(accounts[o], k, v); } }', 'struct mapping pointer');
-const LOCAL = deployPerCallMaster(`${PRAGMA} contract Local { ${ACCOUNT}`
+const LOCAL = deployFramedMaster(`${PRAGMA} contract Local { ${ACCOUNT}`
   + ' mapping(address => Account) accounts;'
   + ' function set(address o, address k, uint v) { Account storage a = accounts[o]; a.parts[k] = v; } }',
 'struct mapping local pointer');
 const POS = 'struct Pos { uint a; uint b; }';
-const SMS = deployPerCallMaster(`${PRAGMA} contract Sms { ${POS}`
+const SMS = deployFramedMaster(`${PRAGMA} contract Sms { ${POS}`
   + ' struct Account { uint total; mapping(address => Pos) positions; } Account acc;'
   + ' function setA(address k, uint v) { acc.positions[k].a = v; } }', 'struct value in state mapping');
-const SMS2 = deployPerCallMaster(`${PRAGMA} contract Sms2 { ${POS}`
+const SMS2 = deployFramedMaster(`${PRAGMA} contract Sms2 { ${POS}`
   + ' struct Account { uint total; mapping(address => Pos) positions; }'
   + ' mapping(address => Account) accounts;'
   + ' function setA(address o, address k, uint v) { accounts[o].positions[k].a = v; } }',

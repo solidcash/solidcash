@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesEqual, bytesToHex, type StateLayout } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { FramedFunctionCall } from '../../../src/framed/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -41,7 +41,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function peek() view returns (int) { return this.total; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const impl = artifacts.Impl!;
 
 /** The commitment the shipped encoder materializes for one data NFT of a layout. */
@@ -51,7 +51,7 @@ function commitment(layout: StateLayout, values: Record<string, bigint | Uint8Ar
 
 /** The record commitments the deployed proxy holds, in data-NFT order, through the shipped reader. */
 async function proxyRecords(network: MockNetworkProvider, categoryId: string): Promise<string[]> {
-  const deployment = await readPerCallDeployment(network, categoryId, impl.stateLayout!);
+  const deployment = await readFramedDeployment(network, categoryId, impl.stateLayout!);
   return deployment.records.map((record) => record.token!.nft!.commitment);
 }
 
@@ -75,7 +75,7 @@ async function deployedWithCallerCoin(network: MockNetworkProvider): Promise<{
   // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
   await fundShippedFacets(network);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress: source.address },
@@ -105,7 +105,7 @@ describe('a read-only call through a proxy handle', () => {
       bytesToHex(commitment(impl.stateLayout!, { separate: 0n }, 1)),
     ]);
 
-    const call = new PerCallFunctionCall({
+    const call = new FramedFunctionCall({
       artifact: impl,
       abiEntry: impl.abi.find((entry) => entry.name === 'peek')!,
       categoryId: funded.proxyCategoryId,

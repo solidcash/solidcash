@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { parsePushdataCommitment, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { encodeFunctionArgument, type FunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -19,7 +19,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * Calls whose entry reads a record it does not write, or names only some of its contract's records, through the
  * shipped path.
  *
- * A per-call frame declares the data records its entry names, then the node of each mapping key the entry reads and
+ * A framed frame declares the data records its entry names, then the node of each mapping key the entry reads and
  * does not write, and its body reads each at that place. An entry that reads a key and writes no mapping spends the
  * key's node on the entry covenant's read-only path and keeps it; an entry that touches only a later data record
  * spends that record and leaves the first unspent.
@@ -80,10 +80,10 @@ const POOL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function balanceOf(address who) view returns (int) { return this.balances[who]; }'
   + ' }';
 
-const gate = compileStringMulti(GATE_SOURCE, { composition: 'per-call' }).Gate!;
-const wide = compileStringMulti(WIDE_SOURCE, { composition: 'per-call' }).Wide!;
-const club = compileStringMulti(CLUB_SOURCE, { composition: 'per-call' }).Club!;
-const pool = compileStringMulti(POOL_SOURCE, { composition: 'per-call' }).Pool!;
+const gate = compileStringMulti(GATE_SOURCE, { composition: 'framed' }).Gate!;
+const wide = compileStringMulti(WIDE_SOURCE, { composition: 'framed' }).Wide!;
+const club = compileStringMulti(CLUB_SOURCE, { composition: 'framed' }).Club!;
+const pool = compileStringMulti(POOL_SOURCE, { composition: 'framed' }).Pool!;
 
 const HOLDER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x61));
 const STRANGER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x62));
@@ -119,11 +119,11 @@ async function deploy(artifact: Artifact): Promise<Deployed> {
 /** Calls one entry with the caller's current coin: the largest tokenless UTXO at its lock, the last call's change. */
 async function call(
   deployed: Deployed, functionName: string, args: readonly FunctionArgument[] = [],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const coins = (await deployed.provider.getUtxosForLockingBytecode(deployed.callerLock))
     .filter((utxo) => utxo.token === undefined)
     .sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
-  return callPerCallEntry({
+  return callFramedEntry({
     provider: deployed.provider,
     artifact: deployed.artifact,
     categoryId: deployed.categoryId,
@@ -138,7 +138,7 @@ async function call(
 
 /** The live nodes of the allowance mapping, as the deployment's own classification reports them. */
 async function allowanceNodes(deployed: Deployed): Promise<readonly string[]> {
-  const deployment = await readPerCallDeployment(deployed.provider, deployed.categoryId, gate.stateLayout!);
+  const deployment = await readFramedDeployment(deployed.provider, deployed.categoryId, gate.stateLayout!);
   return (deployment.nodesByCollection.get('allowance') ?? []).map((utxo) => utxo.token!.nft!.commitment);
 }
 
@@ -213,7 +213,7 @@ async function deployedWide(): Promise<Deployed> {
 describe('an entry that touches only a later data record', () => {
   it('writes that record and leaves the first unspent', async () => {
     const deployed = await deployedWide();
-    const before = await readPerCallDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
+    const before = await readFramedDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
     const first = before.records[0]!.token!.nft!.commitment;
 
     const bumped = await call(deployed, 'bump');
@@ -230,7 +230,7 @@ describe('an entry that touches only a later data record', () => {
 
   it('writes that record beside a mapping key, declaring the first kept ahead of the key\'s group', async () => {
     const deployed = await deployedWide();
-    const before = await readPerCallDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
+    const before = await readFramedDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
     const first = before.records[0]!.token!.nft!.commitment;
 
     const marked = await call(deployed, 'mark', [HOLDER_LOCK]);
@@ -246,7 +246,7 @@ describe('an entry that touches only a later data record', () => {
     const deployed = await deployedWide();
     await call(deployed, 'bump');
     await call(deployed, 'bump');
-    const read = await readPerCallEntry({
+    const read = await readFramedEntry({
       provider: deployed.provider,
       artifact: wide,
       categoryId: deployed.categoryId,
@@ -260,7 +260,7 @@ describe('an entry that touches only a later data record', () => {
 
 /** The balance a contract's `balanceOf` view reads for one lock. */
 async function balanceOf(deployed: Deployed, who: Uint8Array): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: deployed.provider,
     artifact: deployed.artifact,
     categoryId: deployed.categoryId,
@@ -273,7 +273,7 @@ async function balanceOf(deployed: Deployed, who: Uint8Array): Promise<unknown> 
 
 /** The live nodes of one mapping, as the deployment's own classification reports them. */
 async function nodesOf(deployed: Deployed, collection: string): Promise<readonly string[]> {
-  const deployment = await readPerCallDeployment(deployed.provider, deployed.categoryId, deployed.artifact.stateLayout!);
+  const deployment = await readFramedDeployment(deployed.provider, deployed.categoryId, deployed.artifact.stateLayout!);
   return (deployment.nodesByCollection.get(collection) ?? []).map((utxo) => utxo.token!.nft!.commitment);
 }
 

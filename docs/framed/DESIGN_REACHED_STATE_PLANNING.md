@@ -1,19 +1,19 @@
 # Planning against the reached state: design, and a stage-1 prototype
 
 Status: design (2026-10-01, user direction). Stage 1 was prototyped as `patches/reached-state-arguments.diff`, not
-applied. Lane: the SDK hop (`packages/solidcash/src/per-call/proxy/`), which is the ladder stream's; the patch is the
+applied. Lane: the SDK hop (`packages/solidcash/src/framed/proxy/`), which is the ladder stream's; the patch is the
 hand-over. The pins cited are those at `73fefbd2f`, the HEAD the patch is based on and checked against (section 4).
-Superseded for results: section 5 records the execution-order spike that landed on `per-call-next` in place of the
+Superseded for results: section 5 records the execution-order spike that landed on `framed-next` in place of the
 fixed point (arguments and loop bounds from an earlier result, in any frame), and what it found about views.
 
 ## 1. The problem
 
-The hop (`callPerCallProxyEntry`, `deployPerCallProxy`) plans every call of a composed transaction from facts that
+The hop (`callFramedProxyEntry`, `deployFramedProxy`) plans every call of a composed transaction from facts that
 hold before the transaction: the entry's arguments, the proxy's live records and each callee's live deployment. The
 execution runs each call against the state and the results the transaction has reached when the call is made. A
 planned value that depends on something the transaction reaches is therefore refused at plan time, or settled
-against a stale view and refused at that frame's line. The walls, pinned in `packages/solidcash/test/per-call/ahead/`
-(run with `PER_CALL_AHEAD=1`; `PLAN_MARKETPLACE_66.md` section 6, "Walls ahead", and the Log rows titled "walls
+against a stale view and refused at that frame's line. The walls, pinned in `packages/solidcash/test/framed/ahead/`
+(run with `FRAMED_AHEAD=1`; `PLAN_MARKETPLACE_66.md` section 6, "Walls ahead", and the Log rows titled "walls
 ahead ..."):
 
 | Planned value | Depends on | Where it is fixed today | Pinned in `ahead/` |
@@ -40,7 +40,7 @@ The four rows are one capability: plan each call against the state and results t
    the body computed: `learned-retval`, `learned-write` (a value-dependent mapping node, in `learningCandidates`
    order) or `learned-event`. The implementation frame is then attempted the same way (`learned-retval`,
    `learned-record` for its own data records, `learned-write`, `learned-event`) and the root is derived.
-   `PER_CALL_HOP_TRACE=1` prints every `attempt` and `stop ... reason=`.
+   `FRAMED_HOP_TRACE=1` prints every `attempt` and `stop ... reason=`.
 3. **Re-plan for gated arms** (`f2e34600d`). A site whose published condition reads an earlier call's result is
    planned as no visit. `planAndSettleHop` settles, decodes each producer's `retval` (`producedCallResults`, through a
    proxied callee's `retvalFrom`), plans again with those results, and stops when `samePlannedSites` holds, at most
@@ -49,10 +49,10 @@ The four rows are one capability: plan each call against the state and results t
 
 The machine already accepts the reached state. The caller's own code computes each call's argument digest from the
 values it holds, an earlier record's `result` among them, and refuses a record that carries another
-(`solidc/src/per-call/master/call-site.ts`: "the record is not the authority for the digest, the code's operands
+(`solidc/src/framed/master/call-site.ts`: "the record is not the authority for the digest, the code's operands
 are"). V5 binds each record's `result` to the callee's `retval` and its digest to the callee's call data; V6 derives
 the execution order; V7 chains each record's views across every frame that runs on it, in that order, from the real
-input to the real output (`SPEC_PER_CALL_TRANSACTION.md` 7.2). The hand-planned replicas in `test/per-call/shapes/`
+input to the real output (`SPEC_FRAMED_TRANSACTION.md` 7.2). The hand-planned replicas in `test/framed/shapes/`
 (`reentry-payout-loop`, `deep-arbitration`, `fan-in-with-result`, `origin-gated-payout`, `time-gated-challenge`)
 state reached views by hand, and the machine accepts them. The walls are planning walls.
 
@@ -204,7 +204,7 @@ accepted, and the loop returns only a plan whose settle completed. A refusal com
 dropped: it stands once a pass learns nothing that moves the plan. (The separate hand-over that `broadcastHop` runs
 without checking `settled.accepted` is unchanged by this design.)
 
-What this does not change: the compiler, the master programs, the validator program (whose bytes every per-call
+What this does not change: the compiler, the master programs, the validator program (whose bytes every framed
 address is derived from), the witness ABI and the composer's layout. A stage that would need one of them is outside
 this design.
 
@@ -217,7 +217,7 @@ the previous pass's learned values for the frames whose call data and views did 
 
 ## 4. The stage-1 prototype
 
-`docs/per-call/patches/reached-state-arguments.diff` changes only the three hop files of 3.7 item 1
+`docs/framed/patches/reached-state-arguments.diff` changes only the three hop files of 3.7 item 1
 (`call-resolution.ts`, `external-calls.ts`, `deploy.ts`). It was written on `82e71560f`, re-based on `2a85cd76f` when
 the two hop patches landed, and on `73fefbd2f` (an outpoint trace in `broadcastHop`, which moves its last hunk by
 eight lines); each time it applied unchanged, with offsets. It carries no test change: once it is applied, the three
@@ -228,7 +228,7 @@ whose arguments read no earlier result, the hop plans and settles exactly as bef
 `git apply --check --cached` against HEAD (`73fefbd2f`): clean. `git apply --check` against the live tree: clean.
 The patched SDK type-checks, and eslint reports as many problems on the three files as at HEAD (23, 0 and 2).
 
-Measured in a scratch copy under `PER_CALL_AHEAD=1`, the `fan-in` cases at `73fefbd2f` (and the same at
+Measured in a scratch copy under `FRAMED_AHEAD=1`, the `fan-in` cases at `73fefbd2f` (and the same at
 `2a85cd76f`), `packed-address-argument` at `2a85cd76f`:
 
 | Case | HEAD | With the patch |
@@ -239,7 +239,7 @@ Measured in a scratch copy under `PER_CALL_AHEAD=1`, the `fan-in` cases at `73fe
 | the other eight `packed-address-argument` cases | 8/8 | 8/8 |
 
 Behind the `deals` refusal, measured at `82e71560f`, where the hop still planned such a callee without its write
-(`PER_CALL_HOP_TRACE=1`): pass 0 learned `noteCount`'s `1` and `feeOf`'s `250` (`replan pass=0
+(`FRAMED_HOP_TRACE=1`): pass 0 learned `noteCount`'s `1` and `feeOf`'s `250` (`replan pass=0
 reason=argument-results moved=[1:0->1 4:0->250]`; pay start `moved=[2:0->250]`); each settle stopped inside `pay`
 at `Coin.transferFrom()` (an `OP_VERIFY`, so `pay`'s own result was never learned); and pass 1 was refused by the
 reach check: "the hop reaches the entry "Coin.approve()" 2 times, and 2 of them write collection "allowances" at the
@@ -267,7 +267,7 @@ result, so the patch plans and settles them exactly as HEAD does.
 
 ## 5. Execution-order planning: the spike
 
-Status: spike (2026-10-01), landed on `per-call-next` with this section; measured at `171d1528b`, re-checked on the
+Status: spike (2026-10-01), landed on `framed-next` with this section; measured at `171d1528b`, re-checked on the
 tip it was committed to (`ee1b55310`). It replaces the stage-1 patch of section 4:
 `patches/reached-state-arguments.diff` is superseded and should not be applied.
 
@@ -277,7 +277,7 @@ The fixed point of section 3 states a stand-in for every value the transaction r
 until nothing moves. The kernel's planner (`kernel-beta-candidate`, read only) works the same way: producer probes
 seed the stand-ins, every pass is a whole-transaction trace, a pass rebuilds when an argument or a reached call
 moves, the budget is the claims plus two, and a fingerprint stops a cycle; it avoids records an earlier call wrote
-only by composing every call to a contract into one input, which per-call does not do.
+only by composing every call to a contract into one input, which framed does not do.
 
 Per-call allows something the kernel cannot. The validator checks frames in execution (V6) order and each frame is
 a body of its own, so a frame's result depends only on its call data and the records it reads, never on a frame
@@ -348,7 +348,7 @@ was committed on): the nine hop suites (`call/proxy-call` 4, `call/proxy-externa
 `call/branch-predicate-after-arm-write` 3, `call/loop-turns` 7, `deploy/proxy-entry-writes` 7, `toys/proxied-entry` 7:
 44 of 44, as without it at each); `call/proxy-external-calls-loop-state` (6, 1 skipped), `reverts/zero-target-call`
 (3), `call/proxy-guarded-write-call` (2), `call/proxy-callee-proxy` (3), `call/reach-write-check` (4) and
-`call/two-created-heads` (4); under `PER_CALL_AHEAD=1` the four ahead files (19 of 19 with the flipped pins) and
+`call/two-created-heads` (4); under `FRAMED_AHEAD=1` the four ahead files (19 of 19 with the flipped pins) and
 `origin-gated-payout` (6), and, at the first two, `packed-integer-argument` (6), `call-argument-from-own-write` (11)
 and `job-updates` (23) on their own pins. (The tip moved under the spike three times: genesis-only heads and a
 batch-verification fix; each re-sync was re-run before the commit.) Ladder titles whose first wall was one of these refusals
@@ -359,7 +359,7 @@ above.
 
 Measured in one scratch copy at `171d1528b`, each variant installed in turn, every count the same in two untraced
 runs and a traced one (wall time within 5 %); "attempts" are frame attempts, each a full composition build
-(`buildHopPlan` and `composeDraft`) and one or more VM runs, counted from `PER_CALL_HOP_TRACE=1`; VM runs are counted
+(`buildHopPlan` and `composeDraft`) and one or more VM runs, counted from `FRAMED_HOP_TRACE=1`; VM runs are counted
 by wrapping the machine's `evaluate`. `chain` and `sum` are `call/argument-from-earlier-result`'s entries; `deep` is
 `chain` with two more links (`twice`, `thrice`), in an uncommitted measurement copy of that file.
 
@@ -394,7 +394,7 @@ start at each stop is cheap beside a settle (a plan-time refusal at the base tak
 - **Targets** computed from a result: the same stop, once `resolveCallTarget` reads through `resolveArgument`.
 - **A record an earlier frame wrote (re-entry, stage 3): not without a compiler change.** A result is exposed when
   its frame returns, which precedes its consumer in V6 order; a view a frame writes in the middle of its body is
-  not. The shipped masters close every segment at their end: `entryStopSites` (`solidc/src/per-call/master/
+  not. The shipped masters close every segment at their end: `entryStopSites` (`solidc/src/framed/master/
   stop-sites.ts`) publishes "every call in order, then every segment close", and a frame `W.f()` that writes, calls,
   writes and calls publishes `call 0, call 1, close of segment 0, close of segment 1, close of segment 2`. So the
   view `Escrow.release` leaves before it calls `claim` (the guard `claiming = 1`) is compared, and can be learned,

@@ -45,12 +45,12 @@ export async function deployStatefulContract<T extends Artifact>(
     throw new Error(`Contract ${artifact.contractName} is not a stateful contract`);
   }
 
-  // A per-call artifact's master reads its frame from the witness block leading its own unlocking bytecode, so the
+  // A framed artifact's master reads its frame from the witness block leading its own unlocking bytecode, so the
   // direct probe below cannot evaluate its constructor. The artifact publishes which convention it compiled for, so
   // the caller never has to know.
-  if (artifact.composition?.convention === 'per-call') {
-    const { deployPerCallStatefulContract } = await import('../per-call/deploy/stateful.js');
-    return deployPerCallStatefulContract(artifact, constructorArgs, options);
+  if (artifact.composition?.convention === 'framed') {
+    const { deployFramedStatefulContract } = await import('../framed/deploy/stateful.js');
+    return deployFramedStatefulContract(artifact, constructorArgs, options);
   }
 
   if (options.fundingUtxo.vout !== 0) {

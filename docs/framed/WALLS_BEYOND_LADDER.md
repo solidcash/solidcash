@@ -1,10 +1,10 @@
 # Walls ahead of the ladder, predicted from the code (W2)
 
-**Re-confirmed at `0948e0d5d` (2026-10-04):** all 41 pinned replica cases pass under `PER_CALL_AHEAD=1`, so every
+**Re-confirmed at `0948e0d5d` (2026-10-04):** all 41 pinned replica cases pass under `FRAMED_AHEAD=1`, so every
 wall below still stands after `afc0727fb` (the root reads its own mapping values), `23a455e33` (two reads at one
 node) and `0948e0d5d` (grammar). Each replica pins today's refusal; its title says what should settle once served.
 
-Branch `feat/per-call` at `1fb6987a8`, scratch tree `st182-w2`, 2026-10-04. The ladder's 66 titles are expected
+Branch `feat/framed` at `1fb6987a8`, scratch tree `st182-w2`, 2026-10-04. The ladder's 66 titles are expected
 green; this report asks what ordinary Solidity contracts outside it will meet. Every wall below was predicted from
 the code first and then confirmed with one neutral replica, one run each, except where a run met a wall earlier
 than or different from the one predicted: `stored-value-keyed-write` took three runs, `role-admin-read-key` and
@@ -12,21 +12,21 @@ than or different from the one predicted: `stored-value-keyed-write` took three 
 
 ## 0. Method and numbers
 
-- **Census**: every named refusal and fail-closed throw on the per-call path: 352 throw sites in
-  `packages/solidcash/src/per-call/**`, 11 reasons handed to a thrower in `call/callees.ts` and
-  `proxy/external-calls.ts`, 24 throws in `packages/solidc/src/per-call/**` and the 43 refusal reasons the
-  compiler publishes from `solidc/src/per-call/master/support.ts` (`assessPerCallMasterShape`,
+- **Census**: every named refusal and fail-closed throw on the framed path: 352 throw sites in
+  `packages/solidcash/src/framed/**`, 11 reasons handed to a thrower in `call/callees.ts` and
+  `proxy/external-calls.ts`, 24 throws in `packages/solidc/src/framed/**` and the 43 refusal reasons the
+  compiler publishes from `solidc/src/framed/master/support.ts` (`assessFramedMasterShape`,
   `refusedEntries`). 441 rows, classified by rule and checked by hand where it mattered:
   **146 NOT-YET-SERVED**, 241 must-stay (integrity: malformed artifacts, deployments, drafts), 32 must-stay
   (semantics: a real revert, a value rule, the P2PKH caller, a balance of another address), 18 reporting
   wrappers, 4 operational (pool sizes). Full table in the appendix.
-- **Replicas**: `packages/solidcash/test/per-call/ahead/*.test.ts` (run only under `PER_CALL_AHEAD=1`), driven
+- **Replicas**: `packages/solidcash/test/framed/ahead/*.test.ts` (run only under `FRAMED_AHEAD=1`), driven
   through a shared harness `ahead/composition-world.ts`: sources are compiled the way a project compiles them
-  (`solidityImportCompat` + `composition: 'per-call'`; one case uses the fixture's project options),
-  deployed through `deployStatefulContract` (plain, what `deployContract` does) or `deployPerCallProxy`
-  (behind the generated proxy, what `upgrades.deployProxy` does), and entered through `callPerCallEntry` (the
-  plain call path a handle uses) or `callPerCallProxyEntry` (the hop). 12 files, 41 cases, all green as pinned
-  in one final run (9.7 s). `npx tsc -p tsconfig.per-call-tests.json` is clean.
+  (`solidityImportCompat` + `composition: 'framed'`; one case uses the fixture's project options),
+  deployed through `deployStatefulContract` (plain, what `deployContract` does) or `deployFramedProxy`
+  (behind the generated proxy, what `upgrades.deployProxy` does), and entered through `callFramedEntry` (the
+  plain call path a handle uses) or `callFramedProxyEntry` (the hop). 12 files, 41 cases, all green as pinned
+  in one final run (9.7 s). `npx tsc -p tsconfig.framed-tests.json` is clean.
 - **Frequency anchor** (static regex count over files with a contract, tests and mocks excluded; rough):
   solidity-by-example 137 files / MistSwap 66 / OpenZeppelin 5.0.2 63: payable function 33 / 20 / 8; native send
   out 30 / 5 / 3; emit inside a loop 0 / 5 / 1; keccak inside a loop 2 / 0 / 2 (`MerkleProof`); try/catch
@@ -47,7 +47,7 @@ avoids it.
 | 1 | The plain call path is not the hop: a contract deployed WITHOUT a proxy cannot make a call beside its own mapping write, call one token twice, pass an earlier call's result, write two collections, store a string per key, or have a constructor that writes two mappings | every non-upgradeable dApp contract that touches a token (vaults, staking, escrows, marketplaces, fee splits, sweeps) and every token whose constructor mints and records an admin | `call/call.ts` 584, `call/callees.ts` 318/339, `call/entry-records.ts` 762/786, `deploy/genesis.ts` 548 | `plain-root-calls`, `plain-root-writes`, `plain-genesis-writes` | named refusals |
 | 2 | `nonReentrant` on a proxied ROOT that calls out: a record field set before the call and restored after it | every OZ-style upgradeable entry that pulls or pays a token under ReentrancyGuard | `proxy/deploy.ts` 2113 (cause: 3249) | `guarded-vault-root` | unattributed (exhausted settle) |
 | 3 | A mapping write keyed by a scalar state variable: the id counter (`items[nextId]`, OZ v5 `_nextTokenId++`) and the stored recipient (`credit[treasury]`) | listings, escrows, proposals, NFT mints, fee crediting | compiler, `support.ts` 353 (`resolveBatchKey` -> `keyOperandUnavailable`) | `state-keyed-mapping-write` | named compile refusal; served (SK1) |
-| 4 | A mapping write keyed by a value read from another mapping ("credit the party the record names": `owed[deal.payee]`, `proceeds[listing.seller]`, OZ ERC721 `_balances[_ownerOf(id)]`) | escrows, marketplaces, OZ ERC721 transfer/burn | memory-copy spelling: codegen crash in `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation`; direct spelling: `proxy/entry-writes.ts` 977, `call/entry-records.ts` 271 | `stored-value-keyed-write` | crash, then named refusal; served (SK1, MK1, NF1) |
+| 4 | A mapping write keyed by a value read from another mapping ("credit the party the record names": `owed[deal.payee]`, `proceeds[listing.seller]`, OZ ERC721 `_balances[_ownerOf(id)]`) | escrows, marketplaces, OZ ERC721 transfer/burn | memory-copy spelling: codegen crash in `GenerateTargetTraversal.emitFramedBatchWitnessDerivation`; direct spelling: `proxy/entry-writes.ts` 977, `call/entry-records.ts` 271 | `stored-value-keyed-write` | crash, then named refusal; served (SK1, MK1, NF1) |
 | 5 | Native value through a proxy: no value in, no send out | payable entries of upgradeable contracts (sales, auctions, deposits, refunds in BCH) | `call/handle.ts` 182; implementation frame `value: 0n`, `sends: []` (`proxy/deploy.ts` 3414, 3429) | `proxied-native-value` | named (in), unattributed (out) |
 | 6 | AccessControl-shaped roles: a contract constant as a key, a `bytes32(0)` literal key, and the admin check whose key is a stored value | every OZ AccessControl user (`DEFAULT_ADMIN_ROLE`, `MINTER_ROLE`) - including its constructor or `initialize` | compiler `support.ts` 345; hop key evaluator (`stateful/route-expression-key.ts`, `evalComputedKey`); `proxy/entry-writes.ts` 920 | `role-admin-read-key` | named, unattributed, named |
 | 7 | A loop that emits, hashes or pays once per turn | batch airdrops/mints, Merkle-proof claims (`MerkleProof.verify`), refund loops | compiler `support.ts` 1972, 1985, 2404 | `loop-counted-tail` | named compile refusals |
@@ -57,8 +57,8 @@ avoids it.
 | 11 | Removing a member of an enumerable set: swap the last member in, pop, delete the position | OZ `EnumerableSet` users: AccessControlEnumerable, ERC721Enumerable, allowlist and staking sets | compiler `support.ts` 1193 (alias), then 386 (state form's key) | `enumerable-set` | named compile refusals |
 
 Also found: under the fixture's project options (`messageBus: true`) a plain escrow source does not compile at all:
-the message-bus route generated for `open(uint256,address,uint256)` fails its own type check (a route the per-call
-convention then discards). Pinned first in `stored-value-keyed-write`. Root (2.4 (1)): the per-call type check leaves
+the message-bus route generated for `open(uint256,address,uint256)` fails its own type check (a route the framed
+convention then discards). Pinned first in `stored-value-keyed-write`. Root (2.4 (1)): the framed type check leaves
 the derived sorted-batch operands out of every call, the route's too, which forwards one; the source compiles since
 SK1, at the admission ladder's narrower rung.
 
@@ -69,9 +69,9 @@ guarded vault (row 2) would settle: it is a wall.
 
 ## 2. The confirmed walls in detail
 
-SDK paths are under `packages/solidcash/src/per-call/` (the key evaluator under `packages/solidcash/src/stateful/`),
-compiler paths under `packages/solidc/src/` (`support.ts` is `per-call/master/support.ts`); replicas are under
-`packages/solidcash/test/per-call/ahead/`.
+SDK paths are under `packages/solidcash/src/framed/` (the key evaluator under `packages/solidcash/src/stateful/`),
+compiler paths under `packages/solidc/src/` (`support.ts` is `framed/master/support.ts`); replicas are under
+`packages/solidcash/test/framed/ahead/`.
 
 ### 2.1 The plain call path is not the hop (rank 1)
 
@@ -116,7 +116,7 @@ it means declaring the read at the creator's output as the hop does (`proxy/depl
 plans once more with `heldContinuations` and keeps that plan only when it settles. A mapping write beside a value
 call into a contract is refused by name (`call/call.ts` 929); the placement it needs is PL2's (`laid.place`, 1318),
 but the compiler fixes the segment of a write after a send only when it follows every call (a send widens the call
-range, `solidc/src/per-call/master/support.ts` 1258), and its test needs a funded container and a paid contract,
+range, `solidc/src/framed/master/support.ts` 1258), and its test needs a funded container and a paid contract,
 which `ahead/composition-world.ts` `enterPlain` (215) does not carry (`call/value-harness.ts` does). A plain burn through
 OpenZeppelin v5's `_update` (`from` debited, `to` = address(0) skipped, its kept predecessor `from`'s node) needs no
 rule of its own: the plain path lays its batch with the hop's `layBatchRecords`, so the skipped group continues from
@@ -127,8 +127,8 @@ Replicas: `plain-root-calls.test.ts` (4 cases, retired: the deposit, the payout 
 `plain-root-writes.test.ts` (3, retired); `plain-genesis-writes.test.ts`
 retired: **the constructor half is served** (agent C2: genesis learns each created node from the body's close and
 plans run-time loops and several collections; `deploy/constructor-loop-writes.test.ts`).
-A per-call artifact deployed without a proxy is entered by the SDK's handle through `callPerCallEntry`
-(`StatefulContract.createStatefulFunctionCall` -> `PerCallFunctionCall` -> `call/call.ts`), which plans with its own
+A framed artifact deployed without a proxy is entered by the SDK's handle through `callFramedEntry`
+(`StatefulContract.createStatefulFunctionCall` -> `FramedFunctionCall` -> `call/call.ts`), which plans with its own
 narrower planners (`call/entry-records.ts`, `call/callees.ts`). The ladder's roots are all proxied, so none of this
 is exercised there. Met texts, in order: a vault deposit (`token.transferFrom(...); deposits[msg.sender] += amount;`),
 a payout through one token twice, a sweep (`uint256 held = token.balanceOf(address(this)); token.transfer(to, held);`),
@@ -151,7 +151,7 @@ Read from the code but not run: a plain root calling a callee behind a proxy (`c
 proxy": a plain contract calling an upgradeable token), a callee that sends value, touches chunks or co-spends a
 side-car (264-268), a call guarded on an earlier result (321), the value-send combinations (`call.ts` 633-789).
 
-Likely root: two planners. `call/call.ts` (`callPerCallEntry`) plans the root's mapping writes with
+Likely root: two planners. `call/call.ts` (`callFramedEntry`) plans the root's mapping writes with
 `callEntryRecords` (one collection, no chunk runs, keys without the record's state) and its calls with
 `planEntryCallees`, which runs the hop's own `planHopExternalCalls` and then refuses whatever the plain layout does
 not place; `deploy/genesis.ts` (`planConstructorMapping`) plans one collection. The hop already serves each shape
@@ -200,12 +200,12 @@ proxy's own segments (`proxySegments`) read the same `writes` and must follow it
 
 **Served** (agent SK1): the master admits a key that reads a scalar of its own record and derives the slot from the
 record its frame declares, in the segment the body reads it in (`support.ts` `deriveKeyExpression`, emitted by
-`emitPerCallKeyExpression`); a key read after a straight-line write is that write's value, folded as the published
+`emitFramedKeyExpression`); a key read after a straight-line write is that write's value, folded as the published
 label folds it (`binop:+(state:nextId,lit:1)`). A key read behind a write no straight line folds (a branch, a loop, a
 function it invokes, a call between) or after calls the source does not fix is refused by name. The hop already
 resolved `state:` labels; the plain path now passes the deployment's state to `callEntryRecords`. The replica is
 retired into `call/state-keyed-mapping-write.test.ts` (the counter, `items[nextId++]`, `++nextId`, the stored
-recipient, both paths, a forged slot) and `solidc/test/per-call/master/state-value-key-write.test.ts` (the machine,
+recipient, both paths, a forged slot) and `solidc/test/framed/master/state-value-key-write.test.ts` (the machine,
 including a key read after a re-entered frame rewrote the value). Following locals into the emitted key also lets
 the memory-copy spelling of 2.4 compile.
 
@@ -217,12 +217,12 @@ the implementation's "create" entry is refused by the compiler (Registry.create(
 the implementation's "pay" entry is refused by the compiler (Registry.pay()): the body writes a mapping at slot N whose key 0 'state:treasury' reads the state value 'treasury', and a master derives ...
 ```
 
-Already pinned at compiler scale (`solidc/test/per-call/master/mapping-write.test.ts` 309,
+Already pinned at compiler scale (`solidc/test/framed/master/mapping-write.test.ts` 309,
 `composite-key-write.test.ts` 225) as a deliberate refusal; not on any assigned list. The ladder's escrow ids pass
 only because `Counters.Counter._value` is a field of a state struct, which the same check admits; OZ v5 removed
 `Counters`.
 
-Likely root: `solidc/src/per-call/master/support.ts` `keyOperandUnavailable` refuses a bare `StateAccessNode`
+Likely root: `solidc/src/framed/master/support.ts` `keyOperandUnavailable` refuses a bare `StateAccessNode`
 ("the bare state read is not addressable"), because the batch derivation is emitted before the body runs.
 
 Fix sketch: the record holding the field is declared in the frame's first segment, so the derivation can read the
@@ -238,7 +238,7 @@ ready: `evalComputedKey` resolves `state:` labels from the live record (`resolve
 
 - (2) SK1: the derivation emits the key with the local `d` followed to `deals[id]` (`deriveKeyExpression`), so the
   memory-copy spelling compiles, keyed as the direct one (`field:payee(map:deals(id:id))`).
-- (1) is no bus defect. Under `composition: 'per-call'` the type check resolves every call against the callee's
+- (1) is no bus defect. Under `composition: 'framed'` the type check resolves every call against the callee's
   declared parameters, the derived sorted-batch operands left out (`TypeCheckTraversal.callSiteParameterTypes`), but
   the kernel route forwards `__internal__vmapBatchTrailingCount` at the handler's own position, so each route call to
   an entry that writes a sorted mapping fails it: the first rung and the full recompile fail for BOTH spellings, and
@@ -254,7 +254,7 @@ ready: `evalComputedKey` resolves `state:` labels from the live record (`resolve
   body's own read, which proves the node is the one at the key, and the write binds its key's hash to the derived
   slot, so a group at another party is refused by the frame and a declaration naming another payee by settlement.
   Served in `call/stored-value-keyed-write.test.ts` (both spellings through the hop, an address-valued key through
-  the hop and the plain path, the forgeries) and `solidc/test/per-call/master/mapping-value-key-write.test.ts`.
+  the hop and the plain path, the forgeries) and `solidc/test/framed/master/mapping-value-key-write.test.ts`.
 - NF1: a key read out of a node the same body writes, OZ ERC721's `_balances[_ownerOf(id)] -= 1; ...;
   _owners[id] = to`. A batch target is read through the operands its own group yields, so the derivation runs in
   rounds (`support.ts` `batchDerivationOrder`, `buildBatchTargetsDerivationScript` `resume`/`continues`): the
@@ -266,7 +266,7 @@ ready: `evalComputedKey` resolves `state:` labels from the live record (`resolve
   read each other's nodes are refused by name. The hop keys the debit by `liveMappingValueReader`, which reads the
   node as the deployment, or the reaches of the hop before the frame (`rewrittenNodes`), left it: the view the
   frame's group begins with. Served in `call/written-node-keyed-write.test.ts` (mint, `transferFrom`,
-  `safeTransferFrom`, a debit moved to another party refused) and `solidc/test/per-call/master/
+  `safeTransferFrom`, a debit moved to another party refused) and `solidc/test/framed/master/
   written-node-key-write.test.ts` (transfer in both spellings, burn, mint; forged debit and record refused).
   Found on the way: the entry cache (`CacheMappingEntryInLoop`) took a key that reads a mapping as invariant when
   the body deletes that mapping's entry (`balances[owners[id]] -= 1; delete owners[id]`), so it wrote the debit
@@ -282,9 +282,9 @@ As W2 found it (`stored-value-keyed-write.test.ts`, 5 cases; it now pins the one
 flipped to served, in 3), three walls stood in line:
 
 1. Under the project options (`messageBus: true`) the unit does not compile (the message-bus route generated for
-   `open`, which the per-call convention then discards, fails its own type check).
-2. With the per-call options, the memory-copy spelling (`Deal memory d = deals[id]; owed[d.payee] += d.amount;`)
-   crashes code generation (`emitPerCallBatchWitnessDerivation` -> `visitFieldAccess` -> `visitIdentifier`).
+   `open`, which the framed convention then discards, fails its own type check).
+2. With the framed options, the memory-copy spelling (`Deal memory d = deals[id]; owed[d.payee] += d.amount;`)
+   crashes code generation (`emitFramedBatchWitnessDerivation` -> `visitFieldAccess` -> `visitIdentifier`).
 3. The direct spelling (`owed[deals[id].payee] += deals[id].amount`) compiles; the deal opens (control) and the
    release is refused, by the hop and by the plain path.
 
@@ -307,12 +307,12 @@ it), or refuse by name; (3) give `evalComputedKey` a node lookup for `map:<colle
 deployment's `nodesByCollection` (decode the node value, then `field:` selects the member), resolved in the plan's
 execution order so a node an earlier write in the same hop changed is read at that write's view (the hop already
 reads such nodes as kept read nodes in `calleeReadNodes`). (1) skip message-bus route generation when the
-composition is per-call, or fix the route's hidden-parameter arity.
+composition is framed, or fix the route's hidden-parameter arity.
 
 ### 2.5 Native value through a proxy (rank 5)
 
 **Served** for the hop's root (agent NV1), as spec 4b, V5 and V7 already state it: the proxy's root frame takes the
-call's value (`callPerCallProxyEntry` `value`, and a handle's `withValue`), paid by the caller into a satoshi
+call's value (`callFramedProxyEntry` `value`, and a handle's `withValue`), paid by the caller into a satoshi
 container of the proxy, and the delegate frame carries the same value as its `msg.value`; the implementation's sends,
 a send per loop turn among them, follow a container of the proxy in a run and are paid from the proxy's containers,
 each lock and amount learned from the body's own pin as the plain path learns them (`proxy/hop-value.ts`). A send on a
@@ -335,7 +335,7 @@ typed callee with no value (`buildHopPlan`, `proxy/deploy.ts`; pinned in `ahead/
 callee frame's own value call is not learned yet, since only the root's closes are read for one.
 
 Replica (as first met): `proxied-native-value.test.ts` (3 cases). Value in is refused by the handle
-(`callPerCallProxyEntry` has no `value` option at all); a send out fails in the frame, which reads its send slot and
+(`callFramedProxyEntry` has no `value` option at all); a send out fails in the frame, which reads its send slot and
 finds the no-index sentinel:
 
 ```text
@@ -346,7 +346,7 @@ the implementation's "withdraw" entry did not settle through the proxy: frame "i
 Likely root: `proxy/deploy.ts` states the proxy's ROOT frame and the implementation's DELEGATE frame with
 `value: 0n` and `sends: []` (3384-3430), and the hop reads no satoshi containers. Fix sketch: carry the call's
 value on the proxy's root frame (paid into the proxy's containers) and keep it as the delegate frame's `msg.value`;
-plan the implementation's sends the way `callPerCallEntry` plans `entry.transfers` (recipient recipes, payees,
+plan the implementation's sends the way `callFramedEntry` plans `entry.transfers` (recipient recipes, payees,
 `readSatoshiContainers` of the proxy category). This falls out of 2.1's fix if the two paths share one settle.
 
 ### 2.6 AccessControl-shaped roles (rank 6)
@@ -418,7 +418,7 @@ a keccak256 call inside a loop reads one compute side-car per turn, which the ma
 a value send inside a loop makes the send count depend on the loop, so the master cannot fix how many sends the tail holds
 ```
 
-Root: `support.ts` `assessPerCallMasterShape` (1972, 1985, 2404): the head fixes the event and send regions and
+Root: `support.ts` `assessFramedMasterShape` (1972, 1985, 2404): the head fixes the event and send regions and
 the side-car positions per body. Fix sketch: the run-time position mode calls already use (a block declares the
 count; the body binds the k-th record from a counter) applied to the event and send regions and to side-car
 offsets; the hop sizes them from the loop's iteration domain as `occurrenceCountOf` does for calls. A constructor
@@ -526,7 +526,7 @@ The walls, in order:
 
 1. **The swap-remove alias** (both forms). A write that a `delete` of another key of one mapping follows is marked
    `aliasCondDeleteSlot` (`SymbolTableTraversal.ts` 11358); the direct convention gates the write off where the two
-   keys meet (GTT 25078), and a per-call master derives no batch with such a target (`support.ts` 983, 1193). In a
+   keys meet (GTT 25078), and a framed master derives no batch with such a target (`support.ts` 983, 1193). In a
    consistent set `if (valueIndex != lastIndex)` keeps the keys apart wherever the write runs; the compiler cannot
    see that.
 2. **The state form's key**: the array's last element, whose bytes live in the frame's chunk run (`support.ts` 557-569;
@@ -544,7 +544,7 @@ The walls, in order:
    learns from the body's close (`entry-writes.ts` 1157-1174); the state form's run shortens, sized from its record's
    declared length (`planHopDynamicRun`).
 
-Plan: (a) admit `aliasCondDeleteSlot` in a per-call master (`support.ts` 983, 1193; `runtimeAliasPriorSlots` stays
+Plan: (a) admit `aliasCondDeleteSlot` in a framed master (`support.ts` 983, 1193; `runtimeAliasPriorSlots` stays
 refused), the marked write a target its frame may skip; (b) skip the distinct-target comparison for a pair one of
 whose targets is declared skipped (`PredOut` -2; GTT 29109, the general arm); (c) let a skipped target whose slot
 another target writes keep the key's predecessor (`mapping-plan.ts` 418, 463), and have the hop declare the write
@@ -603,9 +603,9 @@ a framed array (a count, then the elements), while such an array is stored as th
 (`entries += 1; ping(); stamps.push(); notes.push()`) is refused at the call: `... did not settle through the proxy:
 frame "implementation-master" of Journal.log() at line 56: no source message (Program failed an OP_VERIFY
 operation.)`. Served (agent DV3): the frame closes a record at each call while it holds none of the record's dynamic
-fields (`perCallRecordsWrittenHere`), so its close at the call held the count against a declaration the hop kept,
+fields (`framedRecordsWrittenHere`), so its close at the call held the count against a declaration the hop kept,
 because a record a dynamic write sizes was published as written in the last segment alone
-(`perCallRecordWriteSegments`). The record is now published written in each segment a write of its other fields lands
+(`framedRecordWriteSegments`). The record is now published written in each segment a write of its other fields lands
 in before the frame first holds a dynamic field of it (the outermost branch or loop around that write holds it from
 its start), and in the last; the hop chains the two declarations. A framed run grown by a bare `push()` that another
 run follows is laid at the width its record declares, as a stated one is. Still predicted, not run: a callee frame
@@ -614,12 +614,12 @@ callee that writes two dynamic values keeps a run another follows at the live wi
 
 ## 4. Replicas to land
 
-All under `packages/solidcash/test/per-call/ahead/`, skipped unless `PER_CALL_AHEAD=1`; each case pins what is met
+All under `packages/solidcash/test/framed/ahead/`, skipped unless `FRAMED_AHEAD=1`; each case pins what is met
 today and its title says what should settle once served.
 
 | File | Cases | Pins |
 | --- | --- | --- |
-| `composition-world.ts` | - | shared harness: project/per-call compile, plain and proxied deploy, both call paths, `recordMet` |
+| `composition-world.ts` | - | shared harness: project/framed compile, plain and proxied deploy, both call paths, `recordMet` |
 | `plain-root-calls.test.ts` | 2 | 2.1, retired: served (`call/plain-root-calls.test.ts`) |
 | `plain-root-writes.test.ts` | 3 | 2.1, retired: served (`call/plain-root-writes.test.ts`) |
 | `plain-genesis-writes.test.ts` | 2 | 2.1, retired: served (`deploy/constructor-loop-writes.test.ts`) |
@@ -635,14 +635,14 @@ today and its title says what should settle once served.
 | `enumerable-set.test.ts` | 2 | 2.11: the state form's key (group-form removal served in `call/enumerable-set`) |
 | `field-before-call-beside-runs.test.ts` | 1 | section 3, retired: served (`call/dynamic-run-order.test.ts`) |
 
-Run: `PER_CALL_AHEAD=1 yarn workspace solidcash vitest run --config vitest.per-call.config.ts test/per-call/ahead/<file>`.
+Run: `FRAMED_AHEAD=1 yarn workspace solidcash vitest run --config vitest.framed.config.ts test/framed/ahead/<file>`.
 `recordMet` writes the met text to `$AHEAD_OBSERVE_DIR/met.txt` when that is set (used for the unattributed walls).
 
 ## 5. NOT-YET-SERVED census, ranked
 
 H = most ordinary contracts with the shape's feature meet it; M = a common pattern; L = specialised. "conf." = a
 replica above confirms it. Refreshed against `403683a74` (agent CS1, read from the code, not run): sites are
-`solidc/src/per-call/master/` (`support.ts`, `lifecycle.ts`) and `solidcash/src/per-call/` by base name, with
+`solidc/src/framed/master/` (`support.ts`, `lifecycle.ts`) and `solidcash/src/framed/` by base name, with
 `proxy/deploy.ts` for the hop. Open rows first, by likelihood in real contracts; served rows after them. The
 appendix keeps the census's original lines.
 
@@ -720,7 +720,7 @@ artifacts, deployments, drafts and txids.
 
 ## Appendix: the full census
 
-Every throw site and published refusal reason on the per-call path, by file and line, with the head of its
+Every throw site and published refusal reason on the framed path, by file and line, with the head of its
 message (`...` stands for an interpolated value) and its class. Classes: GAP (not yet served), MUST-STAY
 (integrity) for checks over malformed artifacts, deployments, drafts and transactions, MUST-STAY (semantics) for
 a rule the EVM or BCH itself imposes, REPORT for wrappers that attribute a frame's own failure, OPERATIONAL for
@@ -729,444 +729,444 @@ section 5.
 
 | Site | Thrown as | Shape / message (head) | Class |
 | --- | --- | --- | --- |
-| solidc/src/per-call/master/composition.ts:36 | SolidcDiagnosticError | unknown composition convention '...'; expected one of ..., { requested, supported: COMPOSITION_CONVENTIONS } | MUST-STAY (integrity) |
-| solidc/src/per-call/master/composition.ts:53 | SolidcDiagnosticError | unknown composition convention '...'; expected one of ..., { requested: convention, supported: COMPOSITION_CONVENTIONS } | MUST-STAY (integrity) |
-| solidc/src/per-call/master/lifecycle.ts:174 | SolidcDiagnosticError | the per-call composition convention does not support this contract: ..., { requested: 'per-call', reason, contract: contract.name } | GAP |
-| solidc/src/per-call/master/master-program.ts:61 | SolidcDiagnosticError | the compiled master does not contain a reserved ...-byte category slot before its address slot', { matches: thirtyTwoByteSlots, addressOffset } | MUST-STAY (integrity) |
-| solidc/src/per-call/master/master-program.ts:71 | SolidcDiagnosticError | the compiled master does not contain a reserved ...-byte validator program hash slot after its address slot', { matches: thirtyTwoByteSlots, addressOffset } | MUST-STAY (integrity) |
-| solidc/src/per-call/master/master-program.ts:114 | SolidcDiagnosticError | 'the census address offset did not settle on the reserved address slot', {} | MUST-STAY (integrity) |
-| solidc/src/per-call/master/master-program.ts:233 | SolidcDiagnosticError | the census address offset at byte ... is not one script element, { start: site.start, end: site.end } | MUST-STAY (integrity) |
-| solidc/src/per-call/master/master-program.ts:243 | SolidcDiagnosticError | the compiled master reserves its ... slot more than once, so no single offset identifies it, { slot: what, matches: offsets } | MUST-STAY (integrity) |
-| solidc/src/per-call/master/master-program.ts:250 | SolidcDiagnosticError | the compiled master does not contain its reserved ... slot, { slot: what } | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:40 | PerCallEncodingError | a slot holds at least one byte: got ... | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:44 | PerCallEncodingError | a slot above 65535 bytes is not representable: got ... | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:55 | PerCallEncodingError | a slot above 65535 bytes is not representable: got ... | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:98 | PerCallEncodingError | unsupported placeholder version: ... | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:102 | PerCallEncodingError | ... slot at ... is outside a ...-byte script | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:109 | PerCallEncodingError | ... slot at ... is not a reserved ...-byte zero push | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:136 | PerCallEncodingError | a category is ... bytes: got ... | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:141 | PerCallEncodingError | a contract address is ... bytes: got ... | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:148 | PerCallEncodingError | 'the descriptor declares a validator program hash slot, so a value is required' | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:151 | PerCallEncodingError | a validator program hash is ... bytes: got ... | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:156 | PerCallEncodingError | 'the descriptor declares no validator program hash slot, so none can be filled' | MUST-STAY (integrity) |
-| solidc/src/per-call/master/placeholders.ts:180 | PerCallEncodingError | slot at ... is outside a ...-byte script | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:308 | refusedEntries | the body writes a mapping at slot N with no key K source to read | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:325 | refusedEntries | the body writes a mapping at slot N whose key K names the parameter ... it does not declare | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:335 | refusedEntries | the body writes a mapping at slot N whose key K ... has no expression to read | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:345 | refusedEntries | the body writes a mapping at slot N whose key K ... is the local ..., which is not bound to a single compile-time value (also: a contract constant used bare as a key) | GAP |
-| solidc/src/per-call/master/support.ts:353 | refusedEntries | the body writes a mapping at slot N whose key K ... reads <the state value X / the mapping entry X / the value computed by f / an element of the dynamic state array X> | GAP |
-| solidc/src/per-call/master/support.ts:662 | refusedEntries | the body writes a mapping at slot N as a read/write/..., and a master derives the sorted-batch operands only for one write per target | GAP |
-| solidc/src/per-call/master/support.ts:667 | refusedEntries | the body writes a mapping at slot N in a loop, so the records it declares are not a fixed set | GAP |
-| solidc/src/per-call/master/support.ts:670 | refusedEntries | the body writes a mapping at slot N that can alias another target at run time (message-bus routes only) | MUST-STAY (semantics) |
-| solidc/src/per-call/master/support.ts:678 | refusedEntries | the body touches mapping "..." outside its batch as ...(in a loop) | GAP |
-| solidc/src/per-call/master/support.ts:682 | refusedEntries | the body writes a mapping in a shape whose record the master cannot read back from its own frame | GAP |
-| solidc/src/per-call/master/support.ts:1902 | contract refused | a contract with no entry point is not supported | MUST-STAY (semantics) |
-| solidc/src/per-call/master/support.ts:1909 | contract refused | contract creation needs the witness CREATE checks, which are not emitted yet | GAP |
-| solidc/src/per-call/master/support.ts:1912 | contract refused | a function pointer needs a call kind the frame does not carry yet | GAP |
-| solidc/src/per-call/master/support.ts:1943 | refusedEntries | inline assembly is not composed per-call (assembly the lowering left in the body) | GAP |
-| solidc/src/per-call/master/support.ts:1953 | refusedEntries | the body reads a long mapping value once per loop turn, and the frame's block lists one value per slot | GAP |
-| solidc/src/per-call/master/support.ts:1959 | refusedEntries | a proxy implementation's entry compiled for the direct convention (hidden proxy master index) | MUST-STAY (semantics) |
-| solidc/src/per-call/master/support.ts:1966 | refusedEntries | the body carries the hidden parameter ..., which the master head does not supply | GAP |
-| solidc/src/per-call/master/support.ts:1972 | refusedEntries | an event emitted from a loop makes the event count depend on the loop | GAP |
-| solidc/src/per-call/master/support.ts:1980 | refusedEntries | a blockhash read needs a co-spent oracle input the master head does not locate | GAP |
-| solidc/src/per-call/master/support.ts:1985 | refusedEntries | a keccak256 call inside a loop reads one compute side-car per turn | GAP |
-| solidc/src/per-call/master/support.ts:1991 | refusedEntries | an ecrecover loop reads one recovery side-car pair per iteration | GAP |
-| solidc/src/per-call/master/support.ts:1995 | refusedEntries | the body makes an external call and is invoked as its own subroutine | GAP |
-| solidc/src/per-call/master/support.ts:2002 | refusedEntries | the body reads the balance of an address other than its own | MUST-STAY (semantics) |
-| solidc/src/per-call/master/support.ts:2006 | refusedEntries | the body reads its contract's balance and is invoked as its own subroutine | GAP |
-| solidc/src/per-call/master/support.ts:2015 | refusedEntries | a loop guard the published recipe cannot carry (UnpublishableLoopGuardError, found by codegen) | GAP |
-| solidc/src/per-call/master/support.ts:2029 | refusedEntries | the constructor reads the balance of an address other than its own | MUST-STAY (semantics) |
-| solidc/src/per-call/master/support.ts:2032 | refusedEntries | the constructor reads its contract's balance, which no genesis shows | MUST-STAY (semantics) |
-| solidc/src/per-call/master/support.ts:2074 | refusedEntries | the body derives a verified-mapping write and is invoked by a caller after an external call | GAP |
-| solidc/src/per-call/master/support.ts:2091 | refusedEntries | it runs ..., which the master cannot serve: ... (closure over invocations) | GAP |
-| solidc/src/per-call/master/support.ts:2110 | refusedEntries | a verified-mapping write ... does not precede the calls (write segment unread) | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:2329 | refusedEntries | the constructor makes an external call / a value send / reads a blockhash / hidden parameter | GAP |
-| solidc/src/per-call/master/support.ts:2354 | refusedEntries | the entry point returns a tuple/mapping/function pointer/token container (composite return) | GAP |
-| solidc/src/per-call/master/support.ts:2404 | refusedEntries | a value send inside a loop makes the send count depend on the loop | GAP |
-| solidc/src/per-call/master/support.ts:2459 | contract refused | the contract emits an event that is not attributed to a body | GAP |
-| solidc/src/per-call/master/support.ts:2840 | refusedEntries | a low-level call needs the witness calls[] checks, which are not emitted yet (any low-level call but a forwarding delegatecall) | GAP |
-| solidc/src/per-call/master/support.ts:2960 | refusedEntries | the body both forwards its own call data and makes a typed external call | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:2973 | refusedEntries | the body forwards its own call data conditionally | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:2985 | refusedEntries | the body writes a verified mapping behind a call whose occurrence the source does not fix | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:2996 | refusedEntries | the call to ... is a delegatecall (typed), whose callee runs on its caller's records | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:3004 | refusedEntries | the call to ... is a <call mode> the master head has no frame kind for | GAP |
-| solidc/src/per-call/master/support.ts:3013 | refusedEntries | the call to ... is in a body that switches / whose call count a branch or loop in an expression decides | GAP |
-| solidc/src/per-call/master/support.ts:3018 | refusedEntries | the call to ... runs repeatedly (loopArrayVar / inline loop dispatch / batch invocations) | GAP |
-| solidc/src/per-call/master/support.ts:3022 | refusedEntries | the call to ... resolves its callee or its selector at run time | GAP |
-| solidc/src/per-call/master/support.ts:3030 | refusedEntries | the call to ... takes the direct path's return-event or value-transfer machinery (opaque return / call value) | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:3039 | refusedEntries | the call to ... has no four-byte selector the master head can check | MUST-STAY (integrity) |
-| solidc/src/per-call/master/support.ts:3095 | refusedEntries | the call to ... targets the transaction's own sender (msg.sender as call target) | GAP |
-| solidc/src/per-call/master/support.ts:3101 | refusedEntries | the call to ... targets an address the caller's own code does not hold as one value | GAP |
-| solidc/src/per-call/master/support.ts:3135 | refusedEntries | the call to ... passes arguments the compiler cannot recover | GAP |
-| solidc/src/per-call/master/support.ts:3148 | refusedEntries | the call to ... passes a run-time argument whose value the compiler cannot encode into one push | GAP |
-| solidc/src/per-call/upgrade-layout.ts:24 | SolidcDiagnosticError | "..." ..., { contract, ...context } | MUST-STAY (semantics) |
-| solidc/src/per-call/validator/program.ts:408 | RangeError | not an opcode: ... | MUST-STAY (integrity) |
-| solidc/src/per-call/validator/program.ts:429 | RangeError | a program constant is 0.....: got ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:357 | PerCallCallError | contract "..." has no receive(), so ... has no body to run | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:360 | PerCallCallError | contract "..." has no receive() and its fallback() is not payable, so it refuses ... | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:371 | PerCallCallError | artifact "..." publishes no entry "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:374 | PerCallCallError | entry "..." publishes no selector, so its frame cannot be dispatched to | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:409 | PerCallCallError | entry "..." has no parameter ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:476 | PerCallCallError | artifact "..." is not a stateful contract | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:479 | PerCallCallError | a root frame's caller is a 25-byte P2PKH lock; got ... bytes | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:485 | PerCallCallError | a call carries no negative value; got ... | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:487 | PerCallCallError | entry "..." is not payable, so a call to it carries no value | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:490 | PerCallCallError | a call to the fallback() of "..." carries a value send's empty call data, so it takes no argument' | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:516 | PerCallCallError | contract "..." has ... dispatched body(ies), so a user's frame to it carries no selector, which this call path does not plan yet' | GAP |
-| solidcash/src/per-call/call/call.ts:534 | PerCallCallError | category ... holds no master, which a root frame runs on | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:538 | PerCallCallError | category ... holds no validator, which a root frame needs to be admitted | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:541 | PerCallCallError | category ... holds ... data-NFT record(s), and the layout names ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:550 | PerCallCallError | the record at data-NFT index ... carries no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:579 | PerCallCallError | error.message | REPORT |
-| solidcash/src/per-call/call/call.ts:584 | PerCallCallError | entry "..." writes mapping "..." and makes ... external call(s), whose segments this call path does not place its writes in yet' | GAP |
-| solidcash/src/per-call/call/call.ts:622 | PerCallCallError | entry "..." sends to the contract at ..., which the call's externals do not name | GAP |
-| solidcash/src/per-call/call/call.ts:633 | PerCallCallError | ... makes a call, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/call.ts:644 | PerCallCallError | contract "..." at category ... holds no master or not every record its layout names' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:661 | PerCallCallError | ... sends to a contract, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/call.ts:700 | PerCallCallError | entry "..." pays one contract through two calls, which would need two of its masters to take value | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:707 | PerCallCallError | entry "..." writes mapping "..." and makes ... external call(s), whose segments this call path does not place its writes in yet' | GAP |
-| solidcash/src/per-call/call/call.ts:717 | PerCallCallError | entry "..." sends value to a contract and makes ... external call(s), and its artifact does not place the sends among the calls, so this call path does not plan both in one call yet' | GAP |
-| solidcash/src/per-call/call/call.ts:738 | PerCallCallError | ... and the paid body writes a mapping, sends or emits, which this call path does not plan beside the callee frames yet' | GAP |
-| solidcash/src/per-call/call/call.ts:742 | PerCallCallError | ... and a callee frame of it writes its records, whose views beside the paid body this call path does not chain yet' | GAP |
-| solidcash/src/per-call/call/call.ts:789 | PerCallCallError | entry "..." pays "...", which its calls also reach, and the frame "..." reads its data records of it side by side, and no order of the records the other frames of that contract name keep | GAP |
-| solidcash/src/per-call/call/call.ts:902 | PerCallCallError | contract "..." holds ... satoshis in its containers, and entry ..." sends ... more than the call brings | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:918 | PerCallCallError | contract "..." holds ... satoshis in its containers, and entry "... sends ... more than the call brings | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:948 | PerCallCallError | contract "..." holds ... satoshis in its containers, and the body entry ..." pays sends ... more than it receives | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:991 | PerCallCallError | entry "...": ... | GAP |
-| solidcash/src/per-call/call/call.ts:1516 | PerCallCallError | 'the composer built no draft for the call frame' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1528 | PerCallCallError | a contract entry "..." pays did not hand back every event payload and node it writes, so its frame cannot declare them' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1534 | PerCallCallError | the call's write to mapping "..." did not hand back every node it rewrites, so the frame cannot declare their commitments' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1540 | PerCallCallError | entry "..." did not hand back every event payload it emits, so its frame cannot declare its event outputs' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1546 | PerCallCallError | entry "..." did not hand back the amount of every value it sends to a contract, so its frame cannot record the calls' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1552 | PerCallCallError | entry "..." did not hand back the lock and amount of every send it makes, so its frame cannot list its send outputs' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1557 | PerCallCallError | entry "..." did not hand back the value it returns, so its frame's \retval\ cannot be stated | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1565 | PerCallCallError | 'the composer built no transaction for the call frame' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1618 | PerCallCallError | the call's output for record "..." carries no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1715 | PerCallCallError | 'the caller funding unlocker signs for a lock that is not the call\'s caller lock, so the root frame\'s msg.sender binding would not hold' | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/call.ts:1733 | PerCallCallError | the derived call carries no input for participant "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1743 | PerCallCallError | the deployment holds no live UTXO for the call's "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1746 | PerCallCallError | the call's "..." holds ... satoshis, but the derived call spends ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1766 | PerCallCallError | the derived call carries no container input at ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/call.ts:1791 | PerCallCallError | the provider returned txid ... for the call, not the ... its bytes hash to | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/callees.ts:258 | PerCallCalleeError | the callee "..." is entered as a delegate frame, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/callees.ts:261 | PerCallCalleeError | the callee "..." sits behind a proxy, whose delegate frame this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/callees.ts:264 | PerCallCalleeError | the callee "..." sends value, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/callees.ts:266 | PerCallCalleeError | the callee "..." touches a dynamic value's or a mapping value's chunks, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/callees.ts:268 | PerCallCalleeError | the callee "..." co-spends a side-car, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/callees.ts:271 | PerCallCalleeError | the callee "..." writes in a segment its artifact does not fix, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/callees.ts:289 | PerCallCalleeError | entry "..." makes ... external call(s): ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/callees.ts:318 | PerCallCalleeError | ... reads an earlier call's result, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/callees.ts:321 | PerCallCalleeError | a call is guarded on an earlier call's result, which this call path does not plan yet | GAP |
-| solidcash/src/per-call/call/callees.ts:335 | PerCallCalleeError | it reaches two deployments of "...", whose blocks and records this call path does not tell apart yet | GAP |
-| solidcash/src/per-call/call/callees.ts:339 | PerCallCalleeError | it enters "..." N times and a frame of it writes its mapping nodes, whose views across the frames this call path does not chain yet | GAP |
-| solidcash/src/per-call/call/callees.ts:349 | PerCallCalleeError | the callee "..." reads its data records of "..." side by side, and no order of the records the call's other frames of that contract name keeps them so | GAP |
-| solidcash/src/per-call/call/entry-records.ts:271 | PerCallCallRecordError | entry "..." touches mapping "..." at a key the frame's arguments do not determine (...) | GAP |
-| solidcash/src/per-call/call/entry-records.ts:346 | PerCallCallRecordError | entry "..." writes mapping "..." in a run-time loop over "...", whose key the artifact does not publish as an element of that array' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:354 | PerCallCallRecordError | entry "..." writes mapping "..." in a run-time loop whose key names no counter to walk it with' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:362 | PerCallCallRecordError | entry "..." writes mapping "..." in a run-time loop over "...", which the frame's arguments do not carry as an array" | GAP |
-| solidcash/src/per-call/call/entry-records.ts:392 | PerCallCallRecordError | entry "..." writes mapping "..." at turn ... of "... under a key the frame's arguments do not determine (...) | GAP |
-| solidcash/src/per-call/call/entry-records.ts:421 | PerCallCallRecordError | entry "..." writes mapping "..." at turn ... of ..." under a key that does not sit above the turn before it, and a loop whose value comes per key... keeps the caller's order, which the run-t | GAP |
-| solidcash/src/per-call/call/entry-records.ts:582 | PerCallCallRecordError | entry "..." writes mapping "..." in ... run-time loop(s) whose turns touch one node twice, which one run of their records cannot declare' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:695 | PerCallCallRecordError | artifact "..." publishes no entry "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/entry-records.ts:701 | PerCallCallRecordError | entry "..." publishes no mapping access at entry slot ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/entry-records.ts:708 | PerCallCallRecordError | entry "..." reads mapping "...", which the artifact does not publish as a collection' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/entry-records.ts:718 | PerCallCallRecordError | category ... holds a node of collection "..." with no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/entry-records.ts:733 | PerCallCallRecordError | category ... holds no node of collection "..." whose slot is the key's or the key\'s bracketing predecessor, so the read cannot locate what it reads' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/entry-records.ts:762 | PerCallCallRecordError | entry "..." touches ... mapping entry(ies) across ... sorted batch(es), and a call declares one collection\'s writes' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:773 | PerCallCallRecordError | entry "..." writes mapping "...", which the artifact does not publish as a sorted collection' | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/entry-records.ts:781 | PerCallCallRecordError | entry "..."'s sorted batch names a slot its entry accesses do not describe | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/entry-records.ts:786 | PerCallCallRecordError | entry "..." writes mapping "...", whose values chunk, so the created node\'s run of chunk records cannot be declared from the call alone' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:797 | PerCallCallRecordError | category ... holds a mapping node of "..." with no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/call/entry-records.ts:818 | PerCallCallRecordError | entry "..." touches mapping "..." as ..., and a call plans one write per target' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:879 | PerCallCallRecordError | entry "..." writes mapping "..." at ... turn(s) of ...", a run-time loop whose per-turn records a call does not declare yet | GAP |
-| solidcash/src/per-call/call/entry-records.ts:884 | PerCallCallRecordError | entry "..." touches mapping "..." as ... outside a sorted batch, which a call does not plan' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:897 | PerCallCallRecordError | entry "..." reads a mapping key at no fixed entry slot, which a call does not declare a node for' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:911 | PerCallCallRecordError | entry "..." reads a ...-byte value of mapping "..." whose bytes sit in chunk records, which a call does not declare' | GAP |
-| solidcash/src/per-call/call/entry-records.ts:947 | PerCallCallRecordError | entry "..." reads a key at a mapping node it also spends for another key, which a call cannot spend twice' | GAP |
-| solidcash/src/per-call/call/handle.ts:75 | PerCallCallError | 'a call carries no negative value' | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/handle.ts:77 | PerCallCallError | entry "..." is not payable, so a call to it carries no value | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/handle.ts:103 | PerCallCompositionRefusedError | refusal | REPORT |
-| solidcash/src/per-call/call/handle.ts:106 | PerCallCallError | the call to "..." was refused, so nothing was broadcast: ... | REPORT |
-| solidcash/src/per-call/call/handle.ts:139 | PerCallCallError | a call to "..." needs the signer whose coin enters the frame; connect one to the handle | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/handle.ts:167 | PerCallCallError | the caller's address ... holds no tokenless UTXO to pay the call with | MUST-STAY (semantics) |
-| solidcash/src/per-call/call/handle.ts:182 | PerCallCallError | a call to "..." through a proxy carries no value: a delegate frame takes none yet | GAP |
-| solidcash/src/per-call/call/handle.ts:250 | PerCallCompositionRefusedError | read.refusal | REPORT |
-| solidcash/src/per-call/call/handle.ts:251 | PerCallReadError | the read of "..." was refused, so it returned no value: ... | REPORT |
-| solidcash/src/per-call/call/side-cars.ts:92 | PerCallSideCarPoolError | the entry co-spends ... ...(s) at the shared covenant lock, and the network holds ... | OPERATIONAL (pool size) |
-| solidcash/src/per-call/composer/assemble.ts:212 | PerCallEncodingError | the block for "..." hosts validator "...", which the plan does not name | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:219 | PerCallEncodingError | "..." is covered by more than one validator | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:314 | PerCallEncodingError | the plan lists events at [...], and the trailing region puts them at [...] | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:320 | PerCallEncodingError | the plan lists sends at [...], and the trailing region puts them at [...] | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:328 | PerCallEncodingError | the plan creates records at [...], and the trailing region puts them at [...] | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:348 | PerCallEncodingError | a settlement lists created output ..., which the plan's trailing region does not create | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:379 | PerCallEncodingError | master "..." calls itself, which the format refuses | MUST-STAY (semantics) |
-| solidcash/src/per-call/composer/assemble.ts:383 | PerCallEncodingError | the call from "..." to "..." does not begin with a ...-byte selector | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:389 | PerCallEncodingError | "..." is called with different arguments by more than one caller, so its single input cannot carry both' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:404 | PerCallEncodingError | "..." is entered by a user, so it carries no call data | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:411 | PerCallEncodingError | "..." carries call data its caller did not record | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:442 | PerCallEncodingError | "..." is both a participant and a user input | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:449 | UnresolvedReferenceError | reference, what | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:468 | PerCallEncodingError | master "..." calls itself, which the format refuses | MUST-STAY (semantics) |
-| solidcash/src/per-call/composer/assemble.ts:545 | PerCallEncodingError | 'a call carries at least its selector' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/assemble.ts:557 | PerCallEncodingError | input "..." sits at ..., outside the layout's participants | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:419 | CompositionDraftError | the call to "..." carries no selector | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:426 | CompositionDraftError | ... "..." has no input in this draft | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:469 | CompositionDraftError | "..." declares record ... in segment ... as carrying on from a declaration it does not have' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:493 | CompositionDraftError | a computed witness of "..." reuses a placeholder | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:506 | CompositionDraftError | "..." is both a participant and a user input | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:551 | CompositionDraftError | the validator "..." was not assembled | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:564 | CompositionDraftError | two inputs claim index ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:568 | CompositionDraftError | no input sits at index ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:581 | CompositionDraftError | input "..." has no source output | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:658 | CompositionDraftError | input "..." is not a master, a validator or a facet, so it needs unlocking bytecode | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:752 | CompositionDraftError | a computed witness of "..." settles "...", which the plan does not spend | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:810 | CompositionDraftError | "..." publishes no call ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:814 | CompositionDraftError | "..." calls "...", which the plan does not run | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:837 | CompositionDraftError | no block for master "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:841 | CompositionDraftError | no master "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/draft.ts:846 | CompositionDraftError | no master "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/need-test.ts:143 | ValidatorCoverageError | entry.facts.contract, entry.facts.functionName, need.reasons | REPORT |
-| solidcash/src/per-call/composer/need-test.ts:148 | ValidatorCoverageError | entry.facts.contract, entry.facts.functionName, [...objections] | REPORT |
-| solidcash/src/per-call/composer/recovery.ts:130 | PerCallEncodingError | the supplied pool holds no ... side-car UTXO for side-car ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/recovery.ts:191 | PerCallEncodingError | the body binds a ...-byte recovery argument, not the ... of hash // v // r // s | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/recovery.ts:279 | PerCallEncodingError | no placeholder recovery for "..." splits its ladder: ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/recovery.ts:373 | PerCallEncodingError | the entry takes ... parameter(s) and its unlocking bytecode carries ... argument push(es)' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/recovery.ts:381 | PerCallEncodingError | the entry has no parameter '...' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/recovery.ts:423 | PerCallEncodingError | the entry takes ... parameter(s) and its unlocking bytecode carries ... argument push(es)' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/recovery.ts:431 | PerCallEncodingError | the entry has no parameter '...' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/refusal.ts:493 | PerCallCompositionRefusedError | report | REPORT |
-| solidcash/src/per-call/composer/refusals.ts:38 | PerCallComposerError | contract "..." needs ... master ... but its pool holds ... | OPERATIONAL (pool size) |
-| solidcash/src/per-call/composer/refusals.ts:49 | PerCallComposerError | contract "..." roots this composition but has no validator | OPERATIONAL (pool size) |
-| solidcash/src/per-call/composer/refusals.ts:66 | PerCallComposerError | no run learned the view the plan left unstated at ......, so its placeholder would reach the transaction' | REPORT |
-| solidcash/src/per-call/composer/refusals.ts:84 | PerCallComposerError | master "..." of ... filled no witness at site ... (...)... | REPORT |
-| solidcash/src/per-call/composer/refusals.ts:96 | PerCallComposerError | a mapping write targets slot ... but its inventory holds no predecessor below it | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/refusals.ts:107 | PerCallComposerError | a sorted batch writes slot ... more than once | GAP |
-| solidcash/src/per-call/composer/refusals.ts:119 | PerCallComposerError | the mapping node at slot ... is written again in the segment that created it; plan the segment\'s writes as one sorted batch (planMappingBatch)' | GAP |
-| solidcash/src/per-call/composer/refusals.ts:128 | PerCallComposerError | value chunk ... of the mapping node at slot ... needs an output index the layout gives it none of' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/refusals.ts:140 | PerCallComposerError | the mapping node at slot ... needs an ... index the layout gives it none of | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/refusals.ts:151 | PerCallComposerError | the dynamic value "..." cannot be planned: ... | GAP |
-| solidcash/src/per-call/composer/settlement.ts:139 | RecordChainError | first | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/settlement.ts:175 | RecordChainError | owner === undefined ? issue : { ...issue, owner } | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/settlement.ts:238 | OutputOccupancyError | first | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/shipped-host.ts:74 | ShippedHostError | 'the artifact publishes no per-call stop-site table' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/shipped-host.ts:80 | ShippedHostError | unsupported stop-site table version: ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/shipped-host.ts:86 | ShippedHostError | 'the stop-site table has no entries array' | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/shipped-host.ts:262 | ShippedHostError | two runs share the master "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/shipped-host.ts:290 | ShippedHostError | ... is refused by the compiler: ... | GAP |
-| solidcash/src/per-call/composer/shipped-host.ts:297 | ShippedHostError | no stop sites are published for "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/shipped-host.ts:308 | ShippedHostError | no run is registered for master "..." of ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/shipped-host.ts:314 | ShippedHostError | master "..." runs ..., not ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/shipped-host.ts:352 | ShippedHostError | ... publishes no call site ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/composer/value-rules.ts:120 | ValueRuleError | first | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/create-lookahead-session.ts:85 | CreateAddressError | No creates are reserved for ..., so no create address can be predicted. Reserve the genesis-eligible UTXOs first (read the funding account\'s nonce with getNonce()). See packages/sol | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/create-lookahead.ts:87 | CreateAddressError | No creates are reserved for ..., so no base nonce exists yet. Reserve the genesis-eligible UTXOs first. See .... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/create-lookahead.ts:114 | CreateAddressError | reserve a positive whole number of creates: got ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/create-lookahead.ts:172 | CreateAddressError | message | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/create-lookahead.ts:172 | CreateAddressError | message, { cause } | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/create-lookahead.ts:177 | CreateAddressError | No creates are reserved for ..., so no address can be predicted. Reserve the genesis-eligible UTXOs first. See .... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/create-lookahead.ts:186 | CreateAddressError | a create nonce is a whole number: got ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/create-lookahead.ts:190 | CreateAddressError | Cannot predict the address of create nonce ...: ... genesis-eligible UTXO(s) are reserved (nonces ........). Reserve one more genesis-eligible UTXO per child before predicting its address. | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:226 | PerCallGenesisError | artifact "..." publishes no constructor selector, so no constructor frame can be run | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:273 | PerCallGenesisError | artifact "..." is not a stateful contract | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:280 | PerCallGenesisError | the constructor of "..." is refused by the compiler (...): ... | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:330 | PerCallGenesisError | the constructor of "..." carries the internal witness '...', which this deployment has no plan for' | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:336 | PerCallGenesisError | the constructor of "..." emits an event from a loop, whose count the block cannot fix | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:341 | PerCallGenesisError | the constructor of "..." makes a value send, which this deployment has no plan for | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:348 | PerCallGenesisError | the constructor of "..." hashes inside a loop, so how many compute side-cars it co-spends is the loop\'s to decide and this deployment lays the artifact\'s fixed count' | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:354 | PerCallGenesisError | the constructor of "..." recovers inside a loop, so how many recovery side-cars it co-spends is the loop\'s to decide and this deployment lays the artifact\'s fixed count' | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:362 | PerCallGenesisError | the constructor of "..." publishes keccakCompute with no per-call entry, so this deployment cannot tell how many compute side-cars its frame reads' | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:479 | PerCallGenesisError | the constructor of "..." writes mapping "...", which the artifact does not publish as a sorted collection' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:506 | PerCallGenesisError | the constructor of "..." writes mapping "..." with ... key(s), which the collection's ... key type(s) do not cover | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:520 | PerCallGenesisError | the constructor of "..." writes mapping "..." at a key this deployment cannot resolve from its arguments (...) | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:548 | PerCallGenesisError | the constructor of "..." writes ... mapping entry(ies) across ... collection(s), and this deployment plans one collection's sorted writes | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:558 | PerCallGenesisError | the constructor of "..." writes mapping "..." at slot ..., which no entry access publishes' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:568 | PerCallGenesisError | the constructor of "..." touches mapping "..." as ..., and this deployment plans one write beside at most a read | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:603 | PerCallGenesisError | the constructor of "..." writes mapping "..." a value this deployment cannot resolve from its arguments' | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:616 | PerCallGenesisError | the constructor of "..." cannot be planned at genesis: writing ..." is not an insertion into the empty list | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:653 | PerCallGenesisError | the constructor of "..." cannot be planned at genesis: writing ..." is not an insertion into the empty list | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:767 | PerCallGenesisError | the constructor of "..." writes dynamic "...", which the artifact publishes no value source for, so this deployment cannot state the run its write creates' | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:776 | PerCallGenesisError | the constructor of "..." writes dynamic "..." a value this deployment cannot resolve from its arguments (a ... source) | GAP |
-| solidcash/src/per-call/deploy/genesis.ts:909 | PerCallGenesisError | the constructor of "..." writes a dynamic value but publishes no block layout to address its chunk run from' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:976 | PerCallGenesisError | a root frame's caller is a 25-byte P2PKH lock; got ... bytes | MUST-STAY (semantics) |
-| solidcash/src/per-call/deploy/genesis.ts:1088 | PerCallGenesisError | the constructor of "..." did not yield a genesis the machine accepts | REPORT |
-| solidcash/src/per-call/deploy/genesis.ts:1185 | PerCallGenesisError | genesisReadingMessage(reading) | REPORT |
-| solidcash/src/per-call/deploy/genesis.ts:1213 | PerCallGenesisError | the constructor probe closed against a declaration no derivation wrote: ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:1354 | PerCallGenesisError | the frame's side-car "..." has no plan | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:1360 | PerCallGenesisError | 'a compute side-car carries no mutable NFT to recreate' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/genesis.ts:1374 | PerCallGenesisError | the frame's side-car "..." has no unlocking | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:58 | PerCallDeploymentError | artifact "..." was not compiled per-call, so it publishes no placeholder descriptor | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:103 | PerCallDeploymentError | "the artifact's program is not assembly, so its published slot offsets cannot apply: (error as Error).message | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:153 | PerCallDeploymentError | 'the deployed address is not addrV(category)' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:156 | PerCallDeploymentError | the deployed script is ... bytes, not the artifact's ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:163 | PerCallDeploymentError | 'the category slot does not read back as the filled category' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:169 | PerCallDeploymentError | "the validator program hash slot does not read back as the program's hash" | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:176 | PerCallDeploymentError | 'the address slot does not read back as the filled address' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:186 | PerCallDeploymentError | byte ... outside the slots changed | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/material.ts:191 | PerCallDeploymentError | 'the master lock is not the P2SH32 of the filled program' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/records.ts:320 | PerCallRecordError | the provider cannot enumerate UTXOs by category ..., which is how the master pool, the validator pool and the records are told apart' | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/records.ts:353 | PerCallRecordError | category ... has no data-NFT record at index ... (found ...) | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/resize.ts:89 | PerCallResizeError | '...' is not the ...(n) function of "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/resize.ts:94 | PerCallResizeError | '...' takes the admin's SignatureTemplate | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/resize.ts:116 | PerCallResizeError | contract "..." declares no ...(n) function | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/resize.ts:119 | PerCallResizeError | contract "..." is not a stateful contract | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/resize.ts:121 | PerCallResizeError | a ... counts at least one master | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/resize.ts:129 | PerCallResizeError | category ... holds no master to keep beside the ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/resize.ts:132 | PerCallResizeError | a merge of ... retires ... master(s), but ... were named | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/stateful.ts:63 | PerCallDeployError | Contract ... is not a stateful contract | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/stateful.ts:66 | PerCallDeployError | 'Funding UTXO must be at vout 0 to create a valid token category. Got vout .... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/stateful.ts:115 | PerCallDeployError | threadCount must be a positive integer, got ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/stateful.ts:119 | PerCallDeployError | validatorCount must be a positive integer, got ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/stateful.ts:183 | PerCallDeployError | genesis minted a node for collection "...", which the artifact does not publish | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/stateful.ts:220 | PerCallDeployError | Insufficient funding for the pool of ... master(s) and ... validator(s): ... satoshis provided, but the genesis requires ... (outputs ..., fee ...). | MUST-STAY (integrity) |
-| solidcash/src/per-call/deploy/stateful.ts:255 | PerCallDeployError | The contract's own address is not encodable: ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/call-resolution.ts:51 | PerCallProxyDeployError | contract "..." publishes no entry "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/call-resolution.ts:291 | PerCallProxyDeployError | ... targets the state field "...", which the caller's own state does not hold as an address' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/call-resolution.ts:301 | PerCallProxyDeployError | ... computes its target from a "..." source the hop cannot resolve to an address | GAP |
-| solidcash/src/per-call/proxy/call-resolution.ts:311 | PerCallProxyDeployError | ... publishes no target address the hop can read (no literal, state field or resolvable source) | GAP |
-| solidcash/src/per-call/proxy/call-resolution.ts:370 | PerCallProxyDeployError | ... takes ... argument(s), but the artifact publishes sources for ..., so the hop cannot state their digest' | GAP |
-| solidcash/src/per-call/proxy/call-resolution.ts:377 | PerCallProxyDeployError | the callee entry "..." publishes no selector, so the call carries no call data | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/call-resolution.ts:384 | PerCallProxyDeployError | ... passes argument ... from a "..."..."}, which the hop cannot resolve from the caller's own arguments and state' | GAP |
-| solidcash/src/per-call/proxy/call-resolution.ts:395 | PerCallProxyDeployError | ... passes a signature as argument ..., which a record's digest cannot state | MUST-STAY (semantics) |
-| solidcash/src/per-call/proxy/call-resolution.ts:424 | PerCallProxyDeployError | the call to "......." names the zero address, so the hop states no callee | MUST-STAY (semantics) |
-| solidcash/src/per-call/proxy/deploy.ts:264 | PerCallProxyDeployError | contract "..." publishes no selector for "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:472 | PerCallProxyDeployError | ... ... beside an external call, and the segment that write lands in is not fixed by the entry\'s own source, so the hop cannot declare it' | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:495 | PerCallProxyDeployError | ... publishes segment ... for ..., which the hop's ... segment(s) do not hold | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:580 | PerCallProxyDeployError | 'the entry lays a run of chunk records and the artifact publishes no dynamic value for it' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:686 | PerCallProxyDeployError | ... declares its mapping's records in segment ... and the run of chunk records its dynamic write grows in segment ..., and a frame reads the run past the records its own block declares,  | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:737 | PerCallProxyDeployError | ... cannot declare its loop's records: ... | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:774 | PerCallProxyDeployError | ... is refused by the compiler (...): ... | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:793 | PerCallProxyDeployError | proxy "..." is not a stateful contract | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:798 | PerCallProxyDeployError | proxy "..." declares no address field named "implementation", so there is nothing for its fallback to forward the call data it received to' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:804 | PerCallProxyDeployError | proxy "..." has no fallback, so it cannot forward the call data it received | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:821 | PerCallProxyDeployError | agreement.reason | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:858 | PerCallProxyDeployError | implementation "..." publishes no entry "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:867 | PerCallProxyDeployError | "..." takes ... argument(s), but ... were supplied | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:961 | PerCallProxyDeployError | a root frame's caller is a 25-byte P2PKH lock; got ... bytes | MUST-STAY (semantics) |
-| solidcash/src/per-call/proxy/deploy.ts:967 | PerCallProxyDeployError | 'each genesis funding UTXO must be at vout 0 to create a token category' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:1039 | PerCallProxyDeployError | the proxy's genesis published ... record(s) for category ..., but its layout declares ... data NFT(s) | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:1047 | PerCallProxyDeployError | the proxy's genesis published no commitment for the record at data NFT ... of category proxy.categoryId | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:1366 | PerCallProxyDeployError | 'the hop\'s callee frames have no settle order that answers each frame\'s callees before it and each shared node\'s writes before the frames that declare the views they left' | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:1636 | PerCallProxyDeployError | the call's callee "..." writes mapping ..." a value whose source the artifact does not publish, so this hop cannot tell whether the write needs value chunks' | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:1682 | PerCallProxyDeployError | the call's callee "..." did not settle through the proxy: ..., refusal.innermost?.reason.arguments | REPORT |
-| solidcash/src/per-call/proxy/deploy.ts:2041 | PerCallProxyDeployError | the implementation's ... writes mapping "..." a value whose source the artifact does not publish, so this hop cannot tell whether the write needs value chunks' | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:2087 | PerCallProxyDeployError | the implementation's ... did not settle through the proxy: ... sizedRunClause(entryWrites), refusal.innermost?.reason.arguments | REPORT |
-| solidcash/src/per-call/proxy/deploy.ts:2113 | PerCallProxyDeployError | the implementation's ... did not settle through the proxy in ... attempts... | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:2139 | PerCallProxyDeployError | the implementation's ... returns a value, which a call through this proxy hop does not carry: the proxy\'s fallback records the delegated call without a result, so the hop binds that | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:2515 | PerCallProxyDeployError | the frame "..." still leaves its write unstated after the hop learned the value its own run exposed, so the frames it encloses cannot start from it' | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:2531 | PerCallProxyDeployError | the hop stopped its plan ... time(s) to learn earlier calls' results and still waits on ..., so the plan does not complete | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:2601 | PerCallProxyDeployError | ... reads the result of the earlier call(s) ..., and settling them returned nothing the hop could decode, so the call cannot be planned from it' | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:2649 | PerCallProxyDeployError | the entry's arms an earlier call's result decides did not settle: the hop re-planned ... time(s) without its sites stopping | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:2874 | PerCallProxyDeployError | the callee "..." reads its data records of "..." side by side, and no order of the records the hop\'s other frames of that contract name keeps them so' | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:3585 | PerCallProxyDeployError | the callee's "..." entry reads a mapping node an earlier reach created, but the hop places no output for it' | GAP |
-| solidcash/src/per-call/proxy/deploy.ts:4256 | PerCallProxyDeployError | 'the caller funding unlocker signs for a lock that is not the hop\'s caller lock, so the root frame\'s msg.sender binding would not hold' | MUST-STAY (semantics) |
-| solidcash/src/per-call/proxy/deploy.ts:4291 | PerCallProxyDeployError | the derived hop carries no input for participant "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4305 | PerCallProxyDeployError | the deployment holds no live UTXO for the hop's "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4309 | PerCallProxyDeployError | the hop's "..." holds ... satoshis, but the derived hop spends ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4373 | PerCallProxyDeployError | the provider returned txid ... for the hop, not the ... its bytes hash to | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4452 | PerCallProxyDeployError | implementation "..." publishes no entry "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4467 | PerCallProxyDeployError | a root frame's caller is a 25-byte P2PKH lock; got ... bytes | MUST-STAY (semantics) |
-| solidcash/src/per-call/proxy/deploy.ts:4480 | PerCallProxyDeployError | category ... holds ... record(s) for a proxy whose layout declares ... data NFT(s) | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4488 | PerCallProxyDeployError | category ... holds no proxy master or no validator, which a call is admitted by | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4508 | PerCallProxyDeployError | category ... holds no implementation master, which the forwarded frame runs from' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4516 | PerCallProxyDeployError | the record at data NFT ... of category ... carries no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/deploy.ts:4579 | PerCallProxyDeployError | the implementation's ... reads mapping "..." at a node its batch also spends, which one transaction cannot spend twice' | GAP |
-| solidcash/src/per-call/proxy/enclosed-reads.ts:110 | PerCallProxyDeployError | the hop's reach "..." ... a node of collection "..." that "...", a frame it runs inside, writes before the call that leads to it, and that write\'s value is the body\'s to compute: the ... i | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:762 | PerCallProxyDeployError | the implementation's "..." entry reads field "..." of mapping ...", which the artifact does not publish as a collection | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:769 | PerCallProxyDeployError | the implementation's "..." entry reads field "..." of mapping ..." at a key this hop cannot resolve (...) | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:788 | PerCallProxyDeployError | the implementation's "..." entry reads field "..." of the node mapping ..." holds for this key, whose value this hop cannot reassemble from the deployment's chunks' | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:871 | PerCallProxyDeployError | the implementation's "..." entry's sorted batch names slot ..., which its entry accesses do not describe' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:905 | PerCallProxyDeployError | the implementation's "..." entry writes ... mapping entry(ies) across 0 sorted batch(es), and this hop plans one batch to one collection' | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:920 | PerCallProxyDeployError | the implementation's "..." entry reads mapping "..." beside the batch it writes, which this hop does not declare' | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:947 | PerCallProxyDeployError | the implementation's "..." entry writes mapping "...", which the artifact does not publish as a sorted collection' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:977 | PerCallProxyDeployError | the implementation's "..." entry writes mapping "..." at a key this hop cannot resolve from its call data (...) | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1029 | PerCallProxyDeployError | the implementation's "..." entry writes mapping "..." in a run-time loop over its own call data, whose values chunk, so the run of chunk records the write takes cannot be sized from th | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1082 | PerCallProxyDeployError | the implementation's "..." entry writes mapping "..." with ... key(s), which the collection's ... key type(s) do not cover | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1094 | PerCallProxyDeployError | the implementation's "..." entry touches mapping "..." as ..., and this hop plans one write per target | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1157 | PerCallProxyDeployError | the implementation's "..." entry reads mapping "..." a value this hop cannot reassemble from the node the deployment holds, so it cannot witness the body's read" | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1194 | PerCallProxyDeployError | the deployment holds a node of collection "..." with no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1211 | PerCallProxyDeployError | the implementation's "..." entry writes mapping "...", but the deployment's collection "..." has no head; a head is minted only at genesis, so this deployment was deployed without it' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1389 | PerCallProxyDeployError | the deployment holds no record declaring dynamic "...", so this hop cannot read the value its write starts from' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1405 | PerCallProxyDeployError | the deployment holds a record at dynamic "..."'s collection covenant whose commitment is not a chunk, so this hop cannot read the value its write starts from' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1413 | PerCallProxyDeployError | the deployment's dynamic "..." declares ... byte(s), which is ... chunk(s), but ... chunk(s) sit at its collection covenant | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1420 | PerCallProxyDeployError | the deployment's dynamic "..." holds chunk ... where chunk ... belongs | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1503 | PerCallProxyDeployError | the implementation's "..." entry mutates mapping "..." as ...", and this hop plans only the element an append carries | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1516 | PerCallProxyDeployError | the implementation's "..." entry appends to mapping "..." a value whose live bytes this hop cannot reassemble from the deployment's chunks" | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1623 | PerCallProxyDeployError | the implementation's "..." entry writes ... dynamic value(s), and this hop plans one run to one variable' | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1632 | PerCallProxyDeployError | the implementation's "..." entry writes dynamic "...", which the artifact does not publish as a dynamic state variable' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1658 | PerCallProxyDeployError | the implementation's "..." entry writes dynamic "..." a value shorter than the one the deployment holds, which this hop does not plan' | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1680 | PerCallProxyDeployError | the implementation's "..." entry writes dynamic "..." (...), whose appended element the artifact publishes no source for, so the run of chunk records its write creates cannot be sized' | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1686 | PerCallProxyDeployError | the implementation's "..." entry writes dynamic "..." (...) an element the artifact publishes a source for but the hop\'s call data does not determine, so the run of chunk records its wr | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1780 | PerCallProxyDeployError | the implementation's "..." entry appends to dynamic "..." once per turn of a run-time loop over "...", whose length this hop's call data does not carry, so the run of chunk records its w | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1789 | PerCallProxyDeployError | the implementation's "..." entry appends to dynamic "..." inside a run-time loop whose width the artifact does not pin to a call parameter, so the run of chunk records its write create | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1861 | PerCallProxyDeployError | the implementation's "..." entry reads dynamic "...", which the artifact does not publish as a dynamic state variable' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/entry-writes.ts:1964 | PerCallProxyDeployError | the implementation's "..." entry reads ...").join(', ')} beside a run-time loop's writes to "...", and its frame finds a run past the loop's records only when it is the one dynamic value | GAP |
-| solidcash/src/per-call/proxy/entry-writes.ts:1988 | PerCallProxyDeployError | the implementation's "..." entry writes ... sorted collections beside a dynamic value, whose records this hop does not order | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:605 | PerCallProxyDeployError | ... runs a loop whose counter the caller's own arguments do not fix | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:610 | PerCallProxyDeployError | ... runs a loop whose counter never advances | MUST-STAY (semantics) |
-| solidcash/src/per-call/proxy/external-calls.ts:618 | PerCallProxyDeployError | ... runs a loop whose bound is not fixed by the caller's own arguments, so the hop cannot state how many records its visits fill' | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:710 | PerCallProxyDeployError | ... runs a loop whose bound is not fixed by the caller's own arguments, so the hop cannot state how many records its visits fill' | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:1071 | PerCallProxyDeployError | the call to "......." targets ..., and none of the deployment's contracts sits at that address" | MUST-STAY (semantics) |
-| solidcash/src/per-call/proxy/external-calls.ts:1226 | PerCallProxyDeployError | the entry "..." publishes call ... to .......", which its ABI routing does not describe | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:1281 | PerCallProxyDeployError | ... reaches ".......()", which the compiler refused: refusal | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:1298 | PerCallProxyDeployError | ... reaches "...", which this hop already places; a contract that reaches itself below itself cannot be given a second block in the hop' | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:1390 | PerCallProxyDeployError | the callee's category ... holds a record with no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:1514 | PerCallProxyDeployError | the callee "..." writes records this hop cannot declare: ... | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:1521 | PerCallProxyDeployError | the callee "..." reads mapping "..." at a node its batch also spends, which one transaction cannot spend twice' | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:1645 | PerCallProxyDeployError | the callee ".......()" reads a mapping key at no fixed entry slot, which this hop does not declare a node for' | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:1669 | PerCallProxyDeployError | the callee ".......()" reads a mapping node this hop cannot declare: ... | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:1704 | PerCallProxyDeployError | the callee ".......()" reads a mapping node of collection "..." whose ...-byte value this hop cannot reassemble from the deployment's chunk records, so it cannot witness the body's read" | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:1781 | PerCallProxyDeployError | the callee's category ... holds no record at data NFT ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:1823 | PerCallProxyDeployError | ... reaches "...", which this hop already places; its category ... holds ... master(s), so it cannot be entered ... time(s) | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:1966 | PerCallProxyDeployError | ... reaches "...", which this hop already places; its category ... holds ... master(s), so it cannot be entered ... time(s) | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:1972 | PerCallProxyDeployError | ... reaches "...", which this hop already places; its category ... holds ... master(s), so it cannot be entered ... time(s) | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2220 | PerCallProxyDeployError | ..., and ... of them write collection ..." at the same key, which the list does not hold, so each reach inserts it; a list holds one node per key, so a later reach of the key has to cont | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2220 | PerCallProxyDeployError | the hop reaches the entry "..." N times, and K of them write collection "..." at the same key, which the list does not hold, so each reach inserts it | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2324 | PerCallProxyDeployError | the hop's reaches "..." and "..." touch one node of collection ...", and one of them enters the other, so their segments interleave in an order this hop does not settle' | GAP |
-| solidcash/src/per-call/proxy/external-calls.ts:2338 | PerCallProxyDeployError | ... relinks to insert a key; ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2338 | PerCallProxyDeployError | ... relinks to insert a key; a node whose values chunk is continued from the bytes the write before each reach stated, and a relink states none | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2341 | PerCallProxyDeployError | ... writes, and inserts through it; ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2341 | PerCallProxyDeployError | ... writes, and inserts through it; (chunked relink) | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2371 | PerCallProxyDeployError | ... relinks to insert a key; ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2371 | PerCallProxyDeployError | ... relinks to insert a key; (chunked relink) | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2374 | PerCallProxyDeployError | ... writes, and inserts through it; ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2374 | PerCallProxyDeployError | ... writes, and inserts through it; (chunked relink) | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/external-calls.ts:2378 | PerCallProxyDeployError | ... writes, and its values chunk: the reach before it states no value a later reach can continue from, so the run of chunk records the later reach takes cannot be sized' | GAP |
-| solidcash/src/per-call/proxy/generate.ts:72 | PerCallProxyDeployError | cannot generate a proxy for "...": ... has type "...", whose base "..." is neither a primitive type nor a struct the state layout publishes' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/generate.ts:109 | PerCallProxyDeployError | cannot generate a proxy for "...": it is not a stateful contract, so it has no record a proxy could keep' | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/generate.ts:121 | PerCallProxyDeployError | cannot generate a proxy for "...": its "..." field has type "...", but a fallback forwards to an address | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/generate.ts:275 | PerCallProxyDeployError | the generated proxy for "..." compiled to a non-stateful contract | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/generate.ts:281 | PerCallProxyDeployError | cannot generate a proxy for "...": ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/generate.ts:303 | PerCallProxyDeployError | the generated proxy for "..." did not compile to a contract | MUST-STAY (integrity) |
-| solidcash/src/per-call/proxy/refusal-order.ts:128 | PerCallProxyDeployError | the call's callee "..." did not settle through the proxy: ..., innermost.reason.arguments | REPORT |
-| solidcash/src/per-call/proxy/upgrade.ts:18 | PerCallProxyDeployError | cannot upgrade proxy "..." to "...": ... | MUST-STAY (semantics) |
-| solidcash/src/per-call/queue/queue.ts:71 | CompositionQueueError | 'a send whose plan is resolved when its turn comes must name the resources it consumes' | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:369 | PerCallReadError | artifact "..." publishes no entry "..." | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:372 | PerCallReadError | entry "..." publishes no selector, so its frame cannot be dispatched to | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:377 | PerCallReadError | entry "..." returns nothing, so it is not a read | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:456 | PerCallReadError | entry ".......()" calls ".......()", whose argument ... comes from a "..."..., which a read cannot state from the caller's own arguments and addresses" | GAP |
-| solidcash/src/per-call/read/read.ts:465 | PerCallReadError | error.message | REPORT |
-| solidcash/src/per-call/read/read.ts:495 | PerCallReadError | error.message | REPORT |
-| solidcash/src/per-call/read/read.ts:607 | PerCallReadError | entry ".......()" publishes call ... to .......()", which its ABI routing does not describe | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:636 | PerCallReadError | entry ".......()" makes ... external call(s): .......()" at 0x... is not supplied in externals | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:651 | PerCallReadError | the read reaches "..." again below itself, so its frames have no order | GAP |
-| solidcash/src/per-call/read/read.ts:839 | PerCallReadError | category ... holds ... master(s), and the read runs ... frame(s) over it | OPERATIONAL (pool size) |
-| solidcash/src/per-call/read/read.ts:849 | PerCallReadError | category ... holds no validator, which a read frame needs to be admitted | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:869 | PerCallReadError | category ... holds no data-NFT record at index ..., which the entry reads | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:875 | PerCallReadError | the record at data-NFT index ... carries no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:941 | PerCallReadError | error.message | REPORT |
-| solidcash/src/per-call/read/read.ts:965 | PerCallReadError | the node of collection "..." the entry reads holds a ...-byte value whose bytes sit in chunk records that category ... does not hold, so the read cannot state its witness' | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:1114 | PerCallReadError | category ... holds a node of collection "..." with no commitment | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:1129 | PerCallReadError | category ... holds no node of collection "..." whose slot is the key\'s or the key\'s bracketing predecessor, so the read cannot locate what it reads' | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:1170 | PerCallReadError | entry "..." reads mapping "...", which the artifact does not publish as a collection' | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:1177 | PerCallReadError | entry "..." names mapping "..." at an element of ..." that the artifact's live records do not state | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:1195 | PerCallReadError | entry "..." reads "..." at ... turn(s), but a chunk-backed array's chunk run shares the fixed record band with the entry slot\'s own turn, so exactly one turn can be composed' | GAP |
-| solidcash/src/per-call/read/read.ts:1213 | PerCallReadError | entry "..." names mapping "..." at a key no run of its own arguments determines' | GAP |
-| solidcash/src/per-call/read/read.ts:1273 | PerCallReadError | category ... holds no data-NFT record at index ..., which the entry reads "..." from | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:1504 | PerCallReadError | 'the frame recorded bytes that are not the entry\'s declared Solidity ABI returns' | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:1634 | PerCallReadError | entry "..." has no parameter ... | MUST-STAY (integrity) |
-| solidcash/src/per-call/read/read.ts:1978 | PerCallReadError | ... runs a loop whose bound reads an earlier call's result, which the read could not learn | GAP |
-| solidcash/src/per-call/validator/reference/reference.ts:735 | PerCallEncodingError | 'not a witness block: magic' | MUST-STAY (integrity) |
-| solidcash/src/per-call/validator/reference/reference.ts:736 | PerCallEncodingError | 'unsupported witness block version' | MUST-STAY (integrity) |
-| solidcash/src/per-call/validator/reference/reference.ts:748 | PerCallEncodingError | call ... is a root frame | MUST-STAY (integrity) |
-| solidcash/src/per-call/validator/reference/reference.ts:752 | PerCallEncodingError | call ... has no callee | MUST-STAY (integrity) |
-| solidcash/src/per-call/validator/reference/reference.ts:780 | PerCallEncodingError | 'segment and call counts disagree' | MUST-STAY (integrity) |
+| solidc/src/framed/master/composition.ts:36 | SolidcDiagnosticError | unknown composition convention '...'; expected one of ..., { requested, supported: COMPOSITION_CONVENTIONS } | MUST-STAY (integrity) |
+| solidc/src/framed/master/composition.ts:53 | SolidcDiagnosticError | unknown composition convention '...'; expected one of ..., { requested: convention, supported: COMPOSITION_CONVENTIONS } | MUST-STAY (integrity) |
+| solidc/src/framed/master/lifecycle.ts:174 | SolidcDiagnosticError | the framed composition convention does not support this contract: ..., { requested: 'framed', reason, contract: contract.name } | GAP |
+| solidc/src/framed/master/master-program.ts:61 | SolidcDiagnosticError | the compiled master does not contain a reserved ...-byte category slot before its address slot', { matches: thirtyTwoByteSlots, addressOffset } | MUST-STAY (integrity) |
+| solidc/src/framed/master/master-program.ts:71 | SolidcDiagnosticError | the compiled master does not contain a reserved ...-byte validator program hash slot after its address slot', { matches: thirtyTwoByteSlots, addressOffset } | MUST-STAY (integrity) |
+| solidc/src/framed/master/master-program.ts:114 | SolidcDiagnosticError | 'the census address offset did not settle on the reserved address slot', {} | MUST-STAY (integrity) |
+| solidc/src/framed/master/master-program.ts:233 | SolidcDiagnosticError | the census address offset at byte ... is not one script element, { start: site.start, end: site.end } | MUST-STAY (integrity) |
+| solidc/src/framed/master/master-program.ts:243 | SolidcDiagnosticError | the compiled master reserves its ... slot more than once, so no single offset identifies it, { slot: what, matches: offsets } | MUST-STAY (integrity) |
+| solidc/src/framed/master/master-program.ts:250 | SolidcDiagnosticError | the compiled master does not contain its reserved ... slot, { slot: what } | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:40 | FramedEncodingError | a slot holds at least one byte: got ... | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:44 | FramedEncodingError | a slot above 65535 bytes is not representable: got ... | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:55 | FramedEncodingError | a slot above 65535 bytes is not representable: got ... | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:98 | FramedEncodingError | unsupported placeholder version: ... | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:102 | FramedEncodingError | ... slot at ... is outside a ...-byte script | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:109 | FramedEncodingError | ... slot at ... is not a reserved ...-byte zero push | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:136 | FramedEncodingError | a category is ... bytes: got ... | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:141 | FramedEncodingError | a contract address is ... bytes: got ... | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:148 | FramedEncodingError | 'the descriptor declares a validator program hash slot, so a value is required' | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:151 | FramedEncodingError | a validator program hash is ... bytes: got ... | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:156 | FramedEncodingError | 'the descriptor declares no validator program hash slot, so none can be filled' | MUST-STAY (integrity) |
+| solidc/src/framed/master/placeholders.ts:180 | FramedEncodingError | slot at ... is outside a ...-byte script | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:308 | refusedEntries | the body writes a mapping at slot N with no key K source to read | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:325 | refusedEntries | the body writes a mapping at slot N whose key K names the parameter ... it does not declare | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:335 | refusedEntries | the body writes a mapping at slot N whose key K ... has no expression to read | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:345 | refusedEntries | the body writes a mapping at slot N whose key K ... is the local ..., which is not bound to a single compile-time value (also: a contract constant used bare as a key) | GAP |
+| solidc/src/framed/master/support.ts:353 | refusedEntries | the body writes a mapping at slot N whose key K ... reads <the state value X / the mapping entry X / the value computed by f / an element of the dynamic state array X> | GAP |
+| solidc/src/framed/master/support.ts:662 | refusedEntries | the body writes a mapping at slot N as a read/write/..., and a master derives the sorted-batch operands only for one write per target | GAP |
+| solidc/src/framed/master/support.ts:667 | refusedEntries | the body writes a mapping at slot N in a loop, so the records it declares are not a fixed set | GAP |
+| solidc/src/framed/master/support.ts:670 | refusedEntries | the body writes a mapping at slot N that can alias another target at run time (message-bus routes only) | MUST-STAY (semantics) |
+| solidc/src/framed/master/support.ts:678 | refusedEntries | the body touches mapping "..." outside its batch as ...(in a loop) | GAP |
+| solidc/src/framed/master/support.ts:682 | refusedEntries | the body writes a mapping in a shape whose record the master cannot read back from its own frame | GAP |
+| solidc/src/framed/master/support.ts:1902 | contract refused | a contract with no entry point is not supported | MUST-STAY (semantics) |
+| solidc/src/framed/master/support.ts:1909 | contract refused | contract creation needs the witness CREATE checks, which are not emitted yet | GAP |
+| solidc/src/framed/master/support.ts:1912 | contract refused | a function pointer needs a call kind the frame does not carry yet | GAP |
+| solidc/src/framed/master/support.ts:1943 | refusedEntries | inline assembly is not composed framed (assembly the lowering left in the body) | GAP |
+| solidc/src/framed/master/support.ts:1953 | refusedEntries | the body reads a long mapping value once per loop turn, and the frame's block lists one value per slot | GAP |
+| solidc/src/framed/master/support.ts:1959 | refusedEntries | a proxy implementation's entry compiled for the direct convention (hidden proxy master index) | MUST-STAY (semantics) |
+| solidc/src/framed/master/support.ts:1966 | refusedEntries | the body carries the hidden parameter ..., which the master head does not supply | GAP |
+| solidc/src/framed/master/support.ts:1972 | refusedEntries | an event emitted from a loop makes the event count depend on the loop | GAP |
+| solidc/src/framed/master/support.ts:1980 | refusedEntries | a blockhash read needs a co-spent oracle input the master head does not locate | GAP |
+| solidc/src/framed/master/support.ts:1985 | refusedEntries | a keccak256 call inside a loop reads one compute side-car per turn | GAP |
+| solidc/src/framed/master/support.ts:1991 | refusedEntries | an ecrecover loop reads one recovery side-car pair per iteration | GAP |
+| solidc/src/framed/master/support.ts:1995 | refusedEntries | the body makes an external call and is invoked as its own subroutine | GAP |
+| solidc/src/framed/master/support.ts:2002 | refusedEntries | the body reads the balance of an address other than its own | MUST-STAY (semantics) |
+| solidc/src/framed/master/support.ts:2006 | refusedEntries | the body reads its contract's balance and is invoked as its own subroutine | GAP |
+| solidc/src/framed/master/support.ts:2015 | refusedEntries | a loop guard the published recipe cannot carry (UnpublishableLoopGuardError, found by codegen) | GAP |
+| solidc/src/framed/master/support.ts:2029 | refusedEntries | the constructor reads the balance of an address other than its own | MUST-STAY (semantics) |
+| solidc/src/framed/master/support.ts:2032 | refusedEntries | the constructor reads its contract's balance, which no genesis shows | MUST-STAY (semantics) |
+| solidc/src/framed/master/support.ts:2074 | refusedEntries | the body derives a verified-mapping write and is invoked by a caller after an external call | GAP |
+| solidc/src/framed/master/support.ts:2091 | refusedEntries | it runs ..., which the master cannot serve: ... (closure over invocations) | GAP |
+| solidc/src/framed/master/support.ts:2110 | refusedEntries | a verified-mapping write ... does not precede the calls (write segment unread) | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:2329 | refusedEntries | the constructor makes an external call / a value send / reads a blockhash / hidden parameter | GAP |
+| solidc/src/framed/master/support.ts:2354 | refusedEntries | the entry point returns a tuple/mapping/function pointer/token container (composite return) | GAP |
+| solidc/src/framed/master/support.ts:2404 | refusedEntries | a value send inside a loop makes the send count depend on the loop | GAP |
+| solidc/src/framed/master/support.ts:2459 | contract refused | the contract emits an event that is not attributed to a body | GAP |
+| solidc/src/framed/master/support.ts:2840 | refusedEntries | a low-level call needs the witness calls[] checks, which are not emitted yet (any low-level call but a forwarding delegatecall) | GAP |
+| solidc/src/framed/master/support.ts:2960 | refusedEntries | the body both forwards its own call data and makes a typed external call | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:2973 | refusedEntries | the body forwards its own call data conditionally | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:2985 | refusedEntries | the body writes a verified mapping behind a call whose occurrence the source does not fix | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:2996 | refusedEntries | the call to ... is a delegatecall (typed), whose callee runs on its caller's records | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:3004 | refusedEntries | the call to ... is a <call mode> the master head has no frame kind for | GAP |
+| solidc/src/framed/master/support.ts:3013 | refusedEntries | the call to ... is in a body that switches / whose call count a branch or loop in an expression decides | GAP |
+| solidc/src/framed/master/support.ts:3018 | refusedEntries | the call to ... runs repeatedly (loopArrayVar / inline loop dispatch / batch invocations) | GAP |
+| solidc/src/framed/master/support.ts:3022 | refusedEntries | the call to ... resolves its callee or its selector at run time | GAP |
+| solidc/src/framed/master/support.ts:3030 | refusedEntries | the call to ... takes the direct path's return-event or value-transfer machinery (opaque return / call value) | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:3039 | refusedEntries | the call to ... has no four-byte selector the master head can check | MUST-STAY (integrity) |
+| solidc/src/framed/master/support.ts:3095 | refusedEntries | the call to ... targets the transaction's own sender (msg.sender as call target) | GAP |
+| solidc/src/framed/master/support.ts:3101 | refusedEntries | the call to ... targets an address the caller's own code does not hold as one value | GAP |
+| solidc/src/framed/master/support.ts:3135 | refusedEntries | the call to ... passes arguments the compiler cannot recover | GAP |
+| solidc/src/framed/master/support.ts:3148 | refusedEntries | the call to ... passes a run-time argument whose value the compiler cannot encode into one push | GAP |
+| solidc/src/framed/upgrade-layout.ts:24 | SolidcDiagnosticError | "..." ..., { contract, ...context } | MUST-STAY (semantics) |
+| solidc/src/framed/validator/program.ts:408 | RangeError | not an opcode: ... | MUST-STAY (integrity) |
+| solidc/src/framed/validator/program.ts:429 | RangeError | a program constant is 0.....: got ... | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:357 | FramedCallError | contract "..." has no receive(), so ... has no body to run | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:360 | FramedCallError | contract "..." has no receive() and its fallback() is not payable, so it refuses ... | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:371 | FramedCallError | artifact "..." publishes no entry "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:374 | FramedCallError | entry "..." publishes no selector, so its frame cannot be dispatched to | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:409 | FramedCallError | entry "..." has no parameter ... | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:476 | FramedCallError | artifact "..." is not a stateful contract | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:479 | FramedCallError | a root frame's caller is a 25-byte P2PKH lock; got ... bytes | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:485 | FramedCallError | a call carries no negative value; got ... | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:487 | FramedCallError | entry "..." is not payable, so a call to it carries no value | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:490 | FramedCallError | a call to the fallback() of "..." carries a value send's empty call data, so it takes no argument' | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:516 | FramedCallError | contract "..." has ... dispatched body(ies), so a user's frame to it carries no selector, which this call path does not plan yet' | GAP |
+| solidcash/src/framed/call/call.ts:534 | FramedCallError | category ... holds no master, which a root frame runs on | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:538 | FramedCallError | category ... holds no validator, which a root frame needs to be admitted | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:541 | FramedCallError | category ... holds ... data-NFT record(s), and the layout names ... | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:550 | FramedCallError | the record at data-NFT index ... carries no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:579 | FramedCallError | error.message | REPORT |
+| solidcash/src/framed/call/call.ts:584 | FramedCallError | entry "..." writes mapping "..." and makes ... external call(s), whose segments this call path does not place its writes in yet' | GAP |
+| solidcash/src/framed/call/call.ts:622 | FramedCallError | entry "..." sends to the contract at ..., which the call's externals do not name | GAP |
+| solidcash/src/framed/call/call.ts:633 | FramedCallError | ... makes a call, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/call.ts:644 | FramedCallError | contract "..." at category ... holds no master or not every record its layout names' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:661 | FramedCallError | ... sends to a contract, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/call.ts:700 | FramedCallError | entry "..." pays one contract through two calls, which would need two of its masters to take value | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:707 | FramedCallError | entry "..." writes mapping "..." and makes ... external call(s), whose segments this call path does not place its writes in yet' | GAP |
+| solidcash/src/framed/call/call.ts:717 | FramedCallError | entry "..." sends value to a contract and makes ... external call(s), and its artifact does not place the sends among the calls, so this call path does not plan both in one call yet' | GAP |
+| solidcash/src/framed/call/call.ts:738 | FramedCallError | ... and the paid body writes a mapping, sends or emits, which this call path does not plan beside the callee frames yet' | GAP |
+| solidcash/src/framed/call/call.ts:742 | FramedCallError | ... and a callee frame of it writes its records, whose views beside the paid body this call path does not chain yet' | GAP |
+| solidcash/src/framed/call/call.ts:789 | FramedCallError | entry "..." pays "...", which its calls also reach, and the frame "..." reads its data records of it side by side, and no order of the records the other frames of that contract name keep | GAP |
+| solidcash/src/framed/call/call.ts:902 | FramedCallError | contract "..." holds ... satoshis in its containers, and entry ..." sends ... more than the call brings | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:918 | FramedCallError | contract "..." holds ... satoshis in its containers, and entry "... sends ... more than the call brings | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:948 | FramedCallError | contract "..." holds ... satoshis in its containers, and the body entry ..." pays sends ... more than it receives | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:991 | FramedCallError | entry "...": ... | GAP |
+| solidcash/src/framed/call/call.ts:1516 | FramedCallError | 'the composer built no draft for the call frame' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1528 | FramedCallError | a contract entry "..." pays did not hand back every event payload and node it writes, so its frame cannot declare them' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1534 | FramedCallError | the call's write to mapping "..." did not hand back every node it rewrites, so the frame cannot declare their commitments' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1540 | FramedCallError | entry "..." did not hand back every event payload it emits, so its frame cannot declare its event outputs' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1546 | FramedCallError | entry "..." did not hand back the amount of every value it sends to a contract, so its frame cannot record the calls' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1552 | FramedCallError | entry "..." did not hand back the lock and amount of every send it makes, so its frame cannot list its send outputs' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1557 | FramedCallError | entry "..." did not hand back the value it returns, so its frame's \retval\ cannot be stated | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1565 | FramedCallError | 'the composer built no transaction for the call frame' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1618 | FramedCallError | the call's output for record "..." carries no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1715 | FramedCallError | 'the caller funding unlocker signs for a lock that is not the call\'s caller lock, so the root frame\'s msg.sender binding would not hold' | MUST-STAY (semantics) |
+| solidcash/src/framed/call/call.ts:1733 | FramedCallError | the derived call carries no input for participant "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1743 | FramedCallError | the deployment holds no live UTXO for the call's "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1746 | FramedCallError | the call's "..." holds ... satoshis, but the derived call spends ... | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1766 | FramedCallError | the derived call carries no container input at ... | MUST-STAY (integrity) |
+| solidcash/src/framed/call/call.ts:1791 | FramedCallError | the provider returned txid ... for the call, not the ... its bytes hash to | MUST-STAY (integrity) |
+| solidcash/src/framed/call/callees.ts:258 | FramedCalleeError | the callee "..." is entered as a delegate frame, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/callees.ts:261 | FramedCalleeError | the callee "..." sits behind a proxy, whose delegate frame this call path does not plan yet | GAP |
+| solidcash/src/framed/call/callees.ts:264 | FramedCalleeError | the callee "..." sends value, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/callees.ts:266 | FramedCalleeError | the callee "..." touches a dynamic value's or a mapping value's chunks, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/callees.ts:268 | FramedCalleeError | the callee "..." co-spends a side-car, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/callees.ts:271 | FramedCalleeError | the callee "..." writes in a segment its artifact does not fix, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/callees.ts:289 | FramedCalleeError | entry "..." makes ... external call(s): ... | MUST-STAY (integrity) |
+| solidcash/src/framed/call/callees.ts:318 | FramedCalleeError | ... reads an earlier call's result, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/callees.ts:321 | FramedCalleeError | a call is guarded on an earlier call's result, which this call path does not plan yet | GAP |
+| solidcash/src/framed/call/callees.ts:335 | FramedCalleeError | it reaches two deployments of "...", whose blocks and records this call path does not tell apart yet | GAP |
+| solidcash/src/framed/call/callees.ts:339 | FramedCalleeError | it enters "..." N times and a frame of it writes its mapping nodes, whose views across the frames this call path does not chain yet | GAP |
+| solidcash/src/framed/call/callees.ts:349 | FramedCalleeError | the callee "..." reads its data records of "..." side by side, and no order of the records the call's other frames of that contract name keeps them so | GAP |
+| solidcash/src/framed/call/entry-records.ts:271 | FramedCallRecordError | entry "..." touches mapping "..." at a key the frame's arguments do not determine (...) | GAP |
+| solidcash/src/framed/call/entry-records.ts:346 | FramedCallRecordError | entry "..." writes mapping "..." in a run-time loop over "...", whose key the artifact does not publish as an element of that array' | GAP |
+| solidcash/src/framed/call/entry-records.ts:354 | FramedCallRecordError | entry "..." writes mapping "..." in a run-time loop whose key names no counter to walk it with' | GAP |
+| solidcash/src/framed/call/entry-records.ts:362 | FramedCallRecordError | entry "..." writes mapping "..." in a run-time loop over "...", which the frame's arguments do not carry as an array" | GAP |
+| solidcash/src/framed/call/entry-records.ts:392 | FramedCallRecordError | entry "..." writes mapping "..." at turn ... of "... under a key the frame's arguments do not determine (...) | GAP |
+| solidcash/src/framed/call/entry-records.ts:421 | FramedCallRecordError | entry "..." writes mapping "..." at turn ... of ..." under a key that does not sit above the turn before it, and a loop whose value comes per key... keeps the caller's order, which the run-t | GAP |
+| solidcash/src/framed/call/entry-records.ts:582 | FramedCallRecordError | entry "..." writes mapping "..." in ... run-time loop(s) whose turns touch one node twice, which one run of their records cannot declare' | GAP |
+| solidcash/src/framed/call/entry-records.ts:695 | FramedCallRecordError | artifact "..." publishes no entry "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/call/entry-records.ts:701 | FramedCallRecordError | entry "..." publishes no mapping access at entry slot ... | MUST-STAY (integrity) |
+| solidcash/src/framed/call/entry-records.ts:708 | FramedCallRecordError | entry "..." reads mapping "...", which the artifact does not publish as a collection' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/entry-records.ts:718 | FramedCallRecordError | category ... holds a node of collection "..." with no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/call/entry-records.ts:733 | FramedCallRecordError | category ... holds no node of collection "..." whose slot is the key's or the key\'s bracketing predecessor, so the read cannot locate what it reads' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/entry-records.ts:762 | FramedCallRecordError | entry "..." touches ... mapping entry(ies) across ... sorted batch(es), and a call declares one collection\'s writes' | GAP |
+| solidcash/src/framed/call/entry-records.ts:773 | FramedCallRecordError | entry "..." writes mapping "...", which the artifact does not publish as a sorted collection' | MUST-STAY (integrity) |
+| solidcash/src/framed/call/entry-records.ts:781 | FramedCallRecordError | entry "..."'s sorted batch names a slot its entry accesses do not describe | MUST-STAY (integrity) |
+| solidcash/src/framed/call/entry-records.ts:786 | FramedCallRecordError | entry "..." writes mapping "...", whose values chunk, so the created node\'s run of chunk records cannot be declared from the call alone' | GAP |
+| solidcash/src/framed/call/entry-records.ts:797 | FramedCallRecordError | category ... holds a mapping node of "..." with no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/call/entry-records.ts:818 | FramedCallRecordError | entry "..." touches mapping "..." as ..., and a call plans one write per target' | GAP |
+| solidcash/src/framed/call/entry-records.ts:879 | FramedCallRecordError | entry "..." writes mapping "..." at ... turn(s) of ...", a run-time loop whose per-turn records a call does not declare yet | GAP |
+| solidcash/src/framed/call/entry-records.ts:884 | FramedCallRecordError | entry "..." touches mapping "..." as ... outside a sorted batch, which a call does not plan' | GAP |
+| solidcash/src/framed/call/entry-records.ts:897 | FramedCallRecordError | entry "..." reads a mapping key at no fixed entry slot, which a call does not declare a node for' | GAP |
+| solidcash/src/framed/call/entry-records.ts:911 | FramedCallRecordError | entry "..." reads a ...-byte value of mapping "..." whose bytes sit in chunk records, which a call does not declare' | GAP |
+| solidcash/src/framed/call/entry-records.ts:947 | FramedCallRecordError | entry "..." reads a key at a mapping node it also spends for another key, which a call cannot spend twice' | GAP |
+| solidcash/src/framed/call/handle.ts:75 | FramedCallError | 'a call carries no negative value' | MUST-STAY (semantics) |
+| solidcash/src/framed/call/handle.ts:77 | FramedCallError | entry "..." is not payable, so a call to it carries no value | MUST-STAY (semantics) |
+| solidcash/src/framed/call/handle.ts:103 | FramedCompositionRefusedError | refusal | REPORT |
+| solidcash/src/framed/call/handle.ts:106 | FramedCallError | the call to "..." was refused, so nothing was broadcast: ... | REPORT |
+| solidcash/src/framed/call/handle.ts:139 | FramedCallError | a call to "..." needs the signer whose coin enters the frame; connect one to the handle | MUST-STAY (semantics) |
+| solidcash/src/framed/call/handle.ts:167 | FramedCallError | the caller's address ... holds no tokenless UTXO to pay the call with | MUST-STAY (semantics) |
+| solidcash/src/framed/call/handle.ts:182 | FramedCallError | a call to "..." through a proxy carries no value: a delegate frame takes none yet | GAP |
+| solidcash/src/framed/call/handle.ts:250 | FramedCompositionRefusedError | read.refusal | REPORT |
+| solidcash/src/framed/call/handle.ts:251 | FramedReadError | the read of "..." was refused, so it returned no value: ... | REPORT |
+| solidcash/src/framed/call/side-cars.ts:92 | FramedSideCarPoolError | the entry co-spends ... ...(s) at the shared covenant lock, and the network holds ... | OPERATIONAL (pool size) |
+| solidcash/src/framed/composer/assemble.ts:212 | FramedEncodingError | the block for "..." hosts validator "...", which the plan does not name | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:219 | FramedEncodingError | "..." is covered by more than one validator | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:314 | FramedEncodingError | the plan lists events at [...], and the trailing region puts them at [...] | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:320 | FramedEncodingError | the plan lists sends at [...], and the trailing region puts them at [...] | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:328 | FramedEncodingError | the plan creates records at [...], and the trailing region puts them at [...] | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:348 | FramedEncodingError | a settlement lists created output ..., which the plan's trailing region does not create | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:379 | FramedEncodingError | master "..." calls itself, which the format refuses | MUST-STAY (semantics) |
+| solidcash/src/framed/composer/assemble.ts:383 | FramedEncodingError | the call from "..." to "..." does not begin with a ...-byte selector | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:389 | FramedEncodingError | "..." is called with different arguments by more than one caller, so its single input cannot carry both' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:404 | FramedEncodingError | "..." is entered by a user, so it carries no call data | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:411 | FramedEncodingError | "..." carries call data its caller did not record | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:442 | FramedEncodingError | "..." is both a participant and a user input | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:449 | UnresolvedReferenceError | reference, what | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:468 | FramedEncodingError | master "..." calls itself, which the format refuses | MUST-STAY (semantics) |
+| solidcash/src/framed/composer/assemble.ts:545 | FramedEncodingError | 'a call carries at least its selector' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/assemble.ts:557 | FramedEncodingError | input "..." sits at ..., outside the layout's participants | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:419 | CompositionDraftError | the call to "..." carries no selector | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:426 | CompositionDraftError | ... "..." has no input in this draft | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:469 | CompositionDraftError | "..." declares record ... in segment ... as carrying on from a declaration it does not have' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:493 | CompositionDraftError | a computed witness of "..." reuses a placeholder | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:506 | CompositionDraftError | "..." is both a participant and a user input | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:551 | CompositionDraftError | the validator "..." was not assembled | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:564 | CompositionDraftError | two inputs claim index ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:568 | CompositionDraftError | no input sits at index ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:581 | CompositionDraftError | input "..." has no source output | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:658 | CompositionDraftError | input "..." is not a master, a validator or a facet, so it needs unlocking bytecode | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:752 | CompositionDraftError | a computed witness of "..." settles "...", which the plan does not spend | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:810 | CompositionDraftError | "..." publishes no call ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:814 | CompositionDraftError | "..." calls "...", which the plan does not run | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:837 | CompositionDraftError | no block for master "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:841 | CompositionDraftError | no master "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/draft.ts:846 | CompositionDraftError | no master "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/need-test.ts:143 | ValidatorCoverageError | entry.facts.contract, entry.facts.functionName, need.reasons | REPORT |
+| solidcash/src/framed/composer/need-test.ts:148 | ValidatorCoverageError | entry.facts.contract, entry.facts.functionName, [...objections] | REPORT |
+| solidcash/src/framed/composer/recovery.ts:130 | FramedEncodingError | the supplied pool holds no ... side-car UTXO for side-car ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/recovery.ts:191 | FramedEncodingError | the body binds a ...-byte recovery argument, not the ... of hash // v // r // s | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/recovery.ts:279 | FramedEncodingError | no placeholder recovery for "..." splits its ladder: ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/recovery.ts:373 | FramedEncodingError | the entry takes ... parameter(s) and its unlocking bytecode carries ... argument push(es)' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/recovery.ts:381 | FramedEncodingError | the entry has no parameter '...' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/recovery.ts:423 | FramedEncodingError | the entry takes ... parameter(s) and its unlocking bytecode carries ... argument push(es)' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/recovery.ts:431 | FramedEncodingError | the entry has no parameter '...' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/refusal.ts:493 | FramedCompositionRefusedError | report | REPORT |
+| solidcash/src/framed/composer/refusals.ts:38 | FramedComposerError | contract "..." needs ... master ... but its pool holds ... | OPERATIONAL (pool size) |
+| solidcash/src/framed/composer/refusals.ts:49 | FramedComposerError | contract "..." roots this composition but has no validator | OPERATIONAL (pool size) |
+| solidcash/src/framed/composer/refusals.ts:66 | FramedComposerError | no run learned the view the plan left unstated at ......, so its placeholder would reach the transaction' | REPORT |
+| solidcash/src/framed/composer/refusals.ts:84 | FramedComposerError | master "..." of ... filled no witness at site ... (...)... | REPORT |
+| solidcash/src/framed/composer/refusals.ts:96 | FramedComposerError | a mapping write targets slot ... but its inventory holds no predecessor below it | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/refusals.ts:107 | FramedComposerError | a sorted batch writes slot ... more than once | GAP |
+| solidcash/src/framed/composer/refusals.ts:119 | FramedComposerError | the mapping node at slot ... is written again in the segment that created it; plan the segment\'s writes as one sorted batch (planMappingBatch)' | GAP |
+| solidcash/src/framed/composer/refusals.ts:128 | FramedComposerError | value chunk ... of the mapping node at slot ... needs an output index the layout gives it none of' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/refusals.ts:140 | FramedComposerError | the mapping node at slot ... needs an ... index the layout gives it none of | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/refusals.ts:151 | FramedComposerError | the dynamic value "..." cannot be planned: ... | GAP |
+| solidcash/src/framed/composer/settlement.ts:139 | RecordChainError | first | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/settlement.ts:175 | RecordChainError | owner === undefined ? issue : { ...issue, owner } | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/settlement.ts:238 | OutputOccupancyError | first | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/shipped-host.ts:74 | ShippedHostError | 'the artifact publishes no framed stop-site table' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/shipped-host.ts:80 | ShippedHostError | unsupported stop-site table version: ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/shipped-host.ts:86 | ShippedHostError | 'the stop-site table has no entries array' | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/shipped-host.ts:262 | ShippedHostError | two runs share the master "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/shipped-host.ts:290 | ShippedHostError | ... is refused by the compiler: ... | GAP |
+| solidcash/src/framed/composer/shipped-host.ts:297 | ShippedHostError | no stop sites are published for "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/shipped-host.ts:308 | ShippedHostError | no run is registered for master "..." of ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/shipped-host.ts:314 | ShippedHostError | master "..." runs ..., not ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/shipped-host.ts:352 | ShippedHostError | ... publishes no call site ... | MUST-STAY (integrity) |
+| solidcash/src/framed/composer/value-rules.ts:120 | ValueRuleError | first | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/create-lookahead-session.ts:85 | CreateAddressError | No creates are reserved for ..., so no create address can be predicted. Reserve the genesis-eligible UTXOs first (read the funding account\'s nonce with getNonce()). See packages/sol | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/create-lookahead.ts:87 | CreateAddressError | No creates are reserved for ..., so no base nonce exists yet. Reserve the genesis-eligible UTXOs first. See .... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/create-lookahead.ts:114 | CreateAddressError | reserve a positive whole number of creates: got ... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/create-lookahead.ts:172 | CreateAddressError | message | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/create-lookahead.ts:172 | CreateAddressError | message, { cause } | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/create-lookahead.ts:177 | CreateAddressError | No creates are reserved for ..., so no address can be predicted. Reserve the genesis-eligible UTXOs first. See .... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/create-lookahead.ts:186 | CreateAddressError | a create nonce is a whole number: got ... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/create-lookahead.ts:190 | CreateAddressError | Cannot predict the address of create nonce ...: ... genesis-eligible UTXO(s) are reserved (nonces ........). Reserve one more genesis-eligible UTXO per child before predicting its address. | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:226 | FramedGenesisError | artifact "..." publishes no constructor selector, so no constructor frame can be run | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:273 | FramedGenesisError | artifact "..." is not a stateful contract | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:280 | FramedGenesisError | the constructor of "..." is refused by the compiler (...): ... | GAP |
+| solidcash/src/framed/deploy/genesis.ts:330 | FramedGenesisError | the constructor of "..." carries the internal witness '...', which this deployment has no plan for' | GAP |
+| solidcash/src/framed/deploy/genesis.ts:336 | FramedGenesisError | the constructor of "..." emits an event from a loop, whose count the block cannot fix | GAP |
+| solidcash/src/framed/deploy/genesis.ts:341 | FramedGenesisError | the constructor of "..." makes a value send, which this deployment has no plan for | GAP |
+| solidcash/src/framed/deploy/genesis.ts:348 | FramedGenesisError | the constructor of "..." hashes inside a loop, so how many compute side-cars it co-spends is the loop\'s to decide and this deployment lays the artifact\'s fixed count' | GAP |
+| solidcash/src/framed/deploy/genesis.ts:354 | FramedGenesisError | the constructor of "..." recovers inside a loop, so how many recovery side-cars it co-spends is the loop\'s to decide and this deployment lays the artifact\'s fixed count' | GAP |
+| solidcash/src/framed/deploy/genesis.ts:362 | FramedGenesisError | the constructor of "..." publishes keccakCompute with no framed entry, so this deployment cannot tell how many compute side-cars its frame reads' | GAP |
+| solidcash/src/framed/deploy/genesis.ts:479 | FramedGenesisError | the constructor of "..." writes mapping "...", which the artifact does not publish as a sorted collection' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:506 | FramedGenesisError | the constructor of "..." writes mapping "..." with ... key(s), which the collection's ... key type(s) do not cover | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:520 | FramedGenesisError | the constructor of "..." writes mapping "..." at a key this deployment cannot resolve from its arguments (...) | GAP |
+| solidcash/src/framed/deploy/genesis.ts:548 | FramedGenesisError | the constructor of "..." writes ... mapping entry(ies) across ... collection(s), and this deployment plans one collection's sorted writes | GAP |
+| solidcash/src/framed/deploy/genesis.ts:558 | FramedGenesisError | the constructor of "..." writes mapping "..." at slot ..., which no entry access publishes' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:568 | FramedGenesisError | the constructor of "..." touches mapping "..." as ..., and this deployment plans one write beside at most a read | GAP |
+| solidcash/src/framed/deploy/genesis.ts:603 | FramedGenesisError | the constructor of "..." writes mapping "..." a value this deployment cannot resolve from its arguments' | GAP |
+| solidcash/src/framed/deploy/genesis.ts:616 | FramedGenesisError | the constructor of "..." cannot be planned at genesis: writing ..." is not an insertion into the empty list | GAP |
+| solidcash/src/framed/deploy/genesis.ts:653 | FramedGenesisError | the constructor of "..." cannot be planned at genesis: writing ..." is not an insertion into the empty list | GAP |
+| solidcash/src/framed/deploy/genesis.ts:767 | FramedGenesisError | the constructor of "..." writes dynamic "...", which the artifact publishes no value source for, so this deployment cannot state the run its write creates' | GAP |
+| solidcash/src/framed/deploy/genesis.ts:776 | FramedGenesisError | the constructor of "..." writes dynamic "..." a value this deployment cannot resolve from its arguments (a ... source) | GAP |
+| solidcash/src/framed/deploy/genesis.ts:909 | FramedGenesisError | the constructor of "..." writes a dynamic value but publishes no block layout to address its chunk run from' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:976 | FramedGenesisError | a root frame's caller is a 25-byte P2PKH lock; got ... bytes | MUST-STAY (semantics) |
+| solidcash/src/framed/deploy/genesis.ts:1088 | FramedGenesisError | the constructor of "..." did not yield a genesis the machine accepts | REPORT |
+| solidcash/src/framed/deploy/genesis.ts:1185 | FramedGenesisError | genesisReadingMessage(reading) | REPORT |
+| solidcash/src/framed/deploy/genesis.ts:1213 | FramedGenesisError | the constructor probe closed against a declaration no derivation wrote: ... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:1354 | FramedGenesisError | the frame's side-car "..." has no plan | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:1360 | FramedGenesisError | 'a compute side-car carries no mutable NFT to recreate' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/genesis.ts:1374 | FramedGenesisError | the frame's side-car "..." has no unlocking | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:58 | FramedDeploymentError | artifact "..." was not compiled framed, so it publishes no placeholder descriptor | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:103 | FramedDeploymentError | "the artifact's program is not assembly, so its published slot offsets cannot apply: (error as Error).message | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:153 | FramedDeploymentError | 'the deployed address is not addrV(category)' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:156 | FramedDeploymentError | the deployed script is ... bytes, not the artifact's ... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:163 | FramedDeploymentError | 'the category slot does not read back as the filled category' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:169 | FramedDeploymentError | "the validator program hash slot does not read back as the program's hash" | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:176 | FramedDeploymentError | 'the address slot does not read back as the filled address' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:186 | FramedDeploymentError | byte ... outside the slots changed | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/material.ts:191 | FramedDeploymentError | 'the master lock is not the P2SH32 of the filled program' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/records.ts:320 | FramedRecordError | the provider cannot enumerate UTXOs by category ..., which is how the master pool, the validator pool and the records are told apart' | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/records.ts:353 | FramedRecordError | category ... has no data-NFT record at index ... (found ...) | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/resize.ts:89 | FramedResizeError | '...' is not the ...(n) function of "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/resize.ts:94 | FramedResizeError | '...' takes the admin's SignatureTemplate | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/resize.ts:116 | FramedResizeError | contract "..." declares no ...(n) function | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/resize.ts:119 | FramedResizeError | contract "..." is not a stateful contract | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/resize.ts:121 | FramedResizeError | a ... counts at least one master | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/resize.ts:129 | FramedResizeError | category ... holds no master to keep beside the ... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/resize.ts:132 | FramedResizeError | a merge of ... retires ... master(s), but ... were named | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/stateful.ts:63 | FramedDeployError | Contract ... is not a stateful contract | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/stateful.ts:66 | FramedDeployError | 'Funding UTXO must be at vout 0 to create a valid token category. Got vout .... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/stateful.ts:115 | FramedDeployError | threadCount must be a positive integer, got ... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/stateful.ts:119 | FramedDeployError | validatorCount must be a positive integer, got ... | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/stateful.ts:183 | FramedDeployError | genesis minted a node for collection "...", which the artifact does not publish | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/stateful.ts:220 | FramedDeployError | Insufficient funding for the pool of ... master(s) and ... validator(s): ... satoshis provided, but the genesis requires ... (outputs ..., fee ...). | MUST-STAY (integrity) |
+| solidcash/src/framed/deploy/stateful.ts:255 | FramedDeployError | The contract's own address is not encodable: ... | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/call-resolution.ts:51 | FramedProxyDeployError | contract "..." publishes no entry "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/call-resolution.ts:291 | FramedProxyDeployError | ... targets the state field "...", which the caller's own state does not hold as an address' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/call-resolution.ts:301 | FramedProxyDeployError | ... computes its target from a "..." source the hop cannot resolve to an address | GAP |
+| solidcash/src/framed/proxy/call-resolution.ts:311 | FramedProxyDeployError | ... publishes no target address the hop can read (no literal, state field or resolvable source) | GAP |
+| solidcash/src/framed/proxy/call-resolution.ts:370 | FramedProxyDeployError | ... takes ... argument(s), but the artifact publishes sources for ..., so the hop cannot state their digest' | GAP |
+| solidcash/src/framed/proxy/call-resolution.ts:377 | FramedProxyDeployError | the callee entry "..." publishes no selector, so the call carries no call data | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/call-resolution.ts:384 | FramedProxyDeployError | ... passes argument ... from a "..."..."}, which the hop cannot resolve from the caller's own arguments and state' | GAP |
+| solidcash/src/framed/proxy/call-resolution.ts:395 | FramedProxyDeployError | ... passes a signature as argument ..., which a record's digest cannot state | MUST-STAY (semantics) |
+| solidcash/src/framed/proxy/call-resolution.ts:424 | FramedProxyDeployError | the call to "......." names the zero address, so the hop states no callee | MUST-STAY (semantics) |
+| solidcash/src/framed/proxy/deploy.ts:264 | FramedProxyDeployError | contract "..." publishes no selector for "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:472 | FramedProxyDeployError | ... ... beside an external call, and the segment that write lands in is not fixed by the entry\'s own source, so the hop cannot declare it' | GAP |
+| solidcash/src/framed/proxy/deploy.ts:495 | FramedProxyDeployError | ... publishes segment ... for ..., which the hop's ... segment(s) do not hold | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:580 | FramedProxyDeployError | 'the entry lays a run of chunk records and the artifact publishes no dynamic value for it' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:686 | FramedProxyDeployError | ... declares its mapping's records in segment ... and the run of chunk records its dynamic write grows in segment ..., and a frame reads the run past the records its own block declares,  | GAP |
+| solidcash/src/framed/proxy/deploy.ts:737 | FramedProxyDeployError | ... cannot declare its loop's records: ... | GAP |
+| solidcash/src/framed/proxy/deploy.ts:774 | FramedProxyDeployError | ... is refused by the compiler (...): ... | GAP |
+| solidcash/src/framed/proxy/deploy.ts:793 | FramedProxyDeployError | proxy "..." is not a stateful contract | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:798 | FramedProxyDeployError | proxy "..." declares no address field named "implementation", so there is nothing for its fallback to forward the call data it received to' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:804 | FramedProxyDeployError | proxy "..." has no fallback, so it cannot forward the call data it received | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:821 | FramedProxyDeployError | agreement.reason | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:858 | FramedProxyDeployError | implementation "..." publishes no entry "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:867 | FramedProxyDeployError | "..." takes ... argument(s), but ... were supplied | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:961 | FramedProxyDeployError | a root frame's caller is a 25-byte P2PKH lock; got ... bytes | MUST-STAY (semantics) |
+| solidcash/src/framed/proxy/deploy.ts:967 | FramedProxyDeployError | 'each genesis funding UTXO must be at vout 0 to create a token category' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:1039 | FramedProxyDeployError | the proxy's genesis published ... record(s) for category ..., but its layout declares ... data NFT(s) | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:1047 | FramedProxyDeployError | the proxy's genesis published no commitment for the record at data NFT ... of category proxy.categoryId | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:1366 | FramedProxyDeployError | 'the hop\'s callee frames have no settle order that answers each frame\'s callees before it and each shared node\'s writes before the frames that declare the views they left' | GAP |
+| solidcash/src/framed/proxy/deploy.ts:1636 | FramedProxyDeployError | the call's callee "..." writes mapping ..." a value whose source the artifact does not publish, so this hop cannot tell whether the write needs value chunks' | GAP |
+| solidcash/src/framed/proxy/deploy.ts:1682 | FramedProxyDeployError | the call's callee "..." did not settle through the proxy: ..., refusal.innermost?.reason.arguments | REPORT |
+| solidcash/src/framed/proxy/deploy.ts:2041 | FramedProxyDeployError | the implementation's ... writes mapping "..." a value whose source the artifact does not publish, so this hop cannot tell whether the write needs value chunks' | GAP |
+| solidcash/src/framed/proxy/deploy.ts:2087 | FramedProxyDeployError | the implementation's ... did not settle through the proxy: ... sizedRunClause(entryWrites), refusal.innermost?.reason.arguments | REPORT |
+| solidcash/src/framed/proxy/deploy.ts:2113 | FramedProxyDeployError | the implementation's ... did not settle through the proxy in ... attempts... | GAP |
+| solidcash/src/framed/proxy/deploy.ts:2139 | FramedProxyDeployError | the implementation's ... returns a value, which a call through this proxy hop does not carry: the proxy\'s fallback records the delegated call without a result, so the hop binds that | GAP |
+| solidcash/src/framed/proxy/deploy.ts:2515 | FramedProxyDeployError | the frame "..." still leaves its write unstated after the hop learned the value its own run exposed, so the frames it encloses cannot start from it' | GAP |
+| solidcash/src/framed/proxy/deploy.ts:2531 | FramedProxyDeployError | the hop stopped its plan ... time(s) to learn earlier calls' results and still waits on ..., so the plan does not complete | GAP |
+| solidcash/src/framed/proxy/deploy.ts:2601 | FramedProxyDeployError | ... reads the result of the earlier call(s) ..., and settling them returned nothing the hop could decode, so the call cannot be planned from it' | GAP |
+| solidcash/src/framed/proxy/deploy.ts:2649 | FramedProxyDeployError | the entry's arms an earlier call's result decides did not settle: the hop re-planned ... time(s) without its sites stopping | GAP |
+| solidcash/src/framed/proxy/deploy.ts:2874 | FramedProxyDeployError | the callee "..." reads its data records of "..." side by side, and no order of the records the hop\'s other frames of that contract name keeps them so' | GAP |
+| solidcash/src/framed/proxy/deploy.ts:3585 | FramedProxyDeployError | the callee's "..." entry reads a mapping node an earlier reach created, but the hop places no output for it' | GAP |
+| solidcash/src/framed/proxy/deploy.ts:4256 | FramedProxyDeployError | 'the caller funding unlocker signs for a lock that is not the hop\'s caller lock, so the root frame\'s msg.sender binding would not hold' | MUST-STAY (semantics) |
+| solidcash/src/framed/proxy/deploy.ts:4291 | FramedProxyDeployError | the derived hop carries no input for participant "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4305 | FramedProxyDeployError | the deployment holds no live UTXO for the hop's "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4309 | FramedProxyDeployError | the hop's "..." holds ... satoshis, but the derived hop spends ... | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4373 | FramedProxyDeployError | the provider returned txid ... for the hop, not the ... its bytes hash to | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4452 | FramedProxyDeployError | implementation "..." publishes no entry "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4467 | FramedProxyDeployError | a root frame's caller is a 25-byte P2PKH lock; got ... bytes | MUST-STAY (semantics) |
+| solidcash/src/framed/proxy/deploy.ts:4480 | FramedProxyDeployError | category ... holds ... record(s) for a proxy whose layout declares ... data NFT(s) | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4488 | FramedProxyDeployError | category ... holds no proxy master or no validator, which a call is admitted by | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4508 | FramedProxyDeployError | category ... holds no implementation master, which the forwarded frame runs from' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4516 | FramedProxyDeployError | the record at data NFT ... of category ... carries no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/deploy.ts:4579 | FramedProxyDeployError | the implementation's ... reads mapping "..." at a node its batch also spends, which one transaction cannot spend twice' | GAP |
+| solidcash/src/framed/proxy/enclosed-reads.ts:110 | FramedProxyDeployError | the hop's reach "..." ... a node of collection "..." that "...", a frame it runs inside, writes before the call that leads to it, and that write\'s value is the body\'s to compute: the ... i | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:762 | FramedProxyDeployError | the implementation's "..." entry reads field "..." of mapping ...", which the artifact does not publish as a collection | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:769 | FramedProxyDeployError | the implementation's "..." entry reads field "..." of mapping ..." at a key this hop cannot resolve (...) | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:788 | FramedProxyDeployError | the implementation's "..." entry reads field "..." of the node mapping ..." holds for this key, whose value this hop cannot reassemble from the deployment's chunks' | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:871 | FramedProxyDeployError | the implementation's "..." entry's sorted batch names slot ..., which its entry accesses do not describe' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:905 | FramedProxyDeployError | the implementation's "..." entry writes ... mapping entry(ies) across 0 sorted batch(es), and this hop plans one batch to one collection' | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:920 | FramedProxyDeployError | the implementation's "..." entry reads mapping "..." beside the batch it writes, which this hop does not declare' | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:947 | FramedProxyDeployError | the implementation's "..." entry writes mapping "...", which the artifact does not publish as a sorted collection' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:977 | FramedProxyDeployError | the implementation's "..." entry writes mapping "..." at a key this hop cannot resolve from its call data (...) | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1029 | FramedProxyDeployError | the implementation's "..." entry writes mapping "..." in a run-time loop over its own call data, whose values chunk, so the run of chunk records the write takes cannot be sized from th | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1082 | FramedProxyDeployError | the implementation's "..." entry writes mapping "..." with ... key(s), which the collection's ... key type(s) do not cover | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1094 | FramedProxyDeployError | the implementation's "..." entry touches mapping "..." as ..., and this hop plans one write per target | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1157 | FramedProxyDeployError | the implementation's "..." entry reads mapping "..." a value this hop cannot reassemble from the node the deployment holds, so it cannot witness the body's read" | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1194 | FramedProxyDeployError | the deployment holds a node of collection "..." with no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1211 | FramedProxyDeployError | the implementation's "..." entry writes mapping "...", but the deployment's collection "..." has no head; a head is minted only at genesis, so this deployment was deployed without it' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1389 | FramedProxyDeployError | the deployment holds no record declaring dynamic "...", so this hop cannot read the value its write starts from' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1405 | FramedProxyDeployError | the deployment holds a record at dynamic "..."'s collection covenant whose commitment is not a chunk, so this hop cannot read the value its write starts from' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1413 | FramedProxyDeployError | the deployment's dynamic "..." declares ... byte(s), which is ... chunk(s), but ... chunk(s) sit at its collection covenant | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1420 | FramedProxyDeployError | the deployment's dynamic "..." holds chunk ... where chunk ... belongs | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1503 | FramedProxyDeployError | the implementation's "..." entry mutates mapping "..." as ...", and this hop plans only the element an append carries | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1516 | FramedProxyDeployError | the implementation's "..." entry appends to mapping "..." a value whose live bytes this hop cannot reassemble from the deployment's chunks" | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1623 | FramedProxyDeployError | the implementation's "..." entry writes ... dynamic value(s), and this hop plans one run to one variable' | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1632 | FramedProxyDeployError | the implementation's "..." entry writes dynamic "...", which the artifact does not publish as a dynamic state variable' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1658 | FramedProxyDeployError | the implementation's "..." entry writes dynamic "..." a value shorter than the one the deployment holds, which this hop does not plan' | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1680 | FramedProxyDeployError | the implementation's "..." entry writes dynamic "..." (...), whose appended element the artifact publishes no source for, so the run of chunk records its write creates cannot be sized' | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1686 | FramedProxyDeployError | the implementation's "..." entry writes dynamic "..." (...) an element the artifact publishes a source for but the hop\'s call data does not determine, so the run of chunk records its wr | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1780 | FramedProxyDeployError | the implementation's "..." entry appends to dynamic "..." once per turn of a run-time loop over "...", whose length this hop's call data does not carry, so the run of chunk records its w | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1789 | FramedProxyDeployError | the implementation's "..." entry appends to dynamic "..." inside a run-time loop whose width the artifact does not pin to a call parameter, so the run of chunk records its write create | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1861 | FramedProxyDeployError | the implementation's "..." entry reads dynamic "...", which the artifact does not publish as a dynamic state variable' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/entry-writes.ts:1964 | FramedProxyDeployError | the implementation's "..." entry reads ...").join(', ')} beside a run-time loop's writes to "...", and its frame finds a run past the loop's records only when it is the one dynamic value | GAP |
+| solidcash/src/framed/proxy/entry-writes.ts:1988 | FramedProxyDeployError | the implementation's "..." entry writes ... sorted collections beside a dynamic value, whose records this hop does not order | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:605 | FramedProxyDeployError | ... runs a loop whose counter the caller's own arguments do not fix | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:610 | FramedProxyDeployError | ... runs a loop whose counter never advances | MUST-STAY (semantics) |
+| solidcash/src/framed/proxy/external-calls.ts:618 | FramedProxyDeployError | ... runs a loop whose bound is not fixed by the caller's own arguments, so the hop cannot state how many records its visits fill' | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:710 | FramedProxyDeployError | ... runs a loop whose bound is not fixed by the caller's own arguments, so the hop cannot state how many records its visits fill' | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:1071 | FramedProxyDeployError | the call to "......." targets ..., and none of the deployment's contracts sits at that address" | MUST-STAY (semantics) |
+| solidcash/src/framed/proxy/external-calls.ts:1226 | FramedProxyDeployError | the entry "..." publishes call ... to .......", which its ABI routing does not describe | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:1281 | FramedProxyDeployError | ... reaches ".......()", which the compiler refused: refusal | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:1298 | FramedProxyDeployError | ... reaches "...", which this hop already places; a contract that reaches itself below itself cannot be given a second block in the hop' | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:1390 | FramedProxyDeployError | the callee's category ... holds a record with no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:1514 | FramedProxyDeployError | the callee "..." writes records this hop cannot declare: ... | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:1521 | FramedProxyDeployError | the callee "..." reads mapping "..." at a node its batch also spends, which one transaction cannot spend twice' | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:1645 | FramedProxyDeployError | the callee ".......()" reads a mapping key at no fixed entry slot, which this hop does not declare a node for' | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:1669 | FramedProxyDeployError | the callee ".......()" reads a mapping node this hop cannot declare: ... | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:1704 | FramedProxyDeployError | the callee ".......()" reads a mapping node of collection "..." whose ...-byte value this hop cannot reassemble from the deployment's chunk records, so it cannot witness the body's read" | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:1781 | FramedProxyDeployError | the callee's category ... holds no record at data NFT ... | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:1823 | FramedProxyDeployError | ... reaches "...", which this hop already places; its category ... holds ... master(s), so it cannot be entered ... time(s) | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:1966 | FramedProxyDeployError | ... reaches "...", which this hop already places; its category ... holds ... master(s), so it cannot be entered ... time(s) | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:1972 | FramedProxyDeployError | ... reaches "...", which this hop already places; its category ... holds ... master(s), so it cannot be entered ... time(s) | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2220 | FramedProxyDeployError | ..., and ... of them write collection ..." at the same key, which the list does not hold, so each reach inserts it; a list holds one node per key, so a later reach of the key has to cont | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2220 | FramedProxyDeployError | the hop reaches the entry "..." N times, and K of them write collection "..." at the same key, which the list does not hold, so each reach inserts it | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2324 | FramedProxyDeployError | the hop's reaches "..." and "..." touch one node of collection ...", and one of them enters the other, so their segments interleave in an order this hop does not settle' | GAP |
+| solidcash/src/framed/proxy/external-calls.ts:2338 | FramedProxyDeployError | ... relinks to insert a key; ... | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2338 | FramedProxyDeployError | ... relinks to insert a key; a node whose values chunk is continued from the bytes the write before each reach stated, and a relink states none | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2341 | FramedProxyDeployError | ... writes, and inserts through it; ... | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2341 | FramedProxyDeployError | ... writes, and inserts through it; (chunked relink) | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2371 | FramedProxyDeployError | ... relinks to insert a key; ... | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2371 | FramedProxyDeployError | ... relinks to insert a key; (chunked relink) | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2374 | FramedProxyDeployError | ... writes, and inserts through it; ... | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2374 | FramedProxyDeployError | ... writes, and inserts through it; (chunked relink) | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/external-calls.ts:2378 | FramedProxyDeployError | ... writes, and its values chunk: the reach before it states no value a later reach can continue from, so the run of chunk records the later reach takes cannot be sized' | GAP |
+| solidcash/src/framed/proxy/generate.ts:72 | FramedProxyDeployError | cannot generate a proxy for "...": ... has type "...", whose base "..." is neither a primitive type nor a struct the state layout publishes' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/generate.ts:109 | FramedProxyDeployError | cannot generate a proxy for "...": it is not a stateful contract, so it has no record a proxy could keep' | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/generate.ts:121 | FramedProxyDeployError | cannot generate a proxy for "...": its "..." field has type "...", but a fallback forwards to an address | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/generate.ts:275 | FramedProxyDeployError | the generated proxy for "..." compiled to a non-stateful contract | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/generate.ts:281 | FramedProxyDeployError | cannot generate a proxy for "...": ... | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/generate.ts:303 | FramedProxyDeployError | the generated proxy for "..." did not compile to a contract | MUST-STAY (integrity) |
+| solidcash/src/framed/proxy/refusal-order.ts:128 | FramedProxyDeployError | the call's callee "..." did not settle through the proxy: ..., innermost.reason.arguments | REPORT |
+| solidcash/src/framed/proxy/upgrade.ts:18 | FramedProxyDeployError | cannot upgrade proxy "..." to "...": ... | MUST-STAY (semantics) |
+| solidcash/src/framed/queue/queue.ts:71 | CompositionQueueError | 'a send whose plan is resolved when its turn comes must name the resources it consumes' | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:369 | FramedReadError | artifact "..." publishes no entry "..." | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:372 | FramedReadError | entry "..." publishes no selector, so its frame cannot be dispatched to | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:377 | FramedReadError | entry "..." returns nothing, so it is not a read | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:456 | FramedReadError | entry ".......()" calls ".......()", whose argument ... comes from a "..."..., which a read cannot state from the caller's own arguments and addresses" | GAP |
+| solidcash/src/framed/read/read.ts:465 | FramedReadError | error.message | REPORT |
+| solidcash/src/framed/read/read.ts:495 | FramedReadError | error.message | REPORT |
+| solidcash/src/framed/read/read.ts:607 | FramedReadError | entry ".......()" publishes call ... to .......()", which its ABI routing does not describe | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:636 | FramedReadError | entry ".......()" makes ... external call(s): .......()" at 0x... is not supplied in externals | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:651 | FramedReadError | the read reaches "..." again below itself, so its frames have no order | GAP |
+| solidcash/src/framed/read/read.ts:839 | FramedReadError | category ... holds ... master(s), and the read runs ... frame(s) over it | OPERATIONAL (pool size) |
+| solidcash/src/framed/read/read.ts:849 | FramedReadError | category ... holds no validator, which a read frame needs to be admitted | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:869 | FramedReadError | category ... holds no data-NFT record at index ..., which the entry reads | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:875 | FramedReadError | the record at data-NFT index ... carries no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:941 | FramedReadError | error.message | REPORT |
+| solidcash/src/framed/read/read.ts:965 | FramedReadError | the node of collection "..." the entry reads holds a ...-byte value whose bytes sit in chunk records that category ... does not hold, so the read cannot state its witness' | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:1114 | FramedReadError | category ... holds a node of collection "..." with no commitment | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:1129 | FramedReadError | category ... holds no node of collection "..." whose slot is the key\'s or the key\'s bracketing predecessor, so the read cannot locate what it reads' | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:1170 | FramedReadError | entry "..." reads mapping "...", which the artifact does not publish as a collection' | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:1177 | FramedReadError | entry "..." names mapping "..." at an element of ..." that the artifact's live records do not state | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:1195 | FramedReadError | entry "..." reads "..." at ... turn(s), but a chunk-backed array's chunk run shares the fixed record band with the entry slot\'s own turn, so exactly one turn can be composed' | GAP |
+| solidcash/src/framed/read/read.ts:1213 | FramedReadError | entry "..." names mapping "..." at a key no run of its own arguments determines' | GAP |
+| solidcash/src/framed/read/read.ts:1273 | FramedReadError | category ... holds no data-NFT record at index ..., which the entry reads "..." from | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:1504 | FramedReadError | 'the frame recorded bytes that are not the entry\'s declared Solidity ABI returns' | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:1634 | FramedReadError | entry "..." has no parameter ... | MUST-STAY (integrity) |
+| solidcash/src/framed/read/read.ts:1978 | FramedReadError | ... runs a loop whose bound reads an earlier call's result, which the read could not learn | GAP |
+| solidcash/src/framed/validator/reference/reference.ts:735 | FramedEncodingError | 'not a witness block: magic' | MUST-STAY (integrity) |
+| solidcash/src/framed/validator/reference/reference.ts:736 | FramedEncodingError | 'unsupported witness block version' | MUST-STAY (integrity) |
+| solidcash/src/framed/validator/reference/reference.ts:748 | FramedEncodingError | call ... is a root frame | MUST-STAY (integrity) |
+| solidcash/src/framed/validator/reference/reference.ts:752 | FramedEncodingError | call ... has no callee | MUST-STAY (integrity) |
+| solidcash/src/framed/validator/reference/reference.ts:780 | FramedEncodingError | 'segment and call counts disagree' | MUST-STAY (integrity) |

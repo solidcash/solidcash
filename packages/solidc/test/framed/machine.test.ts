@@ -3,7 +3,7 @@
  *
  * The suites run on a machine whose per-input byte allowance and operation-cost density are relaxed, and this pins
  * that fact: a transaction libauth's stock machine refuses for carrying more unlocking bytecode than a real chain
- * allows is accepted on the profile the per-call suites use. Without this, a suite could pass while quietly being
+ * allows is accepted on the profile the framed suites use. Without this, a suite could pass while quietly being
  * gated by the profile it was supposed to have been freed from.
  */
 

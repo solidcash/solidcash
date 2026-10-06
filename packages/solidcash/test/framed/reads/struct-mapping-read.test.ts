@@ -4,20 +4,20 @@ import {
   buildPushdataCommitment, bytesToHex, encodeChunkableValueTail, encodePushdataValue, sha256, type StateRecord,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   entryRecordLockingBytecode,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { mappingValueChunkLock, planMappingBatch } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { mappingValueChunkLock, planMappingBatch } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../../../src/utils.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a mapping entry whose value is a struct the node's tail cannot hold.
@@ -42,7 +42,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   mapping(string => Entry) public entries;'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true }).Registry!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Registry!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'entries')!;
 const STRUCTS = artifact.stateLayout!.structs;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
@@ -90,8 +90,8 @@ async function chain(provider: MockNetworkProvider): Promise<void> {
 }
 
 /** The read of the mapping entry through the shipped read module. */
-function read(provider: MockNetworkProvider): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+function read(provider: MockNetworkProvider): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider, artifact, categoryId: CATEGORY_HEX, functionName: 'entries', args: ['k1'], vm: compositionMachine(),
   });
 }
@@ -170,7 +170,7 @@ const PAGED_SOURCE = 'pragma solidity ^0.8.0;'
   + ' }';
 
 const pagedArtifact = compileStringMulti(PAGED_SOURCE, {
-  composition: 'per-call', solidityImportCompat: true,
+  composition: 'framed', solidityImportCompat: true,
 }).Directory!;
 const PAGED_COLLECTION = pagedArtifact.stateLayout!.collections!.find((candidate) => candidate.name === 'members')!;
 const PAGED_STRUCTS = pagedArtifact.stateLayout!.structs;
@@ -217,8 +217,8 @@ async function pagedChain(provider: MockNetworkProvider): Promise<void> {
 /** The read of `getMembers(index_, limit_)` through the shipped read module. */
 function readPaged(
   provider: MockNetworkProvider, index: bigint, limit: bigint,
-): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider, artifact: pagedArtifact, categoryId: PAGED_CATEGORY_HEX, functionName: 'getMembers',
     args: [index, limit], vm: compositionMachine(),
   });

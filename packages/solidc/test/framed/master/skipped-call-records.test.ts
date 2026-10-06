@@ -5,7 +5,7 @@ import {
   type CallRecord, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { stateRecordUnlockingBytecode } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { stateRecordUnlockingBytecode } from '../../../../solidcash/src/framed/deploy/index.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { deployChunkRunContract, type ChunkRunContract } from './chunk-run-input.js';
@@ -53,7 +53,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
   + ' }';
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 const CALLER = deployChunkRunContract(ARTIFACTS.Caller!, label('caller'));
 const B = deployChunkRunContract(ARTIFACTS.B!, label('b'));
 const C = deployChunkRunContract(ARTIFACTS.C!, label('c'));

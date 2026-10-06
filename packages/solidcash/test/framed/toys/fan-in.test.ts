@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind, buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, bytesToHex,
@@ -14,7 +14,7 @@ import {
   createComposedDerivationHost, deriveComposition, layOutMappingWrites, participant, planMappingWrite,
   type CompositionDraft, type CompositionDraftPlan, type DerivationResult, type DraftMaster,
   type MappingNodePlacement, type MappingWritePlan,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * Fan-in: `Hub.go` approves `Vault` on `Token`, then calls `Vault.pull`, which calls `Token.transferFrom`.
@@ -233,7 +233,7 @@ describe('a caller approving a vault that pulls through the token', () => {
     const { artifacts } = compileAndDeploy(SOURCE, {
       Token: TOKEN_LABEL, Vault: VAULT_LABEL, Hub: HUB_LABEL,
     });
-    expect(artifacts.Token?.composition?.convention).toBe('per-call');
+    expect(artifacts.Token?.composition?.convention).toBe('framed');
     expect(artifacts.Token?.stateLayout?.mappings?.map((mapping) => mapping.name)).toStrictEqual(['allowance']);
   });
 

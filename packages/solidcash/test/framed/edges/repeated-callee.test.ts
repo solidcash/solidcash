@@ -9,22 +9,22 @@ import {
 } from '@solidcash/utils';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 import {
-  decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
+  decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
 import {
   EMPTY, compileAndDeploy, hexOf, master, masterInput, rootOf,
   seededAddress, selectorOf, token, userInput, validatorFor, USER_LOCK,
 } from '../shapes/harness.js';
-import { PER_CALL_MASTER_PADDING_BYTES } from '../../../../solidc/src/per-call/master/master-program.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { FRAMED_MASTER_PADDING_BYTES } from '../../../../solidc/src/framed/master/master-program.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { layoutWithFacets } from '../shapes/harness.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant, readPublishedStopSites,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * One entry that calls one callee several times.
@@ -247,7 +247,7 @@ function verdictAt(draft: CompositionDraft, id: string): { readonly accepted: bo
 }
 
 /** The transaction as the validator's own derivation models it, restated from what the machine was handed. */
-function toModel(draft: CompositionDraft): PerCallTransaction {
+function toModel(draft: CompositionDraft): FramedTransaction {
   const program = draft.programFor('hub-1');
   const shape = (
     holder: { readonly token?: { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } } },
@@ -323,7 +323,7 @@ describe('one entry that calls one callee from a loop', () => {
       plan: run.plan,
     });
     expect(() => deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host))
-      .toThrowError(/PER_CALL_DERIVATION_STALLED/);
+      .toThrowError(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('refuses a chain that does not carry on from the turn before it', () => {
@@ -378,7 +378,7 @@ describe('one entry that calls one callee from a loop', () => {
     // The caller's own program is longer than one that carries no padding by the block its input is paid for.
     const hubArtifact = run.artifacts.Hub!;
     const program = scriptToBytecode(asmToScript(hubArtifact.bytecode));
-    expect(program.length).toBeGreaterThan(PER_CALL_MASTER_PADDING_BYTES);
+    expect(program.length).toBeGreaterThan(FRAMED_MASTER_PADDING_BYTES);
   });
 });
 

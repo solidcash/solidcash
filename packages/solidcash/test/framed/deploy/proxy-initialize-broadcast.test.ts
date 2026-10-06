@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { bytesToHex } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { readPerCallState } from '../../../src/per-call/deploy/index.js';
-import { participant } from '../../../src/per-call/composer/index.js';
-import { deployPerCallProxy, proxyRecordParticipantId } from '../../../src/per-call/proxy/index.js';
+import { readFramedState } from '../../../src/framed/deploy/index.js';
+import { participant } from '../../../src/framed/composer/index.js';
+import { deployFramedProxy, proxyRecordParticipantId } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -17,7 +17,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  *
  * The derived hop is the specification — the same unlocking bytecodes, the same participant outputs, the record at
  * the commitment the entry computed — but it is laid out on synthetic outpoints. When the caller offers its own
- * coin, `deployPerCallProxy` rebuilds the hop on the outpoints the two geneses actually created (the masters, the
+ * coin, `deployFramedProxy` rebuilds the hop on the outpoints the two geneses actually created (the masters, the
  * validator, the record and the caller's coin), signs the caller's input over the real transaction, and broadcasts
  * it. These tests drive that on the mock network and read the entry's state back through the shipped decoder.
  */
@@ -80,7 +80,7 @@ async function funded(network: MockNetworkProvider): Promise<{
 interface Broadcast {
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly network: MockNetworkProvider;
-  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
 }
 
 let broadcastRun: Promise<Broadcast> | undefined;
@@ -88,11 +88,11 @@ let broadcastRun: Promise<Broadcast> | undefined;
 /** The broadcast deployment both cases read; neither changes it, so it runs once. */
 function broadcast(): Promise<Broadcast> {
   broadcastRun ??= (async (): Promise<Broadcast> => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, signature, implFunding, proxyFunding, callerUtxo, deployerLock, changeAddress }
       = await funded(network);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyArtifact: artifacts.Proxy!,
@@ -108,7 +108,7 @@ function broadcast(): Promise<Broadcast> {
   return broadcastRun;
 }
 
-describe('a broadcast per-call proxy initialization', () => {
+describe('a broadcast framed proxy initialization', () => {
   it('broadcasts all three transactions, placing the derived hop on the geneses\' real outpoints', async () => {
     const { network, deployment } = await broadcast();
 
@@ -152,7 +152,7 @@ describe('a broadcast per-call proxy initialization', () => {
 
     // The entry wrote `initialized = 1`, `version = 7`, with the implementation's address still in the record; the
     // shipped decoder reads that record back off the chain the hop was broadcast to.
-    const state = await readPerCallState(network, deployment.proxy.categoryId, artifacts.Proxy!.stateLayout!);
+    const state = await readFramedState(network, deployment.proxy.categoryId, artifacts.Proxy!.stateLayout!);
     expect(state.byNft.length).toBe(1);
     expect(state.byNft[0]!.initialized).toBe(1n);
     expect(state.byNft[0]!.version).toBe(7n);

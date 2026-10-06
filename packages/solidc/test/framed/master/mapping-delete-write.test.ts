@@ -8,7 +8,7 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -16,19 +16,19 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose entry removes a mapping entry, deployed and spent on chain.
+ * A framed master whose entry removes a mapping entry, deployed and spent on chain.
  *
  * A sorted mapping's node is never spliced out by a source-level `delete`: the removal is the upsert of the value
  * type's default, so the published access is a write and the node stays in the list carrying the empty tail. The
  * entry's own code therefore closes against a written node, not a removed one, and the frame's record group is the
  * same write's: the node kept in place for an update, the relinked predecessor and the created node for an insert.
- * The whole shipped path runs — the source through `compileString` with the per-call convention, the program
+ * The whole shipped path runs — the source through `compileString` with the framed convention, the program
  * through `deployMaster`, and the BCH-2026 machine is asked for a verdict on the master's own input — in both the
  * present and the absent shape. A record that declares the node removed, as a splice would, is refused: the
  * derivation takes its successor from the written node and a removal's node carries no written view.
  */
 
-const CATEGORY = seededCategory('mapping delete per-call');
+const CATEGORY = seededCategory('mapping delete framed');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const TO = new Uint8Array(20).fill(0x33);
@@ -53,8 +53,8 @@ const DEFAULT_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
-const defaultArtifact = compileString(DEFAULT_SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
+const defaultArtifact = compileString(DEFAULT_SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = encodeLockingBytecodeP2sh32(hash256(deployed.script));
@@ -237,11 +237,11 @@ function evaluateInsert(records: RecordEntry[] = INSERT_RECORDS): { accepted: bo
 /** The refusal the machine gives a declaration whose verification does not close, read off its own state. */
 const OP_VERIFY_REFUSAL = { accepted: false, objection: 'Program failed an OP_VERIFY operation.' };
 
-describe('a per-call master whose entry removes a mapping entry', () => {
+describe('a framed master whose entry removes a mapping entry', () => {
   it('publishes the removal as the default write, under the same layout and ABI as writing the default', () => {
     // The sorted list keeps the node and writes the default tail, so the published access is a write rather than a
     // delete, and the frame's slot offsets and stripped operands are the ones the default write publishes.
-    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.composition?.convention).toBe('framed');
     const entry = artifact.abi.find((candidate) => candidate.name === 'clear');
     expect(entry?.entryAccesses?.map((access) => access.operations)).toStrictEqual([['write']]);
     expect(entry?.inputs?.map((input) => input.name)).toStrictEqual(['to']);

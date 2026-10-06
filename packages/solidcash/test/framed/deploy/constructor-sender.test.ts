@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Signer, getContractFactory } from '../../../src/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
@@ -37,7 +37,7 @@ const SOURCE = [
 ].join('\n');
 
 const artifact: Artifact = compileStringMulti(
-  SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never,
+  SOURCE, { solidityImportCompat: true, composition: 'framed' } as never,
 ).Box!;
 
 /** A mock chain carrying the shipped validator facets, and a funder of fresh vout-0 coins for any signer. */
@@ -61,7 +61,7 @@ function hashOf(lock: Uint8Array): string {
 
 /** The owner the deployment's records hold, read through the read path, as hex. */
 async function ownerHex(provider: MockNetworkProvider, box: StatefulContract): Promise<string> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider, artifact, categoryId: box.categoryId, functionName: 'owner', args: [], vm: compositionMachine(),
   });
   expect(read.accepted, read.objection).toBe(true);

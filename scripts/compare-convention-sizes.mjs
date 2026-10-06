@@ -4,18 +4,18 @@
  *
  *   node scripts/compare-convention-sizes.mjs \
  *     --left <artifact-dir> --left-name kernel \
- *     --right <artifact-dir> --right-name per-call
+ *     --right <artifact-dir> --right-name framed
  *
  * Each directory is a flat or nested folder of `*.json` artifacts (TypeScript
  * artifact modules are ignored). Contracts are paired by `contractName`.
  *
  * Bytes are the real script (`asmToBytecode`), not the ASM character count.
- * The 10,000-byte column is the BCH per-input script limit. A per-call master
+ * The 10,000-byte column is the BCH per-input script limit. A framed master
  * redeem script larger than that cannot be spent under standardness; mocknet
- * relaxes the limit. Deployment UTXOs use the shipped defaults: a per-call
+ * relaxes the limit. Deployment UTXOs use the shipped defaults: a framed
  * deploy funds `dataNftCount` state records plus the default pool (12 masters
  * and 4 validators, `DEFAULT_MASTER_POOL_SIZE`); a direct deploy funds
- * `dataNftCount` state records plus one master. A per-call call spends one
+ * `dataNftCount` state records plus one master. A framed call spends one
  * master per entry into that contract. Records touched by the call are not in
  * the artifact; the column is the state-record upper bound.
  */
@@ -28,8 +28,8 @@ const utilsScript = pathToFileURL(path.join(here, '../packages/utils/dist/script
 const { asmToBytecode } = await import(utilsScript);
 
 const INPUT_LIMIT = 10_000;
-const PER_CALL_MASTERS = 12;
-const PER_CALL_VALIDATORS = 4;
+const FRAMED_MASTERS = 12;
+const FRAMED_VALIDATORS = 4;
 
 function arg(name) {
   const index = process.argv.indexOf(name);
@@ -66,14 +66,14 @@ function measure(artifact) {
   const bodies = artifact.functionBodies ?? {};
   const bodyBytes = Object.values(bodies).map((hex) => hexBytes(hex));
   const refused = artifact.composition?.refusedEntries ?? artifact.refusedFunctions ?? [];
-  const perCall = artifact.composition?.convention === 'per-call';
+  const framed = artifact.composition?.convention === 'framed';
   const stateRecords = artifact.stateLayout?.dataNftCount ?? 0;
-  const deploymentUtxos = perCall
-    ? stateRecords + PER_CALL_MASTERS + PER_CALL_VALIDATORS
+  const deploymentUtxos = framed
+    ? stateRecords + FRAMED_MASTERS + FRAMED_VALIDATORS
     : stateRecords + 1;
   return {
     contractName: artifact.contractName,
-    convention: perCall ? 'per-call' : 'direct',
+    convention: framed ? 'framed' : 'direct',
     bytecodeBytes: script.length,
     bytecodeChars: artifact.bytecode.length,
     functionBodyBytes: bodyBytes.reduce((sum, n) => sum + n, 0),
@@ -82,7 +82,7 @@ function measure(artifact) {
     overInputLimit: script.length > INPUT_LIMIT,
     stateRecords,
     deploymentUtxos,
-    callMasters: perCall ? 1 : 0,
+    callMasters: framed ? 1 : 0,
     callStateRecordBound: stateRecords,
     refusedCount: refused.length,
     refused: refused.map((entry) => `${entry.functionName}: ${entry.reason}`),
@@ -146,6 +146,6 @@ for (const name of names) {
 }
 
 console.log(`# input limit ${INPUT_LIMIT}`);
-console.log(`# per-call deployment = dataNftCount + ${PER_CALL_MASTERS} masters + ${PER_CALL_VALIDATORS} validators`);
+console.log(`# framed deployment = dataNftCount + ${FRAMED_MASTERS} masters + ${FRAMED_VALIDATORS} validators`);
 console.log('# direct deployment = dataNftCount + 1 master');
-console.log('# per-call call masters = 1 per entry; callStateRecordBound = dataNftCount');
+console.log('# framed call masters = 1 per entry; callStateRecordBound = dataNftCount');

@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, validatorAddress, type StateLayout } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -49,13 +49,13 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const impl = artifacts.Impl!;
 
 /** The record's own state, read back through the shipped deployment reader and decoded as a field map. */
 async function recordState(network: MockNetworkProvider, categoryId: string): Promise<string> {
   const layout: StateLayout = impl.stateLayout!;
-  const deployment = await readPerCallDeployment(network, categoryId, layout);
+  const deployment = await readFramedDeployment(network, categoryId, layout);
   return bytesToHex(new Uint8Array(Buffer.from(deployment.records[0]!.token!.nft!.commitment, 'hex')));
 }
 
@@ -95,7 +95,7 @@ async function deployedWithCallerCoin(network: MockNetworkProvider, vm = composi
   readonly hopCoin: Utxo;
   readonly callCoin: { txid: string; vout: number; satoshis: bigint };
   readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
-  readonly initialize: Awaited<ReturnType<typeof deployPerCallProxy>>['initialize'];
+  readonly initialize: Awaited<ReturnType<typeof deployFramedProxy>>['initialize'];
 }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -109,7 +109,7 @@ async function deployedWithCallerCoin(network: MockNetworkProvider, vm = composi
   // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
   await fundShippedFacets(network);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     implementationDeploy: {
@@ -155,7 +155,7 @@ describe('a hop whose implementation entry refuses', () => {
     const { network, funded } = await sharedDeployment();
     const before = await recordState(network, funded.proxyCategoryId);
 
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -177,7 +177,7 @@ describe('a hop whose implementation entry refuses', () => {
   it('names the entry and the failing line for a bare guard', async () => {
     const { network, funded } = await sharedDeployment();
 
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -196,7 +196,7 @@ describe('a hop whose implementation entry refuses', () => {
   it('carries the values the entry\'s custom error was raised with', async () => {
     const { network, funded } = await sharedDeployment();
 
-    const refused = await callPerCallProxyEntry({
+    const refused = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -221,7 +221,7 @@ describe('a hop whose implementation entry refuses', () => {
     const before = await recordState(network, funded.proxyCategoryId);
 
     // The entry accepts, so the frames settle; only the validator's own verdict refuses.
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),

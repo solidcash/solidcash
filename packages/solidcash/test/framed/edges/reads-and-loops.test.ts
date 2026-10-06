@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { FrameKind, encodeIntegerValue, type FrameKindValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
+import { publishedRefusals } from '../../../../solidc/test/framed/master/refused-entry.js';
 import {
   compileAndDeploy, composeAndDerive, entryName, hexOf, master, rootOf, seededAddress, token, userInput,
   userInputs, USER_LOCK, selectorOf, validatorFor,
@@ -10,7 +10,7 @@ import {
 import {
   createComposedDerivationHost, deriveDepthFirst,
   type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * Reads and calls whose shape depends on state or on a loop.
@@ -212,7 +212,7 @@ describe('a call whose execution depends on a run-time value', () => {
       + ' contract Chooser { function go(uint sel) {'
       + `   switch (sel) { case 0: ICal(0x${hexOf(CAL)}).ping.call(); break; default: require(true); }`
       + '   require(true); } }';
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }));
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'framed' }));
     expect(refusals.map((refused) => refused.reason).join(' | '))
       .toMatch(/is in a body that switches, and its arms need not make the same number of calls/);
   });
@@ -226,7 +226,7 @@ describe('a read of state that belongs to another contract', () => {
       + ' contract Ledger { int public counter; function bump() { this.counter = this.counter + 1; require(true); } }'
       + ' contract Reader { function peek() returns (int) {'
       + `   return ILedger(0x${hexOf(ledger)}).counter; } }`;
-    expect(() => compileStringMulti(source, { composition: 'per-call' }))
+    expect(() => compileStringMulti(source, { composition: 'framed' }))
       .toThrow(/Block layout not available while compiling 'peek'/);
   });
 });
@@ -288,6 +288,6 @@ describe('a static read whose callee reverts', () => {
 
   it('settles the faithful read and stalls the derivation when the callee requires false', () => {
     expect(() => deriveStaticRead(read(''))).not.toThrow();
-    expect(() => deriveStaticRead(read('require(false);'))).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => deriveStaticRead(read('require(false);'))).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });

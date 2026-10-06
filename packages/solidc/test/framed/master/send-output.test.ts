@@ -8,13 +8,13 @@ import {
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
- * A compiled per-call entry that makes a value send, driven through the real entry point.
+ * A compiled framed entry that makes a value send, driven through the real entry point.
  *
  * A listed send's recipient lock is a run-time value the entry's own code computes, so the head leaves the output
  * index the witness lists as a tracked slot and the body pins the lock and the value it computed at that output.
@@ -92,7 +92,7 @@ const compiledBySource = new Map<string, Artifact>();
 const compile = (source: string): Artifact => {
   let artifact = compiledBySource.get(source);
   if (artifact === undefined) {
-    artifact = compileString(source, { composition: 'per-call' });
+    artifact = compileString(source, { composition: 'framed' });
     compiledBySource.set(source, artifact);
   }
   return artifact;
@@ -228,7 +228,7 @@ const MARKER: VmOutput = {
 const sendOutput = (lock: Uint8Array, value: bigint): VmOutput =>
   ({ lockingBytecode: lock, valueSatoshis: value });
 
-describe('an entry that sends to a run-time lock, compiled per-call', () => {
+describe('an entry that sends to a run-time lock, compiled framed', () => {
   /** The listed output sits past a filler, so it differs from what a block-layout offset would read. */
   const SEND_OUTPUT = 2;
   const spend = (overrides: Partial<Spend> = {}): { accepted: boolean; objection?: string } => verdict({
@@ -270,7 +270,7 @@ describe('an entry that sends to a run-time lock, compiled per-call', () => {
   });
 });
 
-describe('an entry that pays a lock its caller names, compiled per-call', () => {
+describe('an entry that pays a lock its caller names, compiled framed', () => {
   const SEND_OUTPUT = 2;
   const spend = (to: Uint8Array): { accepted: boolean; objection?: string } => verdict({
     source: NAMED_SOURCE,
@@ -288,7 +288,7 @@ describe('an entry that pays a lock its caller names, compiled per-call', () => 
   });
 });
 
-describe('an entry that pays through a value-carrying low-level call, compiled per-call', () => {
+describe('an entry that pays through a value-carrying low-level call, compiled framed', () => {
   const SEND_OUTPUT = 2;
   const spend = (source: string, to: Uint8Array): { accepted: boolean; objection?: string } => verdict({
     source,
@@ -306,7 +306,7 @@ describe('an entry that pays through a value-carrying low-level call, compiled p
   });
 });
 
-describe('two dispatched entries of which one sends, compiled per-call', () => {
+describe('two dispatched entries of which one sends, compiled framed', () => {
   const SEND_OUTPUT = 2;
   const selectorOf = (entry: string): Uint8Array => Uint8Array.from(Buffer.from(
     compile(DISPATCHED_SOURCE).abi.find((row) => row.name === entry)!.selector!, 'hex'));
@@ -329,7 +329,7 @@ describe('two dispatched entries of which one sends, compiled per-call', () => {
   });
 });
 
-describe('an entry whose send runs on one branch, compiled per-call', () => {
+describe('an entry whose send runs on one branch, compiled framed', () => {
   const SEND_OUTPUT = 2;
   const spend = (
     sends: number[], outputs: readonly VmOutput[], amount: number,
@@ -357,7 +357,7 @@ describe('an entry whose send runs on one branch, compiled per-call', () => {
   });
 });
 
-describe('a stateful entry that sends, compiled per-call', () => {
+describe('a stateful entry that sends, compiled framed', () => {
   const SEND_OUTPUT = 3;
   const stateful = deploy(STATEFUL_SOURCE);
   const commitment = (counter: bigint): Uint8Array =>
@@ -398,7 +398,7 @@ describe('a stateful entry that sends, compiled per-call', () => {
   });
 });
 
-describe('a stateful entry that reads its record, writes none, and sends, compiled per-call', () => {
+describe('a stateful entry that reads its record, writes none, and sends, compiled framed', () => {
   const SEND_OUTPUT = 3;
   const reading = deploy(READING_SOURCE);
   const commitment = (limit: bigint): Uint8Array =>

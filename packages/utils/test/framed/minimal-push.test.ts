@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth';
-import { encodeMinimalDataPush } from '../../src/per-call/primitives.js';
+import { encodeMinimalDataPush } from '../../src/framed/primitives.js';
 
 // Each payload byte depends on its position, so a push that copies the wrong span cannot agree by accident.
 function payload(length: number, seed: number): Uint8Array {

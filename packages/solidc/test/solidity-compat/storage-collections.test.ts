@@ -882,7 +882,7 @@ describe('foreign external fn-ptr state var (fixed method on runtime address)', 
 
 describe('foreign external fn-ptr STATE storage of a received value (x = y)', () => {
   // A fn-ptr state var assigned a RECEIVED value flattens to an `address` field + a `bytes4 __fnsel_<name>`
-  // companion; the stored param splits into (address, selector) and the call marks fnPtrCall + a per-call index.
+  // companion; the stored param splits into (address, selector) and the call marks fnPtrCall + a framed index.
   // VM-verified in ForeignFunctionPointerStorage.test.ts (seed, save->run, and return-event capture).
   it('flattens the fn-ptr state var + splits the stored param + marks the call fnPtrCall', () => {
     const art = compileString('contract C { function(uint) external returns(uint) stored;'

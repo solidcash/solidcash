@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, type StateLayout } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -34,7 +34,7 @@ const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'framed' });
 const impl = artifacts.Impl!;
 
 /** The commitment the shipped encoder materializes from one state of a layout. */
@@ -70,7 +70,7 @@ describe('an initialize hop whose entry returns a value', () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const half = await deploymentHalf(network);
 
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),

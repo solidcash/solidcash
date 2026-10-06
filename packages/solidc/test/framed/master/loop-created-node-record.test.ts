@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue, encodePushdataValue } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  created, deployPerCallMaster, distinctBytes, evaluateMasterSpend, head, node, spent, type PlacedRecord,
+  created, deployFramedMaster, distinctBytes, evaluateMasterSpend, head, node, spent, type PlacedRecord,
 } from './record-spend.js';
 
 /**
@@ -27,9 +27,9 @@ const HEADER = 'pragma solidcash ^0.13.0; contract Holder { struct Account { uin
   + ' mapping(address => uint) parts; } Account acc; function set(';
 
 /** The control: one write, no loop. */
-const SINGLE = deployPerCallMaster(`${HEADER}address k, uint v) { acc.parts[k] = v; } }`, 'loop node single');
+const SINGLE = deployFramedMaster(`${HEADER}address k, uint v) { acc.parts[k] = v; } }`, 'loop node single');
 /** The same write made by a loop that takes one turn. */
-const LOOPED = deployPerCallMaster(
+const LOOPED = deployFramedMaster(
   `${HEADER}address[] ks, uint v) { for (uint i = 0; i < ks.length; i = i + 1) { acc.parts[ks[i]] = v; } } }`,
   'loop node looped',
 );

@@ -14,9 +14,9 @@ import { compileStringMulti } from '../../../src/compiler.js';
  *
  * The publication facts are this file's subject. The machine verdict they are read for is the shipped call path's:
  * the run-time-loop upsert the fourth case publishes is accepted, and refused with one byte of the written record
- * changed, in `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` ("the machine accepts the
+ * changed, in `solidcash/test/framed/conformance/loop-upsert-settlement.test.ts` ("the machine accepts the
  * run-time-loop upsert, and refuses the record it wrote being changed"), and the same pair beside a call in
- * `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`.
+ * `solidcash/test/framed/conformance/loop-upsert-beside-call.test.ts`.
  */
 
 /** One write as the artifact publishes it. */
@@ -72,7 +72,7 @@ const MAPPING_WITH_RUN_SOURCE = LEDGER('', `balances[to] = amount; ${CALL} this.
 // A mapping write inside a loop whose own body makes no call, with the entry's call after the loop. The write runs
 // before the call, so it lands in the segment the frame opens with and a callee of the call sees it - which is the
 // fact a builder declares the batch's records in. The machine's verdict on this shape is
-// `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`, which settles it through the head the
+// `solidcash/test/framed/conformance/loop-upsert-beside-call.test.ts`, which settles it through the head the
 // genesis minted.
 const LOOP_UPSERT_BESIDE_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + ' contract Ledger {'
@@ -98,7 +98,7 @@ const LOOP_UPSERT_BETWEEN_CALLS_SOURCE = `pragma solidcash ^0.13.0;${PING}`
 
 // The same loop with no call anywhere in the body: this is the runtime-loop-upsert shape whose well-formed spend
 // the shipped call path settles and whose mutation it refuses (the first case of
-// `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`). The body below is that guard's body, so the
+// `solidcash/test/framed/conformance/loop-upsert-settlement.test.ts`). The body below is that guard's body, so the
 // fact this file pins and the machine pair that file pins are about one shape.
 const LOOP_UPSERT_ALONE_SOURCE = `pragma solidcash ^0.13.0;`
   + ' contract Ledger {'
@@ -109,13 +109,13 @@ const LOOP_UPSERT_ALONE_SOURCE = `pragma solidcash ^0.13.0;`
   + '   }'
   + ' }';
 
-const callerOnly = compileStringMulti(CALLER_ONLY_SOURCE, { composition: 'per-call' }).Ledger!;
-const readerOnly = compileStringMulti(READER_ONLY_SOURCE, { composition: 'per-call' }).Ledger!;
-const mappingWithRun = compileStringMulti(MAPPING_WITH_RUN_SOURCE, { composition: 'per-call' }).Ledger!;
-const loopUpsertBesideCall = compileStringMulti(LOOP_UPSERT_BESIDE_CALL_SOURCE, { composition: 'per-call' }).Ledger!;
-const loopUpsertBetweenCalls = compileStringMulti(LOOP_UPSERT_BETWEEN_CALLS_SOURCE, { composition: 'per-call' })
+const callerOnly = compileStringMulti(CALLER_ONLY_SOURCE, { composition: 'framed' }).Ledger!;
+const readerOnly = compileStringMulti(READER_ONLY_SOURCE, { composition: 'framed' }).Ledger!;
+const mappingWithRun = compileStringMulti(MAPPING_WITH_RUN_SOURCE, { composition: 'framed' }).Ledger!;
+const loopUpsertBesideCall = compileStringMulti(LOOP_UPSERT_BESIDE_CALL_SOURCE, { composition: 'framed' }).Ledger!;
+const loopUpsertBetweenCalls = compileStringMulti(LOOP_UPSERT_BETWEEN_CALLS_SOURCE, { composition: 'framed' })
   .Ledger!;
-const loopUpsertAlone = compileStringMulti(LOOP_UPSERT_ALONE_SOURCE, { composition: 'per-call' }).Ledger!;
+const loopUpsertAlone = compileStringMulti(LOOP_UPSERT_ALONE_SOURCE, { composition: 'framed' }).Ledger!;
 
 describe('the write facts an entry publishes', () => {
   it('publishes an empty write list for an entry that writes no record of its own', () => {

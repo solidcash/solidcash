@@ -13,12 +13,12 @@ import {
   type RecordEntry,
   type StateLayout,
 } from '@solidcash/utils';
-import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+} from '../../../src/framed/deploy/index.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   EMPTY, USER_LOCK, compileAndDeploy, entryName, hexOf, master, masterInput, rootOf, seededAddress, selectorOf,
   token, userInput, validatorFor,
@@ -26,7 +26,7 @@ import {
 import {
   assertCompositionSettlement, createComposedDerivationHost, deriveDepthFirst, layOutChunkRun,
   participant, planChunkRun, readPublishedStopSites, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * One entry appending to one log three times.

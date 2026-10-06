@@ -698,7 +698,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return out;
   }
 
-  /** A per-call `this.f()` whose callee reads its own message stays the call it is (`readsMessageField`). */
+  /** A framed `this.f()` whose callee reads its own message stays the call it is (`readsMessageField`). */
   private keepsMessageCall(call: FunctionCallNode, callee: FunctionDefinitionNode): boolean {
     return this.keepSelfMessageCalls && call.fromThisCall === true
       && readsMessageField(callee, (name) => this.funcByName.get(name), (fn) => this.nodesOf(fn));
@@ -731,7 +731,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   ): StatementNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
-    // Outside per-call a void helper's early returns are nested away before splicing; an assembly return, which ends
+    // Outside framed a void helper's early returns are nested away before splicing; an assembly return, which ends
     // the whole call, stays unless the helper is a frame of its own. Per-call confines them with a flag instead
     // (`confineHelperReturns`, which finds nothing left to confine after this normalization).
     if (!this.keepSelfMessageCalls) normalizeVoidInlineReturns(cloned, !frame);

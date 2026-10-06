@@ -1,7 +1,7 @@
 /**
  * Claims 3 and 4: insert (trailing new node + predecessor relinked in place) and update in place.
  *
- * Spec: docs/per-call/SPEC_PER_CALL_TRANSACTION.md
+ * Spec: docs/framed/SPEC_FRAMED_TRANSACTION.md
  *   1459 - mapping node row: "Insert: a new node as a trailing output, and the predecessor relinked in place |
  *          In place; slot and next kept";
  *   1495-1497 - "A node created in the transaction can be relinked or updated by later frames."

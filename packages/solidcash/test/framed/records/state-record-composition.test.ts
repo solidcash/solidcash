@@ -11,28 +11,28 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * A stateful composition, deployed and settled on chain.
  *
  * The contract's entry reads and writes its data-NFT record, calls a callee and reads and writes again, so the
  * compiler splits the execution into two segments and the record is declared twice. The whole shipped path runs:
- * the source through the shipped compiler with the per-call option, both programs through the shipped deployment,
+ * the source through the shipped compiler with the framed option, both programs through the shipped deployment,
  * the composer laying the composition out and assembling it, the shipped derivation filling the call site, and the
  * BCH-2026 machine asked for a verdict on the caller's own input.
  *
@@ -74,7 +74,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const ledgerArtifact = artifacts.Ledger!;
 
 /** A data-NFT commitment holding one integer, in the shipped encoder's form. */
@@ -288,8 +288,8 @@ function verdict(): RunVerdict {
 }
 
 describe('a stateful composition whose record sits away from its master', () => {
-  it('publishes a state layout and a per-call composition descriptor', () => {
-    expect(ledgerArtifact.composition?.convention).toBe('per-call');
+  it('publishes a state layout and a framed composition descriptor', () => {
+    expect(ledgerArtifact.composition?.convention).toBe('framed');
     expect(ledgerArtifact.stateLayout).toBeTruthy();
     expect(deployMaster(ledgerArtifact, CATEGORY_LEDGER, VALIDATOR_PROGRAM).script.length).toBeGreaterThan(0);
   });
@@ -321,7 +321,7 @@ describe('a stateful composition whose record sits away from its master', () => 
     const composed = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
     expect(masterVerdict(composed.draft).accepted).toBe(false);
-    expect(() => deriveDepthFirst(ROOT, composed.host)).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => deriveDepthFirst(ROOT, composed.host)).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('refuses the same transaction when the segments declare no record', () => {
@@ -331,6 +331,6 @@ describe('a stateful composition whose record sits away from its master', () => 
     const composed = createComposedDerivationHost({
     vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
     expect(masterVerdict(composed.draft).accepted).toBe(false);
-    expect(() => deriveDepthFirst(ROOT, composed.host)).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => deriveDepthFirst(ROOT, composed.host)).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });

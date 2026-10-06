@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildMasterUnlockingBytecode } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   SIGHASH_ALL, SIGHASH_UTXOS_ALL, callerUnlockingBytecode,
-} from '../../../../solidc/test/per-call/master/caller-input.js';
-import type { CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
+} from '../../../../solidc/test/framed/master/caller-input.js';
+import type { CompositionDraftPlan } from '../../../src/framed/composer/index.js';
 import {
   USER_LOCK,
   composeAndDerive,

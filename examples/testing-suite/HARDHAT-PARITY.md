@@ -135,7 +135,7 @@ Current implementation: the `solidcash` CLI, task registry, config loader, and v
 - [x] HD derivation from a mnemonic (`HDSigner`, `signersFromMnemonic`), watch-only (`HDPublicSigner`).
   EA derives extra wallets via `HDNodeWallet.fromMnemonic(Mnemonic.fromPhrase(m), path)` (17 uses) - map to
   `HDSigner.fromPhrase` / `deriveChild`.
-- [x] `signer.address` / `getAddress()`; `.connect(signer)` per-call sender switch. EA: connect 451, MS: 99.
+- [x] `signer.address` / `getAddress()`; `.connect(signer)` framed sender switch. EA: connect 451, MS: 99.
 - [x] `signer.signMessage(bytes)` (BCH signed-message). EA: 28.
 - [x] **Network-agnostic `getSigners`.** `hre.ethers.getSigners()` prefers `provider.getSigners` (Mock) and
   falls back to `signersFromMnemonic(provider)` for others (funding is the caller's job on live nets). DONE.

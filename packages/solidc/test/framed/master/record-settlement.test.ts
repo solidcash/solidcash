@@ -8,7 +8,7 @@ import {
   validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
@@ -21,7 +21,7 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCatego
  * settles them: the declarations have to begin at the commitment the transaction spends and end at the commitment
  * it writes, and the state UTXOs spent have to be exactly the records it declared.
  *
- * The cases drive the real entry point: the source is compiled with `compileString` for the per-call convention,
+ * The cases drive the real entry point: the source is compiled with `compileString` for the framed convention,
  * the reserved slots are filled the way a deployment fills them, and the machine's own accept/reject verdict on the
  * master's input is the assertion. Each refusal is paired with the accept it mutates, so the refusal is the check
  * under test rather than a malformed transaction.
@@ -59,7 +59,7 @@ const MASTER_INDEX = 0;
 const STATE_INDEX = 1;
 const USER_INDEX = 2;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const program = fillPlaceholders(
   scriptToBytecode(asmToScript(artifact.bytecode)),
   artifact.composition!.placeholders,
@@ -219,8 +219,8 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
 }
 
 describe('a standalone master that reads and writes a record', () => {
-  it('publishes a per-call master whose record declaration matches the transaction', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+  it('publishes a framed master whose record declaration matches the transaction', () => {
+    expect(artifact.composition?.convention).toBe('framed');
   });
 
   it('is accepted when the declared views chain from the spent commitment to the written one', () => {

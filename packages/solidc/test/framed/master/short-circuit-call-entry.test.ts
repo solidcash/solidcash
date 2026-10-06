@@ -6,8 +6,8 @@ import {
   FrameKind, asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
-import { frameRevertReason } from '../../../../solidcash/src/per-call/composer/refusal.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
+import { frameRevertReason } from '../../../../solidcash/src/framed/composer/refusal.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -60,7 +60,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 const ADD_SELECTOR = new Uint8Array(Buffer.from(
   ARTIFACTS.Callee!.abi.find((entry) => entry.name === 'add')!.selector!, 'hex',
 ));

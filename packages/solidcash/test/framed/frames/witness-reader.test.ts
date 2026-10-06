@@ -4,7 +4,7 @@ import { masterPrologue, witnessReader } from 'solidc';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { encodeWitnessBlock, type WitnessBlock } from '@solidcash/utils';
-import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a witness block inside script, evaluated in the VM.

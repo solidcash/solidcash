@@ -234,7 +234,7 @@ audit agent, root cause confirmed but full exploit not independently PoC'd.
   A decodes a forged return and acts on it (stores it, branches, uses it as an amount). Applies to typed returns
   and the opaque `(bool,bytes)=addr.call(payload)` path.
 - **Fix:** Bind the two indices on-chain (derive the caller's from the same base/offset the callee uses) or
-  enforce return-event uniqueness (count category-C none-cap outputs == 1), or add a per-call unique tag.
+  enforce return-event uniqueness (count category-C none-cap outputs == 1), or add a framed unique tag.
 
 #### H3 — Optimizer rule-ordering divergence: common code fails to compile  `[VERIFIED — availability, fail-closed, NOT a bypass]`
 - **Location:** `packages/utils/src/optimisations.ts:127` (`OP_NOT OP_IF`) vs `:149-152` (relational-NOT family);

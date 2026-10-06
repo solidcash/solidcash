@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -27,7 +27,7 @@ const DESK_CATEGORY = '55'.repeat(31) + 'aa';
 const PROBE_CATEGORY = '66'.repeat(31) + 'bb';
 const CALLER_TXID = '33'.repeat(31) + 'cc';
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const DESK_ADDRESS = validatorAddress(hexToBin(DESK_CATEGORY), VALIDATOR_PROGRAM);
 const PROBE_ADDRESS = validatorAddress(hexToBin(PROBE_CATEGORY), VALIDATOR_PROGRAM);
 
@@ -78,7 +78,7 @@ async function deploy(): Promise<{
   readonly signature: SignatureTemplate;
   readonly initialized: boolean;
 }> {
-  const artifacts = compileStringMulti(sourceOf(), { composition: 'per-call' });
+  const artifacts = compileStringMulti(sourceOf(), { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -107,7 +107,7 @@ async function deploy(): Promise<{
     fundingUtxo: deskFunding, funder: funderUnlock, changeAddress: funder.address,
     provider: network, threadCount: 4,
   });
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Ledger!,
     implementationDeploy: { fundingUtxo: implFunding, funder: funderUnlock, changeAddress: funder.address },
@@ -127,7 +127,7 @@ async function deploy(): Promise<{
 async function record(): Promise<{ readonly accepted: boolean; readonly txid: string | undefined }> {
   const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized } = await deploy();
   expect(initialized).toBe(true);
-  const result = await callPerCallProxyEntry({
+  const result = await callFramedProxyEntry({
     provider: network,
     implementationArtifact: artifacts.Ledger!,
     proxyArtifact: buildProxyArtifact(artifacts.Ledger!),
@@ -155,7 +155,7 @@ describe('a callee that writes mapping collections beside its own calls', () => 
     // the frame's own close matches two candidates at once and each pass has to learn the next node in the order the
     // body closes them, rather than restating the first. Once both are stated the frame reaches the pin that sizes
     // its run, and the value is read there.
-    const slots = (compileStringMulti(sourceOf(), { composition: 'per-call' }).Desk!.abi
+    const slots = (compileStringMulti(sourceOf(), { composition: 'framed' }).Desk!.abi
       .find((candidate) => candidate.name === 'record')!.blockLayout?.slots ?? []).map((slot) => slot.kind);
     expect(slots).toStrictEqual(['master', 'dataNft', 'entry', 'entry', 'returnEvent']);
     const { accepted, txid } = await record();

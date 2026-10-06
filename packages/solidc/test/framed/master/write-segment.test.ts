@@ -3,7 +3,7 @@ import {
   BlockNode, BoolLiteralNode, BranchNode, ExpressionStatementNode, ExternalFunctionCallNode,
   FunctionDefinitionNode, IdentifierNode, IntLiteralNode, MappingAssignNode, UncheckedNode, WhileNode,
 } from '../../../src/ast/AST.js';
-import { perCallBatchWriteFollowsEveryCall, perCallBatchWriteSegment } from '../../../src/per-call/master/support.js';
+import { framedBatchWriteFollowsEveryCall, framedBatchWriteSegment } from '../../../src/framed/master/support.js';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { publishedRefusals } from './refused-entry.js';
 
@@ -75,31 +75,31 @@ function bodyWithCallAfterWrite(): FunctionDefinitionNode {
 
 describe('the segment a derived mapping write lands in', () => {
   it('is the frame\'s first when the write precedes every call a branch-free reach reaches', () => {
-    expect(perCallBatchWriteSegment(bodyWithCallFreeBranch())).toBe(0);
+    expect(framedBatchWriteSegment(bodyWithCallFreeBranch())).toBe(0);
   });
 
   it('leaves the count open when a branch that reaches a call decides it', () => {
-    expect(perCallBatchWriteSegment(bodyWithCallBeforeWrite())).toBeUndefined();
+    expect(framedBatchWriteSegment(bodyWithCallBeforeWrite())).toBeUndefined();
   });
 
   it('places a write inside a loop whose own body reaches no call', () => {
     // A call-free loop leaves the call count where it was, so every turn of the write lands in the segment the code
     // before the loop runs in. A loop that reaches a call decides the count at run time and places nothing.
-    expect(perCallBatchWriteSegment(bodyWithCallFreeLoop())).toBe(0);
+    expect(framedBatchWriteSegment(bodyWithCallFreeLoop())).toBe(0);
   });
 });
 
 describe('whether every call precedes the write', () => {
   it('is true when a call the source makes conditionally still precedes the write', () => {
-    expect(perCallBatchWriteFollowsEveryCall(bodyWithCallBeforeWrite())).toBe(true);
+    expect(framedBatchWriteFollowsEveryCall(bodyWithCallBeforeWrite())).toBe(true);
   });
 
   it('is false when a call follows the write, whose segment the declared count then does not name', () => {
-    expect(perCallBatchWriteFollowsEveryCall(bodyWithCallAfterWrite())).toBe(false);
+    expect(framedBatchWriteFollowsEveryCall(bodyWithCallAfterWrite())).toBe(false);
   });
 
   it('is true for a body that makes no call at all', () => {
-    expect(perCallBatchWriteFollowsEveryCall(bodyWithCallFreeBranch())).toBe(true);
+    expect(framedBatchWriteFollowsEveryCall(bodyWithCallFreeBranch())).toBe(true);
   });
 });
 
@@ -114,6 +114,6 @@ describe('an entry whose write follows a call the source does not fix', () => {
       + '     require(true);'
       + '   }'
       + ' }';
-    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([]);
+    expect(publishedRefusals(compileStringMulti(source, { composition: 'framed' }))).toStrictEqual([]);
   });
 });

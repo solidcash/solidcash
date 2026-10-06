@@ -66,7 +66,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const deployed = edgeDeployment({
   scope: 'fixed array return edge', callee: artifacts.Splitter!, caller: artifacts.Settler!,
   interfaceName: 'ISplitter',

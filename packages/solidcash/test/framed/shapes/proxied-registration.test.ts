@@ -13,17 +13,17 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/framed/master/validator-input.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
   createComposedDerivationHost,
   deriveComposition,
@@ -34,7 +34,7 @@ import {
   type CompositionDraftPlan,
   type DraftMaster,
   type MappingNodePlacement,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   bytesToSlotValue,
   encodeEntryCommitment,
@@ -136,7 +136,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function currentCount() view returns (int) { return this.count; }'
   + ' }';
 
-const implementationArtifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Impl!;
+const implementationArtifact = compileStringMulti(SOURCE, { composition: 'framed' }).Impl!;
 const proxyArtifact = buildProxyArtifact(implementationArtifact);
 const proxyContract = proxyArtifact.contractName;
 const implementationContract = implementationArtifact.contractName;
@@ -617,7 +617,7 @@ describe('the registration mapping write on the same proxy hop', () => {
     // The driver's own message: the writer's derivation never advances because the state record sits behind the
     // groups it reads, so the group walk consumes a mapping record as the state record's group.
     expect(stalled).toBeDefined();
-    expect(stalled!.message).toMatch(/PER_CALL_DERIVATION_STALLED: master "impl-1" of Impl\.register\(\)/);
+    expect(stalled!.message).toMatch(/FRAMED_DERIVATION_STALLED: master "impl-1" of Impl\.register\(\)/);
 
     const report = reportCompositionRefusal({
       draft, artifacts: [proxyArtifact, implementationArtifact], vm: compositionMachine(),
@@ -635,7 +635,7 @@ describe('the off-chain read path on the proxied contract', () => {
     // record, so the plan is built and the read is refused on the empty deployment's missing master, not on the
     // mapping the contract keeps.
     const provider = new MockNetworkProvider();
-    await expect(readPerCallEntry({
+    await expect(readFramedEntry({
       provider, artifact: implementationArtifact, categoryId: PROXY_CATEGORY_HEX, functionName: 'currentCount',
       vm: compositionMachine(),
     })).rejects.toThrow(/holds 0 master\(s\), and the read runs 1 frame\(s\) over it/);

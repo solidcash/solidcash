@@ -3,11 +3,11 @@ import { binToHex, encodeDataPush, encodeLockingBytecodeP2sh32, hexToBin } from 
 import {
   INDEX_NONE, concatBytes, encodeWitnessBlock, splitFirstPush, type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../../../src/utils.js';
 import {
@@ -72,7 +72,7 @@ const SOURCE = [
 ].join('\n');
 
 const artifacts = compileStringMulti(SOURCE, {
-  solidityImportCompat: true, composition: 'per-call', commitmentLimit: 10_000_000, maximumInputBytes: 10_000_000,
+  solidityImportCompat: true, composition: 'framed', commitmentLimit: 10_000_000, maximumInputBytes: 10_000_000,
 } as never);
 
 /** The contract-shaped addresses the board's constructor stores beside the log's, each a distinct P2SH32 lock. */
@@ -114,7 +114,7 @@ function chain(): Promise<Chain> {
 }
 
 /** One post that has to settle: entered by the user, reaching the log, broadcast, and returning the item's id. */
-async function post(c: Chain, item: typeof FIRST, id: bigint): Promise<PerCallCallResult> {
+async function post(c: Chain, item: typeof FIRST, id: bigint): Promise<FramedCallResult> {
   const outcome = await enterPlain(c.world, c.board, 'post', [item.tag, item.note, item.label, []], {
     Log: { artifact: c.log.artifact, categoryId: c.log.categoryId },
   });
@@ -131,7 +131,7 @@ async function view(
   c: Chain, deployed: { readonly artifact: Artifact; readonly categoryId: string }, functionName: string,
   args: readonly FunctionArgument[] = [],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: c.world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -143,7 +143,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -151,7 +151,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 }
 
 /** The settled transaction with one master's witness block replaced by `block`. */
-function withBlock(result: PerCallCallResult, master: string, block: WitnessBlock): VmTransaction {
+function withBlock(result: FramedCallResult, master: string, block: WitnessBlock): VmTransaction {
   const forged = structuredClone(result.transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
   const { rest } = splitFirstPush(forged.inputs[index]!.unlockingBytecode);

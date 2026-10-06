@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -20,7 +20,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A proxied root pulls a plain token whose entry reads a mapping key beside the balance batch it writes, through
- * the shipped hop, `callPerCallProxyEntry`.
+ * the shipped hop, `callFramedProxyEntry`.
  *
  * The fixture's `publishJobPost` pulls through `SafeERC20.safeTransferFrom`, whose token reads
  * `allowances[from][msg.sender]` and rewrites `balances[from]` and `balances[to]`. The hop plans a callee's read
@@ -33,7 +33,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * A pull within the allowance settles, and one past it is refused by the token's own check; a read of one key of
  * the batch's own collection settles when the batch does not spend its node and is refused by name when it does,
  * since one transaction cannot spend that node twice; a pull that reads no mapping settles. The file runs only
- * under `PER_CALL_AHEAD=1`.
+ * under `FRAMED_AHEAD=1`.
  */
 
 /** A 32-byte id with varied bytes, `seed` chosen so each name is distinct. */
@@ -46,7 +46,7 @@ const COIN_CATEGORY = category('1c');
 const ROOT_IMPL_CATEGORY = category('2d');
 const ROOT_PROXY_CATEGORY = category('3e');
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 const PAYER = encodeLockingBytecodeP2pkh(alicePkh);
@@ -157,7 +157,7 @@ type ArtifactMap = ReturnType<typeof compileStringMulti>;
 let compiledOnce: ArtifactMap | undefined;
 /** The contracts, compiled once and only when a case runs. */
 function compiled(): ArtifactMap {
-  compiledOnce ??= compileStringMulti(SOURCE, { composition: 'per-call' });
+  compiledOnce ??= compileStringMulti(SOURCE, { composition: 'framed' });
   return compiledOnce;
 }
 
@@ -175,7 +175,7 @@ function funding(txid: string): Utxo {
 
 /** What one pull left: its result or its error, and whether the payer's coin is still unspent. */
 interface Outcome {
-  readonly result?: PerCallProxyCallResult;
+  readonly result?: FramedProxyCallResult;
   readonly error?: Error;
   readonly coinLive: boolean;
   /** The payer's and the root's token balances after the pull, read off chain. */
@@ -208,13 +208,13 @@ async function pullOnce(allowance: bigint, entry: string, args: readonly Functio
   await deployStatefulContract(Coin!, [PAYER, 900n, addressOf(ROOT_PROXY_CATEGORY), 100n, THIRD, 5n], {
     fundingUtxo: funding(COIN_CATEGORY), funder: genesisFunder, changeAddress, provider: network,
   });
-  const approved = await callPerCallEntry({
+  const approved = await callFramedEntry({
     provider: network, artifact: Coin!, categoryId: COIN_CATEGORY, functionName: 'approve',
     args: [addressOf(ROOT_PROXY_CATEGORY), allowance], callerUtxo: await nextCoin(), callerLockingBytecode: PAYER,
     funder, changeAddress, vm: compositionMachine(),
   });
   expect(approved.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-  const root = await deployPerCallProxy({
+  const root = await deployFramedProxy({
     provider: network,
     implementationArtifact: Root!,
     proxyArtifact: buildProxyArtifact(Root!),
@@ -228,10 +228,10 @@ async function pullOnce(allowance: bigint, entry: string, args: readonly Functio
   expect(root.initialize.broadcast).toBeDefined();
 
   const coin = await nextCoin();
-  let result: PerCallProxyCallResult | undefined;
+  let result: FramedProxyCallResult | undefined;
   let error: Error | undefined;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: Root!,
       proxyArtifact: buildProxyArtifact(Root!),
@@ -252,7 +252,7 @@ async function pullOnce(allowance: bigint, entry: string, args: readonly Functio
   const live = await network.getUtxosForLockingBytecode(PAYER);
   const balances: unknown[] = [];
   for (const who of [PAYER, addressOf(ROOT_PROXY_CATEGORY)]) {
-    const read = await readPerCallEntry({
+    const read = await readFramedEntry({
       provider: network, artifact: Coin!, categoryId: COIN_CATEGORY, functionName: 'balanceOf', args: [who],
       vm: compositionMachine(),
     });
@@ -278,7 +278,7 @@ function expectMoved(outcome: Outcome): void {
 
 /** The pull was refused before anything was broadcast, with `message` in its words. */
 function expectRefused(outcome: Outcome, message: string): void {
-  expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
+  expect(outcome.error).toBeInstanceOf(FramedProxyDeployError);
   expect(outcome.error!.message).toContain(message);
   expect(outcome.coinLive).toBe(true);
   expect(outcome.balances).toStrictEqual([900n, 100n]);
@@ -286,7 +286,7 @@ function expectRefused(outcome: Outcome, message: string): void {
 
 const COIN = addressOf(COIN_CATEGORY);
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a hop callee reads a mapping key beside its batch', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: a hop callee reads a mapping key beside its batch', () => {
   it('a pull within the allowance settles, and 40 moves', async () => {
     expectMoved(await pullOnce(50n, 'pull', [COIN, 40n]));
   }, 900_000);

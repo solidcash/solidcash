@@ -6,7 +6,7 @@ import {
   FrameKind, asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { isServed } from './refused-entry.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
@@ -50,7 +50,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `     IState(0x${toHex(ADDRESS_CALLEE)}).add(1); require(true); }`
   + ' }';
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 /** The callee's own dispatcher selector, read from the compiler's ABI rather than spelled out here. */
 const ADD_SELECTOR = new Uint8Array(Buffer.from(
   ARTIFACTS.Callee!.abi.find((entry) => entry.name === 'add')!.selector!, 'hex',

@@ -349,7 +349,7 @@ self-pinned state chain (root is a local, not a collection) nor param-rooted.
 
 **What it'd take.** A per-function memory-local alias map (`local -> state chain`, gated on the local being
 assigned once from a state chain and never field-written/reassigned), applied BEFORE `LowerMemoryModel` obscures
-the assignment; then `castChainTarget` handles the rewritten form. OR per-call-site hoisting (insert
+the assignment; then `castChainTarget` handles the rewritten form. OR framed-site hoisting (insert
 `__extaddr = job.token` just before the call, where `job` is in scope) instead of body-top hoisting.
 
 **Revisit if.** A real contract makes a DIRECT (non-SafeERC20-wrapped) external call on a `memory`-copy struct
@@ -911,7 +911,7 @@ alloc-grow.
   allocation is cheaper than a `memGrowTo` guard on EVERY store, and the 10KB unlocking-bytecode limit makes the
   per-store guards a real size cost. So the "lazy grow" half of Option 2 is a likely NET size REGRESSION here.
 - **Option 1 already delivered the substantive win.** The store/load/byte/init/grow FORMULAS are single-source in
-  `YulMemPrimitives` (a primitive-formula fix lands in ONE place). What stays per-caller (eager-vs-lazy grow, typed
+  `YulMemPrimitives` (a primitive-formula fix lands in ONE place). What stays frameder (eager-vs-lazy grow, typed
   vs raw decode, expression-embed vs statement-lower) is inherent to the two different SOURCES, not duplication.
 
 **What it'd take.** An expression-level Yul IR (so `mload` can be an expression), OR pervasive per-access temp

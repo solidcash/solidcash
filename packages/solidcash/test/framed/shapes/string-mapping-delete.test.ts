@@ -10,7 +10,7 @@ import {
   scriptToBytecode,
   type RecordEntry,
 } from '@solidcash/utils';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
+import { publishedRefusals } from '../../../../solidc/test/framed/master/refused-entry.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -35,7 +35,7 @@ import {
   planMappingDelete,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * One entry deleting a node of a `mapping(string => string)`.
@@ -186,7 +186,7 @@ const ROOT = rootOf('Hub', 'run', HUB_MASTER_ID);
 
 describe('an entry deleting a node of a string-keyed string mapping', () => {
   it('serves the delete entry: no refusal is published and the entry takes only its key', () => {
-    expect(ARTIFACT.composition?.convention).toBe('per-call');
+    expect(ARTIFACT.composition?.convention).toBe('framed');
     expect(publishedRefusals(artifacts)).toStrictEqual([]);
     expect(ARTIFACT.abi.map((entry) => entry.name)).toStrictEqual(['remove']);
     expect(ARTIFACT.abi[0]!.inputs.map((input) => input.name)).toStrictEqual(['k']);

@@ -3,15 +3,15 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { SHARED_LIBRARY_SALT, buildPushdataCommitment, bytesToHex, keccakComputeLockingBytecode } from '@solidcash/utils';
 import { ethers } from 'ethers';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
 import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
-import { participant } from '../../../src/per-call/composer/index.js';
-import { PerCallSideCarPoolError, callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { participant } from '../../../src/framed/composer/index.js';
+import { FramedSideCarPoolError, callFramedEntry } from '../../../src/framed/call/index.js';
 import type { Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -30,8 +30,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
 
 const CATEGORY_HEX = '66'.repeat(32);
 const CALLER_TXID = '77'.repeat(32);
-const PREFIX = new TextEncoder().encode('per-call signed digest:');
-const LEFT = new TextEncoder().encode('per-call side-car call');
+const PREFIX = new TextEncoder().encode('framed signed digest:');
+const LEFT = new TextEncoder().encode('framed side-car call');
 /** The digest the entry hashes: the bytes the recovery builtin reads, little-endian. */
 const DIGEST = keccak_256(Uint8Array.from([...PREFIX, ...keccak_256(LEFT)]));
 
@@ -100,7 +100,7 @@ beforeAll(() => {
     + '     this.counter = this.counter + 1;'
     + '   }'
     + '   function current() view returns (int) { return this.counter; }'
-    + ' }', { composition: 'per-call' }).Guard!;
+    + ' }', { composition: 'framed' }).Guard!;
 }, 120_000);
 
 /** The commitment the shipped encoder materializes for one counter value. */
@@ -152,10 +152,10 @@ function refusalDeployment(): Promise<Funded> {
 
 /** Calls `bump` with the signature through the shipped call path, on a caller coin funded for it. */
 async function bump(deployed: Deployed, txid: string, provider: NetworkProvider = deployed.provider):
-ReturnType<typeof callPerCallEntry> {
+ReturnType<typeof callFramedEntry> {
   const callerUtxo = { txid, vout: 0, satoshis: 300_000n };
   await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
-  return callPerCallEntry({
+  return callFramedEntry({
     provider,
     artifact: guard,
     categoryId: deployed.categoryId,
@@ -194,7 +194,7 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
     // `v` is 0, which the precompile refuses: the body reads no pair and its own `revert` is the refusal, while
     // the placeholder pair the call co-spends accepts on its own.
     const { deployed, callerUtxo } = await refusalDeployment();
-    const refused = await callPerCallEntry({
+    const refused = await callFramedEntry({
       provider: deployed.provider,
       artifact: guard,
       categoryId: deployed.categoryId,
@@ -228,7 +228,7 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
     };
     while (onCurve()) x += 1n;
     const { deployed, callerUtxo } = await refusalDeployment();
-    const refused = await callPerCallEntry({
+    const refused = await callFramedEntry({
       provider: deployed.provider,
       artifact: guard,
       categoryId: deployed.categoryId,
@@ -249,7 +249,7 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
   it('refuses a signature of another length by name and length, as OZ\'s recover does: "0x" and 20 bytes', async () => {
     const { deployed, callerUtxo } = await refusalDeployment();
     for (const signature of [new Uint8Array(0), new Uint8Array(20).fill(7)]) {
-      const refused = await callPerCallEntry({
+      const refused = await callFramedEntry({
         provider: deployed.provider,
         artifact: guard,
         categoryId: deployed.categoryId,
@@ -270,6 +270,6 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
     const deployed = await deploy();
     // A provider that cannot mint stand-ins, as a real network cannot.
     const unminted = Object.assign(Object.create(deployed.provider) as MockNetworkProvider, { addUtxo: undefined });
-    await expect(bump(deployed, CALLER_TXID, unminted)).rejects.toThrow(PerCallSideCarPoolError);
+    await expect(bump(deployed, CALLER_TXID, unminted)).rejects.toThrow(FramedSideCarPoolError);
   }, 120_000);
 });

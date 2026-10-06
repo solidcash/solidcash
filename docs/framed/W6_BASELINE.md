@@ -2,7 +2,7 @@
 
 Log `w6-baseline.log`. `BASELINE_HEAD 295f6eed61c2e554c6d7c4835f5dc984398e8589`.
 `BASELINE_START 2026-10-05T11:26:27Z`. `BASELINE_DONE 2026-10-05T13:24:55Z`.
-Parents: kernel `d7f3c7ad6`, per-call `d8166489d`. Parent suites were not re-run.
+Parents: kernel `d7f3c7ad6`, framed `d8166489d`. Parent suites were not re-run.
 Merge-caused means the test passes on one parent's pre-merge commit. That was not shown,
 so nothing below is marked merge-caused.
 
@@ -11,9 +11,9 @@ so nothing below is marked merge-caused.
 Yarn 1 dropped every `--` flag passed to `yarn workspace <pkg> exec vitest run`.
 Vitest's own argument list was `run`. solidc and solidcash configs already set
 `maxWorkers: 3`, which is inside the 2-or-3 limit. Positional filters were kept:
-`vitest run test/e2e` and `vitest run test/per-call` ran those directories.
-`--config vitest.per-call.config.ts` did not arrive, so the solidc, solidcash, and
-testing per-call configs were not selected. `--exclude test/e2e/**` did not arrive,
+`vitest run test/e2e` and `vitest run test/framed` ran those directories.
+`--config vitest.framed.config.ts` did not arrive, so the solidc, solidcash, and
+testing framed configs were not selected. `--exclude test/e2e/**` did not arrive,
 so the solidcash step ran the full package, including e2e and journal tests.
 `--passWithNoTests` did not arrive, so create-solidhat exited 1 with no test files.
 
@@ -25,12 +25,12 @@ so the solidcash step ran the full package, including e2e and journal tests.
 | solidhat | 0 | 71 passed, 1 skipped |
 | create-solidhat | 1 | no test files |
 | solidc | 1 | 47 failed, 6788 passed |
-| solidc-per-call | 1 | same 47 titles as solidc |
+| solidc-framed | 1 | same 47 titles as solidc |
 | solidcash | 1 | 197 failed, 8382 passed, 1 failed suite |
-| solidcash-per-call | 1 | first solidcash set, plus one StaticCall test |
-| testing-per-call | 1 | the 3 testing failures, plus physical-identity |
+| solidcash-framed | 1 | first solidcash set, plus one StaticCall test |
+| testing-framed | 1 | the 3 testing failures, plus physical-identity |
 | solidcash-e2e | 1 | 88 titles from the first solidcash run, plus StaticCall |
-| utils-per-call | 0 | 119 passed in test/per-call |
+| utils-framed | 0 | 119 passed in test/framed |
 
 ## Commits that landed while the script ran
 
@@ -58,9 +58,9 @@ The 14 section 0 titles keep the classes in `W6_KNOWN_FAILURES.md`. Every other
 failure is classed from the test file at `295f6eed6`:
 
 - pre-existing kernel: the file is only on the kernel parent, or the baseline file
-  matches that parent, or it matches both and the path is not `test/per-call/`.
-- pre-existing per-call: the file is only on the per-call parent, or the baseline
-  file matches that parent and not the kernel parent, or the path is `test/per-call/`.
+  matches that parent, or it matches both and the path is not `test/framed/`.
+- pre-existing framed: the file is only on the framed parent, or the baseline
+  file matches that parent and not the kernel parent, or the path is `test/framed/`.
 - environment: create-solidhat, a harness miss, not a product assertion.
 - flaky: none. The solidc repeat matched title for title.
 - port-during-baseline: not one of the five merge classes. The failure was not red
@@ -73,39 +73,39 @@ failure is classed from the test file at `295f6eed6`:
   baseline file matches the kernel parent. AssertionError
 - pre-existing kernel | `packages/testing/test/chai-typed-address.test.ts`
   does not loosen untyped bytes or native address equality
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/testing/test/chai-typed-address.test.ts`
   uses the Solidity P2SH32 identity without treating an arbitrary hash as an address
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 
 Subtotal: pre-existing kernel 3.
 
 ## solidc
 
-- pre-existing per-call | `packages/solidc/test/CompileCacheDisk.test.ts`
+- pre-existing framed | `packages/solidc/test/CompileCacheDisk.test.ts`
   cold Map loads from disk and re-attaches lazy delegateArtifact with bytecode parity
-  baseline file matches the per-call parent. AssertionError
+  baseline file matches the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/DelegateInference.test.ts`
   reads state-pinned external-call targets from proxy storage, not executor-adjacent NFTs
   section 0 list. AssertionError
 - pre-existing kernel | `packages/solidc/test/DynamicEntryOutputPrefix.test.ts`
   counts only dynamic-state chunks at [ 2, 53 ] bytes (depth 5, route true)
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/DynamicEntryOutputPrefix.test.ts`
   counts only dynamic-state chunks at [ +0, 60 ] bytes (depth +0, route false)
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/DynamicEntryOutputPrefix.test.ts`
   counts only dynamic-state chunks at [ 61, 120 ] bytes (depth 5, route false)
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/DynamicEntryOutputPrefix.test.ts`
   counts only dynamic-state chunks at [ 121, 241 ] bytes (depth +0, route true)
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/Events.test.ts`
   counts only 33-byte minting category+capability outputs
   baseline file matches both parents; parent suites were not re-run. AssertionError
 - pre-existing kernel | `packages/solidc/test/ExternalArrayIndexExpression.test.ts`
   preserves the expression for values[SECOND]
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/ExternalCalls.test.ts`
   publishes the live arithmetic progression for a loop-dependent argument
   section 0 list. AssertionError
@@ -118,34 +118,34 @@ Subtotal: pre-existing kernel 3.
 - pre-existing kernel | `packages/solidc/test/ExternalCalls.test.ts`
   publishes a replayable necessary conjunct before a later call
   section 0 list. AssertionError
-- pre-existing per-call | `packages/solidc/test/ExternalCalls.test.ts`
+- pre-existing framed | `packages/solidc/test/ExternalCalls.test.ts`
   compiles a LOCAL-indexed struct-field chain via the array co-spend loop
   section 0 list. AssertionError
 - pre-existing kernel | `packages/solidc/test/FixedTransferStructProjection.test.ts`
   joins a changed field in source order while retaining its sibling
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/KernelAdmissionCatalog.test.ts`
   compileString still refuses early-return journal shapes with KERNEL_LAYOUT
   baseline file matches the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidc/test/LargeContractSplitting.test.ts`
+- pre-existing framed | `packages/solidc/test/LargeContractSplitting.test.ts`
   forwards the proxy master witness across calls between delegate facet entries
   section 0 list. AssertionError
 - pre-existing kernel | `packages/solidc/test/SequentialStateKeySource.test.ts`
   does not claim one source-order projection across multiple state writes
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/StoredValueSource.test.ts`
   tracks an assignment in an unconditional require before the whole-value write
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/StructsMappings.test.ts`
   conditional local pointer m = c?a:b: publishes the same authenticated entry route as branch/ternary
   section 0 list. AssertionError
-- pre-existing per-call | `packages/solidc/test/generation/UnpublishableLoopGuard.test.ts`
+- pre-existing framed | `packages/solidc/test/generation/UnpublishableLoopGuard.test.ts`
   reads an ERC-20 transfer loop with an inlined arm a preceding revert decides
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidc/test/generation/UnpublishableLoopGuard.test.ts`
+- pre-existing framed | `packages/solidc/test/generation/UnpublishableLoopGuard.test.ts`
   reads an ERC-20 transfer loop with a journal flush the body always reaches
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidc/test/generation/UnpublishableLoopGuard.test.ts`
+- pre-existing framed | `packages/solidc/test/generation/UnpublishableLoopGuard.test.ts`
   reads an ERC-20 transfer loop with the same arm without the revert
   file absent on the kernel parent. AssertionError
 - pre-existing kernel | `packages/solidc/test/generation/generation.test.ts`
@@ -187,50 +187,50 @@ Subtotal: pre-existing kernel 3.
 - pre-existing kernel | `packages/solidc/test/solidity-compat/calls-abi.test.ts`
   encodes a self external-function member stored in a struct blob
   section 0 list. InvalidParameterTypeError
-- pre-existing per-call | `packages/solidc/test/solidity-compat/libraries-imports.test.ts`
+- pre-existing framed | `packages/solidc/test/solidity-compat/libraries-imports.test.ts`
   mixes a using-for external-call method and a genuine interface method on the same field
   section 0 list. AssertionError
-- pre-existing per-call | `packages/solidc/test/solidity-compat/libraries-imports.test.ts`
+- pre-existing framed | `packages/solidc/test/solidity-compat/libraries-imports.test.ts`
   using-for method spelling this.m[k].addElastic(e), both positions
   section 0 list. DirectStaleReadError
 - pre-existing kernel | `packages/solidc/test/solidity-compat/storage-collections.test.ts`
   compiles a single-tail-return external-call helper with a field-name-colliding local (Unicrow calculateSplits)
   section 0 list. UnboundReturnCallError
-- pre-existing per-call | `packages/solidc/test/solidity-compat/storage-collections.test.ts`
+- pre-existing framed | `packages/solidc/test/solidity-compat/storage-collections.test.ts`
   returning bare totals[k].addElastic(e), statement + expression (public mapping)
   section 0 list. DirectStaleReadError
-- pre-existing per-call | `packages/solidc/test/per-call/master/branched-call-entry.test.ts`
+- pre-existing framed | `packages/solidc/test/framed/master/branched-call-entry.test.ts`
   accepts the spend, over the one record and two segments its execution declares
   file absent on the kernel parent. SolidcDiagnosticError
-- pre-existing per-call | `packages/solidc/test/per-call/master/branched-call-entry.test.ts`
+- pre-existing framed | `packages/solidc/test/framed/master/branched-call-entry.test.ts`
   refuses a frame declaring the descriptor list's count instead of the execution's
   file absent on the kernel parent. SolidcDiagnosticError
-- pre-existing per-call | `packages/solidc/test/per-call/master/direct-path-identity.test.ts`
+- pre-existing framed | `packages/solidc/test/framed/master/direct-path-identity.test.ts`
   emits the pinned bytecode for a stateful contract with a signature check
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidc/test/per-call/master/direct-path-identity.test.ts`
+- pre-existing framed | `packages/solidc/test/framed/master/direct-path-identity.test.ts`
   emits the pinned bytecode for a stateful contract that reads msg.sender
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidc/test/per-call/master/entry-append-source.test.ts`
+- pre-existing framed | `packages/solidc/test/framed/master/entry-append-source.test.ts`
   folds the fields a rebuild writes into the element the append states
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidc/test/per-call/master/inlined-literal-branch.test.ts`
+- pre-existing framed | `packages/solidc/test/framed/master/inlined-literal-branch.test.ts`
   serves the entry that passes false, and its body no longer writes the whitelist
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidc/test/per-call/master/inlined-literal-branch.test.ts`
+- pre-existing framed | `packages/solidc/test/framed/master/inlined-literal-branch.test.ts`
   keeps the arm when the argument is not a literal, so the write stays refused
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidc/test/per-call/master/mapping-delete-write.test.ts`
+- pre-existing framed | `packages/solidc/test/framed/master/mapping-delete-write.test.ts`
   publishes the removal as the default write, under the same layout and ABI as writing the default
   file absent on the kernel parent. AssertionError
 
-Subtotal: pre-existing kernel 30, pre-existing per-call 17.
+Subtotal: pre-existing kernel 30, pre-existing framed 17.
 
 ## solidcash
 
 197 failed tests plus one failed suite. The failed suite is counted here.
 
-- pre-existing per-call | `packages/solidcash/test/e2e/AssemblyReturnHalts.test.ts`
+- pre-existing framed | `packages/solidcash/test/e2e/AssemblyReturnHalts.test.ts`
   failed suite (the file did not load a test result)
   file absent on the kernel parent. UnsupportedReturnError
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/AtomicMessageBusGraph.test.ts`
@@ -290,24 +290,24 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
 - pre-existing kernel | `packages/solidcash/test/e2e/ArrayExternalCall.test.ts`
   co-spends an array spanning multiple chunks (4 subscribers, 2 chunks)
   baseline file matches both parents; parent suites were not re-run
-- pre-existing per-call | `packages/solidcash/test/e2e/ChunkReadsBesideExternalCall.test.ts`
+- pre-existing framed | `packages/solidcash/test/e2e/ChunkReadsBesideExternalCall.test.ts`
   received fn-ptr broadcast from a block wider than its planned base, beside two read-only arrays
   file absent on the kernel parent
-- pre-existing per-call | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
+- pre-existing framed | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
   builds the table via push then co-spends every callee through fns[i]()
-  baseline file matches the per-call parent
-- pre-existing per-call | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
+  baseline file matches the framed parent
+- pre-existing framed | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
   refuses a broadcast that leaves an element callee out
-  baseline file matches the per-call parent
-- pre-existing per-call | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
+  baseline file matches the framed parent
+- pre-existing framed | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
   co-spends every callee with its OWN registered method (inc vs dec)
-  baseline file matches the per-call parent
-- pre-existing per-call | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
+  baseline file matches the framed parent
+- pre-existing framed | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
   dispatches each received pointer to its OWN method (inc vs dec, stateful callees)
-  baseline file matches the per-call parent
-- pre-existing per-call | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
+  baseline file matches the framed parent
+- pre-existing framed | `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts`
   dispatches HETEROGENEOUS callees (different data-NFT counts - impossible for any fixed stride)
-  baseline file matches the per-call parent
+  baseline file matches the framed parent
 - pre-existing kernel | `packages/solidcash/test/e2e/PackedArrayExternalCall.test.ts`
   co-spends and verifies every element of a packed address[2]
   baseline file matches both parents; parent suites were not re-run
@@ -359,7 +359,7 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
 - pre-existing kernel | `packages/solidcash/test/e2e/BehaviorParityPins.test.ts`
   a wrong expectation reverts (dispatch is real per-index, not constant-folded)
   baseline file matches both parents; parent suites were not re-run. AssertionError
-- pre-existing per-call | `packages/solidcash/test/e2e/DelegateEntryPresence.test.ts`
+- pre-existing framed | `packages/solidcash/test/e2e/DelegateEntryPresence.test.ts`
   checks every target of a guarded batch through a proxy
   file absent on the kernel parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/DelegateMappingProbe.test.ts`
@@ -368,7 +368,7 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
 - pre-existing kernel | `packages/solidcash/test/e2e/DelegateMappingProbe.test.ts`
   a direct zero-value register is enough to make later delegated writes settle
   baseline file matches both parents; parent suites were not re-run
-- pre-existing per-call | `packages/solidcash/test/e2e/DynamicWriteBesideReturningCalls.test.ts`
+- pre-existing framed | `packages/solidcash/test/e2e/DynamicWriteBesideReturningCalls.test.ts`
   settles with one chunk run whether the calls run or are skipped, and refuses a duplicated or moved chunk
   file absent on the kernel parent
 - pre-existing kernel | `packages/solidcash/test/e2e/OptimisticMultiPinDerivation.test.ts`
@@ -449,58 +449,58 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
 - pre-existing kernel | `packages/solidcash/test/e2e/InlineLoopDispatch.test.ts`
   contract.multiCall(targets, data) - fully internal via registerLoopTargets / registerLoopFunder
   baseline file matches both parents; parent suites were not re-run
-- pre-existing per-call | `packages/solidcash/test/e2e/InternalConstructorSender.test.ts`
+- pre-existing framed | `packages/solidcash/test/e2e/InternalConstructorSender.test.ts`
   records the deployer as the owner, and only the owner passes the owner check
   file absent on the kernel parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelAbsentReadBesideWrite.test.ts`
   preserves an absent profile while appending a different collection ({"populated":false,"optimizeForCompilationSpeed":true})
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelAbsentReadBesideWrite.test.ts`
   preserves an absent profile while appending a different collection ({"populated":true,"optimizeForCompilationSpeed":true})
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelAbsentReadBesideWrite.test.ts`
   preserves an absent profile while appending a different collection
   ({"populated":false,"optimizeForCompilationSpeed":false})
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelAbsentReadBesideWrite.test.ts`
   preserves an absent profile while appending a different collection ({"populated":true,"optimizeForCompilationSpeed":false})
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelDelegateDynamicShrink.test.ts`
   retires a tail chunk while updating a co-spent contract (230 payload bytes)
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelDelegateDynamicShrink.test.ts`
   retires a tail chunk while updating a co-spent contract (350 payload bytes)
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelForwardedTargetIdentity.test.ts`
   authenticates a forwarded 20-byte address in the full VM
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelIndependentComputedChunks.test.ts`
   keeps a direct writer and delegated writer in separate continuation ranges
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelMappingFixedTransfer.test.ts`
   authenticates captured entry operands via transfer after a write
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelMappingFixedTransfer.test.ts`
   authenticates captured entry operands via callvalue after a write
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelMixedEntryInsert.test.ts`
   inserts a scalar entry (false/false)
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelMixedEntryInsert.test.ts`
   inserts a scalar entry (true/false)
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelMixedEntryInsert.test.ts`
   inserts a scalar entry (true/true)
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelRepeatedMixedRouteWrite.test.ts`
   preserves an earlier mapping update and both later appends via Ledger
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelResultTopology.test.ts`
   selects the branch after an earlier write (choice: true)
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/e2e/KernelTypedStateArrayGetter.test.ts`
   projects indexed nested addresses through proxy state getters
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/e2e/MasterChefDeposit.test.ts`
   approve then deposit
   baseline file matches both parents; parent suites were not re-run
@@ -548,13 +548,13 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
   baseline file matches both parents; parent suites were not re-run. AssertionError
 - pre-existing kernel | `packages/solidcash/test/unit/ComposeConstraintIsolation.test.ts`
   does not let a rejected attempt poison a later attempt with identical initial claims
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/unit/ComposeConstraintIsolation.test.ts`
   isolates overlapping attempts across await boundaries
-  file absent on the per-call parent. TypeError
+  file absent on the framed parent. TypeError
 - pre-existing kernel | `packages/solidcash/test/unit/ComposeConstraintIsolation.test.ts`
   still refuses a genuine claim cycle within a single build
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/unit/DeployabilityCertificate.test.ts`
   kernel-beta-manifest no longer uses stringly deployability not-asserted
   baseline file matches the kernel parent. AssertionError
@@ -566,10 +566,10 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
   baseline file matches the kernel parent
 - pre-existing kernel | `packages/solidcash/test/unit/LateTransitiveCalls.test.ts`
   prepares only reached result-dependent branches and loop calls (choice true)
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/unit/LateTransitiveCalls.test.ts`
   prepares only reached result-dependent branches and loop calls (choice false)
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/unit/LegacyJobEventHelpersAdapter.test.ts`
   legacy JobEvent naming retirement: JobEvent-branded aliases are deleted from STB / adapter / index
   baseline file matches the kernel parent. AssertionError
@@ -581,13 +581,13 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
   baseline file matches the kernel parent
 - pre-existing kernel | `packages/solidcash/test/unit/SemanticClaimSeedingOrder.test.ts`
   restores prior resource claims before probing a return hidden behind that resource check
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/unit/SortedMappingProofInputCoordinate.test.ts`
   co-spends the bracketing entry NFT at the distance the covenant adds to the master input
   baseline file matches both parents; parent suites were not re-run. AssertionError
 - pre-existing kernel | `packages/solidcash/test/unit/WorklistTargetIdentity.test.ts`
   binds forwarded canonical address words to the registered owner identity
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/AffineRecursiveMappingStreams.test.ts`
   settles a bounded requirement-only unwind and rejects a hostile read witness
   baseline file matches both parents; parent suites were not re-run. AssertionError
@@ -731,7 +731,7 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
   baseline file matches the kernel parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/KernelProjectedTargetCompose.test.ts`
   authenticates a 20-byte target (canonical=true) against the exact P2SH32 participant identity
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/KernelSegmentedHandlerReturnWidths.test.ts`
   round-trips an unchanged non-empty segment bank through idempotent rows
   baseline file matches both parents; parent suites were not re-run. AssertionError
@@ -740,10 +740,10 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
   baseline file matches both parents; parent suites were not re-run. AssertionError
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/KernelStructAddressTargetDiscovery.test.ts`
   discovers a transitive ABI-word struct target (raw call: false)
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/KernelStructAddressTargetDiscovery.test.ts`
   discovers a transitive ABI-word struct target (raw call: true)
-  file absent on the per-call parent
+  file absent on the framed parent
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/KernelTwoHopReturnProbe.test.ts`
   derives zero, one, and two looped getter results from an authenticated scalar result
   baseline file matches both parents; parent suites were not re-run. AssertionError
@@ -776,7 +776,7 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
   baseline file matches both parents; parent suites were not re-run. AssertionError
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/OutlinedArrayReadRoute.test.ts`
   reads a non-empty chunk from the route trailing run
-  file absent on the per-call parent. AssertionError
+  file absent on the framed parent. AssertionError
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/OverloadedPureInternalCall.test.ts`
   keeps the exact overload through a fixed return on the legacy direct path
   baseline file matches both parents; parent suites were not re-run. AssertionError
@@ -786,47 +786,47 @@ Subtotal: pre-existing kernel 30, pre-existing per-call 17.
 - pre-existing kernel | `packages/solidcash/test/journal-message-bus/e2e/PureFixedKeyVectorProducer.test.ts`
   matches legacy producer results and preserves returned-array bounds
   baseline file matches the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/conformance/loop-turns-beside-calls.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/conformance/loop-turns-beside-calls.test.ts`
   the hop settles a post with an allowlist made twice, the second over the first post's chunks
-  file absent on the kernel parent. PerCallProxyDeployError
-- pre-existing per-call | `packages/solidcash/test/per-call/call/branch-predicate-after-arm-write.test.ts`
+  file absent on the kernel parent. FramedProxyDeployError
+- pre-existing framed | `packages/solidcash/test/framed/call/branch-predicate-after-arm-write.test.ts`
   publishes the predicate as it stands where the branch starts
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/call/branch-predicate-after-arm-write.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/call/branch-predicate-after-arm-write.test.ts`
   accepts the plan the published predicate gives: the arm's call is placed and every input accepted
-  file absent on the kernel parent. PerCallProxyDeployError
-- pre-existing per-call | `packages/solidcash/test/per-call/call/plain-caller-identity.test.ts`
+  file absent on the kernel parent. FramedProxyDeployError
+- pre-existing framed | `packages/solidcash/test/framed/call/plain-caller-identity.test.ts`
   carries the caller's reported address whole inside a long packed payload, to the receipt and the chain
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/call/proxy-external-calls-published.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/call/proxy-external-calls-published.test.ts`
   states one call per published site the caller's own facts reach
   file absent on the kernel parent. ShippedHostError
-- pre-existing per-call | `packages/solidcash/test/per-call/call/skipped-batch-write.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/call/skipped-batch-write.test.ts`
   publishes the condition each balance write runs under
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/call/skipped-batch-write.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/call/skipped-batch-write.test.ts`
   mints, transfers and burns, the balances and the total supply read back
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/call/write-segments-settlement.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/call/write-segments-settlement.test.ts`
   settles a refund-like entry: a call, a mapping write in a later segment, and a dynamic write after the last call
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/edges/aliased-keys-edge.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/edges/aliased-keys-edge.test.ts`
   refuses by name a callee read of the node its own push spends, under another name
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/edges/written-local-sources.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/edges/written-local-sources.test.ts`
   publishes an array local written element by element as the element it holds, packed as an address
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/deploy/genesis.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/deploy/genesis.test.ts`
   refuses a write whose value the artifact publishes no source for
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/toys/identity.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/toys/identity.test.ts`
   resolves the plan's exact shape at compile: the self-call takes the callee's declared parameters
   file absent on the kernel parent. AssertionError
-- pre-existing per-call | `packages/solidcash/test/per-call/toys/identity.test.ts`
+- pre-existing framed | `packages/solidcash/test/framed/toys/identity.test.ts`
   cannot yet lay the sweep out: the frame the callee writes in declares records its own layout omits
   file absent on the kernel parent. AssertionError
 
-Subtotal: pre-existing kernel 175, pre-existing per-call 23.
+Subtotal: pre-existing kernel 175, pre-existing framed 23.
 
 ## create-solidhat
 
@@ -835,24 +835,24 @@ Subtotal: pre-existing kernel 175, pre-existing per-call 23.
 
 ## Repeats
 
-- solidc-per-call reproduced the same 47 titles in the same order. Not flaky.
-- solidcash-per-call reproduced the first 198 FAIL lines and added one:
+- solidc-framed reproduced the same 47 titles in the same order. Not flaky.
+- solidcash-framed reproduced the first 198 FAIL lines and added one:
   port-during-baseline | `packages/solidcash/test/e2e/StaticCall.test.ts`
   multi-value (tuple) reads fail closed with a clear message (not yet supported).
   First pass passed. Repeat and e2e received `[ 5n, 9n ]`. See `84e349830`.
-- testing-per-call reproduced the 3 testing failures and added one:
+- testing-framed reproduced the 3 testing failures and added one:
   port-during-baseline | `packages/testing/test/physical-identity.test.ts`
   addresses a deployment by its own lock when the project asks for the physical form.
   File added by `c3b274eb5` after the first testing pass. The address did not match.
 - solidcash-e2e is `vitest run test/e2e`: 88 failed tests whose titles are in the
   first solidcash list, plus the StaticCall failure above. 3115 passed.
-- utils-per-call is `vitest run test/per-call`: 119 passed, exit 0.
+- utils-framed is `vitest run test/framed`: 119 passed, exit 0.
 
 ## Counts on the first pass, plus create-solidhat
 
 - environment: 1
 - pre-existing kernel: 208
-- pre-existing per-call: 40
+- pre-existing framed: 40
 - merge-caused: 0
 - flaky: 0
 

@@ -274,7 +274,7 @@ direct-param), and the remaining inline usages are being migrated. The generic e
 Migration plan (each step keeps single-call green; the per-function selection flips to allow the case only
 once its codegen + SDK land):
 
-1. **Multi-call (slot-per-call). SHIPPED + VM-verified (2026-07-16).** N direct-param keccak calls -> N
+1. **Multi-call (slot-framed). SHIPPED + VM-verified (2026-07-16).** N direct-param keccak calls -> N
    side-car inputs (the last N) + N result outputs (the last N). One covenant self-preserving + committing at
    `outIdx = OP_INPUTINDEX + OP_TXOUTPUTCOUNT - OP_TXINPUTCOUNT` (generalizes single-call's last-output; for
    N=1 it *is* the last output). Contract call `i` (emission order) reads `input[TXINPUTCOUNT-(N-i)]` (bind) +
@@ -375,7 +375,7 @@ keccak256 references and exposes it in the artifact:
   `AbiFunction.keccakInLoop` is set when any call sits inside a loop (all `for`/`while` desugar to While/DoWhile;
   detector `SymbolTableTraversal.keccakCallInLoop`).
 - **Per contract (keccak256 descriptor)**: `ExternalLibraryAbi.minInstances` = the MAX call count across
-  functions (each function co-spends its own per-call side-cars, so the largest function sets the floor);
+  functions (each function co-spends its own framed side-cars, so the largest function sets the floor);
   `unbounded` = some function hashes in a loop, so `minInstances` is a LOWER BOUND - the runtime need is the
   loop's iteration count, provision extra. Stamped in `Artifact.ts`.
 - **SDK**: `keccakSideCarRequirement(artifact)` -> `{ minInstances, unbounded } | undefined` (undefined when the

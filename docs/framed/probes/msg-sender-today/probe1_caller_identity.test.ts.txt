@@ -7,7 +7,7 @@ import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 
 // PROBE 1: does a callee's `require(msg.sender == <A>)` bind to the ACTUAL caller, or merely to a
 // co-spent minting master of the SDK-declared category? call-model.md section 9 states the covenant
-// proves "IDENTITY (this master was co-spent), not per-call AUTHORIZATION".
+// proves "IDENTITY (this master was co-spent), not framed AUTHORIZATION".
 
 const IX = `
 interface IX {

@@ -9,7 +9,7 @@ import {
 import { compileString } from '../../../src/compiler.js';
 import {
   deployMaster, stateRecordLockingBytecode, verifyMasterDeployment,
-} from '../../../../solidcash/src/per-call/deploy/index.js';
+} from '../../../../solidcash/src/framed/deploy/index.js';
 import { encodeEntryCommitment } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -17,9 +17,9 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * A root frame's spend of one compiled per-call master and the records it declares.
+ * A root frame's spend of one compiled framed master and the records it declares.
  *
- * The source runs through `compileString` with the per-call convention and `deployMaster`, and the BCH-2026 machine
+ * The source runs through `compileString` with the framed convention and `deployMaster`, and the BCH-2026 machine
  * is asked for a verdict on the master's own input. The transaction is the user's signed input and the master,
  * then every record at the index it declares: a spent record is an input and the output at the same index, a
  * created one an output only. Unused indices carry plain user outputs.
@@ -62,8 +62,8 @@ export interface DeployedMaster {
   record(values: Record<string, bigint>): Uint8Array;
 }
 
-export function deployPerCallMaster(source: string, label: string): DeployedMaster {
-  const artifact = compileString(source, { composition: 'per-call' });
+export function deployFramedMaster(source: string, label: string): DeployedMaster {
+  const artifact = compileString(source, { composition: 'framed' });
   const category = seededCategory(label);
   const deployed = deployMaster(artifact, category, REAL_VALIDATOR_PROGRAM);
   verifyMasterDeployment(deployed, artifact, category, REAL_VALIDATOR_PROGRAM);

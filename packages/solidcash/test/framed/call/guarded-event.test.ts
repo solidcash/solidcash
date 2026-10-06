@@ -4,7 +4,7 @@ import {
   bytesEqual, bytesToHex, concatBytes, encodeEventCommitment, encodeWitnessBlock, sha256, splitFirstPush,
   validatorAddress, type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { ConstructorArgument, FunctionArgument } from '../../../src/Argument.js';
@@ -13,14 +13,14 @@ import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { tryParseEventCommitment } from '../../../src/stateful/StateReader.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { derivePerCallGenesis, eventLockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { deriveFramedGenesis, eventLockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -28,7 +28,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 /**
  * An event emitted on a branch the body skips.
  *
- * A per-call frame lists one output per emit its body holds, and the body closes each one against what it computed:
+ * A framed frame lists one output per emit its body holds, and the body closes each one against what it computed:
  * the payload of an emit it reaches, the empty commitment of one it skips. The compiler publishes the condition an
  * emit a branch guards runs under (`abi[].emits[].activation`), in the language a guarded write's condition uses, and
  * a builder decides it from the frame's facts, as it decides the write: a skipped emit's output carries the empty
@@ -45,7 +45,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * payload, and a skipped emit left unlisted.
  */
 
-const OPTIONS = { solidityImportCompat: true, composition: 'per-call' } as never;
+const OPTIONS = { solidityImportCompat: true, composition: 'framed' } as never;
 
 /** The role whose holders may grant and revoke `role`: its admin role, or the default admin role. */
 const adminOf = (constructor: boolean): string => (constructor ? 'DEFAULT_ADMIN_ROLE' : 'getRoleAdmin(role)');
@@ -134,7 +134,7 @@ function idOf(label: string): string {
   return bytesToHex(sha256(utf8ToBin(`guarded event ${label}`)));
 }
 
-type Entered = PerCallProxyCallResult | PerCallCallResult;
+type Entered = FramedProxyCallResult | FramedCallResult;
 
 /** One deployment, entered through its proxy or as a plain contract, and the chain as it stood once deployed. */
 interface World {
@@ -174,7 +174,7 @@ async function newChain(): Promise<{
 /** Deploys `artifact` behind a generated proxy, initialized with `args`, and enters it through the hop. */
 async function deployBehindProxy(artifact: Artifact, args: readonly FunctionArgument[]): Promise<World> {
   const { network, funder, changeAddress } = await newChain();
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifact,
     proxyArtifact: buildProxyArtifact(artifact),
@@ -187,7 +187,7 @@ async function deployBehindProxy(artifact: Artifact, args: readonly FunctionArgu
   });
   expect(deployment.initialize.broadcast).toBeDefined();
   const enter = async (functionName: string, entryArgs: readonly FunctionArgument[]): Promise<Entered> =>
-    callPerCallProxyEntry({
+    callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -214,7 +214,7 @@ async function deployPlainly(artifact: Artifact, args: readonly ConstructorArgum
     provider: network, fundingUtxo: await coinAt(network, changeAddress, 'genesis'), funder, changeAddress,
   });
   const enter = async (functionName: string, entryArgs: readonly FunctionArgument[]): Promise<Entered> =>
-    callPerCallEntry({
+    callFramedEntry({
       provider: network,
       artifact,
       categoryId: deployment.categoryId,
@@ -252,7 +252,7 @@ async function view(
   network: MockNetworkProvider, artifact: Artifact, records: string, functionName: string,
   args: readonly FunctionArgument[] = [],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({ provider: network, artifact, categoryId: records, functionName, args });
+  const read = await readFramedEntry({ provider: network, artifact, categoryId: records, functionName, args });
   expect(read.accepted).toBe(true);
   return read.value;
 }
@@ -504,7 +504,7 @@ describe('a callee frame whose guarded write emits', () => {
     const proxied = async (artifact: Artifact, args: readonly FunctionArgument[]): Promise<{
       readonly proxy: string; readonly implementation: string; readonly address: Uint8Array;
     }> => {
-      const deployment = await deployPerCallProxy({
+      const deployment = await deployFramedProxy({
         provider: network,
         implementationArtifact: artifact,
         proxyArtifact: buildProxyArtifact(artifact),
@@ -529,7 +529,7 @@ describe('a callee frame whose guarded write emits', () => {
         address: deployment.proxy.address,
       };
     };
-    let registry: PerCallProxyExternal;
+    let registry: FramedProxyExternal;
     let registryAddress: Uint8Array;
     if (registryBehindProxy) {
       const deployment = await proxied(REGISTRY, []);
@@ -552,7 +552,7 @@ describe('a callee frame whose guarded write emits', () => {
       return {
         network,
         registryRecords: registry.categoryId,
-        enter: async (functionName, args) => callPerCallProxyEntry({
+        enter: async (functionName, args) => callFramedProxyEntry({
           provider: network,
           implementationArtifact: gateway,
           proxyArtifact: buildProxyArtifact(gateway),
@@ -576,7 +576,7 @@ describe('a callee frame whose guarded write emits', () => {
     return {
       network,
       registryRecords: registry.categoryId,
-      enter: async (functionName, args) => callPerCallEntry({
+      enter: async (functionName, args) => callFramedEntry({
         provider: network,
         artifact: gateway,
         categoryId: deployment.categoryId,
@@ -628,7 +628,7 @@ describe('a constructor that emits on an argument', () => {
   it('lists the payload where the constructor emits and the empty commitment where it does not', () => {
     const loud = artifact.events!.find((event) => event.name === 'Loud')!;
     const outcomes = [2n, 1n].map((mode) => {
-      const genesis = derivePerCallGenesis({
+      const genesis = deriveFramedGenesis({
         artifact, category, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
         constructorArgs: [mode], senderLockingBytecode: ADMIN,
       });

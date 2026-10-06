@@ -7,17 +7,17 @@ import {
   parsePushdataCommitment,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { REAL_VALIDATOR_PROGRAM, seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { REAL_VALIDATOR_PROGRAM, seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { providerUnixLocktime } from '../../../src/stateful/soft-state-overlays.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { participant, type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { participant, type CompositionDraftPlan, type DraftMaster } from '../../../src/framed/composer/index.js';
 import {
   USER_LOCK, composeAndDerive, entryName, layoutWithFacets, master, masterInput, rootOf, selectorOf,
   token, userInput, userInputs, validatorFor, type DeployedContract,
@@ -36,7 +36,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * The first suite drives the shipped composition path with a plan that states the clock, so every entry is
  * evaluated against a different block time. The second suite drives the same contract through the shipped call
- * entry point (`callPerCallEntry`), which states the chain's own time as the clock and a sequence that lets a
+ * entry point (`callFramedEntry`), which states the chain's own time as the clock and a sequence that lets a
  * locktime check run, so the entries there are decided by the contract's own window against that time.
  */
 
@@ -70,7 +70,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const artifact = artifacts.Board!;
 const deployed = deployMaster(artifact, CATEGORY, REAL_VALIDATOR_PROGRAM);
 const DEPLOYED: DeployedContract = {
@@ -178,13 +178,13 @@ describe('spec section 23 row 16: a 24-hour window and the challenge period', ()
     // A body that refuses before its segment closes fills no witness, which the derivation refuses: the late
     // review never becomes a transaction to broadcast.
     expect(() => composeAndDerive(plan, [artifact], [REVIEW]))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+      .toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('refuses a review at the block the window opened, so the review is strictly later', () => {
     const { plan } = buildPlan('review', Number(OPENED_AT), recordOf(OPENED_AT, OPENED_AT, 0n));
     expect(() => composeAndDerive(plan, [artifact], [REVIEW]))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+      .toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('accepts a challenge strictly past the window and records the count it wrote', () => {
@@ -200,7 +200,7 @@ describe('spec section 23 row 16: a 24-hour window and the challenge period', ()
     const boundary = OPENED_AT + DAY;
     const { plan } = buildPlan('challenge', Number(boundary), recordOf(OPENED_AT, 0n, 1n));
     expect(() => composeAndDerive(plan, [artifact], [CHALLENGE]))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+      .toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });
 
@@ -243,7 +243,7 @@ describe('spec section 23 row 16: the clock the shipped call path states', () =>
   /** The shipped call path's options for one entry of the deployed board. */
   function enterOptions(
     deployedCall: Awaited<ReturnType<typeof deployCallPath>>, functionName: string,
-  ): Parameters<typeof callPerCallEntry>[0] {
+  ): Parameters<typeof callFramedEntry>[0] {
     return {
       provider: deployedCall.provider,
       artifact,
@@ -258,7 +258,7 @@ describe('spec section 23 row 16: the clock the shipped call path states', () =>
   }
 
   it('states the chain\'s own time, so the contract\'s window decides the review', async () => {
-    const result = await callPerCallEntry(await enterOptions(await deployCallPath(), 'review'));
+    const result = await callFramedEntry(await enterOptions(await deployCallPath(), 'review'));
     // The plan states the chain tip's time and a sequence that lets a locktime check run, so the body reads the
     // clock and its own window refuses: this board's review window closed long before the tip. The refusal is the
     // contract's require, not the compiler's guard against a final input, and every other participant accepts.
@@ -276,7 +276,7 @@ describe('spec section 23 row 16: the clock the shipped call path states', () =>
     const board = await deployCallPath();
     // The chain's time as the plan reads it, before the call itself advances the mock tip.
     const stated = providerUnixLocktime(board.provider) ?? 0;
-    const result = await callPerCallEntry(await enterOptions(board, 'challenge'));
+    const result = await callFramedEntry(await enterOptions(board, 'challenge'));
     expect(result.accepted).toBe(true);
     // The clock the plan stated is the one the transaction carries, one second behind the chain tip so a unix
     // locktime stays readable.

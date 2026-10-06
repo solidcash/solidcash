@@ -10,10 +10,10 @@ import {
   type StateLayout,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   chunkRecordId,
   createComposedDerivationHost,
@@ -24,14 +24,14 @@ import {
   planChunkRun,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
- * A per-call master whose state is a string, composed from a plan the chunk plan states.
+ * A framed master whose state is a string, composed from a plan the chunk plan states.
  *
  * A `string` state variable is not held in the data NFT that declares it: the NFT carries the value's byte length
  * and the bytes live in chunk NFTs locked by the value's own collection covenant. The emitted body addresses that
@@ -100,7 +100,7 @@ function build(options: {
   const source = options.source ?? SOURCE;
   const spentBytes = options.spent ?? SPENT;
   const writtenBytes = options.written ?? WRITTEN;
-  const artifact = compileString(source, { composition: 'per-call' });
+  const artifact = compileString(source, { composition: 'framed' });
   const stateLayout = artifact.stateLayout!;
   const master = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 
@@ -202,7 +202,7 @@ const compose = (options: Parameters<typeof build>[0] = {}): {
   const built = build(options);
   const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(),
-    artifacts: [compileString(built.source, { composition: 'per-call' })],
+    artifacts: [compileString(built.source, { composition: 'framed' })],
     plan: built.plan,
   });
   return { host, draft, built };

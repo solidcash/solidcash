@@ -9,7 +9,7 @@ import {
   sha256, validatorAddress, type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
@@ -18,7 +18,7 @@ import {
 } from './validator-input.js';
 
 /**
- * A per-call master whose verified-mapping batch and dynamic run land in different segments.
+ * A framed master whose verified-mapping batch and dynamic run land in different segments.
  *
  * The entry inserts a mapping node, makes a call and then writes a `string`: the call closes the segment the batch's
  * records are declared in, and the run the write grows is pinned in the segment the call opened. The frame reads
@@ -49,7 +49,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const caller = artifacts.Caller!;
 
 type Program = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
@@ -206,7 +206,7 @@ function verdict(segments: readonly RecordEntry[][], extraChunks = 0): { accepte
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose batch and dynamic run land in different segments', () => {
+describe('a framed master whose batch and dynamic run land in different segments', () => {
   it('settles the batch in its own segment and the run in the segment the call opened', () => {
     // The artifact publishes that the frame reads the run apart from its batch, which is what lets a builder declare
     // the two in different segments.

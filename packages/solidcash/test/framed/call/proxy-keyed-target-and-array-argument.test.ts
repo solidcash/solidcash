@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster, entryRecordLockingBytecode, stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   entryRowOf, makeCallResolver, resolveCallArguments,
-} from '../../../src/per-call/proxy/call-resolution.js';
-import { planHopExternalCalls, routingOf } from '../../../src/per-call/proxy/external-calls.js';
+} from '../../../src/framed/proxy/call-resolution.js';
+import { planHopExternalCalls, routingOf } from '../../../src/framed/proxy/external-calls.js';
 import { encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 
 /**
@@ -23,7 +23,7 @@ import { encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '.
  * mapping read has to resolve against the live deployment the frame runs on.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ISink { function ping(); }'
@@ -49,7 +49,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const caller = artifacts.Caller!;
 const registry = artifacts.Registry!;
 const echo = artifacts.Echo!;
@@ -78,7 +78,7 @@ describe('the hop resolves a fixed-size array a pure helper builds', () => {
 });
 
 describe('the hop resolves a target a callee\'s own mapping holds', () => {
-  /** A live per-call deployment: a master, one record per data NFT, and the head of every sorted collection. */
+  /** A live framed deployment: a master, one record per data NFT, and the head of every sorted collection. */
   async function seed(
     network: MockNetworkProvider, artifact: Artifact, categoryId: string,
     state: Record<string, Uint8Array> = {},

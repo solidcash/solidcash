@@ -3,18 +3,18 @@ import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, utf8ToBin } from 
 import {
   bytesToHex, concatBytes, encodeWitnessBlock, sha256, splitFirstPush, type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -77,7 +77,7 @@ const body = (constructor: boolean): string => [
   '}',
 ].join('\n');
 
-const OPTIONS = { solidityImportCompat: true, composition: 'per-call' } as never;
+const OPTIONS = { solidityImportCompat: true, composition: 'framed' } as never;
 const proxied = compileStringMulti(body(false), OPTIONS).Registry!;
 const plain = compileStringMulti(body(true), OPTIONS).Registry!;
 
@@ -106,7 +106,7 @@ interface World {
   readonly snapshot: SnapshotRestorer;
 }
 
-type Entered = PerCallProxyCallResult | PerCallCallResult;
+type Entered = FramedProxyCallResult | FramedCallResult;
 
 let coins = 0;
 
@@ -124,7 +124,7 @@ async function deployWorld(behindProxy: boolean): Promise<World> {
   const changeAddress = wallet.address;
   await fundShippedFacets(network);
   if (behindProxy) {
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: proxied,
       proxyArtifact: buildProxyArtifact(proxied),
@@ -139,7 +139,7 @@ async function deployWorld(behindProxy: boolean): Promise<World> {
     });
     expect(deployment.initialize.broadcast).toBeDefined();
     const enter = async (functionName: string, args: readonly FunctionArgument[]): Promise<Entered> =>
-      callPerCallProxyEntry({
+      callFramedProxyEntry({
         provider: network,
         implementationArtifact: proxied,
         proxyArtifact: buildProxyArtifact(proxied),
@@ -162,7 +162,7 @@ async function deployWorld(behindProxy: boolean): Promise<World> {
     provider: network, fundingUtxo: await coinAt(network, wallet.address, 'genesis'), funder, changeAddress,
   });
   const enter = async (functionName: string, args: readonly FunctionArgument[]): Promise<Entered> =>
-    callPerCallEntry({
+    callFramedEntry({
       provider: network,
       artifact: plain,
       categoryId: deployment.categoryId,
@@ -198,7 +198,7 @@ async function settle(shared: World, functionName: string, args: readonly Functi
 
 /** A view's value, read from the deployment's records through the read path. */
 async function view(shared: World, functionName: string, args: readonly FunctionArgument[] = []): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: shared.network, artifact: shared.artifact, categoryId: shared.records, functionName, args,
   });
   expect(read.accepted).toBe(true);

@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { bytesToHex, encodeChunkableValueTail, encodePushdataValue } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { mappingValueChunkLock, planMappingBatch, planMappingWrite } from '../../../src/per-call/composer/index.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { mappingValueChunkLock, planMappingBatch, planMappingWrite } from '../../../src/framed/composer/index.js';
+import { deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { bytesToSlotValue } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -73,7 +73,7 @@ const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
  * and the artifact publishes the access with no sorted batch for it. This is the shape a body makes of a per-job
  * whitelist: an outer key the call names, an inner key per element of the array it also carries.
  *
- * The initialize entry writes the collection once, as a deployment does: a per-call deployment mints the empty head
+ * The initialize entry writes the collection once, as a deployment does: a framed deployment mints the empty head
  * of every sorted collection it declares, and the first write splices through it.
  */
 const LOOP_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -140,15 +140,15 @@ async function deploy(
   args: readonly unknown[] = [],
   broadcast = false,
 ): Promise<{
-  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
   readonly network: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly funding: Funding;
 }> {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network, broadcast);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: { fundingUtxo: funding.implFunding, funder: funding.funder, changeAddress: funding.changeAddress },
@@ -312,7 +312,7 @@ describe('a proxied initialize that writes a sorted mapping', () => {
 
     // The call reads the node the deployment's hop created and writes the value it computed back: an update, with
     // nothing created, so the spent node is the one the key names and it is recreated where it stands.
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -348,7 +348,7 @@ describe('a proxied initialize that writes a sorted mapping', () => {
     const { deployment, network, artifacts, funding } = await deploy(LOOP_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,

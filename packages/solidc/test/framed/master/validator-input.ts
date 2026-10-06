@@ -7,8 +7,8 @@ import {
   validatorRedeemScript,
   type Transcript,
 } from '@solidcash/utils';
-import { buildValidatorFacets, buildValidatorProgram, validatorFacetSpends } from '../../../src/per-call/validator/index.js';
-import { stateRecordLockingBytecode } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { buildValidatorFacets, buildValidatorProgram, validatorFacetSpends } from '../../../src/framed/validator/index.js';
+import { stateRecordLockingBytecode } from '../../../../solidcash/src/framed/deploy/index.js';
 
 /** A category that is not a repeated byte, so the chain's order differs from the display order. */
 export function seededCategory(label: string): Uint8Array {

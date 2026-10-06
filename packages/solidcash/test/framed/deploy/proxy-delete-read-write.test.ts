@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { bytesToHex, encodeChunkableValueTail } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -93,9 +93,9 @@ async function funded(network: MockNetworkProvider): Promise<Funding> {
 /** Deploys the implementation and proxy, running the initializer that writes the tag the call later removes. */
 async function deploy(
   source: string, funding: Funding, key: string, tag: string,
-): Promise<ReturnType<typeof deployPerCallProxy>> {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
-  return deployPerCallProxy({
+): Promise<ReturnType<typeof deployFramedProxy>> {
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
+  return deployFramedProxy({
     provider: funding.network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: {
@@ -113,7 +113,7 @@ async function deploy(
 
 describe('a proxied delete of a sorted-mapping key', () => {
   it('publishes a branch-guarded delete as a conditional soft-delete slot', () => {
-    const artifacts = compileStringMulti(GUARDED_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(GUARDED_SOURCE, { composition: 'framed' });
     const entry = artifacts.Impl!.abi.find((candidate) => candidate.name === 'untag')!;
     // The branch marks the entry slot conditional and soft: the SDK must not statically drop the guarded delete.
     const slot = entry.blockLayout!.slots.find((candidate) => candidate.kind === 'entry')!;
@@ -129,13 +129,13 @@ describe('a proxied delete of a sorted-mapping key', () => {
   it('settles the branch-guarded delete through the proxy, rewriting the node to the default tail', async () => {
     const encoder = new TextEncoder();
     const key = 'DV';
-    const artifacts = compileStringMulti(GUARDED_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(GUARDED_SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = await funded(network);
     const deployment = await deploy(GUARDED_SOURCE, funding, key, 'DIGITAL_VIDEO');
     expect(deployment.initialize.accepted).toBe(true);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -165,7 +165,7 @@ describe('a proxied delete of a sorted-mapping key', () => {
   it('settles the unconditional write-then-delete in one deployment and broadcasts it', async () => {
     const encoder = new TextEncoder();
     const key = 'DV';
-    const artifacts = compileStringMulti(PLAIN_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(PLAIN_SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = await funded(network);
     const deployment = await deploy(PLAIN_SOURCE, funding, key, 'DIGITAL_VIDEO');
@@ -175,7 +175,7 @@ describe('a proxied delete of a sorted-mapping key', () => {
     const classification = buildProxyArtifact(artifacts.Impl!).stateLayout!;
     const slot = keyToSlotMulti([encoder.encode(key)]);
     const heldValue = async (): Promise<string | undefined> => {
-      const pools = await readPerCallDeployment(network, deployment.proxy.categoryId, classification);
+      const pools = await readFramedDeployment(network, deployment.proxy.categoryId, classification);
       const node = pools.collectionNodes.find((utxo) => utxo.token?.nft?.commitment !== undefined
         && bytesToHex(decodeEntryCommitment(hexToBin(utxo.token.nft.commitment)).slot) === bytesToHex(slot));
       return node === undefined
@@ -184,7 +184,7 @@ describe('a proxied delete of a sorted-mapping key', () => {
     expect(await heldValue()).toBe(bytesToHex(encodeChunkableValueTail(encoder.encode('DIGITAL_VIDEO'))));
 
     // The call deletes the key: the node stays in place and takes the value type's default tail.
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,

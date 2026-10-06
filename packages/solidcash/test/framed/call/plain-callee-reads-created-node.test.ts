@@ -3,18 +3,18 @@ import { binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   INDEX_NONE, concatBytes, encodeWitnessBlock, splitFirstPush, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  USER_LOCK, addressOfCategory, compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts,
+  USER_LOCK, addressOfCategory, compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts,
   type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A plain callee that only reads a mapping node an earlier frame of its own contract created in the same call, on the
- * plain call path (`callPerCallEntry`).
+ * plain call path (`callFramedEntry`).
  *
  * The created node carries no input: the frame that created it places it as an output, so the frame that reads it
  * names it at that output, as the hop names it, and its kept declaration chains onto the creator's.
@@ -115,7 +115,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 const UNLIMITED = (1n << 256n) - 1n;
 
@@ -123,7 +123,7 @@ const UNLIMITED = (1n << 256n) - 1n;
 async function enter(
   world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
   reached: readonly PlainDeployment[] = [],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
     [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
   expect(outcome.error?.message).toBeUndefined();
@@ -135,7 +135,7 @@ async function enter(
 async function view(
   world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -148,7 +148,7 @@ interface Credited {
   readonly ledger: PlainDeployment;
   readonly reader: PlainDeployment;
   readonly fresh: Uint8Array;
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
 }
 
 let creditRun: Promise<Credited> | undefined;
@@ -171,7 +171,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -179,7 +179,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 }
 
 /** The settled transaction with one master's witness block replaced by `block`. */
-function withBlock(result: PerCallCallResult, master: string, block: WitnessBlock): VmTransaction {
+function withBlock(result: FramedCallResult, master: string, block: WitnessBlock): VmTransaction {
   const forged = structuredClone(result.transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
   const { rest } = splitFirstPush(forged.inputs[index]!.unlockingBytecode);
@@ -191,20 +191,20 @@ function withBlock(result: PerCallCallResult, master: string, block: WitnessBloc
 }
 
 /** The master of the one frame of `result` that ran `entry`. */
-function frameOf(result: PerCallCallResult, entry: string): string {
+function frameOf(result: FramedCallResult, entry: string): string {
   const frames = result.completed.filter((frame) => frame.functionName.endsWith(`.${entry}()`));
   expect(frames).toHaveLength(1);
   return frames[0]!.master;
 }
 
 /** The declarations of the frame that ran `entry` that name a node by an output, holding no input for it. */
-function namedByOutput(result: PerCallCallResult, entry: string): readonly RecordEntry[] {
+function namedByOutput(result: FramedCallResult, entry: string): readonly RecordEntry[] {
   return result.draft.blockOf(frameOf(result, entry)).segments.flat()
     .filter((declared) => declared.in === INDEX_NONE);
 }
 
 /** The commitment output `index` of the settled transaction carries. */
-function commitmentAt(result: PerCallCallResult, index: number): string {
+function commitmentAt(result: FramedCallResult, index: number): string {
   return binToHex(result.transaction.outputs[index]?.token?.nft?.commitment ?? new Uint8Array(0));
 }
 

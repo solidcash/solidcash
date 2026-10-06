@@ -9,9 +9,9 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-call/master/master-head.js';
-import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/framed/master/master-head.js';
+import { findPlaceholderOffsets } from '../../../src/framed/master/master-program.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -77,7 +77,7 @@ const CALLER_SOURCE = 'pragma solidcash ^0.13.0;'
 
 /** The compiled caller program, with its deployment slots filled the way a deployment fills them. */
 const COMPILED_CALLER_PROGRAM = ((): Uint8Array => {
-  const artifact = compileString(CALLER_SOURCE, { composition: 'per-call' });
+  const artifact = compileString(CALLER_SOURCE, { composition: 'framed' });
   return fillPlaceholders(
     scriptToBytecode(asmToScript(artifact.bytecode)),
     artifact.composition!.placeholders,

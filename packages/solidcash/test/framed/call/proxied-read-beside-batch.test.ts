@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, sha256, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-} from '../../../src/per-call/proxy/index.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+} from '../../../src/framed/proxy/index.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti,
 } from '../../../src/stateful/SortedList.js';
@@ -75,7 +75,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 
 /** The 1-based line of the first source line containing `needle`. */
 function lineOf(needle: string): number {
@@ -143,7 +143,7 @@ async function deployWorld(): Promise<World> {
     const initializeCoin = funding(idOf(`${name} initialize coin`));
     for (const coin of [implementationFunding, proxyFunding]) await network.addUtxo(wallet.address, coin);
     await network.addUtxo(binToHex(USER), initializeCoin);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifact,
       proxyArtifact: proxy,
@@ -183,11 +183,11 @@ let entered = 0;
 async function enter(
   world: World, target: Deployed, functionName: string, args: readonly FunctionArgument[],
   provider: NetworkProvider = world.network,
-): Promise<{ readonly coin: Utxo; readonly call: ReturnType<typeof callPerCallProxyEntry> }> {
+): Promise<{ readonly coin: Utxo; readonly call: ReturnType<typeof callFramedProxyEntry> }> {
   entered += 1;
   const coin = funding(idOf(`${functionName} coin ${entered}`));
   await world.network.addUtxo(binToHex(USER), coin);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider,
     implementationArtifact: target.artifact,
     proxyArtifact: target.proxy,
@@ -222,7 +222,7 @@ function nodeOf(utxo: Utxo): ReturnType<typeof decodeEntryCommitment> {
 /** The value each live node of one collection holds, by slot, the head left out: it holds no value. */
 async function held(world: World, target: Deployed, collection: string): Promise<ReadonlyMap<string, string>> {
   const layout = { ...target.proxy.stateLayout!, collections: target.artifact.stateLayout!.collections };
-  const deployment = await readPerCallDeployment(world.network, target.proxyCategoryId, layout);
+  const deployment = await readFramedDeployment(world.network, target.proxyCategoryId, layout);
   const values = new Map<string, string>();
   for (const node of (deployment.nodesByCollection.get(collection) ?? []).map(nodeOf)) {
     if (!node.slot.every((byte) => byte === 0)) values.set(bytesToHex(node.slot), bytesToHex(node.value));
@@ -334,7 +334,7 @@ describe('a proxied entry that reads one mapping beside the batch it writes', ()
     // A holder the list does not hold has the empty name, which the entry's own guard refuses.
     const error = await expectRefused(world, world.board, 'visit', [BELOW, 4n],
       unsettled('visit', 'Board', lineOf('"unnamed"'), 'unnamed'));
-    expect(error).toBeInstanceOf(PerCallProxyDeployError);
+    expect(error).toBeInstanceOf(FramedProxyDeployError);
   }, 600_000);
 
   it('reads the written mapping at a node its batch spends or not, and is refused under the key it writes', async () => {
@@ -356,7 +356,7 @@ describe('a proxied entry that reads one mapping beside the batch it writes', ()
       + 'which its frame reads as the segment began, before the write, whichever comes first in the source';
     const again = await deployed();
     expect(await expectRefused(again, again.ledger, 'shift', [USER, USER], sameKey))
-      .toBeInstanceOf(PerCallProxyDeployError);
+      .toBeInstanceOf(FramedProxyDeployError);
   }, 600_000);
 
   it('is refused by the frame when the hop declares a node that does not bracket the key', async () => {
@@ -365,10 +365,10 @@ describe('a proxied entry that reads one mapping beside the batch it writes', ()
 
     // Without the caller's node, the hop proves the caller's own key absent by the head, whose successor is that key.
     expect(await expectRefused(world, world.tally, 'bump', [USER, 7n], refused, hiding(world.network, USER)))
-      .toBeInstanceOf(PerCallProxyDeployError);
+      .toBeInstanceOf(FramedProxyDeployError);
     // Without it, the hop brackets a key above the caller's by the head, though the caller's node lies between.
     expect(await expectRefused(world, world.tally, 'bump', [ABOVE, 7n], refused, hiding(world.network, USER)))
-      .toBeInstanceOf(PerCallProxyDeployError);
+      .toBeInstanceOf(FramedProxyDeployError);
   }, 600_000);
 
   it('is refused by the validator when the hop declares a node the list does not hold', async () => {

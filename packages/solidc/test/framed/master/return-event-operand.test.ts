@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { hexOf, seededAddress } from '../../../../solidcash/test/per-call/shapes/harness.js';
+import { hexOf, seededAddress } from '../../../../solidcash/test/framed/shapes/harness.js';
 
 /**
  * The operand the direct path threads into a body for its call's return event.
  *
  * A direct-convention body reads the value a callee returned out of the output that carries the return event, so
  * the semantic pass injects a parameter naming that output — bare when one call returns a value, indexed per
- * returning slot when several do. A per-call master writes no such output: the frame records the value in `retval`
+ * returning slot when several do. A framed master writes no such output: the frame records the value in `retval`
  * and the body takes the call's result from its own witness record where the call is made, so the operand is dead
  * in this program and must not refuse the contract or reach a caller through the published interface.
  */
@@ -40,7 +40,7 @@ const ONE_RETURNING_CALL = HEAD + INTERFACES
   + ' }';
 
 const compiling = (source: string): ReturnType<typeof compileStringMulti> =>
-  compileStringMulti(source, { composition: 'per-call' });
+  compileStringMulti(source, { composition: 'framed' });
 
 /** Every parameter the compiled unit publishes for one contract's entries, synthetic ones included. */
 const publishedParameters = (source: string, contract: string): readonly string[] =>

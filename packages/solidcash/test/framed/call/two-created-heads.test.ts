@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, sha256 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
@@ -69,7 +69,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const store = artifacts.Store!;
 const root = artifacts.Root!;
 
@@ -109,7 +109,7 @@ async function deployWorld(): Promise<World> {
   for (const coin of [storeInitCoin, rootInitCoin, callCoin]) await network.addUtxo(binToHex(callerLock), coin);
   await fundShippedFacets(network);
 
-  const storeDeployment = await deployPerCallProxy({
+  const storeDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: store,
     proxyArtifact: buildProxyArtifact(store),
@@ -121,7 +121,7 @@ async function deployWorld(): Promise<World> {
     vm: compositionMachine(),
   });
   expect(storeDeployment.initialize.broadcast).toBeDefined();
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -158,8 +158,8 @@ async function deployed(): Promise<World> {
 }
 
 /** One call of the root's entry through its proxy, the store reached behind its own. */
-function callRoot(world: World, functionName: string, args: readonly bigint[]): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+function callRoot(world: World, functionName: string, args: readonly bigint[]): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -227,7 +227,7 @@ async function deployHeadless(): Promise<HeadlessWorld> {
   for (const coin of [rootInitCoin, callCoin]) await network.addUtxo(binToHex(callerLock), coin);
   await fundShippedFacets(network);
 
-  const validatorProgram = perCallValidator.buildValidatorProgram();
+  const validatorProgram = framedValidator.buildValidatorProgram();
   await deployStatefulContract(store, [], {
     fundingUtxo: funding(storeImplementationCategoryId), funder, changeAddress: wallet.address, provider: network,
   });
@@ -238,7 +238,7 @@ async function deployHeadless(): Promise<HeadlessWorld> {
   });
   const storeProxy = deployMaster(buildProxyArtifact(store), hexToBin(storeProxyCategoryId), validatorProgram);
 
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -268,7 +268,7 @@ async function deployHeadless(): Promise<HeadlessWorld> {
 /** The store's live nodes of one collection, read with the implementation's collections grafted on the proxy's. */
 async function storeNodes(world: World, collection: string): Promise<readonly Utxo[]> {
   const layout = { ...buildProxyArtifact(store).stateLayout!, collections: store.stateLayout!.collections };
-  const deployment = await readPerCallDeployment(world.network, world.storeProxyCategoryId, layout);
+  const deployment = await readFramedDeployment(world.network, world.storeProxyCategoryId, layout);
   return deployment.nodesByCollection.get(collection) ?? [];
 }
 
@@ -352,7 +352,7 @@ describe('reaches into a collection the store never wrote, through the head its 
 
     // Called directly, the store's own frame plans the write against the deployment and finds no head to splice
     // through; a call never mints one.
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: headless.network,
       implementationArtifact: store,
       proxyArtifact: buildProxyArtifact(store),
@@ -368,7 +368,7 @@ describe('reaches into a collection the store never wrote, through the head its 
     })).rejects.toThrow(noHeadRefusal('put', 'counts'));
 
     // Reached from the root, the callee's frame is refused the same way, by the callee's name.
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: headless.network,
       implementationArtifact: root,
       proxyArtifact: buildProxyArtifact(root),

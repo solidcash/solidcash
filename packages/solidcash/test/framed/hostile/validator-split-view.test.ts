@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import type { PerCallTransaction as ModelledTransaction } from '../../../../solidc/src/per-call/validator/index.js';
+import type { FramedTransaction as ModelledTransaction } from '../../../../solidc/src/framed/validator/index.js';
 import { accepted, expectRefusal, laidOut } from './validator-machine.js';
 import { categoryOf, materialise, mutableTokenShape, seedBytes } from '../validator/fixture.js';
 import { abbaPlan } from '../validator/plans.js';
-import { validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { validatorSpend } from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * The shipped validator program keeps one contract inside one validator.

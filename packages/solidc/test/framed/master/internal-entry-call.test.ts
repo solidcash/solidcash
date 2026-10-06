@@ -49,7 +49,7 @@ type Abi = readonly { name: string; entryAccesses?: readonly { collection: strin
 describe('an internal call to a function that writes a mapping', () => {
   for (const { name, members, kept, caller } of CASES) {
     it(`compiles ${name} in both conventions`, () => {
-      for (const options of [{ composition: 'per-call' }, {}]) {
+      for (const options of [{ composition: 'framed' }, {}]) {
         const artifacts = compileStringMulti(ledger(members), options as never);
         expect(publishedRefusals(artifacts)).toStrictEqual([]);
         const abi = artifacts.Ledger!.abi as unknown as Abi;

@@ -1,7 +1,7 @@
 /**
  * Claim 7: the value tail's two thresholds.
  *
- * Spec: docs/per-call/SPEC_PER_CALL_TRANSACTION.md
+ * Spec: docs/framed/SPEC_FRAMED_TRANSACTION.md
  *   1461 - long value: "Head in the node's tail: `len4 || sha256(v) || v[0:28]`; chunks ... Chunk:
  *          `uint16LE(i) || 126-byte slice`";
  *   1467-1472 - "A node's tail holds 64 bytes, and both thresholds come from it: a fixed-width value whose

@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -53,7 +53,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function poke() { IData(this.data).touch(); require(true); }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const data = artifacts.Data!;
 const outer = artifacts.Outer!;
 
@@ -95,7 +95,7 @@ async function deployProxiedCallee(
     await setup_.network.addUtxo(source.address, funding(txid));
   }
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: setup_.network,
     implementationArtifact: data,
     proxyArtifact: buildProxyArtifact(data),
@@ -149,7 +149,7 @@ async function deployCaller(setup_: Setup, dataAddress: Uint8Array, seed: string
   await setup_.network.addUtxo(binToHex(setup_.deployerLock), initCoin);
   for (const txid of [implCategory, proxyCategory]) await setup_.network.addUtxo(source.address, funding(txid));
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: setup_.network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),
@@ -171,14 +171,14 @@ async function deployCaller(setup_: Setup, dataAddress: Uint8Array, seed: string
 async function callRun(options: {
   readonly setup: Setup;
   readonly caller: { readonly proxyCategoryId: string; readonly implementationCategoryId: string };
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly functionName: string;
   readonly args: readonly (bigint | Uint8Array | string | boolean)[];
   readonly fundingTxid: string;
-}): Promise<PerCallProxyCallResult> {
+}): Promise<FramedProxyCallResult> {
   const coin = funding(options.fundingTxid);
   await options.setup.network.addUtxo(binToHex(options.setup.deployerLock), coin);
-  return callPerCallProxyEntry({
+  return callFramedProxyEntry({
     provider: options.setup.network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),

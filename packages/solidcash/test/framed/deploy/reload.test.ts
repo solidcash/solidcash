@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { Signer } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { selectGenesisFundingUtxo } from '../../../src/stateful/ContractFactory.js';
@@ -9,8 +9,8 @@ import {
   genesisOutpointKey,
   isReservedGenesisOutpoint,
 } from '../../../src/stateful/genesis-reservations.js';
-import { CreateLookahead, takeReloadPoint } from '../../../src/per-call/deploy/index.js';
-import { CompositionPools } from '../../../src/per-call/composer/index.js';
+import { CreateLookahead, takeReloadPoint } from '../../../src/framed/deploy/index.js';
+import { CompositionPools } from '../../../src/framed/composer/index.js';
 
 /**
  * Reloading a fixture: the mock chain and the SDK state derived from it.
@@ -27,7 +27,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   constructor(int seed) { this.total = seed + 1; }'
   + '   function check(int v) { require(this.total == v); }'
   + ' }';
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 
 const keyOf = (utxo: { txid: string; vout: number }): string => genesisOutpointKey(utxo.txid, utxo.vout);
 

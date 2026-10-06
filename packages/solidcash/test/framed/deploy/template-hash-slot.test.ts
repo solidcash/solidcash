@@ -3,7 +3,7 @@ import { compositionPlaceholders } from 'solidc';
 import {
   asmToScript, bytecodeToAsm, scriptToBytecode, validatorTemplateHash, type Artifact,
 } from '@solidcash/utils';
-import { deployMaster, verifyMasterDeployment } from '../../../src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../src/framed/deploy/index.js';
 
 /**
  * The optional third slot: the hash of the validator program.
@@ -140,7 +140,7 @@ describe('deploying a master that recognises a validator', () => {
       bytecode: bytecodeToAsm(script),
       source: 'contract Ledger {}',
       composition: {
-        convention: 'per-call',
+        convention: 'framed',
         placeholders: {
           version: 1,
           categoryOffset: HEAD.length,

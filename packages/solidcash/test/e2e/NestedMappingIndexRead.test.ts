@@ -6,7 +6,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
 // A mapping access that reads another entry inside its own element index or key, on the direct convention: the
-// inner read is an entry access of its own, so the SDK co-spends its entry beside the outer one. The per-call frames
+// inner read is an entry access of its own, so the SDK co-spends its entry beside the outer one. The framed frames
 // of the same shapes are settled on the machine in solidc's `nested-entry-read.test.ts`.
 const ARRAYS = `contract Arrays() {
   mapping(int => int[]) m;

@@ -3,19 +3,19 @@ import { FrameKind, bytesToHex } from '@solidcash/utils';
 import {
   layOutChunkRun, participant, planChunkRun,
   type CompositionDraftPlan, type DraftRecordEntry,
-} from '../../../../solidcash/src/per-call/composer/index.js';
+} from '../../../../solidcash/src/framed/composer/index.js';
 import { compositionMachine } from '../machine.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../../solidcash/src/per-call/deploy/index.js';
+} from '../../../../solidcash/src/framed/deploy/index.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, hexOf, layoutWithFacets, master, masterInput, rootOf,
   seededAddress, selectorOf, token, userInput, validatorFor,
-} from '../../../../solidcash/test/per-call/shapes/harness.js';
+} from '../../../../solidcash/test/framed/shapes/harness.js';
 import { seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose body both touches a dynamic value and makes an external call, settled end to end.
+ * A framed master whose body both touches a dynamic value and makes an external call, settled end to end.
  *
  * The entry reads a `string` state variable, appends to it and calls a stateless callee, so its one execution is
  * declared as two segments: the read before the call and the write after it. Both segments declare the state
@@ -172,7 +172,7 @@ const outcome = composeAndDerive(
   [rootOf('Appender', 'append', APP_MASTER)],
 );
 
-describe('a per-call master whose dynamic write shares the frame with a call', () => {
+describe('a framed master whose dynamic write shares the frame with a call', () => {
   it('derives the callee before its caller', () => {
     expect(outcome.completed.map((frame) => `${frame.contract}.${frame.functionName}`)).toStrictEqual([
       'Callee.Callee.ping()', 'Appender.Appender.append()',

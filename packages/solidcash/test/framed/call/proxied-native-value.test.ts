@@ -3,17 +3,17 @@ import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, utf8ToBin } from 
 import {
   concatBytes, encodeWitnessBlock, sha256, splitFirstPush, type Artifact, type StateValue, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import Signer from '../../../src/Signer.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { readSatoshiContainers, satoshiContainerLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { PerCallCallError, PerCallFunctionCall } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { readSatoshiContainers, satoshiContainerLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { FramedCallError, FramedFunctionCall } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -74,7 +74,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const compiled = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const compiled = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const bank = compiled.Bank!;
 const vault = compiled.Vault!;
 
@@ -126,10 +126,10 @@ interface Proxied {
 async function deployProxied(artifact: Artifact, seed: string, start: bigint): Promise<Proxied> {
   const world = await newWorld(seed);
   const proxyArtifact = buildProxyArtifact(artifact);
-  const deployOf = async (): Promise<Parameters<typeof deployPerCallProxy>[0]['proxyDeploy']> => ({
+  const deployOf = async (): Promise<Parameters<typeof deployFramedProxy>[0]['proxyDeploy']> => ({
     fundingUtxo: await world.coin(world.walletAddress), funder: world.walletFunder, changeAddress: world.walletAddress,
   });
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: world.network,
     implementationArtifact: artifact,
     proxyArtifact,
@@ -152,8 +152,8 @@ async function deployProxied(artifact: Artifact, seed: string, start: bigint): P
 /** Enters an entry through the hop with a fresh coin of the caller's, carrying `value` when it is given. */
 async function enter(
   proxied: Proxied, functionName: string, args: readonly unknown[], value?: bigint,
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: proxied.world.network, implementationArtifact: proxied.artifact, proxyArtifact: proxied.proxyArtifact,
     proxyCategoryId: proxied.proxyCategoryId, implementationCategoryId: proxied.implementationCategoryId,
     functionName, args: args as never, callerUtxo: await proxied.world.coin(binToHex(CALLER)),
@@ -164,7 +164,7 @@ async function enter(
 
 /** An entry read through the proxy at its category, as a handle's `staticCall` reads it. */
 async function read(proxied: Proxied, functionName: string): Promise<StateValue> {
-  const result = await readPerCallEntry({
+  const result = await readFramedEntry({
     provider: proxied.world.network, artifact: proxied.artifact, categoryId: proxied.proxyCategoryId, functionName,
     vm: compositionMachine(),
   });
@@ -179,14 +179,14 @@ async function held(proxied: Proxied, categoryId: string): Promise<bigint> {
 }
 
 /** The refused verdicts of a result, as one line, or undefined when every input the machine was asked about accepted. */
-function refused(result: PerCallProxyCallResult): string | undefined {
+function refused(result: FramedProxyCallResult): string | undefined {
   const refusals = result.verdicts.filter((verdict) => !verdict.accepted);
   return refusals.length === 0 ? undefined
     : refusals.map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
 }
 
 /** The lock and the value each send the delegate frame lists pays on the broadcast, in list order. */
-function paid(result: PerCallProxyCallResult): readonly string[] {
+function paid(result: FramedProxyCallResult): readonly string[] {
   return result.draft.blockOf(IMPLEMENTATION).sends.map((index) => {
     const output = result.broadcast!.outputs[index]!;
     return `${binToHex(output.lockingBytecode)}:${output.valueSatoshis}`;
@@ -194,7 +194,7 @@ function paid(result: PerCallProxyCallResult): readonly string[] {
 }
 
 /** The output just before the delegate frame's first send: the container its run follows. */
-function runContainer(result: PerCallProxyCallResult): { readonly lock: string; readonly value: bigint } {
+function runContainer(result: FramedProxyCallResult): { readonly lock: string; readonly value: bigint } {
   const output = result.broadcast!.outputs[result.draft.blockOf(IMPLEMENTATION).sends[0]! - 1]!;
   return { lock: binToHex(output.lockingBytecode), value: output.valueSatoshis };
 }
@@ -222,7 +222,7 @@ describe('value into a payable entry behind a proxy', () => {
     // The handle pays with the largest coin at the signer's own lock.
     await proxied.world.coin(binToHex(CALLER));
     const abiEntry = bank.abi.find((entry) => entry.name === 'deposit')!;
-    const call = new PerCallFunctionCall({
+    const call = new FramedFunctionCall({
       artifact: bank,
       abiEntry: abiEntry as never,
       categoryId: proxied.proxyCategoryId,
@@ -241,10 +241,10 @@ describe('value into a payable entry behind a proxy', () => {
       'the implementation\'s "withdraw" entry is not payable, so a call to it carries no value',
     );
     const abiEntry = bank.abi.find((entry) => entry.name === 'withdraw')!;
-    expect(() => new PerCallFunctionCall({
+    expect(() => new FramedFunctionCall({
       artifact: bank, abiEntry: abiEntry as never, categoryId: proxied.proxyCategoryId, provider: proxied.world.network,
       proxyImplementationCategoryId: proxied.implementationCategoryId,
-    }, 'withdraw', [1n]).withValue(1_000n)).toThrow(PerCallCallError);
+    }, 'withdraw', [1n]).withValue(1_000n)).toThrow(FramedCallError);
   }, 300_000);
 });
 
@@ -358,7 +358,7 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
  * kept.
  */
 function forged(
-  result: PerCallProxyCallResult,
+  result: FramedProxyCallResult,
   apply: (draft: { readonly transaction: VmTransaction; readonly block: WitnessBlock }) => void,
 ): ReadonlyMap<string, boolean> {
   const transaction = structuredClone(result.transaction) as VmTransaction;
@@ -382,8 +382,8 @@ const everyAccepts = (verdicts: ReadonlyMap<string, boolean>): boolean => [...ve
 
 describe('a forged value through the proxy', () => {
   let proxied: Proxied;
-  let deposit: PerCallProxyCallResult;
-  let withdrawal: PerCallProxyCallResult;
+  let deposit: FramedProxyCallResult;
+  let withdrawal: FramedProxyCallResult;
   beforeAll(async () => {
     proxied = await deployProxied(bank, 'forged', 0n);
     deposit = await enter(proxied, 'deposit', [], 20_000n);
@@ -393,7 +393,7 @@ describe('a forged value through the proxy', () => {
   }, 300_000);
 
   /** The index of the derived spend's output at the proxy's container lock, the one the deposit pays into. */
-  const containerOutput = (result: PerCallProxyCallResult): number => {
+  const containerOutput = (result: FramedProxyCallResult): number => {
     const lock = binToHex(satoshiContainerLockingBytecode(proxied.proxyCategoryId));
     return result.transaction.outputs.findIndex((output) => binToHex(output.lockingBytecode) === lock);
   };

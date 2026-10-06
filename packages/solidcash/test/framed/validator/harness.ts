@@ -9,13 +9,13 @@
 import {
   decideValidator,
   type ExecutionStep,
-  type PerCallTransaction,
+  type FramedTransaction,
   type ValidatorDecision,
-} from '../../../../solidc/src/per-call/validator/index.js';
+} from '../../../../solidc/src/framed/validator/index.js';
 import {
   decideReference,
   type ReferenceDecision,
-} from '../../../src/per-call/validator/reference/index.js';
+} from '../../../src/framed/validator/reference/index.js';
 import { VALIDATOR_TEMPLATE } from './fixture.js';
 
 /** The template the fixtures run against. */
@@ -29,7 +29,7 @@ export interface BothDecisions {
 }
 
 /** Runs both modules over the same transaction. */
-export function decideBoth(transaction: PerCallTransaction, validatorIndex: number): BothDecisions {
+export function decideBoth(transaction: FramedTransaction, validatorIndex: number): BothDecisions {
   return {
     derivation: decideValidator(transaction, { validatorTemplate: VALIDATOR_TEMPLATE, validatorInputIndex: validatorIndex }),
     reference: decideReference(transaction, { validatorTemplate: VALIDATOR_TEMPLATE, validatorInputIndex: validatorIndex }),

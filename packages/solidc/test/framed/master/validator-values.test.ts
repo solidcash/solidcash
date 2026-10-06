@@ -8,7 +8,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -36,7 +36,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function deposit() payable { this.total = this.total + msg.value; }'
   + '   function pay(int amount) { this.total = this.total + 1; this.transfer(msg.sender, amount); }'
   + ' }';
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Till!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Till!;
 const PROGRAM = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
   category: categorySlotValue(CATEGORY), contractAddress: ADDRESS, templateHash: TEMPLATE_HASH,
 });

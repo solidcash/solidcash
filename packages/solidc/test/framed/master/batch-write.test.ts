@@ -8,7 +8,7 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import {
   bytesToSlotValue, encodeEntryCommitment, keyToSlot,
 } from '../../../../solidcash/src/stateful/SortedList.js';
@@ -18,18 +18,18 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose entry writes two targets of one verified mapping, deployed and spent on chain.
+ * A framed master whose entry writes two targets of one verified mapping, deployed and spent on chain.
  *
  * The body writes `balances[a]` and `balances[b]` unconditionally, so its batch has two logical targets. A
- * per-call master has no SDK batch plan, but its own witness block declares one record group per target in write
+ * framed master has no SDK batch plan, but its own witness block declares one record group per target in write
  * order. The derivation reads each target's group back, computing the slot in script from the target's key, and
  * leaves the per-target operands the general sorted-batch arm consumes: the slot, the proof input, the successor
  * the written node carries and `-1` for an update, plus the batch's distinct rewritten predecessors. The whole
- * shipped path runs: the source through `compileString` with the per-call convention, the program through
+ * shipped path runs: the source through `compileString` with the framed convention, the program through
  * `deployMaster`, and the BCH-2026 machine is asked for a verdict on the master's own input.
  */
 
-const CATEGORY = seededCategory('batch write per-call');
+const CATEGORY = seededCategory('batch write framed');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const TO_A = new Uint8Array(20).fill(0x33);
@@ -53,7 +53,7 @@ const USER_INDEX = 0;
 const NODE_A_INDEX = MASTER_INDEX + 1;
 const NODE_B_INDEX = MASTER_INDEX + 2;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = encodeLockingBytecodeP2sh32(hash256(deployed.script));
@@ -189,9 +189,9 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry writes two verified-mapping targets', () => {
-  it('publishes a per-call master that derives every target from its own frame', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+describe('a framed master whose entry writes two verified-mapping targets', () => {
+  it('publishes a framed master that derives every target from its own frame', () => {
+    expect(artifact.composition?.convention).toBe('framed');
     expect(deployed.script.length).toBeGreaterThan(0);
     const declared = artifact.abi.find((entry) => entry.name === 'set');
     expect(declared?.inputs?.map((input) => input.name)).toStrictEqual(['a', 'b', 'amount']);
@@ -357,7 +357,7 @@ function evaluateInsert(options: InsertOptions = {}): { accepted: boolean; objec
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry inserts two verified-mapping targets', () => {
+describe('a framed master whose entry inserts two verified-mapping targets', () => {
   it('derives each target through its own relinked predecessor and is accepted', () => {
     expect(bytesToSlotValue(LOWER_SLOT) < bytesToSlotValue(MIDDLE_SLOT)).toBe(true);
     expect(bytesToSlotValue(MIDDLE_SLOT) < bytesToSlotValue(UPPER_SLOT)).toBe(true);

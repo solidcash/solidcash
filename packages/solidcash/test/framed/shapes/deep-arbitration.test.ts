@@ -9,15 +9,15 @@ import {
   type CallStopSite,
   type RecordEntry,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { publishedRefusals } from '../../../../solidc/test/framed/master/refused-entry.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   participant,
   type CompositionDraft,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { layoutWithFacets } from './harness.js';
 import {
   USER_LOCK,
@@ -640,7 +640,7 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
   it('compiles all six contracts and serves every entry', () => {
     const run = build(FULL_SHARES);
     for (const name of ['Root', 'Store', 'Rater', 'Vault', 'Claimer', 'Token']) {
-      expect(run.artifacts[name]?.composition?.convention).toBe('per-call');
+      expect(run.artifacts[name]?.composition?.convention).toBe('framed');
     }
     expect(publishedRefusals(run.artifacts)).toStrictEqual([]);
     // The payout is one call site the source repeats, beside four the source fixes: readFlag, calc, readRecord and

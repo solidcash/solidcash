@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { Unlocker } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { buildProxyArtifact, callFramedProxyEntry, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -93,14 +93,14 @@ async function wired(): Promise<Wire> {
 /** Deploys one implementation behind its own proxy, funded by the wire's funder and entered by the deployer. */
 async function deployBehindProxy(
   wire: Wire, implementationArtifact: Artifact, seed: number, args: readonly unknown[],
-): Promise<Awaited<ReturnType<typeof deployPerCallProxy>>> {
+): Promise<Awaited<ReturnType<typeof deployFramedProxy>>> {
   const implFunding = { txid: outpointHash(seed), vout: 0, satoshis: 500_000n };
   const proxyFunding = { txid: outpointHash(seed + 1), vout: 0, satoshis: 500_000n };
   const callerUtxo = { txid: outpointHash(seed + 2), vout: 0, satoshis: 100_000n };
   await wire.network.addUtxo(wire.changeAddress, implFunding);
   await wire.network.addUtxo(wire.changeAddress, proxyFunding);
   await wire.network.addUtxo(binToHex(wire.deployerLock), callerUtxo);
-  return deployPerCallProxy({
+  return deployFramedProxy({
     provider: wire.network,
     implementationArtifact,
     proxyArtifact: buildProxyArtifact(implementationArtifact),
@@ -129,7 +129,7 @@ async function run(solidityImportCompat: boolean, seed: number): Promise<{
 }> {
   const artifacts = compileStringMulti(
     solidityImportCompat ? SOURCES.compat : SOURCES.native,
-    { composition: 'per-call', ...(solidityImportCompat ? { solidityImportCompat: true } : {}) },
+    { composition: 'framed', ...(solidityImportCompat ? { solidityImportCompat: true } : {}) },
   );
   const wire = await wired();
   const data = await deployBehindProxy(wire, artifacts.Data!, seed, []);
@@ -137,7 +137,7 @@ async function run(solidityImportCompat: boolean, seed: number): Promise<{
   const caller = await deployBehindProxy(wire, artifacts.Caller!, seed + 0x10, [data.proxy.address]);
   expect(caller.initialize.broadcast).toBeDefined();
 
-  const external: PerCallProxyExternal = {
+  const external: FramedProxyExternal = {
     artifact: artifacts.Data!,
     categoryId: data.proxy.categoryId,
     proxyArtifact: buildProxyArtifact(artifacts.Data!),
@@ -146,7 +146,7 @@ async function run(solidityImportCompat: boolean, seed: number): Promise<{
   const coin = { txid: outpointHash(seed + 0x20), vout: 0, satoshis: 100_000n };
   await wire.network.addUtxo(binToHex(wire.deployerLock), coin);
 
-  const answered = await callPerCallProxyEntry({
+  const answered = await callFramedProxyEntry({
     provider: wire.network,
     implementationArtifact: artifacts.Caller!,
     proxyArtifact: buildProxyArtifact(artifacts.Caller!),

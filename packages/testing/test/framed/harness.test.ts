@@ -8,7 +8,7 @@ import { createHardhatRuntimeEnvironment } from '../../src/hre.js';
 import { resolveConfig } from '../../src/config.js';
 
 /**
- * The testing layer drives a contract compiled for the per-call composition convention.
+ * The testing layer drives a contract compiled for the framed composition convention.
  *
  * `ethers.getContractFactory(name).deploy(...)` is the entry a Hardhat-style suite uses, and the handle it returns
  * is where a suite makes its calls. Both are convention-agnostic: the artifact publishes the convention it was
@@ -39,11 +39,11 @@ afterEach(() => {
 
 /** A project directory whose artifacts dir holds the compiled contract, the way `solidcash compile` lays it out. */
 function projectWithCompiledContract(): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solidcash-per-call-harness-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solidcash-framed-harness-'));
   temporaryDirectories.push(directory);
   const artifacts = path.join(directory, 'solidcash', 'Tally.scash');
   fs.mkdirSync(artifacts, { recursive: true });
-  for (const [name, artifact] of Object.entries(compileStringMulti(SOURCE, { composition: 'per-call' }))) {
+  for (const [name, artifact] of Object.entries(compileStringMulti(SOURCE, { composition: 'framed' }))) {
     fs.writeFileSync(path.join(artifacts, `${name}.json`), formatArtifact(artifact, 'json'));
   }
   return directory;
@@ -58,7 +58,7 @@ function projectHarness(directory: string): ReturnType<typeof createHardhatRunti
   }));
 }
 
-describe('the testing layer and a per-call contract', () => {
+describe('the testing layer and a framed contract', () => {
   it('deploys it and answers its entries through the handle the factory returns', async () => {
     const hre = projectHarness(projectWithCompiledContract());
     const [signer] = await hre.ethers.getSigners(1);

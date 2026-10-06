@@ -135,7 +135,7 @@ export function finishCreateBuilderAtomicPromotion(params: {
     if (requiresAtomicPromotion && allRoutesEligible) {
     // A participant's route materializes one continuation lane per storage resource, and the compiled program
     // chunks that resource's post-state after every row the composed route executes. Row discovery is
-    // per-callsite, so when several reached rows of one owner write the same resource each derivation sees
+    // framedsite, so when several reached rows of one owner write the same resource each derivation sees
     // only its own element (plus at most one predecessor) and the row planned last would publish a value that
     // stops there - binding too narrow a band and digesting a state the route covenant never produces.
     //
@@ -239,7 +239,7 @@ export function finishCreateBuilderAtomicPromotion(params: {
           )),
           ...derived,
         ];
-        // A per-callsite refresh would republish the partial lane as soon as one row's arguments change, so
+        // A framedsite refresh would republish the partial lane as soon as one row's arguments change, so
         // keep every writer row of this resource refreshing the same complete row list.
         const rowArgumentsByPath = new Map<string, readonly FunctionArgument[]>(
           rowSources.flatMap((entry) => {

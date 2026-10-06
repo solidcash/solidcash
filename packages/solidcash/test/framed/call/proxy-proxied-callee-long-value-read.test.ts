@@ -3,15 +3,15 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth
 import {
   buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue, sha256, splitValueIntoValueChunks,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
-import { entryRecordLockingBytecode } from '../../../src/per-call/deploy/records.js';
-import { mappingValueChunkLock } from '../../../src/per-call/composer/mapping-plan.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/framed/proxy/entry-writes.js';
+import { entryRecordLockingBytecode } from '../../../src/framed/deploy/records.js';
+import { mappingValueChunkLock } from '../../../src/framed/composer/mapping-plan.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -49,7 +49,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function run(address who) { IRoster(this.roster).hasKey(who); require(true); }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const roster = artifacts.Roster!;
 const outer = artifacts.Outer!;
 
@@ -94,7 +94,7 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
   for (const coin of [rosterInitCoin, outerInitCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);
   await fundShippedFacets(network);
 
-  const rosterDeployment = await deployPerCallProxy({
+  const rosterDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: roster,
     proxyArtifact: buildProxyArtifact(roster),
@@ -111,7 +111,7 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
   });
   expect(rosterDeployment.initialize.accepted).toBe(true);
 
-  const outerDeployment = await deployPerCallProxy({
+  const outerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),
@@ -176,8 +176,8 @@ async function callRun(
   network: MockNetworkProvider,
   funded: Awaited<ReturnType<typeof deployBoth>>,
   who: Uint8Array,
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),

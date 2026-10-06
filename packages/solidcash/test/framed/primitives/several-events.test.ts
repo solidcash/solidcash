@@ -11,8 +11,8 @@ import {
 import {
   allocateOutputRegions,
   type CompositionDraftPlan, type DraftMaster, type DraftTrailingOutput,
-} from '../../../src/per-call/composer/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+} from '../../../src/framed/composer/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 
 /**
  * Two events of one contract, emitted by two frames of one transaction.

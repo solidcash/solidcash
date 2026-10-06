@@ -4,7 +4,7 @@
  * The machine is wrapped in a Proxy that counts every `evaluate` call, attributed to a master by the input index the
  * run evaluates, so the counts are the shipped host's own runs. Writes a JSON summary to `process.env.PW7_OUT`
  * (default `/tmp/pw7-measure.json`). Nothing here is shipped code; it is a measurement instrument, so it runs only
- * under `PER_CALL_FULL=1` (and its twenty-four-master case under `PW7_FULL=1` as well).
+ * under `FRAMED_FULL=1` (and its twenty-four-master case under `PW7_FULL=1` as well).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -26,15 +26,15 @@ import {
   type RecordEntry,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../solidc/test/per-call/machine.js';
-import { eventOutput } from '../../../solidc/test/per-call/master/event-input.js';
+import { compositionMachine } from '../../../solidc/test/framed/machine.js';
+import { eventOutput } from '../../../solidc/test/framed/master/event-input.js';
 import { createUnlockingBytecode, scriptToLockingBytecode } from '../../src/utils.js';
 import { encodeFunctionArgument } from '../../src/Argument.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../src/stateful/SortedList.js';
 import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../src/per-call/deploy/index.js';
+} from '../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveComposition,
@@ -47,7 +47,7 @@ import {
   type DraftInput,
   type DraftMaster,
   type MappingNodePlacement,
-} from '../../src/per-call/composer/index.js';
+} from '../../src/framed/composer/index.js';
 import {
   USER_LOCK,
   compileAndDeploy,
@@ -992,7 +992,7 @@ function out(value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-describe.runIf(process.env.PER_CALL_FULL === '1')('PW7 measurements', () => {
+describe.runIf(process.env.FRAMED_FULL === '1')('PW7 measurements', () => {
   it('measures Y6, Y2 and the dynamic event array', () => {
     const y6 = driveY6();
     const y2 = driveY2();

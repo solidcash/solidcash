@@ -1,7 +1,7 @@
 /**
  * Whether a frame's mapping write or emit runs, decided from the frame's own facts.
  *
- * A per-call body publishes, for a write a branch guards, the condition it runs under (`entryAccesses[].activation`),
+ * A framed body publishes, for a write a branch guards, the condition it runs under (`entryAccesses[].activation`),
  * in the language a conditional call site's condition is published in, and the frame lets the body skip that write:
  * a skipped write keeps its node, or its absent key's predecessor. A builder decides the condition as it decides a
  * call site's (`makeCallResolver`): from the frame's arguments, its `msg.sender`, its state, `address(this)` and the
@@ -16,7 +16,7 @@
 import type { Artifact, ExternalCallExpression } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import { makeCallResolver, type MappingValueReader } from './call-resolution.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 
 /** The frame facts beyond its arguments and its sender that a write's activation is decided from. */
 export interface WriteActivationFacts {
@@ -60,7 +60,7 @@ export function writeRuns(
       ...(frame.facts.readMappingValue === undefined ? {} : { readMappingValue: frame.facts.readMappingValue }),
     }).evaluate(activation, 0);
   } catch (error) {
-    if (error instanceof PerCallProxyDeployError) return undefined;
+    if (error instanceof FramedProxyDeployError) return undefined;
     throw error;
   }
   if (typeof holds === 'boolean') return holds;

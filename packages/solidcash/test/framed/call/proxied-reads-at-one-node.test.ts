@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, sha256, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { sharedNodeId } from '../../../src/framed/proxy/entry-writes.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti,
 } from '../../../src/stateful/SortedList.js';
@@ -64,7 +64,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const artifact = artifacts.Marks!;
 const proxy = buildProxyArtifact(artifact);
 const asker = artifacts.Asker!;
@@ -125,7 +125,7 @@ let entered = 0;
 async function enter(
   world: Marked | World, functionName: string, args: readonly FunctionArgument[],
   provider: NetworkProvider = world.network,
-): Promise<{ readonly coin: Utxo; readonly call: Promise<PerCallProxyCallResult> }> {
+): Promise<{ readonly coin: Utxo; readonly call: Promise<FramedProxyCallResult> }> {
   entered += 1;
   const coin = funding(idOf(`${functionName} coin ${entered}`));
   await world.network.addUtxo(binToHex(USER), coin);
@@ -140,7 +140,7 @@ async function enter(
     vm: compositionMachine(),
   };
   const call = 'askerProxyCategoryId' in world && functionName === 'ask'
-    ? callPerCallProxyEntry({
+    ? callFramedProxyEntry({
       ...common,
       implementationArtifact: asker,
       proxyArtifact: askerProxy,
@@ -153,7 +153,7 @@ async function enter(
         },
       },
     })
-    : callPerCallProxyEntry({
+    : callFramedProxyEntry({
       ...common,
       implementationArtifact: artifact,
       proxyArtifact: proxy,
@@ -166,7 +166,7 @@ async function enter(
 /** Enters one call and requires it to settle: every participant accepted and the transaction broadcast. */
 async function settle(
   world: Marked | World, functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const result = await (await enter(world, functionName, args)).call;
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.accepted).toBe(true);
@@ -182,13 +182,13 @@ async function deployWorld(): Promise<World> {
   await fundShippedFacets(network);
   const deploy = async (
     target: Artifact, initialize: { readonly functionName: string; readonly args: readonly FunctionArgument[] },
-  ): Promise<Awaited<ReturnType<typeof deployPerCallProxy>>> => {
+  ): Promise<Awaited<ReturnType<typeof deployFramedProxy>>> => {
     const implementationFunding = funding(idOf(`${target.contractName} implementation`));
     const proxyFunding = funding(idOf(`${target.contractName} proxy`));
     const initializeCoin = funding(idOf(`${target.contractName} initialize coin`));
     for (const coin of [implementationFunding, proxyFunding]) await network.addUtxo(wallet.address, coin);
     await network.addUtxo(binToHex(USER), initializeCoin);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: target,
       proxyArtifact: buildProxyArtifact(target),
@@ -237,7 +237,7 @@ function nodeOf(utxo: Utxo): ReturnType<typeof decodeEntryCommitment> {
 /** Every live node of one of the marks deployment's collections, the head included. */
 async function nodes(world: World, collection: string): Promise<readonly Utxo[]> {
   const layout = { ...proxy.stateLayout!, collections: artifact.stateLayout!.collections };
-  const deployment = await readPerCallDeployment(world.network, world.proxyCategoryId, layout);
+  const deployment = await readFramedDeployment(world.network, world.proxyCategoryId, layout);
   return deployment.nodesByCollection.get(collection) ?? [];
 }
 
@@ -256,14 +256,14 @@ async function markNode(world: World, key: bigint): Promise<Utxo> {
 }
 
 /** The input each record the implementation frame's first segment declares at `node`'s view names. */
-function declaredInputs(result: PerCallProxyCallResult, node: Utxo): readonly number[] {
+function declaredInputs(result: FramedProxyCallResult, node: Utxo): readonly number[] {
   return result.draft.blockOf('implementation-master').segments[0]!
     .filter((record) => bytesToHex(record.viewIn) === node.token!.nft!.commitment)
     .map((record) => record.in);
 }
 
 /** The ids a hop places its participants under that start with `prefix`. */
-function placed(result: PerCallProxyCallResult, prefix: string): readonly string[] {
+function placed(result: FramedProxyCallResult, prefix: string): readonly string[] {
   return result.draft.layout.participants.map((participant) => participant.id).filter((id) => id.startsWith(prefix));
 }
 
@@ -413,7 +413,7 @@ describe('a proxied entry that reads two keys of one mapping at one node', () =>
     // itself is held, and a key above it is not the head's to bracket.
     for (const pair of [[FIRST, MID], [MID, MID2]]) {
       expect(await expectRefused(world, 'look', pair, refused, hiding(world.network, FIRST)))
-        .toBeInstanceOf(PerCallProxyDeployError);
+        .toBeInstanceOf(FramedProxyDeployError);
     }
   }, 600_000);
 

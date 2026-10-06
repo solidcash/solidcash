@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -64,7 +64,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const ping = artifacts.Ping!;
 const inner = artifacts.Inner!;
 const outer = artifacts.Outer!;
@@ -108,7 +108,7 @@ async function deployAll(network: MockNetworkProvider): Promise<{
   }
   await fundShippedFacets(network);
 
-  const innerDeployment = await deployPerCallProxy({
+  const innerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: inner,
     proxyArtifact: buildProxyArtifact(inner),
@@ -125,7 +125,7 @@ async function deployAll(network: MockNetworkProvider): Promise<{
   });
   expect(innerDeployment.initialize.broadcast).toBeDefined();
 
-  const outerDeployment = await deployPerCallProxy({
+  const outerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),
@@ -173,7 +173,7 @@ async function deployed(): Promise<World> {
 /** The root's `run`, entered on its proxy, taking the guarded reach or not and looping `times` turns. */
 async function run(world: World, takeExtra: boolean, times: bigint): Promise<{ readonly txid?: string }> {
   const { network, funded } = world;
-  const result = await callPerCallProxyEntry({
+  const result = await callFramedProxyEntry({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),
@@ -195,7 +195,7 @@ async function run(world: World, takeExtra: boolean, times: bigint): Promise<{ r
 /** The callee's `events` list as the chain holds it, walked from the head: each key's slot and its value's hex. */
 async function eventsList(world: World): Promise<readonly (readonly [bigint, string])[]> {
   const layout = { ...buildProxyArtifact(inner).stateLayout!, collections: inner.stateLayout!.collections };
-  const deployment = await readPerCallDeployment(world.network, world.funded.innerProxyCategoryId, layout);
+  const deployment = await readFramedDeployment(world.network, world.funded.innerProxyCategoryId, layout);
   const nodes = new Map((deployment.nodesByCollection.get('events') ?? []).map((utxo) => {
     const node = decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment));
     return [bytesToSlotValue(node.slot), node] as const;

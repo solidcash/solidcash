@@ -3,7 +3,7 @@ import {
   Opcodes, encodeDataPush, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
 import { bigIntToVmNumber } from '@bitauth/libauth';
-import { canonicalPushScript } from '../../../src/per-call/master/argument-push.js';
+import { canonicalPushScript } from '../../../src/framed/master/argument-push.js';
 import { compositionMachine } from '../machine.js';
 
 /**

@@ -2,23 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue, type RecordEntry } from '@solidcash/utils';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  created, deployPerCallMaster, evaluateMasterSpend, head, node, spent, type PlacedRecord,
+  created, deployFramedMaster, evaluateMasterSpend, head, node, spent, type PlacedRecord,
 } from './record-spend.js';
 
 /**
- * A per-call batch two of whose write targets name one entry at run time.
+ * A framed batch two of whose write targets name one entry at run time.
  *
  * `balances[a] -= x; balances[b] -= x` is one batch of two targets. Each target reads the first view its write segment
  * declares for the node its proof names, and an update closes against the last view the segment declares there, so
  * with `a == b` a frame that declared the node once per target settled one debit where the EVM debits twice, and two
  * inserts of one key created two nodes, each a value a later read could prove. The master compares the targets' slot
- * operands pairwise where the batch ran (`emitPerCallDistinctBatchTargets`), as the direct convention's dense rows do
+ * operands pairwise where the batch ran (`emitFramedDistinctBatchTargets`), as the direct convention's dense rows do
  * by their strict order. Distinct keys, distinct inserts through one predecessor and a conditional batch that did not
  * run still settle. Each verdict is the BCH-2026 machine's on the master's own input.
  */
 
 const PRAGMA = 'pragma solidcash ^0.13.0;';
-const LEDGER = deployPerCallMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
+const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
   + ' function debit(uint a, uint b, uint x) { balances[a] -= x; balances[b] -= x; }'
   + ' function credit(uint a, uint b, uint x) { balances[a] += x; balances[b] += x; }'
   + ' function set(uint a, uint b, uint x, uint y) { balances[a] = x; balances[b] = y; }'
@@ -84,7 +84,7 @@ const held = (value: bigint): Uint8Array => node(SLOT.a, ZERO, n(value));
 const accepts = (entry: string, args: Uint8Array[], spend: Spend): boolean =>
   evaluateMasterSpend(LEDGER, { entry, args, ...spend }).accepted;
 
-describe('a per-call batch two of whose targets name one entry at run time', () => {
+describe('a framed batch two of whose targets name one entry at run time', () => {
   it('settles two debits of distinct keys and refuses a value the code did not compute', () => {
     expect(accepts('debit', [X, B, A], updates('debit', { a: 50n, b: 50n }, { a: 42n, b: 42n }))).toBe(true);
     expect(accepts('debit', [X, B, A], updates('debit', { a: 50n, b: 50n }, { a: 42n, b: 43n }))).toBe(false);

@@ -15,13 +15,13 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { scriptToLockingBytecode } from '../../../src/utils.js';
-import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
 import {
   chunkRecordId,
   dynamicValueRecords,
   layOutChunkRun,
   planChunkRun,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * The chunk plan, read back through the shipped codecs it is built from.
@@ -39,7 +39,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function append() { this.name = string.concat(this.name, "!"); }'
   + ' }';
 
-const artifacts = compileString(SOURCE, { composition: 'per-call' });
+const artifacts = compileString(SOURCE, { composition: 'framed' });
 const layout: StateLayout = artifacts.stateLayout!;
 
 const utf8 = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, 'utf8'));
@@ -131,7 +131,7 @@ describe('the chunk plan', () => {
       'pragma solidcash ^0.13.0; contract Two {'
       + ' string public a; string public b;'
       + ' function grow() { this.a = string.concat(this.a, "x"); this.b = string.concat(this.b, "y"); } }',
-      { composition: 'per-call' },
+      { composition: 'framed' },
     );
     const twoLayout: StateLayout = two.stateLayout!;
     const lockOf = (variable: string): Uint8Array => {
@@ -147,10 +147,10 @@ describe('the chunk plan', () => {
   it('refuses a variable that is not dynamic, and one the layout does not declare', () => {
     const plain = compileString(
       'pragma solidcash ^0.13.0; contract Plain { int public n; function bump() { this.n = this.n + 1; } }',
-      { composition: 'per-call' },
+      { composition: 'framed' },
     );
     expect(() => planChunkRun({ layout: plain.stateLayout, variable: 'n', spent: SPENT, written: WRITTEN }))
-      .toThrowError(/PER_CALL_CHUNK_UNPLANNABLE: the dynamic value "n" cannot be planned: the variable is declared int/);
+      .toThrowError(/FRAMED_CHUNK_UNPLANNABLE: the dynamic value "n" cannot be planned: the variable is declared int/);
     expect(() => planChunkRun({ layout, variable: 'missing', spent: SPENT, written: WRITTEN }))
       .toThrowError(/the state layout declares no such variable/);
     expect(() => planChunkRun({ layout: undefined, variable: 'name', spent: SPENT, written: WRITTEN }))

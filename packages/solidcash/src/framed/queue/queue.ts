@@ -1,7 +1,7 @@
 /**
  * Serializing the sends whose compositions could touch the same resources.
  *
- * A per-call send spends masters, validators and state records, and the transaction it builds has to be built
+ * A framed send spends masters, validators and state records, and the transaction it builds has to be built
  * against the state its predecessor left: once a send lands, the outpoints it spent are gone and the resources it
  * touched sit at the outputs it created. Two sends whose resource sets intersect therefore have to run one after
  * the other, while two whose sets are disjoint run concurrently.
@@ -16,8 +16,8 @@
  * the queue, so its successors run too, each built against the state that is actually live; the failure reaches the
  * caller's own promise and no other's.
  *
- * The handle's sends share one queue per provider (`perCallSendQueue`) and name what they may spend before their
- * turn (`perCallSendResources`): the contract's categories, the caller's coins, and the covenant pools every
+ * The handle's sends share one queue per provider (`framedSendQueue`) and name what they may spend before their
+ * turn (`framedSendResources`): the contract's categories, the caller's coins, and the covenant pools every
  * composition co-spends. A call through a proxy hop joins once the hop's module opts in (`queueProxyHopSends`).
  */
 
@@ -123,15 +123,15 @@ export class CompositionQueue {
 }
 
 /** The provider property a provider's send queue is kept under, one symbol across copies of this module. */
-const SEND_QUEUE = Symbol.for('@solidcash/per-call-send-queue');
+const SEND_QUEUE = Symbol.for('@solidcash/framed-send-queue');
 
 /**
- * The queue every per-call send made on `provider` waits its turn in.
+ * The queue every framed send made on `provider` waits its turn in.
  *
  * It is kept on the provider itself, as the deployment registry is, so a wrapper that forwards property reads (the
  * simulation provider an unfunded caller composes over) reaches the queue of the provider it wraps.
  */
-export function perCallSendQueue(provider: NetworkProvider): CompositionQueue {
+export function framedSendQueue(provider: NetworkProvider): CompositionQueue {
   const existing = (provider as unknown as Record<symbol, CompositionQueue | undefined>)[SEND_QUEUE];
   if (existing !== undefined) return existing;
   const queue = new CompositionQueue();
@@ -140,7 +140,7 @@ export function perCallSendQueue(provider: NetworkProvider): CompositionQueue {
 }
 
 /**
- * The resource every per-call send names: the validator facets and compute side-cars sit at locks every contract
+ * The resource every framed send names: the validator facets and compute side-cars sit at locks every contract
  * shares, and each composition through the shipped validator co-spends its facets, so all such sends serialize.
  */
 export const SHARED_COVENANT_POOLS = 'shared-covenant-pools';
@@ -149,7 +149,7 @@ export const SHARED_COVENANT_POOLS = 'shared-covenant-pools';
  * The resources a send names before its turn: the categories whose masters, validators and records it may spend,
  * the caller's coins (it picks one only in its turn), and the shared covenant pools.
  */
-export function perCallSendResources(options: {
+export function framedSendResources(options: {
   readonly callerLockingBytecode: Uint8Array;
   readonly categoryIds: readonly string[];
 }): SendResources {

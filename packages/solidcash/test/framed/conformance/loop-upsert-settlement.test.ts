@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate, type FunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { planCallLoopWrites } from '../../../src/per-call/call/entry-records.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { planCallLoopWrites } from '../../../src/framed/call/entry-records.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -23,7 +23,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * trip count the execution decides: the shipped path accepts that spend, and the case after it mutates the
  * transaction the path assembled - the record the entry wrote carries a commitment its code did not compute - and
  * the machine refuses it. The second body writes a key that is an element of a caller-supplied array, so a different
- * node per turn: the per-call layout declares the collection's `entry` slot and the artifact publishes the in-loop
+ * node per turn: the framed layout declares the collection's `entry` slot and the artifact publishes the in-loop
  * access, and the call path plans one node per turn - the predecessor and its new node for an insert, chained
  * through the node the turn before created - and declares them where the emitted coordinate reads them. The same
  * accept-and-refused-mutation pair is taken there for one turn and for three.
@@ -70,7 +70,7 @@ function outpointHash(seed: number): string {
 /** The address the write names, in the form the shipped encoder takes for an `address`. */
 const KEY = binToHex(new Uint8Array(20).fill(0x44));
 
-type CallResult = Awaited<ReturnType<typeof callPerCallEntry>>;
+type CallResult = Awaited<ReturnType<typeof callFramedEntry>>;
 
 /** One source's deployment with its caller's coin, and the chain as it stood when both were placed. */
 interface Deployed {
@@ -88,7 +88,7 @@ async function deployed(source: string): Promise<Deployed> {
   let run = deployments.get(source);
   if (run === undefined) {
     run = (async (): Promise<Deployed> => {
-      const artifact = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+      const artifact = compileStringMulti(source, { composition: 'framed' }).Ledger!;
       const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
       const signature = new SignatureTemplate(alicePriv);
       const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -114,7 +114,7 @@ async function deployed(source: string): Promise<Deployed> {
 /** Drives one entry through the shipped call path, on the chain its contract's deployment left, and reports it. */
 async function call(source: string, entry: string, args: readonly unknown[]): Promise<CallResult> {
   const { provider, artifact, categoryId, callerUtxo } = await deployed(source);
-  return callPerCallEntry({
+  return callFramedEntry({
     provider, artifact, categoryId, functionName: entry, args: args as never,
     callerUtxo, callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh),
     funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
@@ -140,7 +140,7 @@ Uint8Array | undefined => output.token?.nft?.commitment;
 function ascendingKeys(
   count: number, source: string = VARYING_SOURCE, tail: readonly FunctionArgument[] = [42n],
 ): string[] {
-  const artifact = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+  const artifact = compileStringMulti(source, { composition: 'framed' }).Ledger!;
   return Array.from({ length: 48 }, (_unused, seed) => binToHex(new Uint8Array(20).fill(seed * 5 + 1)))
     .map((address) => {
       const planned = planCallLoopWrites({
@@ -191,7 +191,7 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
   });
 
   it('accepts the loop upsert whose key varies per turn, and refuses a record it wrote being changed', async () => {
-    // The per-call layout declares the collection's `entry` slot and the artifact publishes the in-loop access, so
+    // The framed layout declares the collection's `entry` slot and the artifact publishes the in-loop access, so
     // the call path plans one node per turn of the caller's array and declares each where the emitted per-turn
     // coordinate reads it. `accepted` is true only when every participant's verdict is accepted, so this assertion
     // is the machine's verdict on the well-formed spend of a mapping upsert whose key varies per turn.

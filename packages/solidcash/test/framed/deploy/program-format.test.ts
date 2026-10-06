@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TokenCapability } from '@solidcash/utils';
-import { deployMaster, verifyMasterDeployment } from '../../../src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../src/framed/deploy/index.js';
 import { artifactFixture, programBytesOf, SLOT_SCRIPT_HEX } from './fixture.js';
 
 /**

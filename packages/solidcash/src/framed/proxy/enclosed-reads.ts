@@ -20,7 +20,7 @@
 import { bytesToHex } from '@solidcash/utils';
 import { sharedNodeId } from './entry-writes.js';
 import type { HopCallee } from './external-calls.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 
 /** One frame's touch of a node, as the chain checks read it. */
 interface EnclosedTouch {
@@ -106,8 +106,8 @@ export function enclosingWriteValue(
  */
 export function enclosedValueRefusal(
   inner: string, reads: boolean, collection: string, outer: string,
-): PerCallProxyDeployError {
-  return new PerCallProxyDeployError(
+): FramedProxyDeployError {
+  return new FramedProxyDeployError(
     `the hop's reach "${inner}" ${reads ? 'reads' : 'rewrites'} a node of collection "${collection}" that "${outer}", `
     + 'a frame it runs inside, writes before the call that leads to it, and that write\'s value is the body\'s to '
     + `compute: the ${reads ? 'read' : 'rewrite'} is judged before the writer settles, so it would read the plan's `

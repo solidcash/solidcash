@@ -3,8 +3,8 @@ import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, sha256 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { planHopExternalCalls } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster, stateRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { planHopExternalCalls } from '../../../src/framed/proxy/external-calls.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
 
 /**
@@ -31,7 +31,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const ledger = artifacts.Ledger!;
 const ping = artifacts.Ping!;
 

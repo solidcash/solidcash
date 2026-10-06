@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/framed/proxy/entry-writes.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -50,7 +50,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const ledger = artifacts.Ledger!;
 const outer = artifacts.Outer!;
 
@@ -85,7 +85,7 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
   for (const coin of [ledgerInitCoin, outerInitCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);
   await fundShippedFacets(network);
 
-  const ledgerDeployment = await deployPerCallProxy({
+  const ledgerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: ledger,
     proxyArtifact: buildProxyArtifact(ledger),
@@ -102,7 +102,7 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
   });
   expect(ledgerDeployment.initialize.accepted).toBe(true);
 
-  const outerDeployment = await deployPerCallProxy({
+  const outerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),
@@ -155,7 +155,7 @@ async function sharedDeployment(txid?: string): Promise<Deployed> {
 async function allowanceOf(
   network: MockNetworkProvider, categoryId: string, who: Uint8Array,
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: network,
     artifact: ledger,
     categoryId,
@@ -172,8 +172,8 @@ async function callRun(
   network: MockNetworkProvider,
   funded: Awaited<ReturnType<typeof deployBoth>>,
   args: readonly [Uint8Array, bigint, boolean, bigint],
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),

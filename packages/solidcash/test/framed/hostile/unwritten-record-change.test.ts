@@ -3,14 +3,14 @@ import { layoutWithFacets } from '../shapes/harness.js';
 import {
   FrameKind, buildPushdataCommitment, bytesToHex, encodeIntegerValue, type RecordEntry,
 } from '@solidcash/utils';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
   participant, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A record declared changed in a segment its frame's code does not write it in (T44).
@@ -132,21 +132,21 @@ describe('a record declared changed where its frame does not write it', () => {
   });
 
   it('refuses the record declared changed by code that never touches it', () => {
-    expect(() => compose('noop', [[ZERO, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
-    expect(() => compose('touch', [[ZERO, ZERO], [ZERO, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
-    expect(() => compose('touch', [[ZERO, FAKE], [FAKE, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => compose('noop', [[ZERO, FAKE]])).toThrow(/FRAMED_DERIVATION_STALLED/);
+    expect(() => compose('touch', [[ZERO, ZERO], [ZERO, FAKE]])).toThrow(/FRAMED_DERIVATION_STALLED/);
+    expect(() => compose('touch', [[ZERO, FAKE], [FAKE, FAKE]])).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('refuses the record declared changed around a call from the value the code wrote', () => {
     // Rewritten after the write, so the transaction would end at a value no code computed.
-    expect(() => compose('bump', [[ZERO, EIGHT], [EIGHT, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => compose('bump', [[ZERO, EIGHT], [EIGHT, FAKE]])).toThrow(/FRAMED_DERIVATION_STALLED/);
     // The guard shown unset while the call runs, so a callee re-entering would pass it.
-    expect(() => compose('guard', [[ZERO, ZERO], [ZERO, ZERO]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => compose('guard', [[ZERO, ZERO], [ZERO, ZERO]])).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('refuses the record declared changed around a call only some paths make', () => {
     expect(refusals(compose('maybe', [[ZERO, ZERO], [ZERO, ZERO]]))).toStrictEqual([]);
-    expect(() => compose('maybe', [[ZERO, ZERO], [ZERO, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
-    expect(() => compose('maybe', [[ZERO, FAKE], [FAKE, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => compose('maybe', [[ZERO, ZERO], [ZERO, FAKE]])).toThrow(/FRAMED_DERIVATION_STALLED/);
+    expect(() => compose('maybe', [[ZERO, FAKE], [FAKE, FAKE]])).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });

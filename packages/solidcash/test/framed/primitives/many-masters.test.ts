@@ -5,18 +5,18 @@ import {
   bytesToHex,
   type RecordEntry,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   CompositionPools,
   participant,
   type CompositionDraftPlan,
   type DraftInput,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { layoutWithFacets } from '../shapes/harness.js';
 import {
   USER_LOCK,
@@ -236,9 +236,9 @@ describe('one contract entered nine times in one transaction', () => {
     return nine;
   }
 
-  // Milestone cases (`PER_CALL_FULL=1`): by default, `shapes/deep-arbitration.test.ts` composes twenty-one masters
+  // Milestone cases (`FRAMED_FULL=1`): by default, `shapes/deep-arbitration.test.ts` composes twenty-one masters
   // and refuses a record output no frame computed.
-  it.runIf(process.env.PER_CALL_FULL === '1')(
+  it.runIf(process.env.FRAMED_FULL === '1')(
     'declares the record once per frame and is accepted at every contract input', () => {
       const { ledgers, recordIndex, outcome } = derived();
       expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
@@ -254,7 +254,7 @@ describe('one contract entered nine times in one transaction', () => {
     },
   );
 
-  it.runIf(process.env.PER_CALL_FULL === '1')('refuses a record output the last declaration did not end at', () => {
+  it.runIf(process.env.FRAMED_FULL === '1')('refuses a record output the last declaration did not end at', () => {
     const { ledgers, recordIndex, outcome: { draft } } = derived();
     const program = draft.programFor(ledgerMaster(specs[0]!, 8));
     const wrong = ledgers[0]!.recordOf(10n);
@@ -281,7 +281,7 @@ describe('three contracts entered eight times each in one transaction', () => {
     { contract: 'Gamma', label: 'many masters gamma', entries: 8 },
   ];
 
-  it.runIf(process.env.PER_CALL_FULL === '1')(
+  it.runIf(process.env.FRAMED_FULL === '1')(
     'carries twenty-four masters, one record chain per contract, and every input is accepted', () => {
     const { artifacts, contracts, ledgers } = compose(specs);
     const { plan, recordIndex } = buildPlan(artifacts, contracts, ledgers);

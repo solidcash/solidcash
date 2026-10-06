@@ -2,18 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { refusalMessageOf } from './refused-entry.js';
 
 /**
- * The shapes the per-call convention still refuses, each at its smallest scale.
+ * The shapes the framed convention still refuses, each at its smallest scale.
  *
  * Every shipped contract whose cold compile publishes a refusal publishes one of these, so a source that keeps a
  * refusal here is a shape a whole set of entries stops on. Each case sits beside the boundary the same mechanism
  * serves, so it pins where the refusal begins rather than that some refusal exists.
  *
- * Each source is compiled through the shipped entry point with the per-call convention and the refusal is read
+ * Each source is compiled through the shipped entry point with the framed convention and the refusal is read
  * back from the artifact's composition metadata; a source the convention serves has none to read.
  *
  * The dynamic-array key is a wall rather than a gate: the derivation emits its keys where the body begins, and the
  * emitter answers an element read of a chunk-backed dynamic array there with a shape that does not leave one key
- * value (`PER_CALL_CODEGEN_UNAVAILABLE`), even when the body never writes the array. Admitting the read without
+ * value (`FRAMED_CODEGEN_UNAVAILABLE`), even when the body never writes the array. Admitting the read without
  * moving the derivation only turns the clean refusal into that codegen failure.
  */
 

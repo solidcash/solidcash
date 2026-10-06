@@ -2,19 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, encodeChunkableValueTail, sha256 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   entryRecordLockingBytecode,
-  readPerCallDeployment,
-} from '../../../src/per-call/deploy/index.js';
-import { mappingValueChunkLock, planMappingBatch, participant } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  readFramedDeployment,
+} from '../../../src/framed/deploy/index.js';
+import { mappingValueChunkLock, planMappingBatch, participant } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a view of a mapping node whose value the node's tail cannot hold.
@@ -53,7 +53,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true }).Registry!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Registry!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'tags')!;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
 
@@ -97,8 +97,8 @@ async function chain(
 }
 
 /** The read of `tag(k)` through the shipped read module. */
-function read(provider: MockNetworkProvider, tag: string): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+function read(provider: MockNetworkProvider, tag: string): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider, artifact, categoryId: CATEGORY_HEX, functionName: 'tag', args: [tag], vm: compositionMachine(),
   });
 }
@@ -164,7 +164,7 @@ describe('reading a mapping node whose value lives in continuation chunks', () =
   it('classifies the value chunks of a key no write recreated, beside the nodes', async () => {
     const provider = new MockNetworkProvider();
     await chain(provider);
-    const deployment = await readPerCallDeployment(provider, CATEGORY_HEX, artifact.stateLayout!);
+    const deployment = await readFramedDeployment(provider, CATEGORY_HEX, artifact.stateLayout!);
     // A mapping value's chunk sits at its own root-salted covenant, so it is filed beside the nodes, not among them.
     const chunkLock = mappingValueChunkLock(CATEGORY, COLLECTION.name, BATCH.chunks[0]!);
     const chunkHex = bytesToHex(chunkLock);

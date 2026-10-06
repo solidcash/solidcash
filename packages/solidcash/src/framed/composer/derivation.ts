@@ -21,7 +21,7 @@ import {
   validateStopSiteMetadata,
   witnessKindOf,
 } from '@solidcash/utils';
-import { PerCallComposerError, derivationStalled } from './refusals.js';
+import { FramedComposerError, derivationStalled } from './refusals.js';
 
 /** One execution's place in the derivation. */
 export interface FrameRequest {
@@ -81,7 +81,7 @@ export interface DerivationOptions {
    * refuses on its own check runs to that check, binding the calls before it, rather than stopping on the first
    * record a stalled callee left unbound below it.
    */
-  readonly onCalleeStall?: (callee: FrameRequest, stall: PerCallComposerError) => void;
+  readonly onCalleeStall?: (callee: FrameRequest, stall: FramedComposerError) => void;
 }
 
 /** Derives one execution and everything it calls, depth-first, refusing a step that fills no witness. */
@@ -160,7 +160,7 @@ function deriveCallee(
   try {
     deriveExecution(callee, host, runs, completed, options);
   } catch (error) {
-    if (!(error instanceof PerCallComposerError) || error.code !== 'PER_CALL_DERIVATION_STALLED') throw error;
+    if (!(error instanceof FramedComposerError) || error.code !== 'FRAMED_DERIVATION_STALLED') throw error;
     onCalleeStall(callee, error);
   }
 }

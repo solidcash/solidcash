@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { parsePushdataCommitment, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -115,13 +115,13 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const compiled = compileStringMulti(SOURCE, FIXTURE_OPTIONS as never);
 const { Ledger, Settler, Root } = compiled as Required<typeof compiled>;
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 /** A coin a genesis or a hop is funded from; a genesis's txid becomes the category it mints. */
@@ -133,7 +133,7 @@ function funding(txid: string): Utxo {
 interface World {
   readonly network: MockNetworkProvider;
   readonly snapshot: SnapshotRestorer;
-  readonly enter: (functionName: string) => Promise<PerCallProxyCallResult>;
+  readonly enter: (functionName: string) => Promise<FramedProxyCallResult>;
 }
 
 /** The ledger and the settler plain, the root behind its proxy, and the entry opened through the root with `note`. */
@@ -156,7 +156,7 @@ async function deployWorld(note: string): Promise<World> {
   for (const id of [ROOT_IMPL_CATEGORY, ROOT_PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(id));
   await network.addUtxo(binToHex(ALICE_LOCK), funding(ROOT_INIT_TXID));
   await fundShippedFacets(network);
-  const root = await deployPerCallProxy({
+  const root = await deployFramedProxy({
     provider: network,
     implementationArtifact: Root!,
     proxyArtifact: buildProxyArtifact(Root!),
@@ -169,11 +169,11 @@ async function deployWorld(note: string): Promise<World> {
   });
   expect(root.initialize.broadcast).toBeDefined();
   let coins = 0x50;
-  const call = async (functionName: string, args: readonly (bigint | string)[]): Promise<PerCallProxyCallResult> => {
+  const call = async (functionName: string, args: readonly (bigint | string)[]): Promise<FramedProxyCallResult> => {
     coins += 1;
     const coin = funding(category(coins.toString(16)));
     await network.addUtxo(binToHex(ALICE_LOCK), coin);
-    return callPerCallProxyEntry({
+    return callFramedProxyEntry({
       provider: network,
       implementationArtifact: Root!,
       proxyArtifact: buildProxyArtifact(Root!),
@@ -211,11 +211,11 @@ async function world(note: string): Promise<World> {
  * as the inner rewrite set it) and its note, and the root kept its own write.
  */
 async function expectBothWrites(
-  shared: World, result: PerCallProxyCallResult, note: string, stage: bigint, marks: readonly bigint[],
+  shared: World, result: FramedProxyCallResult, note: string, stage: bigint, marks: readonly bigint[],
 ): Promise<void> {
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: shared.network, artifact: Ledger!, categoryId: LEDGER_CATEGORY, functionName: 'entry', args: [ID],
     vm: compositionMachine(),
   });

@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, type StateLayout } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Calling an entry of a deployed per-call implementation through the proxy in front of it.
+ * Calling an entry of a deployed framed implementation through the proxy in front of it.
  *
  * A user's coin enters the proxy's fallback, which forwards the call data to the address its record holds, and the
  * implementation's entry runs as a delegate frame on the proxy's records. The call is the same hop a deployment's
@@ -46,7 +46,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const impl = artifacts.Impl!;
 
 // The shape whose fallback drops the delegated result, which a caller can still write by hand. Kept as a compiled
@@ -58,7 +58,7 @@ const BARE_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   int public total;'
   + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
   + ' }';
-const bareProxy = compileStringMulti(BARE_PROXY_SOURCE, { composition: 'per-call' }).BareProxy!;
+const bareProxy = compileStringMulti(BARE_PROXY_SOURCE, { composition: 'framed' }).BareProxy!;
 
 /** The commitment the shipped encoder materializes from one state of a layout. */
 function commitment(layout: StateLayout, state: Record<string, bigint | Uint8Array>): Uint8Array {
@@ -67,7 +67,7 @@ function commitment(layout: StateLayout, state: Record<string, bigint | Uint8Arr
 
 /** The record's own state, read back through the shipped deployment reader and decoded as a field map. */
 async function recordState(network: MockNetworkProvider, categoryId: string): Promise<string> {
-  const deployment = await readPerCallDeployment(network, categoryId, impl.stateLayout!);
+  const deployment = await readFramedDeployment(network, categoryId, impl.stateLayout!);
   return bytesToHex(new Uint8Array(Buffer.from(deployment.records[0]!.token!.nft!.commitment, 'hex')));
 }
 
@@ -107,7 +107,7 @@ async function deployedWithCallerCoins(
   // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
   await fundShippedFacets(network);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     proxyArtifact,
@@ -148,7 +148,7 @@ async function sharedDeployment(): Promise<Deployed> {
   return deployed;
 }
 
-describe('a call into a per-call implementation through its proxy', () => {
+describe('a call into a framed implementation through its proxy', () => {
   it('lays out the hop with no OP_RETURN and no bare OP_1 output', async () => {
     const { network, funded } = await sharedDeployment();
 
@@ -159,7 +159,7 @@ describe('a call into a per-call implementation through its proxy', () => {
       implementation: implementationAddress(), initialized: 1n, total: 5n,
     })));
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: funded.proxyArtifact,
@@ -210,7 +210,7 @@ describe('a call into a per-call implementation through its proxy', () => {
     await network.addUtxo(binToHex(funded.deployerLock), callCoin);
     const before = await recordState(network, funded.proxyCategoryId);
 
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -234,7 +234,7 @@ describe('a call into a per-call implementation through its proxy', () => {
     // which is not a field of any record, so only the entry's own answer explains the value the call reports.
     const { network, funded } = await sharedDeployment();
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: funded.proxyArtifact,
@@ -270,7 +270,7 @@ describe('a call into a per-call implementation through its proxy', () => {
     const funded = await deployedWithCallerCoins(network, bareProxy);
     const before = await recordState(network, funded.proxyCategoryId);
 
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: funded.proxyArtifact,

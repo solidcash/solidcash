@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -75,7 +75,7 @@ const OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const artifacts = compileStringMulti(SOURCE, OPTIONS as never);
@@ -85,7 +85,7 @@ const lineOf = (needle: string): number => SOURCE.split('\n').findIndex((line) =
 
 interface World {
   readonly network: MockNetworkProvider;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   readonly funder: Unlocker;
   readonly nextCoin: () => Utxo;
@@ -109,7 +109,7 @@ async function deployWorld(): Promise<World> {
   await fundShippedFacets(network);
   const storeInit = nextCoin();
   await network.addUtxo(binToHex(CALLER_LOCK), storeInit);
-  const store = await deployPerCallProxy({
+  const store = await deployFramedProxy({
     provider: network,
     implementationArtifact: Store!,
     proxyArtifact: buildProxyArtifact(Store!),
@@ -123,7 +123,7 @@ async function deployWorld(): Promise<World> {
   expect(store.initialize.broadcast).toBeDefined();
   const deskInit = nextCoin();
   await network.addUtxo(binToHex(CALLER_LOCK), deskInit);
-  const desk = await deployPerCallProxy({
+  const desk = await deployFramedProxy({
     provider: network,
     implementationArtifact: Desk!,
     proxyArtifact: buildProxyArtifact(Desk!),
@@ -151,11 +151,11 @@ async function deployWorld(): Promise<World> {
   };
 }
 
-async function rate(world: World, score: bigint): Promise<{ result?: PerCallProxyCallResult; error?: Error }> {
+async function rate(world: World, score: bigint): Promise<{ result?: FramedProxyCallResult; error?: Error }> {
   const coin = world.nextCoin();
   await world.network.addUtxo(binToHex(CALLER_LOCK), coin);
   try {
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: artifacts.Desk!,
       proxyArtifact: buildProxyArtifact(artifacts.Desk!),

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { callPerCallProxyEntry, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { callFramedProxyEntry, deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -131,8 +131,8 @@ async function post(source: string, seed: string): Promise<{ accepted: boolean; 
   await network.addUtxo(binToHex(deployerLock), funded.call);
   await fundShippedFacets(network);
 
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
-  const deployment = await deployPerCallProxy({
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: {
@@ -151,7 +151,7 @@ async function post(source: string, seed: string): Promise<{ accepted: boolean; 
   expect(deployment.initialize.accepted).toBe(true);
 
   try {
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -181,7 +181,7 @@ async function post(source: string, seed: string): Promise<{ accepted: boolean; 
   }
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('the entry that appends a struct and emits its event', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('the entry that appends a struct and emits its event', () => {
   it('settles the append and its field writes', async () => {
     const outcome = await post(WITHOUT_THE_EVENT, '1');
     expect(outcome.accepted, outcome.objection).toBe(true);

@@ -11,11 +11,11 @@ import {
   readOwnWitnessBlock,
   splitFirstPush,
   splitLastPush,
-} from '../../src/per-call/index.js';
-import { FrameKind } from '../../src/per-call/frames.js';
-import { concatBytes, hexToBytes } from '../../src/per-call/primitives.js';
-import { encodeArgumentPayload } from '../../src/per-call/canonical.js';
-import { expectPerCallRejection, toBytes, toHex, toWitnessBlock } from './helpers.js';
+} from '../../src/framed/index.js';
+import { FrameKind } from '../../src/framed/frames.js';
+import { concatBytes, hexToBytes } from '../../src/framed/primitives.js';
+import { encodeArgumentPayload } from '../../src/framed/canonical.js';
+import { expectFramedRejection, toBytes, toHex, toWitnessBlock } from './helpers.js';
 import { BLOCKS, MALFORMED_WITNESS_BLOCKS } from './vectors/witness-block.js';
 import { LOADER_CODE_A } from './vectors/identity.js';
 
@@ -60,14 +60,14 @@ describe('witness block decode rejection', () => {
 
   for (const [name, vector] of Object.entries(MALFORMED_WITNESS_BLOCKS)) {
     it(`rejects ${name}: ${vector.reason}`, () => {
-      expectPerCallRejection(() => decodeWitnessBlock(toBytes(vector.hex)), expectedMessage[name]);
+      expectFramedRejection(() => decodeWitnessBlock(toBytes(vector.hex)), expectedMessage[name]);
     });
   }
 
   it('rejects an absent callee reference', () => {
     // The byte image is the specification's: target, value, then calleeRef = 0xffff. Decoding always reads 32
     // fixed args-hash bytes, so a malformed call can only be rejected as it is read.
-    expectPerCallRejection(
+    expectFramedRejection(
       () => decodeWitnessBlock(toBytes(MALFORMED_WITNESS_BLOCKS.ABSENT_CALLEE!.hex)),
     );
   });
@@ -77,25 +77,25 @@ describe('witness block encode rejection', () => {
   it('rejects a call that records the root frame kind', () => {
     const block = toWitnessBlock(BLOCKS.ABBA_A_F!);
     block.calls[0]!.kind = FrameKind.ROOT;
-    expectPerCallRejection(() => encodeWitnessBlock(block), /records a root frame/);
+    expectFramedRejection(() => encodeWitnessBlock(block), /records a root frame/);
   });
 
   it('rejects an args hash that is not 32 bytes', () => {
     const block = toWitnessBlock(BLOCKS.ABBA_A_F!);
     block.calls[0]!.argsHash = new Uint8Array(ARGS_HASH_LENGTH - 1);
-    expectPerCallRejection(() => encodeWitnessBlock(block), /args hash/);
+    expectFramedRejection(() => encodeWitnessBlock(block), /args hash/);
   });
 
   it('rejects a callee reference that is absent', () => {
     const block = toWitnessBlock(BLOCKS.ABBA_A_F!);
     block.calls[0]!.calleeRef = INDEX_NONE;
-    expectPerCallRejection(() => encodeWitnessBlock(block), /no callee/);
+    expectFramedRejection(() => encodeWitnessBlock(block), /no callee/);
   });
 
   it('rejects a segment count that is not calls plus one', () => {
     const block = toWitnessBlock(BLOCKS.ABBA_A_K!);
     block.segments.push([]);
-    expectPerCallRejection(() => encodeWitnessBlock(block), /one more segment than calls/);
+    expectFramedRejection(() => encodeWitnessBlock(block), /one more segment than calls/);
   });
 
   it('accepts a record a frame creates before it has made any call', () => {
@@ -114,7 +114,7 @@ describe('witness block encode rejection', () => {
     const block = toWitnessBlock(BLOCKS.EVENTS_AND_SENDS!);
     block.segments[0]![0]!.in = INDEX_NONE;
     block.segments[0]![0]!.out = INDEX_NONE;
-    expectPerCallRejection(() => encodeWitnessBlock(block));
+    expectFramedRejection(() => encodeWitnessBlock(block));
   });
 });
 
@@ -178,16 +178,16 @@ describe('splitFirstPush', () => {
   });
 
   it('rejects an unlocking bytecode that does not begin with a push', () => {
-    expectPerCallRejection(() => splitFirstPush(Uint8Array.of(0x87, 0x00)));
+    expectFramedRejection(() => splitFirstPush(Uint8Array.of(0x87, 0x00)));
   });
 
   it('rejects an empty unlocking bytecode', () => {
-    expectPerCallRejection(() => splitFirstPush(new Uint8Array(0)), /empty unlocking bytecode/);
+    expectFramedRejection(() => splitFirstPush(new Uint8Array(0)), /empty unlocking bytecode/);
   });
 
   it('rejects a truncated length field and a truncated payload', () => {
-    expectPerCallRejection(() => splitFirstPush(Uint8Array.of(0x4d, 0x01)));
-    expectPerCallRejection(() => splitFirstPush(Uint8Array.of(0x03, 0x01, 0x02)));
+    expectFramedRejection(() => splitFirstPush(Uint8Array.of(0x4d, 0x01)));
+    expectFramedRejection(() => splitFirstPush(Uint8Array.of(0x03, 0x01, 0x02)));
   });
 });
 
@@ -240,7 +240,7 @@ describe('readOwnWitnessBlock', () => {
     const own = toWitnessBlock(BLOCKS.ABBA_A_K!);
     const other = toWitnessBlock(BLOCKS.ABBA_A_F!);
     const unlocking = buildMasterUnlockingBytecode(own, [], hexToBytes(LOADER_CODE_A));
-    expectPerCallRejection(
+    expectFramedRejection(
       () => readOwnWitnessBlock(unlocking, other),
       /not the witness block this execution used/,
     );

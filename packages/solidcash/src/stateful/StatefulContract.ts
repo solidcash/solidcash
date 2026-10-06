@@ -556,7 +556,7 @@ export {
   evaluateProbeTrace,
   MAX_BOUNDED_PROBE_STATES,
 } from './faithful-probe-trace.js';
-import { PerCallFunctionCall } from '../per-call/call/handle.js';
+import { FramedFunctionCall } from '../framed/call/handle.js';
 import { isCanonicalEvmScalarReturnVector, probeRequireMessage } from './external-return-encoding.js';
 export {
   isCanonicalEvmScalarReturnVector,
@@ -1424,8 +1424,8 @@ export interface DeployOptions {
   fee?: bigint;            // default 1000n
   maxFee?: bigint;         // maximum allowed fee (throws if exceeded)
   addressType?: AddressType;
-  threadCount?: number;    // number of master minting NFTs (direct default 1; per-call default 12)
-  /** Number of validator UTXOs at the contract's address; per-call deployments default to the composing size. */
+  threadCount?: number;    // number of master minting NFTs (direct default 1; framed default 12)
+  /** Number of validator UTXOs at the contract's address; framed deployments default to the composing size. */
   validatorCount?: number;
   /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
@@ -4421,18 +4421,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /** Signer identity retained for logical nonce parity without changing legacy funding behavior. */
   _logicalNonceSigner?: Signer;
   /**
-   * The implementation's own category, when this handle is a per-call proxy's: its calls are composed as the hop
+   * The implementation's own category, when this handle is a framed proxy's: its calls are composed as the hop
    * that enters the proxy's fallback and lets the implementation's master run as a delegate frame, and both
    * categories are read to place the inputs.
    */
-  _perCallProxyImplementationCategory?: string;
-  /** The address a per-call proxy's handle presents: the proxy's own master pool, not the implementation's. */
-  _perCallProxyAddress?: string;
+  _framedProxyImplementationCategory?: string;
+  /** The address a framed proxy's handle presents: the proxy's own master pool, not the implementation's. */
+  _framedProxyAddress?: string;
   /**
-   * The address a plain per-call handle presents: the contract's own address, `addrV(category)`, carried rather
+   * The address a plain framed handle presents: the contract's own address, `addrV(category)`, carried rather
    * than recomputed from the artifact so it wins over a Solidity-facing logical CREATE address.
    */
-  _perCallAddress?: string;
+  _framedAddress?: string;
 
   /**
    * Legacy default number of VM probe iterations for auto-derivation.
@@ -4587,16 +4587,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         new DeployFunctionCall(self as StatefulContract, functionName, args),
       createStatefulFunctionCall: (
         functionName: string, args: FunctionArgument[], abiFunction: AbiFunction,
-      ) => (self.inner.artifact.composition?.convention === 'per-call'
-        ? new PerCallFunctionCall(
+      ) => (self.inner.artifact.composition?.convention === 'framed'
+        ? new FramedFunctionCall(
           {
             artifact: self.inner.artifact,
             abiEntry: abiFunction,
             categoryId: self.categoryId,
             provider: self.inner.provider,
             signer: self._signer,
-            ...(self._perCallProxyImplementationCategory === undefined
-              ? {} : { proxyImplementationCategoryId: self._perCallProxyImplementationCategory }),
+            ...(self._framedProxyImplementationCategory === undefined
+              ? {} : { proxyImplementationCategoryId: self._framedProxyImplementationCategory }),
           },
           functionName, args,
         )
@@ -4878,9 +4878,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     (sc as StatefulContract)._deployDefaults = { ...this._deployDefaults };
     (sc as StatefulContract)._signer = signer;
     (sc as StatefulContract)._logicalNonceSigner = signer;
-    (sc as StatefulContract)._perCallProxyImplementationCategory = this._perCallProxyImplementationCategory;
-    (sc as StatefulContract)._perCallProxyAddress = this._perCallProxyAddress;
-    (sc as StatefulContract)._perCallAddress = this._perCallAddress;
+    (sc as StatefulContract)._framedProxyImplementationCategory = this._framedProxyImplementationCategory;
+    (sc as StatefulContract)._framedProxyAddress = this._framedProxyAddress;
+    (sc as StatefulContract)._framedAddress = this._framedAddress;
     // Connecting a signer changes only the runner. Preserve the externally visible logical identity used by
     // Solidity `address(this)`/cross-contract `msg.sender`; rebuilding from the category alone otherwise falls
     // back to the physical p2sh32 state covenant address.
@@ -5106,9 +5106,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   get address(): string {
     // For an address-constructed instance the address is known immediately (the category-less scaffold's own
-    // address would differ until resolution). A per-call contract is addressed by its own `addrV(category)`, and a
-    // per-call contract behind a proxy by the proxy's, so both are carried rather than recomputed from the artifact.
-    return this._perCallAddress ?? this._perCallProxyAddress ?? this._pendingAddress ?? this.inner.address;
+    // address would differ until resolution). A framed contract is addressed by its own `addrV(category)`, and a
+    // framed contract behind a proxy by the proxy's, so both are carried rather than recomputed from the artifact.
+    return this._framedAddress ?? this._framedProxyAddress ?? this._pendingAddress ?? this.inner.address;
   }
 
   get tokenAddress(): string {
@@ -5135,9 +5135,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`).
-   * A deployed logical CREATE address is that identifier. The per-call execution address stays on `address`. */
+   * A deployed logical CREATE address is that identifier. The framed execution address stays on `address`. */
   get target(): string {
-    return this._logicalAddress ?? this._perCallAddress ?? this.address;
+    return this._logicalAddress ?? this._framedAddress ?? this.address;
   }
 
   /** The contract's p2sh address (async, ethers.js `contract.getAddress()`). */

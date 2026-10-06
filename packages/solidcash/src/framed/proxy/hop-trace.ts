@@ -1,10 +1,10 @@
 /**
- * An opt-in trace of a per-call hop's plan and settle path.
+ * An opt-in trace of a framed hop's plan and settle path.
  *
  * A hop that does not settle reports one frame, and the frame it reports is read from the refusal reporter: the
  * deepest frame the machine refused, which need not be the frame the settle evaluated. The sequence that produced
  * the report — the plan's frames, the call records each draft carries before and after every attempt, and the
- * frame the derivation stopped on — is only visible while the settle runs. Setting `PER_CALL_HOP_TRACE=1` prints
+ * frame the derivation stopped on — is only visible while the settle runs. Setting `FRAMED_HOP_TRACE=1` prints
  * that sequence, one line per event, under a fixed prefix so it can be grepped out of a noisy run.
  *
  * The trace is observation only: it reads the draft, never mutates it, and it is off unless the variable is
@@ -12,7 +12,7 @@
  */
 
 /** The environment variable that turns the trace on. */
-export const HOP_TRACE_ENV = 'PER_CALL_HOP_TRACE';
+export const HOP_TRACE_ENV = 'FRAMED_HOP_TRACE';
 
 /** The prefix every trace line carries, so a run's output can be grepped for it. */
 export const HOP_TRACE_PREFIX = 'HOPTRACE ';

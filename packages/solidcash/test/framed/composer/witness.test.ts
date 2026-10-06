@@ -16,7 +16,7 @@ import {
 import {
   assembleMasterWitness,
   assembleValidatorWitness,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 const contractAddress = new Uint8Array(35).fill(0x11);
 const redeemScript = new Uint8Array([0x21, 0x00, 0x00, 0x00, 0x87]);

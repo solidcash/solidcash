@@ -64,13 +64,13 @@ const CALL_WITHOUT_DYNAMIC = 'pragma solidcash ^0.13.0;'
 
 /** The entries one contract's artifact publishes in its ABI, in declaration order. */
 function abiNames(source: string, contract: string): string[] {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   return (artifacts[contract]?.abi ?? []).map((entry) => entry.name);
 }
 
 describe('a body that touches a dynamic value and makes an external call', () => {
   it('serves the write with a returning call rather than crashing code generation', () => {
-    expect(() => compileString(WRITE_WITH_RETURNING_CALL, { composition: 'per-call' })).not.toThrow();
+    expect(() => compileString(WRITE_WITH_RETURNING_CALL, { composition: 'framed' })).not.toThrow();
     expect(isServed(WRITE_WITH_RETURNING_CALL)).toBe(true);
     expect(abiNames(WRITE_WITH_RETURNING_CALL, 'A')).toStrictEqual(['push']);
   });

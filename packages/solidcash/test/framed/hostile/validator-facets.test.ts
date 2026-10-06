@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth';
 import { concatBytes, encodeTranscript, type Transcript } from '@solidcash/utils';
-import type { PerCallTransaction as ModelledTransaction } from '../../../../solidc/src/per-call/validator/index.js';
+import type { FramedTransaction as ModelledTransaction } from '../../../../solidc/src/framed/validator/index.js';
 import { accepted, decisionOf, inputAccepted, reference } from './validator-machine.js';
 import { categoryOf, emptyToken, mutableTokenShape, seedBytes, userLockOf } from '../validator/fixture.js';
-import { validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { validatorSpend } from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * The validator's head holds the facet it binds (spec section 24).

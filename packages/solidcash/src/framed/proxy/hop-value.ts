@@ -26,7 +26,7 @@ import {
   readSatoshiContainers, satoshiContainerLockingBytecode, satoshiContainerUnlockingBytecode,
 } from '../deploy/records.js';
 import { sendRecipient } from '../call/send-recipient.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 
 /** The least the container before the sends keeps; the caller tops it up past the change. */
 const CONTAINER_MINIMUM_SATOSHIS = 1_000n;
@@ -90,11 +90,11 @@ export async function planHopValue(options: {
   const entry = artifact.abi.find((candidate) => candidate.name === functionName);
   const label = `the implementation's "${functionName}" entry`;
   if (entry === undefined) {
-    throw new PerCallProxyDeployError(`implementation "${artifact.contractName}" publishes no entry "${functionName}"`);
+    throw new FramedProxyDeployError(`implementation "${artifact.contractName}" publishes no entry "${functionName}"`);
   }
-  if (value < 0n) throw new PerCallProxyDeployError(`a call carries no negative value; got ${value}`);
+  if (value < 0n) throw new FramedProxyDeployError(`a call carries no negative value; got ${value}`);
   if (value > 0n && !(entry.modifiers ?? []).includes('payable')) {
-    throw new PerCallProxyDeployError(`${label} is not payable, so a call to it carries no value`);
+    throw new FramedProxyDeployError(`${label} is not payable, so a call to it carries no value`);
   }
   const transfers = entry.transfers ?? [];
   // The body chooses by the lock: a user's is a listed send, and any other is a call into the recipient's
@@ -107,7 +107,7 @@ export async function planHopValue(options: {
     for (const transfer of transfers) {
       const lock = sendRecipient(transfer.recipientRecipe, context);
       if (lock !== undefined && lock.length !== 25) {
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `${label} sends to the contract at ${binToHex(lock)}, which a call through a proxy does not pay yet`,
         );
       }
@@ -139,7 +139,7 @@ export function unlearnedHopSends(hop: HopValue | undefined): readonly HopSend[]
 /** The lock a send output carries until the body's own pin hands back the lock it computed. */
 export function hopSendLockSentinel(hop: HopValue, position: number): Uint8Array {
   return encodeLockingBytecodeP2pkh(sha256(utf8ToBin(
-    `per-call hop send lock\u0000${hop.contract}\u0000${hop.functionName}\u0000${position}`,
+    `framed hop send lock\u0000${hop.contract}\u0000${hop.functionName}\u0000${position}`,
   )).slice(0, 20));
 }
 
@@ -195,7 +195,7 @@ export function hopPaying(hop: HopValue, sends: readonly HopSend[], proxyName: s
   if (sends.some((send) => send.amount === undefined)) return { spent: every, kept: settle(everyTotal + hop.value) };
   const need = sends.reduce<bigint>((sum, send) => sum + send.amount!, 0n) - hop.value;
   const refuse = (total: bigint): never => {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `proxy "${proxyName}" holds ${total} satoshis in its containers, and the implementation's "${hop.functionName}" `
       + `entry sends ${need} more than the call brings`,
     );

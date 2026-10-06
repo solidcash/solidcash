@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { sha256 } from '@solidcash/utils';
-import { derivePerCallGenesis } from '../../solidcash/src/per-call/deploy/index.js';
+import { deriveFramedGenesis } from '../../solidcash/src/framed/deploy/index.js';
 import { compileString } from './direct-compile.js';
-import { buildValidatorProgram } from '../src/per-call/validator/index.js';
-import { compositionMachine, compositionProvider } from './per-call/machine.js';
+import { buildValidatorProgram } from '../src/framed/validator/index.js';
+import { compositionMachine, compositionProvider } from './framed/machine.js';
 
 /**
  * A compiled program defines every identifier at most once.
@@ -22,7 +22,7 @@ import { compositionMachine, compositionProvider } from './per-call/machine.js';
  * identifier the captured read is about to define.
  */
 
-/** A per-call contract whose helper pool is pressured past the single-byte range, with or without a constructor. */
+/** A framed contract whose helper pool is pressured past the single-byte range, with or without a constructor. */
 const pressuredContract = (internals: number, withConstructor: boolean): string => 'pragma solidcash ^0.13.0;'
   + ' contract Rep {'
   + '   int public counter;'
@@ -43,13 +43,13 @@ const definedIds = (bytecode: string): readonly string[] => {
 
 /** The ids a shape defines, with the duplicates it defines twice. */
 const duplicateIds = (source: string): readonly string[] => {
-  const artifact = compileString(source, { composition: 'per-call', sortedMappings: ['totals'] });
+  const artifact = compileString(source, { composition: 'framed', sortedMappings: ['totals'] });
   const ids = definedIds(artifact.bytecode);
   const seen = new Set<string>();
   return ids.filter((id) => (seen.has(id) ? true : (seen.add(id), false)));
 };
 
-describe('the identifiers a compiled per-call master defines', () => {
+describe('the identifiers a compiled framed master defines', () => {
   it('are distinct when the helper pool falls through to the captured sorted read\'s range', () => {
     // The pressure shape: one read alone leaves the captured read unprofitable and no collision is possible, so
     // the two reads are what put the captured read's identifier in play while the allocator is still walking.
@@ -83,12 +83,12 @@ describe('the identifiers a compiled per-call master defines', () => {
  * state can be derived from it. Reading its verdict is what says the definitions are the machine's own subject
  * rather than a property of the assembly text.
  */
-describe('a per-call master whose helper pool falls through to the captured read\'s identifier', () => {
+describe('a framed master whose helper pool falls through to the captured read\'s identifier', () => {
   it('is accepted by the machine that refuses a program defining an identifier twice', () => {
     const artifact = compileString(pressuredContract(13, true), {
-      composition: 'per-call', sortedMappings: ['totals'],
+      composition: 'framed', sortedMappings: ['totals'],
     });
-    const genesis = derivePerCallGenesis({
+    const genesis = deriveFramedGenesis({
       artifact,
       category: sha256(new TextEncoder().encode('define identifier uniqueness')),
       validatorProgram: buildValidatorProgram(),

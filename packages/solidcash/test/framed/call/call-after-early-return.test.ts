@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { parsePushdataCommitment, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -40,7 +40,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '     last = b.peek(x);'
   + '   } }';
 
-type CallResult = Awaited<ReturnType<typeof callPerCallEntry>>;
+type CallResult = Awaited<ReturnType<typeof callFramedEntry>>;
 
 /** The artifact without the call's published condition, as a builder that ignores the return would read it. */
 function withoutCondition(artifact: Artifact): Artifact {
@@ -64,10 +64,10 @@ async function deployed(): Promise<{
   ) => Promise<CallResult>;
   readonly field: (name: string) => Promise<unknown>;
 }> {
-  const compiled = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+  const compiled = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
   const artifacts: Readonly<Record<string, Artifact>> = { A: compiled.A!, B: compiled.B! };
-  const { perCallValidator } = await import('solidc');
-  const validatorProgram = perCallValidator.buildValidatorProgram();
+  const { framedValidator } = await import('solidc');
+  const validatorProgram = framedValidator.buildValidatorProgram();
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
   await fundShippedFacets(provider);
@@ -91,7 +91,7 @@ async function deployed(): Promise<{
     enter: async (skip, coin, { artifact = artifacts.A!, entry = 'run' } = {}) => {
       const callerUtxo = { txid: `${'76'.repeat(31)}${coin.toString(16).padStart(2, '0')}`, vout: 0, satoshis: 300_000n };
       await provider.addUtxo(binToHex(user), callerUtxo);
-      return callPerCallEntry({
+      return callFramedEntry({
         provider, artifact, categoryId: categories.get('A')!, functionName: entry, args: [5n, skip],
         callerUtxo, callerLockingBytecode: user, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
         vm: compositionMachine(), externals,
@@ -99,7 +99,7 @@ async function deployed(): Promise<{
     },
     field: async (name) => {
       const layout = artifacts.A!.stateLayout!;
-      const set = await readPerCallDeployment(provider, categories.get('A')!, layout);
+      const set = await readFramedDeployment(provider, categories.get('A')!, layout);
       return parsePushdataCommitment(set.records[0]!.token!.nft!.commitment, layout, 0)[name];
     },
   };

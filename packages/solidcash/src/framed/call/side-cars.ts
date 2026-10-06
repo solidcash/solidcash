@@ -23,11 +23,11 @@ import {
   type RecoveryAbiFunction,
   type RecoverySideCars,
 } from '../composer/index.js';
-import { PerCallLoopTurnsError } from './loop-turns.js';
+import { FramedLoopTurnsError } from './loop-turns.js';
 
 /** Raised when the network holds fewer side-car UTXOs than an entry co-spends. */
-export class PerCallSideCarPoolError extends Error {
-  public readonly name = 'PerCallSideCarPoolError';
+export class FramedSideCarPoolError extends Error {
+  public readonly name = 'FramedSideCarPoolError';
 
   public constructor(message: string) {
     super(message);
@@ -60,7 +60,7 @@ export async function entrySideCars(options: EntrySideCarOptions): Promise<Recov
   const { provider, master, abiFunction, argumentPushes, leadingPushes } = options;
   // A loop's hashes are as many as its turns, which only the frame's own planner counts.
   if (options.hashes === undefined && abiFunction.keccakInLoop === true) {
-    throw new PerCallLoopTurnsError(
+    throw new FramedLoopTurnsError(
       `entry "${abiFunction.name ?? master}" hashes inside a loop, and its frame here is laid without the turns `
       + 'that count its side-cars',
     );
@@ -101,13 +101,13 @@ async function livePool(
   const addUtxo = (provider as { addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
   if (utxos.length < count && typeof addUtxo === 'function') {
     for (let index = utxos.length; index < count; index += 1) {
-      const standIn = computeSideCarStandIn(`per-call ${name}`, lock, index);
+      const standIn = computeSideCarStandIn(`framed ${name}`, lock, index);
       if (!hasOutpoint(utxos, standIn)) await addUtxo.call(provider, binToHex(lock), standIn);
     }
     utxos = await mutable();
   }
   if (utxos.length < count) {
-    throw new PerCallSideCarPoolError(
+    throw new FramedSideCarPoolError(
       `the entry co-spends ${count} ${name}(s) at the shared covenant lock, and the network holds ${utxos.length}`,
     );
   }

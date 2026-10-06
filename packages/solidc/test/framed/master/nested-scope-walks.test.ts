@@ -9,7 +9,7 @@ import { bytesToSlotValue, keyToSlotMulti } from '../../../../solidcash/src/stat
 import { compositionMachine } from '../machine.js';
 import { eventOutput } from './event-input.js';
 import {
-  declarationOf, deployPerCallMaster, masterSpendProgram, MASTER_INDEX, node, spent, USER_INDEX, USER_LOCK,
+  declarationOf, deployFramedMaster, masterSpendProgram, MASTER_INDEX, node, spent, USER_INDEX, USER_LOCK,
   type PlacedRecord,
 } from './record-spend.js';
 
@@ -38,7 +38,7 @@ const CALLER = compileStringMulti(`${PRAGMA}${PING}`
   + `   function plainFirst(address to, uint amount) { balances[to] = amount; ${CALL} require(true); }`
   + `   function uncheckedLast(address to, uint amount) { ${CALL} unchecked { balances[to] = amount; } require(true); }`
   + `   function plainLast(address to, uint amount) { ${CALL} balances[to] = amount; require(true); }`
-  + ' }', { composition: 'per-call' }).Ledger!;
+  + ' }', { composition: 'framed' }).Ledger!;
 
 /** The single segment and the per-write segments one entry publishes beside its stop sites. */
 function publishedWrites(
@@ -77,7 +77,7 @@ describe('a mapping write an unchecked block holds beside a call', () => {
 });
 
 /** A ledger whose branch emits and writes a node, the two held in a nested block or written in the arm itself. */
-const LEDGER = deployPerCallMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
+const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
   + ' event Moved(uint value);'
   + ' function nested(uint a, uint b, uint x, bool c) {'
   + ' if (c) { { emit Moved(x); balances[a] = x; } } balances[b] -= x; }'

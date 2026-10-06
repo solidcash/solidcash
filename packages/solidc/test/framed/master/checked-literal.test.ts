@@ -8,13 +8,13 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
- * Arithmetic beside an integer literal in a per-call body: the literal takes the bounded operand's type, as Solidity
+ * Arithmetic beside an integer literal in a framed body: the literal takes the bounded operand's type, as Solidity
  * converts it, so the result is range-checked, and wraps inside `unchecked`. Each entry's condition holds for every
  * integer, so only the result's range can refuse it.
  */
@@ -45,7 +45,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function widenedWraps(uint8 a) { unchecked { require(a * 10000 == 50000); } }'
   + '   function noCommonType(int8 a) { require(a * 300 / 300 == a); }'
   + ' }';
-const ARTIFACT = compileString(SOURCE, { composition: 'per-call' });
+const ARTIFACT = compileString(SOURCE, { composition: 'framed' });
 const PROGRAM = fillPlaceholders(scriptToBytecode(asmToScript(ARTIFACT.bytecode)), ARTIFACT.composition!.placeholders, {
   category: categorySlotValue(CATEGORY), contractAddress: ADDRESS, templateHash: TEMPLATE_HASH,
 });
@@ -84,7 +84,7 @@ function spend(entry: string, argument: bigint): boolean {
   return vm.stateSuccess(vm.evaluate({ inputIndex: 1, sourceOutputs, transaction })) === true;
 }
 
-describe('arithmetic beside an integer literal in a per-call body', () => {
+describe('arithmetic beside an integer literal in a framed body', () => {
   it.each([
     ['a + 1 on a uint8', 'inc', 254n, 255n],
     ['a - 1 on a uint256', 'dec', 1n, 0n],

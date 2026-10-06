@@ -3,13 +3,13 @@ import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin } from '
 import {
   concatBytes, encodeWitnessBlock, splitFirstPush, type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { bytesToHex } from '@solidcash/utils';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -17,8 +17,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A sorted mapping write under a branch arm, through the shipped per-call call path. Read back through
- * `readPerCallDeployment`: the arm not taken keeps the node's old value, the arm taken settles the new one, and a
+ * A sorted mapping write under a branch arm, through the shipped framed call path. Read back through
+ * `readFramedDeployment`: the arm not taken keeps the node's old value, the arm taken settles the new one, and a
  * record whose value differs from what the node was spent with is refused at the master.
  */
 
@@ -55,7 +55,7 @@ let deployment: Promise<Deployed> | undefined;
 async function deployed(): Promise<Deployed> {
   if (deployment === undefined) {
     deployment = (async (): Promise<Deployed> => {
-      const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Ledger!;
+      const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Ledger!;
       const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
       const signature = new SignatureTemplate(alicePriv);
       const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -73,14 +73,14 @@ async function deployed(): Promise<Deployed> {
   return world;
 }
 
-type CallResult = Awaited<ReturnType<typeof callPerCallEntry>>;
+type CallResult = Awaited<ReturnType<typeof callFramedEntry>>;
 
 let nonce = 0x50;
 async function call(world: Deployed, entry: string, args: readonly unknown[]): Promise<CallResult> {
   nonce += 1;
   const callerUtxo = { txid: outpointHash(nonce), vout: 0, satoshis: 200_000n };
   await world.provider.addUtxo(binToHex(encodeLockingBytecodeP2pkh(alicePkh)), callerUtxo);
-  return callPerCallEntry({
+  return callFramedEntry({
     provider: world.provider, artifact: world.artifact, categoryId: world.categoryId, functionName: entry,
     args: args as never, callerUtxo, callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh),
     funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
@@ -93,7 +93,7 @@ const objectionsOf = (answered: CallResult): string => answered.verdicts
 
 /** The live value the key's node holds, read back through the shipped deployment decoder. */
 async function heldValue(world: Deployed): Promise<bigint | undefined> {
-  const pools = await readPerCallDeployment(world.provider, world.categoryId, world.artifact.stateLayout!);
+  const pools = await readFramedDeployment(world.provider, world.categoryId, world.artifact.stateLayout!);
   const node = pools.collectionNodes.find((utxo) => utxo.token?.nft?.commitment !== undefined
     && bytesToHex(decodeEntryCommitment(hexToBin(utxo.token.nft.commitment)).slot) === SLOT);
   if (node === undefined) return undefined;
@@ -141,7 +141,7 @@ function expectForgedValueRefused(answered: CallResult): void {
   expect(verdict(mutated)).not.toBe(true);
 }
 
-describe('per-call conditional sorted write: the arm not taken preserves the co-spent node', () => {
+describe('framed conditional sorted write: the arm not taken preserves the co-spent node', () => {
   it('keeps the old value on the arm not taken, and refuses a node value changed from the input', async () => {
     const world = await deployed();
     expect((await call(world, 'set', [KEY, 50n])).accepted).toBe(true);

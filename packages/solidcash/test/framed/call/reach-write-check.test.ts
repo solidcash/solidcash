@@ -3,8 +3,8 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   chainedNodeIds, requireSatisfiableReachWrites, requireSettledNodeChains, sharedNodeWritersBefore,
   type HopCallee,
-} from '../../../src/per-call/proxy/external-calls.js';
-import { sharedNodeId, type HopEntryWrites } from '../../../src/per-call/proxy/entry-writes.js';
+} from '../../../src/framed/proxy/external-calls.js';
+import { sharedNodeId, type HopEntryWrites } from '../../../src/framed/proxy/entry-writes.js';
 
 /**
  * The cross-reach check one hop runs over the frames it placed, read on its own.

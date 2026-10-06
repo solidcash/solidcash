@@ -3,15 +3,15 @@ import {
   bigIntToVmNumber, binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, hash256, type Transaction,
 } from '@bitauth/libauth';
 import { FrameKind, encodeWitnessBlock, sha256, type WitnessBlock } from '@solidcash/utils';
-import { perCallLifecycle, perCallValidator } from 'solidc';
+import { framedLifecycle, framedValidator } from 'solidc';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import { Contract, HashType, SignatureTemplate, StatefulContract } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { createSighashPreimage } from '../../../src/utils.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import {
   USER_LOCK as DRAFT_USER_LOCK, compileAndDeploy, composeAndDerive, fundShippedFacets, hexOf, master as draftMaster,
   masterInput, rootOf, seededAddress, selectorOf, token as draftToken, userInput, userInputs, validatorFor,
@@ -36,12 +36,12 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function grow(int n, sig s) split(n) { require(checkSig(s, ADMIN)); require(n >= 1 && n <= 3); }'
   + '   function shrink(int n, sig s) merge(n) { require(checkSig(s, ADMIN)); }'
   + ' }';
-const artifact = compileString(SOURCE, { composition: 'per-call' });
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const artifact = compileString(SOURCE, { composition: 'framed' });
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const CATEGORY = sha256(new TextEncoder().encode('pool resize'));
 const MASTER = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
-const { SPLIT, MERGE, RETIRE } = perCallLifecycle.LIFECYCLE_MODE;
+const { SPLIT, MERGE, RETIRE } = framedLifecycle.LIFECYCLE_MODE;
 
 type Capability = 'minting' | 'mutable' | 'none';
 interface Token { category: Uint8Array; amount: bigint; nft?: { capability: Capability; commitment: Uint8Array } }
@@ -177,7 +177,7 @@ describe('merge(n): the admin retires exactly n masters, and a master survives',
 
 describe('an entry neither mints nor retires a master', () => {
   const SAMPLE = 'pragma solidcash ^0.13.0; contract Sample { function ping() { require(true); } }';
-  const sample = deployMaster(compileString(SAMPLE, { composition: 'per-call' }), CATEGORY, VALIDATOR_PROGRAM);
+  const sample = deployMaster(compileString(SAMPLE, { composition: 'framed' }), CATEGORY, VALIDATOR_PROGRAM);
   const block: WitnessBlock = {
     kind: 0, callerRef: 1, originRef: 1, validatorRef: 0xffff, sender: USER_LOCK, self: sample.address, value: 0n,
     retval: new Uint8Array(), calls: [], segments: [[]], events: [], sends: [],
@@ -284,7 +284,7 @@ describe('the owner resizes a deployed pool', () => {
       provider, fundingUtxo: genesis, funder: wallet.unlock.spend(alicePub, alice), changeAddress: wallet.address,
     });
     const masters = async (): Promise<readonly { txid: string; vout: number }[]> =>
-      (await readPerCallDeployment(provider, categoryId, artifact.stateLayout!)).masters;
+      (await readFramedDeployment(provider, categoryId, artifact.stateLayout!)).masters;
     expect((await masters()).length).toBe(12);
 
     const splitFunding = coin('5b', 50_000n);
@@ -313,7 +313,7 @@ describe('the owner resizes a deployed pool', () => {
     const callerUtxo = coin('5c', 200_000n);
     await provider.addUtxo(binToHex(callerLock), callerUtxo);
     await fundShippedFacets(provider);
-    const call = await callPerCallEntry({
+    const call = await callFramedEntry({
       provider: onlyNew, artifact, categoryId, functionName: 'bump', args: [], callerUtxo,
       callerLockingBytecode: callerLock, funder: alice.unlockP2PKH(), vm: compositionMachine(),
     });

@@ -7,12 +7,12 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from '../frames/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * The census a standalone master runs over the transaction's own state UTXOs.
@@ -20,9 +20,9 @@ import {
  * A master that stands alone settles the record its segment declares. It compares each input's own token against
  * the index the segment declared, so a record the frame declares but the transaction does not spend fails the walk.
  * The other census refusals on the same contract (an undeclared state UTXO, and a declaration that does not start
- * at the spent commitment or end at the written one) are in `solidc/test/per-call/master/record-settlement.test.ts`.
+ * at the spent commitment or end at the written one) are in `solidc/test/framed/master/record-settlement.test.ts`.
  *
- * The source is compiled per-call, the reserved slots are filled the way a deployment fills them, and the verdict
+ * The source is compiled framed, the reserved slots are filled the way a deployment fills them, and the verdict
  * is the BCH-2026 machine's on a real transaction. The refusal is shown beside the spend it mutates.
  */
 
@@ -47,7 +47,7 @@ const MASTER_INDEX = 0;
 const STATE_INDEX = 1;
 const USER_INDEX = 2;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const program = fillPlaceholders(
   scriptToBytecode(asmToScript(artifact.bytecode)),
   artifact.composition!.placeholders,

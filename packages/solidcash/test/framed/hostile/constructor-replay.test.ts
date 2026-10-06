@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import type { Artifact, StateValue } from '@solidcash/utils';
-import { compositionMachine, COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine, COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment, readPerCallState } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment, readFramedState } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import { alicePkh, alicePriv, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
@@ -59,15 +59,15 @@ interface Snapshot {
 interface Replay {
   readonly before: Snapshot;
   readonly after: Snapshot;
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
 }
 
 async function snapshot(provider: MockNetworkProvider, categoryId: string, artifact: Artifact): Promise<Snapshot> {
   const layout = artifact.stateLayout!;
-  const deployment = await readPerCallDeployment(provider, categoryId, layout);
+  const deployment = await readFramedDeployment(provider, categoryId, layout);
   const commitments = [...deployment.records, ...deployment.collectionNodes]
     .map((utxo) => utxo.token?.nft?.commitment ?? '').sort();
-  return { state: (await readPerCallState(provider, categoryId, layout)).byNft[0]!, commitments };
+  return { state: (await readFramedState(provider, categoryId, layout)).byNft[0]!, commitments };
 }
 
 /**
@@ -96,7 +96,7 @@ async function deployAndReplay(artifact: Artifact, sibling: string): Promise<Rep
   const patched = {
     ...artifact, composition: { ...artifact.composition!, stopSites: { ...stops, entries: [...stops.entries, forged] } },
   } as Artifact;
-  const result = await callPerCallEntry({
+  const result = await callFramedEntry({
     provider, artifact: patched, categoryId, functionName: '__construct', args: [],
     callerUtxo: bobCoin, callerLockingBytecode: bobLock, funder: new SignatureTemplate(bobPriv).unlockP2PKH(),
     vm: compositionMachine(),
@@ -118,7 +118,7 @@ function expectRefusedAtMaster({ before, after, result }: Replay): void {
 
 describe('a constructor replayed on a live master', () => {
   it('keeps the owner the genesis wrote', async () => {
-    const owned = compileStringMulti(OWNED, { composition: 'per-call' }).Owned!;
+    const owned = compileStringMulti(OWNED, { composition: 'framed' }).Owned!;
     const replay = await deployAndReplay(owned, 'bump');
     // The honest genesis ran the guarded constructor for Alice.
     expect(binToHex(replay.before.state.owner as Uint8Array)).toBe(binToHex(aliceLock));
@@ -126,7 +126,7 @@ describe('a constructor replayed on a live master', () => {
   });
 
   it('mints only at the genesis', async () => {
-    const minted = compileStringMulti(MINTED, { composition: 'per-call' }).Minted!;
+    const minted = compileStringMulti(MINTED, { composition: 'framed' }).Minted!;
     const replay = await deployAndReplay(minted, 'burn');
     // The honest genesis minted once, to Alice: the supply, and her node beside the list's head.
     expect(replay.before.state.totalSupply).toBe(1000n);

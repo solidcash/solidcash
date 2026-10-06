@@ -4,13 +4,13 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { publishedRefusals } from './refused-entry.js';
 
 /**
- * The effects a per-call body repeats once per turn of a loop, as the compile publishes them.
+ * The effects a framed body repeats once per turn of a loop, as the compile publishes them.
  *
  * A body that emits, sends or hashes inside a loop binds each effect where it makes it and pins how many it made, so
  * the compile publishes the order a builder lays the outputs and side-cars in: runs the body makes once, and runs a
  * loop makes once per turn, with the loop's recurrence. A body whose order no builder could reconstruct is refused by
  * name: an effect on a branch beside a looped one, one in a nested loop, and one in a loop whose bound is no counted
- * recurrence. The settlements are machine cases in `solidcash/test/per-call/call/loop-turn-effects.test.ts`.
+ * recurrence. The settlements are machine cases in `solidcash/test/framed/call/loop-turn-effects.test.ts`.
  */
 
 const compile = (body: string): ReturnType<typeof compileStringMulti> => compileStringMulti(
@@ -22,7 +22,7 @@ const compile = (body: string): ReturnType<typeof compileStringMulti> => compile
   + '   receive() external payable { require(true); }'
   + `   ${body}`
   + ' }',
-  { composition: 'per-call' },
+  { composition: 'framed' },
 );
 
 /** The runs one entry publishes, as `[ids, counter]` per run, keyed by kind. */
@@ -111,7 +111,7 @@ describe('a body whose looped effects no builder could lay', () => {
       + '   event Seen(int x);'
       + '   constructor(int n) { for (int i = 0; i < n; i = i + 1) { emit Seen(i); } }'
       + '   function f() { this.count = 1; }'
-      + ' }', { composition: 'per-call' })).toThrow('the constructor emits an event from a loop, whose turns its genesis '
+      + ' }', { composition: 'framed' })).toThrow('the constructor emits an event from a loop, whose turns its genesis '
       + 'does not count');
   });
 });

@@ -53,7 +53,7 @@ export function artifactFixture(overrides: Partial<Artifact> = {}): Artifact {
     bytecode: SLOT_SCRIPT_ASM,
     source: 'contract Ledger {}',
     composition: {
-      convention: 'per-call',
+      convention: 'framed',
       placeholders: { version: 1, categoryOffset: CATEGORY_OFFSET, addressOffset: ADDRESS_OFFSET },
     },
     ...overrides,

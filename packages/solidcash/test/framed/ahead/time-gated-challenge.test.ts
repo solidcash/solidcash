@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate, providerUnixLocktime } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Ahead of the ladder, MS6: the time-gated challenge, driven through the shipped proxy hop (`callPerCallProxyEntry`).
+ * Ahead of the ladder, MS6: the time-gated challenge, driven through the shipped proxy hop (`callFramedProxyEntry`).
  *
  * The root, behind a generated proxy, keeps its jobs in a dynamic array of structs; its `dispute`, entered by the
  * job's creator, marks the job disputed and, because the sender is the creator, calls a judge's guarded
@@ -132,7 +132,7 @@ function artifactsFor(variant: Variant, paidAt: bigint = PAID_AT): Artifacts {
   const key = `${variant}:${paidAt}`;
   let artifacts = compiled.get(key);
   if (artifacts === undefined) {
-    artifacts = compileStringMulti(sourceFor(variant, paidAt), { composition: 'per-call' });
+    artifacts = compileStringMulti(sourceFor(variant, paidAt), { composition: 'framed' });
     compiled.set(key, artifacts);
   }
   return artifacts;
@@ -144,7 +144,7 @@ interface Deployed {
   readonly artifacts: Artifacts;
   readonly rootProxyCategoryId: string;
   readonly rootImplementationCategoryId: string;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   readonly callCoin: { txid: string; vout: number; satoshis: bigint };
 }
@@ -185,7 +185,7 @@ async function deployAll(artifacts: Artifacts): Promise<Deployed> {
   for (const coin of [storeInitCoin, rootInitCoin, callCoin]) await network.addUtxo(binToHex(CREATOR_LOCK), coin);
 
   const store = artifacts.Store!;
-  const storeDeployment = await deployPerCallProxy({
+  const storeDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: store,
     proxyArtifact: buildProxyArtifact(store),
@@ -199,7 +199,7 @@ async function deployAll(artifacts: Artifacts): Promise<Deployed> {
   expect(storeDeployment.initialize.broadcast).toBeDefined();
 
   const root = artifacts.Root!;
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -238,8 +238,8 @@ async function deployAll(artifacts: Artifacts): Promise<Deployed> {
 }
 
 /** The creator's dispute, entered on the root's proxy through the shipped hop. */
-function dispute(deployed: Deployed): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+function dispute(deployed: Deployed): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: deployed.network,
     implementationArtifact: deployed.artifacts.Root!,
     proxyArtifact: buildProxyArtifact(deployed.artifacts.Root!),
@@ -262,11 +262,11 @@ async function coinLive(deployed: Deployed): Promise<boolean> {
     .some((utxo) => utxo.txid === deployed.callCoin.txid && utxo.vout === deployed.callCoin.vout);
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS6): the time-gated challenge', () => {
-  it('compiles the four contracts on the per-call path', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (MS6): the time-gated challenge', () => {
+  it('compiles the four contracts on the framed path', () => {
     for (const variant of ['flow', 'unguarded', 'untimed'] as const) {
       for (const name of ['Judge', 'Escrow', 'Store', 'Root']) {
-        expect(artifactsFor(variant)[name]?.composition?.convention).toBe('per-call');
+        expect(artifactsFor(variant)[name]?.composition?.convention).toBe('framed');
       }
     }
   });
@@ -283,7 +283,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS6): the time-gated 
   });
 });
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS6): behind the judge\'s guard', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (MS6): behind the judge\'s guard', () => {
   it('settles the dispute once the stated chain time reaches the gate', async () => {
     const deployed = await deployAll(artifactsFor('unguarded'));
     // Read the tip before the hop: broadcasting it mines a block, which advances the mock chain's own time.

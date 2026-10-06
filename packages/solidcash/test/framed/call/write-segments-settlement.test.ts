@@ -4,15 +4,15 @@ import {
   buildPushdataCommitment, bytesToHex, encodeIntegerValue, validatorAddress, type Artifact,
   type PublishedWriteSegment,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { stateRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -26,11 +26,11 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * entry. A batch and the run of chunk records a dynamic write grows may land in different segments too: the frame
  * reads that run in its own segment, past the records every segment declares ahead of any group.
  *
- * The whole shipped path runs: the deployment through `deployPerCallProxy`, the call through
- * `callPerCallProxyEntry`, and the machine's verdict on every participant is the assertion.
+ * The whole shipped path runs: the deployment through `deployFramedProxy`, the call through
+ * `callFramedProxyEntry`, and the machine's verdict on every participant is the assertion.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const IMPL_CATEGORY = '11'.repeat(32);
 const PROXY_CATEGORY = '22'.repeat(32);
 const ESCROW_CATEGORY = '66'.repeat(32);
@@ -84,10 +84,10 @@ const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const impl = artifacts.Impl!;
 const escrow = artifacts.Escrow!;
-const dynamicArtifacts = compileStringMulti(DYNAMIC_SOURCE, { composition: 'per-call' });
+const dynamicArtifacts = compileStringMulti(DYNAMIC_SOURCE, { composition: 'framed' });
 const dynamicImpl = dynamicArtifacts.Impl!;
 
 // The marketplace's refund in miniature: a call, a whitelist write behind a flag the entry passes as a literal, the
@@ -120,7 +120,7 @@ const REFUND_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + '   function refund(address to, uint amount) { _refund(to, amount, true); require(true); }'
   + ' }';
-const refundImpl = compileStringMulti(REFUND_SOURCE, { composition: 'per-call' }).Impl!;
+const refundImpl = compileStringMulti(REFUND_SOURCE, { composition: 'framed' }).Impl!;
 
 /** One write as the artifact publishes it. */
 type PublishedWrite = PublishedWriteSegment;
@@ -172,7 +172,7 @@ async function deployed(
 
   // The validator runs as a head plus one input per facet, each locked by its own code and holding no token, so
   // any live UTXO at the facet's lock serves it.
-  const facets = perCallValidator.buildValidatorFacets();
+  const facets = framedValidator.buildValidatorFacets();
   for (const [index, code] of facets.entries()) {
     await network.addUtxo(hexOf(encodeLockingBytecodeP2sh32(hash256(code))), {
       txid: (0x70 + index).toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: FACET_SATOSHIS,
@@ -186,7 +186,7 @@ async function deployed(
   for (const coin of [implFunding, proxyFunding]) await network.addUtxo(source.address, coin);
   for (const coin of [hopCoin, callCoin]) await network.addUtxo(hexOf(deployerLock), coin);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: implementation,
     proxyArtifact: buildProxyArtifact(implementation),
@@ -236,7 +236,7 @@ describe('a proxied entry whose writes land in different segments', () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployed(network, impl);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -285,7 +285,7 @@ describe('a proxied entry whose writes land in different segments', () => {
     ]);
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployed(network, dynamicImpl);
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: dynamicImpl,
       proxyArtifact: buildProxyArtifact(dynamicImpl),
@@ -317,7 +317,7 @@ describe('a proxied entry whose writes land in different segments', () => {
         .toContainEqual({ variable: 'names', segment: 'last', apart: true });
       const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
       const funded = await deployed(network, refundImpl);
-      const result = await callPerCallProxyEntry({
+      const result = await callFramedProxyEntry({
         provider: network,
         implementationArtifact: refundImpl,
         proxyArtifact: buildProxyArtifact(refundImpl),

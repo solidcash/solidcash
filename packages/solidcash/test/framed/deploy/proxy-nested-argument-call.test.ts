@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -30,7 +30,7 @@ const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 const SERVICE_CATEGORY = '55'.repeat(31) + 'aa';
 const CALLER_TXID = '33'.repeat(31) + 'cc';
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const SERVICE_ADDRESS = validatorAddress(hexToBin(SERVICE_CATEGORY), VALIDATOR_PROGRAM);
 
 /** The entry whose outer call's argument list makes the inner call. */
@@ -103,7 +103,7 @@ async function deploy(): Promise<{
   readonly funding: Funding;
   readonly initialized: boolean;
 }> {
-  const artifacts = compileStringMulti(sourceOf(), { composition: 'per-call' });
+  const artifacts = compileStringMulti(sourceOf(), { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network);
   // A deployment's token category is its funding coin's transaction id, so the coin carries the id the site names.
@@ -112,7 +112,7 @@ async function deploy(): Promise<{
     funder: funding.funder, changeAddress: funding.changeAddress,
     provider: network, threadCount: 4,
   });
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Ledger!,
     implementationDeploy: {
@@ -137,7 +137,7 @@ async function callEntry(): Promise<{
   readonly txid: string | undefined;
 }> {
   const { network, artifacts, service, funding } = await deploy();
-  const result = await callPerCallProxyEntry({
+  const result = await callFramedProxyEntry({
     provider: network,
     implementationArtifact: artifacts.Ledger!,
     proxyArtifact: buildProxyArtifact(artifacts.Ledger!),
@@ -161,7 +161,7 @@ async function callEntry(): Promise<{
 
 describe('a proxied entry that feeds one call into another call\u2019s argument', () => {
   it('settles and broadcasts with the inner call inlined into the outer call\u2019s argument list', async () => {
-    const artifacts = compileStringMulti(sourceOf(), { composition: 'per-call' });
+    const artifacts = compileStringMulti(sourceOf(), { composition: 'framed' });
     const entry = artifacts.Ledger!.abi.find((candidate) => candidate.name === 'run')!;
     // The compiler publishes the argument's own call beside the call it feeds, in the order the execution reaches
     // them; the body binds those positions, not the order its own emission happens to reach them.

@@ -3,17 +3,17 @@ import {
   FrameKind, buildPushdataCommitment, bytesToHex, encodeEventCommitment, encodeIntegerValue, encodeResultList,
   type Artifact, type EventDefinitionAbi,
 } from '@solidcash/utils';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
 import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+} from '../../../src/framed/composer/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { tryParseEventCommitment } from '../../../src/stateful/StateReader.js';
 import { layoutWithFacets } from './harness.js';
@@ -348,9 +348,9 @@ function settledSellerRun(): ReturnType<typeof deriveSellerPlan> {
 }
 
 describe('a root that reaches an origin-gated escrow', () => {
-  it('compiles the five contracts on the per-call path', () => {
+  it('compiles the five contracts on the framed path', () => {
     for (const name of ['Root', 'Escrow', 'Ledger', 'Token', 'Store']) {
-      expect(built.artifacts[name]?.composition?.convention).toBe('per-call');
+      expect(built.artifacts[name]?.composition?.convention).toBe('framed');
     }
     expect(built.artifacts.Escrow?.events?.map((event) => event.name)).toStrictEqual(['Released']);
   });
@@ -412,7 +412,7 @@ describe('the origin gate', () => {
     // The whole composition shares one origin input (the validator binds a callee's origin to its caller's, V5), so
     // `tx.origin` can only ever be the root user. Presenting a different user as that input makes the escrow's
     // `require(tx.origin == seller || tx.origin == arbitrator)` false, so the escrow frame's program stops before its
-    // token call and no derived step fills its witness: this is the `PER_CALL_DERIVATION_STALLED` refusal the driver
+    // token call and no derived step fills its witness: this is the `FRAMED_DERIVATION_STALLED` refusal the driver
     // raises, naming `escrow-1` of `Escrow.release()`.
     const { plan } = buildPlan(OTHER_LOCK);
     const objection = (() => {
@@ -423,7 +423,7 @@ describe('the origin gate', () => {
         return String((error as Error).message);
       }
     })();
-    expect(objection).toContain('PER_CALL_DERIVATION_STALLED');
+    expect(objection).toContain('FRAMED_DERIVATION_STALLED');
     // The stalled frame is the escrow's own `release`, so the gate and not a malformed companion is what refused.
     expect(objection).toContain(entryName('Escrow', 'release'));
   });

@@ -1,7 +1,7 @@
 /**
  * Binding an external call to its own witness record where the source makes the call.
  *
- * A per-call master records every external call in the witness block it carries as the first push of its own
+ * A framed master records every external call in the witness block it carries as the first push of its own
  * unlocking bytecode. The proof of a call belongs at the call site, in the caller's own code, so this module
  * emits that proof into the body: the code reads its block back from the transaction, walks to the record its
  * site names, and binds the record to what the source says.

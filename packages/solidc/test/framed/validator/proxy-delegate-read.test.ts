@@ -13,15 +13,15 @@ import {
   type ContractPlan,
   type RecordTouchPlan,
   type SegmentPlan,
-} from '../../../../solidcash/test/per-call/validator/fixture.js';
+} from '../../../../solidcash/test/framed/validator/fixture.js';
 import {
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
-  type PerCallTransaction,
+  type FramedTransaction,
   type TokenShape,
   type ValidatorReasonName,
-} from '../../../src/per-call/validator/index.js';
+} from '../../../src/framed/validator/index.js';
 import { compositionMachine } from '../machine.js';
 
 /**
@@ -67,7 +67,7 @@ function vmToken(token: TokenShape): VmSourceOutput['token'] {
 }
 
 /** The same transaction as the machine reads it, with every spent output stated. */
-function toVm(transaction: PerCallTransaction): { transaction: VmTransaction; sourceOutputs: VmSourceOutput[] } {
+function toVm(transaction: FramedTransaction): { transaction: VmTransaction; sourceOutputs: VmSourceOutput[] } {
   return {
     transaction: {
       version: 2,
@@ -93,7 +93,7 @@ function toVm(transaction: PerCallTransaction): { transaction: VmTransaction; so
 }
 
 /** Whether the machine accepts the validator head and every facet the head binds. */
-function programAccepts(transaction: PerCallTransaction, validatorIndex: number): boolean {
+function programAccepts(transaction: FramedTransaction, validatorIndex: number): boolean {
   const vm = compositionMachine();
   const program = toVm(transaction);
   for (let offset = 0; offset <= FACET_COUNT; offset += 1) {

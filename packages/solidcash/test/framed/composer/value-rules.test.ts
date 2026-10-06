@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertValueRules, valueIssues, ValueRuleError,
   type PlannedSend, type ValueFacts,
-} from '../../../src/per-call/composer/value-rules.js';
+} from '../../../src/framed/composer/value-rules.js';
 
 /**
  * The value rules a settlement has to satisfy, driven through the shipped check.

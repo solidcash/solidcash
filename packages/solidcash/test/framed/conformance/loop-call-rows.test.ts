@@ -4,23 +4,23 @@ import {
   FrameKind, buildPushdataCommitment, bytesToHex, encodeEventCommitment, parsePushdataCommitment, sha256,
   type Artifact,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import {
-  deployMaster, readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { participant, type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+  deployMaster, readFramedDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { participant, type CompositionDraftPlan, type DraftMaster } from '../../../src/framed/composer/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import {
@@ -123,7 +123,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const catalog = artifacts.Catalog!;
 const payout = artifacts.Payout!;
 const board = artifacts.Board!;
@@ -140,7 +140,7 @@ interface Deployed {
   readonly proxyCategoryId: string;
   readonly implementationCategoryId: string;
   readonly changeAddress: string;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly snapshot: SnapshotRestorer;
 }
 
@@ -169,7 +169,7 @@ async function deployed(): Promise<Deployed> {
     await network.addUtxo(binToHex(USER_LOCK), initCoin);
     const addressOf = (artifact: Artifact, categoryId: string): Uint8Array =>
       deployMaster(artifact, hexToBin(categoryId), VALIDATOR_PROGRAM).address;
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: board,
       proxyArtifact: boardProxy,
@@ -203,14 +203,14 @@ async function deployed(): Promise<Deployed> {
 
 interface Entered {
   readonly coin: { txid: string; vout: number; satoshis: bigint };
-  readonly call: Promise<PerCallProxyCallResult>;
+  readonly call: Promise<FramedProxyCallResult>;
 }
 
 /** Funds a coin of the user's and runs one board entry over `list` through the shipped proxy hop. */
 async function enter(run: Deployed, functionName: string, list: readonly bigint[]): Promise<Entered> {
   const coin = funding(idOf(`${functionName} ${list.join(' ')}`));
   await run.network.addUtxo(binToHex(USER_LOCK), coin);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider: run.network,
     implementationArtifact: board,
     proxyArtifact: boardProxy,
@@ -231,7 +231,7 @@ async function enter(run: Deployed, functionName: string, list: readonly bigint[
 /** The board's fields as its proxy's records hold them, decoded with the shipped decoder. */
 async function boardState(run: Deployed): Promise<Record<string, unknown>> {
   const layout = boardProxy.stateLayout!;
-  const pools = await readPerCallDeployment(run.network, run.proxyCategoryId, layout);
+  const pools = await readFramedDeployment(run.network, run.proxyCategoryId, layout);
   return Object.assign({}, ...pools.records.map((record, nftIndex) =>
     parsePushdataCommitment(record.token!.nft!.commitment, layout, nftIndex))) as Record<string, unknown>;
 }
@@ -266,7 +266,7 @@ Promise<void> {
 }
 
 /** How many frames of one entry a settled hop completed. */
-function framesOf(result: PerCallProxyCallResult, functionName: string): number {
+function framesOf(result: FramedProxyCallResult, functionName: string): number {
   return result.completed.filter((frame) => frame.functionName === functionName).length;
 }
 
@@ -354,7 +354,7 @@ describe('spec section 23 row 4: calls inside data-dependent loops', () => {
     const run = await deployed();
     const coin = funding(idOf('plain path coin'));
     await run.network.addUtxo(binToHex(USER_LOCK), coin);
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       provider: run.network, artifact: board, categoryId: run.implementationCategoryId, functionName: 'post',
       args: [[5n, PRIMARY_A]], callerUtxo: coin, callerLockingBytecode: USER_LOCK,
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
@@ -503,6 +503,6 @@ describe('spec section 23 row 4: the per-turn condition, composed with the calls
     // The payout would accept (1, 6), but the body's second call carries the third turn's index, so the splitter's
     // own frame is the one that stalls.
     expect(() => composeSplit([{ to: 0n, amount: 4n }, { to: 1n, amount: 6n }]))
-      .toThrow(/PER_CALL_DERIVATION_STALLED.*master "splitter-1" of Splitter\.split\(\) filled no witness/);
+      .toThrow(/FRAMED_DERIVATION_STALLED.*master "splitter-1" of Splitter\.split\(\) filled no witness/);
   });
 });

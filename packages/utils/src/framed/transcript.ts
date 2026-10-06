@@ -22,7 +22,7 @@
 import {
   ByteReader,
   ByteWriter,
-  PerCallEncodingError,
+  FramedEncodingError,
   bytesEqual,
   bytesToHex,
   concatBytes,
@@ -71,14 +71,14 @@ export interface Transcript {
 export function encodeTranscript(transcript: Transcript): Uint8Array {
   for (const [index, settled] of transcript.settles.entries()) {
     if (settled.category.length !== CATEGORY_LENGTH) {
-      throw new PerCallEncodingError(
+      throw new FramedEncodingError(
         `settled contract ${index} has a ${settled.category.length}-byte category, expected ${CATEGORY_LENGTH}`,
       );
     }
   }
-  if (transcript.roots.length > 0xff) throw new PerCallEncodingError('too many roots');
-  if (transcript.masters.length > 0xff) throw new PerCallEncodingError('too many masters');
-  if (transcript.settles.length > 0xff) throw new PerCallEncodingError('too many settled contracts');
+  if (transcript.roots.length > 0xff) throw new FramedEncodingError('too many roots');
+  if (transcript.masters.length > 0xff) throw new FramedEncodingError('too many masters');
+  if (transcript.settles.length > 0xff) throw new FramedEncodingError('too many settled contracts');
 
   const writer = new ByteWriter()
     .pushBytes(TRANSCRIPT_MAGIC)
@@ -90,8 +90,8 @@ export function encodeTranscript(transcript: Transcript): Uint8Array {
   writer.pushByte(transcript.settles.length);
   for (const settled of transcript.settles) {
     const created = settled.createdOutputs ?? [];
-    if (settled.stateInputs.length > 0xff) throw new PerCallEncodingError('too many state inputs');
-    if (created.length > 0xff) throw new PerCallEncodingError('too many created records');
+    if (settled.stateInputs.length > 0xff) throw new FramedEncodingError('too many state inputs');
+    if (created.length > 0xff) throw new FramedEncodingError('too many created records');
     writer.pushBytes(settled.category).pushByte(settled.stateInputs.length);
     for (const input of settled.stateInputs) writer.pushByte(input);
     writer.pushByte(created.length);
@@ -106,11 +106,11 @@ export function decodeTranscript(payload: Uint8Array): Transcript {
   const reader = new ByteReader(payload);
   const magic = reader.readBytes(3);
   if (!bytesEqual(magic, TRANSCRIPT_MAGIC)) {
-    throw new PerCallEncodingError(`not a transcript: magic ${bytesToHex(magic)}`);
+    throw new FramedEncodingError(`not a transcript: magic ${bytesToHex(magic)}`);
   }
   const version = reader.readByte();
   if (version !== TRANSCRIPT_VERSION) {
-    throw new PerCallEncodingError(`unsupported transcript version: ${version}`);
+    throw new FramedEncodingError(`unsupported transcript version: ${version}`);
   }
 
   const rootCount = reader.readByte();

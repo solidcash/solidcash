@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { refusalOf } from '../../../../solidc/test/per-call/master/refused-entry.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { refusalOf } from '../../../../solidc/test/framed/master/refused-entry.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost, participant,
   type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { deployPerCallProxy, PerCallProxyDeployError } from '../../../src/per-call/proxy/index.js';
+} from '../../../src/framed/composer/index.js';
+import { deployFramedProxy, FramedProxyDeployError } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -204,7 +204,7 @@ describe('a proxied initialize that writes state', () => {
     const { artifacts } = compileAndDeploy(mismatched, { Proxy: 'mismatch proxy', Impl: 'mismatch impl' });
     const network = provider();
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
-    const deployment = deployPerCallProxy({
+    const deployment = deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyArtifact: artifacts.Proxy!,
@@ -214,7 +214,7 @@ describe('a proxied initialize that writes state', () => {
       callerLockingBytecode: deployerLock,
       vm: compositionMachine(),
     });
-    await expect(deployment).rejects.toThrowError(PerCallProxyDeployError);
+    await expect(deployment).rejects.toThrowError(FramedProxyDeployError);
     await expect(deployment).rejects.toThrowError(/must declare the same record fields/);
   });
 

@@ -2,20 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, encodeIntegerValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   entryRecordLockingBytecode,
-  readPerCallDeployment,
+  readFramedDeployment,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { participant, planMappingBatch } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { participant, planMappingBatch } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a page over a mapping, off chain.
@@ -50,7 +50,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true }).Pages!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Pages!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'cells')!;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
 
@@ -75,7 +75,7 @@ const ANCHORED_SOURCE = 'pragma solidity ^0.8.0;'
   + '   }'
   + ' }';
 
-const anchored = compileStringMulti(ANCHORED_SOURCE, { composition: 'per-call', solidityImportCompat: true })
+const anchored = compileStringMulti(ANCHORED_SOURCE, { composition: 'framed', solidityImportCompat: true })
   .Anchored!;
 
 const empty = new Uint8Array(0);
@@ -113,8 +113,8 @@ async function anchoredChain(provider: MockNetworkProvider): Promise<void> {
 }
 
 /** The read of `page(start, count)` through the shipped read module. */
-function read(provider: MockNetworkProvider, start: bigint, count: bigint): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+function read(provider: MockNetworkProvider, start: bigint, count: bigint): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider, artifact, categoryId: CATEGORY_HEX, functionName: 'page', args: [start, count],
     vm: compositionMachine(),
   });
@@ -132,7 +132,7 @@ function verdict(
 }
 
 /** The records the frame declares for the entry slot's own nodes, in declaration order. */
-function entryRecords(result: Awaited<ReturnType<typeof readPerCallEntry>>): readonly string[] {
+function entryRecords(result: Awaited<ReturnType<typeof readFramedEntry>>): readonly string[] {
   return result.draft.layout.participants
     .map((placed) => placed.id)
     .filter((id) => id.startsWith('read-entry-'));
@@ -142,7 +142,7 @@ describe('reading a page over a mapping', () => {
   it('reads the entry the page\'s first turn names, for the arguments the caller supplies', async () => {
     const provider = new MockNetworkProvider();
     await chain(provider);
-    const deployment = await readPerCallDeployment(provider, CATEGORY_HEX, artifact.stateLayout!);
+    const deployment = await readFramedDeployment(provider, CATEGORY_HEX, artifact.stateLayout!);
     expect(deployment.nodesByCollection.get('cells')).toHaveLength(VALUES.length + 1);
 
     const result = await read(provider, 3n, 1n);
@@ -190,7 +190,7 @@ describe('reading a page over a mapping', () => {
     const provider = new MockNetworkProvider();
     await anchoredChain(provider);
 
-    await expect(readPerCallEntry({
+    await expect(readFramedEntry({
       provider, artifact: anchored, categoryId: ANCHORED_HEX, functionName: 'page', args: [2n],
       vm: compositionMachine(),
     })).rejects.toThrow(/entry "page" touches mapping "cells" at a key the frame's arguments do not determine/);

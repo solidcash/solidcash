@@ -1,7 +1,7 @@
 # W6 finding: the kernel upgrade route refuses every positive upgrade composition
 
 Status: diagnosed to the instruction, not fixed. Both files below are pre-existing kernel failures
-(present on the kernel parent, so the per-call work did not introduce them).
+(present on the kernel parent, so the framed work did not introduce them).
 
 Files and titles:
 

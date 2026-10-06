@@ -8,14 +8,14 @@ import {
   encodePushdataValue, scriptToBytecode, type Artifact,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../../solidcash/src/Argument.js';
-import { derivePerCallGenesis } from '../../solidcash/src/per-call/deploy/index.js';
+import { deriveFramedGenesis } from '../../solidcash/src/framed/deploy/index.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
 } from '../../solidcash/src/stateful/SortedList.js';
 import { compileString } from '../src/index.js';
 import { ConstructorStaleReadError } from '../src/Errors.js';
-import { buildValidatorProgram } from '../src/per-call/validator/index.js';
-import { compositionProvider } from './per-call/machine.js';
+import { buildValidatorProgram } from '../src/framed/validator/index.js';
+import { compositionProvider } from './framed/machine.js';
 
 /**
  * A constructor that reads a verified-mapping entry after writing it, run on the BCH-2026 machine.
@@ -27,12 +27,12 @@ import { compositionProvider } from './per-call/machine.js';
  *
  * On the direct convention the deployment probe spends the master down `__construct` at 0, the empty list's head at
  * 1 and a funder at 2, and creates the written node at the entry slot's output and the relinked head after the block;
- * every input runs its own program. On the per-call convention the shipped genesis derivation runs the constructor
+ * every input runs its own program. On the framed convention the shipped genesis derivation runs the constructor
  * frame and refuses a frame the machine does not accept. Scalar writes the entry cache (`CacheMappingEntryInLoop`)
  * serves stand beside the shapes the kept values serve, and a read after a write the body keeps no value for is
  * refused at compile time, as is, on the direct convention, a read a loop's earlier turns may have written.
  *
- * On the per-call convention a read that the same turn's write of its entry follows is served: the genesis runs the
+ * On the framed convention a read that the same turn's write of its entry follows is served: the genesis runs the
  * loop's writes as one chain of inserts in ascending slot order, so the only node an earlier turn wrote under the key
  * is the one the chain holds, which the read takes where it holds that key. A key two turns repeat is written in
  * place, so a body that requires its entry unwritten (the multisig owner loop) refuses the repeat by its own reason,
@@ -43,7 +43,7 @@ import { compositionProvider } from './per-call/machine.js';
  *
  * A constructor that writes in a loop publishes what its deployment plans the writes by: the recipe of a value every
  * write states, the array a run-time loop walks and its guard, and no recipe for a key its loop may write any number
- * of times, zero included. The per-call genesis derives every such write from the body's own close, a key the loop
+ * of times, zero included. The framed genesis derives every such write from the body's own close, a key the loop
  * left unwritten holding its default; what the body cannot write exactly is refused by name.
  */
 
@@ -142,10 +142,10 @@ function settleDirect(artifact: Artifact, args: Record<string, Uint8Array>, crea
   return createVirtualMachineBch2026().verify({ sourceOutputs, transaction: { version: 2, locktime: 0, inputs, outputs } });
 }
 
-/** Derives the per-call genesis of the constructor with `args`; true when the machine accepts the frame. */
-function settlePerCall(artifact: Artifact, args: FunctionArgument[]): true | string {
+/** Derives the framed genesis of the constructor with `args`; true when the machine accepts the frame. */
+function settleFramed(artifact: Artifact, args: FunctionArgument[]): true | string {
   try {
-    derivePerCallGenesis({
+    deriveFramedGenesis({
       artifact, category: CATEGORY, validatorProgram: buildValidatorProgram(), provider: compositionProvider(),
       constructorArgs: args, senderLockingBytecode: encodeLockingBytecodeP2pkh(distinctBytes(20, 0x51)),
     });
@@ -271,8 +271,8 @@ describe('a direct constructor that reads a mapping entry after writing it', () 
   }
 });
 
-/** A constructor body run through the per-call genesis derivation, with its arguments before `e`. */
-interface PerCallCase {
+/** A constructor body run through the framed genesis derivation, with its arguments before `e`. */
+interface FramedCase {
   readonly name: string;
   readonly members: string;
   readonly args: FunctionArgument[];
@@ -280,7 +280,7 @@ interface PerCallCase {
   readonly wrong: bigint;
 }
 
-const PER_CALL: readonly PerCallCase[] = [
+const FRAMED: readonly FramedCase[] = [
   {
     name: 'the value a write under another key name left, when the keys are equal',
     members: `${TOTALS} constructor(uint a, uint b, uint e) { this.totals[a] = 5; require(this.totals[b] == e); }`,
@@ -316,13 +316,13 @@ const PER_CALL: readonly PerCallCase[] = [
   },
 ];
 
-describe('a per-call constructor that reads a mapping entry after writing it', () => {
-  for (const shape of PER_CALL) {
+describe('a framed constructor that reads a mapping entry after writing it', () => {
+  for (const shape of FRAMED) {
     it(`reads ${shape.name}: the genesis derivation accepts the EVM's value, not the other`, () => {
       const artifact = compileString(`${PRAGMA} contract Genesis {${shape.members} function g() { require(true); } }`,
-        { composition: 'per-call' });
-      expect(settlePerCall(artifact, [...shape.args, shape.right])).toBe(true);
-      expect(settlePerCall(artifact, [...shape.args, shape.wrong])).toContain('PerCallGenesisError');
+        { composition: 'framed' });
+      expect(settleFramed(artifact, [...shape.args, shape.right])).toBe(true);
+      expect(settleFramed(artifact, [...shape.args, shape.wrong])).toContain('FramedGenesisError');
     });
   }
 });
@@ -335,20 +335,20 @@ const PUSHED_ELEMENT = `${LOGS} constructor(uint k, bytes4 v, uint i, bytes4 e) 
   + ' require(this.logs[k][i] == e); }';
 
 describe('a constructor element read past the length of the value it reads', () => {
-  const compileFor = (members: string, convention: 'direct' | 'per-call'): Artifact =>
+  const compileFor = (members: string, convention: 'direct' | 'framed'): Artifact =>
     compileString(`${PRAGMA} contract Genesis {${members} function g() { require(true); } }`,
-      convention === 'direct' ? { messageBus: false } : { composition: 'per-call' });
+      convention === 'direct' ? { messageBus: false } : { composition: 'framed' });
 
   it('refuses the deployment of an element of an entry no write names', () => {
     expect(settleDirect(compileFor(UNWRITTEN_ELEMENT, 'direct'), { k: K }, undefined, num(0n)))
       .toContain('Program failed an OP_VERIFY operation');
-    expect(settlePerCall(compileFor(UNWRITTEN_ELEMENT, 'per-call'), [7n, 0n])).toContain('PerCallGenesisError');
+    expect(settleFramed(compileFor(UNWRITTEN_ELEMENT, 'framed'), [7n, 0n])).toContain('FramedGenesisError');
   });
 
   it('refuses the deployment of an index past a fixed array\'s length', () => {
     expect(settleDirect(compileFor(FIXED, 'direct'), { k: K, i: num(3n) }, undefined, num(0n)))
       .toContain('Program failed an OP_VERIFY operation');
-    expect(settlePerCall(compileFor(FIXED, 'per-call'), [7n, 3n, 0n])).toContain('PerCallGenesisError');
+    expect(settleFramed(compileFor(FIXED, 'framed'), [7n, 3n, 0n])).toContain('FramedGenesisError');
   });
 
   it('refuses an index past the length a push left, and takes the element the push appended', () => {
@@ -365,10 +365,10 @@ const readOf = (entry: string, written: string, shape: string): string => `a rea
   + `constructor after the write of \`${written}\` ${shape} is not supported: read it before the write, or into a local`;
 
 /** The stale-read refusal a constructor with `members` draws in `convention`, or undefined when it compiles. */
-function refusal(members: string, convention: 'direct' | 'per-call'): string | undefined {
+function refusal(members: string, convention: 'direct' | 'framed'): string | undefined {
   try {
     compileString(`${PRAGMA} contract Refused {${members} function g() { require(true); } }`,
-      convention === 'direct' ? { messageBus: false } : { composition: 'per-call' });
+      convention === 'direct' ? { messageBus: false } : { composition: 'framed' });
     return undefined;
   } catch (error) {
     if (error instanceof ConstructorStaleReadError) return error.message;
@@ -434,7 +434,7 @@ const COMPILED: readonly { readonly shape: string; readonly members: string }[] 
 ];
 
 describe('a constructor read after a write the body keeps no value for', () => {
-  for (const convention of ['direct', 'per-call'] as const) {
+  for (const convention of ['direct', 'framed'] as const) {
     for (const { shape, members, message } of REFUSED) {
       it(`refuses ${shape} on the ${convention} convention, naming the entries and the shape`, () => {
         expect(refusal(members, convention)).toContain(message);
@@ -533,11 +533,11 @@ const LOOPS: readonly LoopCase[] = [
   },
 ];
 
-/** The nodes a per-call genesis mints for `members` with `args`, as their keys' slots to their value tails. */
+/** The nodes a framed genesis mints for `members` with `args`, as their keys' slots to their value tails. */
 function mintedNodes(members: string, args: FunctionArgument[]): Map<string, string> {
   const artifact = compileString(`${PRAGMA} contract Genesis {${members} function g() { require(true); } }`,
-    { composition: 'per-call' });
-  const genesis = derivePerCallGenesis({
+    { composition: 'framed' });
+  const genesis = deriveFramedGenesis({
     artifact, category: CATEGORY, validatorProgram: buildValidatorProgram(), provider: compositionProvider(),
     constructorArgs: args, senderLockingBytecode: encodeLockingBytecodeP2pkh(distinctBytes(20, 0x51)),
   });
@@ -548,9 +548,9 @@ function mintedNodes(members: string, args: FunctionArgument[]): Map<string, str
 
 describe('a constructor that writes a mapping in a loop', () => {
   for (const shape of LOOPS) {
-    it(`publishes ${shape.name}, and the per-call genesis mints what the body wrote`, () => {
+    it(`publishes ${shape.name}, and the framed genesis mints what the body wrote`, () => {
       const artifact = compileString(`${PRAGMA} contract Genesis {${shape.members} function g() { require(true); } }`,
-        { composition: 'per-call' });
+        { composition: 'framed' });
       const constructor = artifact.abi.find((candidate) => candidate.name === '__construct')!;
       expect(constructor.entryAccesses?.[0]?.valueSource).toBe(shape.valueSource);
       const loop = constructor.sortedUpsertLoopInfo?.[0] as unknown as Record<string, unknown> | undefined;
@@ -567,8 +567,8 @@ describe('a constructor that writes a mapping in a loop', () => {
     const members = `${SEEN} constructor(uint[] memory ks, bool[] memory fs) {`
       + ' for (uint i = 0; i < ks.length; i++) { if (fs[i]) { this.seen[ks[i]] = true; } } }';
     const artifact = compileString(`${PRAGMA} contract Genesis {${members} function g() { require(true); } }`,
-      { composition: 'per-call' });
-    expect(settlePerCall(artifact, [[3n], [true]]))
+      { composition: 'framed' });
+    expect(settleFramed(artifact, [[3n], [true]]))
       .toContain('KERNEL_UNBOUNDED_KEY: the loop writes \'seen\' under the guard');
   });
 
@@ -603,9 +603,9 @@ describe('a constructor read that the same turn\'s write of its entry follows', 
       .toContain(readOf('totals[ks[i]]', 'totals[ks[i]]', 'in an earlier turn of its loop'));
   });
 
-  it('publishes the per-call owner loop: the array it walks and the literal it stores', () => {
+  it('publishes the framed owner loop: the array it walks and the literal it stores', () => {
     const artifact = compileString(`${PRAGMA} contract Genesis {${OWNERS} function g() { require(true); } }`,
-      { composition: 'per-call' });
+      { composition: 'framed' });
     const constructor = artifact.abi.find((candidate) => candidate.name === '__construct')!;
     expect(constructor.entryAccesses?.map((access) => access.valueSource)).toStrictEqual(['lit:true']);
     expect(constructor.sortedUpsertLoopInfo).toHaveLength(1);
@@ -614,7 +614,7 @@ describe('a constructor read that the same turn\'s write of its entry follows', 
       .toStrictEqual({ collection: 'isOwner', varyingArrayParam: 'owners', valueConst: '1', op: 'set' });
   });
 
-  it('mints each owner once at a per-call genesis, and refuses a repeated owner by the body\'s own reason', () => {
+  it('mints each owner once at a framed genesis, and refuses a repeated owner by the body\'s own reason', () => {
     expect(mintedNodes(OWNERS, [[OWNER_A, OWNER_B, OWNER_C]])).toStrictEqual(new Map([OWNER_A, OWNER_B, OWNER_C]
       .map((owner) => [binToHex(ownerSlot(owner)), binToHex(SEEN_TRUE)])));
     const repeated = 'the constructor of "Genesis" reverts at line 1: owner not unique';
@@ -624,9 +624,9 @@ describe('a constructor read that the same turn\'s write of its entry follows', 
 
   it('counts the turns that found their key unwritten, a repeated key reading what its first turn wrote', () => {
     const artifact = compileString(`${PRAGMA} contract Genesis {${TURN_COUNTED} function g() { require(true); } }`,
-      { composition: 'per-call' });
-    expect(settlePerCall(artifact, [[LOW, LOW, HIGH], 9n, 2n])).toBe(true);
-    expect(settlePerCall(artifact, [[LOW, LOW, HIGH], 9n, 3n])).toContain('PerCallGenesisError');
-    expect(settlePerCall(artifact, [[LOW, MID, HIGH], 9n, 3n])).toBe(true);
+      { composition: 'framed' });
+    expect(settleFramed(artifact, [[LOW, LOW, HIGH], 9n, 2n])).toBe(true);
+    expect(settleFramed(artifact, [[LOW, LOW, HIGH], 9n, 3n])).toContain('FramedGenesisError');
+    expect(settleFramed(artifact, [[LOW, MID, HIGH], 9n, 3n])).toBe(true);
   });
 });

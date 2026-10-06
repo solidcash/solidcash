@@ -5,12 +5,12 @@ import {
   asmToScript, computeFunctionSelector, computeFunctionSignature, scriptToBytecode, sha256, validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import {
@@ -20,7 +20,7 @@ import {
   validatorFacetsOf,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A composed transaction under the chain's own limits.
@@ -78,7 +78,7 @@ function consensusMachine(): ReturnType<typeof createVirtualMachineBch2026ForPro
 
 /** The compiled pair, the plan, and the locks the plan's source outputs carry. */
 function buildPlan(): CompositionDraftPlan {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const program = (name: 'Caller' | 'Callee'): Uint8Array => fillPlaceholders(
     scriptToBytecode(asmToScript(artifacts[name]!.bytecode)),
     artifacts[name]!.composition!.placeholders,
@@ -202,7 +202,7 @@ const FACET_INDEX = 2;
 /** Composes the pair through the shipped composer, derives every execution, and evaluates every input. */
 function measure(): { measurements: readonly InputMeasurement[]; programBytes: number } {
   const plan = buildPlan();
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan,
   });
@@ -268,7 +268,7 @@ describe('the composed transaction under the chain\'s own limits', () => {
     // The control for the split: the head requires the facet at `head + 1`, so a transaction that leaves it out is
     // refused. Without this the facet's checks could be dropped by leaving its input out.
     const plan = buildPlan();
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan,
     });

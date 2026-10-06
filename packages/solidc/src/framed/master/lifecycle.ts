@@ -43,7 +43,7 @@ interface CountBound {
 }
 
 /** One `split(n)` or `merge(n)` function, reduced to what the arm checks. */
-export interface PerCallLifecycleEntry {
+export interface FramedLifecycleEntry {
   readonly kind: 'split' | 'merge';
   readonly name: string;
   readonly countParameter: string;
@@ -75,14 +75,14 @@ const MIRRORED: ReadonlyMap<BinaryOperator, BinaryOperator> = new Map([
 ]);
 
 /** The contract's `split(n)` and `merge(n)` functions, at most one of each, or none. */
-export function perCallLifecycleFunctions(contract: ContractNode): readonly FunctionDefinitionNode[] {
+export function framedLifecycleFunctions(contract: ContractNode): readonly FunctionDefinitionNode[] {
   return contract.functions.filter((fn) => fn.modifiers.includes(FunctionModifier.SPLIT)
     || fn.modifiers.includes(FunctionModifier.MERGE));
 }
 
 /** Reduces the lifecycle functions to their arm entries, refusing by name any body the arm cannot serve. */
-export function extractPerCallLifecycle(contract: ContractNode): readonly PerCallLifecycleEntry[] {
-  const entries = perCallLifecycleFunctions(contract).map((fn) => lifecycleEntry(contract, fn));
+export function extractFramedLifecycle(contract: ContractNode): readonly FramedLifecycleEntry[] {
+  const entries = framedLifecycleFunctions(contract).map((fn) => lifecycleEntry(contract, fn));
   for (const kind of ['split', 'merge'] as const) {
     if (entries.filter((entry) => entry.kind === kind).length > 1) {
       refuse(contract, `declares more than one ${kind}(n) function, and a master serves one`);
@@ -91,7 +91,7 @@ export function extractPerCallLifecycle(contract: ContractNode): readonly PerCal
   return entries;
 }
 
-function lifecycleEntry(contract: ContractNode, fn: FunctionDefinitionNode): PerCallLifecycleEntry {
+function lifecycleEntry(contract: ContractNode, fn: FunctionDefinitionNode): FramedLifecycleEntry {
   const kind = fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' : 'merge';
   if (fn.modifiers.includes(FunctionModifier.SPLIT) && fn.modifiers.includes(FunctionModifier.MERGE)) {
     refuse(contract, `'${fn.name}' is both split and merge`);
@@ -172,9 +172,9 @@ function constantBytes(
 
 function refuse(contract: ContractNode, reason: string): never {
   throw new SolidcDiagnosticError(
-    'PER_CALL_CODEGEN_UNAVAILABLE',
-    `the per-call composition convention does not support this contract: ${reason}`,
-    { requested: 'per-call', reason, contract: contract.name },
+    'FRAMED_CODEGEN_UNAVAILABLE',
+    `the framed composition convention does not support this contract: ${reason}`,
+    { requested: 'framed', reason, contract: contract.name },
   );
 }
 
@@ -246,7 +246,7 @@ function masterOrForeign(depth: number): Op[] {
 }
 
 /** `[n, sig, pin, mode]` to the same: the signature has base type ALL and is the admin's; `n` meets the bounds. */
-function authorise(entry: PerCallLifecycleEntry): Op[] {
+function authorise(entry: FramedLifecycleEntry): Op[] {
   const ops: Op[] = [
     num(2), O.OP_PICK, O.OP_SIZE, O.OP_1SUB, O.OP_SPLIT, O.OP_NIP,
     encodeDataPush(Uint8Array.of(0x1f)), O.OP_AND, encodeDataPush(Uint8Array.of(0x01)), O.OP_EQUALVERIFY,
@@ -316,7 +316,7 @@ function census(): Op[] {
 }
 
 /** The arm: entry `[mode, n, sig]` or `[mode]`, exit `[1]`. */
-export function buildLifecycleArmScript(entries: readonly PerCallLifecycleEntry[]): Uint8Array {
+export function buildLifecycleArmScript(entries: readonly FramedLifecycleEntry[]): Uint8Array {
   const split = entries.find((entry) => entry.kind === 'split');
   const merge = entries.find((entry) => entry.kind === 'merge');
   const splitOrMerge: Op[] = split !== undefined && merge !== undefined
@@ -371,7 +371,7 @@ export interface MasterProgramParts {
  */
 export function wrapLifecycleArm(
   parts: MasterProgramParts,
-  entries: readonly PerCallLifecycleEntry[],
+  entries: readonly FramedLifecycleEntry[],
   location: LocationI,
 ): MasterProgramParts {
   const head = [...bytecodeToScript(bytes(ARM_SELECTOR)), O.OP_NOTIF];
@@ -389,7 +389,7 @@ export function wrapLifecycleArm(
 }
 
 /** What a master serves outside its head, as the artifact publishes it. */
-export function publishLifecycle(entries: readonly PerCallLifecycleEntry[]): {
+export function publishLifecycle(entries: readonly FramedLifecycleEntry[]): {
   split?: { name: string; inputs: { name: string; type: string }[]; countParameter: string };
   merge?: { name: string; inputs: { name: string; type: string }[]; countParameter: string };
 } {

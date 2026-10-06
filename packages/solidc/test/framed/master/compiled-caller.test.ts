@@ -8,8 +8,8 @@ import {
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { buildMasterHeadScript } from '../../../src/per-call/master/master-head.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { buildMasterHeadScript } from '../../../src/framed/master/master-head.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -58,7 +58,7 @@ const callingSource = (target: Uint8Array): string => 'pragma solidcash ^0.13.0;
   + ' }';
 
 const compile = (target: Uint8Array = ADDRESS_CALLEE): ReturnType<typeof compileString> =>
-  compileString(callingSource(target), { composition: 'per-call' });
+  compileString(callingSource(target), { composition: 'framed' });
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
 const scriptBytes = (artifact: ReturnType<typeof compileString>): Uint8Array =>

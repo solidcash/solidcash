@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, parsePushdataCommitment, sha256, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -72,7 +72,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const vault = artifacts.Vault!;
 const desk = artifacts.Desk!;
 const deskProxy = buildProxyArtifact(desk);
@@ -89,7 +89,7 @@ interface Deployed {
   readonly deskImplementationCategoryId: string;
   readonly deskProxyAddress: Uint8Array;
   readonly changeAddress: string;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly snapshot: SnapshotRestorer;
 }
 
@@ -111,7 +111,7 @@ async function deployed(): Promise<Deployed> {
     for (const txid of [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(txid));
     const initCoin = funding(idOf('initialize coin'));
     await network.addUtxo(binToHex(OWNER_LOCK), initCoin);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: desk,
       proxyArtifact: deskProxy,
@@ -147,7 +147,7 @@ type Caller = 'owner' | 'stranger';
 interface Entered {
   readonly coin: { txid: string; vout: number; satoshis: bigint };
   readonly lock: Uint8Array;
-  readonly call: Promise<PerCallProxyCallResult>;
+  readonly call: Promise<FramedProxyCallResult>;
 }
 
 /** Funds the caller's coin and runs one desk entry through the shipped proxy hop. */
@@ -155,7 +155,7 @@ async function enter(run: Deployed, functionName: string, caller: Caller): Promi
   const lock = caller === 'owner' ? OWNER_LOCK : STRANGER_LOCK;
   const coin = funding(idOf(`${caller} ${functionName} coin`));
   await run.network.addUtxo(binToHex(lock), coin);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider: run.network,
     implementationArtifact: desk,
     proxyArtifact: deskProxy,
@@ -178,14 +178,14 @@ async function recordsOf(
   network: MockNetworkProvider, artifact: Artifact, categoryId: string,
 ): Promise<Record<string, unknown>> {
   const layout = artifact.stateLayout!;
-  const pools = await readPerCallDeployment(network, categoryId, layout);
+  const pools = await readFramedDeployment(network, categoryId, layout);
   return Object.assign({}, ...pools.records.map((record, nftIndex) =>
     parsePushdataCommitment(record.token!.nft!.commitment, layout, nftIndex))) as Record<string, unknown>;
 }
 
 /** The value tail of the vault's node for a claim id, or undefined while the list holds no node for it. */
 async function claimOf(network: MockNetworkProvider, id: bigint): Promise<string | undefined> {
-  const pools = await readPerCallDeployment(network, VAULT_CATEGORY, vault.stateLayout!);
+  const pools = await readFramedDeployment(network, VAULT_CATEGORY, vault.stateLayout!);
   const slot = bytesToHex(keyToSlotMulti([bigIntToVmNumber(id)]));
   const node = (pools.nodesByCollection.get('claims') ?? []).map((utxo) =>
     decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment))).find((entry) => bytesToHex(entry.slot) === slot);
@@ -263,7 +263,7 @@ describe('spec section 23 row 7: tx.origin authorizes a nested call', () => {
     const run = await deployed();
     const coin = funding(idOf('plain path coin'));
     await run.network.addUtxo(binToHex(OWNER_LOCK), coin);
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       provider: run.network, artifact: desk, categoryId: run.deskImplementationCategoryId, functionName: 'request',
       args: [CLAIM_ID, AMOUNT], callerUtxo: coin, callerLockingBytecode: OWNER_LOCK,
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),

@@ -6,7 +6,7 @@ import {
 import {
   assertValidatorCoverage, decideValidatorNeed, recogniseValidator, standaloneObjections,
   ValidatorCoverageError, type EntryFacts, type ValidatorUtxo,
-} from '../../../src/per-call/composer/need-test.js';
+} from '../../../src/framed/composer/need-test.js';
 
 /**
  * The need test and validator recognition, driven through the shipped predicates.

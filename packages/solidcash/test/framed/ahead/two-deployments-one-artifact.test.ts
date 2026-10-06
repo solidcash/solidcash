@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, newWorld, recordMet, type PlainDeployment, type World,
+  compileFramed, deployPlain, newWorld, recordMet, type PlainDeployment, type World,
 } from './composition-world.js';
 
 /**
@@ -13,9 +13,9 @@ import {
  * The off-chain read path plans its frames on its own (`read/read.ts`). It resolves a call's target from the address
  * the site bakes in or from the interface the site names, never from the address the caller's own state holds, so
  * two deployments held in state behind one interface are refused by name; past that, its blocks and record ids are
- * still keyed by the contract's name (`calleeRecordId`, the block loop of `readPerCallEntry`).
+ * still keyed by the contract's name (`calleeRecordId`, the block loop of `readFramedEntry`).
  *
- * The file runs only under `PER_CALL_AHEAD=1`.
+ * The file runs only under `FRAMED_AHEAD=1`.
  */
 
 const SOURCE = [
@@ -43,7 +43,7 @@ interface Chain {
 let chainRun: Promise<Chain> | undefined;
 function chain(): Promise<Chain> {
   chainRun ??= (async (): Promise<Chain> => {
-    const artifacts = compilePerCall(SOURCE);
+    const artifacts = compileFramed(SOURCE);
     const world = await newWorld(0x55);
     const tokenA = await deployPlain(world, artifacts.Token!, [3n]);
     const tokenB = await deployPlain(world, artifacts.Token!, [4n]);
@@ -53,7 +53,7 @@ function chain(): Promise<Chain> {
   return chainRun;
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: one entry reaching two deployments of one contract', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: one entry reaching two deployments of one contract', () => {
   it('through the read path: refuses a view over both deployments by name (should read 304 once served)', async () => {
     const c = await chain();
     // Each token under its own name, so each call could be matched to its deployment by address.
@@ -63,7 +63,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: one entry reaching tw
     };
     let error: Error | undefined;
     try {
-      await readPerCallEntry({
+      await readFramedEntry({
         provider: c.world.network, artifact: c.basket.artifact, categoryId: c.basket.categoryId,
         functionName: 'supplies', externals, vm: compositionMachine(),
       });

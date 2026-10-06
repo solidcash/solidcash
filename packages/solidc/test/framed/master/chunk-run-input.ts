@@ -7,14 +7,14 @@ import {
   dynamicChunkSignature, encodeWitnessBlock, scriptToBytecode, splitValueIntoChunks, type RecordEntry,
   type WitnessBlock,
 } from '@solidcash/utils';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import type { compileString } from '../../../src/compiler.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { dataRecordLock, REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * Dynamic values' chunk runs, laid out for a per-call master that settles alone.
+ * Dynamic values' chunk runs, laid out for a framed master that settles alone.
  *
  * The master sits at index 0, the signing user at 1 and the data NFT that carries the values' length headers at 2.
  * Any leading records, such as a mapping write's group, follow from 3, each spent and recreated at its own index.
@@ -56,7 +56,7 @@ const RUN_BASE = 3;
 const CHUNK_UNLOCKING_BYTECODE = new Uint8Array([0x00, 0x51]);
 const EMPTY = new Uint8Array(0);
 
-/** A compiled per-call master deployed under its own category. */
+/** A compiled framed master deployed under its own category. */
 export interface ChunkRunContract {
   readonly artifact: Artifact;
   readonly category: Uint8Array;
@@ -65,7 +65,7 @@ export interface ChunkRunContract {
   readonly masterLock: Uint8Array;
 }
 
-/** Deploys a compiled per-call master under a category seeded from `label`, and checks the deployment. */
+/** Deploys a compiled framed master under a category seeded from `label`, and checks the deployment. */
 export function deployChunkRunContract(artifact: Artifact, label: string): ChunkRunContract {
   const category = seededCategory(label);
   const deployed = deployMaster(artifact, category, REAL_VALIDATOR_PROGRAM);

@@ -7,7 +7,7 @@ vi.mock('solidcash/vitest', () => import('../../../src/test/TestExtensions.js'))
 
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { expect as chaiExpect } from '../../../../testing/src/chai.js';
 import { Contract, SignatureTemplate, Signer } from '../../../src/index.js';
@@ -15,10 +15,10 @@ import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
-import { PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { FramedFunctionCall } from '../../../src/framed/call/index.js';
+import { FramedProxyDeployError, buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -115,7 +115,7 @@ const OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const artifacts = compileStringMulti(SOURCE, OPTIONS as never);
@@ -143,7 +143,7 @@ const overLimitArgs = (amount: bigint): readonly unknown[] => [`0x${binToHex(CAL
 
 interface World {
   readonly network: MockNetworkProvider;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   readonly funder: Unlocker;
   readonly nextCoin: () => Utxo;
@@ -175,10 +175,10 @@ async function deployWorld(): Promise<World> {
   const proxied = async (
     artifact: NonNullable<typeof Vault>, implementationCategory: string, proxyCategory: string,
     args: readonly FunctionArgument[],
-  ): Promise<Awaited<ReturnType<typeof deployPerCallProxy>>> => {
+  ): Promise<Awaited<ReturnType<typeof deployFramedProxy>>> => {
     const initCoin = nextCoin();
     await network.addUtxo(binToHex(CALLER_LOCK), initCoin);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -227,13 +227,13 @@ type Refusal = Error & { readonly errorArgs?: readonly unknown[] };
 /** One call of a front entry through its proxy; a refusal is returned with the coin it left unspent. */
 async function enter(
   world: World, functionName: string, amount: bigint,
-): Promise<{ result?: PerCallProxyCallResult; error?: Refusal; coinLive: boolean }> {
+): Promise<{ result?: FramedProxyCallResult; error?: Refusal; coinLive: boolean }> {
   const coin = world.nextCoin();
   await world.network.addUtxo(binToHex(CALLER_LOCK), coin);
-  let outcome: { result?: PerCallProxyCallResult; error?: Refusal };
+  let outcome: { result?: FramedProxyCallResult; error?: Refusal };
   try {
     outcome = {
-      result: await callPerCallProxyEntry({
+      result: await callFramedProxyEntry({
         provider: world.network,
         implementationArtifact: artifacts.Front!,
         proxyArtifact: buildProxyArtifact(artifacts.Front!),
@@ -259,10 +259,10 @@ async function enter(
 
 /** Checks a refusal names the vault's `OverLimit` in its frame for `entry` and carries the values it was raised with. */
 function expectOverLimit(
-  refused: { result?: PerCallProxyCallResult; error?: Refusal; coinLive: boolean }, entry: string, amount: bigint,
+  refused: { result?: FramedProxyCallResult; error?: Refusal; coinLive: boolean }, entry: string, amount: bigint,
 ): void {
   expect(refused.result).toBeUndefined();
-  expect(refused.error).toBeInstanceOf(PerCallProxyDeployError);
+  expect(refused.error).toBeInstanceOf(FramedProxyDeployError);
   expect(refused.error!.message.startsWith(`the call's callee "Vault.${entry}()" did not settle through the proxy: `))
     .toBe(true);
   expect(refused.error!.message).toMatch(overLimitTail(entry));
@@ -315,7 +315,7 @@ describe('a custom error a callee behind its own proxy raises, with its argument
     await world.network.addUtxo(binToHex(CALLER_LOCK), world.nextCoin());
     const signer = new Signer(alicePriv, world.network);
     const front = artifacts.Front!;
-    const deposit = (amount: bigint): PerCallFunctionCall => new PerCallFunctionCall({
+    const deposit = (amount: bigint): FramedFunctionCall => new FramedFunctionCall({
       artifact: front,
       abiEntry: front.abi.find((entry) => entry.name === 'deposit')!,
       categoryId: FRONT_PROXY,

@@ -12,7 +12,7 @@
  */
 
 import {
-  PerCallEncodingError,
+  FramedEncodingError,
   bytesEqual,
   decodeTranscript,
   decodeWitnessBlock,
@@ -22,7 +22,7 @@ import {
   type Transcript,
   type WitnessBlock,
 } from '@solidcash/utils';
-import { hasCategory, isMutableNft, type InputView, type PerCallTransaction, type ValidatorContext } from './model.js';
+import { hasCategory, isMutableNft, type InputView, type FramedTransaction, type ValidatorContext } from './model.js';
 import { ValidatorReason, type ValidatorCheck, type ValidatorReasonName } from './reasons.js';
 
 /** A named rejection raised inside the derivation, carrying the check that raised it. */
@@ -45,7 +45,7 @@ export class CheckFailure extends Error {
  * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32`. This decoder is written here because the
  * frozen codec's `decodeWitnessBlock` reads a call record as `kind, calleeRef, target, value, ...`, which is
  * neither the order its own encoder writes nor the order section 16 states, so it cannot read back a version 1
- * block that contains a call (`packages/utils/src/per-call/witness-block.ts`, encoder lines 130-137 against decoder
+ * block that contains a call (`packages/utils/src/framed/witness-block.ts`, encoder lines 130-137 against decoder
  * lines 174-191). Every other part of the frozen interface is used as it stands.
  */
 /**
@@ -76,7 +76,7 @@ export function readWitnessBlock(input: InputView): WitnessBlock | undefined {
   try {
     return decodeWitnessBlockPayload(splitFirstPush(input.unlockingBytecode).payload);
   } catch (error) {
-    if (error instanceof PerCallEncodingError) return undefined;
+    if (error instanceof FramedEncodingError) return undefined;
     throw error;
   }
 }
@@ -97,7 +97,7 @@ export interface CallData {
  * value pushed as `OP_3` contributes the opcode, not the one-byte `0x03`, so the bytes are taken from the unlocking
  * bytecode rather than re-encoded from decoded payloads.
  */
-export function readCallData(transaction: PerCallTransaction, index: number): CallData {
+export function readCallData(transaction: FramedTransaction, index: number): CallData {
   const input = transaction.inputs[index];
   const unlocking = input === undefined ? new Uint8Array(0) : input.unlockingBytecode;
   let selector: Uint8Array;
@@ -109,7 +109,7 @@ export function readCallData(transaction: PerCallTransaction, index: number): Ca
     selector = afterWitness.payload;
     cursor = afterWitness.rest;
   } catch (error) {
-    if (error instanceof PerCallEncodingError) {
+    if (error instanceof FramedEncodingError) {
       throw new CheckFailure('V5', ValidatorReason.V5_CALLEE_CALL_DATA_MALFORMED, index, error.message);
     }
     throw error;
@@ -127,7 +127,7 @@ export function readCallData(transaction: PerCallTransaction, index: number): Ca
       rest = next.rest;
     }
   } catch (error) {
-    if (error instanceof PerCallEncodingError) {
+    if (error instanceof FramedEncodingError) {
       throw new CheckFailure('V5', ValidatorReason.V5_CALLEE_CALL_DATA_MALFORMED, index, error.message);
     }
     throw error;
@@ -153,7 +153,7 @@ export interface ParsedValidator {
  * and `pin(category) || V_TEMPLATE` as its redeem script. Its lock must be the address that script derives, which is
  * what P2SH32 consensus guarantees on chain.
  */
-export function readValidator(transaction: PerCallTransaction, context: ValidatorContext): ParsedValidator {
+export function readValidator(transaction: FramedTransaction, context: ValidatorContext): ParsedValidator {
   const input = transaction.inputs[context.validatorInputIndex];
   const index = context.validatorInputIndex;
   if (input === undefined) {
@@ -167,7 +167,7 @@ export function readValidator(transaction: PerCallTransaction, context: Validato
   try {
     pushes = splitPushes(input.unlockingBytecode);
   } catch (error) {
-    if (error instanceof PerCallEncodingError) {
+    if (error instanceof FramedEncodingError) {
       throw new CheckFailure('V2', ValidatorReason.V2_VALIDATOR_UNLOCKING_MALFORMED, index, error.message);
     }
     throw error;
@@ -187,7 +187,7 @@ export function readValidator(transaction: PerCallTransaction, context: Validato
   try {
     transcript = decodeTranscript(pushes[0]!);
   } catch (error) {
-    if (error instanceof PerCallEncodingError) {
+    if (error instanceof FramedEncodingError) {
       throw new CheckFailure('V2', ValidatorReason.V2_TRANSCRIPT_MALFORMED, index, error.message);
     }
     throw error;

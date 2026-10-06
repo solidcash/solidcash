@@ -20,19 +20,19 @@ import {
   placeholderPush,
 } from './placeholders.js';
 
-/** The internal option that marks this compile as a per-call master. */
-export interface PerCallMasterOptionCarrier {
-  __perCallMaster?: boolean;
+/** The internal option that marks this compile as a framed master. */
+export interface FramedMasterOptionCarrier {
+  __framedMaster?: boolean;
 }
 
-/** True when this compile emits a per-call master program. */
-export function isPerCallMaster(options: PerCallMasterOptionCarrier): boolean {
-  return options.__perCallMaster === true;
+/** True when this compile emits a framed master program. */
+export function isFramedMaster(options: FramedMasterOptionCarrier): boolean {
+  return options.__framedMaster === true;
 }
 
-/** Marks this compile as emitting a per-call master program. */
-export function setPerCallMaster(options: PerCallMasterOptionCarrier): void {
-  options.__perCallMaster = true;
+/** Marks this compile as emitting a framed master program. */
+export function setFramedMaster(options: FramedMasterOptionCarrier): void {
+  options.__framedMaster = true;
 }
 
 /**
@@ -59,7 +59,7 @@ export function findPlaceholderOffsets(
   const categoryOffset = lastBefore(thirtyTwoByteSlots, addressOffset);
   if (categoryOffset === undefined) {
     throw new SolidcDiagnosticError(
-      'PER_CALL_CODEGEN_UNAVAILABLE',
+      'FRAMED_CODEGEN_UNAVAILABLE',
       `the compiled master does not contain a reserved ${CATEGORY_SLOT_LENGTH}-byte category slot before its `
       + 'address slot',
       { matches: thirtyTwoByteSlots, addressOffset },
@@ -69,7 +69,7 @@ export function findPlaceholderOffsets(
   const templateHashOffset = thirtyTwoByteSlots.find((offset) => offset > addressOffset);
   if (templateHashOffset === undefined) {
     throw new SolidcDiagnosticError(
-      'PER_CALL_CODEGEN_UNAVAILABLE',
+      'FRAMED_CODEGEN_UNAVAILABLE',
       `the compiled master does not contain a reserved ${CATEGORY_SLOT_LENGTH}-byte validator program hash slot `
       + 'after its address slot',
       { matches: thirtyTwoByteSlots, addressOffset },
@@ -112,7 +112,7 @@ export function alignCensusAddressOffset(script: Script, declaresTemplateHash: b
     current = aligned;
   }
   throw new SolidcDiagnosticError(
-    'PER_CALL_CODEGEN_UNAVAILABLE',
+    'FRAMED_CODEGEN_UNAVAILABLE',
     'the census address offset did not settle on the reserved address slot',
     {},
   );
@@ -130,13 +130,13 @@ export function alignCensusAddressOffset(script: Script, declaresTemplateHash: b
  * execute, and leaves the stack as it found it, so it changes nothing except the room an input has. Each chunk
  * stays under the push size limit, so a path that reaches the block pays for it rather than failing on it.
  */
-export const PER_CALL_MASTER_PADDING_BYTES = 1024;
+export const FRAMED_MASTER_PADDING_BYTES = 1024;
 const PADDING_CHUNK_BYTES = 512;
 
 /** Appends the padding block to a finished master script. */
-export function padPerCallMasterScript(script: Script): Script {
+export function padFramedMasterScript(script: Script): Script {
   const padding: Script = [];
-  for (let written = 0; written < PER_CALL_MASTER_PADDING_BYTES; written += PADDING_CHUNK_BYTES) {
+  for (let written = 0; written < FRAMED_MASTER_PADDING_BYTES; written += PADDING_CHUNK_BYTES) {
     padding.push(new Uint8Array(PADDING_CHUNK_BYTES), Op.OP_DROP);
   }
   return [...script, ...padding];
@@ -231,7 +231,7 @@ function elementIndexCovering(script: Script, site: EncodedPush): number {
     at += size;
   }
   throw new SolidcDiagnosticError(
-    'PER_CALL_CODEGEN_UNAVAILABLE',
+    'FRAMED_CODEGEN_UNAVAILABLE',
     `the census address offset at byte ${site.start} is not one script element`,
     { start: site.start, end: site.end },
   );
@@ -241,14 +241,14 @@ function uniqueOffset(script: Uint8Array, pattern: Uint8Array, what: string): nu
   const offsets = allOffsets(script, pattern);
   if (offsets.length > 1) {
     throw new SolidcDiagnosticError(
-      'PER_CALL_CODEGEN_UNAVAILABLE',
+      'FRAMED_CODEGEN_UNAVAILABLE',
       `the compiled master reserves its ${what} slot more than once, so no single offset identifies it`,
       { slot: what, matches: offsets },
     );
   }
   if (offsets.length === 0) {
     throw new SolidcDiagnosticError(
-      'PER_CALL_CODEGEN_UNAVAILABLE',
+      'FRAMED_CODEGEN_UNAVAILABLE',
       `the compiled master does not contain its reserved ${what} slot`,
       { slot: what },
     );

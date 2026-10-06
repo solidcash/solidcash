@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { parsePushdataCommitment } from '@solidcash/utils';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { HDSigner, type TransactionDetails } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import type { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import type { FramedFunctionCall } from '../../../src/framed/call/index.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * The call surface a deployed per-call contract's handle exposes.
+ * The call surface a deployed framed contract's handle exposes.
  *
  * The handle hands back one call per ABI entry. Awaiting a writing entry composes it, derives it, and broadcasts
  * what the machine accepted; awaiting a read-only entry answers with the value the entry's own frame computed and
@@ -32,12 +32,12 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function current() view returns (int) { return this.total; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const tally = artifacts.Tally!;
 
 /** The deployed contract's record commitment, as the deployment reader reports it (hex, one per data NFT). */
 async function recordCommitment(provider: MockNetworkProvider, categoryId: string): Promise<string> {
-  const deployment = await readPerCallDeployment(provider, categoryId, tally.stateLayout!);
+  const deployment = await readFramedDeployment(provider, categoryId, tally.stateLayout!);
   return deployment.records[0]!.token!.nft!.commitment;
 }
 
@@ -47,10 +47,10 @@ function recordTotal(commitment: string): bigint {
   return decoded.total as bigint;
 }
 
-/** The entries the handle's call namespace exposes, as the class the per-call path returns. */
+/** The entries the handle's call namespace exposes, as the class the framed path returns. */
 interface TallyCalls {
-  readonly add: (by: bigint) => PerCallFunctionCall;
-  readonly current: () => PerCallFunctionCall;
+  readonly add: (by: bigint) => FramedFunctionCall;
+  readonly current: () => FramedFunctionCall;
 }
 
 /** Deploys the contract through the shipped deployment, with a funded signer connected to the handle. */
@@ -82,7 +82,7 @@ function sharedDeployment(): ReturnType<typeof deploy> {
   return deployedRun;
 }
 
-describe('the call surface of a deployed per-call contract', () => {
+describe('the call surface of a deployed framed contract', () => {
   it('answers a read-only entry with the value its own frame computed and sends nothing', async () => {
     const { calls } = await sharedDeployment();
     // A read is derived and evaluated locally: the contract's total starts at zero and no transaction is built.
@@ -96,7 +96,7 @@ describe('the call surface of a deployed per-call contract', () => {
     // The call is derived over a stand-in coin at the caller's own lock, so the body's refusal is what it reports,
     // not that the caller cannot pay.
     await expect(calls.add(-1n)).rejects.toThrow(
-      /PER_CALL_COMPOSITION_REFUSED: frame "master" of Tally\.add\(\) at line \d+/,
+      /FRAMED_COMPOSITION_REFUSED: frame "master" of Tally\.add\(\) at line \d+/,
     );
     expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
   });

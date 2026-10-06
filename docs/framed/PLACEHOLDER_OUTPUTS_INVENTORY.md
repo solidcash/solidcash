@@ -24,7 +24,7 @@ transaction funder).
 | D | UTXOs created on demand via `provider.addUtxo` | 13 SDK sites | No | Out of scope, but a real-chain blocker |
 | E | Tagged `OP_1` scripts (`<data> OP_DROP OP_1`) | 6 | n/a | Not placeholders; unaffected |
 
-**In the new per-call design** (`SPEC_PER_CALL_TRANSACTION.md`, revision 5), groups A-D disappear:
+**In the new framed design** (`SPEC_FRAMED_TRANSACTION.md`, revision 5), groups A-D disappear:
 - no balanced pads;
 - no dummy funders;
 - no UTXOs created on demand;

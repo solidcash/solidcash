@@ -9,7 +9,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -18,7 +18,7 @@ import {
 } from './validator-input.js';
 
 /**
- * A per-call `fallback()` at the EVM's dispatch: a selector a body has runs that body, and any other runs the
+ * A framed `fallback()` at the EVM's dispatch: a selector a body has runs that body, and any other runs the
  * fallback, with the call data as its input. A value send carries the selector of `receive()` alone, the EVM's
  * empty call data, so a contract without `receive()` takes it in a payable fallback, whose input is then empty.
  *
@@ -32,7 +32,7 @@ type VmOutput = VmTransaction['outputs'][number];
 const RECEIVE_SELECTOR = computeFunctionSelector(computeFunctionSignature('__receive', []));
 const MISSING_SELECTOR = computeFunctionSelector('missing()');
 
-describe('a per-call master with a fallback, entered by a user', () => {
+describe('a framed master with a fallback, entered by a user', () => {
   const CATEGORY = seededCategory('fallback dispatch');
   const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]);
   const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
@@ -45,7 +45,7 @@ describe('a per-call master with a fallback, entered by a user', () => {
     + '   function bump() { require(msg.sender == owner); }'
     + '   fallback(bytes input) external { require(input == expected); }'
     + ' }';
-  const artifact = compileString(SOURCE, { composition: 'per-call' });
+  const artifact = compileString(SOURCE, { composition: 'framed' });
   const BUMP_SELECTOR = new Uint8Array(Buffer.from(artifact.abi.find((entry) => entry.name === 'bump')!.selector!,
     'hex'));
   const FALLBACK_SELECTOR = new Uint8Array(Buffer.from(
@@ -136,7 +136,7 @@ describe('a per-call master with a fallback, entered by a user', () => {
   });
 });
 
-describe('a contract paying another contract that has a fallback, compiled per-call', () => {
+describe('a contract paying another contract that has a fallback, compiled framed', () => {
   const CATEGORY_PAYER = seededCategory('value fallback payer');
   const CATEGORY_PAYEE = seededCategory('value fallback payee');
   const TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
@@ -158,7 +158,7 @@ describe('a contract paying another contract that has a fallback, compiled per-c
     + ' contract Refuses { function note() { require(true); } fallback() external payable { require(false); } }'
     + ' contract Both { receive() external payable { require(true); } fallback() external payable { require(false); } }'
     + ' contract Payer { function pay(bytes to, int amount) { this.transfer(to, amount); require(true); } }';
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 
   const program = (name: string, category: Uint8Array, address: Uint8Array): Uint8Array => {
     const artifact = artifacts[name]!;

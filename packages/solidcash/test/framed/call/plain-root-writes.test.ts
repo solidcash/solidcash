@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { concatBytes, encodeWitnessBlock, splitFirstPush, type Artifact, type WitnessBlock } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A plain deployment's own mapping writes on the plain call path (`callPerCallEntry`), with no call beside them.
+ * A plain deployment's own mapping writes on the plain call path (`callFramedEntry`), with no call beside them.
  *
  * The call path plans a root frame's writes with the hop's own planner (`hopEntryWrites`), on the root's own records,
  * nodes and category: one sorted batch per collection, and a value that chunks laid with its run of chunk records.
@@ -60,7 +60,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 
 /** The user who deploys and enters every call: each frame's `msg.sender`. */
 const USER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
@@ -127,8 +127,8 @@ function chain(): Promise<Chain> {
 /** One call of a plain deployment's entry through the plain call path, entered by the user's own coin. */
 async function enter(
   world: World, deployed: Deployed, functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallCallResult> {
-  return callPerCallEntry({
+): Promise<FramedCallResult> {
+  return callFramedEntry({
     provider: world.provider,
     artifact: deployed.artifact,
     categoryId: deployed.categoryId,
@@ -145,7 +145,7 @@ async function enter(
 /** One call that has to settle: every participant accepted and the transaction broadcast. */
 async function settle(
   world: World, deployed: Deployed, functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const result = await enter(world, deployed, functionName, args);
   expect(result.verdicts.filter((verdict) => !verdict.accepted), functionName).toStrictEqual([]);
   expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -156,7 +156,7 @@ async function settle(
 async function view(
   world: World, deployed: Deployed, functionName: string, args: readonly FunctionArgument[] = [],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.provider, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -168,7 +168,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,

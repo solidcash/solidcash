@@ -1201,7 +1201,7 @@ back to 862/24 over the six pre-existing WIP files). Operator directive for all 
 **MockNetworkProvider** path only (`packages/solidcash/src/network/MockNetworkProvider.ts`), not the solidhat
 offline provider.
 
-### Probe A - per-call state source (`getContractState`, print name/category/master/data NFTs/`jobs$len`)
+### Probe A - framed state source (`getContractState`, print name/category/master/data NFTs/`jobs$len`)
 
 69 reads. The read that feeds the failing `takeJob` guard (last one before the predicate error) is:
 
@@ -6218,7 +6218,7 @@ fails in `take job`" shape observed.
 **Cheap check that needs no code change:** instrument the helper (one `console.error`) to record, per probe, how many
 of `published` resolved versus how many were needed, and run both `take job$` and `take job multiple`. If `take job`
 reports fewer resolved callsites than its sibling, the all-or-nothing return is the mechanism and the fix is to make
-the fallback *per-callsite* (keep the resolvable participants, and let the unresolvable slot keep its sentinel) —
+the fallback *framedsite* (keep the resolvable participants, and let the unresolvable slot keep its sentinel) —
 which is exactly what the comment argues against for ordering reasons, so the ordering concern would need to be
 addressed by pinning each participant's block explicitly rather than by list position.
 
@@ -11993,7 +11993,7 @@ in a full `take job` run, and round 324's `caller-identity-missing-category` gat
 failing `approve` frame neither `withCallerIdentity` overrides nor `_buildRepeatedExternalBatch` are on the path that
 resolves `nullop:msg.sender` to `aa20bbc502f0…` (the marketplace).
 
-The remaining authority for a per-call frame's key is `overrides.entryKeyOverrides` (`withEntryKey`): the composer
+The remaining authority for a framed frame's key is `overrides.entryKeyOverrides` (`withEntryKey`): the composer
 computes the entry key for the slot it materializes and passes it explicitly, which explains a CORRECT KEY with a
 ZERO `__internal__msgSenderCategory` witness - the two halves of the same identity are supplied by different
 mechanisms, and only the key half is wired for this frame.

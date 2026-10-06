@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, decodeTransaction, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, type StateLayout } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate, providerUnixLocktime } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A per-call hop carries the chain's current time as its nLocktime.
+ * A framed hop carries the chain's current time as its nLocktime.
  *
  * An entry that writes `tx.locktime` into state only records a real value when the hop's plan states one. The
  * plan's locktime comes from the provider through the deployment layer's own `providerUnixLocktime` (the tip,
@@ -36,7 +36,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function stamp() { this.stamped = uint32(tx.locktime); require(true); }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true });
 const impl = artifacts.Clock!;
 
 /** The commitment the shipped encoder materializes from one state of a layout. */
@@ -51,7 +51,7 @@ function implementationAddress(): Uint8Array {
 
 /** The record's own state, read back through the shipped deployment reader. */
 async function recordCommitment(network: MockNetworkProvider, categoryId: string): Promise<string> {
-  const deployment = await readPerCallDeployment(network, categoryId, impl.stateLayout!);
+  const deployment = await readFramedDeployment(network, categoryId, impl.stateLayout!);
   return bytesToHex(new Uint8Array(Buffer.from(deployment.records[0]!.token!.nft!.commitment, 'hex')));
 }
 
@@ -81,7 +81,7 @@ async function deployClock(): Promise<Deployed> {
   // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
   await fundShippedFacets(network);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     proxyArtifact: buildProxyArtifact(impl),
@@ -105,8 +105,8 @@ async function deployClock(): Promise<Deployed> {
 }
 
 /** The stamp hop, entered on the proxy through the shipped path. */
-async function stamp(deployed: Deployed): Promise<Awaited<ReturnType<typeof callPerCallProxyEntry>>> {
-  return callPerCallProxyEntry({
+async function stamp(deployed: Deployed): Promise<Awaited<ReturnType<typeof callFramedProxyEntry>>> {
+  return callFramedProxyEntry({
     provider: deployed.network,
     implementationArtifact: impl,
     proxyArtifact: buildProxyArtifact(impl),
@@ -122,7 +122,7 @@ async function stamp(deployed: Deployed): Promise<Awaited<ReturnType<typeof call
   });
 }
 
-describe('a per-call hop states the chain time as its nLocktime', () => {
+describe('a framed hop states the chain time as its nLocktime', () => {
   it('stores the stated locktime and broadcasts it, reading the tip again for a later hop', async () => {
     const deployed = await deployClock();
     deployed.network.increaseTime(5000);

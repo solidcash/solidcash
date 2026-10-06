@@ -2836,11 +2836,11 @@ export function planCompiledGraph(
             && valueTransfers.length === 1 && !valueTransfers[0].condition) {
             callValueEffect = true;
           } else {
-            throw new Error(`messageBus: invocation ${child} omits per-callsite value metadata; recompile its caller`);
+            throw new Error(`messageBus: invocation ${child} omits framedsite value metadata; recompile its caller`);
           }
         }
       } else if (typeof callValueEffect !== 'boolean') {
-        throw new Error(`messageBus: invocation ${child} has invalid per-callsite value metadata`);
+        throw new Error(`messageBus: invocation ${child} has invalid framedsite value metadata`);
       }
       if (callValueEffect) boundValueBits[child] = CALL_OPTION_VALUE;
       if (!callsite?.hasReturnValues) return;

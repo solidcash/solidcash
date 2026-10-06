@@ -87,7 +87,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   usesBlockhash = false;
   private fnUsesBlockhash = false;
   // Distinct blockhash read keys in the current function - each rides its own oracle slot (param name for a
-  // direct-identifier n; a per-call-site placeholder for a computed n).
+  // direct-identifier n; a framed-site placeholder for a computed n).
   private fnBlockhashArgs = new Set<string>();
   // Per-function counter for computed-n blockhash reads (each is its own slot).
   private fnComputedBlockhashCount = 0;
@@ -129,14 +129,14 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       this.fnUsesBlockhash = true;
       // Each distinct n gets its own consecutive oracle slot. A direct-identifier n keys on the param name (the
       // SDK reads the arg; same param -> one slot). ANY computed n (block.number - K, arbitrary arithmetic)
-      // gets its own per-call-site slot; the SDK resolves it from the auto-derivation probe trace (the covenant
+      // gets its own framed-site slot; the SDK resolves it from the auto-derivation probe trace (the covenant
       // computes n on-stack). Only the slot COUNT matters here (codegen assigns the concrete keys), so mark
       // each computed call site with a unique placeholder.
       const nArg = node.parameters[0];
       if (nArg instanceof IdentifierNode) {
         this.fnBlockhashArgs.add(nArg.name);
       } else {
-        // Stamp a stable per-call-site index (this pass visits each call once; codegen visits twice).
+        // Stamp a stable framed-site index (this pass visits each call once; codegen visits twice).
         node.blockhashComputedIndex = this.fnComputedBlockhashCount++;
         this.fnBlockhashArgs.add(encodeComputedBlockhashKey(node.blockhashComputedIndex));
       }

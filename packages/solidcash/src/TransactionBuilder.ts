@@ -316,7 +316,7 @@ export class TransactionBuilder {
       if (!abiFn.keccakCompute) continue;
       const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
       // A dynamic (runtime-bound) keccak loop reads N absolute-forward side-cars right after the master, one per
-      // iteration - resolved by a progressive probe, not the fixed one-per-call path. A function that ALSO has a
+      // iteration - resolved by a progressive probe, not the fixed one-framed path. A function that ALSO has a
       // straight-line keccak256 call mixes that with a second, count-relative index family and needs both funded
       // in one pass (either can execute first, so neither probe converges without the other's side-cars).
       if (abiFn.keccakLoopReads) {

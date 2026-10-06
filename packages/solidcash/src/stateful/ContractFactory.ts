@@ -13,7 +13,7 @@ import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
 import { registerDeployment, registeredValueAddressLockingBytecode } from './deployment-registry.js';
 import { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';
-import { resolveMasterPoolSize, poolGenesisSatoshis } from '../per-call/deploy/pool.js';
+import { resolveMasterPoolSize, poolGenesisSatoshis } from '../framed/deploy/pool.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -34,7 +34,7 @@ export interface DeployContractOptions {
    */
   salt?: Uint8Array;
   threadCount?: number;
-  /** Number of validator UTXOs a per-call genesis mints; defaults to the composing pool size. */
+  /** Number of validator UTXOs a framed genesis mints; defaults to the composing pool size. */
   validatorCount?: number;
   /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
   messageBusVerificationInputCount?: number;
@@ -79,7 +79,7 @@ function normalizeRegisteredAddressArguments<T>(
  *
  * `identityNftCount` counts the category-branded 1200-satoshi outputs a genesis mints for identity anchors and
  * message bus verifiers. `additionalSatoshis` is a satoshi floor for anything else the genesis carries that the
- * fixed per-output estimate does not name — a per-call genesis's master and validator pools, for instance. Both
+ * fixed per-output estimate does not name — a framed genesis's master and validator pools, for instance. Both
  * only size the coin the caller is given; the genesis itself refuses funding it cannot cover.
  */
 export async function selectGenesisFundingUtxo(
@@ -317,15 +317,15 @@ export class ContractFactory<T extends Artifact = Artifact> {
       // A create address is predicted from the genesis-eligible coin the deployment will spend: the coin's txid
       // becomes the child's category, and the address is derived from that category. So a deployment whose address
       // was predicted ahead spends the coin the prediction named, rather than selecting another one.
-      const { takeReservedGenesisFunding } = await import('../per-call/deploy/create-lookahead-session.js');
+      const { takeReservedGenesisFunding } = await import('../framed/deploy/create-lookahead-session.js');
       fundingUtxo = takeReservedGenesisFunding(signer);
       if (!fundingUtxo) {
         const verifierCount = overrides.messageBusVerificationInputCount
           ?? (deployArtifact.messageBus?.verifierProgram ? 1 : 0);
-        // A per-call genesis mints its whole master and validator pool, so the funding selection holds the pool's
+        // A framed genesis mints its whole master and validator pool, so the funding selection holds the pool's
         // outputs (and the validator facets) as a satoshi floor on top of the records and anchors it already counts.
         let poolSatoshis = 0n;
-        if (deployArtifact.composition?.convention === 'per-call') {
+        if (deployArtifact.composition?.convention === 'framed') {
           const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
           poolSatoshis = poolGenesisSatoshis(pool);
         }
@@ -432,13 +432,13 @@ export class ContractFactory<T extends Artifact = Artifact> {
     (contract as unknown as { deployed: () => Promise<DeployedContract<T>> }).deployed = awaitDeployed;
     // The registered lock is what an address argument naming this deployment is stored as (a constructor's or an
     // entry's), so it must be the lock the deployment's frames present as `msg.sender` and `address(this)`. A
-    // per-call contract presents its own address, `addrV(category)`, which `target` carries: its handle's lock is
+    // framed contract presents its own address, `addrV(category)`, which `target` carries: its handle's lock is
     // the unfilled artifact's, which no frame presents, so a stored copy of it would never equal the caller.
-    const perCallAddress = (contract as StatefulContract)._perCallAddress;
+    const framedAddress = (contract as StatefulContract)._framedAddress;
     // Frames present `addrV(category)`. Register that lock even though `target` is the logical CREATE address.
-    const executionLock = perCallAddress === undefined
-      ? contract.inner.lockingBytecode : binToHex(addressToLockScript(perCallAddress));
-    const executionAddress = perCallAddress ?? contract.target;
+    const executionLock = framedAddress === undefined
+      ? contract.inner.lockingBytecode : binToHex(addressToLockScript(framedAddress));
+    const executionAddress = framedAddress ?? contract.target;
     registerDeployment(provider, {
       contractName: this.artifact.contractName,
       address: executionAddress,

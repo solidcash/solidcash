@@ -9,7 +9,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -120,7 +120,7 @@ const compiledFixtures = new Map<string, Fixture>();
 function fixture(source: string, argumentPushes: Uint8Array): Fixture {
   const cached = compiledFixtures.get(source);
   if (cached !== undefined) return cached;
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const entry = artifacts.Callee!.abi.find((candidate) => candidate.selector !== undefined)!;
   const selector = new Uint8Array(Buffer.from(entry.selector!, 'hex'));
   const built = { artifacts, selector, argumentPushes };

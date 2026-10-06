@@ -17,8 +17,8 @@ lands it removes the claim line.
   call returned (`f2e34600d`) — and the title now stops on the entry's **own** `require(meceCount == 1, "Exactly one
   MECE tag is required")`, whose count comes from a value a **proxied** callee returned. That is PW8, and it is the
   critical path for the 24 titles. Evidence: `{SCRATCH}/ladder/probe-postjob1-r29.log` (the targeted run) and
-  `probe-postjob1-trace-r29.log` (`PER_CALL_HOP_TRACE=1`).
-- Coordinator directions (log rows `f85b9d3d3`, `912ff9400`): strict `revertedWith`/`withArgs` for per-call contracts
+  `probe-postjob1-trace-r29.log` (`FRAMED_HOP_TRACE=1`).
+- Coordinator directions (log rows `f85b9d3d3`, `912ff9400`): strict `revertedWith`/`withArgs` for framed contracts
   before M1 is claimed (the count is expected to drop), and a full ladder at the next checkpoint. Both are the
   ladder stream's.
 - Estimate at the time of writing: M2 (66/66 on the mock) around 2026-10-09 to 10-17; the long tail is L5-L7 (19
@@ -26,11 +26,11 @@ lands it removes the claim line.
 
 ## The ladder stream's lane (do not edit without its agreement)
 
-- `packages/solidcash/src/per-call/proxy/**` (hop planning, `callPerCallProxyEntry`, entry writes, the hop trace).
-- `packages/solidcash/src/per-call/composer/**` derivation host and draft (the repeated-site fill is being changed).
+- `packages/solidcash/src/framed/proxy/**` (hop planning, `callFramedProxyEntry`, entry writes, the hop trace).
+- `packages/solidcash/src/framed/composer/**` derivation host and draft (the repeated-site fill is being changed).
 - The ladder harness and fixture: `vitest.marketplace.config.ts`, `examples/effectiveacceleration/**`,
   `.marketplace/**`, `packages/testing/src/chai.ts` (the strict matchers), and the scoreboard ticks.
-- `packages/solidc/src/per-call/master/support.ts` and `stop-sites.ts` write-segment publication (`f22ecc5ff`);
+- `packages/solidc/src/framed/master/support.ts` and `stop-sites.ts` write-segment publication (`f22ecc5ff`);
   the second worker also edits `support.ts` (self-call admission).
 - Full ladder runs (at most one per day, the ladder stream's). Single-title runs in a scratch copy are fine; say so in
   the claim if they will be frequent, since each loads the shared box.
@@ -54,12 +54,12 @@ lands it removes the claim line.
 - **Why**: the seven open class-(a) titles (#21-23, #25-27, "reverts after calls", one inside the third token call)
   need the innermost entry's own reason through a composed hop, and the strict matchers will compare it. E3 is
   partial: `reportCompositionRefusal` (`composer/refusal.ts`) finds the innermost refusing frame, but the derivation
-  stalls (`PER_CALL_DERIVATION_STALLED`) before it is asked.
+  stalls (`FRAMED_DERIVATION_STALLED`) before it is asked.
 - **Do**: (1) in the worker's own directory, a neutral MS10 replica behind generated proxies: a root that makes
   state-changing calls into a proxied store and a token, then fails each of the seven checks in turn; show the
   reason is recoverable by applying `reportCompositionRefusal` to the stalled draft. (2) Agree with the ladder stream
   on the one hook in the settle loop that reports it (its file), and update the suites that pin the stall as a stall
-  (find them by `PER_CALL_DERIVATION_STALLED` under `test/per-call`).
+  (find them by `FRAMED_DERIVATION_STALLED` under `test/framed`).
 - **Done when**: each of the seven checks is reported by its own reason (and custom-error arguments) through the
   shipped proxy path, nothing is broadcast, and E3 is ticked.
 - **Size**: 1-2 days. **Coordination**: medium-high (step 2 is in the ladder stream's file).
@@ -68,8 +68,8 @@ lands it removes the claim line.
 
 - **Why**: each flow shape settles as a hand-planned replica in `shapes/`, but none is driven through the automatic
   hop planning the ladder uses. L5-L7 are the estimate's long tail; knowing their first walls days early narrows it.
-- **Do**: in a new `test/per-call/ahead/` directory, neutral contracts deployed behind generated proxies and called
-  through `callPerCallProxyEntry` with `PER_CALL_HOP_TRACE=1`, one file per shape: MS3 fan-in (`takeJob` single
+- **Do**: in a new `test/framed/ahead/` directory, neutral contracts deployed behind generated proxies and called
+  through `callFramedProxyEntry` with `FRAMED_HOP_TRACE=1`, one file per shape: MS3 fan-in (`takeJob` single
   applicant, `payStartJob`), MS5 (`refund`, `refuseArbitration` on a taken job), MS6 (`dispute` by the creator), MS4
   (`approveResult` with a rating), MS7 (`arbitrate` 80-20, about 24 masters). Pin each as settling or at its first
   wall by name. Fix a compiler-side gap in this lane (with a machine accept and refuse); hand an SDK hop gap to the
@@ -80,14 +80,14 @@ lands it removes the claim line.
 
 ### PW3. Write segments for the entries that publish none
 
-- **Status**: ledger row D5 (`docs/per-call/DECISIONS.md`) - met on the Done-when below, with the fixture's
+- **Status**: ledger row D5 (`docs/framed/DECISIONS.md`) - met on the Done-when below, with the fixture's
   call-in-loop shape handed to the ladder stream.
 - **Why**: `postThreadMessage` (no record write of its own), `updateJobWhitelist` (a loop upsert whose body also
   calls) and a batch write beside a dynamic run in another segment published no write segment and stop the ladder at
   #20, #30, #46 and #47.
 - **Do**: publish each shape's fact in `support.ts`/`stop-sites.ts`, with a master test per shape in
-  `solidc/test/per-call/master` that the body verifies the write at that segment (accept and refuse). This lane owns
-  the loop protocol's SDK side (`packages/solidcash/src/per-call/call/**`); `per-call/proxy/**` and `read.ts` stay the
+  `solidc/test/framed/master` that the body verifies the write at that segment (accept and refuse). This lane owns
+  the loop protocol's SDK side (`packages/solidcash/src/framed/call/**`); `framed/proxy/**` and `read.ts` stay the
   ladder stream's.
 - **The code that landed**: `c3cf75d69` (a write list states the empty case; a loop whose own body reaches no call
   has its write placed - one call puts it at segment 1, two at segment 2; a batch beside a run in another segment
@@ -101,20 +101,20 @@ lands it removes the claim line.
 - **Served, measured through the shipped deploy and call path**: an entry that writes nothing of its own, a
   runtime-loop upsert beside a call, a batch beside a dynamic run, and the loop upsert for one to four turns in any
   key order - each accepted by the machine with a refused mutation beside it. Pins:
-  `solidc/test/per-call/master/write-shape-publication.test.ts` (which carries the shipped-path verdict for its own
+  `solidc/test/framed/master/write-shape-publication.test.ts` (which carries the shipped-path verdict for its own
   body), `master/write-segments-publication.test.ts`, `master/loop-upsert-segment.test.ts`,
-  `solidcash/test/per-call/call/loop-turns.test.ts`, `conformance/loop-upsert-settlement.test.ts` and
+  `solidcash/test/framed/call/loop-turns.test.ts`, `conformance/loop-upsert-settlement.test.ts` and
   `conformance/loop-upsert-beside-call.test.ts`.
 - **Refused by name, and not served**: a per-key value array (`balances[workers[i]] = amounts[i]`, which the SDK may
   not permute), and a loop whose body makes the call. The second is the fixture's `updateJobWhitelist`
   (`.marketplace/contracts/MarketplaceV1.sol:474-497`, where the write and `publishJobEvent(...)` share one
   iteration): its write fact cannot be stated because the write's segment is decided by a call inside the loop body
-  (`support.ts:722`'s `callFreeNestedBlocks` returns undefined for that shape), and `callPerCallEntry` refuses the
+  (`support.ts:722`'s `callFreeNestedBlocks` returns undefined for that shape), and `callFramedEntry` refuses the
   body for the callee-frame reason. Settling it is the hop's callee-frame planning, PW1/PW2's lane, which is what D5
   hands over; the reproducer is `master/loop-upsert-segment.test.ts` (the fixture's own shape, still refused wherever
   its node record is declared), `write-segments-publication.test.ts:142`, and the source lines above.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder stream
-  has taken the published facts. Met: 7 contracts / 0 refusals, `solidc/test/per-call/master` 610 in 82 files.
+  has taken the published facts. Met: 7 contracts / 0 refusals, `solidc/test/framed/master` 610 in 82 files.
 - **Coordination**: high (the ladder stream wrote `support.ts` and owns `proxy/**`); agree the split first.
 
 ### PW4. The owed proxy-binding guard (soundness)
@@ -132,7 +132,7 @@ lands it removes the claim line.
   `probes/this-call-msg-sender/ref.sol` (A to B, re-entry, `staticcall`, `delegatecall`, `new`, a value send, a
   fallback, the proxy pair, the factory) are to be recorded as served or refused by name, with no work on the hop.
 - **Do**: finish the draft (`{SCRATCH}/drafts/cross-contract-identity.test.ts` in the parallel worker's scratch),
-  pin each row's per-call answer or refusal beside the EVM's.
+  pin each row's framed answer or refusal beside the EVM's.
 - **Done when**: 21 of 21 rows recorded; G1 ticked when every row is served or its refusal is the hop's by name.
 - **Size**: half a day to a day. **Coordination**: none (`conformance/`). Claimed by the parallel worker.
 
@@ -169,7 +169,7 @@ lands it removes the claim line.
   reason=learned-retval`, then `reason=accepted`), and the caller then failing on the value it recorded for the
   **proxy** frame. This is the shape the parallel worker already recorded as "a value a proxied store returns reaches
   its caller empty", now measured on the ladder's own title; the same wall holds the other 23 titles.
-- **What the model requires**: `packages/solidc/src/per-call/validator/checks.ts:299` —
+- **What the model requires**: `packages/solidc/src/framed/validator/checks.ts:299` —
   `if (!bytesEqual(calleeBlock.retval, call.result)) check('V5','V5_RETVAL_MISMATCH', callee)`. The callee block the
   caller records is the proxy's `__fallback` frame, so **that frame's `retval` must be the bytes the implementation
   frame recorded**, i.e. the value encoded by the implementation entry's own declared return encoding. Two facts
@@ -180,10 +180,10 @@ lands it removes the claim line.
 - **Do**: give the generated proxy's fallback a frame that records the delegate's result **verbatim**, with no
   re-encoding — the smallest compiler notion of a raw retval, or one generated facade method per implementation
   entry typed to that entry's declared return — and plan the proxy leg with that return, threading the value the
-  implementation frame's own close hands back. Files: `packages/solidcash/src/per-call/proxy/generate.ts` and
-  `packages/solidcash/src/per-call/proxy/external-calls.ts` (the hop), plus the compiler's retval emission.
+  implementation frame's own close hands back. Files: `packages/solidcash/src/framed/proxy/generate.ts` and
+  `packages/solidcash/src/framed/proxy/external-calls.ts` (the hop), plus the compiler's retval emission.
 - **Done when**: a proxied callee's return reaches its caller through the shipped hop (a focused case in
-  `test/per-call/call/` beside a control where the implementation returns nothing), and the fixture's `meceTags` read
+  `test/framed/call/` beside a control where the implementation returns nothing), and the fixture's `meceTags` read
   answers the value the implementation entry returned — measured by re-running `-t 'post job 1'` (~7 minutes with the
   deployment) beside `-t 'mece tags > remove mece tag'`.
 - **Size**: a day or two. **Coordination**: the compiler half is `GenerateTargetTraversal.ts`/`proxy/generate.ts`,
@@ -219,9 +219,9 @@ lands it removes the claim line.
   declaration for it, including both segments and an insert, with `Program failed an OP_VERIFY operation.` inside
   the upsert body's own emitted code, before any record is read - and the shipped call path refuses it on the frame
   it plans itself (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a
-  parameter settles there. The reproducers are `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the
+  parameter settles there. The reproducers are `solidc/test/framed/master/loop-upsert-segment.test.ts` (the
   fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3's status is
-  ledger row D5** (`docs/per-call/DECISIONS.md`), met on the item's own Done-when: the three refusals are gone from
+  ledger row D5** (`docs/framed/DECISIONS.md`), met on the item's own Done-when: the three refusals are gone from
   the published census (7 contracts,
   0 refusals, `{SCRATCH}/census2-head.log`, `BUILD=0`, `COMPILE=0`), the master tests pass (610 in 82 files), and the
   published facts are in the ladder stream's hands. Two shapes are recorded as refused **by name** rather than
@@ -231,18 +231,18 @@ lands it removes the claim line.
   withdrawn in `c612e351b`. **That wording was never the item's Done-when**: the Done-when line is
   byte-identical at `1ec400927` and at HEAD ("the three refusals are gone from the published census, the master tests
   pass, and the ladder stream has taken the published facts"), with only a status sentence appended below it
-  (`git show 1ec400927:docs/per-call/HANDOFF_PARALLEL.md | grep -n -A2 'Done when'`), so PW3's requirement was
+  (`git show 1ec400927:docs/framed/HANDOFF_PARALLEL.md | grep -n -A2 'Done when'`), so PW3's requirement was
   narrowed and restored inside one round and a citation of the interval reads a revision that is not on the branch
-  (`git log -S "outside PW3" -- docs/per-call/HANDOFF_PARALLEL.md` names `87b092627` adding it and `c612e351b`
+  (`git log -S "outside PW3" -- docs/framed/HANDOFF_PARALLEL.md` names `87b092627` adding it and `c612e351b`
   removing it).
   **The served loop-upsert shape's machine accept, and where it is pinned** (the criterion that asks each published
   shape for `well-formed spend accepted, mutated spend refused`): the accept is
-  `solidc/test/per-call/master/loop-upsert-segment.test.ts`'s third describe, `the run-time-loop upsert the shipped
-  path settles, its machine verdict` - shipped compile, shipped deploy, `callPerCallEntry`, `{ accepted: true,
+  `solidc/test/framed/master/loop-upsert-segment.test.ts`'s third describe, `the run-time-loop upsert the shipped
+  path settles, its machine verdict` - shipped compile, shipped deploy, `callFramedEntry`, `{ accepted: true,
   objections: [] }`, then one byte of the commitment the loop wrote changed and `vm.stateSuccess(...)` not true - so
   the compiler-side file that pins the refusals carries the accept beside them; the same pair is
-  `solidc/test/per-call/master/write-shape-publication.test.ts:232` (whose fourth case publishes that body) and
-  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts:94` (with the mutation refused in the same
+  `solidc/test/framed/master/write-shape-publication.test.ts:232` (whose fourth case publishes that body) and
+  `solidcash/test/framed/conformance/loop-upsert-settlement.test.ts:94` (with the mutation refused in the same
   case). A citation of `loop-upsert-settlement.test.ts:86-97` reads the revision before `fddae17aa`.
 - **PW4 - landed** (`a723cdfba`, `cfecf35b7`). The attack table cites `hostile/delegate-callee-mutation.test.ts`: the
   faithful forwarded hop is accepted, and a callee that is a second deployed contract's master is refused
@@ -267,7 +267,7 @@ lands it removes the claim line.
   and its run, which is the two publication halves of PW3 at the fixture; `MarketplaceV1.updateJobWhitelist()`
   publishes nothing, for the wall recorded in the plan's Deviations.
 - **PW4, PW6 and PW7 re-audited** (2026-09-30, a scratch copy of HEAD - `2de577884`, re-confirmed at `b538a48bd`): PW4 two files / 7
-  passed, PW6 ten files / 38 passed, the PW7 instrument 1 passed / 1 skipped behind its own `PER_CALL_FULL` and `PW7_FULL` gates. One stale
+  passed, PW6 ten files / 38 passed, the PW7 instrument 1 passed / 1 skipped behind its own `FRAMED_FULL` and `PW7_FULL` gates. One stale
   detail was closed: the 4.5 wall-time row's transaction sizes are each 176 bytes below this revision's, so
   the row now carries a dated re-measurement note. No guard, G2 tick, attack row or source changed.
 
@@ -279,13 +279,13 @@ lands it removes the claim line.
   own reason, except where the failing `require` sits in a **call-making** body. Measured on a neutral replica: the
   machine reports the failing instruction relative to the invoked subroutine (`ip = 4`), while the compiler publishes
   that selector's `debug.functionDebug[selector].requires` in **program** coordinates (`ip = 589`), and
-  `artifact.debug.requires` is empty; `frameRevertReason` (`packages/solidcash/src/per-call/composer/refusal.ts:222`)
+  `artifact.debug.requires` is empty; `frameRevertReason` (`packages/solidcash/src/framed/composer/refusal.ts:222`)
   looks both up, misses, and falls back to `no source message`. The same entry with its call removed recovers its
   message, so the gap is the coordinate space, not the reason.
 - **Do**: publish a call-making (subroutine-invoked) body's `requires` and source map in the coordinates the machine
   reports for it, or publish the base the reporter must subtract; then a revert inside such a body names its own
-  message. Reproducers already exist: `packages/solidcash/test/per-call/reverts/zero-target-call.test.ts` and
-  `packages/solidcash/test/per-call/reverts/chunk-array-range-read.test.ts` (both currently assert the frame and the
+  message. Reproducers already exist: `packages/solidcash/test/framed/reverts/zero-target-call.test.ts` and
+  `packages/solidcash/test/framed/reverts/chunk-array-range-read.test.ts` (both currently assert the frame and the
   line, and say the message is not surfaced).
 - **Done when**: those two tests assert the entry's own message and the fixture's `post job with invalid token`,
   `post job from unregistered user` and the other revert titles report their source text.
@@ -294,11 +294,11 @@ lands it removes the claim line.
 
 ### PW10. A read-only entry reached through a proxy (the read shape of the 24 titles)
 
-- **Why**: a per-call transaction reaches a proxied contract by naming the proxy's master; the proxy's `__fallback`
+- **Why**: a framed transaction reaches a proxied contract by naming the proxy's master; the proxy's `__fallback`
   records a `DELEGATE` call to the implementation. For a **read-only** entry the caller's compiled body requires its
   call record's kind to be `STATIC` (the site's kind is fixed by the interface declaration it was compiled
   against), so the plan states the proxy frame `STATIC` and its own call to the implementation `DELEGATE`, which
-  `checkV10` refuses (`V10_STATIC_NON_STATIC_CALL`, `packages/solidc/src/per-call/validator/checks.ts`). Measured: the
+  `checkV10` refuses (`V10_STATIC_NON_STATIC_CALL`, `packages/solidc/src/framed/validator/checks.ts`). Measured: the
   same hop settles and broadcasts with the method declared non-`view`, and fails with it declared `view`
   (`HOPTRACE verdict id=validator/1 index=2 objection=Program failed an OP_VERIFY operation.`). Most of the
   remaining acceptance titles read through a proxy: `meceTags`, `userRegistered` and `arbitratorRegistered` are all
@@ -329,14 +329,14 @@ lands it removes the claim line.
   callee's custom error. Left in the settle loop (`proxy/deploy.ts`, the ladder stream's): `errorArgs` on the thrown
   error, and the callee-first order that lets an unreached callee's revert beat an earlier check of the entry.
 - **PW2 - landed** (`8f3ae98ee`, `48c4e03d3`, `315e2b853`, `a808809d9`, `c27583fa5`, `86c803be1`, `d99258e47`,
-  `b5273653e`, `c51f24376`). The probes in `test/per-call/ahead/`, the plan's "Walls ahead" table (shape, first wall,
+  `b5273653e`, `c51f24376`). The probes in `test/framed/ahead/`, the plan's "Walls ahead" table (shape, first wall,
   what stands behind it, file, owner) and `ahead/` in `MANIFEST.md`. Fixed on the way, each with its focused case: a
   call site's branch predicate published as it stands where its branch starts (`569c0d60d`); a method named like a
   built-in on a contract receiver compiled as the built-in (`73265877c`, `2aa73362e`); a long mapping value's chunk
   taken as a data record by the deployment classifier (`82493523a`); and a constructor's struct-literal mapping value,
   which crashed the genesis rather than being refused by name (`25173d5a3`). Handed over through the table: the hop's
   walls, with a patch for the delegate frame declaring records its entry does not name (applied in `184d88c25`),
-  and the per-call clock that never moves
+  and the framed clock that never moves
   (`oracle/blockOracleUpdater.ts`). Beyond PW8 on `post job 1`'s own path stand PW10's `view` reads through the data
   proxy, the token pull's allowance read beside its balances batch, which the hop drops (`job-updates.test.ts`), and,
   as last probed, two reaches of one mapping node (`publishJobPost`'s `balanceOf(msg.sender)` beside
@@ -364,8 +364,8 @@ lands it removes the claim line.
   `stateLayout.collections` has the collection as `sorted: true` with key types `["uint256","address"]`.
 - **Why it is PW3's**: it is the same nested-key, varying-element write shape as `updateJobWhitelist`, and the
   reason it was not served was the machine's own refusal of every declaration tried for that shape (PW3's status at
-  that revision; the current status is ledger row D5 in `docs/per-call/DECISIONS.md`), not the planner's choice. Whoever publishes and serves the varying-key loop row serves both entries —
+  that revision; the current status is ledger row D5 in `docs/framed/DECISIONS.md`), not the planner's choice. Whoever publishes and serves the varying-key loop row serves both entries —
   this one is the fixture's own acceptance title (`post job 1`), so it is worth measuring against it directly:
-  `cd /Code/cashscript/.worktrees/per-call && node --max-old-space-size=8192 packages/testing/dist/cli.js compile
+  `cd /Code/cashscript/.worktrees/framed && node --max-old-space-size=8192 packages/testing/dist/cli.js compile
   --jobs 4` then `yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism -t 'post job 1'`
   (~8 minutes, most of it the fixture deployment).

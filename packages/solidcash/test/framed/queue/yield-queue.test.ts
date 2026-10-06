@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { FrameKind, hexToBytes } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import { SignatureTemplate, TransactionBuilder } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
@@ -10,17 +10,17 @@ import { libauthOutputToSolidCashOutput } from '../../../src/utils.js';
 import {
   createComposedDerivationHost, deriveComposition, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftSourceOutput,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   CompositionQueue, type QueuedSend, type SendResources,
-} from '../../../src/per-call/queue/index.js';
+} from '../../../src/framed/queue/index.js';
 import { alicePriv } from '../../fixture/vars.js';
 import { compileAndDeploy, entryName, master, type DeployedContract } from '../shapes/harness.js';
 
 /**
  * The queue that serializes sends whose compositions could touch the same resources.
  *
- * Each case drives the shipped path — real sources through `compileStringMulti` with the per-call option, the
+ * Each case drives the shipped path — real sources through `compileStringMulti` with the framed option, the
  * shipped deployment, the shipped composer and derivation — and then broadcasts the derived transaction through a
  * `MockNetworkProvider` with the outpoints the masters actually sit on plus a change output for the relay fee, the
  * way the proxy initialization is broadcast. The queue decides which sends may run at once; the provider's UTXO

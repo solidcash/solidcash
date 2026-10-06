@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, type Artifact, type ExternalCallExpression } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -60,7 +60,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const sink = artifacts.Sink!;
 const root = artifacts.Root!;
 
@@ -115,7 +115,7 @@ async function deployShape(): Promise<Deployed> {
   const initCoin = funding(idOf('initialize coin'));
   const callCoin = funding(idOf('call coin'));
   for (const coin of [initCoin, callCoin]) await network.addUtxo(binToHex(CALLER_LOCK), coin);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -159,8 +159,8 @@ async function deployedShape(): Promise<Deployed> {
 }
 
 /** `close(0)` through the shipped hop, planned from `implementation`'s published routing. */
-function close(deployed: Deployed, implementation: Artifact): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+function close(deployed: Deployed, implementation: Artifact): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: deployed.network,
     implementationArtifact: implementation,
     proxyArtifact: buildProxyArtifact(root),

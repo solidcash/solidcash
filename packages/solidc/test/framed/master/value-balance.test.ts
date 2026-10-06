@@ -8,13 +8,13 @@ import {
   scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
- * `address(this).balance` in a per-call master (spec 4b): the value of the containers the transaction spends, with
+ * `address(this).balance` in a framed master (spec 4b): the value of the containers the transaction spends, with
  * the frame's value credited and the sends the body has made so far taken out, as the EVM's balance stands at that
  * point of the execution.
  */
@@ -51,7 +51,7 @@ const OTHER_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function own() { require(address(this).balance >= 0); }'
   + ' }';
 
-const artifact: Artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact: Artifact = compileString(SOURCE, { composition: 'framed' });
 
 function deployed(target: Artifact = artifact): { program: Uint8Array; lock: Uint8Array } {
   const { placeholders } = target.composition!;
@@ -124,7 +124,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
 
 const int = (value: bigint): Uint8Array => encodeIntegerValue(value);
 
-describe('address(this).balance, compiled per-call', () => {
+describe('address(this).balance, compiled framed', () => {
   it('is the value of the containers the transaction spends', () => {
     const spend = (expected: bigint): { accepted: boolean } => verdict({
       entry: 'check', args: [int(expected)], containersIn: [30_000n, 20_000n], trailing: [container(50_000n)],
@@ -171,7 +171,7 @@ describe('address(this).balance, compiled per-call', () => {
   });
 
   it('refuses by name a body that reads another address\'s balance', () => {
-    const other = compileString(OTHER_SOURCE, { composition: 'per-call' });
+    const other = compileString(OTHER_SOURCE, { composition: 'framed' });
     const refused = other.composition!.refusedEntries ?? [];
     expect(refused.map((entry) => entry.functionName)).toStrictEqual(['Peek.peek()']);
     expect(refused[0]!.reason).toMatch(/reads the balance of an address other than its own/);
@@ -217,10 +217,10 @@ const SERVED_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function check(int expected) { require(address(this).balance == expected); }'
   + ' }';
 
-describe('a constructor that reads a balance, compiled per-call', () => {
+describe('a constructor that reads a balance, compiled framed', () => {
   it('is refused by name when it reads another address\'s balance, itself or through a body it runs', () => {
     for (const [name, source] of Object.entries(OTHER_BALANCE_CONSTRUCTORS)) {
-      expect(compileString(source, { composition: 'per-call' }).composition!.refusedEntries, name).toStrictEqual([{
+      expect(compileString(source, { composition: 'framed' }).composition!.refusedEntries, name).toStrictEqual([{
         functionName: `${name}.__construct()`,
         reason: 'the constructor reads the balance of an address other than its own, which a transaction shows '
           + 'only in the inputs it spends',
@@ -231,12 +231,12 @@ describe('a constructor that reads a balance, compiled per-call', () => {
   it('is refused by name when it reads its own contract\'s balance, in either spelling', () => {
     const own = [
       ...Object.entries(OWN_BALANCE_CONSTRUCTORS).map(([name, source]) => ({
-        name, compiled: compileString(source, { composition: 'per-call' }),
+        name, compiled: compileString(source, { composition: 'framed' }),
       })),
       {
         name: 'Sol',
         compiled: compileString(SOLIDITY_OWN_BALANCE_SOURCE, {
-          composition: 'per-call', solidityImportCompat: true,
+          composition: 'framed', solidityImportCompat: true,
         } as never),
       },
     ];
@@ -253,7 +253,7 @@ describe('a constructor that reads a balance, compiled per-call', () => {
   });
 
   it('fails at the refused constructor while an entry that reads its balance keeps settling', () => {
-    const kept = compileString(KEPT_SOURCE, { composition: 'per-call' });
+    const kept = compileString(KEPT_SOURCE, { composition: 'framed' });
     expect(kept.composition!.refusedEntries!.map((entry) => entry.functionName)).toStrictEqual(['Kept.__construct()']);
     expect(kept.composition!.balanceReaders).toStrictEqual(['Kept.check()']);
     expect(verdict({
@@ -263,7 +263,7 @@ describe('a constructor that reads a balance, compiled per-call', () => {
     expect(verdict({ artifact: kept, entry: '__construct', args: [], containersIn: [], trailing: [] }))
       .toStrictEqual({ accepted: false, objection: 'Program failed an OP_VERIFY operation.' });
     // The control: the same master with a constructor that reads no balance serves the same frame.
-    const served = compileString(SERVED_SOURCE, { composition: 'per-call' });
+    const served = compileString(SERVED_SOURCE, { composition: 'framed' });
     expect(served.composition!.refusedEntries).toBeUndefined();
     expect(verdict({ artifact: served, entry: '__construct', args: [], containersIn: [], trailing: [] }))
       .toStrictEqual({ accepted: true });
@@ -285,8 +285,8 @@ const KEPT_HELPER_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function mine() internal view returns (int) { return address(this).balance; }'
   + ' }';
 
-describe('a kept subroutine that reads its contract\'s balance, compiled per-call', () => {
-  const compiledVault = (): Artifact => compileString(KEPT_HELPER_SOURCE, { composition: 'per-call' });
+describe('a kept subroutine that reads its contract\'s balance, compiled framed', () => {
+  const compiledVault = (): Artifact => compileString(KEPT_HELPER_SOURCE, { composition: 'framed' });
 
   it('compiles, and refuses by name the entry and the constructor that run it', () => {
     expect(compiledVault().composition!.refusedEntries).toStrictEqual([

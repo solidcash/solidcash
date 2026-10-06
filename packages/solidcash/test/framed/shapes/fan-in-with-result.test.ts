@@ -19,8 +19,8 @@ import {
   type FrameKindValue,
   type RecordEntry,
 } from '@solidcash/utils';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveComposition,
@@ -30,8 +30,8 @@ import {
   type CompositionDraftPlan,
   type DraftMaster,
   type MappingNodePlacement,
-} from '../../../src/per-call/composer/index.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+} from '../../../src/framed/composer/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { bytesToSlotValue, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
@@ -547,9 +547,9 @@ function settledFlow(): ReturnType<typeof deriveFlow> {
 }
 
 describe('a root that fans in: pay through a struct, then a token pull', () => {
-  it('compiles every contract on the per-call path', () => {
+  it('compiles every contract on the framed path', () => {
     for (const name of ['Root', 'Store', 'Arbiter', 'Escrow', 'Token']) {
-      expect(built.artifacts[name]?.composition?.convention).toBe('per-call');
+      expect(built.artifacts[name]?.composition?.convention).toBe('framed');
     }
   });
 
@@ -895,14 +895,14 @@ describe('the obstacles this flow replica works around', () => {
   it('serves an inline struct literal built from a run-time member the next argument reads too', () => {
     // The site's digest visits the arguments last first, so the fee's final use is the second argument's read; the
     // site keeps the fee for the struct's read as well. The machine cases are in
-    // `solidc/test/per-call/master/composed-arguments.test.ts`, and the settled edge in `edges/struct-argument-edge`.
+    // `solidc/test/framed/master/composed-arguments.test.ts`, and the settled edge in `edges/struct-argument-edge`.
     const source = 'pragma solidcash ^0.13.0;'
       + ' struct Rec { string tag; int amount; }'
       + ' interface IStore { function getFee() view returns (int); }'
       + ' interface IEscrow { function pay(Rec r, int fee); }'
       + ` contract Root { function run() { int fee = IStore(0x${hexOf(STORE_ADDRESS)}).getFee(); `
       + `   IEscrow(0x${hexOf(ESCROW_ADDRESS)}).pay(Rec("tag", fee), fee); require(true); } }`;
-    const root = compileStringMulti(source, { composition: 'per-call' }).Root!;
+    const root = compileStringMulti(source, { composition: 'framed' }).Root!;
     expect(root.composition!.refusedEntries ?? [])
       .toStrictEqual([]);
   });
@@ -930,7 +930,7 @@ describe('the obstacles this flow replica works around', () => {
     // node, takes it for an insert's predecessor, and the holder's walk then reads past the segment.
     const written = buildOnePullPlan('written');
     expect(derivationRefusal(written.plan, written.artifacts, 'pull-1')).toStrictEqual({
-      message: 'PER_CALL_DERIVATION_STALLED: master "pull-1" of Token.transferFrom() filled no witness at site 0 '
+      message: 'FRAMED_DERIVATION_STALLED: master "pull-1" of Token.transferFrom() filled no witness at site 0 '
         + '(close of segment 0)',
       objection: 'Program called an OP_SPLIT operation with an invalid index. '
         + 'stack item length: 2; requested split index: 4.',

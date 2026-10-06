@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { planHopExternalCalls } from '../../../src/per-call/proxy/external-calls.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { planHopExternalCalls } from '../../../src/framed/proxy/external-calls.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -51,7 +51,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const impl = artifacts.Impl!;
 
 /** The planner against the entry, named the way a hop names its callee. */
@@ -64,7 +64,7 @@ function plan(args: readonly Uint8Array[]): ReturnType<typeof planHopExternalCal
     externals: { IERC20: { artifact: artifacts.Token!, categoryId: TOKEN_CATEGORY } },
     selfAddress: new Uint8Array(35).fill(0x22),
     senderAddress: new Uint8Array(25).fill(0x33),
-    validatorProgram: perCallValidator.buildValidatorProgram(),
+    validatorProgram: framedValidator.buildValidatorProgram(),
   });
 }
 
@@ -88,7 +88,7 @@ async function deployedWithCallerCoin(network: MockNetworkProvider): Promise<{
   for (const coin of [hopCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);
   await fundShippedFacets(network);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     implementationDeploy: {
@@ -131,7 +131,7 @@ describe('an entry whose guarded call names the zero address', () => {
     // The entry's own frame refuses before the call is reached, so the implementation frame is named with its source
     // line and its own message rather than the hop refusing a target that names no contract. The `&&` skips the
     // call, so the frame declares no record and the body reaches its `require` rather than a call-count check.
-    await expect(callPerCallProxyEntry({
+    await expect(callFramedProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),

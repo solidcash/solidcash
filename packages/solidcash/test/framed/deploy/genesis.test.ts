@@ -7,24 +7,24 @@ import {
   encodeEventCommitment, encodeIntegerValue, encodePushdataValue, hash256, scriptToBytecode, sha256, validatorAddress,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator/index.js';
-import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../../../../solidc/test/per-call/machine.js';
+import { buildValidatorProgram } from '../../../../solidc/src/framed/validator/index.js';
+import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../../../../solidc/test/framed/machine.js';
 import { Contract, SignatureTemplate, StatefulContract, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  chunkRecordLockingBytecode, deployMaster, derivePerCallGenesis,
-} from '../../../src/per-call/deploy/index.js';
+  chunkRecordLockingBytecode, deployMaster, deriveFramedGenesis,
+} from '../../../src/framed/deploy/index.js';
 import {
   planChunkRun, planMappingBatch, planMappingWrite, type MappingWritePlan,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
 /**
- * Deriving a per-call contract's genesis by running its constructor frame.
+ * Deriving a framed contract's genesis by running its constructor frame.
  *
- * A per-call master carries its frame in the witness block leading its own unlocking bytecode, so the direct
+ * A framed master carries its frame in the witness block leading its own unlocking bytecode, so the direct
  * deployment's synthetic unlocking is refused by the head before the constructor runs. The derivation here builds
  * the block, runs the shipped, placeholder-filled master in the BCH-2026 machine, and learns the commitments the
  * constructor body computes. The machine accepts only when the record the frame declares and the transaction's
@@ -54,7 +54,7 @@ const NOARG_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function check() { require(this.total == 42); }'
   + ' }';
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const stateLayout = artifact.stateLayout!;
 
 /** The commitment the constructor computes for `seed + 1`, in the shipped encoder's form. */
@@ -88,11 +88,11 @@ function withMutatedOutput(program: VmProgram, commitment: Uint8Array): VmProgra
   return { ...program, transaction: { ...program.transaction, outputs } };
 }
 
-describe('a per-call genesis derived by running the constructor frame', () => {
-  let seeded: ReturnType<typeof derivePerCallGenesis> | undefined;
+describe('a framed genesis derived by running the constructor frame', () => {
+  let seeded: ReturnType<typeof deriveFramedGenesis> | undefined;
   /** The derivation for argument 5, which the cases read and none changes. */
-  const seededGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
-    seeded ??= derivePerCallGenesis({
+  const seededGenesis = (): ReturnType<typeof deriveFramedGenesis> => {
+    seeded ??= deriveFramedGenesis({
       artifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
       constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
     });
@@ -100,7 +100,7 @@ describe('a per-call genesis derived by running the constructor frame', () => {
   };
 
   it('publishes the convention and makes the contract address the validator address', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.composition?.convention).toBe('framed');
     const master = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
     expect([...master.address]).toStrictEqual([...ADDRESS]);
   });
@@ -113,7 +113,7 @@ describe('a per-call genesis derived by running the constructor frame', () => {
   });
 
   it('derives a different state for a different constructor argument', () => {
-    const genesis = derivePerCallGenesis({
+    const genesis = deriveFramedGenesis({
       artifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
       constructorArgs: [41n], senderLockingBytecode: OWNER_LOCK,
     });
@@ -123,8 +123,8 @@ describe('a per-call genesis derived by running the constructor frame', () => {
   });
 
   it('derives a contract whose constructor takes no argument', () => {
-    const plain = compileString(NOARG_SOURCE, { composition: 'per-call' });
-    const genesis = derivePerCallGenesis({
+    const plain = compileString(NOARG_SOURCE, { composition: 'framed' });
+    const genesis = deriveFramedGenesis({
       artifact: plain, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
       constructorArgs: [], senderLockingBytecode: OWNER_LOCK,
     });
@@ -153,7 +153,7 @@ const EMITTING_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function check(int v) { require(this.count == v); }'
   + ' }';
 
-const emittingArtifact = compileString(EMITTING_SOURCE, { composition: 'per-call' });
+const emittingArtifact = compileString(EMITTING_SOURCE, { composition: 'framed' });
 const emittingLayout = emittingArtifact.stateLayout!;
 
 /** The lock an event output carries under `category`: the P2SH32 of the covenant the body rebuilds. */
@@ -172,10 +172,10 @@ function withMutatedEventPayload(program: VmProgram, index: number, commitment: 
   return { ...program, transaction: { ...program.transaction, outputs } };
 }
 
-describe('a per-call genesis whose constructor emits an event', () => {
-  let emitting: ReturnType<typeof derivePerCallGenesis> | undefined;
-  const emittingGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
-    emitting ??= derivePerCallGenesis({
+describe('a framed genesis whose constructor emits an event', () => {
+  let emitting: ReturnType<typeof deriveFramedGenesis> | undefined;
+  const emittingGenesis = (): ReturnType<typeof deriveFramedGenesis> => {
+    emitting ??= deriveFramedGenesis({
       artifact: emittingArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
     });
@@ -254,10 +254,10 @@ describe('a per-call genesis whose constructor emits an event', () => {
       + '   constructor(int id) { this.count = id; emit Ping(id); }'
       + '   function check(int v) { require(this.count == v); }'
       + ' }',
-      { composition: 'per-call' },
+      { composition: 'framed' },
     );
     const definition = anonymousArtifact.events!.find((event) => event.name === 'Ping')!;
-    const genesis = derivePerCallGenesis({
+    const genesis = deriveFramedGenesis({
       artifact: anonymousArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [7n], senderLockingBytecode: OWNER_LOCK,
     });
@@ -288,13 +288,13 @@ const ANNOUNCE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function check() { require(true); }'
   + ' }';
 
-const announceArtifact = compileString(ANNOUNCE_SOURCE, { composition: 'per-call' });
+const announceArtifact = compileString(ANNOUNCE_SOURCE, { composition: 'framed' });
 const announced = announceArtifact.events!.find((definition) => definition.name === 'Announced')!;
 
-describe('a per-call genesis whose constructor emits without writing state', () => {
-  let announcing: ReturnType<typeof derivePerCallGenesis> | undefined;
-  const announceGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
-    announcing ??= derivePerCallGenesis({
+describe('a framed genesis whose constructor emits without writing state', () => {
+  let announcing: ReturnType<typeof deriveFramedGenesis> | undefined;
+  const announceGenesis = (): ReturnType<typeof deriveFramedGenesis> => {
+    announcing ??= deriveFramedGenesis({
       artifact: announceArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [9n], senderLockingBytecode: OWNER_LOCK,
     });
@@ -335,7 +335,7 @@ const MAPPING_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function touch() { require(true); }'
   + ' }';
 
-const mappingArtifact = compileString(MAPPING_SOURCE, { composition: 'per-call' });
+const mappingArtifact = compileString(MAPPING_SOURCE, { composition: 'framed' });
 const mappingStateLayout = mappingArtifact.stateLayout!;
 const MAPPING_ADMIN = new Uint8Array(20).fill(7);
 const MAPPING_SEED = 5n;
@@ -356,9 +356,9 @@ const mappingEntryLock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
   buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(mappingStateLayout.collections![0]!.signature)),
 )));
 
-let mapping: ReturnType<typeof derivePerCallGenesis> | undefined;
-const mappingGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
-  mapping ??= derivePerCallGenesis({
+let mapping: ReturnType<typeof deriveFramedGenesis> | undefined;
+const mappingGenesis = (): ReturnType<typeof deriveFramedGenesis> => {
+  mapping ??= deriveFramedGenesis({
     artifact: mappingArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
     provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN, MAPPING_SEED],
     senderLockingBytecode: OWNER_LOCK,
@@ -384,7 +384,7 @@ function withOutputCommitment(program: VmProgram, index: number, commitment: Uin
   return { ...program, transaction: { ...program.transaction, outputs } };
 }
 
-describe('a per-call genesis whose constructor writes a mapping entry', () => {
+describe('a framed genesis whose constructor writes a mapping entry', () => {
   it('mints the record, the relinked head and the created node from the shipped encoders', () => {
     const genesis = mappingGenesis();
     expect(genesis.commitments).toStrictEqual([buildPushdataCommitment(mappingStateLayout, { count: 6n }, 0)]);
@@ -431,9 +431,9 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
       + '   constructor(address admin) { this.balances[admin] = 1; }'
       + '   function touch() { require(true); }'
       + ' }',
-      { composition: 'per-call' },
+      { composition: 'framed' },
     );
-    const genesis = derivePerCallGenesis({
+    const genesis = deriveFramedGenesis({
       artifact: plain, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
     });
@@ -451,9 +451,9 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
       + '   constructor(address who) { this.first[who] = 1; this.second[who] = 2; }'
       + '   function touch() { require(true); }'
       + ' }',
-      { composition: 'per-call' },
+      { composition: 'framed' },
     );
-    const genesis = derivePerCallGenesis({
+    const genesis = deriveFramedGenesis({
       artifact: multi, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
     });
@@ -480,9 +480,9 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
       + `   constructor(address who) { this.terms[7] = Terms(0x${binToHex(encodeLockingBytecodeP2pkh(alicePkh))}, 5); }`
       + '   function touch() { require(true); }'
       + ' }',
-      { composition: 'per-call' },
+      { composition: 'framed' },
     );
-    const genesis = derivePerCallGenesis({
+    const genesis = deriveFramedGenesis({
       artifact: seeded, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
     });
@@ -518,7 +518,7 @@ const BATCH_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function touch() { require(true); }'
   + ' }';
 
-const batchArtifact = compileString(BATCH_SOURCE, { composition: 'per-call' });
+const batchArtifact = compileString(BATCH_SOURCE, { composition: 'framed' });
 const batchLayout = batchArtifact.stateLayout!;
 const BATCH_FIRST = new Uint8Array(20).fill(0x31);
 const BATCH_SECOND = new Uint8Array(20).fill(0x32);
@@ -540,9 +540,9 @@ const batchEntryLock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
   buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(batchLayout.collections![0]!.signature)),
 )));
 
-let batch: ReturnType<typeof derivePerCallGenesis> | undefined;
-const batchGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
-  batch ??= derivePerCallGenesis({
+let batch: ReturnType<typeof deriveFramedGenesis> | undefined;
+const batchGenesis = (): ReturnType<typeof deriveFramedGenesis> => {
+  batch ??= deriveFramedGenesis({
     artifact: batchArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
     provider: compositionProvider(), constructorArgs: [BATCH_FIRST, BATCH_SECOND, BATCH_SEED],
     senderLockingBytecode: OWNER_LOCK,
@@ -558,7 +558,7 @@ function batchEntryOutputIndex(program: VmProgram | undefined, commitment: Uint8
   ));
 }
 
-describe('a per-call genesis whose constructor writes one mapping as a sorted batch', () => {
+describe('a framed genesis whose constructor writes one mapping as a sorted batch', () => {
   it('mints the relinked head and both created nodes from the shipped batch planner', () => {
     const genesis = batchGenesis();
     expect(genesis.commitments).toStrictEqual([
@@ -608,10 +608,10 @@ const BATCH_DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function touch() { require(true); }'
   + ' }';
 
-const batchDynamicArtifact = compileString(BATCH_DYNAMIC_SOURCE, { composition: 'per-call' });
+const batchDynamicArtifact = compileString(BATCH_DYNAMIC_SOURCE, { composition: 'framed' });
 
-describe('a per-call genesis whose constructor writes a dynamic value, a sorted batch and an event', () => {
-  const derive = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+describe('a framed genesis whose constructor writes a dynamic value, a sorted batch and an event', () => {
+  const derive = (): ReturnType<typeof deriveFramedGenesis> => deriveFramedGenesis({
     artifact: batchDynamicArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
     provider: compositionProvider(), constructorArgs: ['ledger', BATCH_FIRST, BATCH_SECOND],
     senderLockingBytecode: OWNER_LOCK,
@@ -649,12 +649,12 @@ const SERVED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
-const servedCallArtifact = compileString(SERVED_CALL_SOURCE, { composition: 'per-call' });
+const servedCallArtifact = compileString(SERVED_CALL_SOURCE, { composition: 'framed' });
 const servedCallLayout = servedCallArtifact.stateLayout!;
 const ORACLE_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(5));
 
-describe('a per-call genesis beside a call-making entry the master serves', () => {
-  const refinedGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+describe('a framed genesis beside a call-making entry the master serves', () => {
+  const refinedGenesis = (): ReturnType<typeof deriveFramedGenesis> => deriveFramedGenesis({
     artifact: servedCallArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
     provider: compositionProvider(), constructorArgs: [ORACLE_LOCK], senderLockingBytecode: OWNER_LOCK,
   });
@@ -691,17 +691,17 @@ const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function peek() external returns (int) { return 0; }'
   + ' }';
 
-const dynamicArtifact = compileString(DYNAMIC_SOURCE, { composition: 'per-call' });
+const dynamicArtifact = compileString(DYNAMIC_SOURCE, { composition: 'framed' });
 const dynamicLayout = dynamicArtifact.stateLayout!;
 
-const dynamicGenesis = (value: string): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+const dynamicGenesis = (value: string): ReturnType<typeof deriveFramedGenesis> => deriveFramedGenesis({
   artifact: dynamicArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
   provider: compositionProvider(), constructorArgs: [value], senderLockingBytecode: OWNER_LOCK,
 });
 
 const utf8 = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, 'utf8'));
 
-describe('a per-call genesis whose constructor writes a dynamic value', () => {
+describe('a framed genesis whose constructor writes a dynamic value', () => {
   it('accepts the frame and carries the header and chunk the body computed', () => {
     const genesis = dynamicGenesis('hello');
     expect(accepted(genesis.program)).toBe(true);
@@ -738,11 +738,11 @@ describe('a per-call genesis whose constructor writes a dynamic value', () => {
       + '   constructor(int n) { this.name = string.concat("a", "b"); this.name = "c"; }'
       + '   function peek() external returns (int) { return 0; }'
       + ' }',
-      { composition: 'per-call' },
+      { composition: 'framed' },
     );
     expect(runtime.abi.find((row) => row.name === '__construct')?.dynamicWriteSources?.name)
       .toMatchObject({ kind: 'literal', value: 'c', type: 'string' });
-    const genesis = derivePerCallGenesis({
+    const genesis = deriveFramedGenesis({
       artifact: runtime, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [1n], senderLockingBytecode: OWNER_LOCK,
     });
@@ -798,13 +798,13 @@ const BALANCE_SOURCE = 'pragma solidcash ^0.13.0;'
 const PEEK_REFUSAL = 'the constructor of "Peek" is refused by the compiler (Peek.__construct()): the constructor reads '
   + 'the balance of an address other than its own, which a transaction shows only in the inputs it spends';
 
-describe('a per-call genesis whose constructor the compiler refused', () => {
-  const refusedArtifact = compileString(BALANCE_SOURCE, { composition: 'per-call' });
+describe('a framed genesis whose constructor the compiler refused', () => {
+  const refusedArtifact = compileString(BALANCE_SOURCE, { composition: 'framed' });
 
   it('is refused by name, with the reason the artifact publishes', () => {
     expect(refusedArtifact.composition?.refusedEntries?.map((entry) => entry.functionName))
       .toStrictEqual(['Peek.__construct()']);
-    expect(() => derivePerCallGenesis({
+    expect(() => deriveFramedGenesis({
       artifact: refusedArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [OWNER_LOCK], senderLockingBytecode: OWNER_LOCK,
     })).toThrow(PEEK_REFUSAL);
@@ -824,7 +824,7 @@ describe('a per-call genesis whose constructor the compiler refused', () => {
       category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
       constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
     };
-    expect(() => derivePerCallGenesis({ ...options, artifact: stated }))
+    expect(() => deriveFramedGenesis({ ...options, artifact: stated }))
       .toThrow('the constructor of "Vault" is refused by the compiler (Vault.__construct()): stated for this case');
     // An entry's refusal is not the constructor's: the same artifact refusing only `check` still derives.
     const entryRefused = {
@@ -834,7 +834,7 @@ describe('a per-call genesis whose constructor the compiler refused', () => {
         refusedEntries: [{ functionName: 'Vault.check()', reason: 'stated for this case' }],
       },
     };
-    expect(derivePerCallGenesis({ ...options, artifact: entryRefused }).commitments[0])
+    expect(deriveFramedGenesis({ ...options, artifact: entryRefused }).commitments[0])
       .toBe(Buffer.from(expectedCommitment(6n)).toString('hex'));
   });
 
@@ -865,7 +865,7 @@ describe('a per-call genesis whose constructor the compiler refused', () => {
       + '   constructor() { bad(); this.seen = 1; }'
       + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
       + '   function note() { this.seen = this.seen + 1; require(true); }'
-      + ' }', { composition: 'per-call' });
+      + ' }', { composition: 'framed' });
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -901,7 +901,7 @@ const HASH_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function peek() returns (bytes32) { return this.h; }'
   + ' }';
 
-const hashArtifact = compileString(HASH_SOURCE, { composition: 'per-call' });
+const hashArtifact = compileString(HASH_SOURCE, { composition: 'framed' });
 const hashLayout = hashArtifact.stateLayout!;
 const HASH_SEED = new Uint8Array(32).fill(0x5a);
 
@@ -909,13 +909,13 @@ const HASH_SEED = new Uint8Array(32).fill(0x5a);
 const hashCommitment = (preimage: Uint8Array, layout = hashLayout): string =>
   buildPushdataCommitment(layout, { h: Uint8Array.from(keccak_256(preimage)) }, 0);
 
-const hashGenesis = (seed: Uint8Array = HASH_SEED): ReturnType<typeof derivePerCallGenesis> =>
-  derivePerCallGenesis({
+const hashGenesis = (seed: Uint8Array = HASH_SEED): ReturnType<typeof deriveFramedGenesis> =>
+  deriveFramedGenesis({
     artifact: hashArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
     provider: compositionProvider(), constructorArgs: [seed], senderLockingBytecode: OWNER_LOCK,
   });
 
-describe('a per-call genesis whose constructor hashes a runtime value', () => {
+describe('a framed genesis whose constructor hashes a runtime value', () => {
   it('serves the body, co-spends its compute side-car and carries the hash it read back', () => {
     const constructorAbi = hashArtifact.abi.find((row) => row.name === '__construct')!;
     expect(hashArtifact.composition?.refusedEntries ?? []).toStrictEqual([]);
@@ -941,9 +941,9 @@ describe('a per-call genesis whose constructor hashes a runtime value', () => {
       + '   bytes32 public h;'
       + '   constructor(bytes seed) { this.h = keccak256(bytes.concat(seed, hex"01")); }'
       + '   function peek() returns (bytes32) { return this.h; }'
-      + ' }', { composition: 'per-call' });
+      + ' }', { composition: 'framed' });
     const seed = new Uint8Array([3, 1, 4, 1, 5]);
-    const genesis = derivePerCallGenesis({
+    const genesis = deriveFramedGenesis({
       artifact: computed, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [seed], senderLockingBytecode: OWNER_LOCK,
     });
@@ -980,25 +980,25 @@ describe('a per-call genesis whose constructor hashes a runtime value', () => {
       + '     for (int i = 0; i < turns; i = i + 1) { this.h = keccak256(seed); }'
       + '   }'
       + '   function peek() returns (bytes32) { return this.h; }'
-      + ' }', { composition: 'per-call' });
+      + ' }', { composition: 'framed' });
 
-    expect(() => derivePerCallGenesis({
+    expect(() => deriveFramedGenesis({
       artifact: looping, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [HASH_SEED, 2n], senderLockingBytecode: OWNER_LOCK,
     })).toThrow(/hashes inside a loop, so how many compute side-cars it co-spends is the loop's to decide/);
   });
 
-  it('refuses a body that publishes the hash with no per-call entry to count its side-cars by', () => {
+  it('refuses a body that publishes the hash with no framed entry to count its side-cars by', () => {
     // A hand-built publication: the artifact says the body computes, and names no call, so nothing states how many
     // side-cars its frame reads. The refusal answers that rather than building a frame the machine cannot run.
     const stated = {
       ...hashArtifact,
       abi: hashArtifact.abi.map((row) => (row.name === '__construct' ? { ...row, keccakPreimageParams: [] } : row)),
     };
-    expect(() => derivePerCallGenesis({
+    expect(() => deriveFramedGenesis({
       artifact: stated, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [HASH_SEED], senderLockingBytecode: OWNER_LOCK,
-    })).toThrow(/publishes keccakCompute with no per-call entry, so this deployment cannot tell how many compute/);
+    })).toThrow(/publishes keccakCompute with no framed entry, so this deployment cannot tell how many compute/);
   });
 });
 
@@ -1022,7 +1022,7 @@ const HASHED_DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function peek() returns (bytes32) { return this.digest; }'
   + ' }';
 
-const hashedDynamicArtifact = compileString(HASHED_DYNAMIC_SOURCE, { composition: 'per-call' });
+const hashedDynamicArtifact = compileString(HASHED_DYNAMIC_SOURCE, { composition: 'framed' });
 const hashedDynamicLayout = hashedDynamicArtifact.stateLayout!;
 const HASHED_SEED = new Uint8Array(32).map((_unused, index) => (index * 13 + 7) & 0xff);
 const HASHED_TEXT = 'tagged';
@@ -1031,12 +1031,12 @@ const HASHED_TEXT = 'tagged';
 const hashedDynamicCommitment = (layout = hashedDynamicLayout): string =>
   buildPushdataCommitment(layout, { digest: Uint8Array.from(keccak_256(HASHED_SEED)), label: HASHED_TEXT }, 0);
 
-const hashedDynamicGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+const hashedDynamicGenesis = (): ReturnType<typeof deriveFramedGenesis> => deriveFramedGenesis({
   artifact: hashedDynamicArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
   provider: compositionProvider(), constructorArgs: [HASHED_SEED, HASHED_TEXT], senderLockingBytecode: OWNER_LOCK,
 });
 
-describe('a per-call genesis whose constructor hashes beside a dynamic write', () => {
+describe('a framed genesis whose constructor hashes beside a dynamic write', () => {
   it('publishes the dynamic source and settles the frame the shipped encoders describe', () => {
     const constructorAbi = hashedDynamicArtifact.abi.find((row) => row.name === '__construct')!;
     expect(constructorAbi.keccakCompute).toBe(true);
@@ -1089,10 +1089,10 @@ describe('a per-call genesis whose constructor hashes beside a dynamic write', (
       + '     this.label = string.concat(left, right);'
       + '   }'
       + '   function peek() returns (bytes32) { return this.digest; }'
-      + ' }', { composition: 'per-call' });
+      + ' }', { composition: 'framed' });
 
     expect(concatenated.abi.find((row) => row.name === '__construct')?.dynamicWriteSources?.label).toBeUndefined();
-    expect(() => derivePerCallGenesis({
+    expect(() => deriveFramedGenesis({
       artifact: concatenated, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [HASHED_SEED, 'left', 'right'], senderLockingBytecode: OWNER_LOCK,
     })).toThrow(/writes dynamic "label", which the artifact publishes no value source for/);
@@ -1120,18 +1120,18 @@ const TRIO_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function peek() returns (bytes32) { return this.first; }'
   + ' }';
 
-const trioArtifact = compileString(TRIO_SOURCE, { composition: 'per-call' });
+const trioArtifact = compileString(TRIO_SOURCE, { composition: 'framed' });
 const trioLayout = trioArtifact.stateLayout!;
 /** Two distinct 32-byte seeds, filled from different strides so neither repeats a pattern the project forbids. */
 const TRIO_SEED_A = new Uint8Array(32).map((_, index) => (index * 7 + 3) & 0xff);
 const TRIO_SEED_B = new Uint8Array(32).map((_, index) => (index * 11 + 5) & 0xff);
 
-const trioGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+const trioGenesis = (): ReturnType<typeof deriveFramedGenesis> => deriveFramedGenesis({
   artifact: trioArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
   provider: compositionProvider(), constructorArgs: [TRIO_SEED_A, TRIO_SEED_B], senderLockingBytecode: OWNER_LOCK,
 });
 
-describe('a per-call genesis whose constructor hashes three runtime values', () => {
+describe('a framed genesis whose constructor hashes three runtime values', () => {
   const hashes = (): readonly Uint8Array[] => [
     Uint8Array.from(keccak_256(TRIO_SEED_A)),
     Uint8Array.from(keccak_256(TRIO_SEED_B)),

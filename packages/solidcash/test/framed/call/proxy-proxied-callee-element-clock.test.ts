@@ -4,16 +4,16 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { type Artifact, type StateRecord } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { deploymentStateValues } from '../../../src/per-call/proxy/external-calls.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { deploymentStateValues } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -66,7 +66,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const store = artifacts.Store!;
 const outer = artifacts.Outer!;
 
@@ -93,7 +93,7 @@ describe('a proxied callee that appends an element stamped with the transaction 
     for (const coin of [storeInitCoin, outerInitCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);
     await fundShippedFacets(network);
 
-    const storeDeployment = await deployPerCallProxy({
+    const storeDeployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: store,
       proxyArtifact: buildProxyArtifact(store),
@@ -110,7 +110,7 @@ describe('a proxied callee that appends an element stamped with the transaction 
     });
     expect(storeDeployment.initialize.accepted).toBe(true);
 
-    const outerDeployment = await deployPerCallProxy({
+    const outerDeployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: outer,
       proxyArtifact: buildProxyArtifact(outer),
@@ -123,7 +123,7 @@ describe('a proxied callee that appends an element stamped with the transaction 
     });
     expect(outerDeployment.initialize.accepted).toBe(true);
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: outer,
       proxyArtifact: buildProxyArtifact(outer),
@@ -161,7 +161,7 @@ describe('a proxied callee that appends an element stamped with the transaction 
 
     // The element the reach appended carries the clock the frame read, read back through the shipped reader.
     for (const id of [7n]) {
-      const read = await readPerCallEntry({
+      const read = await readFramedEntry({
         provider: network,
         artifact: store,
         categoryId: storeDeployment.proxy.categoryId,
@@ -186,8 +186,8 @@ function loadArtifact(name: string): Artifact {
   return JSON.parse(readFileSync(join(ARTIFACTS_DIR, name), 'utf8')) as Artifact;
 }
 
-// Deploying the shipped data contract takes minutes, so the case runs at milestones (`PER_CALL_FULL=1`).
-const describeShipped = hasArtifacts && process.env.PER_CALL_FULL === '1' ? describe : describe.skip;
+// Deploying the shipped data contract takes minutes, so the case runs at milestones (`FRAMED_FULL=1`).
+const describeShipped = hasArtifacts && process.env.FRAMED_FULL === '1' ? describe : describe.skip;
 
 describeShipped('the shipped artifact whose append carries the transaction clock', () => {
   const DATA_IMPL_CATEGORY = '0b'.repeat(32);
@@ -210,7 +210,7 @@ describeShipped('the shipped artifact whose append carries the transaction clock
   it('settles the append the callee stamps and reads the element back', async () => {
     const data = loadArtifact('MarketplaceDataV1.json');
     const callerArtifacts = compileStringMulti(CALLER_SOURCE, {
-      solidityImportCompat: true, composition: 'per-call',
+      solidityImportCompat: true, composition: 'framed',
     });
     const caller = callerArtifacts.Caller!;
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -234,11 +234,11 @@ describeShipped('the shipped artifact whose append carries the transaction clock
     const callerProxyArtifact = buildProxyArtifact(caller);
     const dataProxyArtifact = buildProxyArtifact(data);
     const dataProxyMaster = deployMaster(
-      dataProxyArtifact, hexToBin(DATA_PROXY_CATEGORY), perCallValidator.buildValidatorProgram(),
+      dataProxyArtifact, hexToBin(DATA_PROXY_CATEGORY), framedValidator.buildValidatorProgram(),
     ).address;
 
     // The caller's own proxy is the data contract's marketplace, and its record names the data contract's proxy.
-    const callerDeployment = await deployPerCallProxy({
+    const callerDeployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: caller,
       proxyArtifact: callerProxyArtifact,
@@ -255,7 +255,7 @@ describeShipped('the shipped artifact whose append carries the transaction clock
     });
     expect(callerDeployment.initialize.accepted).toBe(true);
 
-    const dataDeployment = await deployPerCallProxy({
+    const dataDeployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: data,
       proxyArtifact: dataProxyArtifact,
@@ -278,13 +278,13 @@ describeShipped('the shipped artifact whose append carries the transaction clock
       ...dataProxyArtifact.stateLayout!,
       collections: data.stateLayout?.collections,
     };
-    const live = await readPerCallDeployment(network, dataDeployment.proxy.categoryId, classification);
+    const live = await readFramedDeployment(network, dataDeployment.proxy.categoryId, classification);
     const clock = deploymentStateValues(
       classification, dataDeployment.proxy.categoryId, live,
     ).__block_timestamp;
     expect(typeof clock).toBe('bigint');
 
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: caller,
       proxyArtifact: callerProxyArtifact,
@@ -319,7 +319,7 @@ describeShipped('the shipped artifact whose append carries the transaction clock
 
     // The element the body computed is the element the plan stated: its last field is the clock, and the frame's
     // own close accepted only because the value the plan declared there is the one the body built.
-    const read = await readPerCallEntry({
+    const read = await readFramedEntry({
       provider: network,
       artifact: data,
       categoryId: dataDeployment.proxy.categoryId,

@@ -2,16 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, type Artifact, type RecordEntry } from '@solidcash/utils';
 import {
-  decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+  decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput,
   rootOf, seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
   participant, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * An execution order the EVM cannot produce is refused (T9, T30).
@@ -27,7 +27,7 @@ import {
  * A master's own input accepts either way: its body agrees with the views it declares, and binding those views to
  * the record's history is the validator's.
  *
- * The whole shipped path runs: real sources through `compileStringMulti` with the per-call convention, the shipped
+ * The whole shipped path runs: real sources through `compileStringMulti` with the framed convention, the shipped
  * deployment, the composer laying out and assembling the composition, the derivation judging it, and the BCH-2026
  * machine answering on the assembled transaction. Each control differs from its hostile case in one declaration.
  */
@@ -215,7 +215,7 @@ function planFor(fixture: Fixture, variant: Variant): CompositionDraftPlan {
 }
 
 /** The assembled transaction restated in the shape the derivation reads; nothing here decides anything. */
-function modelOf(outcome: ReturnType<typeof composeAndDerive>): PerCallTransaction {
+function modelOf(outcome: ReturnType<typeof composeAndDerive>): FramedTransaction {
   const program = outcome.draft.programFor(A_ROOT);
   type VmToken = { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
   const shape = (holder: { readonly token?: VmToken }): TokenShape => (holder.token === undefined
@@ -245,7 +245,7 @@ function modelOf(outcome: ReturnType<typeof composeAndDerive>): PerCallTransacti
 
 interface Composed {
   readonly outcome: ReturnType<typeof composeAndDerive>;
-  readonly transaction: PerCallTransaction;
+  readonly transaction: FramedTransaction;
   readonly validatorIndex: number;
   readonly rootIndex: number;
   readonly calledIndex: number;

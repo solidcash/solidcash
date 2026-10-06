@@ -1,6 +1,6 @@
 # Per-call composition: transaction specification
 
-Design spec for the per-call path of [`PLAN_MARKETPLACE_66.md`](./PLAN_MARKETPLACE_66.md) (its section 4).
+Design spec for the framed path of [`PLAN_MARKETPLACE_66.md`](./PLAN_MARKETPLACE_66.md) (its section 4).
 
 Revision 14, 2026-10-03. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
 
@@ -11,7 +11,7 @@ Revision 14, 2026-10-03. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 ### Since revision 13 (2026-10-03)
 
 Revision 14 records what landed after revision 13 (`3c0d52997`), and one place the implementation still differs.
-- **Plain-path callees** (sections 10, 18). `callPerCallEntry` plans the callee frames an entry reaches, each a frame
+- **Plain-path callees** (sections 10, 18). `callFramedEntry` plans the callee frames an entry reaches, each a frame
   of its contract's own block whose return is learned from its own close (`200a2079d`). A callee that emits or reads
   and writes a mapping entry is planned too (`7086239dc`): its events follow the root's, and its nodes are declared
   in the segments its artifact publishes. Chunks, value sends, side-cars, proxied callees and a write in a contract
@@ -433,7 +433,7 @@ A runs on two masters, so its validator settles it. B runs on one master, so B s
   so the redeem script is a data push followed by the program, and `addrV(cat)` hashes those bytes.
 - The program reads its own bytes with `OP_ACTIVEBYTECODE` and skips the pin push to find itself, which is what lets
   one program derive every category's address. It is emitted by the compiler (`buildValidatorParts` in
-  `solidc/src/per-call/validator/program.ts`), and whether its cost fits the runtime budget at the 66's widths is
+  `solidc/src/framed/validator/program.ts`), and whether its cost fits the runtime budget at the 66's widths is
   open (sections 12, 24).
 - It checks V1-V11 (section 7.2).
 - It spans two inputs, a head and one facet (section 24); the head is the input described here.
@@ -673,7 +673,7 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
 | Trailing | (none) | Events, each sending frame's container and then its value sends, then created UTXOs (new entries, chunks, containers) |
 | Fee | Funder inputs, including every root caller's signed input, and the containers a frame pays from | Change |
 
-**Compute side-cars** (`solidcash/src/per-call/composer/layout.ts`, `recovery.ts`).
+**Compute side-cars** (`solidcash/src/framed/composer/layout.ts`, `recovery.ts`).
 - A frame whose body hashes with `keccak256` or recovers a signer with `ecrecover` co-spends side-car inputs right
   after its own master: each recovery's A/B pair in call order, then one keccak side-car per recovery projected to
   an EVM address, then one per `keccak256` call in the order the body makes them.
@@ -685,7 +685,7 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   frame co-spends its side-cars the same way (`c937caa8f`). A preimage or digest the body computes is learned from
   the body's own bind (section 18).
 - A recovery inside a loop would need a run-time number of side-car pairs, and is refused by name
-  (`solidc/src/per-call/master/support.ts`). A `keccak256` call inside a loop reads one side-car per turn: the body
+  (`solidc/src/framed/master/support.ts`). A `keccak256` call inside a loop reads one side-car per turn: the body
   counts the side-cars it has read, and the artifact publishes the loop's recurrence, by which the SDK counts the
   side-cars it lays (`master/loop-effects.ts`, `call/loop-turns.ts`). An extra side-car is never read.
 
@@ -814,11 +814,11 @@ exactly the witness block the master executed with (section 4).
 - `msg.value = value`, never negative. A body that is not payable requires it to be 0, the EVM's call-value check
   (4b): the head requires it of every frame when no body of the master is payable, and each non-payable body
   requires it otherwise (`master-head.ts` `valueChecks`, `assertZeroValue`; `GenerateTargetTraversal.ts`
-  `emitPerCallCallValueCheck`).
+  `emitFramedCallValueCheck`).
 - A `ROOT` frame may carry value into a payable body: the user pays it into a satoshi container of the contract,
   and 4b's conservation rule counts it in `in(X)`, checked by the master when the frame settles alone and by the
   validator otherwise (V7). The SDK takes it as the call's `value` and refuses one for an entry that is not payable
-  (`solidcash/src/per-call/call/call.ts`).
+  (`solidcash/src/framed/call/call.ts`).
 - Every other value of a non-`ROOT` frame is checked by the validator (V5). The need test guarantees there is one.
 
 **O1. Origin.**
@@ -1147,8 +1147,8 @@ by the code that produces it, by the validator program, or against real state.
 | T46 | Pass a plain UTXO, a mapping node or a chunk of the contract's category off as its data record: the master reads the record's fields from the record its segment declares and settlement ties them to the commitments at the coordinate, but a commitment names no lock, so a same-category mutable UTXO at any lock that merely preserves itself would stand in | W2: a non-delegate frame holds a data record's input and output to `buildDataNftCovenantScript(ownerCategory)` (`emitDataNftLbc`), as it does for a mapping node (T45); its token category is still preserved in place. A delegate (proxy) frame's data-record lock is the proxy/composer lane's | Yes |
 | T47 | Name a mapping write target at its output alone, with a start view no input carries, on a frame that settles alone, so a forged value is read and a second node for the key is written | W2: a proof record is named by the input it spends, or by its output only when an earlier frame created it, which needs a validator settling the contract beside another master; a created predecessor sits at its collection's covenant with a non-zero slot, so a created head stays refused | Yes |
 | T49 | Pass a commitment-bearing mutable pair at the contract's address off as its validator's token in a self-settling master's census | S2: beside a self-settling master the census admits only its category's validator token, recreated in place with the empty commitment it is deployed with | Yes |
-| T50 | Rewrite a mapping node that a conditional sorted write co-spends, in a run that does not take the write's arm: the frame declares the node for the write the arm would make, and nothing bound its output (VM-proven in the direct and per-call conventions) | W2: a conditional write does not authorize an unreached output mutation (DECISIONS D15). When the arm does not run, the master requires each node it would write to be recreated with the commitment it was spent with: per one-slot target (`bc67e44ca`) and per multi-slot batch in one arm (`b87bba777`) | Yes |
-| T51 | Forge a log at a proxy: an immutable NFT of the proxy's category at an output no frame lists, beside a forwarding entry that emits nothing | S2 and V7, and the master's own-category event pin. DECISIONS D16 ports the kernel's drop of that pin in a delegatecall function with no local emit (`71bee8228`) to the direct convention (`65a67fed5`), keeping it where no delegate co-spend is forced, where a runtime loop emits, and on a per-call master | Yes |
+| T50 | Rewrite a mapping node that a conditional sorted write co-spends, in a run that does not take the write's arm: the frame declares the node for the write the arm would make, and nothing bound its output (VM-proven in the direct and framed conventions) | W2: a conditional write does not authorize an unreached output mutation (DECISIONS D15). When the arm does not run, the master requires each node it would write to be recreated with the commitment it was spent with: per one-slot target (`bc67e44ca`) and per multi-slot batch in one arm (`b87bba777`) | Yes |
+| T51 | Forge a log at a proxy: an immutable NFT of the proxy's category at an output no frame lists, beside a forwarding entry that emits nothing | S2 and V7, and the master's own-category event pin. DECISIONS D16 ports the kernel's drop of that pin in a delegatecall function with no local emit (`71bee8228`) to the direct convention (`65a67fed5`), keeping it where no delegate co-spend is forced, where a runtime loop emits, and on a framed master | Yes |
 | T52 | Declare a mapping entry at a coordinate that names no input (u16 0x8001, read as -1) with a forged view, so a read-only entry check passes with no entry spent | W2: an entry is read as absent only at the created-record sentinel 0xffff (`8dedaf280`); any other coordinate is read at the input it names, so one naming none fails. Was open since `4a0a9ce76` (VM-proven) | Yes |
 | T53 | Mint a contract's minting NFT at an output its index does not recreate (an extra master at the master lock, or one at a caller's own lock), so its holder forges the contract's masters and records | R2b and S2: every master's head requires each index's output to carry the category's minting NFT exactly when its input does (`27bc49b12`); only the admin's `split(n)`/`merge(n)` arm changes N. Was open (VM-proven, standalone and composed) | Yes |
 | T54 | Run a contract's constructor again on a live master: an owner rewritten, a supply minted twice | The constructor arm requires input 0 to spend `(category, 0)`, which only the genesis spends (`08d0bba27`, DECISIONS D18). Was open (VM-proven: an owner taken over; a supply minted from 1000 to 2000) | Yes |
@@ -1245,7 +1245,7 @@ A failing `require` that is not at a designated site is a real revert; the SDK r
   - An entry record is a whole entry-NFT commitment.
   - An insert is a created record (a trailing output). A `delete` consumes nothing: it writes the value type's
     default, as any other write would, and the node stays in the list (section 20). A frame that declares the node
-    removed is refused (`solidc/test/per-call/master/mapping-delete-write.test.ts`).
+    removed is refused (`solidc/test/framed/master/mapping-delete-write.test.ts`).
   - A sorted-list update also touches the predecessor entry's record.
   - Settlement binds records to real inputs and outputs. The executing code handles keys and predecessor logic.
 - **Value chunks and dynamic `bytes`/`string`/arrays:** chunk records, handled the same way.
@@ -1370,7 +1370,7 @@ facet's 5,660 B and 51% (`validator/consensus-limits.test.ts`). Wider compositio
    - The invoked target receives the caller's sender as hidden context (`GenerateTargetTraversal.ts:11661-11680`).
    - Probe: `require(this.who() == msg.sender)` passes and `require(this.who() == address(this))` fails. Solidity
      gives the opposite.
-   - The per-call codegen must pass the own lock instead (plan D7, stream C item C8).
+   - The framed codegen must pass the own lock instead (plan D7, stream C item C8).
    - Found on the way:
      - a public function that reads `msg.sender` and writes state fails `OP_VERIFY` when it is called internally,
        through `this.f()` or `f()`, although each half works alone;
@@ -1664,7 +1664,7 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
 - **Addresses.**
   - A user's address is its 25-byte P2PKH locking bytecode. A contract's is its 35-byte `addrV` lock.
   - In native mode, state fields, arguments, results and event fields all use this form
-    (`packages/utils/src/per-call/canonical.ts`).
+    (`packages/utils/src/framed/canonical.ts`).
   - In Solidity-compat mode (`solidityImportCompat`, which the marketplace compiles with), stored values keep the
     full lock, while results and the arguments of the calls a contract makes carry the 20-byte identity (DECISIONS
     D13, the kernel's shared base). The identity is the hash a P2PKH lock names, or `HASH160` of a contract's
@@ -1707,7 +1707,7 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
 ## 18. SDK derivation, reverts and reads (resolves open point 3)
 
 - **Stop sites.** For every entry, the compiler publishes two kinds of site on the artifact
-  (`composition.stopSites`, `solidc/src/per-call/master/stop-sites.ts`):
+  (`composition.stopSites`, `solidc/src/framed/master/stop-sites.ts`):
   - external calls, with their index, in call order: a call inside a loop is published once and marked `repeated`,
     and a call on a branch is marked `conditional`;
   - segment closes, one per segment, so an entry with `k` calls publishes `2k + 1` sites.
@@ -1724,7 +1724,7 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
     selector and arguments, or the computed records.
   - Fill that witness, derive any callee fully first, and continue. Every step gets strictly further (section 10).
   - **What ships: every step reruns the master.** The driver's cursor only moves forward
-    (`solidcash/src/per-call/composer/derivation.ts`), but the shipped host runs each step from the master's start,
+    (`solidcash/src/framed/composer/derivation.ts`), but the shipped host runs each step from the master's start,
     twice: once with the site's witness unfilled, noting where the program stops, and once with it filled, and counts
     the site filled only when the second run gets strictly further (`composer/shipped-host.ts`). The compiled master
     publishes no program offset per site, so a stop cannot be mapped back to its site, and the two runs prove the
@@ -1733,11 +1733,11 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - **Resuming is a future option.** Continuing each master from a snapshot of its VM state at the stop site costs
     about one run per master, where the rerun costs two per stop site, about 10 sites per master. The evaluation
     estimated that even one run per site could cost more SDK time than today's kernel, and resuming 2-4x less
-    (`EVAL_PER_CALL_VS_KERNEL.md` section 5). Resuming needs the compiler to publish where each site's witness is
+    (`EVAL_FRAMED_VS_KERNEL.md` section 5). Resuming needs the compiler to publish where each site's witness is
     consumed, and a VM snapshot cheaper than a run.
   - **Stalls are refused** (review, 2026-09-25; the step cap was removed in revision 11). Every step must fill at
     least one missing witness: a call result or a segment close. A step that fills none stops derivation with
-    `PER_CALL_DERIVATION_STALLED`, naming the master, the function and the stop site. Nothing is built or
+    `FRAMED_DERIVATION_STALLED`, naming the master, the function and the stop site. Nothing is built or
     broadcast.
   - **Termination needs no extra constant.** Each step fills a witness at a stop site that the execution reaches,
     so the steps are bounded by that execution's length. The VM bounds the execution with the provider's
@@ -1862,9 +1862,9 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
     `solidcash.faketoken.config.ts:9`). They have no record.
   - **Upgrade layout rule** (`readUpgradeLayoutVerdict`, plan 4.7). An upgrade keeps every record the old
     implementation wrote: each state variable by name, type, coordinates and encoding, each struct a field or
-    collection reaches field for field, each collection by signature and value form. A per-call record is minted
+    collection reaches field for field, each collection by signature and value form. A framed record is minted
     only at genesis, so an appended field or collection has no record behind the proxy and is refused too; `__gap`
-    carries no record. The compiler refuses by name under `upgradesFrom`, and the SDK's `requirePerCallUpgrade`
+    carries no record. The compiler refuses by name under `upgradesFrom`, and the SDK's `requireFramedUpgrade`
     refuses by name before an upgrade is built. The generated proxy serves no upgrade entry (19.4 is held), and the
     66 do not upgrade.
 
@@ -1940,7 +1940,7 @@ since each needs a master.
   - the table above gives each contract's minimum;
   - the default is 12 masters per contract, which covers Unicrow's 9, and a contract may get more;
   - the default is 4 validators for every contract, whether or not it roots compositions
-    (`DEFAULT_MASTER_POOL_SIZE` in `solidcash/src/per-call/deploy/pool.ts`), and a deployment may state either count.
+    (`DEFAULT_MASTER_POOL_SIZE` in `solidcash/src/framed/deploy/pool.ts`), and a deployment may state either count.
     In the 66 only the MarketplaceV1 proxy roots compositions; direct calls to MarketplaceData and FakeToken are
     standalone;
   - a deployment also funds one UTXO per validator facet (section 24), which serves any contract.
@@ -1955,7 +1955,7 @@ since each needs a master.
     - The only refusal: the transaction's first root belongs to a category with no validator. Other roots need no
       validator of their own category, because V9 constrains only a group's first root. Splitting into several
       groups is a choice, and each group then needs one validator of its own first root's category.
-  - The diagnostic `PER_CALL_POOL_EXHAUSTED` names X, the entries needed so far and the pool size. The remedy is a
+  - The diagnostic `FRAMED_POOL_EXHAUSTED` names X, the entries needed so far and the pool size. The remedy is a
     larger pool at deployment (plan D6), or `split` (deferred).
   - On chain there is nothing to check: a transaction cannot spend masters that do not exist.
   - The margin is small: `arbitrate` uses 9 of Unicrow's 12. A dedicated test fills a pool exactly, then asks for
@@ -2045,7 +2045,7 @@ landed (2026-09-28): the program was 10,270 B, the validator input's unlocking b
 4,897,165 of the 8,316,000 units its bytes bought. The program still had checks to emit, and `arbitrate` covers
 about 24 masters. So a validator may span several inputs, and since `dc4c1bdc6` (2026-09-29) it does.
 
-**What ships** (`solidc/src/per-call/validator/program.ts`).
+**What ships** (`solidc/src/framed/validator/program.ts`).
 - `K = 2`: a head and one facet.
 - The head (`HEAD_CHECKS`) runs V1, V2's header and index checks, V9, V3, V7's input, census, chain and value rules
   with the V6 order the chains follow, and V11, and binds the facet. A check stays in the head when its rule is
@@ -2098,7 +2098,7 @@ about 24 masters. So a validator may span several inputs, and since `dc4c1bdc6` 
   from 28 masters; measured in the parked tree on 2026-09-30). They are parked as a patch rather than landed,
   because changing `K` moves every address and every facet funding.
 
-**Threats** (section 9; `solidcash/test/per-call/hostile/validator-facets.test.ts`).
+**Threats** (section 9; `solidcash/test/framed/hostile/validator-facets.test.ts`).
 - A facet left out or moved: the head requires each facet's lock at `head + k` (the T4 and T6 class). A facet moved
   behind another head leaves its own position to some other input, and its head is refused.
 - A facet spent away or drained: the head requires the output at `head + k` to recreate it, worth at least its

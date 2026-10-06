@@ -47,7 +47,7 @@ const SWEEP_REASON = `it runs 'transfer', which the master cannot serve: ${TRANS
 describe('a public body that writes a sorted mapping, reached by a self-call', () => {
   for (const call of ['none', 'after', 'before', 'conditionalBefore'] as const) {
     it(`refuses the writing body by name, with its caller (${call})`, () => {
-      const refusals = publishedRefusals(compileStringMulti(SOURCE(call), { composition: 'per-call' }));
+      const refusals = publishedRefusals(compileStringMulti(SOURCE(call), { composition: 'framed' }));
       expect(refusals.map((refused) => refused.functionName).sort())
         .toStrictEqual(['Ledger.sweep()', 'Ledger.transfer()']);
       expect(refusals.find((refused) => refused.functionName === 'Ledger.transfer()')!.reason).toBe(TRANSFER_REASON);

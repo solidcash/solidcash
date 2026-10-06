@@ -1,7 +1,7 @@
 /**
  * Claim 2: absence is proven by the STRICT predecessor on the MASKED slot, and slot 0 stays reserved for HEAD.
  *
- * Spec: docs/per-call/SPEC_PER_CALL_TRANSACTION.md
+ * Spec: docs/framed/SPEC_FRAMED_TRANSACTION.md
  *   1489 - "its strict predecessor as an absence proof (`slot < s(k) < next`, or `next = 0`)";
  *   1491-1492 - "`s(k)` is the key's masked slot ..., never the raw hash: the mask changes the last byte for about
  *          half of all keys. Slots compare as little-endian 255-bit numbers, which the mask keeps non-negative."

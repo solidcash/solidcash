@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { FrameKind, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -67,10 +67,10 @@ async function coin(provider: MockNetworkProvider): Promise<{ txid: string; vout
 /** The token, the payer holding it, and 1000 minted to the payer; each case rewinds the chain to them first. */
 async function deployed(): Promise<Deployed> {
   run ??= (async (): Promise<Deployed> => {
-    const compiled = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+    const compiled = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
     const artifacts = { Token: compiled.Token!, Payer: compiled.Payer! };
-    const { perCallValidator } = await import('solidc');
-    const validatorProgram = perCallValidator.buildValidatorProgram();
+    const { framedValidator } = await import('solidc');
+    const validatorProgram = framedValidator.buildValidatorProgram();
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
     await fundShippedFacets(provider);
@@ -86,7 +86,7 @@ async function deployed(): Promise<Deployed> {
       categories.set(name, deployment.categoryId);
       locks.set(name, validatorAddress(hexToBin(deployment.categoryId), validatorProgram));
     }
-    const minted = await callPerCallEntry({
+    const minted = await callFramedEntry({
       provider, artifact: artifacts.Token, categoryId: categories.get('Token')!, functionName: 'mint',
       args: [locks.get('Payer')!, 1000n], callerUtxo: await coin(provider), callerLockingBytecode: USER,
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
@@ -102,8 +102,8 @@ async function deployed(): Promise<Deployed> {
 /** Enters one of the payer's entries with a fresh coin of the user's, naming the token as its calls reach it. */
 async function enter(
   chain: Deployed, functionName: string, args: readonly (bigint | Uint8Array)[] = [],
-): Promise<PerCallCallResult> {
-  return callPerCallEntry({
+): Promise<FramedCallResult> {
+  return callFramedEntry({
     provider: chain.provider, artifact: chain.artifacts.Payer, categoryId: chain.categories.get('Payer')!,
     functionName, args, callerUtxo: await coin(chain.provider), callerLockingBytecode: USER,
     funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
@@ -113,7 +113,7 @@ async function enter(
 
 /** A key's balance, read back from the token's list on chain. */
 async function balanceOf(chain: Deployed, who: Uint8Array): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: chain.provider, artifact: chain.artifacts.Token, categoryId: chain.categories.get('Token')!,
     functionName: 'balanceOf', args: [who], vm: compositionMachine(),
   });

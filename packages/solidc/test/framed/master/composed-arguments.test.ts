@@ -9,7 +9,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { refusalMessageOf } from './refused-entry.js';
@@ -177,7 +177,7 @@ function buildComposite(
   expectedPushes: Uint8Array,
   options: CompositeOptions = {},
 ): Composition {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const fill = (name: string, category: Uint8Array, address: Uint8Array): Uint8Array => {
     const artifact = artifacts[name]!;
     return fillPlaceholders(scriptBytes(artifact), artifact.composition!.placeholders, {
@@ -320,7 +320,7 @@ describe('a call whose run-time argument is a composite the caller builds', () =
     const pushes = structArgumentPushes(STRUCT_N);
     const options = {
       callerEntryPushes: entryPush(STRUCT_N),
-      recordedArgsHash: argsHash(selectorOf(compileStringMulti(STRUCT_SOURCE, { composition: 'per-call' }), 'put'),
+      recordedArgsHash: argsHash(selectorOf(compileStringMulti(STRUCT_SOURCE, { composition: 'framed' }), 'put'),
         structArgumentPushes(STRUCT_N + 1n)),
     };
     expect(compositeAccepted(STRUCT_SOURCE, 'put', pushes, options, CALLER_INDEX)).toBe(false);
@@ -366,7 +366,7 @@ describe('a call whose arguments read one run-time local twice', () => {
   });
 
   it('is refused when the record carries another value in either position', () => {
-    const selector = selectorOf(compileStringMulti(SHARED_SOURCE, { composition: 'per-call' }), 'pay');
+    const selector = selectorOf(compileStringMulti(SHARED_SOURCE, { composition: 'framed' }), 'pay');
     for (const [member, recorded] of [[fee + 1n, fee], [fee, fee + 1n]] as const) {
       expect(compositeAccepted(SHARED_SOURCE, 'pay', sharedPushes(fee, fee), {
         ...options, recordedArgsHash: argsHash(selector, sharedPushes(member, recorded)),
@@ -378,7 +378,7 @@ describe('a call whose arguments read one run-time local twice', () => {
     const pushes = encodeCallDataArguments([encodeIntegerValue(fee + 1n), encodeIntegerValue(fee)]);
     expect(compositeAccepted(SHARED_SCALAR_SOURCE, 'pair', pushes, options, CALLER_INDEX)).toBe(true);
     expect(compositeAccepted(SHARED_SCALAR_SOURCE, 'pair', pushes, options, CALLEE_INDEX)).toBe(true);
-    const selector = selectorOf(compileStringMulti(SHARED_SCALAR_SOURCE, { composition: 'per-call' }), 'pair');
+    const selector = selectorOf(compileStringMulti(SHARED_SCALAR_SOURCE, { composition: 'framed' }), 'pair');
     const swapped = encodeCallDataArguments([encodeIntegerValue(fee), encodeIntegerValue(fee + 1n)]);
     expect(compositeAccepted(SHARED_SCALAR_SOURCE, 'pair', pushes, {
       ...options, recordedArgsHash: argsHash(selector, swapped),

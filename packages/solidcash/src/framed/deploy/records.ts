@@ -1,5 +1,5 @@
 /**
- * A per-call deployment's state records: where they sit, how they are spent, and how they are found.
+ * A framed deployment's state records: where they sit, how they are spent, and how they are found.
  *
  * A data-NFT record is minted at the data-NFT covenant the contract's category derives, the same lock the direct
  * convention's data NFTs sit at: a P2SH32 of `buildDataNftCovenantScript(category)`. It carries the contract's
@@ -32,9 +32,9 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import { getDataNftLockingBytecode } from '../../stateful/covenant-helpers.js';
 import { createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode } from '../../utils.js';
 
-/** Raised when a per-call deployment's records cannot be read. */
-export class PerCallRecordError extends Error {
-  public readonly name = 'PerCallRecordError';
+/** Raised when a framed deployment's records cannot be read. */
+export class FramedRecordError extends Error {
+  public readonly name = 'FramedRecordError';
 
   public constructor(message: string) {
     super(message);
@@ -42,7 +42,7 @@ export class PerCallRecordError extends Error {
 }
 
 /**
- * The lock a per-call state record sits at: the data-NFT covenant the contract's category derives.
+ * The lock a framed state record sits at: the data-NFT covenant the contract's category derives.
  *
  * A genesis mints every data NFT at this lock, and a composition spends and recreates the record at it, so the
  * record's input and output carry the same lock. The covenant pins the record's own category and capability, so a
@@ -53,7 +53,7 @@ export function stateRecordLockingBytecode(categoryId: string): Uint8Array {
 }
 
 /**
- * The lock a per-call contract's satoshi containers sit at: the direct convention's container covenant for the
+ * The lock a framed contract's satoshi containers sit at: the direct convention's container covenant for the
  * contract's category. Their value is the contract's balance (spec 4b).
  */
 export function satoshiContainerLockingBytecode(categoryId: string): Uint8Array {
@@ -122,7 +122,7 @@ export function chunkRecordLockingBytecode(categoryId: string, variable: string,
 }
 
 /**
- * The unlocking a per-call state record carries: the data-NFT covenant's `<masterInputIndex> <flag>` shape.
+ * The unlocking a framed state record carries: the data-NFT covenant's `<masterInputIndex> <flag>` shape.
  *
  * `flag = 1` is the covenant's write path, which authorizes the spend by the minting NFT of `categoryId` at
  * `masterInputIndex`; a composition passes the index its own master sits at. `flag = 0` is the read-only path,
@@ -139,8 +139,8 @@ export function stateRecordUnlockingBytecode(
   return createUnlockingBytecode('p2sh32', bytecode, args);
 }
 
-/** What a category's live UTXOs are, classified the way a per-call deployment mints them. */
-export interface PerCallDeploymentSet {
+/** What a category's live UTXOs are, classified the way a framed deployment mints them. */
+export interface FramedDeploymentSet {
   /** The master pool: UTXOs carrying the category's minting NFT. */
   readonly masters: readonly Utxo[];
   /** The validator pool: mutable NFTs with no commitment, recreated by every composition. */
@@ -213,7 +213,7 @@ function nftIndexOf(commitment: string, layout: StateLayout): number | undefined
 }
 
 /**
- * Classifies a category's live UTXOs into the pools and records a per-call deployment mints.
+ * Classifies a category's live UTXOs into the pools and records a framed deployment mints.
  *
  * A minting NFT is a master, a mutable NFT with an empty commitment is a validator, a mutable NFT at the data-NFT
  * covenant whose commitment parses as the layout's pushdata encoding is a record at that data-NFT index, and any
@@ -221,10 +221,10 @@ function nftIndexOf(commitment: string, layout: StateLayout): number | undefined
  * come back in data-NFT order (the tag order a multi-NFT layout carries, otherwise by outpoint), so index `i` is
  * genuinely register `i`.
  */
-export function classifyPerCallDeployment(
+export function classifyFramedDeployment(
   utxos: readonly Utxo[],
   layout: StateLayout,
-): PerCallDeploymentSet {
+): FramedDeploymentSet {
   const masters: Utxo[] = [];
   const validators: Utxo[] = [];
   const chunks: Utxo[] = [];
@@ -305,28 +305,28 @@ export function classifyPerCallDeployment(
 }
 
 /**
- * Reads a deployed per-call contract's pools and records from the chain, by category.
+ * Reads a deployed framed contract's pools and records from the chain, by category.
  *
  * Refuses rather than guessing when the provider cannot enumerate a category, since classifying the pools needs
  * every live UTXO of the category to tell a master from a validator from a record.
  */
-export async function readPerCallDeployment(
+export async function readFramedDeployment(
   provider: NetworkProvider,
   categoryId: string,
   layout: StateLayout,
-): Promise<PerCallDeploymentSet> {
+): Promise<FramedDeploymentSet> {
   const utxos = await utxosOfCategory(provider, categoryId);
   if (utxos === undefined) {
-    throw new PerCallRecordError(
+    throw new FramedRecordError(
       `the provider cannot enumerate UTXOs by category ${categoryId}, which is how the master pool, the validator `
       + 'pool and the records are told apart',
     );
   }
-  return classifyPerCallDeployment(utxos, layout);
+  return classifyFramedDeployment(utxos, layout);
 }
 
-/** The decoded state a per-call deployment's records hold, keyed by variable name. */
-export interface PerCallState {
+/** The decoded state a framed deployment's records hold, keyed by variable name. */
+export interface FramedState {
   /** The state values of each data NFT, in data-NFT order. */
   readonly byNft: readonly Record<string, StateValue>[];
   /** The records the values were read from, in data-NFT order. */
@@ -334,23 +334,23 @@ export interface PerCallState {
 }
 
 /**
- * Reads and decodes a per-call deployment's state through the shipped pushdata decoder.
+ * Reads and decodes a framed deployment's state through the shipped pushdata decoder.
  *
  * Refuses when a record for a data-NFT index is missing, because a state read that guessed at a missing register
  * would report a default where the contract has a value.
  */
-export async function readPerCallState(
+export async function readFramedState(
   provider: NetworkProvider,
   categoryId: string,
   layout: StateLayout,
-): Promise<PerCallState> {
-  const deployment = await readPerCallDeployment(provider, categoryId, layout);
+): Promise<FramedState> {
+  const deployment = await readFramedDeployment(provider, categoryId, layout);
   const byNft: Array<Record<string, StateValue>> = [];
   for (let nftIndex = 0; nftIndex < layout.dataNftCount; nftIndex += 1) {
     const record = deployment.records[nftIndex];
     const commitment = record?.token?.nft?.commitment;
     if (record === undefined || commitment === undefined) {
-      throw new PerCallRecordError(
+      throw new FramedRecordError(
         `category ${categoryId} has no data-NFT record at index ${nftIndex} (found ${deployment.records.length})`,
       );
     }

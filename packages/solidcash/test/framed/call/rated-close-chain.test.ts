@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress, type StateRecord } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../../../src/utils.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv } from '../../fixture/vars.js';
@@ -143,7 +143,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-/** The options an imported Solidity project compiles with under the per-call composition. */
+/** The options an imported Solidity project compiles with under the framed composition. */
 const OPTIONS = {
   solidityImportCompat: true,
   commitmentLimit: 128,
@@ -153,7 +153,7 @@ const OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const artifacts = compileStringMulti(SOURCE, OPTIONS as never);
@@ -168,7 +168,7 @@ const HELPER: Caller = { lock: HELPER_LOCK, funder: new SignatureTemplate(bobPri
 
 interface World {
   readonly network: MockNetworkProvider;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   readonly nextCoin: () => Utxo;
 }
@@ -190,7 +190,7 @@ async function deployWorld(): Promise<World> {
   await fundShippedFacets(network);
   const bookInit = nextCoin();
   await network.addUtxo(binToHex(OWNER_LOCK), bookInit);
-  const book = await deployPerCallProxy({
+  const book = await deployFramedProxy({
     provider: network,
     implementationArtifact: Book!,
     proxyArtifact: buildProxyArtifact(Book!),
@@ -204,7 +204,7 @@ async function deployWorld(): Promise<World> {
   expect(book.initialize.broadcast).toBeDefined();
   const deskInit = nextCoin();
   await network.addUtxo(binToHex(OWNER_LOCK), deskInit);
-  const desk = await deployPerCallProxy({
+  const desk = await deployFramedProxy({
     provider: network,
     implementationArtifact: Desk!,
     proxyArtifact: buildProxyArtifact(Desk!),
@@ -234,12 +234,12 @@ async function deployWorld(): Promise<World> {
 /** Enters one entry of the desk or the book through its proxy with a fresh coin of the caller's. */
 async function enter(
   world: World, contract: 'Desk' | 'Book', functionName: string, args: readonly FunctionArgument[], caller: Caller,
-): Promise<{ readonly result?: PerCallProxyCallResult; readonly error?: Error }> {
+): Promise<{ readonly result?: FramedProxyCallResult; readonly error?: Error }> {
   const coin = world.nextCoin();
   await world.network.addUtxo(binToHex(caller.lock), coin);
   const artifact = artifacts[contract]!;
   try {
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -261,14 +261,14 @@ async function enter(
 }
 
 /** The hop settled and broadcast. */
-function expectSettled(outcome: { readonly result?: PerCallProxyCallResult; readonly error?: Error }): void {
+function expectSettled(outcome: { readonly result?: FramedProxyCallResult; readonly error?: Error }): void {
   expect(outcome.error?.message).toBeUndefined();
   expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
 }
 
 /** The hop was refused with `reason` as a source line of `entry`'s own frame reports it. */
 function expectRefused(
-  outcome: { readonly result?: PerCallProxyCallResult; readonly error?: Error }, entry: string, reason: string,
+  outcome: { readonly result?: FramedProxyCallResult; readonly error?: Error }, entry: string, reason: string,
 ): void {
   expect(outcome.result).toBeUndefined();
   expect(outcome.error!.message).toMatch(new RegExp(
@@ -279,7 +279,7 @@ function expectRefused(
 
 /** One getter of the book, read at the proxy's records. */
 async function read(world: World, functionName: string, args: readonly FunctionArgument[]): Promise<unknown> {
-  const result = await readPerCallEntry({
+  const result = await readFramedEntry({
     provider: world.network, artifact: artifacts.Book!, categoryId: BOOK_PROXY, functionName, args,
     vm: compositionMachine(),
   });

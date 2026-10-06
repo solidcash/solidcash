@@ -4,14 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, buildPushdataCommitment, sha256, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { registerDeployment } from '../../../src/stateful/deployment-registry.js';
 import {
   deployMaster, entryRecordLockingBytecode, stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { planHopExternalCalls, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
-import { readPublishedStopSites } from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { planHopExternalCalls, type FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
+import { readPublishedStopSites } from '../../../src/framed/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import type { ConstructorArgument } from '../../../src/Argument.js';
 
@@ -30,7 +30,7 @@ const ARTIFACTS_DIR = resolve(
   '../../../../../.marketplace/artifacts/solidcash',
 );
 const hasArtifacts = existsSync(ARTIFACTS_DIR);
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
 /** One shipped artifact, loaded by file name. */
 function loadArtifact(name: string): Artifact {
@@ -58,7 +58,7 @@ async function seedHeads(network: MockNetworkProvider, artifact: Artifact, categ
 }
 
 /**
- * A live per-call deployment of `artifact`'s category: its master, one record per data NFT, and the empty head of
+ * A live framed deployment of `artifact`'s category: its master, one record per data NFT, and the empty head of
  * every sorted collection.
  *
  * The planner only needs a category the provider can enumerate, so the pools are seeded directly rather than
@@ -361,7 +361,7 @@ describePublished('the plan against the shipped published call table', () => {
     // One live deployment per shipped artifact, so every callee a site reaches has masters and records to run on.
     const network = new MockNetworkProvider();
     const categoryById = new Map<string, string>();
-    const externals: Record<string, PerCallProxyExternal> = {};
+    const externals: Record<string, FramedProxyExternal> = {};
     for (const artifact of shipped) {
       const categoryId = categoryOf(artifact.contractName);
       categoryById.set(artifact.contractName, categoryId);

@@ -16,14 +16,14 @@ import { EmittingStateHelperEventError } from '../../../src/Errors.js';
  * helper that cannot be inlined keeps X118's refusal and its message.
  */
 
-type Convention = 'direct' | 'per-call';
-const CONVENTIONS: readonly Convention[] = ['direct', 'per-call'];
+type Convention = 'direct' | 'framed';
+const CONVENTIONS: readonly Convention[] = ['direct', 'framed'];
 
 /** Compiles `source` in `convention` and returns contract `name`. */
 function compile(source: string, convention: Convention, name = 'Roles'): Artifact {
   return compileStringMulti(source, {
     solidityImportCompat: true, suppressWarnings: true,
-    ...(convention === 'per-call' ? { composition: 'per-call' } : {}),
+    ...(convention === 'framed' ? { composition: 'framed' } : {}),
   } as never)[name]!;
 }
 

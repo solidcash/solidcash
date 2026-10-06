@@ -9,10 +9,10 @@ import {
   type DerivationHost,
   type FrameRequest,
   type StepOutcome,
-  PerCallComposerError,
+  FramedComposerError,
   deriveComposition,
-} from '../../../src/per-call/composer/index.js';
-import { deriveThroughFrame } from '../../../src/per-call/call/callees.js';
+} from '../../../src/framed/composer/index.js';
+import { deriveThroughFrame } from '../../../src/framed/call/callees.js';
 
 /** The call with ordinal `callIndex`, reached at `site`. */
 function call(site: number, callIndex: number): StopSite {
@@ -120,6 +120,6 @@ describe('plain path: a callee frame judged from the composition derived through
 
   it('rethrows a stall of the root before the frame is entered', () => {
     const { host } = composition(ROOT.master);
-    expect(() => deriveThroughFrame([ROOT], host, C.master)).toThrow(PerCallComposerError);
+    expect(() => deriveThroughFrame([ROOT], host, C.master)).toThrow(FramedComposerError);
   });
 });

@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { bytesToHex, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
 } from '../../../src/stateful/SortedList.js';
@@ -18,7 +18,7 @@ import { aliceAddress, alicePkh, alicePriv, alicePub } from '../../fixture/vars.
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Calling an entry on a deployed per-call contract that keeps a mapping.
+ * Calling an entry on a deployed framed contract that keeps a mapping.
  *
  * The contract holds one `mapping(address => uint)`, so its state is not a data NFT but a chain of entry NFTs: the
  * genesis mints the empty list's head and the node the constructor's write created, and a call that writes a key
@@ -48,9 +48,9 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function balanceOf(address who) view returns (uint) { return this.balances[who]; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const ledger = artifacts.Ledger!;
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
 const SEED_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));
 const RECIPIENT_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x44));
@@ -121,8 +121,8 @@ function ledgerDeployment(): Promise<Deployed> {
 }
 
 /** Calls `deposit` through the shipped call path. */
-async function deposit(deployed: Deployed, who: Uint8Array, amount: bigint): ReturnType<typeof callPerCallEntry> {
-  return callPerCallEntry({
+async function deposit(deployed: Deployed, who: Uint8Array, amount: bigint): ReturnType<typeof callFramedEntry> {
+  return callFramedEntry({
     provider: deployed.provider,
     artifact: ledger,
     categoryId: deployed.categoryId,
@@ -136,17 +136,17 @@ async function deposit(deployed: Deployed, who: Uint8Array, amount: bigint): Ret
 }
 
 /** The commitment the call ends a mapping node at, read out of the draft's output for it. */
-function nodeOutput(result: Awaited<ReturnType<typeof callPerCallEntry>>, index: number): Uint8Array {
+function nodeOutput(result: Awaited<ReturnType<typeof callFramedEntry>>, index: number): Uint8Array {
   const commitment = result.transaction.outputs[index]?.token?.nft?.commitment;
   if (commitment === undefined) throw new Error(`no node commitment at output ${index}`);
   return Uint8Array.from(commitment);
 }
 
-describe('calling an entry that writes a mapping on a deployed per-call contract', () => {
+describe('calling an entry that writes a mapping on a deployed framed contract', () => {
   it('declares the head sentinel and creates the node for a key the list does not hold', async () => {
     const deployed = await ledgerDeployment();
     // The genesis wrote `balances[SEED]`, so the category holds the relinked head and the seeded node.
-    const genesis = await readPerCallDeployment(deployed.provider, deployed.categoryId, ledger.stateLayout!);
+    const genesis = await readFramedDeployment(deployed.provider, deployed.categoryId, ledger.stateLayout!);
     const seeded = genesis.nodesByCollection.get('balances') ?? [];
     expect(seeded).toHaveLength(2);
     // The constructor's own write relinked the head, so no live node carries the empty list's commitment.
@@ -218,12 +218,12 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       + '   function viaSet(uint amount) { set(amount); }'
       + '   function viaSetAndReturn(uint amount) returns (uint) { return setAndReturn(amount) + 1; }'
       + ' }';
-    const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    const token = compileStringMulti(source, { composition: 'framed' }).Ledger!;
     // One deployment serves both entries, each setting the caller's node outright; the second enters with a fresh coin.
     const shared = await deploy(token, CALLER_LOCK);
     for (const [entry, amount] of [['viaSet', 7n], ['viaSetAndReturn', 9n]] as const) {
       const deployed = entry === 'viaSet' ? shared : await withCallerCoin(shared, SECOND_CALLER_TXID);
-      const result = await callPerCallEntry({
+      const result = await callFramedEntry({
         provider: deployed.provider, artifact: token, categoryId: deployed.categoryId, functionName: entry,
         args: [amount], callerUtxo: deployed.callerUtxo, callerLockingBytecode: deployed.callerLock,
         funder: deployed.funder, vm: compositionMachine(),
@@ -247,13 +247,13 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       + '   function viaBump() returns (int) { bump(); return this.total; }'
       + '   function viaThisBump() returns (int) { this.bump(); return this.total; }'
       + ' }';
-    const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    const token = compileStringMulti(source, { composition: 'framed' }).Ledger!;
     // One deployment serves both entries, the chain rewound to it before each, so each bumps `total` from zero.
     const deployed = await deploy(token, CALLER_LOCK);
     const fresh = await deployed.provider.takeSnapshot();
     for (const entry of ['viaBump', 'viaThisBump']) {
       await fresh.restore();
-      const result = await callPerCallEntry({
+      const result = await callFramedEntry({
         provider: deployed.provider, artifact: token, categoryId: deployed.categoryId, functionName: entry,
         args: [], callerUtxo: deployed.callerUtxo, callerLockingBytecode: deployed.callerLock,
         funder: deployed.funder, vm: compositionMachine(),
@@ -276,7 +276,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       + '     require(this.balances[from] >= amount);'
       + '   }'
       + ' }';
-    const moving = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    const moving = compileStringMulti(source, { composition: 'framed' }).Ledger!;
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -291,7 +291,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
     await fundShippedFacets(provider);
 
-    await expect(callPerCallEntry({
+    await expect(callFramedEntry({
       provider, artifact: moving, categoryId: deployment.categoryId, functionName: 'move',
       args: [SEED_LOCK, RECIPIENT_LOCK, 5n], callerUtxo, callerLockingBytecode: callerLock,
       funder: signature.unlockP2PKH(), vm: compositionMachine(),
@@ -313,7 +313,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       + '     return this.balances[msg.sender];'
       + '   }'
       + ' }';
-    const artifact = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    const artifact = compileStringMulti(source, { composition: 'framed' }).Ledger!;
     const depositAbi = artifact.abi.find((candidate) => candidate.name === 'deposit')!;
     expect(depositAbi.entryAccesses?.[0]?.keySources?.[0]).toStrictEqual({ kind: 'msgSender', senderOp: 'msg.sender' });
     depositAbi.entryAccesses![0]!.keySources = [{ kind: 'expression', expressionLabel: 'nullop:msg.sender' }];
@@ -332,7 +332,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
     await fundShippedFacets(provider);
 
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       provider, artifact, categoryId: deployment.categoryId, functionName: 'deposit',
       args: [5n], callerUtxo, callerLockingBytecode: callerLock,
       funder: signature.unlockP2PKH(), vm: compositionMachine(),
@@ -366,7 +366,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       + '     return this.balances[to];'
       + '   }'
       + ' }';
-    const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    const token = compileStringMulti(source, { composition: 'framed' }).Ledger!;
 
     // The deployer's own coin funds the genesis and is the frame's caller, exactly as a signer's coin does a call.
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -384,7 +384,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     // The constructor seeded the caller's key, so the caller's write rewrites a held node. The recipient's key is
     // one the list does not hold and the caller's node is the greatest slot below it, so the insert relinks that
     // same node: it is both an updated target and the insert's predecessor, declared once per group that names it.
-    const genesis = await readPerCallDeployment(provider, deployment.categoryId, token.stateLayout!);
+    const genesis = await readFramedDeployment(provider, deployment.categoryId, token.stateLayout!);
     expect(genesis.nodesByCollection.get('balances') ?? []).toHaveLength(2);
     // The constructor never writes `allowances`, so the genesis mints its empty head: a first insert into that
     // collection later splices beside it.
@@ -393,7 +393,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     const recipientSlot = keyToSlotMulti([keyOf(RELINKED_LOCK)]);
     expect(bytesToSlotValue(callerSlot) < bytesToSlotValue(recipientSlot)).toBe(true);
 
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       provider, artifact: token, categoryId: deployment.categoryId, functionName: 'transfer',
       args: [RELINKED_LOCK, 5n], callerUtxo, callerLockingBytecode: CALLER_LOCK,
       funder: signature.unlockP2PKH(), vm: compositionMachine(),

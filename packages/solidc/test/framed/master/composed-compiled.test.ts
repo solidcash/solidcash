@@ -8,7 +8,7 @@ import {
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -53,7 +53,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const compile = (): ReturnType<typeof compileStringMulti> =>
-  compileStringMulti(SOURCE, { composition: 'per-call' });
+  compileStringMulti(SOURCE, { composition: 'framed' });
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
 const scriptBytes = (artifact: { bytecode: string }): Uint8Array => scriptToBytecode(asmToScript(artifact.bytecode));
@@ -219,10 +219,10 @@ function accepted(options: CompositionOptions, inputIndex: number): boolean {
 }
 
 describe('two compiled masters that call each other', () => {
-  it('publishes a per-call caller and callee, each with a validator program hash slot', () => {
+  it('publishes a framed caller and callee, each with a validator program hash slot', () => {
     const artifacts = compile();
-    expect(artifacts.Caller!.composition?.convention).toBe('per-call');
-    expect(artifacts.Callee!.composition?.convention).toBe('per-call');
+    expect(artifacts.Caller!.composition?.convention).toBe('framed');
+    expect(artifacts.Callee!.composition?.convention).toBe('framed');
     // A callee has to recognise the validator that covers the call, so its master reserves the slot too.
     expect(artifacts.Callee!.composition!.placeholders.templateHashOffset).toBeTypeOf('number');
   });

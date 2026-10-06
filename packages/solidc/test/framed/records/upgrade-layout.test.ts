@@ -1,9 +1,9 @@
 /**
  * Section 20: the proxy-upgrade layout rule at compile time (plan 4.7).
  *
- * `upgradesFrom` names, per contract, the layout of the implementation it replaces behind a per-call proxy. The
+ * `upgradesFrom` names, per contract, the layout of the implementation it replaces behind a framed proxy. The
  * replacement must read every record the old code wrote the same way: each field by name, type and coordinates,
- * each struct it reaches field for field, each collection by signature and value form. A per-call record is minted
+ * each struct it reaches field for field, each collection by signature and value form. A framed record is minted
  * only at genesis, so an append has no record behind the proxy and is refused too. Each refusal names what stops
  * it, beside the compatible replacement that compiles.
  */
@@ -18,14 +18,14 @@ const V1 = 'pragma solidcash ^0.13.0;'
   + '   mapping(address => int) balances;'
   + '   function deposit(int by) { this.total = this.total + by; this.deposits = this.deposits + 1; }'
   + ' }';
-const reference = compileStringMulti(V1, { composition: 'per-call' }).Vault!.stateLayout!;
+const reference = compileStringMulti(V1, { composition: 'framed' }).Vault!.stateLayout!;
 
 /** A replacement named `Next`, with the given struct and declarations, compiled against the old layout. */
 function next(struct: string, body: string): ReturnType<typeof compileStringMulti> {
   return compileStringMulti(
     `pragma solidcash ^0.13.0; struct Pos { ${struct} } contract Next { ${body}`
     + ' function deposit(int by) { this.deposits = this.deposits + by; } }',
-    { composition: 'per-call', upgradesFrom: { Next: reference } },
+    { composition: 'framed', upgradesFrom: { Next: reference } },
   );
 }
 
@@ -65,7 +65,7 @@ describe('section 20 proxy-upgrade layout rule, at compile time', () => {
       'collection "balances" changes its'],
   ])('refuses %s by name', (_what, struct, body, named) => {
     const refused = refusal(() => next(struct, body));
-    expect(refused.code).toBe('PER_CALL_UPGRADE_LAYOUT');
+    expect(refused.code).toBe('FRAMED_UPGRADE_LAYOUT');
     expect(refused.message).toContain('"Next" cannot replace the implementation it upgrades');
     expect(refused.message).toContain(named);
   });

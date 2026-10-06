@@ -9,22 +9,22 @@ import {
   validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
- * An event emitted by a per-call master, laid out as a trailing output.
+ * An event emitted by a framed master, laid out as a trailing output.
  *
  * The plan states the event's output itself — its lock, value and token — and the layout opens that output past
  * the participants, where no input sits. The composer's assembled transaction carries it, a block's `events` list
@@ -91,7 +91,7 @@ function buildRoundTrip(): {
   artifacts: ReturnType<typeof compileStringMulti>;
   eventIndex: number;
 } {
-  const artifacts = compileStringMulti(ROUND_TRIP_SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(ROUND_TRIP_SOURCE, { composition: 'framed' });
   const a = deployMaster(artifacts.A!, CATEGORY_A, VALIDATOR_PROGRAM);
   const b = deployMaster(artifacts.B!, CATEGORY_B, VALIDATOR_PROGRAM);
   const aEvent = artifacts.A!.events![0]!;
@@ -179,8 +179,8 @@ const ROOT = { contract: 'A', functionName: ENTRY_F, kind: FrameKind.ROOT, maste
 describe('a plan whose entry emits after its call returns', () => {
   it('lays the event at a trailing output past the participants', () => {
     const { plan, artifacts, eventIndex } = buildRoundTrip();
-    expect(artifacts.A!.composition?.convention).toBe('per-call');
-    expect(artifacts.B!.composition?.convention).toBe('per-call');
+    expect(artifacts.A!.composition?.convention).toBe('framed');
+    expect(artifacts.B!.composition?.convention).toBe('framed');
 
     const { draft } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
@@ -313,8 +313,8 @@ describe('a plan whose entry emits after its call returns', () => {
       + '   function k() { require(true); }'
       + ' }';
 
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
-    expect(artifacts.B?.composition?.convention).toBe('per-call');
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
+    expect(artifacts.B?.composition?.convention).toBe('framed');
     expect(artifacts.B?.events ?? []).toStrictEqual([]);
     expect(artifacts.A?.events?.length).toBe(1);
   });
@@ -340,7 +340,7 @@ describe('an entry that emits and makes no call', () => {
   const USER = 'user';
 
   function build(): { plan: CompositionDraftPlan; artifacts: ReturnType<typeof compileStringMulti> } {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const log = deployMaster(artifacts.Log!, CATEGORY_A, VALIDATOR_PROGRAM);
     const events = artifacts.Log!.events!;
     const blocks: CompositionDraftPlan['blocks'] = [{ contract: 'Log', masters: [LOG_MASTER], state: [] }];

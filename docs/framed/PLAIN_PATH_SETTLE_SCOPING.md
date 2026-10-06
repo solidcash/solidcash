@@ -81,7 +81,7 @@ These are pure recomputation and help both lanes without touching the loop struc
 above:
 
 - `composer/draft.ts:676-724` — `programFor` → `transactionFor` re-encodes **every** input's unlocking bytecode on
-  every evaluation, and `buildMasterUnlockingBytecode` (`utils/src/per-call/witness-block.ts:325`) minimal-pushes the
+  every evaluation, and `buildMasterUnlockingBytecode` (`utils/src/framed/witness-block.ts:325`) minimal-pushes the
   whole redeem script (22,000 B for UnicrowClaim up to 140,004 B for MarketplaceV1). Only the evaluated master's
   block ever differs, so the per-input bytes belong in a draft-level cache keyed by the block a view-learning
   mutates. `transactionOutputs()` (`:667`) and `segmentsInWalkOrder()` (`:596`) rebuild per call too.

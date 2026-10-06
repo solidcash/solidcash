@@ -4,7 +4,7 @@ import { compileString } from '../../../src/compiler.js';
 import { refusalOf } from './refused-entry.js';
 
 /**
- * Which inline assembly refuses a per-call body.
+ * Which inline assembly refuses a framed body.
  *
  * Inline assembly is a property of the code a master carries rather than of the unit it is compiled in: a unit is
  * a file and its imports, and one contract's master holds its own bodies, the definitions they invoke, and nothing
@@ -51,7 +51,7 @@ const OWN_NATIVE_ASSEMBLY_CONTRACT = 'contract AsmScope(address owner) {'
   + ' }';
 
 const compiling = (source: string): ReturnType<typeof compileString> =>
-  compileString(source, { composition: 'per-call', solidityImportCompat: true } as never);
+  compileString(source, { composition: 'framed', solidityImportCompat: true } as never);
 
 const scriptBytes = (source: string): Uint8Array =>
   scriptToBytecode(asmToScript(compiling(source).bytecode));
@@ -63,7 +63,7 @@ function thrownRefusalOf(source: string): { code?: string; message: string } {
   } catch (error) {
     return error as { code?: string; message: string };
   }
-  throw new Error('the shipped per-call compiler accepted the source, so there is no refusal to record');
+  throw new Error('the shipped framed compiler accepted the source, so there is no refusal to record');
 }
 
 describe('a unit that carries inline assembly no body reaches', () => {
@@ -94,15 +94,15 @@ describe('inline assembly the master would run', () => {
     // The definition is emitted behind no stub, so its assembly would reach every master of the contract: the
     // contract is refused rather than one of its bodies.
     const refusal = thrownRefusalOf(HEAD + NATIVE_ASSEMBLY_DEFINITION + CALLING_CONTRACT);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('inline assembly is not composed per-call');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('inline assembly is not composed framed');
   });
 
   it('refuses by name when the entry holds it itself, and compiles the contract', () => {
     // A body's own assembly is a fact about that body: it is refused by name beside the artifact, and the contract
     // is still compiled so its other bodies keep their programs.
     const refusal = refusalOf(HEAD + OWN_NATIVE_ASSEMBLY_CONTRACT, undefined, { solidityImportCompat: true });
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('inline assembly is not composed per-call');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('inline assembly is not composed framed');
   });
 });

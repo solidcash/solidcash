@@ -10,7 +10,7 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import {
@@ -18,14 +18,14 @@ import {
   deployMaster,
   entryRecordLockingBytecode,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { planMappingBatch } from '../../../src/per-call/composer/index.js';
-import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { planMappingBatch } from '../../../src/framed/composer/index.js';
+import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a record through a proxied callee's delegate frame.
@@ -68,7 +68,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function job(int jobId) view returns (Job) { return IJobs(0x${hex(PROXY_ADDRESS)}).getJob(jobId); }`
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const root = artifacts.Root!;
 const impl = artifacts.Jobs!;
 const proxy = buildProxyArtifact(impl);
@@ -166,8 +166,8 @@ function transactionCount(provider: MockNetworkProvider): number {
 
 function read(
   provider: MockNetworkProvider, functionName: string, args: readonly bigint[],
-): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider,
     artifact: root,
     categoryId: ROOT_HEX,
@@ -185,7 +185,7 @@ function read(
   });
 }
 
-const participantIds = (result: Awaited<ReturnType<typeof readPerCallEntry>>): readonly string[] =>
+const participantIds = (result: Awaited<ReturnType<typeof readFramedEntry>>): readonly string[] =>
   result.draft.layout.participants.map((entry) => entry.id);
 
 describe('a read whose proxied callee reads a mapping node', () => {
@@ -237,7 +237,7 @@ const RETURN_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function priceOf(int id) view returns (int) { return IStore(store).priceOf(id); }'
   + ' }';
 
-const returnArtifacts = compileStringMulti(RETURN_SOURCE, { composition: 'per-call', evmCompat: true });
+const returnArtifacts = compileStringMulti(RETURN_SOURCE, { composition: 'framed', evmCompat: true });
 const returnRoot = returnArtifacts.Root!;
 const returnStore = returnArtifacts.Store!;
 const returnProxy = buildProxyArtifact(returnStore);
@@ -277,7 +277,7 @@ describe('a read whose root body only returns its callee\'s value', () => {
   it('serves the value the callee frame computed, with nothing broadcast', async () => {
     const provider = await returnChain();
     const before = transactionCount(provider);
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider,
       artifact: returnRoot,
       categoryId: ROOT_HEX,

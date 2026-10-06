@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, parsePushdataCommitment, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -92,7 +92,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const judge = artifacts.Judge!;
 const claimer = artifacts.Claimer!;
 const root = artifacts.Root!;
@@ -136,7 +136,7 @@ async function deployWorld(): Promise<World> {
   const callCoin = funding(idOf('call coin'));
   for (const coin of [judgeInitCoin, rootInitCoin, callCoin]) await network.addUtxo(binToHex(callerLock), coin);
   await fundShippedFacets(network);
-  const judgeDeployment = await deployPerCallProxy({
+  const judgeDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: judge,
     proxyArtifact: buildProxyArtifact(judge),
@@ -149,7 +149,7 @@ async function deployWorld(): Promise<World> {
   });
   expect(judgeDeployment.initialize.broadcast).toBeDefined();
   expect(binToHex(judgeDeployment.proxy.address)).toBe(addressOf(JUDGE_PROXY_CATEGORY));
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -185,8 +185,8 @@ async function deployed(): Promise<World> {
 }
 
 /** One call of the root's entry through its proxy, the judge reached behind its own. */
-function callRoot(world: World, functionName: string): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+function callRoot(world: World, functionName: string): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -212,7 +212,7 @@ function callRoot(world: World, functionName: string): Promise<PerCallProxyCallR
 }
 
 /** The value the root left in its `last` field, read from the record the hop wrote. */
-function lastOf(result: PerCallProxyCallResult): unknown {
+function lastOf(result: FramedProxyCallResult): unknown {
   const layout = buildProxyArtifact(root).stateLayout!;
   const field = layout.variables.find((variable) => variable.name === 'last')!;
   return parsePushdataCommitment(binToHex(result.writtenCommitments[field.nftIndex]!), layout, field.nftIndex).last;

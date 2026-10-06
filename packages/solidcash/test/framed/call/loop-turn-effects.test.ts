@@ -4,19 +4,19 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   bytesToHex, concatBytes, encodeEventCommitment, encodeWitnessBlock, sha256, splitFirstPush, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { eventLockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { eventLockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
-  callPerCallEntry, sendPerCallValue, type PerCallCallResult,
-} from '../../../src/per-call/call/index.js';
+  callFramedEntry, sendFramedValue, type FramedCallResult,
+} from '../../../src/framed/call/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -62,7 +62,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const batch = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never).Batch!;
+const batch = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never).Batch!;
 const NOTED = batch.events!.find((definition) => definition.name === 'Noted')!;
 
 const MASTER = 'master';
@@ -128,8 +128,8 @@ async function deployPlain(seed: string): Promise<Plain> {
   return plain;
 }
 
-async function enterPlain(plain: Plain, functionName: string, args: readonly unknown[]): Promise<PerCallCallResult> {
-  return callPerCallEntry({
+async function enterPlain(plain: Plain, functionName: string, args: readonly unknown[]): Promise<FramedCallResult> {
+  return callFramedEntry({
     provider: plain.world.network, artifact: batch, categoryId: plain.categoryId, functionName,
     args: args as never, callerUtxo: await plain.world.coin(binToHex(CALLER)), callerLockingBytecode: CALLER,
     funder: CALLER_FUNDER, changeAddress: plain.world.walletAddress, vm: compositionMachine(),
@@ -145,10 +145,10 @@ interface Proxied {
 
 async function deployProxied(seed: string): Promise<Proxied> {
   const world = await newWorld(seed);
-  const deployOf = async (): Promise<Parameters<typeof deployPerCallProxy>[0]['proxyDeploy']> => ({
+  const deployOf = async (): Promise<Parameters<typeof deployFramedProxy>[0]['proxyDeploy']> => ({
     fundingUtxo: await world.coin(world.walletAddress), funder: world.walletFunder, changeAddress: world.walletAddress,
   });
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: world.network,
     implementationArtifact: batch,
     proxyArtifact: buildProxyArtifact(batch),
@@ -169,8 +169,8 @@ async function deployProxied(seed: string): Promise<Proxied> {
 
 async function enterProxied(
   proxied: Proxied, functionName: string, args: readonly unknown[],
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: proxied.world.network, implementationArtifact: batch, proxyArtifact: buildProxyArtifact(batch),
     proxyCategoryId: proxied.proxyCategoryId, implementationCategoryId: proxied.implementationCategoryId,
     functionName, args: args as never, externals: {}, callerUtxo: await proxied.world.coin(binToHex(CALLER)),
@@ -192,7 +192,7 @@ function refused(result: Verdicts): string | undefined {
 }
 
 /** The ids the plain broadcast's `Noted` events carry, read back from its outputs in output order. */
-function notedIds(result: PerCallCallResult): readonly unknown[] {
+function notedIds(result: FramedCallResult): readonly unknown[] {
   return compositionEventLogs(result.draft, [batch], { outputs: result.broadcast!.outputs })
     .filter((log) => log.eventName === 'Noted').map((log) => log.args.id);
 }
@@ -207,11 +207,11 @@ interface Spend {
   readonly sourceOutputs: VmSourceOutputs;
 }
 
-const masterIndex = (result: PerCallCallResult): number =>
+const masterIndex = (result: FramedCallResult): number =>
   result.draft.layout.participants.find((placed) => placed.id === MASTER)!.index;
 
 /** The machine's verdict on the master's input of a spend: undefined when accepted, the error otherwise. */
-function masterVerdict(result: PerCallCallResult, spend: Spend): string | undefined {
+function masterVerdict(result: FramedCallResult, spend: Spend): string | undefined {
   const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: masterIndex(result), ...spend });
   return vm.stateSuccess(state) === true ? undefined : String((state as { readonly error?: unknown }).error);
@@ -222,7 +222,7 @@ function masterVerdict(result: PerCallCallResult, spend: Spend): string | undefi
  * is encoded as the composer encodes it, and the pushes after it are kept.
  */
 function forged(
-  result: PerCallCallResult,
+  result: FramedCallResult,
   apply: (draft: { readonly transaction: VmTransaction; readonly sourceOutputs: VmSourceOutputs[number][];
     readonly block: WitnessBlock }) => void,
 ): Spend {
@@ -242,7 +242,7 @@ function forged(
  * The accepted spend without one participant's input and the output it recreates, every index the master's block
  * holds past it moved down by one: the layout as if the plan had never placed that participant.
  */
-function withoutParticipant(result: PerCallCallResult, id: string): Spend {
+function withoutParticipant(result: FramedCallResult, id: string): Spend {
   const removed = result.draft.layout.participants.find((placed) => placed.id === id)!.index;
   expect(removed).toBeGreaterThan(masterIndex(result));
   const moved = (index: number): number => (index !== INDEX_NONE && index > removed ? index - 1 : index);
@@ -346,7 +346,7 @@ describe('an airdrop that pays each recipient in turn', () => {
   let plain: Plain;
   beforeAll(async () => {
     plain = await deployPlain('sends');
-    const deposit = await sendPerCallValue({
+    const deposit = await sendFramedValue({
       provider: plain.world.network, artifact: batch, categoryId: plain.categoryId,
       callerUtxo: await plain.world.coin(binToHex(CALLER)), callerLockingBytecode: CALLER, funder: CALLER_FUNDER,
       changeAddress: plain.world.walletAddress, vm: compositionMachine(), value: 100_000n,
@@ -355,7 +355,7 @@ describe('an airdrop that pays each recipient in turn', () => {
   }, 300_000);
 
   /** The lock and the value each listed send pays, in list order. */
-  const paid = (result: PerCallCallResult): readonly string[] => result.draft.blockOf(MASTER).sends.map((index) => {
+  const paid = (result: FramedCallResult): readonly string[] => result.draft.blockOf(MASTER).sends.map((index) => {
     const output = result.broadcast!.outputs[index]!;
     return `${binToHex(output.lockingBytecode)}:${output.valueSatoshis}`;
   });

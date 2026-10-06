@@ -6,7 +6,7 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import {
   entryRowOf, makeCallResolver, resolveCallArguments,
-} from '../../../src/per-call/proxy/call-resolution.js';
+} from '../../../src/framed/proxy/call-resolution.js';
 
 /**
  * A local the body writes after its declaration, read by a published value or argument source (Solidity-compatible).
@@ -100,7 +100,7 @@ contract Root {
 }
 `;
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
 
 const USER = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x21));
 const OTHER = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x43));

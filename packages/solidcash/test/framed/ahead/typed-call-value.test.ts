@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { SignatureTemplate } from '../../../src/index.js';
-import { PerCallProxyDeployError, callPerCallProxyEntry } from '../../../src/per-call/proxy/index.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { FramedProxyDeployError, callFramedProxyEntry } from '../../../src/framed/proxy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { alicePriv } from '../../fixture/vars.js';
-import { USER_LOCK, compilePerCall, deployPlain, deployProxied, newWorld, type World } from './composition-world.js';
+import { USER_LOCK, compileFramed, deployPlain, deployProxied, newWorld, type World } from './composition-world.js';
 
 /**
  * Walls ahead: a typed call carrying value, `IWrapper(w).deposit{value: v}()`, beside the caller's own write. A DEX
@@ -18,7 +18,7 @@ import { USER_LOCK, compilePerCall, deployPlain, deployProxied, newWorld, type W
  * refuses at the call site, where the record does not carry the amount its code computed.
  *
  * The case pins what is met today; its title says what should settle once served. The file runs only under
- * `PER_CALL_AHEAD=1`.
+ * `FRAMED_AHEAD=1`.
  */
 
 const SOURCE = [
@@ -50,10 +50,10 @@ async function spent(world: World, txid: string, vout: number): Promise<boolean>
   return !live.some((utxo) => utxo.txid === txid && utxo.vout === vout);
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a typed call carrying value', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: a typed call carrying value', () => {
   it('serves the caller\'s entry, whose frame the hop still plans with no value at the call (should settle once '
     + 'the hop plans the value a typed call carries)', async () => {
-    const units = compilePerCall(SOURCE);
+    const units = compileFramed(SOURCE);
     expect(units.Router!.composition?.refusedEntries ?? []).toStrictEqual([]);
     const world = await newWorld(0x5c);
     const wrapper = await deployPlain(world, units.Wrapper!);
@@ -62,14 +62,14 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a typed call carrying
     // Through the generated proxy, the implementation's frame refuses at the call.
     const proxied = await deployProxied(world, units.Router!, [0n]);
     const hopCoin = await world.userCoin();
-    const hop = await callPerCallProxyEntry({
+    const hop = await callFramedProxyEntry({
       provider: world.network, implementationArtifact: proxied.artifact,
       proxyArtifact: proxied.external.proxyArtifact!, proxyCategoryId: proxied.proxyCategoryId,
       implementationCategoryId: proxied.implementationCategoryId, functionName: 'depositVia',
       args: [wrapper.address, VALUE], value: VALUE, externals: externals as never, callerUtxo: hopCoin,
       callerLockingBytecode: USER_LOCK, funder: FUNDER, changeAddress: world.changeAddress, vm: compositionMachine(),
     }).then(() => undefined, (error: unknown) => error as Error);
-    expect(hop).toBeInstanceOf(PerCallProxyDeployError);
+    expect(hop).toBeInstanceOf(FramedProxyDeployError);
     expect(hop!.message).toBe('the implementation\'s "depositVia" entry did not settle through the proxy: frame '
       + `"implementation-master" ${AT_CALL_SITE}`);
     expect(await spent(world, hopCoin.txid, hopCoin.vout)).toBe(false);

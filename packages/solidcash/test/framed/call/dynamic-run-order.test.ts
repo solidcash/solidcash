@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { INDEX_NONE, bytesEqual, type RecordEntry } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { CompositionDraft } from '../../../src/per-call/composer/index.js';
-import { chunkRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import type { PerCallProxyCallResult } from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { CompositionDraft } from '../../../src/framed/composer/index.js';
+import { chunkRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
+import type { FramedProxyCallResult } from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { bobPkh, carolPkh } from '../../fixture/vars.js';
 import {
-  USER_LOCK, compilePerCall, deployPlain, deployProxied, enterProxied, newWorld, refusedVerdicts,
+  USER_LOCK, compileFramed, deployPlain, deployProxied, enterProxied, newWorld, refusedVerdicts,
   type PlainDeployment, type ProxiedDeployment, type World,
 } from '../ahead/composition-world.js';
 
@@ -129,7 +129,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const units = compilePerCall(SOURCE);
+const units = compileFramed(SOURCE);
 const {
   Ledger, Roster, Labels, Sink, Journal, Tally, CountedJournal, Enrolment,
 } = units as Required<typeof units>;
@@ -144,8 +144,8 @@ const LONG_SECOND = `a second label long enough to span two chunk records once i
 /** One call through the hop, with the externals its calls reach; it has to settle and broadcast. */
 async function settle(
   world: World, root: ProxiedDeployment, fn: string, args: readonly FunctionArgument[],
-  externals: Readonly<Record<string, PerCallProxyExternal>> = {},
-): Promise<PerCallProxyCallResult> {
+  externals: Readonly<Record<string, FramedProxyExternal>> = {},
+): Promise<FramedProxyCallResult> {
   const outcome = await enterProxied(world, root, fn, args, externals);
   expect(outcome.error).toBeUndefined();
   expect(refusedVerdicts(outcome.result!)).toBeUndefined();
@@ -158,7 +158,7 @@ async function view(
   world: World, root: ProxiedDeployment | PlainDeployment, fn: string, args: readonly FunctionArgument[] = [],
 ): Promise<unknown> {
   const categoryId = 'proxyCategoryId' in root ? root.proxyCategoryId : root.categoryId;
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: root.artifact, categoryId, functionName: fn, args: [...args],
     vm: compositionMachine(),
   });

@@ -1,10 +1,10 @@
 /**
- * The record rule an upgrade behind a per-call proxy keeps (spec 20, plan 4.7).
+ * The record rule an upgrade behind a framed proxy keeps (spec 20, plan 4.7).
  *
  * An upgrade changes only the code a delegate frame runs. The records stay where they are, and the new code reads
  * and rebuilds each one from its own declaration, so it must read every record the way the old code wrote it: each
  * state variable by the same name, type, coordinates and encoding, each struct a field or collection reaches with
- * the same fields, and each collection with the same signature and value form. A per-call record is minted only at
+ * the same fields, and each collection with the same signature and value form. A framed record is minted only at
  * its contract's genesis, so a field or collection the old layout does not declare has no record behind the proxy:
  * an append is refused as well, by the name of what it adds.
  */
@@ -117,7 +117,7 @@ export function readUpgradeLayoutVerdict(old: StateLayout, next: StateLayout): U
   if (added !== undefined) {
     return {
       ok: false, name: added.name,
-      reason: `adds state variable "${added.name}" at ${place(added)}, which no record holds: a per-call record `
+      reason: `adds state variable "${added.name}" at ${place(added)}, which no record holds: a framed record `
         + 'is minted only at its contract\'s genesis',
     };
   }

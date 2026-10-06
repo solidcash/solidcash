@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Artifact, ExternalCallExpression } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { hexOf, seededAddress } from '../../../../solidcash/test/per-call/shapes/harness.js';
+import { hexOf, seededAddress } from '../../../../solidcash/test/framed/shapes/harness.js';
 
 /**
- * What a per-call artifact publishes for a call an earlier `return` can skip.
+ * What a framed artifact publishes for a call an earlier `return` can skip.
  *
  * The body binds its call records in the order it makes them, so a run that returns before a call makes no record
  * for it. The call's stop site is therefore conditional, and its routing carries the condition it runs under - no
@@ -55,10 +55,10 @@ const not = (expression: ExternalCallExpression): ExternalCallExpression => ({ k
 const and = (left: ExternalCallExpression, right: ExternalCallExpression): ExternalCallExpression =>
   ({ kind: 'binary', operator: '&&', left, right });
 
-const WITH_RETURNS = compileStringMulti(RETURNS, { composition: 'per-call' }).Caller!;
-const WITH_CONFINED = compileStringMulti(CONFINED, { composition: 'per-call' }).Caller!;
-const WITH_FALLBACK = compileStringMulti(FALLBACK, { composition: 'per-call' }).Caller!;
-const WITHOUT_RETURNS = compileStringMulti(NO_RETURN, { composition: 'per-call' }).Caller!;
+const WITH_RETURNS = compileStringMulti(RETURNS, { composition: 'framed' }).Caller!;
+const WITH_CONFINED = compileStringMulti(CONFINED, { composition: 'framed' }).Caller!;
+const WITH_FALLBACK = compileStringMulti(FALLBACK, { composition: 'framed' }).Caller!;
+const WITHOUT_RETURNS = compileStringMulti(NO_RETURN, { composition: 'framed' }).Caller!;
 
 /** The call sites one entry publishes, and the condition its routing carries for each call. */
 function published(artifact: Artifact, entry: string): { sites: unknown[]; conditions: unknown[] } {

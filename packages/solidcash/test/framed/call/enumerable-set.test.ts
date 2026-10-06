@@ -3,14 +3,14 @@ import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/l
 import {
   concatBytes, encodeWitnessBlock, splitFirstPush, type WitnessBlock,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallProxyCallResult } from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedProxyCallResult } from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment } from '../../../src/stateful/SortedList.js';
 import { alicePkh, bobPkh, carolPkh } from '../../fixture/vars.js';
 import {
-  USER_LOCK, compilePerCall, deployProxied, enterProxied, newWorld, refusedVerdicts,
+  USER_LOCK, compileFramed, deployProxied, enterProxied, newWorld, refusedVerdicts,
   type ProxiedDeployment, type World,
 } from '../ahead/composition-world.js';
 
@@ -103,7 +103,7 @@ const CAROL = encodeLockingBytecodeP2pkh(carolPkh);
 /** One call through the hop; it has to settle and broadcast. */
 async function settle(
   world: World, root: ProxiedDeployment, fn: string, args: readonly FunctionArgument[],
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const outcome = await enterProxied(world, root, fn, args);
   expect(outcome.error).toBeUndefined();
   expect(refusedVerdicts(outcome.result!)).toBeUndefined();
@@ -116,7 +116,7 @@ async function settle(
  * The master's verdict on a settled removal that moved a member, and on the same removal with the moved member's
  * node declared kept, in its declaration and at the output it settles to: the write the body makes there skipped.
  */
-function expectMovedMemberKeptRefused(result: PerCallProxyCallResult, position: bigint): void {
+function expectMovedMemberKeptRefused(result: FramedProxyCallResult, position: bigint): void {
   const frame = result.verdicts.find((verdict) => verdict.id === 'implementation-master')!;
   expect(frame.accepted).toBe(true);
   const block = structuredClone(result.draft.blockOf('implementation-master')) as WitnessBlock;
@@ -138,7 +138,7 @@ function expectMovedMemberKeptRefused(result: PerCallProxyCallResult, position: 
       : output)),
   };
   const vm = compositionMachine();
-  const verdict = (transaction: PerCallProxyCallResult['transaction']): unknown => vm.stateSuccess(
+  const verdict = (transaction: FramedProxyCallResult['transaction']): unknown => vm.stateSuccess(
     vm.evaluate({ inputIndex: frame.index, sourceOutputs: result.sourceOutputs, transaction }),
   );
   expect(verdict(result.transaction)).toBe(true);
@@ -149,7 +149,7 @@ function expectMovedMemberKeptRefused(result: PerCallProxyCallResult, position: 
 async function view(
   world: World, root: ProxiedDeployment, fn: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: root.artifact, categoryId: root.proxyCategoryId, functionName: fn,
     args: [...args], vm: compositionMachine(),
   });
@@ -160,7 +160,7 @@ async function view(
 describe('an enumerable member set behind the generated proxy', () => {
   it('adds three members to the set the contract holds, and reads them back', async () => {
     const world = await newWorld(0x61);
-    const set = await deployProxied(world, compilePerCall(STATE_SET).MemberSet!, []);
+    const set = await deployProxied(world, compileFramed(STATE_SET).MemberSet!, []);
     for (const member of [USER_LOCK, BOB, CAROL]) await settle(world, set, 'add', [member]);
     expect(await view(world, set, 'length', [])).toBe(3n);
     expect(binToHex(await view(world, set, 'at', [0n]) as Uint8Array)).toBe(binToHex(alicePkh));
@@ -169,7 +169,7 @@ describe('an enumerable member set behind the generated proxy', () => {
 
   it('adds three members to one group\'s set, and reads them back', async () => {
     const world = await newWorld(0x62);
-    const sets = await deployProxied(world, compilePerCall(GROUP_SETS).GroupSets!, []);
+    const sets = await deployProxied(world, compileFramed(GROUP_SETS).GroupSets!, []);
     for (const member of [USER_LOCK, BOB, CAROL]) await settle(world, sets, 'add', [1n, member]);
     expect(await view(world, sets, 'length', [1n])).toBe(3n);
     expect(binToHex(await view(world, sets, 'at', [1n, 0n]) as Uint8Array)).toBe(binToHex(alicePkh));
@@ -178,7 +178,7 @@ describe('an enumerable member set behind the generated proxy', () => {
 
   it('removes a middle member and then the last member of one group\'s set, and reads the set back', async () => {
     const world = await newWorld(0x66);
-    const sets = await deployProxied(world, compilePerCall(GROUP_SETS).GroupSets!, []);
+    const sets = await deployProxied(world, compileFramed(GROUP_SETS).GroupSets!, []);
     for (const member of [USER_LOCK, BOB, CAROL]) await settle(world, sets, 'add', [1n, member]);
     // The middle member: the last one moves into its place and takes its position, 2.
     const swapped = await settle(world, sets, 'remove', [1n, BOB]);

@@ -1,27 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { decodePushdataValue, validatorAddress, type Artifact, type StateValue } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import * as composer from '../../../src/per-call/composer/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import * as composer from '../../../src/framed/composer/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { deploymentStateValues, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { deploymentStateValues, type FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv, carolPkh, carolPriv } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Walls ahead: the class-(d) L4 entries on a posted task, through the shipped hop (`callPerCallProxyEntry`).
+ * Walls ahead: the class-(d) L4 entries on a posted task, through the shipped hop (`callFramedProxyEntry`).
  *
  * `Desk` (a proxied root) keeps a task array and a per-task allowlist; `Journal` (a proxied store) keeps members,
  * arbiters and per-task notes, gates its writes on the root proxy's address and stamps each note with the clock;
@@ -37,7 +37,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * Each entry is pinned where it stands today. Beside them, `greet` and `setAllowedOnly` drop the task read,
  * `refuseOnce` the refund arm's note and `postUnlisted` the allowlist loop, each a wall its entry met; a second
  * deployment whose escrow and dispute contract accept escrow 0 shows what stands behind their reverts. The file runs
- * only under `PER_CALL_AHEAD=1`.
+ * only under `FRAMED_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -53,7 +53,7 @@ const JOURNAL_PROXY_CATEGORY = category('30');
 const DESK_IMPL_CATEGORY = category('41');
 const DESK_PROXY_CATEGORY = category('52');
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
@@ -304,7 +304,7 @@ type ArtifactMap = ReturnType<typeof compileStringMulti>;
 let compiledRun: ArtifactMap | undefined;
 /** The contracts, compiled once and only when the file runs. */
 function compiled(): ArtifactMap {
-  compiledRun ??= compileStringMulti(SOURCE, { composition: 'per-call' });
+  compiledRun ??= compileStringMulti(SOURCE, { composition: 'framed' });
   return compiledRun;
 }
 
@@ -330,7 +330,7 @@ interface World {
   readonly network: MockNetworkProvider;
   readonly desk: { readonly proxy: string; readonly implementation: string };
   readonly journal: { readonly proxy: string; readonly implementation: string };
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   /** Hands out a fresh coin id per hop, distinct from every category. */
   readonly nextCoin: () => Utxo;
@@ -338,7 +338,7 @@ interface World {
 
 /** What a hop left: its result, or its error with the last draft built and the stalls the settle caught. */
 interface Outcome {
-  readonly result?: PerCallProxyCallResult;
+  readonly result?: FramedProxyCallResult;
   readonly error?: Error;
   readonly draft?: composer.CompositionDraft;
   readonly stalls: readonly string[];
@@ -356,10 +356,10 @@ async function enter(
   await world.network.addUtxo(binToHex(caller.lock), coin);
   const hosts = vi.spyOn(composer, 'createComposedDerivationHost');
   const derivations = vi.spyOn(composer, 'deriveComposition');
-  let result: PerCallProxyCallResult | undefined;
+  let result: FramedProxyCallResult | undefined;
   let error: Error | undefined;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -393,7 +393,7 @@ async function enter(
 }
 
 /** The hop settled: every verdict accepted and the transaction broadcast. */
-function expectSettled(outcome: Outcome): PerCallProxyCallResult {
+function expectSettled(outcome: Outcome): FramedProxyCallResult {
   expect(outcome.error).toBeUndefined();
   expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
   expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -403,7 +403,7 @@ function expectSettled(outcome: Outcome): PerCallProxyCallResult {
 
 /** The hop was refused before anything was broadcast, with `message` in its words. */
 function expectRefused(outcome: Outcome, message: string): Error {
-  expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
+  expect(outcome.error).toBeInstanceOf(FramedProxyDeployError);
   expect(outcome.error!.message).toContain(message);
   expect(outcome.coinLive).toBe(true);
   return outcome.error!;
@@ -441,7 +441,7 @@ function publishedFacts(functionName: string): Record<string, unknown> {
 interface Posted { readonly id: bigint; readonly kind: bigint; readonly data: string }
 
 /** The notes the store emitted in a settled hop: its outputs whose commitment decodes exactly as the event's payload. */
-function postedNotes(world: World, result: PerCallProxyCallResult): Posted[] {
+function postedNotes(world: World, result: FramedProxyCallResult): Posted[] {
   const journal = compiled().Journal!;
   const [idType, noteType] = journal.events![0]!.parameters.map((parameter) => parameter.type);
   const structs = journal.structs ?? journal.stateLayout?.structs;
@@ -467,7 +467,7 @@ function postedNotes(world: World, result: PerCallProxyCallResult): Posted[] {
 /** The root proxy's task array as its records hold it, parsed with the shipped decoder. */
 async function tasksOf(world: World): Promise<readonly Record<string, unknown>[]> {
   const layout = buildProxyArtifact(compiled().Desk!).stateLayout!;
-  const pools = await readPerCallDeployment(world.network, world.desk.proxy, layout);
+  const pools = await readFramedDeployment(world.network, world.desk.proxy, layout);
   return deploymentStateValues(layout, world.desk.proxy, pools).tasks as readonly Record<string, unknown>[];
 }
 
@@ -503,7 +503,7 @@ async function deployWorld(escrows: bigint): Promise<World> {
   // The store gates on the root proxy's address, which its category fixes before the root is deployed.
   const journalInit = nextCoin();
   await network.addUtxo(binToHex(ALICE_LOCK), journalInit);
-  const journal = await deployPerCallProxy({
+  const journal = await deployFramedProxy({
     provider: network,
     implementationArtifact: Journal!,
     proxyArtifact: buildProxyArtifact(Journal!),
@@ -517,7 +517,7 @@ async function deployWorld(escrows: bigint): Promise<World> {
   expect(journal.initialize.broadcast).toBeDefined();
   const deskInit = nextCoin();
   await network.addUtxo(binToHex(ALICE_LOCK), deskInit);
-  const desk = await deployPerCallProxy({
+  const desk = await deployFramedProxy({
     provider: network,
     implementationArtifact: Desk!,
     proxyArtifact: buildProxyArtifact(Desk!),
@@ -562,7 +562,7 @@ async function deployWorld(escrows: bigint): Promise<World> {
 
 const OBJECTION = [new Uint8Array(32), new TextEncoder().encode('Objection!')] as const;
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages, allowlists and refusals', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (L4): thread messages, allowlists and refusals', () => {
   it('compiles every entry with the call sites, occurrences, reads and write facts the fixture publishes', () => {
     for (const artifact of Object.values(compiled())) {
       if (artifact.composition === undefined) continue;
@@ -711,7 +711,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       expectRefused(outcome, entryRefusal('refuse', lineOf('"not arbitrator"'), 'not arbitrator'));
       // The entry's own frame is derived with the refund's verdict deferred, so the refusal carries that stall.
       expect(outcome.stalls).toStrictEqual([
-        'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.refuse() filled no witness at '
+        'FRAMED_DERIVATION_STALLED: master "implementation-master" of Desk.refuse() filled no witness at '
         + 'site 0 (call 0)',
       ]);
       const report = reportOf(outcome);
@@ -736,7 +736,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       expectRefused(outcome, entryRefusal('refuseOnce', lineOf('"not arbitrator"'), 'not arbitrator'));
       // The entry's own frame is derived with the skipped arm's verdict deferred, so the refusal carries that stall.
       expect(outcome.stalls).toStrictEqual([
-        'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.refuseOnce() filled no witness at '
+        'FRAMED_DERIVATION_STALLED: master "implementation-master" of Desk.refuseOnce() filled no witness at '
         + 'site 0 (call 0)',
       ]);
       expect(reportOf(outcome).innermost?.master).toBe('implementation-master');

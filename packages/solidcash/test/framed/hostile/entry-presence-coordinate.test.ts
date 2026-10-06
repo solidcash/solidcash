@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, utf8ToBin } from '@bitauth/libauth';
 import { sha256 } from '@solidcash/utils';
 import {
-  deployPerCallMaster, evaluateMasterSpend, node, spent,
-} from '../../../../solidc/test/per-call/master/record-spend.js';
+  deployFramedMaster, evaluateMasterSpend, node, spent,
+} from '../../../../solidc/test/framed/master/record-spend.js';
 import { Contract, SignatureTemplate, type TransactionBuilder } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
@@ -18,7 +18,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * An entry's presence gates the check that holds its input to the contract's category and the mutable capability,
  * so a coordinate that names no input must not read as absent.
  *
- * A per-call frame reads the entry at the coordinate its own block declares. The one coordinate it reads as absent is
+ * A framed frame reads the entry at the coordinate its own block declares. The one coordinate it reads as absent is
  * the no-index sentinel a node an earlier frame created carries; any other is read at the input it names, so one
  * naming no input fails. Before that, `0x8001` (-1) read as absent: settlement never visits a negative index, so the
  * body took the declared view as the entry with no entry spent. The head now refuses any declared index the
@@ -29,7 +29,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 const WHO = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x33), 0x88, 0xac]);
 const ALLOWED = node(keyToSlot(WHO), new Uint8Array(32), new Uint8Array([1]));
 
-const PER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const FRAMED_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Gate {'
   + '   mapping(address => uint) allowed;'
   + '   uint claims;'
@@ -39,8 +39,8 @@ const PER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-describe('a per-call frame reads an entry\'s presence at its declared coordinate', () => {
-  const gate = deployPerCallMaster(PER_CALL_SOURCE, 'entry presence coordinate');
+describe('a framed frame reads an entry\'s presence at its declared coordinate', () => {
+  const gate = deployFramedMaster(FRAMED_SOURCE, 'entry presence coordinate');
   const claims = (count: bigint): Uint8Array => gate.record({ claims: count });
   const recordSpent = spent(gate.recordLock, 2, claims(0n), claims(1n));
 

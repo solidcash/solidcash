@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { decodePushdataValue, validatorAddress, type StateValue } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import * as resolution from '../../../src/per-call/proxy/call-resolution.js';
+import * as resolution from '../../../src/framed/proxy/call-resolution.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -19,7 +19,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Walls ahead: an integer packed with `abi.encodePacked` into a store call's argument, through the shipped hop
- * (`callPerCallProxyEntry`), compiled with the fixture's options (`solidityImportCompat` among them).
+ * (`callFramedProxyEntry`), compiled with the fixture's options (`solidityImportCompat` among them).
  *
  * The body packs an integer by its declared type (`emitEvmPackedValue`): its natural width, big-endian. The compiler
  * publishes a parameter, a cast and a one-level struct field typed, but a nested struct field, an element of an
@@ -28,7 +28,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * (measured at 8fcb48d4a): `arbitrate`'s `amounts[i]` (#59-#62), an element of an earlier call's `uint256[5]`
  * result, is that shape once the hop can state the result. The evaluator now packs such a read by its declared type
  * (`stateful/sc-evaluate-external-expression.ts`, `packedReadType`), so `Desk` (a proxied root) settles each read
- * into the proxied store `Journal` with the bytes the body packs. The file runs only under `PER_CALL_AHEAD=1`.
+ * into the proxied store `Journal` with the bytes the body packs. The file runs only under `FRAMED_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -42,7 +42,7 @@ const JOURNAL_PROXY_CATEGORY = category('2b');
 const DESK_IMPL_CATEGORY = category('3c');
 const DESK_PROXY_CATEGORY = category('4d');
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
@@ -133,7 +133,7 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
@@ -175,7 +175,7 @@ interface World {
   readonly network: MockNetworkProvider;
   readonly desk: { readonly proxy: string; readonly implementation: string };
   readonly journal: { readonly proxy: string; readonly implementation: string };
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   /** Hands out a fresh coin id per hop, distinct from every category. */
   readonly nextCoin: () => Utxo;
@@ -183,7 +183,7 @@ interface World {
 
 /** What a hop left: its result or error, and the call arguments its plan stated. */
 interface Outcome {
-  readonly result?: PerCallProxyCallResult;
+  readonly result?: FramedProxyCallResult;
   readonly error?: Error;
   /** The argument values each planned call states, in parameter order. */
   readonly stated: readonly (readonly FunctionArgument[])[];
@@ -197,10 +197,10 @@ async function enter(world: World, functionName: string, args: readonly Function
   const coin = world.nextCoin();
   await world.network.addUtxo(binToHex(CREATOR.lock), coin);
   const resolved = vi.spyOn(resolution, 'resolvePublishedCall');
-  let result: PerCallProxyCallResult | undefined;
+  let result: FramedProxyCallResult | undefined;
   let error: Error | undefined;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -231,7 +231,7 @@ async function enter(world: World, functionName: string, args: readonly Function
 }
 
 /** The `data_` bytes of the notes the store emitted in a settled hop: its outputs that decode as the event. */
-function storedData(world: World, result: PerCallProxyCallResult): string[] {
+function storedData(world: World, result: FramedProxyCallResult): string[] {
   const journal = compiled().Journal!;
   const [idType, eventType] = journal.events![0]!.parameters.map((parameter) => parameter.type);
   const structs = journal.structs ?? journal.stateLayout?.structs;
@@ -289,7 +289,7 @@ async function deployWorld(): Promise<World> {
   await fundShippedFacets(network);
   const journalInit = nextCoin();
   await network.addUtxo(binToHex(ALICE_LOCK), journalInit);
-  const journal = await deployPerCallProxy({
+  const journal = await deployFramedProxy({
     provider: network,
     implementationArtifact: Journal!,
     proxyArtifact: buildProxyArtifact(Journal!),
@@ -303,7 +303,7 @@ async function deployWorld(): Promise<World> {
   expect(journal.initialize.broadcast).toBeDefined();
   const deskInit = nextCoin();
   await network.addUtxo(binToHex(ALICE_LOCK), deskInit);
-  const desk = await deployPerCallProxy({
+  const desk = await deployFramedProxy({
     provider: network,
     implementationArtifact: Desk!,
     proxyArtifact: buildProxyArtifact(Desk!),
@@ -332,7 +332,7 @@ async function deployWorld(): Promise<World> {
   };
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an integer packed into a store call\'s argument', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: an integer packed into a store call\'s argument', () => {
   it('publishes a parameter, a cast and a one-level field typed, and the other reads untyped', () => {
     expect(compiled().Desk!.composition!.refusedEntries ?? []).toStrictEqual([]);
     expect(packedData('packParam')).toStrictEqual({

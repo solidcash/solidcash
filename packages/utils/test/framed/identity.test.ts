@@ -11,10 +11,10 @@ import {
   validatorAddress,
   validatorRedeemScript,
   validatorTemplateHash,
-} from '../../src/per-call/index.js';
-import { buildMasterUnlockingBytecode, splitFirstPush } from '../../src/per-call/witness-block.js';
-import { encodeArgumentPayload } from '../../src/per-call/canonical.js';
-import { expectPerCallRejection, toBytes, toHex, toWitnessBlock } from './helpers.js';
+} from '../../src/framed/index.js';
+import { buildMasterUnlockingBytecode, splitFirstPush } from '../../src/framed/witness-block.js';
+import { encodeArgumentPayload } from '../../src/framed/canonical.js';
+import { expectFramedRejection, toBytes, toHex, toWitnessBlock } from './helpers.js';
 import {
   ADDRESS_A,
   ADDRESS_A_ALT_PROGRAM,
@@ -41,8 +41,8 @@ describe('category pin', () => {
   });
 
   it('rejects a category that is not 32 bytes and an unknown capability', () => {
-    expectPerCallRejection(() => categoryPin(new Uint8Array(31), TokenCapability.NONE));
-    expectPerCallRejection(() => categoryPin(toBytes(CATEGORY_A), 0x03));
+    expectFramedRejection(() => categoryPin(new Uint8Array(31), TokenCapability.NONE));
+    expectFramedRejection(() => categoryPin(toBytes(CATEGORY_A), 0x03));
   });
 
   it('builds the input-side script the vector records', () => {
@@ -100,7 +100,7 @@ describe('validator address', () => {
   });
 
   it('rejects a category that is not 32 bytes', () => {
-    expectPerCallRejection(() => validatorAddress(new Uint8Array(31), toBytes(VALIDATOR_TEMPLATE)));
+    expectFramedRejection(() => validatorAddress(new Uint8Array(31), toBytes(VALIDATOR_TEMPLATE)));
   });
 });
 

@@ -3,7 +3,7 @@ import type { ExternalCallExpression } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 
 /**
- * The condition a per-call body's guarded emit runs under, as its `emits` row publishes it.
+ * The condition a framed body's guarded emit runs under, as its `emits` row publishes it.
  *
  * A frame lists every emit's output, and one the body skips carries the empty commitment, so a builder decides the
  * condition from the frame's facts as it decides a guarded write's (`write-activation-publication.test.ts`), in the
@@ -40,7 +40,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifact = compileString(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifact = compileString(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 
 /** The activation each emit of the entry publishes, in emit order. */
 function activationsOf(entry: string): readonly (ExternalCallExpression | undefined)[] {
@@ -50,7 +50,7 @@ function activationsOf(entry: string): readonly (ExternalCallExpression | undefi
 const forward = (paramIndex: number): ExternalCallExpression =>
   ({ kind: 'source', source: { kind: 'forward', paramIndex } });
 
-describe('the condition a per-call guarded emit publishes', () => {
+describe('the condition a framed guarded emit publishes', () => {
   it('serves every entry', () => {
     expect(artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
   });

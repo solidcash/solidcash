@@ -9,10 +9,10 @@ import {
   type DerivationHost,
   type FrameRequest,
   type StepOutcome,
-  PerCallComposerError,
+  FramedComposerError,
   deriveComposition,
   deriveDepthFirst,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /** A state read at `site`, of the record `record`. */
 function read(site: number, record: string): StopSite {
@@ -39,11 +39,11 @@ function witnessFor(site: StopSite): StopSiteWitnessKind {
 }
 
 /** Runs `body` and returns the refusal it raised. */
-function captureRefusal(body: () => unknown): PerCallComposerError {
+function captureRefusal(body: () => unknown): FramedComposerError {
   try {
     body();
   } catch (error) {
-    if (error instanceof PerCallComposerError) return error;
+    if (error instanceof FramedComposerError) return error;
     throw error;
   }
   throw new Error('expected a refusal, but nothing was raised');
@@ -174,7 +174,7 @@ describe('derivation driver', () => {
 
     const refusal = captureRefusal(() => deriveDepthFirst(root, host));
 
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
     expect(refusal.message).toContain('A m1');
     expect(refusal.message).toContain('A.k()');
     expect(refusal.message).toContain('site 0');
@@ -195,7 +195,7 @@ describe('derivation driver', () => {
 
     const refusal = captureRefusal(() => deriveDepthFirst(root, host));
 
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.code).toBe('FRAMED_DERIVATION_STALLED');
     expect(refusal.message).toContain('call 0');
   });
 });

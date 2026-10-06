@@ -1,5 +1,5 @@
 /**
- * The virtual machine the per-call suites run transactions on.
+ * The virtual machine the framed suites run transactions on.
  *
  * A composition transaction carries the validator program and a transcript inside a single unlocking bytecode, so a
  * real chain's per-input byte allowance and operation-cost density are both too small for the shapes these suites

@@ -15,7 +15,7 @@ describe('param', () => {
   contract Handler() is IHandler { bigint counter; function inc(pubkey o, sig s) { require(checkSig(s, o)); this.counter = this.counter + 1; } function dec(pubkey o, sig s) { require(checkSig(s, o)); this.counter = this.counter - 1; } }`;
 
   // A FOREIGN function pointer PASSED as a parameter and called (store_function shape). The callee master input
-  // index is a per-call param the SDK fills, so the covenant reads the right co-spent callee regardless of layout.
+  // index is a framed param the SDK fills, so the covenant reads the right co-spent callee regardless of layout.
   const CALLER = `pragma solidcash >=0.8.0;
   interface IHandler { public bigint counter; function inc(pubkey o, sig s); function dec(pubkey o, sig s); }
   contract Caller() {
@@ -27,7 +27,7 @@ describe('param', () => {
     }
   }`;
 
-  describe('foreign function-pointer parameter (per-call master index)', () => {
+  describe('foreign function-pointer parameter (framed master index)', () => {
     const provider = createTestProvider();
     const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
@@ -52,7 +52,7 @@ describe('param', () => {
     });
   });
 
-  describe('foreign fn-ptr params: MULTIPLE calls bind to the proper callee (per-call index)', () => {
+  describe('foreign fn-ptr params: MULTIPLE calls bind to the proper callee (framed index)', () => {
     const provider = createTestProvider();
     const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
@@ -311,7 +311,7 @@ describe('storage (received value)', () => {
 
   // A foreign fn-ptr STATE var holding a RECEIVED value (`this.stored = y`, method carried in the value). It
   // flattens to an `address stored` + a `bytes4 __fnsel_stored` companion; `save` stores both, `run` calls through
-  // the pair (state-address co-spend + runtime selector + per-call master index). store_function's `x = y` case.
+  // the pair (state-address co-spend + runtime selector + framed master index). store_function's `x = y` case.
   const STORE = `pragma solidcash >=0.8.0;
   interface IH { public bigint counter; function inc(pubkey o, sig s); function dec(pubkey o, sig s); }
   contract Store() {

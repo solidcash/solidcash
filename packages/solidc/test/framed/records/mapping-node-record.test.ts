@@ -1,7 +1,7 @@
 /**
  * Claim 1: an exact read of a mapping node, and the node commitment layout.
  *
- * Spec: docs/per-call/SPEC_PER_CALL_TRANSACTION.md
+ * Spec: docs/framed/SPEC_FRAMED_TRANSACTION.md
  *   1459 - mapping node: `slot(32) || next(32) || value tail`, one entry covenant per collection salted with
  *          `sha256(name:type)[:20]`;
  *   1460 - HEAD sentinel: the same lock, slot 0;

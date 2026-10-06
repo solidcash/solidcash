@@ -3,19 +3,19 @@ import { encodeDataPush } from '@bitauth/libauth';
 import {
   INDEX_NONE, bytesEqual, concatBytes, encodeWitnessBlock, splitFirstPush, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import type { CompositionDraft } from '../../../src/per-call/composer/index.js';
-import { declareUnstatedCalls } from '../../../src/per-call/proxy/planning-refusal.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import type { CompositionDraft } from '../../../src/framed/composer/index.js';
+import { declareUnstatedCalls } from '../../../src/framed/proxy/planning-refusal.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A plain root that writes an element of its own chunked array between two calls, the call before the write waiting
- * on the result of an earlier one, on the plain call path (`callPerCallEntry`).
+ * on the result of an earlier one, on the plain call path (`callFramedEntry`).
  *
  * A board keeps its items in an array of structs holding strings. Taking an item reads the element, asks a static
  * oracle the fee for the item's amount, pays the amount and the fee into a vault, writes the reference the vault
@@ -82,7 +82,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 const SHORT_TITLE = 'a first item';
 /** A title long enough that the taken item's element spans more than one chunk record. */
@@ -99,14 +99,14 @@ interface Chain {
   readonly board: PlainDeployment;
   readonly vault: PlainDeployment;
   readonly journal: PlainDeployment;
-  readonly taken: PerCallCallResult;
+  readonly taken: FramedCallResult;
 }
 
 /** One entry of `root` that has to settle, entered by the user and reaching the deployments named. */
 async function enter(
   world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
   reached: readonly PlainDeployment[] = [],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
     [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
   expect(outcome.error?.message).toBeUndefined();
@@ -120,7 +120,7 @@ async function enter(
 async function view(
   world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[] = [],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -146,7 +146,7 @@ function chain(): Promise<Chain> {
 }
 
 /** The root frame's block as the settled take declares it, with its master. */
-function rootBlock(result: PerCallCallResult): { master: string; block: WitnessBlock } {
+function rootBlock(result: FramedCallResult): { master: string; block: WitnessBlock } {
   const roots = result.completed.filter((frame) => frame.functionName === 'Board.take()');
   expect(roots).toHaveLength(1);
   return { master: roots[0]!.master, block: structuredClone(result.draft.blockOf(roots[0]!.master)) as WitnessBlock };
@@ -168,7 +168,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -176,7 +176,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 }
 
 /** The settled transaction with one master's witness block replaced by `block`. */
-function withBlock(result: PerCallCallResult, master: string, block: WitnessBlock): VmTransaction {
+function withBlock(result: FramedCallResult, master: string, block: WitnessBlock): VmTransaction {
   const forged = structuredClone(result.transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
   const { rest } = splitFirstPush(forged.inputs[index]!.unlockingBytecode);

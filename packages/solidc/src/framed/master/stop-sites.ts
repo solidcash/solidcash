@@ -5,7 +5,7 @@
  * The stop sites say where that gathering happens: one `call` site per external call, in call order, and one
  * `segmentClose` site per segment, so a run with `k` calls publishes `2k + 1` sites. The driver resumes each
  * execution at its sites in order, filling one witness per step, and derives each call's callee before its caller
- * resumes (`solidcash/src/per-call/composer/derivation.ts`).
+ * resumes (`solidcash/src/framed/composer/derivation.ts`).
  *
  * No `read` site is published yet. A read's site carries the identity of the record it reads, and the compiler
  * does not hold a record identity at this point: which records a master touches is decided by settlement, not by
@@ -23,7 +23,7 @@ import {
   STOP_SITE_METADATA_VERSION,
   validateStopSiteMetadata,
   type PublishedLoopEffects,
-  type PublishedPerCallStopSites,
+  type PublishedFramedStopSites,
   type PublishedWriteSegment,
   type StopSite,
   type StopSiteMetadata,
@@ -32,7 +32,7 @@ import type { MasterCallSite } from './frame-tail.js';
 
 // The published table is the artifact's own type, `Artifact.composition.stopSites`.
 export type {
-  PublishedCallSite, PublishedEntryStopSites, PublishedPerCallStopSites, PublishedWriteSegment,
+  PublishedCallSite, PublishedEntryStopSites, PublishedFramedStopSites, PublishedWriteSegment,
 } from '@solidcash/utils';
 
 /** The identity a driver's `FrameRequest.functionName` uses for an entry. */
@@ -97,7 +97,7 @@ export function entryStopSites(
  * write instead. An entry that emits, sends or hashes once per turn of a loop publishes the runs a builder lays
  * those outputs and side-cars by (`loop-effects.ts`).
  */
-export function publishPerCallStopSites(
+export function publishFramedStopSites(
   contractName: string,
   entries: readonly {
     readonly entryName: string;
@@ -108,7 +108,7 @@ export function publishPerCallStopSites(
     readonly sendCallsBefore?: readonly number[];
     readonly loopEffects?: PublishedLoopEffects;
   }[],
-): PublishedPerCallStopSites {
+): PublishedFramedStopSites {
   return {
     version: 1,
     entries: entries.map(({

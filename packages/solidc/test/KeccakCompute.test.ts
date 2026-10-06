@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { KECCAK256_COMPUTE_STATEFUL_COVENANT } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
-// keccak256 is the compute-and-commit model: each call co-spends its own side-car (slot-per-call) that
+// keccak256 is the compute-and-commit model: each call co-spends its own side-car (slot-framed) that
 // computes ONE hash into its own NFT commitment; the contract reads call i from the i-th of the last N
 // side-car outputs. EVERY stateless keccak256 uses it: direct-param args are co-spent from the call args;
 // complex/nested args are recorded as `null` (the SDK resolves them via a VM probe). Only STATEFUL contracts
@@ -22,7 +22,7 @@ describe('keccak256 compute-model selection (soundness gate)', () => {
   it('TWO direct-param keccak256 calls use one batched compute side-car', () => {
     const a = compileString('contract C { function f(bytes a, bytes b) public pure { require(keccak256(a) != keccak256(b)); } }');
     expect(fn(a).keccakCompute).toBe(true);
-    expect(fn(a).keccakPreimageParams).toEqual(['a', 'b']); // per-call params in emission order
+    expect(fn(a).keccakPreimageParams).toEqual(['a', 'b']); // framed params in emission order
     expect(lib(a).resultNft).toBe(true);
   });
 

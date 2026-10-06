@@ -41,8 +41,8 @@ export async function deriveComposedReturnBlob(
   const artifact = contract.inner.artifact;
   const edges = abiFunction.externalCalls ?? [];
   const selector = abiFunction.selector;
-  // A per-call contract reads through its own call handle; this composer does not compose per-call masters.
-  if (artifact.composition?.convention === 'per-call' || edges.length < 2 || selector === undefined
+  // A framed contract reads through its own call handle; this composer does not compose framed masters.
+  if (artifact.composition?.convention === 'framed' || edges.length < 2 || selector === undefined
     || artifact.messageBus?.handlers.some((handler) =>
       handler.selector.toLowerCase() === selector.toLowerCase() && handler.eligible) !== true) {
     return undefined;

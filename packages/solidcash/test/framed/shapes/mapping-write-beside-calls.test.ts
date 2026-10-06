@@ -36,7 +36,7 @@ import {
   planMappingWrite,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A mapping write beside calls: the arbitration shape, where the entry records the award, then reads a value through
@@ -256,25 +256,25 @@ describe('a mapping write beside two calls', () => {
 
   it('refuses the node declared changed and back in the segments after the one it is written in', () => {
     expect(() => compose(updateShape([[BEFORE, AFTER], [AFTER, FAKE], [FAKE, AFTER]])))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+      .toThrow(/FRAMED_DERIVATION_STALLED/);
     expect(() => compose(insertShape((head, node) => [[relinks(head), creates(node)],
       [kept(head, HEAD_AFTER), { in: node, out: node, viewIn: CREATED, viewOut: FAKE }],
       [kept(head, HEAD_AFTER), { in: node, out: node, viewIn: FAKE, viewOut: CREATED }],
-    ]))).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    ]))).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('refuses the node declared changed, or created, in the segments before the one it is written in', () => {
     expect(() => compose(updateShape([[BEFORE, AFTER], [AFTER, AFTER], [AFTER, AFTER]]), 'arbitrateLate'))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+      .toThrow(/FRAMED_DERIVATION_STALLED/);
     expect(() => compose(insertShape((head, node) => [[kept(head, SENTINEL), creates(node, FAKE)],
       [kept(head, SENTINEL), kept(node, FAKE)], [relinks(head), { in: node, out: node, viewIn: FAKE, viewOut: CREATED }],
-    ]), 'arbitrateLate')).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    ]), 'arbitrateLate')).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 
   it('refuses a node declared changed by an entry that never touches the mapping', () => {
     const untouched = updateShape([[BEFORE, BEFORE], [BEFORE, BEFORE], [BEFORE, BEFORE]]);
     expect(refusals(compose({ ...untouched, after: BEFORE }, 'ping'))).toStrictEqual([]);
     const rewritten = updateShape([[BEFORE, FAKE], [FAKE, FAKE], [FAKE, FAKE]]);
-    expect(() => compose({ ...rewritten, after: FAKE }, 'ping')).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => compose({ ...rewritten, after: FAKE }, 'ping')).toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });

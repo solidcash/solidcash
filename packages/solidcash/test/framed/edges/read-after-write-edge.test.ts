@@ -58,7 +58,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     int got = IJournal(this.journal).log(id, entry); this.seen = got; this.held = this.wide[id].length; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const keeper = edgeDeployment({
   scope: 'read after write edge', callee: artifacts.Journal!, caller: artifacts.Keeper!, interfaceName: 'IJournal',
 });
@@ -123,7 +123,7 @@ describe('a body that reads a mapping entry after writing it', () => {
   it('refuses a read past a call of a node its own push inserted (pinned)', async () => {
     // Pinned wall, failing closed: past the write's segment the read names the node the insert created by the output
     // the write segment declares for it (`GenerateTargetTraversal.emitCreatedTargetName`, served at master level in
-    // `solidc/test/per-call/master/read-after-push.test.ts`), but the hop declares no created node in a later
+    // `solidc/test/framed/master/read-after-push.test.ts`), but the hop declares no created node in a later
     // segment (`placeLaidWrites` in proxy/deploy.ts), so the read finds no record. A key the list holds settles above.
     const run = await relay();
     await expectRefusedEdge(run, 'keepThenLog', [FRESH, 41n, word(0x58)],

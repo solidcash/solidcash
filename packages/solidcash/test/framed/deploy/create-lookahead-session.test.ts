@@ -7,14 +7,14 @@ vi.mock('solidcash', () => import('../../../src/index.js'));
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator/index.js';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { buildValidatorProgram } from '../../../../solidc/src/framed/validator/index.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { deriveLogicalCreateAddress, Signer, StatefulContract } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { CreateAddressError, deployMaster } from '../../../src/per-call/deploy/index.js';
+import { CreateAddressError, deployMaster } from '../../../src/framed/deploy/index.js';
 import {
   createLookaheadForAddress, openCreateLookahead, predictCreateAddress, takeReservedGenesisFunding,
-} from '../../../src/per-call/deploy/create-lookahead-session.js';
+} from '../../../src/framed/deploy/create-lookahead-session.js';
 import { getCreateAddress } from '../../../../testing/src/ethers-shim.js';
 
 /**
@@ -34,7 +34,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   constructor(int seed) { this.total = seed + 1; }'
   + '   function check(int v) { require(this.total == v); }'
   + ' }';
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 
 /** A signer over the relaxed mock, funded with `count` fresh vout-0 token-free UTXOs (each its own txid). */
 async function fundedSigner(

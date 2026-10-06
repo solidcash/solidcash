@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { buildChunkCommitment, encodePushdataValue } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -77,15 +77,15 @@ async function funded(network: MockNetworkProvider): Promise<Funding> {
 
 /** Deploys one hop for an appending initialize, with the implementation's generated proxy. */
 async function deploy(source: string): Promise<{
-  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
   readonly network: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly funding: Funding;
 }> {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funding = await funded(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: artifacts.Impl!,
     implementationDeploy: {
@@ -137,8 +137,8 @@ describe('a proxied append of a struct whose default holds an address field', ()
 
   it('settles the spelled-out `address(0)`, which the artifact states identically', () => {
     // The spelled-out element compiles to the default's program and ABI, so it settles through the deployment above.
-    const spelled = compileStringMulti(SPELLED_SOURCE, { composition: 'per-call' }).Impl!;
-    const plain = compileStringMulti(DEFAULT_SOURCE, { composition: 'per-call' }).Impl!;
+    const spelled = compileStringMulti(SPELLED_SOURCE, { composition: 'framed' }).Impl!;
+    const plain = compileStringMulti(DEFAULT_SOURCE, { composition: 'framed' }).Impl!;
     expect(spelled.bytecode).toBe(plain.bytecode);
     expect(spelled.abi).toStrictEqual(plain.abi);
     expect(spelled.abi.find((candidate) => candidate.name === 'initialize')?.dynamicWriteSources)

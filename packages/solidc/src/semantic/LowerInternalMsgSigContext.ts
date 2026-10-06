@@ -21,7 +21,7 @@ const CONTEXT = '__internal__msgSig';
  */
 export default class LowerInternalMsgSigContext extends AstTraversal {
   /**
-   * @param forwardsCallerSelector an entry passes its own msg.sig rather than its selector, so its per-call
+   * @param forwardsCallerSelector an entry passes its own msg.sig rather than its selector, so its framed
    * subroutine, reached by an internal call, passes on the selector its caller gave it.
    */
   constructor(private readonly forwardsCallerSelector = false) {
@@ -65,7 +65,7 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
       this.replaceMsgSig(fn.body);
     }
     for (const caller of node.functions) this.rewriteCalls(caller.body, caller, unique, tainted);
-    // A per-call fallback and receive() read msg.sig from the call data, so their calls forward it too.
+    // A framed fallback and receive() read msg.sig from the call data, so their calls forward it too.
     if (this.forwardsCallerSelector) {
       for (const caller of [node.fallbackDef, node.receiveDef]) {
         if (caller) this.rewriteCalls(caller.body, caller, unique, tainted);

@@ -3,15 +3,15 @@ import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8T
 import {
   bytesToHex, encodeChunkableValueTail, encodeEventCommitment, parsePushdataCommitment, sha256,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { eventLockingBytecode, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { eventLockingBytecode, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -31,7 +31,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * node per registration. A second registration of a held key is refused with the entry's own reason, and the
  * provider sees no transaction. Six transactions run by default: the log's run grows into its second chunk and the
  * registrations insert into an empty list, before its first node, after its last and between two. The row's thirty
- * run under `PER_CALL_FULL=1`.
+ * run under `FRAMED_FULL=1`.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -49,7 +49,7 @@ const TAGS: readonly (readonly [string, string])[] = [
   ['MAP', 'MAPS_AND_PLACES'], ['GDS', 'PHYSICAL_GOODS'], ['SVC', 'SERVICES_IN_PERSON'], ['OTH', 'OTHER'],
 ];
 /** The transactions the growth runs over, one entry each: the row's thirty at milestones. */
-const TRANSACTIONS = process.env.PER_CALL_FULL === '1' ? 30 : 6;
+const TRANSACTIONS = process.env.FRAMED_FULL === '1' ? 30 : 6;
 /** The id every append writes. */
 const LOG_ID = 7n;
 /** The members' keys, distinct and spread over the slot space. */
@@ -72,7 +72,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function kindAt(int id, int index) view returns (int) { return this.logs[id][index]; }'
   + ' }';
 
-const journal = compileStringMulti(SOURCE, { composition: 'per-call' }).Journal!;
+const journal = compileStringMulti(SOURCE, { composition: 'framed' }).Journal!;
 const journalProxy = buildProxyArtifact(journal);
 const encoder = new TextEncoder();
 
@@ -104,7 +104,7 @@ async function deployed(): Promise<Deployed> {
     for (const txid of [IMPL_CATEGORY, PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(txid));
     const initCoin = funding(idOf('initialize coin'));
     await network.addUtxo(binToHex(USER_LOCK), initCoin);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: journal,
       proxyArtifact: journalProxy,
@@ -132,14 +132,14 @@ async function deployed(): Promise<Deployed> {
 
 interface Entered {
   readonly coin: { txid: string; vout: number; satoshis: bigint };
-  readonly call: Promise<PerCallProxyCallResult>;
+  readonly call: Promise<FramedProxyCallResult>;
 }
 
 /** Funds a coin of the user's and runs one journal entry through the shipped proxy hop. */
 async function enter(run: Deployed, functionName: string, args: readonly bigint[], label: string): Promise<Entered> {
   const coin = funding(idOf(`${functionName} coin ${label}`));
   await run.network.addUtxo(binToHex(USER_LOCK), coin);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider: run.network,
     implementationArtifact: journal,
     proxyArtifact: journalProxy,
@@ -158,7 +158,7 @@ async function enter(run: Deployed, functionName: string, args: readonly bigint[
 
 /** A read of the journal through the shipped read path, over its proxy's live records. */
 async function read(run: Deployed, functionName: string, args: readonly bigint[]): Promise<unknown> {
-  const answered = await readPerCallEntry({
+  const answered = await readFramedEntry({
     provider: run.network, artifact: journal, categoryId: run.proxyCategoryId, functionName, args: [...args],
     vm: compositionMachine(),
   });
@@ -171,7 +171,7 @@ async function linkedNodes(run: Deployed, collection: string): Promise<{
   readonly walked: readonly { readonly slot: string; readonly value: string }[];
   readonly held: number;
 }> {
-  const pools = await readPerCallDeployment(run.network, run.proxyCategoryId, journal.stateLayout!);
+  const pools = await readFramedDeployment(run.network, run.proxyCategoryId, journal.stateLayout!);
   const nodes = (pools.nodesByCollection.get(collection) ?? [])
     .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)));
   const bySlot = new Map(nodes.map((node) => [bytesToHex(node.slot), node]));
@@ -223,7 +223,7 @@ describe('spec section 23 row 23: records growing within one transaction and acr
         && bytesToHex(output.token.nft.commitment) === bytesToHex(payload))
         .map((output) => bytesToHex(output.lockingBytecode))).toStrictEqual([eventLock]);
     }
-    expect((await readPerCallDeployment(run.network, run.proxyCategoryId, journalProxy.stateLayout!)).records
+    expect((await readFramedDeployment(run.network, run.proxyCategoryId, journalProxy.stateLayout!)).records
       .map((record, nftIndex) => parsePushdataCommitment(record.token!.nft!.commitment, journalProxy.stateLayout!,
         nftIndex)).find((fields) => 'logged' in fields)?.logged).toBe(BigInt(TRANSACTIONS));
     // The whole array, as the last append left it: its length and its first, middle and last elements.

@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue, encodePushdataValue, type RecordEntry } from '@solidcash/utils';
 import {
-  created, declarationOf, deployPerCallMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
+  created, declarationOf, deployFramedMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
   type DeployedMaster, type PlacedRecord,
-} from '../../../../solidc/test/per-call/master/record-spend.js';
+} from '../../../../solidc/test/framed/master/record-spend.js';
 import {
   chunkCommitments, chunkLock, lengthHeader, type ChunkRunContract,
-} from '../../../../solidc/test/per-call/master/chunk-run-input.js';
+} from '../../../../solidc/test/framed/master/chunk-run-input.js';
 import { keyToSlot } from '../../../src/stateful/SortedList.js';
 
 /**
- * A per-call frame refuses a record declared at a coordinate the transaction does not have.
+ * A framed frame refuses a record declared at a coordinate the transaction does not have.
  *
  * A master that settles alone walks only the transaction's own indices, so a declaration at any other coordinate is
  * never settled, and a body that reads its views takes them on the frame's word. A loop's later turns read a paged
@@ -33,7 +33,7 @@ function forgedAt(records: readonly PlacedRecord[], coordinate: number, forged: 
 }
 
 describe('a paged read whose later turn is declared nowhere', () => {
-  const pager = deployPerCallMaster(`${PRAGMA} contract Pager { mapping(uint => uint) cells; uint total;`
+  const pager = deployFramedMaster(`${PRAGMA} contract Pager { mapping(uint => uint) cells; uint total;`
     + ' function sum(uint start, uint n) { uint s = 0;'
     + '   for (uint i = 0; i < n; i = i + 1) { s = s + this.cells[start + i]; } this.total = s; } }', 'paged turn');
   const lock = pager.collectionLock('cells');
@@ -62,8 +62,8 @@ describe('a paged read whose later turn is declared nowhere', () => {
 describe('a mapping write, in a run-time loop and as a batch target', () => {
   const HEADER = `${PRAGMA} contract Holder { struct Account { uint total; mapping(address => uint) parts; }`
     + ' Account acc; function set(';
-  const single = deployPerCallMaster(`${HEADER}address k, uint v) { acc.parts[k] = v; } }`, 'coordinate single');
-  const looped = deployPerCallMaster(`${HEADER}address[] ks, uint v) {`
+  const single = deployFramedMaster(`${HEADER}address k, uint v) { acc.parts[k] = v; } }`, 'coordinate single');
+  const looped = deployFramedMaster(`${HEADER}address[] ks, uint v) {`
     + ' for (uint i = 0; i < ks.length; i = i + 1) { acc.parts[ks[i]] = v; } } }', 'coordinate looped');
   const K = distinctBytes(20, 0x13);
   const slot = keyToSlot(K);
@@ -106,11 +106,11 @@ describe('a mapping write, in a run-time loop and as a batch target', () => {
 });
 
 describe('a data record and a chunk run', () => {
-  const counter = deployPerCallMaster(`${PRAGMA} contract Counter { uint n;`
+  const counter = deployFramedMaster(`${PRAGMA} contract Counter { uint n;`
     + ' function bump(uint x) { require(this.n == x); this.n = this.n + 1; } }', 'coordinate counter');
-  const pair = deployPerCallMaster(`${PRAGMA} contract Pair { bytes public data; bytes public other;`
+  const pair = deployFramedMaster(`${PRAGMA} contract Pair { bytes public data; bytes public other;`
     + ' function check(bytes value) { require(this.data == value); } }', 'coordinate pair');
-  const blob = deployPerCallMaster(`${PRAGMA} contract Blob { bytes public data;`
+  const blob = deployFramedMaster(`${PRAGMA} contract Blob { bytes public data;`
     + ' function set(bytes value) { this.data = value; } }', 'coordinate blob');
   const runOf = (master: DeployedMaster): ChunkRunContract => ({
     artifact: master.artifact, category: master.category, program: master.script, address: master.address,

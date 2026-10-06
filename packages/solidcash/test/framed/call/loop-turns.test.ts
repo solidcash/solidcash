@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { orderLoopKeyArgs, planCallLoopWrites } from '../../../src/per-call/call/entry-records.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { orderLoopKeyArgs, planCallLoopWrites } from '../../../src/framed/call/entry-records.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -19,7 +19,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * The entry writes `balances[workers[i]] = amount` inside a loop whose bound is the array's own length, so the
  * artifact publishes the shape (`sortedUpsertLoopInfo`: the collection, the array the loop walks and the parameter
  * the value comes from) and the loop's access carries the key as a label with the counter among its operands. This
- * file pins the derivation the per-call lane reads: one turn per element of the array the caller handed the entry,
+ * file pins the derivation the framed lane reads: one turn per element of the array the caller handed the entry,
  * each turn's key the element at its index - and the same derivation reached through the shipped call path, whose
  * frame declares one node per derived turn where the emitted coordinate reads it.
  *
@@ -30,7 +30,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * array, and the shipped path settles a descending array as readily as an ascending one.
  *
  * Nothing is re-implemented here: the artifact comes from the shipped compiler, the keys the derivation is checked
- * against are the ones the caller passed, and the shipped-path cases drive `callPerCallEntry` over a real deployment.
+ * against are the ones the caller passed, and the shipped-path cases drive `callFramedEntry` over a real deployment.
  */
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -43,7 +43,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Ledger!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Ledger!;
 const key = (seed: number): Uint8Array => {
   const bytes = new Uint8Array(20);
   for (let index = 0; index < bytes.length; index += 1) bytes[index] = (seed * 17 + index * 3) & 0xff;
@@ -95,9 +95,9 @@ async function deployed(): Promise<Deployed> {
 
 /** Drives the entry through the shipped call path with one array, and reports what it answered. */
 async function callWorkers(workers: readonly Uint8Array[]):
-Promise<Awaited<ReturnType<typeof callPerCallEntry>>> {
+Promise<Awaited<ReturnType<typeof callFramedEntry>>> {
   const { provider, categoryId, callerUtxo } = await deployed();
-  return callPerCallEntry({
+  return callFramedEntry({
     provider, artifact, categoryId, functionName: 'move',
     args: [workers, 42n] as never,
     callerUtxo, callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh),
@@ -169,7 +169,7 @@ describe('the turns of a run-time-loop mapping write', () => {
       + '     require(workers.length > 0);'
       + '   }'
       + '   function ping() { require(true); }'
-      + ' }', { composition: 'per-call' }).Ledger!;
+      + ' }', { composition: 'framed' }).Ledger!;
     expect(() => planCallLoopWrites({
       artifact: perKey, functionName: 'move', args: [[WORKERS[0]!, WORKERS[1]!], [1n, 2n]],
       callerLockingBytecode: new Uint8Array(0),
@@ -212,7 +212,7 @@ const GUARDED = compileStringMulti('pragma solidcash ^0.13.0;'
   + '     for (int i = 0; i < workers.length; i = i + 1) { if (flags[i] == 1) { balances[workers[i]] = 42; } }'
   + '   }'
   + '   function ping() { require(true); }'
-  + ' }', { composition: 'per-call' }).Ledger!;
+  + ' }', { composition: 'framed' }).Ledger!;
 // The slots ascend as key(3) < key(6) < key(5); the guard selects key(5) and key(6) and skips key(3).
 const FLAGS = [1n, 0n, 1n];
 
@@ -249,14 +249,14 @@ describe('the turns of a run-time loop a guard array selects', () => {
     });
     const callerUtxo = { txid: outpointHash(0x51), vout: 0, satoshis: 200_000n };
     await provider.addUtxo(binToHex(encodeLockingBytecodeP2pkh(alicePkh)), callerUtxo);
-    const answered = await callPerCallEntry({
+    const answered = await callFramedEntry({
       provider, artifact: GUARDED, categoryId, functionName: 'grant', args: [WORKERS, FLAGS] as never,
       callerUtxo, callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh),
       funder: signature.unlockP2PKH(), vm: compositionMachine(),
     });
     expect(answered.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(answered.accepted).toBe(true);
-    const live = await readPerCallDeployment(provider, categoryId, GUARDED.stateLayout!);
+    const live = await readFramedDeployment(provider, categoryId, GUARDED.stateLayout!);
     const written = (live.nodesByCollection.get('balances') ?? [])
       .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
       .filter((node) => node.slot.some((byte) => byte !== 0))

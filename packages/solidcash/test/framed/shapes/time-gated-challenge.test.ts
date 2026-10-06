@@ -12,11 +12,11 @@ import {
   scriptToBytecode,
   type FrameKindValue,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   layOutMappingWrites,
   participant,
@@ -24,7 +24,7 @@ import {
   type CompositionDraftPlan,
   type DraftMaster,
   type MappingNodePlacement,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   encodeEntryCommitment,
   keyToSlotMulti,
@@ -326,7 +326,7 @@ function derivedAfterPayment(): AfterPayment {
 describe('a user-entered root that reaches an escrow through a judge gated on the escrow\'s payment block', () => {
   it('compiles all three contracts and serves the escrow\'s read and write entries', () => {
     for (const name of ['Root', 'Judge', 'Escrow']) {
-      expect(built.artifacts[name]?.composition?.convention).toBe('per-call');
+      expect(built.artifacts[name]?.composition?.convention).toBe('framed');
     }
     expect(built.artifacts.Escrow?.abi.map((entry) => entry.name).sort()).toStrictEqual(['challenge', 'paidAt']);
   });
@@ -385,7 +385,7 @@ describe('a user-entered root that reaches an escrow through a judge gated on th
     // the judge's gate false before any spend and the driver reports the stalled step.
     const builtPlan = buildPlan(Number(PAYMENT_BLOCK));
     expect(() => composeAndDerive(builtPlan.plan, ARTIFACTS, [ROOT]))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+      .toThrow(/FRAMED_DERIVATION_STALLED/);
   });
 });
 

@@ -1,12 +1,12 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { concatBytes, encodeWitnessBlock, splitFirstPush, type Artifact, type WitnessBlock } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, sendPerCallValue, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { callFramedEntry, sendFramedValue, type FramedCallResult } from '../../../src/framed/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -30,7 +30,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  *   Re-listing the send at another output of that exact shape changes neither recipient nor amount, so the freedom
  *   grants the builder nothing. That acceptance is pinned below.
  *
- * Every coordinate comes from the shipped path: `compileStringMulti` with the per-call convention, the shipped
+ * Every coordinate comes from the shipped path: `compileStringMulti` with the framed convention, the shipped
  * deployment and call composer, and the BCH-2026 machine. The single difference from the accepted spend in each
  * case is the field under test.
  */
@@ -48,7 +48,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function withdraw(int amount) { this.paid = this.paid + amount; this.transfer(msg.sender, amount); }'
   + ' }';
 
-const holder = compileStringMulti(SOURCE, { composition: 'per-call' }).Holder!;
+const holder = compileStringMulti(SOURCE, { composition: 'framed' }).Holder!;
 
 interface Deployed {
   readonly artifact: Artifact;
@@ -82,7 +82,7 @@ async function deploy(artifact: Artifact): Promise<Deployed> {
 }
 
 /** The call options, less the entry and the value. */
-function callerOf(deployed: Deployed): Parameters<typeof sendPerCallValue>[0] {
+function callerOf(deployed: Deployed): Parameters<typeof sendFramedValue>[0] {
   return {
     provider: deployed.provider,
     artifact: deployed.artifact,
@@ -96,7 +96,7 @@ function callerOf(deployed: Deployed): Parameters<typeof sendPerCallValue>[0] {
 }
 
 /** The caller's current tokenless coin: the last call's change. */
-async function currentCaller(deployed: Deployed): Promise<Parameters<typeof sendPerCallValue>[0]> {
+async function currentCaller(deployed: Deployed): Promise<Parameters<typeof sendFramedValue>[0]> {
   const coins = (await deployed.provider.getUtxosForLockingBytecode(deployed.callerLock))
     .filter((utxo) => utxo.token === undefined)
     .sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
@@ -134,7 +134,7 @@ interface Composition {
   readonly transaction: VmTransaction;
   readonly sourceOutputs: VmSourceOutputs;
   readonly participants: { readonly id: string; readonly index: number }[];
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
 }
 
 /** The accepted value-send composition: deployed, called, assembled. */
@@ -142,8 +142,8 @@ let accepted: Composition | undefined;
 
 beforeAll(async () => {
   const deployed = await deploy(holder);
-  await sendPerCallValue({ ...callerOf(deployed), value: DEPOSIT });
-  const result = await callPerCallEntry({
+  await sendFramedValue({ ...callerOf(deployed), value: DEPOSIT });
+  const result = await callFramedEntry({
     ...(await currentCaller(deployed)), functionName: 'withdraw', args: [AMOUNT],
   });
   accepted = {
@@ -239,7 +239,7 @@ describe('the output a listed send names', () => {
     // there, funded out of the caller's own change, and the block re-lists the send at it. Recipient and amount are
     // exactly what the accepted spend paid and the contract's container grew by nothing, so the builder gains
     // nothing. Together with the lock refusal above, and the value and container refusals a compiled master gives
-    // in `solidc/test/per-call/master/send-output.test.ts`, this pins the property: the index is bound by the
+    // in `solidc/test/framed/master/send-output.test.ts`, this pins the property: the index is bound by the
     // container it follows and by the lock, amount and empty token the body computed at it, and by nothing else.
     const compositionValue = composition();
     const original = sendIndex(compositionValue);

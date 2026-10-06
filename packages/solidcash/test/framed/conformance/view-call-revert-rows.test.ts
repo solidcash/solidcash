@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { HDSigner } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import type { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
+import type { FramedFunctionCall } from '../../../src/framed/call/index.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 
 /**
@@ -58,17 +58,17 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   }'
   + ' }';
 
-/** The view entries the handle's call namespace exposes, as the class the per-call path returns. */
+/** The view entries the handle's call namespace exposes, as the class the framed path returns. */
 interface RegistryCalls {
-  readonly arbitratorPage: (start: bigint, count: bigint) => PerCallFunctionCall;
-  readonly jobPage: (start: bigint, count: bigint) => PerCallFunctionCall;
-  readonly eventPage: (id: bigint, start: bigint, count: bigint) => PerCallFunctionCall;
-  readonly tag: (key: string) => PerCallFunctionCall;
+  readonly arbitratorPage: (start: bigint, count: bigint) => FramedFunctionCall;
+  readonly jobPage: (start: bigint, count: bigint) => FramedFunctionCall;
+  readonly eventPage: (id: bigint, start: bigint, count: bigint) => FramedFunctionCall;
+  readonly tag: (key: string) => FramedFunctionCall;
 }
 
 /** Deploys the contract through the shipped deployment, seeding the registries the constructor writes. */
 async function deployFresh(): Promise<RegistryCalls> {
-  const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true }).Registry!;
+  const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Registry!;
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signer = HDSigner.fromPhrase(PHRASE, provider);
   const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };
@@ -89,7 +89,7 @@ function deploy(): Promise<RegistryCalls> {
 }
 
 /** The reason a refused read hands back, or the value it resolved if it did not refuse. */
-async function reasonOf(call: () => PerCallFunctionCall): Promise<string> {
+async function reasonOf(call: () => FramedFunctionCall): Promise<string> {
   let message = '';
   await call().then(
     (value) => { throw new Error(`the read resolved a value: ${String(value)}`); },

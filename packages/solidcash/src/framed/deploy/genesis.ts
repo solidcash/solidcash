@@ -1,7 +1,7 @@
 /**
- * Deriving a per-call contract's genesis state by running its constructor frame.
+ * Deriving a framed contract's genesis state by running its constructor frame.
  *
- * A per-call master recreates itself in place and reads every frame field — its sender, its own address, the
+ * A framed master recreates itself in place and reads every frame field — its sender, its own address, the
  * records its body may read and write — from the witness block leading its own unlocking bytecode. The same is
  * true of the constructor body, which the master dispatches behind the same head. So a deployment cannot evaluate
  * the constructor against the direct convention's synthetic unlocking: the head refuses a spend that does not carry
@@ -100,24 +100,24 @@ import {
   type MappingBatchPlan, type MappingNodePlacement, type MappingNodePlacements, type MappingWritePlan,
 } from '../composer/mapping-plan.js';
 import {
-  PerCallCallRecordError, planCallLoopWrites, publishedLoopTurns, type CallLoopWritePlan, type CallLoopWriteTurn,
+  FramedCallRecordError, planCallLoopWrites, publishedLoopTurns, type CallLoopWritePlan, type CallLoopWriteTurn,
 } from '../call/entry-records.js';
-import { PerCallComposerError } from '../composer/refusals.js';
+import { FramedComposerError } from '../composer/refusals.js';
 import { frameRevertReason } from '../composer/refusal.js';
 import { eventCloseOf, readComputedDeclaration, type DeclarationReading } from './declaration.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 import { chunkRecordLockingBytecode, entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 
-/** Raised when a per-call genesis cannot be derived from the artifact. */
-export class PerCallGenesisError extends Error {
-  public readonly name = 'PerCallGenesisError';
+/** Raised when a framed genesis cannot be derived from the artifact. */
+export class FramedGenesisError extends Error {
+  public readonly name = 'FramedGenesisError';
 
   public constructor(message: string) {
     super(message);
   }
 }
 
-export interface PerCallGenesisOptions {
+export interface FramedGenesisOptions {
   readonly artifact: Artifact;
   /** The category the genesis mints: the funding outpoint's transaction hash. */
   readonly category: Uint8Array;
@@ -143,7 +143,7 @@ export interface PerCallGenesisOptions {
    * A collection a constructor writes is already seeded by the constructor's own plan; every other one is named
    * here: the artifact's own, and for a proxy, every sorted collection of the implementation it fronts.
    */
-  readonly headCollections?: readonly PerCallGenesisHeadCollection[];
+  readonly headCollections?: readonly FramedGenesisHeadCollection[];
   readonly maximumNftCommitmentBytes?: number;
   /** A bound on the learning iterations. Defaults to one per data NFT plus a convergence run. */
   readonly maximumIterations?: number;
@@ -155,7 +155,7 @@ export interface PerCallGenesisOptions {
  * The lock is the entry covenant the collection's signature derives, so a composition spends and recreates the
  * node under the covenant's own rules; the commitment is the one the shipped planner computed for the write.
  */
-export interface PerCallGenesisEntry {
+export interface FramedGenesisEntry {
   /** The collection whose entry covenant the node sits at. */
   readonly collection: string;
   /** The node commitment, in hex, which the genesis transaction's entry output carries. */
@@ -170,7 +170,7 @@ export interface PerCallGenesisEntry {
 }
 
 /** A sorted collection a genesis seeds with its empty head sentinel, named by the deployment. */
-export interface PerCallGenesisHeadCollection {
+export interface FramedGenesisHeadCollection {
   readonly name: string;
   readonly signature: string;
 }
@@ -182,7 +182,7 @@ export interface PerCallGenesisHeadCollection {
  * length and the bytes live in a run of chunk NFTs at the value's own collection covenant. The chunk's commitment
  * is the value's piece in the shipped encoder's form, and the lock is the covenant the body itself rebuilds.
  */
-export interface PerCallGenesisChunk {
+export interface FramedGenesisChunk {
   /** The dynamic variable whose run the chunk belongs to. */
   readonly variable: string;
   /** The chunk's position in the run. */
@@ -200,7 +200,7 @@ export interface PerCallGenesisChunk {
  * The payload is what the body computed, so it cannot be declared in advance; the genesis transaction mints the
  * output with this commitment at this lock, which is the event the deployment carries.
  */
-export interface PerCallGenesisEvent {
+export interface FramedGenesisEvent {
   readonly eventName: string;
   readonly eventSignature: string;
   /** The event covenant's P2SH32 lock, which the body rebuilds from the category and the signature. */
@@ -210,16 +210,16 @@ export interface PerCallGenesisEvent {
 }
 
 /** The derived genesis: the filled master, the committed state, and the transaction the machine accepted. */
-export interface PerCallGenesis {
+export interface FramedGenesis {
   readonly master: DeployedMaster;
   /** The state commitments by data-NFT index, in hex, which the genesis transaction's record outputs carry. */
   readonly commitments: readonly string[];
   /** The entry-NFT nodes the genesis mints, in write order: the head sentinel and the node the write created. */
-  readonly entries: readonly PerCallGenesisEntry[];
+  readonly entries: readonly FramedGenesisEntry[];
   /** The chunk records the constructor's frame wrote, in variable and chunk order. */
-  readonly chunks: readonly PerCallGenesisChunk[];
+  readonly chunks: readonly FramedGenesisChunk[];
   /** The event outputs the constructor's body emits, in emit order. */
-  readonly events: readonly PerCallGenesisEvent[];
+  readonly events: readonly FramedGenesisEvent[];
   /** The derivation transaction the machine accepted. Absent for a contract with no constructor body. */
   readonly program?: VirtualMachineProgram;
 }
@@ -231,7 +231,7 @@ type VirtualMachineProgram = Parameters<VirtualMachine['evaluate']>[0];
 function constructorSelector(artifact: Artifact): Uint8Array {
   const entry = artifact.abi.find((candidate) => candidate.name === '__construct');
   if (entry?.selector === undefined) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `artifact "${artifact.contractName}" publishes no constructor selector, so no constructor frame can be run`,
     );
   }
@@ -269,23 +269,23 @@ function kept(index: number, viewIn: Uint8Array, viewOut: Uint8Array): RecordEnt
 }
 
 /**
- * Derives a per-call contract's genesis state by running its constructor frame against the BCH-2026 machine.
+ * Derives a framed contract's genesis state by running its constructor frame against the BCH-2026 machine.
  *
  * A contract with no constructor body has nothing to run: its state is the explicit initial state, materialized
  * through the shipped encoder.
  */
-export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGenesis {
+export function deriveFramedGenesis(options: FramedGenesisOptions): FramedGenesis {
   const { artifact } = options;
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
-    throw new PerCallGenesisError(`artifact "${artifact.contractName}" is not a stateful contract`);
+    throw new FramedGenesisError(`artifact "${artifact.contractName}" is not a stateful contract`);
   }
   // A constructor the compiler refused is emitted as a body that fails whenever the head dispatches to it, so no
   // genesis can run it: the artifact publishes why, and the deployment answers with that before it builds anything.
   const constructorName = publishedEntryName(artifact.contractName, '__construct');
   const refused = artifact.composition?.refusedEntries?.find((entry) => entry.functionName === constructorName);
   if (refused !== undefined) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" is refused by the compiler (${constructorName}): ${refused.reason}`,
     );
   }
@@ -317,9 +317,9 @@ export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGen
  * commitment is the shipped encoder's for the empty list.
  */
 function headSentinelEntries(
-  options: PerCallGenesisOptions,
+  options: FramedGenesisOptions,
   plannedCollections: readonly string[],
-): readonly PerCallGenesisEntry[] {
+): readonly FramedGenesisEntry[] {
   return (options.headCollections ?? [])
     .filter((collection) => !plannedCollections.includes(collection.name))
     .map((collection) => ({
@@ -332,7 +332,7 @@ function headSentinelEntries(
 /**
  * Refuses constructor arguments that do not fit the constructor's declared parameters, before any frame runs.
  *
- * A per-call artifact publishes no `constructorInputs`: the constructor's parameter list is its `__construct` ABI
+ * A framed artifact publishes no `constructorInputs`: the constructor's parameter list is its `__construct` ABI
  * entry, the list the frame encodes the arguments against. Too few arguments would run the frame with words missing,
  * and it would stop on a stack read the caller cannot trace back to its call (a stale deployment script's); a
  * surplus one would be pushed into a frame that never reads it. ethers refuses both up front, and so does this. Each
@@ -348,7 +348,7 @@ function refuseConstructorArguments(
   const parameterText = (input: (typeof inputs)[number]): string => [input.type, input.name].filter(Boolean).join(' ');
   if (constructorArgs.length !== inputs.length) {
     const expected = inputs.length === 0 ? 'no parameters' : inputs.map(parameterText).join(', ');
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `incorrect number of arguments to constructor of "${artifact.contractName}": expected ${inputs.length} `
       + `(${expected}) but got ${constructorArgs.length}`,
     );
@@ -374,31 +374,31 @@ function refuseUnservedShape(
 ): void {
   const hidden = constructorAbi.inputs.find((input) => input.name.startsWith('__internal__'));
   if (hidden !== undefined) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" carries the internal witness '${hidden.name}', which this `
       + 'deployment has no plan for',
     );
   }
   if ((constructorAbi.runtimeLoopEvents?.length ?? 0) > 0) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" emits an event from a loop, whose count the block cannot fix`,
     );
   }
   if ((constructorAbi.transferCount ?? 0) > 0) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" makes a value send, which this deployment has no plan for`,
     );
   }
   // A call inside a loop reads one side-car per turn, so the number a frame co-spends is the loop's to decide and
   // not a count the artifact fixes and this deployment can lay.
   if (constructorAbi.keccakInLoop === true) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" hashes inside a loop, so how many compute side-cars it co-spends `
       + 'is the loop\'s to decide and this deployment lays the artifact\'s fixed count',
     );
   }
   if (constructorAbi.ecrecoverLoopReads === true) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" recovers inside a loop, so how many recovery side-cars it `
       + 'co-spends is the loop\'s to decide and this deployment lays the artifact\'s fixed count',
     );
@@ -406,8 +406,8 @@ function refuseUnservedShape(
   // A body that hashes or recovers publishes one entry per call, which is the count this deployment lays its
   // side-cars by. A body that says it computes with none published is one whose witness cannot be counted at all.
   if (constructorAbi.keccakCompute === true && (constructorAbi.keccakPreimageParams?.length ?? 0) === 0) {
-    throw new PerCallGenesisError(
-      `the constructor of "${artifact.contractName}" publishes keccakCompute with no per-call entry, so this `
+    throw new FramedGenesisError(
+      `the constructor of "${artifact.contractName}" publishes keccakCompute with no framed entry, so this `
       + 'deployment cannot tell how many compute side-cars its frame reads',
     );
   }
@@ -558,7 +558,7 @@ function requireSortedCollection(
   const collection = (artifact.stateLayout?.collections ?? [])
     .find((candidate) => candidate.name === name);
   if (collection === undefined || collection.sorted !== true) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" writes mapping "${name}", which the artifact does `
       + 'not publish as a sorted collection',
     );
@@ -578,14 +578,14 @@ function resolveConstructorKeys(
   constructorAbi: Artifact['abi'][number],
   access: ConstructorMappingAccess['access'],
   collection: ConstructorMappingAccess['collection'],
-  options: PerCallGenesisOptions,
+  options: FramedGenesisOptions,
 ): readonly Uint8Array[] {
   const args = [...options.constructorArgs];
   const visible = visibleConstructorInputs(constructorAbi);
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const keyTypes = collection.keyTypes ?? [collection.keyType];
   if (keyTypes.length !== access.keyParams.length) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" writes mapping "${access.collection}" with `
       + `${access.keyParams.length} key(s), which the collection's ${keyTypes.length} key type(s) do not cover`,
     );
@@ -599,7 +599,7 @@ function resolveConstructorKeys(
     if (evaluated !== undefined) return evaluated;
     const byName = constructorArgumentByName(constructorAbi, args, label ?? '', structs);
     if (byName !== undefined) return byName;
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" writes mapping "${access.collection}" at a key this deployment `
       + `cannot resolve from its arguments (${label ?? '<unnamed>'})`,
     );
@@ -620,7 +620,7 @@ function resolveConstructorKeys(
 function planConstructorMapping(
   artifact: Artifact,
   constructorAbi: Artifact['abi'][number],
-  options: PerCallGenesisOptions,
+  options: FramedGenesisOptions,
 ): readonly ConstructorMapping[] {
   if ((constructorAbi.sortedUpsertLoopInfo ?? []).length > 0) {
     const loop = planConstructorLoop(artifact, constructorAbi, options);
@@ -632,7 +632,7 @@ function planConstructorMapping(
   const unbatched = accesses.find((access) => access.slotIndex === undefined || !batched.has(access.slotIndex));
   const repeated = batches.find((batch, at) => batches.findIndex((other) => other.collection === batch.collection) < at);
   if (unbatched !== undefined || repeated !== undefined) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" writes ${accesses.length} mapping entry(ies) across `
       + `${batches.length} sorted batch(es), and this deployment plans one batch per collection it writes`,
     );
@@ -642,14 +642,14 @@ function planConstructorMapping(
     const resolved = batch.slotIndices.map((slotIndex): ConstructorMappingAccess => {
       const access = bySlot.get(slotIndex);
       if (access === undefined || access.collection !== batch.collection) {
-        throw new PerCallGenesisError(
+        throw new FramedGenesisError(
           `the constructor of "${artifact.contractName}" writes mapping "${batch.collection}" at slot ${slotIndex}, `
           + 'which no entry access publishes',
         );
       }
       const writes = access.operations.filter((operation) => operation !== 'read');
       if (writes.length !== 1 || writes[0] !== 'write') {
-        throw new PerCallGenesisError(
+        throw new FramedGenesisError(
           `the constructor of "${artifact.contractName}" touches mapping "${access.collection}" as `
           + `${access.operations.join('/')}, and this deployment plans one write beside at most a read`,
         );
@@ -683,7 +683,7 @@ function planSingleMappingWrite(
     encodeValue: (encoded) => encoded,
   });
   if (plan.written.length !== 2 || !plan.written[0]!.existed || plan.written[1]!.existed) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" cannot be planned at genesis: writing `
       + `"${access.collection}" is not an insertion into the empty list`,
     );
@@ -721,7 +721,7 @@ function planBatchMappingWrites(
   });
   const created = plan.written.filter((node) => !node.existed);
   if (created.length !== resolved.length) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" cannot be planned at genesis: writing `
       + `"${collection.name}" is not an insertion into the empty list`,
     );
@@ -769,7 +769,7 @@ const UNPLANNED_LOOP_FACTS = [
 function planConstructorLoop(
   artifact: Artifact,
   constructorAbi: Artifact['abi'][number],
-  options: PerCallGenesisOptions,
+  options: FramedGenesisOptions,
 ): ConstructorMappingBatch | undefined {
   const name = artifact.contractName;
   const infos = constructorAbi.sortedUpsertLoopInfo ?? [];
@@ -777,21 +777,21 @@ function planConstructorLoop(
   const info = infos[0]!;
   if (infos.length > 1 || batches.length > 0
     || (constructorAbi.entryAccesses ?? []).some((access) => access.collection !== info.collection)) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${name}" writes mappings in ${infos.length} run-time loop(s) beside ${batches.length} `
       + 'sorted batch(es), and this deployment plans one loop\'s writes to one collection',
     );
   }
   const unplanned = UNPLANNED_LOOP_FACTS.find((fact) => info[fact] !== undefined && info[fact] !== false);
   if (unplanned !== undefined || (info.op !== 'set' && info.op !== '+' && info.op !== 'delete')) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${name}" writes mapping "${info.collection}" in a run-time loop over `
       + `"${info.varyingArrayParam}" whose ${unplanned ?? `'${info.op}' write`} decides its turns beyond the array, `
       + 'which this deployment has no plan for',
     );
   }
   if (publishedLoopTurns(artifact, '__construct').length > 0) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${name}" writes mapping "${info.collection}" in a run-time loop whose turns make calls, `
       + 'and a genesis frame declares one segment',
     );
@@ -803,8 +803,8 @@ function planConstructorLoop(
       callerLockingBytecode: options.senderLockingBytecode ?? rootCallerLockingBytecode(),
     })?.[0];
   } catch (error) {
-    if (!(error instanceof PerCallCallRecordError)) throw error;
-    throw new PerCallGenesisError(`the constructor of "${name}" cannot be planned at genesis: ${error.message}`);
+    if (!(error instanceof FramedCallRecordError)) throw error;
+    throw new FramedGenesisError(`the constructor of "${name}" cannot be planned at genesis: ${error.message}`);
   }
   if (loop === undefined || loop.turns.length === 0) return undefined;
   // The frame walks the caller's own array. A constructor's argument is not reordered into the slot order the run of
@@ -815,7 +815,7 @@ function planConstructorLoop(
   const slotOf = (turn: CallLoopWriteTurn): bigint => bytesToSlotValue(keyToSlotMulti([...turn.keys]));
   const below = walk.find((turn, at) => at > 0 && slotOf(turn) < slotOf(walk[at - 1]!));
   if (below !== undefined) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${name}" writes mapping "${loop.collection}" at element ${below.source} of `
       + `"${loop.varyingArrayParam}" under a key below the one before it, and a run-time loop inserts its keys in `
       + 'ascending slot order only; a constructor\'s own array is not reordered for it, since its body may also '
@@ -838,8 +838,8 @@ function planConstructorLoop(
       encodeValue: (encoded) => encoded,
     });
   } catch (error) {
-    if (!(error instanceof PerCallComposerError)) throw error;
-    throw new PerCallGenesisError(
+    if (!(error instanceof FramedComposerError)) throw error;
+    throw new FramedGenesisError(
       `the constructor of "${name}" writes mapping "${collection.name}" in a run-time loop over `
       + `"${loop.varyingArrayParam}" whose turns cannot be planned at genesis: ${error.message}`,
     );
@@ -946,7 +946,7 @@ function resolveDynamicWriteValue(
 function planConstructorDynamicWrites(
   artifact: Artifact,
   constructorAbi: Artifact['abi'][number],
-  options: PerCallGenesisOptions,
+  options: FramedGenesisOptions,
 ): readonly ConstructorDynamicWrite[] {
   const variables = constructorAbi.dynamicWrites ?? [];
   if (variables.length === 0) return [];
@@ -956,7 +956,7 @@ function planConstructorDynamicWrites(
   return variables.map((variable) => {
     const expression = sources[variable];
     if (expression === undefined) {
-      throw new PerCallGenesisError(
+      throw new FramedGenesisError(
         `the constructor of "${artifact.contractName}" writes dynamic "${variable}", which the artifact publishes `
         + 'no value source for, so this deployment cannot state the run its write creates',
       );
@@ -965,7 +965,7 @@ function planConstructorDynamicWrites(
     const value = resolved instanceof Uint8Array ? resolved
       : typeof resolved === 'string' ? utf8ToBin(resolved) : undefined;
     if (value === undefined) {
-      throw new PerCallGenesisError(
+      throw new FramedGenesisError(
         `the constructor of "${artifact.contractName}" writes dynamic "${variable}" a value this deployment cannot `
         + `resolve from its arguments (a ${expression.kind} source)`,
       );
@@ -1005,7 +1005,7 @@ function probeLayout(
 } {
   const caller = 0;
   const master = 1;
-  // A per-call body locates its side-cars from its own input, so they sit immediately after the master and every
+  // A framed body locates its side-cars from its own input, so they sit immediately after the master and every
   // other participant follows them.
   const sideCars = Array.from({ length: sideCarCount }, (_unused, index) => 2 + index);
   const records = Array.from({ length: dataNftCount }, (_unused, index) => 2 + sideCarCount + index);
@@ -1119,7 +1119,7 @@ const CHUNK_OUTPUT_SATOSHIS = 1_000n;
  * the run at: the machine's verdict is the authority, and a run laid elsewhere fails the body's own close.
  */
 function layOutConstructorChunks(
-  options: PerCallGenesisOptions,
+  options: FramedGenesisOptions,
   constructorAbi: Artifact['abi'][number],
   dynamic: readonly ConstructorDynamicWrite[],
   layout: ReturnType<typeof probeLayout>,
@@ -1127,7 +1127,7 @@ function layOutConstructorChunks(
   if (dynamic.length === 0) return [];
   const blockLayout = constructorAbi.blockLayout;
   if (blockLayout === undefined) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${options.artifact.contractName}" writes a dynamic value but publishes no block layout `
       + 'to address its chunk run from',
     );
@@ -1191,18 +1191,18 @@ function layOutMapping(
  * evaluates is always the shipped, placeholder-filled master over a block a composition would accept.
  */
 function deriveConstructorFrame(
-  options: PerCallGenesisOptions,
+  options: FramedGenesisOptions,
   master: DeployedMaster,
   zeroCommitments: readonly string[],
   constructorAbi: Artifact['abi'][number],
   mappings: readonly ConstructorMapping[],
   dynamic: readonly ConstructorDynamicWrite[],
-): PerCallGenesis {
+): FramedGenesis {
   const { artifact } = options;
   const stateLayout = artifact.stateLayout!;
   const dataNftCount = stateLayout.dataNftCount;
   if (options.senderLockingBytecode !== undefined && options.senderLockingBytecode.length !== 25) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `a root frame's caller is a 25-byte P2PKH lock; got ${options.senderLockingBytecode.length} bytes`,
     );
   }
@@ -1319,7 +1319,7 @@ function deriveConstructorFrame(
   }
 
   if (!accepted) {
-    throw new PerCallGenesisError(
+    throw new FramedGenesisError(
       `the constructor of "${artifact.contractName}" did not yield a genesis the machine accepts`,
     );
   }
@@ -1333,7 +1333,7 @@ function deriveConstructorFrame(
       .some((seed, index) => bytesEqual(seed, nodeOuts[offset + index]!));
     if (mapping.placeholderSeeds && unclosed) {
       const valueType = stateLayout.collections?.find((entry) => entry.name === mapping.collection)?.valueType;
-      throw new PerCallGenesisError(
+      throw new FramedGenesisError(
         `the constructor of "${artifact.contractName}" leaves mapping "${mapping.collection}" unwritten at a key its `
         + `body writes only on another path (a loop that ran no turn, an arm not taken), and a "${valueType}" entry `
         + 'has no fixed unwritten value for this deployment to mint',
@@ -1382,7 +1382,7 @@ function deriveConstructorFrame(
 function mappingEntries(
   mappings: readonly ConstructorMapping[],
   nodeOuts: readonly Uint8Array[],
-): readonly PerCallGenesisEntry[] {
+): readonly FramedGenesisEntry[] {
   let offset = 0;
   return mappings.flatMap((mapping) => {
     const created = nodeOuts.slice(offset, offset + createdCountOf(mapping));
@@ -1436,7 +1436,7 @@ function learnDeclaration(step: LearningStep): LearnedDeclarations {
     vm: step.vm, program: step.program, maximumCommitmentBytes: step.readingBound,
   });
   if (!reading.ok) {
-    throw new PerCallGenesisError((reading.reason === 'not-a-close' ? step.revert() : undefined)
+    throw new FramedGenesisError((reading.reason === 'not-a-close' ? step.revert() : undefined)
       ?? genesisReadingMessage(reading));
   }
   const { declared, computed } = reading;
@@ -1467,7 +1467,7 @@ function learnDeclaration(step: LearningStep): LearnedDeclarations {
     learned[node] = Uint8Array.from(computed);
     return { records, events, nodes: learned, sideCars };
   }
-  throw new PerCallGenesisError(
+  throw new FramedGenesisError(
     `the constructor probe closed against a declaration no derivation wrote: ${binToHex(declared)}`,
   );
 }
@@ -1623,18 +1623,18 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   outputs[layout.master] = masterOutput;
   sourceOutputs[layout.master] = masterOutput;
 
-  // Each compute side-car follows the master's own input, which is where a per-call body locates it. The input's
+  // Each compute side-car follows the master's own input, which is where a framed body locates it. The input's
   // unlocking bytecode is what the body decodes its preimage from, and the output the shipped builder recreates
   // carries the result the body reads back. A witness the loop settled replaces the placeholder the plan laid.
   const sideCarInput = (id: string): DraftInput => {
     const laid = options.sideCars.inputs[id];
-    if (laid === undefined) throw new PerCallGenesisError(`the frame's side-car "${id}" has no plan`);
+    if (laid === undefined) throw new FramedGenesisError(`the frame's side-car "${id}" has no plan`);
     return { ...laid, ...options.settledSideCars[id] };
   };
   /** A side-car's UTXO, which always carries the mutable NFT its covenant recreates. */
   const sideCarOutput = (output: DraftSourceOutput): VmOutput => {
     if (output.token?.nft === undefined) {
-      throw new PerCallGenesisError('a compute side-car carries no mutable NFT to recreate');
+      throw new FramedGenesisError('a compute side-car carries no mutable NFT to recreate');
     }
     return {
       lockingBytecode: output.lockingBytecode,
@@ -1648,7 +1648,7 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   layout.sideCars.forEach((index, ordinal) => {
     const input = sideCarInput(options.sideCars.ids[ordinal]!);
     if (input.unlockingBytecode === undefined) {
-      throw new PerCallGenesisError(`the frame's side-car "${options.sideCars.ids[ordinal]!}" has no unlocking`);
+      throw new FramedGenesisError(`the frame's side-car "${options.sideCars.ids[ordinal]!}" has no unlocking`);
     }
     inputs[index] = {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(0xb0 + ordinal),

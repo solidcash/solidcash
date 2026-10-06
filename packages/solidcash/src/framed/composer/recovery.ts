@@ -1,5 +1,5 @@
 /**
- * The recovery side-cars a per-call master co-spends.
+ * The recovery side-cars a framed master co-spends.
  *
  * A compiled master whose entry calls `ecrecoverPubKey` (or the EVM projection) reads a side-car pair at a fixed
  * offset from its own input: side-car A checkpoints the GLV ladder and side-car B commits the recovered key, with
@@ -20,7 +20,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import {
-  PerCallEncodingError,
+  FramedEncodingError,
   SHARED_LIBRARY_SALT,
   decodeIntegerValue,
   ecrecoverComputeLockingBytecode,
@@ -127,7 +127,7 @@ function sideCarUtxoAt(pool: readonly Utxo[] | undefined, index: number, role: '
   if (pool === undefined) return sideCarUtxo(role);
   const utxo = pool[index];
   if (utxo === undefined) {
-    throw new PerCallEncodingError(`the supplied pool holds no ${role} side-car UTXO for side-car ${index}`);
+    throw new FramedEncodingError(`the supplied pool holds no ${role} side-car UTXO for side-car ${index}`);
   }
   return utxo;
 }
@@ -188,7 +188,7 @@ const recoveryArgumentOf = (scalars: RecoveryScalars): Uint8Array =>
 /** The scalars of the blob a body bound, which must be the `hash || v || r || s` a recovery takes. */
 function recoveryScalarsOf(blob: Uint8Array): RecoveryScalars {
   if (blob.length !== RECOVERY_ARGUMENT_BYTES) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `the body binds a ${blob.length}-byte recovery argument, not the ${RECOVERY_ARGUMENT_BYTES} of hash || v || r || s`,
     );
   }
@@ -261,7 +261,7 @@ function placeholderRecovery(
   let refusal: unknown;
   for (let draw = 0; draw < PLACEHOLDER_RECOVERY_DRAWS; draw += 1) {
     const drawn = (part: string): bigint => BigInt(`0x${binToHex(
-      sha256(new TextEncoder().encode(`per-call computed recovery\u0000${tag}\u0000${draw}\u0000${part}`)),
+      sha256(new TextEncoder().encode(`framed computed recovery\u0000${tag}\u0000${draw}\u0000${part}`)),
     )}`);
     const point = secp256k1.ProjectivePoint.BASE.multiply(drawn('k') % order || 1n).toAffine();
     const scalars: RecoveryScalars = {
@@ -276,7 +276,7 @@ function placeholderRecovery(
       refusal = error;
     }
   }
-  throw new PerCallEncodingError(`no placeholder recovery for "${tag}" splits its ladder: ${String(refusal)}`);
+  throw new FramedEncodingError(`no placeholder recovery for "${tag}" splits its ladder: ${String(refusal)}`);
 }
 
 /**
@@ -353,7 +353,7 @@ export function buildRecoverySideCars(
  * and the parameters then follow with the FIRST parameter's push LAST, which is where the compiled body reads it. A
  * call with any argument that is not a named parameter of the entry - a value the body computes - has no pushes to
  * read, so it is returned as computed, and `buildRecoverySideCars` leaves its scalars to the derivation. An
- * artifact that publishes no argument sources at all still names its calls through the per-call flags, so every
+ * artifact that publishes no argument sources at all still names its calls through the framed flags, so every
  * such call is computed rather than the entry being read as making none.
  */
 export function recoveryCallsOf(
@@ -370,7 +370,7 @@ export function recoveryCallsOf(
   const values = argumentPushes.slice(leadingPushes);
   const parameterCount = abiFunction.inputs.length;
   if (values.length !== parameterCount) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `the entry takes ${parameterCount} parameter(s) and its unlocking bytecode carries ${values.length} `
       + 'argument push(es)',
     );
@@ -378,7 +378,7 @@ export function recoveryCallsOf(
   /** The push of parameter `index`, which the wire carries last for the first parameter. */
   const valueOf = (name: string): Uint8Array => {
     const index = abiFunction.inputs.findIndex((input) => input.name === name);
-    if (index < 0) throw new PerCallEncodingError(`the entry has no parameter '${name}'`);
+    if (index < 0) throw new FramedEncodingError(`the entry has no parameter '${name}'`);
     return values[parameterCount - 1 - index]!;
   };
   return Array.from({ length: callCount }, (_unused, call): RecoveryCall | ComputedRecoveryCall => {
@@ -420,7 +420,7 @@ export function keccakPreimagesOf(
   const values = argumentPushes.slice(leadingPushes);
   const parameterCount = abiFunction.inputs.length;
   if (values.length !== parameterCount) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `the entry takes ${parameterCount} parameter(s) and its unlocking bytecode carries ${values.length} `
       + 'argument push(es)',
     );
@@ -428,7 +428,7 @@ export function keccakPreimagesOf(
   return params.map((name) => {
     if (name === null) return undefined;
     const index = abiFunction.inputs.findIndex((input) => input.name === name);
-    if (index < 0) throw new PerCallEncodingError(`the entry has no parameter '${name}'`);
+    if (index < 0) throw new FramedEncodingError(`the entry has no parameter '${name}'`);
     return values[parameterCount - 1 - index]!;
   });
 }
@@ -443,7 +443,7 @@ function keccakSideCarOver(preimage: Uint8Array, salt: Uint8Array, utxo: Utxo): 
  * Builds the keccak256 compute side-cars one master co-spends, one per call in the order its body makes them.
  *
  * Each follows the master's recovery side-cars in the block's list, so the body reads it at the step its own count
- * of calls names. The stateful covenant recreates the side-car at its own index, where a per-call body reads the
+ * of calls names. The stateful covenant recreates the side-car at its own index, where a framed body reads the
  * result; the ids are namespaced by the master. A side-car whose preimage the body computes hashes a placeholder,
  * and its computed witness rebuilds it around the preimage the body binds. A side-car the body never reads keeps
  * the placeholder and still holds its place, so the calls after it read theirs. A caller that spends live side-cars
@@ -469,7 +469,7 @@ export function buildKeccakSideCars(
       inputs[id] = { source, ...keccakSideCarOver(preimage, salt, utxo) };
       return;
     }
-    const placeholder = sha256(new TextEncoder().encode(`per-call computed witness\u0000${id}`));
+    const placeholder = sha256(new TextEncoder().encode(`framed computed witness\u0000${id}`));
     inputs[id] = { source, ...keccakSideCarOver(placeholder, salt, utxo) };
     computedWitnesses.push({
       master, placeholder, settle: (value) => ({ [id]: keccakSideCarOver(value, salt, utxo) }),

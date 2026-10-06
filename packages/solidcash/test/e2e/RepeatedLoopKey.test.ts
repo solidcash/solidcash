@@ -113,7 +113,7 @@ describe('a key a sorted-mapping loop repeats', () => {
   });
 
   it('publishes which loops read the entry they write, on the direct convention only', () => {
-    const published = (loop: string, composition?: 'per-call'): boolean | undefined => {
+    const published = (loop: string, composition?: 'framed'): boolean | undefined => {
       const artifact = composition === undefined ? compileString(source(LOOPS[loop]))
         : compileStringMulti(source(LOOPS[loop]), { composition }).Book!;
       return artifact.abi.find((entry) => entry.name === 'run')?.sortedUpsertLoopInfo?.[0]?.readsWrittenEntry;
@@ -121,6 +121,6 @@ describe('a key a sorted-mapping loop repeats', () => {
     expect(['bump', 'double', 'tally', 'drain'].map((loop) => published(loop))).toStrictEqual([true, true, true, true]);
     expect(['index', 'increment', 'restate', 'fill'].map((loop) => published(loop)))
       .toStrictEqual([undefined, undefined, undefined, undefined]);
-    expect(published('bump', 'per-call')).toBeUndefined();
+    expect(published('bump', 'framed')).toBeUndefined();
   });
 });

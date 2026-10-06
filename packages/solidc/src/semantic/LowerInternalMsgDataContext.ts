@@ -28,7 +28,7 @@ const CONTEXT = '__internal__msgData';
  */
 export default class LowerInternalMsgDataContext extends AstTraversal {
   /**
-   * @param forwardsCallerData an entry passes its own msg.data, the per-call frame's call data, rather than the
+   * @param forwardsCallerData an entry passes its own msg.data, the framed frame's call data, rather than the
    * encoding of its parameters, unless a self-call reaches it: only that encoding states the call data then.
    */
   constructor(private readonly forwardsCallerData = false) {
@@ -90,7 +90,7 @@ export default class LowerInternalMsgDataContext extends AstTraversal {
     for (const caller of node.functions) {
       this.rewriteCalls(caller.body, caller, unique, tainted, selfCalled);
     }
-    // A per-call fallback and receive() read msg.data from the frame, so their calls forward it too.
+    // A framed fallback and receive() read msg.data from the frame, so their calls forward it too.
     if (this.forwardsCallerData) {
       for (const caller of [node.fallbackDef, node.receiveDef]) {
         if (caller) this.rewriteCalls(caller.body, caller, unique, tainted, selfCalled);

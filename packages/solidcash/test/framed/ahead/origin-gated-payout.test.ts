@@ -1,24 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti, keyToSlotValue } from '../../../src/stateful/SortedList.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { readPublishedStopSites } from '../../../src/per-call/composer/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { readPublishedStopSites } from '../../../src/framed/composer/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Ahead of the ladder, MS5: the origin-gated nested payout, driven through the shipped proxy hop
- * (`callPerCallProxyEntry`).
+ * (`callFramedProxyEntry`).
  *
  * The root, behind a generated proxy, keeps its jobs in a dynamic array of structs and settles a taken job two ways:
  * `refund`, entered by the job's worker, and `refuseArbitration`, entered by its arbitrator. Both reach a guarded
@@ -168,7 +168,7 @@ const compiled = new Map<boolean, Artifacts>();
 function artifactsFor(guarded: boolean): Artifacts {
   let artifacts = compiled.get(guarded);
   if (artifacts === undefined) {
-    artifacts = compileStringMulti(sourceFor(guarded), { composition: 'per-call' });
+    artifacts = compileStringMulti(sourceFor(guarded), { composition: 'framed' });
     compiled.set(guarded, artifacts);
   }
   return artifacts;
@@ -182,7 +182,7 @@ interface Market {
   readonly artifacts: Artifacts;
   readonly rootProxyCategoryId: string;
   readonly rootImplementationCategoryId: string;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   readonly coins: Readonly<Record<Flow, { txid: string; vout: number; satoshis: bigint }>>;
 }
@@ -233,7 +233,7 @@ async function deployMarket(artifacts: Artifacts, escrowCategory: string): Promi
   await network.addUtxo(binToHex(ARBITER_LOCK), coins.refuseArbitration);
 
   const store = artifacts.Store!;
-  const storeDeployment = await deployPerCallProxy({
+  const storeDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: store,
     proxyArtifact: buildProxyArtifact(store),
@@ -247,7 +247,7 @@ async function deployMarket(artifacts: Artifacts, escrowCategory: string): Promi
   expect(storeDeployment.initialize.broadcast).toBeDefined();
 
   const root = artifacts.Root!;
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -287,9 +287,9 @@ async function deployMarket(artifacts: Artifacts, escrowCategory: string): Promi
 }
 
 /** One flow through the shipped hop: the worker enters `refund`, the arbitrator `refuseArbitration`. */
-function callFlow(market: Market, flow: Flow): Promise<PerCallProxyCallResult> {
+function callFlow(market: Market, flow: Flow): Promise<FramedProxyCallResult> {
   const caller = flow === 'refund' ? { lock: WORKER_LOCK, key: alicePriv } : { lock: ARBITER_LOCK, key: bobPriv };
-  return callPerCallProxyEntry({
+  return callFramedProxyEntry({
     provider: market.network,
     implementationArtifact: market.artifacts.Root!,
     proxyArtifact: buildProxyArtifact(market.artifacts.Root!),
@@ -317,7 +317,7 @@ async function coinLive(market: Market, flow: Flow): Promise<boolean> {
 /** The values the store's proxy holds under `counts[id]`, read back from the chain through the shipped decoder. */
 async function storeCounts(market: Market, id: bigint): Promise<readonly string[]> {
   const layout = market.artifacts.Store!.stateLayout!;
-  const deployment = await readPerCallDeployment(market.network, market.externals.IStore!.categoryId, layout);
+  const deployment = await readFramedDeployment(market.network, market.externals.IStore!.categoryId, layout);
   const slot = bytesToHex(keyToSlotMulti([bigIntToVmNumber(id)]));
   return (deployment.nodesByCollection.get('counts') ?? [])
     .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
@@ -345,11 +345,11 @@ function sharedGuardedMarket(): Promise<Market> {
  * The guard writes the escrow's data record before its first call and again after its last, and the compiler now
  * publishes a segment for each write the entry makes, the mapping write included, so the hop can declare them all.
  */
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): the origin-gated payout', () => {
-  it('compiles the five contracts on the per-call path', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (MS5): the origin-gated payout', () => {
+  it('compiles the five contracts on the framed path', () => {
     for (const artifacts of [artifactsFor(true), artifactsFor(false)]) {
       for (const name of ['Registry', 'Token', 'Escrow', 'Store', 'Root']) {
-        expect(artifacts[name]?.composition?.convention).toBe('per-call');
+        expect(artifacts[name]?.composition?.convention).toBe('framed');
       }
     }
   });
@@ -387,7 +387,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): the origin-gate
   });
 });
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): behind the escrow\'s guard', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (MS5): behind the escrow\'s guard', () => {
   it('refund, the buyer\'s new balance sorting before the escrow\'s, settles with one count node of value 2',
     async () => {
       expect(keyToSlotValue(ROOT_PROXY_ADDRESS)).toBeLessThan(keyToSlotValue(

@@ -189,7 +189,7 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
   `OP_UTXOBYTECODE` of a co-spent minting NFT (`0x02`) of the SDK-declared caller category. The covenant
   enforces EXACTLY ONE such co-spent input, fail-closed on 0 or >1 (`emitMsgSenderMintingVerification`), so
   `msg.sender` is always the genuine, unambiguous caller master - never a builder-chosen one of several
-  co-spent minting masters. It proves IDENTITY (this master was co-spent), not per-call AUTHORIZATION:
+  co-spent minting masters. It proves IDENTITY (this master was co-spent), not framed AUTHORIZATION:
   co-presence of a peer's master is not proof that peer initiated this call. For peer-mode caller-intent
   authorization (the caller pre-commits to a specific callee), use the transcript's M4 binding - see
   the website message-bus guide. Direct EOA calls take the `tx.origin` path (first native P2PKH input) instead.

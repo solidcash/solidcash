@@ -3,7 +3,7 @@ import {
   encodeDataPush, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
 import { encodeWitnessBlock, type WitnessBlock } from '@solidcash/utils';
-import { witnessBlockShapeScript } from '../../../src/per-call/validator/program.js';
+import { witnessBlockShapeScript } from '../../../src/framed/validator/program.js';
 import { compositionMachine } from '../machine.js';
 
 /**

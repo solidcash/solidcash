@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { INDEX_NONE, bytesToHex, validatorAddress } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { planCallLoopWrites } from '../../../src/per-call/call/entry-records.js';
-import { buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { planCallLoopWrites } from '../../../src/framed/call/entry-records.js';
+import { buildProxyArtifact, callFramedProxyEntry, deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -31,7 +31,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * the hop declares those kept chunks after them in the segment the turn writes in (ladder #19).
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const category = (seed: number): string => binToHex(Uint8Array.from({ length: 32 }, (_unused, index) =>
   (seed * 31 + index * 7) & 0xff));
 const JOURNAL_CATEGORY = category(0x13);
@@ -73,7 +73,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 const DESK = ARTIFACTS.Desk!;
 const JOURNAL = ARTIFACTS.Journal!;
 const TASK = 7n;
@@ -147,14 +147,14 @@ const EXTERNALS = { IJournal: { artifact: JOURNAL, categoryId: JOURNAL_CATEGORY 
 
 /** The desk deployed behind its generated proxy, and a function that calls one of its entries through the hop. */
 async function proxiedDesk(seed: number): Promise<{
-  readonly call: (entry: string, args: readonly unknown[]) => ReturnType<typeof callPerCallProxyEntry>;
+  readonly call: (entry: string, args: readonly unknown[]) => ReturnType<typeof callFramedProxyEntry>;
 }> {
   const net = await world(seed);
   const implementationFunding = { txid: category(seed + 100), vout: 0, satoshis: 500_000n };
   const proxyFunding = { txid: category(seed + 101), vout: 0, satoshis: 500_000n };
   for (const coin of [implementationFunding, proxyFunding]) await net.network.addUtxo(net.changeAddress, coin);
   const signature = new SignatureTemplate(alicePriv);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: net.network,
     implementationArtifact: DESK,
     proxyArtifact: buildProxyArtifact(DESK),
@@ -167,7 +167,7 @@ async function proxiedDesk(seed: number): Promise<{
   });
   expect(deployment.initialize.broadcast).toBeDefined();
   return {
-    call: async (entry, args) => callPerCallProxyEntry({
+    call: async (entry, args) => callFramedProxyEntry({
       provider: net.network,
       implementationArtifact: DESK,
       proxyArtifact: buildProxyArtifact(DESK),
@@ -212,8 +212,8 @@ describe('a mapping write in a loop whose turns make calls, through the shipped 
     const deployment = await deployStatefulContract(DESK, [], {
       fundingUtxo: funding, funder: net.funder, changeAddress: net.changeAddress, provider: net.network,
     });
-    const call = async (entry: string, args: readonly unknown[]): ReturnType<typeof callPerCallEntry> =>
-      callPerCallEntry({
+    const call = async (entry: string, args: readonly unknown[]): ReturnType<typeof callFramedEntry> =>
+      callFramedEntry({
         provider: net.network, artifact: DESK, categoryId: deployment.categoryId, functionName: entry,
         args: args as never, externals: EXTERNALS, callerUtxo: await net.coin(), callerLockingBytecode: CALLER_LOCK,
         funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: net.changeAddress,

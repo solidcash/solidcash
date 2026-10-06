@@ -23,7 +23,7 @@ import {
   ByteReader,
   FrameKind,
   INDEX_NONE,
-  PerCallEncodingError,
+  FramedEncodingError,
   TokenCapability,
   WITNESS_BLOCK_MAGIC,
   WITNESS_BLOCK_VERSION,
@@ -660,7 +660,7 @@ export function decideReference(transaction: ReferenceTransaction, context: Refe
     if (error instanceof ReferenceRejection) {
       return { accepted: false, check: error.check, reason: error.reason, index: error.index, order: run.order };
     }
-    if (error instanceof PerCallEncodingError) {
+    if (error instanceof FramedEncodingError) {
       return { accepted: false, check: 'V2', reason: `ENCODING: ${error.message}` };
     }
     throw error;
@@ -732,8 +732,8 @@ function splitPushFrames(unlockingBytecode: Uint8Array): Uint8Array[] {
 function readBlock(payload: Uint8Array): WitnessBlock {
   const reader = new ByteReader(payload);
   const magic = reader.readBytes(2);
-  if (!bytesEqual(magic, WITNESS_BLOCK_MAGIC)) throw new PerCallEncodingError('not a witness block: magic');
-  if (reader.readByte() !== WITNESS_BLOCK_VERSION) throw new PerCallEncodingError('unsupported witness block version');
+  if (!bytesEqual(magic, WITNESS_BLOCK_MAGIC)) throw new FramedEncodingError('not a witness block: magic');
+  if (reader.readByte() !== WITNESS_BLOCK_VERSION) throw new FramedEncodingError('unsupported witness block version');
   const kind = assertFrameKind(reader.readByte());
   const callerRef = reader.readUint16();
   const originRef = reader.readUint16();
@@ -745,11 +745,11 @@ function readBlock(payload: Uint8Array): WitnessBlock {
 
   const calls = reader.readCounted16((inner, index) => {
     const callKind = assertFrameKind(inner.readByte());
-    if (callKind === FrameKind.ROOT) throw new PerCallEncodingError(`call ${index} is a root frame`);
+    if (callKind === FrameKind.ROOT) throw new FramedEncodingError(`call ${index} is a root frame`);
     const target = inner.readLp16();
     const callValue = inner.readUint64();
     const calleeRef = inner.readUint16();
-    if (calleeRef === INDEX_NONE) throw new PerCallEncodingError(`call ${index} has no callee`);
+    if (calleeRef === INDEX_NONE) throw new FramedEncodingError(`call ${index} has no callee`);
     return {
       kind: callKind,
       target,
@@ -777,7 +777,7 @@ function readBlock(payload: Uint8Array): WitnessBlock {
   // The values a body reads are bound by the master against its records, so the validator only reads past them.
   reader.readCounted16((inner): Uint8Array => inner.readLp32());
   reader.assertEnd();
-  if (segments.length !== calls.length + 1) throw new PerCallEncodingError('segment and call counts disagree');
+  if (segments.length !== calls.length + 1) throw new FramedEncodingError('segment and call counts disagree');
   return { kind, callerRef, originRef, validatorRef, sender, self, value, retval, calls, segments, events, sends };
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bytesToHex, chainCategory, validatorAddress } from '@solidcash/utils';
-import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { PerCallDeploymentError, deployMaster, verifyMasterDeployment } from '../../../src/per-call/deploy/index.js';
+import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
+import { FramedDeploymentError, deployMaster, verifyMasterDeployment } from '../../../src/framed/deploy/index.js';
 import {
   ADDRESS_PAYLOAD,
   CATEGORY_PAYLOAD,
@@ -87,8 +87,8 @@ describe('filling deployment-time constants in a master', () => {
   it('refuses an artifact that publishes no placeholder descriptor', () => {
     const bare = artifactFixture({ composition: undefined });
 
-    expect(() => deployMaster(bare, CATEGORY, VALIDATOR_PROGRAM)).toThrow(PerCallDeploymentError);
-    expect(() => deployMaster(bare, CATEGORY, VALIDATOR_PROGRAM)).toThrow(/not compiled per-call/);
+    expect(() => deployMaster(bare, CATEGORY, VALIDATOR_PROGRAM)).toThrow(FramedDeploymentError);
+    expect(() => deployMaster(bare, CATEGORY, VALIDATOR_PROGRAM)).toThrow(/not compiled framed/);
   });
 
   it('refuses a category that is not 32 bytes', () => {
@@ -101,7 +101,7 @@ describe('filling deployment-time constants in a master', () => {
   it('refuses a descriptor whose offsets do not point at the reserved pushes', () => {
     const shifted = artifactFixture({
       composition: {
-        convention: 'per-call',
+        convention: 'framed',
         placeholders: { version: 1, categoryOffset: 0, addressOffset: 36 },
       },
     });

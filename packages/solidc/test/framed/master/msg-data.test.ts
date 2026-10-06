@@ -8,13 +8,13 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
- * `msg.data` in a per-call master: the frame's call data, the selector's push and the argument pushes, as the EVM's
+ * `msg.data` in a framed master: the frame's call data, the selector's push and the argument pushes, as the EVM's
  * is the calldata; empty for a value send, whose call data is the selector of `receive()` alone. `msg.sig` in the
  * fallback and `receive()` is that call data's selector, zero when it is empty.
  */
@@ -52,7 +52,7 @@ const PLAIN_SOURCE = `pragma solidcash ^0.13.0; contract Probe { function data(i
 
 /** The machine's verdict on a user's frame into the compiled source carrying `callData`. */
 function spend(source: string, callData: readonly Uint8Array[]): boolean {
-  const artifact = compileString(source, { composition: 'per-call' });
+  const artifact = compileString(source, { composition: 'framed' });
   const program = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
     category: categorySlotValue(CATEGORY), contractAddress: ADDRESS, templateHash: TEMPLATE_HASH,
   });
@@ -87,10 +87,10 @@ function spend(source: string, callData: readonly Uint8Array[]): boolean {
 }
 
 const selectorOf = (source: string, entry: string): Uint8Array => Uint8Array.from(Buffer.from(
-  compileString(source, { composition: 'per-call' }).abi.find((row) => row.name === entry)!.selector!, 'hex',
+  compileString(source, { composition: 'framed' }).abi.find((row) => row.name === entry)!.selector!, 'hex',
 ));
 
-describe('msg.data in a per-call master', () => {
+describe('msg.data in a framed master', () => {
   it('leaves the frame values where every entry reads them', () => {
     // The control: the same entry in a contract that never reads msg.data.
     expect(spend(PLAIN_SOURCE, [selectorOf(PLAIN_SOURCE, 'self'), ADDRESS])).toBe(true);
@@ -121,7 +121,7 @@ describe('msg.data in a per-call master', () => {
 
   it('is refused by name in a master with one entry, whose user frame carries no selector', () => {
     const sole = 'pragma solidcash ^0.13.0; contract Sole { function only() { require(msg.data.length > 0); } }';
-    expect(() => compileString(sole, { composition: 'per-call' })).toThrow(/msg\.data in a master with one entry/);
+    expect(() => compileString(sole, { composition: 'framed' })).toThrow(/msg\.data in a master with one entry/);
   });
 });
 
@@ -138,7 +138,7 @@ const sigSource = (body: SigBody, expected: Uint8Array): string => {
     + ' }';
 };
 
-describe('msg.sig in a per-call fallback and receive()', () => {
+describe('msg.sig in a framed fallback and receive()', () => {
   const FALLBACK: SigBody = 'fallback(bytes input) external';
   const RECEIVE: SigBody = 'receive() external payable';
 

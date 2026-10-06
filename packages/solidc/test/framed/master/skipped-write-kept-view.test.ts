@@ -4,11 +4,11 @@ import { encodeIntegerValue, encodeWitnessBlock, type RecordEntry, type WitnessB
 import { bytesToSlotValue, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { USER_LOCK, deployPerCallMaster, distinctBytes, head, node } from './record-spend.js';
+import { USER_LOCK, deployFramedMaster, distinctBytes, head, node } from './record-spend.js';
 import { validatorFacetPlacements, validatorSpend } from './validator-input.js';
 
 /**
- * A per-call conditional write that did not run, beside later frames of its contract that write the node it skips.
+ * A framed conditional write that did not run, beside later frames of its contract that write the node it skips.
  *
  * Where a guarded write's flag stays clear, the frame's batch transition binds the node its group names kept. That
  * kept binding compared the commitment the transaction spends with the one it writes, or for a node an earlier frame
@@ -23,7 +23,7 @@ import { validatorFacetPlacements, validatorSpend } from './validator-input.js';
  */
 
 const PRAGMA = 'pragma solidcash ^0.13.0;';
-const LEDGER = deployPerCallMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
+const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
   + ' function credit(uint a, uint x) { balances[a] += x; }'
   + ' function maybeDebit(uint a, uint x, bool c) { if (c) { balances[a] -= x; } }'
   + ' function move(uint a, uint b, uint x) { balances[a] -= x; balances[b] += x; }'
@@ -181,7 +181,7 @@ const move = (records: Record<Key, RecordEntry>): Frame =>
 const maybeMove = (c: Uint8Array, records: Record<Key, RecordEntry>): Frame =>
   ({ entry: 'maybeMove', pushes: [c, X, KEY_B, KEY_A], records: targetKeys('maybeMove').map((key) => records[key]) });
 
-describe('a per-call write that did not run holds the node it spends to its own declared views', () => {
+describe('a framed write that did not run holds the node it spends to its own declared views', () => {
   const at = layout(2);
   /** The skipped debit of `a`, declared from 50 to `skipped`, then `move(a, b, 8)` from that view to `written`. */
   const beforeMove = (skipped: bigint, written: bigint): Composition => ({
@@ -217,7 +217,7 @@ describe('a per-call write that did not run holds the node it spends to its own 
   });
 });
 
-describe('a per-call write that did not run holds a node an earlier frame created to its own declared views', () => {
+describe('a framed write that did not run holds a node an earlier frame created to its own declared views', () => {
   const at = layout(3);
   /** `credit(a, 50)` into the list holding `b` alone: the head relinked to `a`, and `a`'s node created after it. */
   const inserted: Frame = {
@@ -250,7 +250,7 @@ describe('a per-call write that did not run holds a node an earlier frame create
   });
 });
 
-describe('a per-call conditional batch that did not run holds its nodes to their own declared views', () => {
+describe('a framed conditional batch that did not run holds its nodes to their own declared views', () => {
   const at = layout(2);
   /** The skipped batch, `a` declared from 50 to `skipped` and `b` kept, then the move from those views. */
   const beforeMove = (skipped: bigint, written: bigint): Composition => ({

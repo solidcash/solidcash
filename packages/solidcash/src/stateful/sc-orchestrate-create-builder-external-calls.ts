@@ -547,7 +547,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     // (layout-less) input order or when the caller's block reserves trailing slots for it; the base then advances
     // by the chunk count. Dense placement otherwise keeps the caller's complete block first and appends the
     // callee blocks ahead of the run (see buildInputs), so the run does not shift them. The assembled
-    // transaction rebinds the base and every per-callee index afterwards; this plan only has to agree with it.
+    // transaction rebinds the base and every framedee index afterwards; this plan only has to agree with it.
     const chunkRunPrecedesCallees = abiFunction?.blockLayout === undefined
       || abiFunction.blockLayout.slots.some((slot) => slot.kind === 'trailing');
     const chunkRunBeforeCallees = chunkRunPrecedesCallees ? iterationEntryInputs.length : 0;

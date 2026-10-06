@@ -4,9 +4,9 @@ import { encodeWitnessBlock, validatorAddress, type WitnessBlock } from '@solidc
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from '../frames/caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { REAL_VALIDATOR_PROGRAM, seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * A standalone master binds `tx.origin` to the one user that entered it.
@@ -38,7 +38,7 @@ const RELAXED_LIMITS = {
   hashDigestIterationsPerByte: 3,
 };
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = deployed.lockingBytecode;
 

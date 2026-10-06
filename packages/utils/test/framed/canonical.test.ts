@@ -15,9 +15,9 @@ import {
   encodeRawValue,
   encodeResultList,
   isAddressValue,
-} from '../../src/per-call/index.js';
-import { concatBytes, hexToBytes } from '../../src/per-call/primitives.js';
-import { expectPerCallRejection, toBytes, toHex } from './helpers.js';
+} from '../../src/framed/index.js';
+import { concatBytes, hexToBytes } from '../../src/framed/primitives.js';
+import { expectFramedRejection, toBytes, toHex } from './helpers.js';
 import { ARGUMENT_PUSHES, ARGS_HASHES, INTEGER_VALUES } from './vectors/canonical.js';
 import { ADDRESS_A, USER_LOCK } from './vectors/identity.js';
 
@@ -76,8 +76,8 @@ describe('argsHash', () => {
   });
 
   it('rejects a selector that is not four bytes', () => {
-    expectPerCallRejection(() => argsHash(new Uint8Array(3), new Uint8Array(0)), /selector is 4 bytes/);
-    expectPerCallRejection(() => argsHash(new Uint8Array(5), new Uint8Array(0)), /selector is 4 bytes/);
+    expectFramedRejection(() => argsHash(new Uint8Array(3), new Uint8Array(0)), /selector is 4 bytes/);
+    expectFramedRejection(() => argsHash(new Uint8Array(5), new Uint8Array(0)), /selector is 4 bytes/);
   });
 });
 
@@ -91,7 +91,7 @@ describe('canonical integer values', () => {
   }
 
   it('rejects a value that is not a bigint', () => {
-    expectPerCallRejection(() => encodeIntegerValue(1 as unknown as bigint));
+    expectFramedRejection(() => encodeIntegerValue(1 as unknown as bigint));
   });
 });
 
@@ -121,7 +121,7 @@ describe('address values', () => {
   it('rejects a length no address form uses', () => {
     expect(isAddressValue(new Uint8Array(30))).toBe(false);
     expect(isAddressValue(new Uint8Array(0))).toBe(false);
-    expectPerCallRejection(() => assertAddressValue(new Uint8Array(30), 'sender'), /sender is 30 byte/);
-    expectPerCallRejection(() => assertAddressValue(new Uint8Array(0), 'self'));
+    expectFramedRejection(() => assertAddressValue(new Uint8Array(30), 'sender'), /sender is 30 byte/);
+    expectFramedRejection(() => assertAddressValue(new Uint8Array(0), 'self'));
   });
 });

@@ -7,16 +7,16 @@ import {
   buildChunkCommitment, buildPushdataCommitment, encodePushdataValue, splitValueIntoChunks,
   type Artifact,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  chunkRecordLockingBytecode, deployMaster, entryRecordLockingBytecode, readPerCallDeployment,
+  chunkRecordLockingBytecode, deployMaster, entryRecordLockingBytecode, readFramedDeployment,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   deploymentStateValues, planHopExternalCalls,
-} from '../../../src/per-call/proxy/external-calls.js';
-import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
+} from '../../../src/framed/proxy/external-calls.js';
+import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 
 /**
@@ -40,7 +40,7 @@ const ARTIFACTS_DIR = resolve(
   '../../../../../.marketplace/artifacts/solidcash',
 );
 const hasArtifacts = existsSync(ARTIFACTS_DIR);
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
 const FACADE_CATEGORY = '0a'.repeat(32);
 const DATA_CATEGORY = '0b'.repeat(32);
@@ -193,7 +193,7 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
       network, FACADE_CATEGORY, 'jobs', 'JobPost[]', chunkIndex, chunk,
     )));
 
-    const deployment = await readPerCallDeployment(network, FACADE_CATEGORY, facadeDeployment.layout);
+    const deployment = await readFramedDeployment(network, FACADE_CATEGORY, facadeDeployment.layout);
     const state = deploymentStateValues(facadeDeployment.layout, FACADE_CATEGORY, deployment);
     expect((state.jobs as unknown[]).length).toBe(1);
 

@@ -2,32 +2,32 @@ import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A chain for the walls-ahead replicas of ordinary Solidity shapes: sources compiled the way a project's per-call
- * build compiles them (`solidityImportCompat`, the shipped per-call convention), deployed through the shipped
+ * A chain for the walls-ahead replicas of ordinary Solidity shapes: sources compiled the way a project's framed
+ * build compiles them (`solidityImportCompat`, the shipped framed convention), deployed through the shipped
  * deployment paths, and entered the way a project's handle enters them: a plain deployment through the plain call
- * path (`callPerCallEntry`) and a contract behind its generated proxy through the hop (`callPerCallProxyEntry`).
+ * path (`callFramedEntry`) and a contract behind its generated proxy through the hop (`callFramedProxyEntry`).
  *
  * Nothing here supplies a coordinate or a record: every plan, frame and verdict is the shipped code's own.
  */
 
-/** The compile options a per-call project build uses (the fixture's `solidcash.config.ts`, as its tests set them). */
+/** The compile options a framed project build uses (the fixture's `solidcash.config.ts`, as its tests set them). */
 export const PROJECT_OPTIONS = {
   solidityImportCompat: true,
   commitmentLimit: 128,
@@ -37,29 +37,29 @@ export const PROJECT_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 export type ArtifactMap = ReturnType<typeof compileStringMulti>;
 
-/** Compiles a unit of Solidity sources as a per-call project build does. */
+/** Compiles a unit of Solidity sources as a framed project build does. */
 export function compileProject(source: string): ArtifactMap {
   return compileStringMulti(source, PROJECT_OPTIONS as never);
 }
 
 /**
- * Compiles a unit with the per-call convention and the Solidity compatibility layer only, as the conformance rows
- * do: no message-bus route is generated beside the per-call bodies.
+ * Compiles a unit with the framed convention and the Solidity compatibility layer only, as the conformance rows
+ * do: no message-bus route is generated beside the framed bodies.
  */
-export function compilePerCall(source: string): ArtifactMap {
-  return compileStringMulti(source, { solidityImportCompat: true, composition: 'per-call' } as never);
+export function compileFramed(source: string): ArtifactMap {
+  return compileStringMulti(source, { solidityImportCompat: true, composition: 'framed' } as never);
 }
 
 /** The deployer's lock, which also enters every call: the root frame's `msg.sender`. */
 export const USER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 const USER_FUNDER: Unlocker = new SignatureTemplate(alicePriv).unlockP2PKH();
 
-/** A per-call contract's address, which its category fixes. */
+/** A framed contract's address, which its category fixes. */
 export const addressOfCategory = (categoryId: string): Uint8Array =>
   validatorAddress(hexToBin(categoryId), VALIDATOR_PROGRAM);
 
@@ -106,7 +106,7 @@ export interface PlainDeployment {
   readonly address: Uint8Array;
 }
 
-/** Deploys a contract without a proxy, as `deployContract` does for a per-call artifact. */
+/** Deploys a contract without a proxy, as `deployContract` does for a framed artifact. */
 export async function deployPlain(
   world: World, artifact: Artifact, constructorArgs: readonly unknown[] = [],
 ): Promise<PlainDeployment> {
@@ -125,7 +125,7 @@ export interface ProxiedDeployment {
   /** The proxy's address: the one every caller and callee names. */
   readonly address: Uint8Array;
   /** The deployment as a hop names a callee behind its proxy. */
-  readonly external: PerCallProxyExternal;
+  readonly external: FramedProxyExternal;
 }
 
 /** Deploys a contract behind its generated proxy and runs `initialize` through the hop, as `deployProxy` does. */
@@ -136,7 +136,7 @@ export async function deployProxied(
   const implementationFunding = await world.walletCoin();
   const proxyFunding = await world.walletCoin();
   const initCoin = await world.userCoin();
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: world.network,
     implementationArtifact: artifact,
     proxyArtifact,
@@ -186,11 +186,11 @@ export async function enterProxied(
   root: ProxiedDeployment,
   functionName: string,
   args: readonly FunctionArgument[],
-  externals: Readonly<Record<string, PerCallProxyExternal>> = {},
-): Promise<Outcome<PerCallProxyCallResult>> {
+  externals: Readonly<Record<string, FramedProxyExternal>> = {},
+): Promise<Outcome<FramedProxyCallResult>> {
   const coin = await world.userCoin();
   try {
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: root.artifact,
       proxyArtifact: root.external.proxyArtifact!,
@@ -218,10 +218,10 @@ export async function enterPlain(
   functionName: string,
   args: readonly FunctionArgument[],
   externals: Readonly<Record<string, { readonly artifact: Artifact; readonly categoryId: string }>> = {},
-): Promise<Outcome<PerCallCallResult>> {
+): Promise<Outcome<FramedCallResult>> {
   const coin = await world.userCoin();
   try {
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       provider: world.network,
       artifact: root.artifact,
       categoryId: root.categoryId,

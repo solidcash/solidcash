@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { FrameKind, bytesToHex } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -51,7 +51,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function run() { IInner(this.inner).pingBad(); require(true); }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const inner = artifacts.Inner!;
 const outer = artifacts.Outer!;
 
@@ -93,7 +93,7 @@ async function deployThroughProxiedCallee(network: MockNetworkProvider): Promise
   }
   await fundShippedFacets(network);
 
-  const innerDeployment = await deployPerCallProxy({
+  const innerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: inner,
     proxyArtifact: buildProxyArtifact(inner),
@@ -106,7 +106,7 @@ async function deployThroughProxiedCallee(network: MockNetworkProvider): Promise
   });
   expect(innerDeployment.initialize.broadcast).toBeDefined();
 
-  const outerDeployment = await deployPerCallProxy({
+  const outerDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),
@@ -135,8 +135,8 @@ function enter(
   network: MockNetworkProvider,
   funded: Awaited<ReturnType<typeof deployThroughProxiedCallee>>,
   functionName: string,
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: network,
     implementationArtifact: outer,
     proxyArtifact: buildProxyArtifact(outer),
@@ -163,13 +163,13 @@ async function callMessage(
 }
 
 /**
- * Runs `body` with the hop trace's stdout captured and `PER_CALL_HOP_TRACE` set or unset; the environment and the
+ * Runs `body` with the hop trace's stdout captured and `FRAMED_HOP_TRACE` set or unset; the environment and the
  * stream are restored before anything is asserted.
  */
 async function withHopTrace(enabled: boolean, body: () => Promise<void>): Promise<readonly string[]> {
-  const previous = process.env.PER_CALL_HOP_TRACE;
-  if (enabled) process.env.PER_CALL_HOP_TRACE = '1';
-  else delete process.env.PER_CALL_HOP_TRACE;
+  const previous = process.env.FRAMED_HOP_TRACE;
+  if (enabled) process.env.FRAMED_HOP_TRACE = '1';
+  else delete process.env.FRAMED_HOP_TRACE;
   const lines: string[] = [];
   const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array): boolean => {
     lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
@@ -179,8 +179,8 @@ async function withHopTrace(enabled: boolean, body: () => Promise<void>): Promis
     await body();
   } finally {
     spy.mockRestore();
-    if (previous === undefined) delete process.env.PER_CALL_HOP_TRACE;
-    else process.env.PER_CALL_HOP_TRACE = previous;
+    if (previous === undefined) delete process.env.FRAMED_HOP_TRACE;
+    else process.env.FRAMED_HOP_TRACE = previous;
   }
   return lines;
 }
@@ -216,7 +216,7 @@ async function deployed(): Promise<World> {
 /** The one `runOk` hop that settles, which the first two cases read: its result and its trace. */
 interface SettledHop {
   readonly funded: Funded;
-  readonly result: PerCallProxyCallResult;
+  readonly result: FramedProxyCallResult;
   readonly traced: readonly string[];
 }
 
@@ -226,7 +226,7 @@ let settledRun: Promise<SettledHop> | undefined;
 function settledHop(): Promise<SettledHop> {
   settledRun ??= (async (): Promise<SettledHop> => {
     const { network, funded } = await deployed();
-    let result: PerCallProxyCallResult | undefined;
+    let result: FramedProxyCallResult | undefined;
     const lines = await withHopTrace(true, async () => {
       result = await enter(network, funded, 'runOk');
     });
@@ -308,7 +308,7 @@ describe('the hop trace', () => {
     expect(message).toMatch(/callee-impl-master-2/);
   });
 
-  it('writes nothing when PER_CALL_HOP_TRACE is unset', async () => {
+  it('writes nothing when FRAMED_HOP_TRACE is unset', async () => {
     const { network, funded } = await deployed();
     let message: string | undefined;
     const lines = await withHopTrace(false, async () => {

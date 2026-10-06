@@ -3,16 +3,16 @@ import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, utf8ToBin } from 
 import {
   bytesToHex, concatBytes, encodeWitnessBlock, sha256, splitFirstPush, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -57,7 +57,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const OPTIONS = { solidityImportCompat: true, composition: 'per-call' } as never;
+const OPTIONS = { solidityImportCompat: true, composition: 'framed' } as never;
 const TOKEN = compileStringMulti(SOURCE, OPTIONS).Token!;
 const PROXY = buildProxyArtifact(TOKEN);
 
@@ -78,7 +78,7 @@ interface World {
   readonly network: MockNetworkProvider;
   /** The category the token's records and nodes sit at: the proxy's. */
   readonly records: string;
-  readonly enter: (functionName: string, args: readonly FunctionArgument[]) => Promise<PerCallProxyCallResult>;
+  readonly enter: (functionName: string, args: readonly FunctionArgument[]) => Promise<FramedProxyCallResult>;
 }
 
 let coins = 0;
@@ -96,7 +96,7 @@ async function deployWorld(): Promise<World> {
   const funder = wallet.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
   const changeAddress = wallet.address;
   await fundShippedFacets(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: TOKEN,
     proxyArtifact: PROXY,
@@ -108,8 +108,8 @@ async function deployWorld(): Promise<World> {
     vm: compositionMachine(),
   });
   expect(deployment.initialize.broadcast).toBeDefined();
-  const enter = async (functionName: string, args: readonly FunctionArgument[]): Promise<PerCallProxyCallResult> =>
-    callPerCallProxyEntry({
+  const enter = async (functionName: string, args: readonly FunctionArgument[]): Promise<FramedProxyCallResult> =>
+    callFramedProxyEntry({
       provider: network,
       implementationArtifact: TOKEN,
       proxyArtifact: PROXY,
@@ -129,7 +129,7 @@ async function deployWorld(): Promise<World> {
 /** Enters a call and requires it to settle: every participant accepted and the transaction broadcast. */
 async function settle(
   world: World, functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const result = await world.enter(functionName, args);
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -138,7 +138,7 @@ async function settle(
 
 /** A view's value, read from the deployment's records through the read path. */
 async function view(world: World, functionName: string, args: readonly FunctionArgument[] = []): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: TOKEN, categoryId: world.records, functionName, args,
   });
   expect(read.accepted).toBe(true);
@@ -158,7 +158,7 @@ async function heldCount(world: World): Promise<number> {
  * The master's verdict on a settled burn of `from`, whose skipped write kept a node, and on the same call with that
  * node's group restated as a record the frame changes: the declaration and the output it settles to alike.
  */
-function expectRestatedSkipRefused(result: PerCallProxyCallResult, from: Uint8Array): void {
+function expectRestatedSkipRefused(result: FramedProxyCallResult, from: Uint8Array): void {
   const frame = result.verdicts.find((verdict) => verdict.id === FRAME)!;
   expect(frame.accepted).toBe(true);
   const block = structuredClone(result.draft.blockOf(FRAME)) as WitnessBlock;
@@ -185,7 +185,7 @@ function expectRestatedSkipRefused(result: PerCallProxyCallResult, from: Uint8Ar
       : output)),
   };
   const vm = compositionMachine();
-  const verdict = (transaction: PerCallProxyCallResult['transaction']): unknown => vm.stateSuccess(
+  const verdict = (transaction: FramedProxyCallResult['transaction']): unknown => vm.stateSuccess(
     vm.evaluate({ inputIndex: frame.index, sourceOutputs: result.sourceOutputs, transaction }),
   );
   expect(verdict(result.transaction)).toBe(true);

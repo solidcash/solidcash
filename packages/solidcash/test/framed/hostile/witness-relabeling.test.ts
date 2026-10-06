@@ -12,20 +12,20 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import {
-  decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+  decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput,
   rootOf, seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
   participant, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
+} from '../../../src/framed/composer/index.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
 
 /**
  * A witness block relabelled after the user signed.
@@ -37,7 +37,7 @@ import { eventOutput } from '../../../../solidc/test/per-call/master/event-input
  * check, while a relabelled block every check admits leaves the transaction's outputs exactly the ones the user
  * signed.
  *
- * The whole shipped path runs: real sources through `compileStringMulti` with the per-call convention, the shipped
+ * The whole shipped path runs: real sources through `compileStringMulti` with the framed convention, the shipped
  * deployment, the composer laying out and assembling the composition, the derivation judging it, and the BCH-2026
  * machine answering on the assembled transaction. Each mutation rewrites one or two covered masters' blocks through
  * the same builder the composer used and leaves the user's signature bytes untouched.
@@ -194,7 +194,7 @@ function setup(): Fixture {
 }
 
 /** The assembled transaction restated in the shape the derivation reads; nothing here decides anything. */
-function modelOf(transaction: VmProgram['transaction'], sourceOutputs: VmSourceOutputs): PerCallTransaction {
+function modelOf(transaction: VmProgram['transaction'], sourceOutputs: VmSourceOutputs): FramedTransaction {
   type VmToken = { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
   const shape = (holder: { readonly token?: VmToken }): TokenShape => (holder.token === undefined
     ? { category: new Uint8Array(0), capability: 0, hasNft: false, nftCommitment: new Uint8Array(0), amount: 0n }

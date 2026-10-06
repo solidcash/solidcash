@@ -10,7 +10,7 @@ import {
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { isServed } from './refused-entry.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -21,7 +21,7 @@ import {
 /**
  * An entry that returns one scalar value, settled against the frame's witness `retval`.
  *
- * Under the per-call convention the value an entry returns is not written to a return-event output: the frame's
+ * Under the framed convention the value an entry returns is not written to a return-event output: the frame's
  * witness block records it in `retval`, and the entry's own code compares the blob its `return` built against
  * that field. The callee is accepted when the two agree and refused when they do not; a caller that consumes the
  * call's value decodes the record's `result`, which the validator holds equal to the callee's `retval`.
@@ -79,7 +79,7 @@ const token = (
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 /** The callee's `answer()` selector, which the caller's interface resolves the site to. */
 const SELECTOR = new Uint8Array(
   Buffer.from(artifacts.Answer!.abi.find((entry) => entry.name === 'answer')!.selector!, 'hex'),
@@ -254,7 +254,7 @@ const MIXED_SOURCE = 'pragma solidcash ^0.13.0;'
 const MIXED_CATEGORY = seededCategory('mixed return value');
 const MIXED_ADDRESS = validatorAddress(MIXED_CATEGORY, VALIDATOR_PROGRAM);
 
-const mixedArtifact = compileString(MIXED_SOURCE, { composition: 'per-call' });
+const mixedArtifact = compileString(MIXED_SOURCE, { composition: 'framed' });
 const mixedSelector = (name: string): Uint8Array =>
   new Uint8Array(Buffer.from(mixedArtifact.abi.find((entry) => entry.name === name)!.selector!, 'hex'));
 
@@ -334,7 +334,7 @@ const VIEW_ADDRESS = validatorAddress(VIEW_CATEGORY, VALIDATOR_PROGRAM);
 const VIEW_STATE_LOCK = dataRecordLock(VIEW_CATEGORY);
 const VIEW_INDEX = { master: 0, state: 1, user: 2 } as const;
 
-const viewArtifact = compileString(VIEW_SOURCE, { composition: 'per-call' });
+const viewArtifact = compileString(VIEW_SOURCE, { composition: 'framed' });
 const viewProgram = fillPlaceholders(scriptBytes(viewArtifact), viewArtifact.composition!.placeholders, {
   category: categorySlotValue(VIEW_CATEGORY), contractAddress: VIEW_ADDRESS, templateHash: TEMPLATE_HASH,
 });
@@ -421,7 +421,7 @@ const WRITE_SOURCE = 'pragma solidcash ^0.13.0;'
 const WRITE_CATEGORY = seededCategory('stateful write return');
 const WRITE_STATE_LOCK = dataRecordLock(WRITE_CATEGORY);
 const WRITE_ADDRESS = validatorAddress(WRITE_CATEGORY, VALIDATOR_PROGRAM);
-const writeArtifact = compileString(WRITE_SOURCE, { composition: 'per-call' });
+const writeArtifact = compileString(WRITE_SOURCE, { composition: 'framed' });
 const writeProgram = fillPlaceholders(scriptBytes(writeArtifact), writeArtifact.composition!.placeholders, {
   category: categorySlotValue(WRITE_CATEGORY), contractAddress: WRITE_ADDRESS, templateHash: TEMPLATE_HASH,
 });

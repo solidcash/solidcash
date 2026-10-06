@@ -5,17 +5,17 @@ import {
   FrameKind, buildMasterUnlockingBytecode, encodeEventCommitment, type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
 import {
-  VALIDATOR_PROGRAM_REASONS, decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+  VALIDATOR_PROGRAM_REASONS, decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput,
   rootOf, seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
   participant, type CompositionDraftPlan, type ContractBlock,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * The shipped validator program refuses two frames that list the same event output.
@@ -31,7 +31,7 @@ import {
  * event output and drops the now-unlisted second output, so the transaction carries one event where two frames
  * claim to have emitted it.
  *
- * The whole shipped path runs: the source through `compileStringMulti` with the per-call convention, the shipped
+ * The whole shipped path runs: the source through `compileStringMulti` with the framed convention, the shipped
  * deployment, the composer laying out and assembling the composition, the derivation judging it, and the BCH-2026
  * machine answering on the assembled transaction.
  */
@@ -141,7 +141,7 @@ function setup(): Fixture {
 }
 
 /** The assembled transaction restated in the shape the derivation reads; nothing here decides anything. */
-function modelOf(program: VmProgram): PerCallTransaction {
+function modelOf(program: VmProgram): FramedTransaction {
   type VmToken = { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
   const shape = (holder: { readonly token?: VmToken }): TokenShape => (holder.token === undefined
     ? { category: new Uint8Array(0), capability: 0, hasNft: false, nftCommitment: new Uint8Array(0), amount: 0n }
@@ -193,7 +193,7 @@ describe('two frames that list the same event output', () => {
   it('refuses the forged spend by name, and the machine refuses the same bytes', () => {
     // A plan that lists one output for two frames cannot be assembled at all: the trailing event region holds one
     // output per listed event and requires the plan's indices to be exactly the ones allocated, so the shipped
-    // composer raises `PerCallEncodingError` before any transaction exists. The forgery is therefore a mutation of
+    // composer raises `FramedEncodingError` before any transaction exists. The forgery is therefore a mutation of
     // the assembled spend, which is the bytes a hostile builder would put on chain.
     const { fixture, outcome } = control();
     const program = outcome.draft.programFor(ROOT_MASTER);

@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../../fixture/vars.js';
@@ -96,13 +96,13 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const compiled = compileStringMulti(SOURCE, FIXTURE_OPTIONS as never);
 const { Token, Directory, Relay, Root } = compiled as Required<typeof compiled>;
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 const CONTRACT_PAYEE = addressOf(DIRECTORY_CATEGORY);
 
@@ -132,7 +132,7 @@ describe('addresses read back through a call result and passed on as call argume
     for (const id of [ROOT_IMPL_CATEGORY, ROOT_PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(id));
     await network.addUtxo(binToHex(ALICE_LOCK), funding(ROOT_INIT_TXID));
     await fundShippedFacets(network);
-    const root = await deployPerCallProxy({
+    const root = await deployFramedProxy({
       provider: network,
       implementationArtifact: Root!,
       proxyArtifact: buildProxyArtifact(Root!),
@@ -146,11 +146,11 @@ describe('addresses read back through a call result and passed on as call argume
     expect(root.initialize.broadcast).toBeDefined();
 
     let coins = 0x60;
-    const pay = async (which: bigint): Promise<PerCallProxyCallResult> => {
+    const pay = async (which: bigint): Promise<FramedProxyCallResult> => {
       coins += 1;
       const coin = funding(category(coins.toString(16)));
       await network.addUtxo(binToHex(ALICE_LOCK), coin);
-      return callPerCallProxyEntry({
+      return callFramedProxyEntry({
         provider: network,
         implementationArtifact: Root!,
         proxyArtifact: buildProxyArtifact(Root!),
@@ -170,7 +170,7 @@ describe('addresses read back through a call result and passed on as call argume
         vm: compositionMachine(),
       });
     };
-    const balanceOf = async (who: Uint8Array): Promise<unknown> => (await readPerCallEntry({
+    const balanceOf = async (who: Uint8Array): Promise<unknown> => (await readFramedEntry({
       provider: network, artifact: Token!, categoryId: TOKEN_CATEGORY, functionName: 'balanceOf', args: [who],
       vm: compositionMachine(),
     })).value;

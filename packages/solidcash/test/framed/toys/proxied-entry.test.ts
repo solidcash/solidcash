@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
-import { VALIDATOR_PROGRAM_REASONS } from '../../../../solidc/src/per-call/validator/index.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { VALIDATOR_PROGRAM_REASONS } from '../../../../solidc/src/framed/validator/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput, rootOf,
   seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
@@ -13,7 +13,7 @@ import {
 import {
   participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A proxied entry: a stateful implementation, entered through the proxy's fallback, that makes a call of its own.

@@ -19,7 +19,7 @@ import {
   layoutTransaction,
   participant,
   selectGroupValidators,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 const category = new Uint8Array(32).fill(0x33);
 const addrA = new Uint8Array(35).fill(0xaa);

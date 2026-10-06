@@ -3,16 +3,16 @@ import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8T
 import {
   FrameKind, bytesToHex, encodePushdataValue, parsePushdataCommitment, sha256, validatorAddress, type Artifact,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import type { CompositionDraft } from '../../../src/per-call/composer/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import type { CompositionDraft } from '../../../src/framed/composer/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -35,7 +35,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * token five), the shape the row names; it takes about 11 s. One turn carries the same depth and the same proxy hops
  * in sixteen masters, about 4 s, and 8 s with its compile. Both are driven through the shipped proxy hop and settle
  * with every input accepted, the validator's walk among them, and the writes are read back on chain through the
- * shipped decoders. Both run under `PER_CALL_FULL=1`, compiling only then; by default the row's parts run cheaper
+ * shipped decoders. Both run under `FRAMED_FULL=1`, compiling only then; by default the row's parts run cheaper
  * elsewhere: the same four-deep shape composed and derived in `shapes/deep-arbitration.test.ts`, a proxied callee
  * making its own call through the hop in `call/proxy-callee-proxy.test.ts`, a proxied callee reached at several
  * sites in `call/proxy-default-pool.test.ts`, calls in a loop through the hop in `loop-call-rows.test.ts`, and
@@ -176,7 +176,7 @@ let rootProxy: Artifact;
 
 /** Compiles the six contracts and generates the store's and the root's proxies. */
 function compileRow(): void {
-  artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   store = artifacts.Store!;
   root = artifacts.Root!;
   storeProxy = buildProxyArtifact(store);
@@ -224,10 +224,10 @@ async function deployFor(turns: number): Promise<Deployed> {
   }
   const deployProxied = async (
     implementation: Artifact, proxy: Artifact, categories: readonly [string, string], args: readonly Uint8Array[],
-  ): Promise<Awaited<ReturnType<typeof deployPerCallProxy>>> => {
+  ): Promise<Awaited<ReturnType<typeof deployFramedProxy>>> => {
     const initCoin = funding(idOf(`${implementation.contractName} initialize coin`));
     await network.addUtxo(binToHex(USER_LOCK), initCoin);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: implementation,
       proxyArtifact: proxy,
@@ -258,10 +258,10 @@ async function deployFor(turns: number): Promise<Deployed> {
 }
 
 /** Runs the user's `run` on the root's proxy through the shipped hop. */
-async function run(deployed: Deployed, label: string): Promise<PerCallProxyCallResult> {
+async function run(deployed: Deployed, label: string): Promise<FramedProxyCallResult> {
   const coin = funding(idOf(`${label} call coin`));
   await deployed.network.addUtxo(binToHex(USER_LOCK), coin);
-  return callPerCallProxyEntry({
+  return callFramedProxyEntry({
     provider: deployed.network,
     implementationArtifact: root,
     proxyArtifact: rootProxy,
@@ -310,7 +310,7 @@ function depths(draft: CompositionDraft): ReadonlyMap<string, number> {
 async function nodeValue(
   network: MockNetworkProvider, artifact: Artifact, categoryId: string, collection: string, key: Uint8Array,
 ): Promise<string | undefined> {
-  const pools = await readPerCallDeployment(network, categoryId, artifact.stateLayout!);
+  const pools = await readFramedDeployment(network, categoryId, artifact.stateLayout!);
   const slot = bytesToHex(keyToSlotMulti([key]));
   const node = (pools.nodesByCollection.get(collection) ?? []).map((utxo) =>
     decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment))).find((entry) => bytesToHex(entry.slot) === slot);
@@ -353,7 +353,7 @@ async function expectDeepChain(turns: number): Promise<void> {
 
   // The writes, on chain: the root kept the first share, the store's two notes moved, the vault counted the gate's
   // settle and the claimer's claim, and the holder's node took one credit per turn.
-  const rootRecords = await readPerCallDeployment(deployed.network, deployed.rootProxyCategoryId,
+  const rootRecords = await readFramedDeployment(deployed.network, deployed.rootProxyCategoryId,
     rootProxy.stateLayout!);
   expect(Object.assign({}, ...rootRecords.records.map((record, nftIndex) => parsePushdataCommitment(
     record.token!.nft!.commitment, rootProxy.stateLayout!, nftIndex)))).toMatchObject({ score: 1n });
@@ -369,7 +369,7 @@ async function expectDeepChain(turns: number): Promise<void> {
     .toBe(intValue(1n + BigInt(turns)));
 }
 
-describe.runIf(process.env.PER_CALL_FULL === '1')(
+describe.runIf(process.env.FRAMED_FULL === '1')(
   'spec section 23 row 25: deep chains, four calls below the root plus proxy hops, about 24 masters', () => {
     beforeAll(compileRow, 120_000);
 

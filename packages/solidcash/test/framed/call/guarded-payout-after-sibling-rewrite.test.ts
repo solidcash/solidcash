@@ -4,17 +4,17 @@ import {
   VALUE_INLINE_LIMIT, bytesToHex, encodePushdataValue, parsePushdataCommitment, sha256, validatorAddress,
   type Artifact,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { deploymentStateValues } from '../../../src/per-call/proxy/external-calls.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { deploymentStateValues } from '../../../src/framed/proxy/external-calls.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -132,7 +132,7 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 /** The three contracts one form of the sibling's write compiles to. */
@@ -154,7 +154,7 @@ function contractsFor(form: keyof typeof SETTLES): Contracts {
   return found;
 }
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 /** A coin a genesis or a hop is funded from; a genesis's txid becomes the category it mints. */
@@ -165,7 +165,7 @@ function funding(txid: string): Utxo {
 /** The store and the collector plain, the root behind its proxy, the record opened through the root. */
 async function openThenDecide(contracts: Contracts, note: string): Promise<{
   readonly network: MockNetworkProvider;
-  readonly decide: () => Promise<PerCallProxyCallResult>;
+  readonly decide: () => Promise<FramedProxyCallResult>;
 }> {
   const { Store, Collector, Root } = contracts;
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -186,7 +186,7 @@ async function openThenDecide(contracts: Contracts, note: string): Promise<{
   const [openCoin, initCoin, callCoin] = ['open', 'initialize', 'call'].map((label) => funding(idOf(`${label} coin`)));
   for (const coin of [openCoin!, initCoin!, callCoin!]) await network.addUtxo(binToHex(CALLER), coin);
   await fundShippedFacets(network);
-  const root = await deployPerCallProxy({
+  const root = await deployFramedProxy({
     provider: network,
     implementationArtifact: Root,
     proxyArtifact: buildProxyArtifact(Root),
@@ -198,8 +198,8 @@ async function openThenDecide(contracts: Contracts, note: string): Promise<{
     vm: compositionMachine(),
   });
   expect(root.initialize.broadcast).toBeDefined();
-  const enter = (functionName: string, args: readonly unknown[], coin: Utxo): Promise<PerCallProxyCallResult> =>
-    callPerCallProxyEntry({
+  const enter = (functionName: string, args: readonly unknown[], coin: Utxo): Promise<FramedProxyCallResult> =>
+    callFramedProxyEntry({
       provider: network,
       implementationArtifact: Root,
       proxyArtifact: buildProxyArtifact(Root),
@@ -239,7 +239,7 @@ describe('a guarded collector that reads back and rewrites a long value a siblin
       expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
       expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
       // The record carries both writes: the shares and votes the sibling left, and the second write's mark.
-      const read = await readPerCallEntry({
+      const read = await readFramedEntry({
         provider: network, artifact: contracts.Store, categoryId: STORE_CATEGORY, functionName: 'rec', args: [ID],
         vm: compositionMachine(),
       });
@@ -260,7 +260,7 @@ describe('a guarded collector that reads back and rewrites a long value a siblin
       // The guard is restored: the collector's record ends where it started.
       const collectorLayout = contracts.Collector.stateLayout!;
       const state = deploymentStateValues(collectorLayout, COLLECTOR_CATEGORY,
-        await readPerCallDeployment(network, COLLECTOR_CATEGORY, collectorLayout));
+        await readFramedDeployment(network, COLLECTOR_CATEGORY, collectorLayout));
       expect(state.status).toBe(1n);
     });
   }

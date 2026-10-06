@@ -2,19 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { bytesToHex, encodeIntegerValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   entryRecordLockingBytecode,
-  readPerCallDeployment,
-} from '../../../src/per-call/deploy/index.js';
-import { participant, planMappingBatch } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  readFramedDeployment,
+} from '../../../src/framed/deploy/index.js';
+import { participant, planMappingBatch } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a mapping keyed by an `address`, however the caller writes that address.
@@ -37,7 +37,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   function heldAt(address who) public view returns (uint256) { return held[who]; }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true }).Balances!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Balances!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'held')!;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
 
@@ -75,15 +75,15 @@ async function chain(): Promise<MockNetworkProvider> {
 }
 
 /** The read of `heldAt(account)` through the shipped read module. */
-function read(provider: MockNetworkProvider, account: Uint8Array): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+function read(provider: MockNetworkProvider, account: Uint8Array): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider, artifact, categoryId: CATEGORY_HEX, functionName: 'heldAt', args: [account], vm: compositionMachine(),
   });
 }
 
 /** The node the frame spends, as the record its own slot names. */
 function spentNodeSlot(
-  result: Awaited<ReturnType<typeof readPerCallEntry>>,
+  result: Awaited<ReturnType<typeof readFramedEntry>>,
 ): string {
   const id = result.draft.layout.participants.map((placed) => placed.id)
     .find((candidate) => candidate.startsWith('read-entry-'))!;
@@ -107,7 +107,7 @@ function verdict(
 describe('reading a mapping keyed by an address', () => {
   it('reads the value the lock names from the same account written as a 20-byte payload', async () => {
     const provider = await chain();
-    expect((await readPerCallDeployment(provider, CATEGORY_HEX, artifact.stateLayout!))
+    expect((await readFramedDeployment(provider, CATEGORY_HEX, artifact.stateLayout!))
       .nodesByCollection.get('held')).toHaveLength(2);
 
     // The caller names the account the way an EVM ABI carries it; the contract keys the mapping by the lock.

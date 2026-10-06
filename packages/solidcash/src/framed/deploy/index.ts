@@ -1,5 +1,5 @@
 /**
- * The deployment half of per-call composition: filling a compiled master's deployment-time constants from the
+ * The deployment half of framed composition: filling a compiled master's deployment-time constants from the
  * contract's category, the master and validator pools a deployment funds at the derived address, and the records a
  * deployment mints and how they are found again.
  */

@@ -7,13 +7,13 @@
  */
 
 /** Raised whenever a composition payload is malformed, truncated, or non-canonical. */
-export class PerCallEncodingError extends Error {
+export class FramedEncodingError extends Error {
   constructor(
     message: string,
     readonly offset?: number,
   ) {
     super(offset === undefined ? message : `${message} (at byte ${offset})`);
-    this.name = 'PerCallEncodingError';
+    this.name = 'FramedEncodingError';
   }
 }
 
@@ -26,21 +26,21 @@ export class ByteWriter {
 
   pushByte(value: number): this {
     if (!Number.isInteger(value) || value < 0 || value > 0xff) {
-      throw new PerCallEncodingError(`byte out of range: ${String(value)}`);
+      throw new FramedEncodingError(`byte out of range: ${String(value)}`);
     }
     return this.pushBytes(new Uint8Array([value]));
   }
 
   pushUint16(value: number): this {
     if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
-      throw new PerCallEncodingError(`uint16 out of range: ${String(value)}`);
+      throw new FramedEncodingError(`uint16 out of range: ${String(value)}`);
     }
     return this.pushBytes(new Uint8Array([value & 0xff, (value >>> 8) & 0xff]));
   }
 
   pushUint32(value: number): this {
     if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
-      throw new PerCallEncodingError(`uint32 out of range: ${String(value)}`);
+      throw new FramedEncodingError(`uint32 out of range: ${String(value)}`);
     }
     return this.pushBytes(new Uint8Array([
       value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff,
@@ -49,7 +49,7 @@ export class ByteWriter {
 
   pushUint64(value: bigint): this {
     if (value < 0n || value > 0xffffffffffffffffn) {
-      throw new PerCallEncodingError(`uint64 out of range: ${value}`);
+      throw new FramedEncodingError(`uint64 out of range: ${value}`);
     }
     const out = new Uint8Array(8);
     let rest = value;
@@ -61,26 +61,26 @@ export class ByteWriter {
   }
 
   pushBytes(bytes: Uint8Array): this {
-    if (!(bytes instanceof Uint8Array)) throw new PerCallEncodingError('expected a byte array');
+    if (!(bytes instanceof Uint8Array)) throw new FramedEncodingError('expected a byte array');
     this.chunks.push(bytes);
     return this;
   }
 
   /** `lp16`: a 2-byte length prefix followed by the payload. */
   pushLp16(bytes: Uint8Array): this {
-    if (bytes.length > 0xffff) throw new PerCallEncodingError(`lp16 payload too long: ${bytes.length}`);
+    if (bytes.length > 0xffff) throw new FramedEncodingError(`lp16 payload too long: ${bytes.length}`);
     return this.pushUint16(bytes.length).pushBytes(bytes);
   }
 
   /** `lp32`: a 4-byte length prefix followed by the payload. */
   pushLp32(bytes: Uint8Array): this {
-    if (bytes.length > 0xffffffff) throw new PerCallEncodingError(`lp32 payload too long: ${bytes.length}`);
+    if (bytes.length > 0xffffffff) throw new FramedEncodingError(`lp32 payload too long: ${bytes.length}`);
     return this.pushUint32(bytes.length).pushBytes(bytes);
   }
 
   /** A `u16`-counted list whose elements are written by `writeElement`. */
   pushCounted16<T>(items: readonly T[], writeElement: (writer: ByteWriter, item: T, index: number) => void): this {
-    if (items.length > 0xffff) throw new PerCallEncodingError(`counted list too long: ${items.length}`);
+    if (items.length > 0xffff) throw new FramedEncodingError(`counted list too long: ${items.length}`);
     this.pushUint16(items.length);
     items.forEach((item, index) => writeElement(this, item, index));
     return this;
@@ -114,10 +114,10 @@ export class ByteReader {
 
   readBytes(length: number): Uint8Array {
     if (!Number.isInteger(length) || length < 0) {
-      throw new PerCallEncodingError(`invalid byte length: ${String(length)}`, this.offset);
+      throw new FramedEncodingError(`invalid byte length: ${String(length)}`, this.offset);
     }
     if (this.remaining < length) {
-      throw new PerCallEncodingError(`truncated: wanted ${length} byte(s), ${this.remaining} left`, this.offset);
+      throw new FramedEncodingError(`truncated: wanted ${length} byte(s), ${this.remaining} left`, this.offset);
     }
     const out = this.data.slice(this.offset, this.offset + length);
     this.offset += length;
@@ -164,7 +164,7 @@ export class ByteReader {
   /** Requires that the payload is fully consumed, so nothing follows the last field. */
   assertEnd(): void {
     if (this.remaining !== 0) {
-      throw new PerCallEncodingError(`${this.remaining} trailing byte(s) after the last field`, this.offset);
+      throw new FramedEncodingError(`${this.remaining} trailing byte(s) after the last field`, this.offset);
     }
   }
 }
@@ -184,7 +184,7 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
 /**
  * The minimal push of `data`, byte-identical to libauth's `encodeDataPush`: an empty push is OP_0, a single byte 1..16
  * is OP_N and 0x81 is OP_1NEGATE, up to 75 bytes is a direct push, then PUSHDATA1/2/4 with a little-endian length.
- * Copies `data` once: libauth spreads every byte into an array, and the per-call derivation pushes whole redeem
+ * Copies `data` once: libauth spreads every byte into an array, and the framed derivation pushes whole redeem
  * scripts for every program it evaluates.
  */
 export function encodeMinimalDataPush(data: Uint8Array): Uint8Array {
@@ -221,8 +221,8 @@ export function bytesToHex(bytes: Uint8Array): string {
 
 /** Parses lowercase or uppercase hex. An odd length or a non-hex digit is rejected. */
 export function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new PerCallEncodingError(`odd hex length: ${hex.length}`);
-  if (!/^[0-9a-fA-F]*$/.test(hex)) throw new PerCallEncodingError('non-hex character');
+  if (hex.length % 2 !== 0) throw new FramedEncodingError(`odd hex length: ${hex.length}`);
+  if (!/^[0-9a-fA-F]*$/.test(hex)) throw new FramedEncodingError('non-hex character');
   const out = new Uint8Array(hex.length / 2);
   for (let index = 0; index < out.length; index += 1) {
     out[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);

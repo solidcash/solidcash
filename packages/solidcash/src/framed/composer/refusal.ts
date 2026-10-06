@@ -13,7 +13,7 @@
  * revert fails: a variable's place on the stack, a literal's bytes, and a cast's own conversion. The report reads
  * the values from the failing state, and names only the declared parameters of an argument it cannot place.
  *
- * The debug metadata is written before a per-call master's head is emitted in front of the body, so its pointers
+ * The debug metadata is written before a framed master's head is emitted in front of the body, so its pointers
  * are offset from the shipped program by the head's own length. The offset is exactly the difference between the
  * source map's entry count and the program's instruction count, so it is read from the artifact rather than
  * assumed: without it an objection's instruction pointer lands on an unrelated instruction.
@@ -91,11 +91,11 @@ export interface CompositionRefusal {
 }
 
 /** Raised for a refused composition, carrying the report a caller reads the innermost reason from. */
-export class PerCallCompositionRefusedError extends Error {
-  public readonly name = 'PerCallCompositionRefusedError';
+export class FramedCompositionRefusedError extends Error {
+  public readonly name = 'FramedCompositionRefusedError';
 
   public constructor(public readonly report: CompositionRefusal) {
-    super(`PER_CALL_COMPOSITION_REFUSED: ${describeInnermost(report.innermost)}`);
+    super(`FRAMED_COMPOSITION_REFUSED: ${describeInnermost(report.innermost)}`);
   }
 
   /** The innermost frame's custom error arguments, as a Solidity-style matcher reads them. */
@@ -125,7 +125,7 @@ export function describeInnermost(frame: RefusedFrame | undefined): string {
   return frame === undefined ? 'the machine refused no frame' : describeRefusedFrame(frame);
 }
 
-/** The offset a per-call master's debug pointers carry relative to the shipped program. */
+/** The offset a framed master's debug pointers carry relative to the shipped program. */
 function debugSkew(artifact: Artifact, program: Uint8Array): number {
   const sourceMap = artifact.debug?.sourceMap;
   if (sourceMap === undefined || sourceMap.length === 0) return 0;
@@ -500,6 +500,6 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
 /** Reports a refused composition as an error, so a caller that only wants the reason can throw it. */
 export function assertCompositionAccepted(options: CompositionRefusalOptions): CompositionRefusal {
   const report = reportCompositionRefusal(options);
-  if (!report.accepted) throw new PerCallCompositionRefusedError(report);
+  if (!report.accepted) throw new FramedCompositionRefusedError(report);
   return report;
 }

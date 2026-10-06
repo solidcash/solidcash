@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, hexToBin } from '@bitauth/libauth';
 import { INDEX_NONE, concatBytes, encodeWitnessBlock, splitFirstPush, type WitnessBlock } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A plain root whose callee writes a value that chunks beside its other mapping writes, on the plain call path
- * (`callPerCallEntry`).
+ * (`callFramedEntry`).
  *
  * A poster, deployed without a proxy, passes an entry on to a log, deployed on its own. The log appends the entry to
  * the array one id keys, counts it under that id and emits: its frame writes two collections and the array's value
@@ -49,7 +49,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 /** The id every post appends under. */
 const ID = 7n;
@@ -78,7 +78,7 @@ function chain(): Promise<Chain> {
 }
 
 /** One post that has to settle: entered by the user, reaching the log, and broadcast. */
-async function post(c: Chain, entry: typeof FIRST): Promise<PerCallCallResult> {
+async function post(c: Chain, entry: typeof FIRST): Promise<FramedCallResult> {
   const outcome = await enterPlain(c.world, c.poster, 'post', [ID, entry], {
     Log: { artifact: c.log.artifact, categoryId: c.log.categoryId },
   });
@@ -91,7 +91,7 @@ async function post(c: Chain, entry: typeof FIRST): Promise<PerCallCallResult> {
 
 /** A view's value, read from the log's records and nodes through the read path. */
 async function view(c: Chain, functionName: string, args: readonly FunctionArgument[]): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: c.world.network, artifact: c.log.artifact, categoryId: c.log.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -103,7 +103,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -111,7 +111,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 }
 
 /** The settled transaction with one master's witness block replaced by `block`. */
-function withBlock(result: PerCallCallResult, master: string, block: WitnessBlock): VmTransaction {
+function withBlock(result: FramedCallResult, master: string, block: WitnessBlock): VmTransaction {
   const forged = structuredClone(result.transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
   const { rest } = splitFirstPush(forged.inputs[index]!.unlockingBytecode);

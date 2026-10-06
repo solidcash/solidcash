@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { INDEX_NONE, decodeTranscript, decodeWitnessBlock, encodeArgumentList, splitFirstPush } from '@solidcash/utils';
 import {
   assembleComposition, declaredValidators, UnresolvedReferenceError, type CompositionPlan, type PlannedMaster,
-} from '../../../src/per-call/composer/assemble.js';
-import { assertValidatorCoverage, ValidatorCoverageError } from '../../../src/per-call/composer/need-test.js';
+} from '../../../src/framed/composer/assemble.js';
+import { assertValidatorCoverage, ValidatorCoverageError } from '../../../src/framed/composer/need-test.js';
 import { FrameKind } from '@solidcash/utils';
 
 /**

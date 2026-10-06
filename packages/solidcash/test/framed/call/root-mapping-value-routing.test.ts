@@ -3,21 +3,21 @@ import {
   bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin,
 } from '@bitauth/libauth';
 import { VALUE_INLINE_LIMIT, bytesEqual, bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
 import {
-  deploymentStateValues, planHopExternalCalls, type PerCallProxyExternal,
-} from '../../../src/per-call/proxy/external-calls.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  deploymentStateValues, planHopExternalCalls, type FramedProxyExternal,
+} from '../../../src/framed/proxy/external-calls.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -153,7 +153,7 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const compiled = compileStringMulti(SOURCE, FIXTURE_OPTIONS as never);
@@ -163,7 +163,7 @@ const { Sink, Keeper, Starter, Relay } = compiled as Required<typeof compiled>;
 const SHORT_NAME = "Sam's short note";
 const LONG_NAME = `# a long note ${'n'.repeat(120)} that spans a run of chunk records`;
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 const SINK = addressOf(SINK_CATEGORY);
 
@@ -177,13 +177,13 @@ interface Proxied {
   readonly proxyCategoryId: string;
   readonly implementationCategoryId: string;
   readonly address: Uint8Array;
-  readonly external: PerCallProxyExternal;
+  readonly external: FramedProxyExternal;
 }
 
 /** One call entered with a fresh coin of the caller's: the coin, and the hop it pays for. */
 interface Entered {
   readonly coin: Utxo;
-  readonly call: Promise<PerCallProxyCallResult>;
+  readonly call: Promise<FramedProxyCallResult>;
 }
 
 /** The deployments, the chain as it stood once every initialize settled, and a way to enter each proxied root. */
@@ -192,7 +192,7 @@ interface World {
   readonly snapshot: SnapshotRestorer;
   readonly keeper: Proxied;
   readonly relay: Proxied;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   /** Deploys a contract behind its generated proxy and requires its initialize, which may call the sink, to settle. */
   readonly deploy: (
     implementationArtifact: NonNullable<typeof Keeper>, label: string, initArgs: readonly FunctionArgument[],
@@ -223,7 +223,7 @@ async function deployWorld(): Promise<World> {
     for (const id of [implementationId!, proxyId!]) await network.addUtxo(wallet.address, funding(id));
     await network.addUtxo(binToHex(ALICE_LOCK), funding(initTxid!));
     const proxyArtifact = buildProxyArtifact(implementationArtifact);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact,
       proxyArtifact,
@@ -260,7 +260,7 @@ async function deployWorld(): Promise<World> {
     await network.addUtxo(binToHex(ALICE_LOCK), coin);
     const deployment = target === 'keeper' ? keeper : relay;
     const artifact = target === 'keeper' ? Keeper! : Relay!;
-    const call = callPerCallProxyEntry({
+    const call = callFramedProxyEntry({
       provider,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -293,7 +293,7 @@ async function deployed(): Promise<World> {
 /** Enters one call and requires it to settle every participant and broadcast; hands back the hop. */
 async function settle(
   world: World, target: 'keeper' | 'relay', functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const result = await (await world.enter(target, functionName, args)).call;
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.accepted).toBe(true);
@@ -324,12 +324,12 @@ async function expectRefused(
 }
 
 /** The sink entries a hop ran, in the order the derivation completed them. */
-const sinkFrames = (result: PerCallProxyCallResult): readonly string[] => result.completed
+const sinkFrames = (result: FramedProxyCallResult): readonly string[] => result.completed
   .map((frame) => frame.functionName).filter((name) => name.startsWith(`${Sink!.contractName}.`));
 
 /** One of the sink's view entries, read from its live records. */
 async function sinkView(world: World, functionName: string, args: readonly FunctionArgument[]): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: Sink!, categoryId: SINK_CATEGORY, functionName, args: [...args],
     vm: compositionMachine(),
   });
@@ -338,10 +338,10 @@ async function sinkView(world: World, functionName: string, args: readonly Funct
 }
 
 /** The keeper's live set, its mapping nodes classified by the implementation's collections. */
-async function keeperDeployment(world: World): ReturnType<typeof readPerCallDeployment> {
+async function keeperDeployment(world: World): ReturnType<typeof readFramedDeployment> {
   const proxy = buildProxyArtifact(Keeper!);
   const layout = { ...proxy.stateLayout!, collections: Keeper!.stateLayout!.collections };
-  return readPerCallDeployment(world.network, world.keeper.proxyCategoryId, layout);
+  return readFramedDeployment(world.network, world.keeper.proxyCategoryId, layout);
 }
 
 /** A listing that reports the keeper's `amounts` node of key `k` as holding `value`, at the same outpoint. */
@@ -487,7 +487,7 @@ describe('a call a reach routes through a value an earlier reach of the hop left
   it('plans the later reach from the view a settle learned for the delegate frame that wrote the node', async () => {
     const world = await deployed();
     await settle(world, 'keeper', 'setAmount', [23n, 85n]);
-    const relaySet = await readPerCallDeployment(
+    const relaySet = await readFramedDeployment(
       world.network, world.relay.proxyCategoryId, buildProxyArtifact(Relay!).stateLayout!);
     // The node the first reach rewrites, at the view a settle hands back for its delegate frame: the count raised.
     const slot = keyToSlotMulti([bigIntToVmNumber(23n)]);

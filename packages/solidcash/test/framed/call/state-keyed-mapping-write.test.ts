@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, utf8ToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, sha256, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
@@ -9,11 +9,11 @@ import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv, carolPkh } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -23,7 +23,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  *
  * Two shapes ordinary contracts write: the id counter (`items[nextId] = ...; nextId += 1`, the idiom since
  * OpenZeppelin v5 dropped `Counters`, in its post-increment spelling `items[nextId++]` too, and a key read after the
- * increment, `uint256 id = ++nextId`) and the stored recipient (`credit[treasury] += fee`). The per-call master
+ * increment, `uint256 id = ++nextId`) and the stored recipient (`credit[treasury] += fee`). The framed master
  * derives the write's target slot from the record its frame declares for the value, in the segment the body reads
  * it, and from the value one straight-line assignment ahead of the read left; the hop and the plain call path plan
  * the node at the same key from the deployment's own records, through the label the artifact publishes. Each write
@@ -72,7 +72,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const registry = artifacts.Registry!;
 const tickets = artifacts.Tickets!;
 
@@ -115,7 +115,7 @@ async function deployWorld(): Promise<World> {
   const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const funder = wallet.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
   await fundShippedFacets(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: registry,
     proxyArtifact: buildProxyArtifact(registry),
@@ -156,8 +156,8 @@ async function deployed(): Promise<World> {
 /** One call through the proxy, from a fresh coin of the caller's; it has to settle. */
 async function settleProxied(
   world: World, functionName: string, args: readonly FunctionArgument[], caller: Caller = ALICE,
-): Promise<PerCallProxyCallResult> {
-  const result = await callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  const result = await callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: registry,
     proxyArtifact: buildProxyArtifact(registry),
@@ -180,7 +180,7 @@ async function settleProxied(
 async function settlePlain(
   world: World, functionName: string, args: readonly FunctionArgument[], caller: Caller = ALICE,
 ): Promise<void> {
-  const result = await callPerCallEntry({
+  const result = await callFramedEntry({
     provider: world.network,
     artifact: tickets,
     categoryId: world.plain,
@@ -200,7 +200,7 @@ async function settlePlain(
 async function view(
   world: World, artifact: Artifact, functionName: string, args: readonly FunctionArgument[] = [],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact, categoryId: artifact === registry ? world.proxy : world.plain, functionName,
     args: [...args], vm: compositionMachine(),
   });

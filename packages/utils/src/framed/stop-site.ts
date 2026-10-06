@@ -14,7 +14,7 @@
  * steps is bounded without a configured cap.
  */
 
-import { PerCallEncodingError } from './primitives.js';
+import { FramedEncodingError } from './primitives.js';
 
 /** The three places an execution can need a witness it does not have. */
 export type StopSiteKind = 'read' | 'call' | 'segmentClose';
@@ -88,11 +88,11 @@ export function countStopSites(metadata: StopSiteMetadata, kind: StopSiteKind): 
  */
 export function validateStopSiteMetadata(metadata: StopSiteMetadata): void {
   if (metadata.version !== STOP_SITE_METADATA_VERSION) {
-    throw new PerCallEncodingError(`unsupported stop-site metadata version: ${String(metadata.version)}`);
+    throw new FramedEncodingError(`unsupported stop-site metadata version: ${String(metadata.version)}`);
   }
   metadata.sites.forEach((site, index) => {
     if (site.site !== index) {
-      throw new PerCallEncodingError(`stop site ${index} reports ordinal ${site.site}`);
+      throw new FramedEncodingError(`stop site ${index} reports ordinal ${site.site}`);
     }
   });
 
@@ -108,11 +108,11 @@ export function validateStopSiteMetadata(metadata: StopSiteMetadata): void {
         callIndices.add(site.callIndex);
         if (site.conditional === true) conditionalIndices.add(site.callIndex);
       } else if (site.conditional !== true || !conditionalIndices.has(site.callIndex)) {
-        throw new PerCallEncodingError(`two call sites report call index ${site.callIndex}`);
+        throw new FramedEncodingError(`two call sites report call index ${site.callIndex}`);
       }
     } else if (site.kind === 'segmentClose') {
       if (segmentIndices.has(site.segmentIndex)) {
-        throw new PerCallEncodingError(`two segment closes report segment ${site.segmentIndex}`);
+        throw new FramedEncodingError(`two segment closes report segment ${site.segmentIndex}`);
       }
       segmentIndices.add(site.segmentIndex);
     }
@@ -121,18 +121,18 @@ export function validateStopSiteMetadata(metadata: StopSiteMetadata): void {
   const callCount = callIndices.size;
   for (let index = 0; index < callCount; index += 1) {
     if (!callIndices.has(index)) {
-      throw new PerCallEncodingError(`call indices are not contiguous: ${index} is missing`);
+      throw new FramedEncodingError(`call indices are not contiguous: ${index} is missing`);
     }
   }
   const expectedSegments = callCount + 1;
   if (segmentIndices.size !== expectedSegments) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `an execution with ${callCount} call(s) closes ${expectedSegments} segment(s): got ${segmentIndices.size}`,
     );
   }
   for (let index = 0; index < expectedSegments; index += 1) {
     if (!segmentIndices.has(index)) {
-      throw new PerCallEncodingError(`segment indices are not contiguous: ${index} is missing`);
+      throw new FramedEncodingError(`segment indices are not contiguous: ${index} is missing`);
     }
   }
 
@@ -144,7 +144,7 @@ export function validateStopSiteMetadata(metadata: StopSiteMetadata): void {
       seenCalls.add(site.callIndex);
     } else if (site.kind === 'segmentClose' && site.segmentIndex > 0) {
       if (!seenCalls.has(site.segmentIndex - 1)) {
-        throw new PerCallEncodingError(
+        throw new FramedEncodingError(
           `segment ${site.segmentIndex} closes before call ${site.segmentIndex - 1} is made`,
         );
       }

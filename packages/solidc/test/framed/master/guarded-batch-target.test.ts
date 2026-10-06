@@ -2,28 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue, type RecordEntry } from '@solidcash/utils';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  created, deployPerCallMaster, evaluateMasterSpend, head, node, spent, type PlacedRecord,
+  created, deployFramedMaster, evaluateMasterSpend, head, node, spent, type PlacedRecord,
 } from './record-spend.js';
 
 /**
- * A per-call batch one of whose writes a branch guards, beside a write of the same collection that runs.
+ * A framed batch one of whose writes a branch guards, beside a write of the same collection that runs.
  *
  * `if (c) { balances[a] -= x; } balances[b] -= x` is one batch of two targets, and the entry cache leaves each write a
  * flush its dirty flag guards. Where `c` is false the first flush does not run, yet the second sets the batch's ran
  * flag, so the frame accepted the first target's node rewritten to any value: the batch held only its links. A
- * per-call batch target a branch guards now carries its own ran flag, and where that stays clear the batch transition
- * binds its group (`emitPerCallKeptBatchTarget`): the node keeps the value its proof began with, relinked only as the
+ * framed batch target a branch guards now carries its own ran flag, and where that stays clear the batch transition
+ * binds its group (`emitFramedKeptBatchTarget`): the node keeps the value its proof began with, relinked only as the
  * batch's checks admit, and no node is created for the key. Beside a plain write, which leaves the batch no flag at
  * all, the guarded node is bound the same way.
  *
  * Such a target also publishes the condition it runs under, and a frame that skips it at a key the list does not
- * hold declares its group as the kept predecessor proving the key absent (`emitPerCallSkippedBatchTarget`), which the
+ * hold declares its group as the kept predecessor proving the key absent (`emitFramedSkippedBatchTarget`), which the
  * other key's write may relink. No link may name the slot of a write declared skipped, which no node carries. Each
  * verdict is the BCH-2026 machine's on the master's own input.
  */
 
 const PRAGMA = 'pragma solidcash ^0.13.0;';
-const LEDGER = deployPerCallMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
+const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
   + ' function debit(uint a, uint b, uint x, bool c) { if (c) { balances[a] -= x; } balances[b] -= x; }'
   + ' function credit(uint a, uint b, uint x, bool c) { if (c) { balances[a] += x; } balances[b] += x; }'
   + ' function set(uint a, uint b, uint x, bool c) { if (c) { balances[a] -= x; } balances[b] = x; }'
@@ -147,7 +147,7 @@ const args = (c: Uint8Array): Uint8Array[] => [c, X, KEY_B, KEY_A];
 const accepts = (entry: string, c: Uint8Array, spend: Spend, pushes = args(c)): boolean =>
   evaluateMasterSpend(LEDGER, { entry, args: pushes, ...spend }).accepted;
 
-describe('a per-call batch one of whose writes a branch guards, beside a write that runs', () => {
+describe('a framed batch one of whose writes a branch guards, beside a write that runs', () => {
   it('keeps the guarded node where its arm is not taken, and refuses a value the code did not compute', () => {
     expect(accepts('debit', NO, updates('debit', { a: 50n, b: 50n }, { a: 50n, b: 42n }))).toBe(true);
     // Before the binding the frame accepted this: the write that ran set the batch's flag, which bound no node.

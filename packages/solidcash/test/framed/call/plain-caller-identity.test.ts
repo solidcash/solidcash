@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Signer, getContractFactory } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
@@ -9,9 +9,9 @@ import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../../../src/utils.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
@@ -20,9 +20,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * Both contracts are deployed through the factory, without a proxy, and the guarded contract's constructor takes the
  * calling contract's address as its handle reports it (`getAddress()`): `addrV(category)`, the address the calling
  * contract's frames present as `msg.sender` (spec open point 13, plan D9). The factory stores an address argument
- * that names a deployment it registered as the lock that deployment is registered under. A per-call deployment was
+ * that names a deployment it registered as the lock that deployment is registered under. A framed deployment was
  * registered under its handle's lock, the unfilled artifact's, which no frame presents, so the constructor stored that
- * lock and the calling contract's call was refused at the guard. A per-call deployment is registered under its own
+ * lock and the calling contract's call was refused at the guard. A framed deployment is registered under its own
  * address, so the stored address is the one the caller's frame states: its call settles, and a user who calls the
  * guarded entry directly is still refused by the guard.
  *
@@ -63,7 +63,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const CALLER: Artifact = artifacts.Caller!;
 const GUARDED: Artifact = artifacts.Guarded!;
 
@@ -106,8 +106,8 @@ function chain(): Promise<Chain> {
 async function enter(
   world: Chain, artifact: Artifact, deployed: StatefulContract, functionName: string,
   args: readonly FunctionArgument[],
-): Promise<PerCallCallResult> {
-  return callPerCallEntry({
+): Promise<FramedCallResult> {
+  return callFramedEntry({
     provider: world.provider,
     artifact,
     categoryId: deployed.categoryId,
@@ -124,7 +124,7 @@ async function enter(
 
 /** A view's value, read from the deployment's records through the read path. */
 async function view(world: Chain, artifact: Artifact, deployed: StatefulContract, functionName: string): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.provider, artifact, categoryId: deployed.categoryId, functionName, args: [],
     vm: compositionMachine(),
   });
@@ -143,7 +143,7 @@ function hexOf(value: unknown): string {
 }
 
 /** One event's fields as the composition's receipt decodes them from the outputs the frames listed. */
-function receiptEvent(result: PerCallCallResult, eventName: string): Record<string, unknown> {
+function receiptEvent(result: FramedCallResult, eventName: string): Record<string, unknown> {
   const logs = compositionEventLogs(result.draft, [CALLER, GUARDED]).filter((log) => log.eventName === eventName);
   expect(logs.map((log) => log.contract)).toStrictEqual(['Guarded']);
   return logs[0]!.args as Record<string, unknown>;

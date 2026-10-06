@@ -1,18 +1,18 @@
 /**
- * Deploying a per-call stateful contract through the shipped SDK entry point.
+ * Deploying a framed stateful contract through the shipped SDK entry point.
  *
  * `StatefulContract.deploy` (and the factory path that reaches it) is written for the direct convention: it
  * evaluates the constructor against a synthetic transaction whose unlocking bytecode carries the direct block
- * layout, and it funds one master UTXO and one data NFT per state variable. A per-call master refuses that
+ * layout, and it funds one master UTXO and one data NFT per state variable. A framed master refuses that
  * unlocking — it reads its frame out of a witness block, which the direct shape does not carry — so the deployment
- * is routed here when the artifact publishes `composition.convention === 'per-call'`.
+ * is routed here when the artifact publishes `composition.convention === 'framed'`.
  *
  * The genesis transaction is the same shape the convention's pools expect: a pool of master UTXOs carrying the
  * minting NFT at the master lock, a pool of validator UTXOs at `addrV(category)`, one state record per data NFT
  * carrying the commitment the constructor's own frame computed, and one output per event that frame emitted, at the
  * covenant the body rebuilt. Both pools default to the composing size and are overridden per contract through the
  * deployment options.
- * The state comes from `derivePerCallGenesis`, which runs that frame against the BCH-2026 machine; nothing here
+ * The state comes from `deriveFramedGenesis`, which runs that frame against the BCH-2026 machine; nothing here
  * supplies a commitment the constructor did not compute.
  *
  * The records are minted at the data-NFT covenant the category derives, the same lock the direct convention's data
@@ -24,7 +24,7 @@
 import {
   binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
-import { perCallValidator } from 'solidc';
+import { framedValidator } from 'solidc';
 import type { Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
@@ -32,13 +32,13 @@ import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecy
 import { getNetworkPrefix } from '../../utils.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
-import { derivePerCallGenesis } from './genesis.js';
+import { deriveFramedGenesis } from './genesis.js';
 import { resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 
-/** Raised when a per-call deployment cannot be built from the artifact or the options. */
-export class PerCallDeployError extends Error {
-  public readonly name = 'PerCallDeployError';
+/** Raised when a framed deployment cannot be built from the artifact or the options. */
+export class FramedDeployError extends Error {
+  public readonly name = 'FramedDeployError';
 
   public constructor(message: string) {
     super(message);
@@ -52,19 +52,19 @@ async function measuredFee(builder: { buildLibauthTransaction: () => unknown }):
 }
 
 /**
- * Deploys a per-call stateful contract: derives the genesis state from the constructor frame, funds the master and
+ * Deploys a framed stateful contract: derives the genesis state from the constructor frame, funds the master and
  * validator pools, mints one state record per data NFT, and returns the connected contract handle.
  */
-export async function deployPerCallStatefulContract<T extends Artifact>(
+export async function deployFramedStatefulContract<T extends Artifact>(
   artifact: T,
   constructorArgs: ConstructorArgument[],
   options: DeployOptions,
 ): Promise<DeployResult<T>> {
   if (artifact.stateLayout === undefined) {
-    throw new PerCallDeployError(`Contract ${artifact.contractName} is not a stateful contract`);
+    throw new FramedDeployError(`Contract ${artifact.contractName} is not a stateful contract`);
   }
   if (options.fundingUtxo.vout !== 0) {
-    throw new PerCallDeployError(
+    throw new FramedDeployError(
       'Funding UTXO must be at vout 0 to create a valid token category. '
       + `Got vout ${options.fundingUtxo.vout}.`,
     );
@@ -72,8 +72,8 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
 
   const categoryId = options.fundingUtxo.txid;
   const category = new Uint8Array(hexToBin(categoryId));
-  const validatorProgram = perCallValidator.buildValidatorProgram();
-  // A per-call artifact publishes no `constructorInputs`, so the factory path that splits a call's arguments
+  const validatorProgram = framedValidator.buildValidatorProgram();
+  // A framed artifact publishes no `constructorInputs`, so the factory path that splits a call's arguments
   // between the constructor and the initial state cannot see that this contract takes any: the values arrive as
   // `initArgs`. A caller that reaches `StatefulContract.deploy` directly passes them as the constructor args.
   const constructorValues = constructorArgs.length > 0 ? constructorArgs : (options.initArgs ?? []);
@@ -93,7 +93,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
     .map((collection) => ({ name: collection.name, signature: collection.signature }));
   const headCollections = [...(options.headCollections ?? []), ...declaredHeads]
     .filter((collection, index, all) => all.findIndex((other) => other.name === collection.name) === index);
-  const genesis = derivePerCallGenesis({
+  const genesis = deriveFramedGenesis({
     artifact,
     category,
     validatorProgram,
@@ -115,11 +115,11 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // is authoritative for that count, and the deployment funds exactly the pool it resolved.
   if (options.threadCount !== undefined
     && (!Number.isInteger(options.threadCount) || options.threadCount < 1)) {
-    throw new PerCallDeployError(`threadCount must be a positive integer, got ${options.threadCount}`);
+    throw new FramedDeployError(`threadCount must be a positive integer, got ${options.threadCount}`);
   }
   if (options.validatorCount !== undefined
     && (!Number.isInteger(options.validatorCount) || options.validatorCount < 1)) {
-    throw new PerCallDeployError(`validatorCount must be a positive integer, got ${options.validatorCount}`);
+    throw new FramedDeployError(`validatorCount must be a positive integer, got ${options.validatorCount}`);
   }
   const pool = resolveMasterPoolSize({ masters: options.threadCount, validators: options.validatorCount });
 
@@ -154,7 +154,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   }
   // The facet pool: one tokenless UTXO per facet the validator program binds, at the facet's own lock. A facet
   // holds no token and pins no category, so a composition spends any UTXO of its code.
-  for (const code of perCallValidator.buildValidatorFacets()) {
+  for (const code of framedValidator.buildValidatorFacets()) {
     addFunded({
       to: encodeLockingBytecodeP2sh32(hash256(code)),
       amount: FACET_SATOSHIS,
@@ -198,7 +198,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
     const signature = entry.signature
       ?? artifact.stateLayout?.collections?.find((candidate) => candidate.name === entry.collection)?.signature;
     if (signature === undefined) {
-      throw new PerCallDeployError(
+      throw new FramedDeployError(
         `genesis minted a node for collection "${entry.collection}", which the artifact does not publish`,
       );
     }
@@ -235,7 +235,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
     .reduce((sum, output) => sum + output.amount, 0n);
   const finalChange = options.fundingUtxo.satoshis - nonChangeTotal - fee;
   if (finalChange < 0n) {
-    throw new PerCallDeployError(
+    throw new FramedDeployError(
       `Insufficient funding for the pool of ${pool.masters} master(s) and ${pool.validators} validator(s): `
       + `${options.fundingUtxo.satoshis} satoshis provided, but the genesis requires `
       + `${nonChangeTotal + fee} (outputs ${nonChangeTotal}, fee ${fee}).`,
@@ -251,7 +251,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
 
   const tx = await builder.send();
 
-  // A per-call artifact bakes its constructor arguments into the filled program the genesis published rather than
+  // A framed artifact bakes its constructor arguments into the filled program the genesis published rather than
   // into the handle's redeem script, so the handle is built without repeating them.
   const contract = new Contract(artifact, [] as never, {
     provider: options.provider,
@@ -270,8 +270,8 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
     tokenSupport: true,
   });
   if (typeof ownAddress === 'string') {
-    throw new PerCallDeployError(`The contract's own address is not encodable: ${ownAddress}`);
+    throw new FramedDeployError(`The contract's own address is not encodable: ${ownAddress}`);
   }
-  (statefulContract as unknown as { _perCallAddress?: string })._perCallAddress = ownAddress.address;
+  (statefulContract as unknown as { _framedAddress?: string })._framedAddress = ownAddress.address;
   return { contract: statefulContract, tx, categoryId };
 }

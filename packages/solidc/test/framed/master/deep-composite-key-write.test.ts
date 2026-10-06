@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  USER_LOCK, created, deployPerCallMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
+  USER_LOCK, created, deployFramedMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
   type PlacedRecord,
 } from './record-spend.js';
 
 /**
- * A per-call master whose entry names a mapping node through three or four keys.
+ * A framed master whose entry names a mapping node through three or four keys.
  *
  * `m[a][b][c]` is one node of one collection: its slot is the masked hash of the per-key hashes concatenated, in
  * source order, which is what the body's key hash computes and the SDK's `keyToSlotMulti` derives. The two-key
@@ -24,23 +24,23 @@ const D = distinctBytes(32, 0x35);
 const V = 42n;
 const OLD = 7n;
 
-const THREE = deployPerCallMaster(`${PRAGMA} contract Three {`
+const THREE = deployFramedMaster(`${PRAGMA} contract Three {`
   + ' mapping(address => mapping(address => mapping(uint => uint))) m;'
   + ' function set(address a, address b, uint c, uint v) { m[a][b][c] = v; } }', 'deep keys three');
-const THREE_BUMP = deployPerCallMaster(`${PRAGMA} contract ThreeBump {`
+const THREE_BUMP = deployFramedMaster(`${PRAGMA} contract ThreeBump {`
   + ' mapping(address => mapping(address => mapping(uint => uint))) m;'
   + ' function bump(address a, address b, uint c, uint v) { m[a][b][c] = m[a][b][c] + v; } }', 'deep keys bump');
-const FOUR = deployPerCallMaster(`${PRAGMA} contract Four {`
+const FOUR = deployFramedMaster(`${PRAGMA} contract Four {`
   + ' mapping(address => mapping(address => mapping(uint => mapping(bytes32 => uint)))) m;'
   + ' function set(address a, address b, uint c, bytes32 d, uint v) { m[a][b][c][d] = v; } }', 'deep keys four');
-const THREE_READ = deployPerCallMaster(`${PRAGMA} contract ThreeRead {`
+const THREE_READ = deployFramedMaster(`${PRAGMA} contract ThreeRead {`
   + ' mapping(address => mapping(address => mapping(uint => uint))) m;'
   + ' mapping(address => uint) copies;'
   + ' function copy(address a, address b, uint c) { copies[a] = m[a][b][c]; } }', 'deep keys read');
-const THREE_CLEAR = deployPerCallMaster(`${PRAGMA} contract ThreeClear {`
+const THREE_CLEAR = deployFramedMaster(`${PRAGMA} contract ThreeClear {`
   + ' mapping(address => mapping(address => mapping(uint => uint))) m;'
   + ' function clear(address a, address b, uint c) { delete m[a][b][c]; } }', 'deep keys clear');
-const THREE_SENDER = deployPerCallMaster(`${PRAGMA} contract ThreeSender {`
+const THREE_SENDER = deployFramedMaster(`${PRAGMA} contract ThreeSender {`
   + ' mapping(address => mapping(address => mapping(uint => uint))) m;'
   + ' function set(address b, uint c, uint v) { m[msg.sender][b][c] = v; } }', 'deep keys sender');
 

@@ -3,17 +3,17 @@ import { binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   INDEX_NONE, bytesEqual, concatBytes, encodeWitnessBlock, splitFirstPush, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A plain callee that runs inside a frame of its own contract and reads back what that outer frame wrote earlier in
- * the same call, on the plain call path (`callPerCallEntry`).
+ * the same call, on the plain call path (`callFramedEntry`).
  *
  * `Vault.release` closes a record and raises its amount behind a ternary, so the artifact states no value for the
  * write and only the vault's own run computes it, and then calls `Payer.pay`, which calls back into the vault: `get`
@@ -66,7 +66,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 const ID = 7n;
 
@@ -74,7 +74,7 @@ const ID = 7n;
 async function enter(
   world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
   reached: readonly PlainDeployment[] = [],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
     [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
   expect(outcome.error?.message).toBeUndefined();
@@ -86,7 +86,7 @@ async function enter(
 async function view(
   world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -98,7 +98,7 @@ interface Released {
   readonly world: World;
   readonly vault: PlainDeployment;
   readonly payer: PlainDeployment;
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
 }
 
 let releaseRun: Promise<Released> | undefined;
@@ -120,7 +120,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -128,7 +128,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 }
 
 /** The settled transaction with one master's witness block replaced by `block`. */
-function withBlock(result: PerCallCallResult, master: string, block: WitnessBlock): VmTransaction {
+function withBlock(result: FramedCallResult, master: string, block: WitnessBlock): VmTransaction {
   const forged = structuredClone(result.transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
   const { rest } = splitFirstPush(forged.inputs[index]!.unlockingBytecode);
@@ -140,19 +140,19 @@ function withBlock(result: PerCallCallResult, master: string, block: WitnessBloc
 }
 
 /** The master of the one frame of `result` that ran `entry`. */
-function frameOf(result: PerCallCallResult, entry: string): string {
+function frameOf(result: FramedCallResult, entry: string): string {
   const frames = result.completed.filter((frame) => frame.functionName.endsWith(`.${entry}()`));
   expect(frames).toHaveLength(1);
   return frames[0]!.master;
 }
 
 /** The declarations the frame that ran `entry` makes of the spent input at `index`, in segment order. */
-function declarationsOf(result: PerCallCallResult, entry: string, index: number): readonly RecordEntry[] {
+function declarationsOf(result: FramedCallResult, entry: string, index: number): readonly RecordEntry[] {
   return result.draft.blockOf(frameOf(result, entry)).segments.flat().filter((declared) => declared.in === index);
 }
 
 /** The one declaration of `release` that moves a spent input: its write of the record. */
-function outerWrite(result: PerCallCallResult): RecordEntry {
+function outerWrite(result: FramedCallResult): RecordEntry {
   const writes = result.draft.blockOf(frameOf(result, 'release')).segments.flat()
     .filter((declared) => declared.in !== INDEX_NONE && !bytesEqual(declared.viewIn, declared.viewOut));
   expect(writes).toHaveLength(1);

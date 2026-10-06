@@ -4,14 +4,14 @@ import {
   INDEX_NONE, concatBytes, decodeWitnessBlock, encodeWitnessBlock, splitFirstPush,
   type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -20,8 +20,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * Every field the builder states that a frame reads, and whether the settlement refuses a transaction that
  * re-states it to a value the execution did not compute.
  *
- * The engine is the shipped path: the shipped compiler under the per-call convention, the shipped deployment and
- * `callPerCallEntry`, whose result carries the settled transaction and the draft its derivation ran on. Each case
+ * The engine is the shipped path: the shipped compiler under the framed convention, the shipped deployment and
+ * `callFramedEntry`, whose result carries the settled transaction and the draft its derivation ran on. Each case
  * clones the settled transaction, mutates exactly one builder-stated field — in the master's witness block, in the
  * transaction, or in the spent outputs the machine reads — and asks the shipped machine for a verdict on every
  * participant. A field that no participant refuses is a finding; the smallest change believed to close it is
@@ -56,7 +56,7 @@ function outpointHash(seed: number): string {
   return binToHex(bytes);
 }
 
-const ledger = compileStringMulti(SOURCE, { composition: 'per-call' }).Ledger!;
+const ledger = compileStringMulti(SOURCE, { composition: 'framed' }).Ledger!;
 
 type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -64,7 +64,7 @@ type VmSourceOutputs = VmProgram['sourceOutputs'];
 
 /** The settled composition and the artifact it was built from. */
 interface Composition {
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
   readonly artifact: Artifact;
 }
 
@@ -84,7 +84,7 @@ beforeAll(async () => {
   const user = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: outpointHash(0x51), vout: 0, satoshis: 300_000n };
   await provider.addUtxo(binToHex(user), callerUtxo);
-  const result = await callPerCallEntry({
+  const result = await callFramedEntry({
     provider, artifact, categoryId: deployment.categoryId, functionName: 'record',
     args: [alicePkh, 500n], callerUtxo, callerLockingBytecode: user,
     funder: signature.unlockP2PKH(), vm: compositionMachine(), value: 2000n,
@@ -98,17 +98,17 @@ function composition(): Composition {
 }
 
 /** The input index the layout placed for a participant. */
-function indexOf(result: PerCallCallResult, id: string): number {
+function indexOf(result: FramedCallResult, id: string): number {
   return result.draft.layout.participants.find((placed) => placed.id === id)!.index;
 }
 
 /** The identifiers the layout placed; the state participants are records, the rest master/validator/facet. */
-function participantIds(result: PerCallCallResult): readonly string[] {
+function participantIds(result: FramedCallResult): readonly string[] {
   return result.draft.layout.participants.map((placed) => placed.id);
 }
 
 /** The settled transaction, cloned so a case can mutate it without reaching the next. */
-function cloned(result: PerCallCallResult): VmTransaction {
+function cloned(result: FramedCallResult): VmTransaction {
   return structuredClone(result.transaction) as VmTransaction;
 }
 
@@ -119,7 +119,7 @@ function cloned(result: PerCallCallResult): VmTransaction {
  * splices the same argument and redeem bytes back after it, exactly as the composer built them.
  */
 function withBlock(
-  result: PerCallCallResult,
+  result: FramedCallResult,
   mutate: (block: WitnessBlock) => void,
 ): VmTransaction {
   const transaction = cloned(result);
@@ -137,7 +137,7 @@ function withBlock(
 
 /** The identifiers of the participants the machine refuses on one transaction, in layout order. */
 function refusals(
-  result: PerCallCallResult,
+  result: FramedCallResult,
   transaction: VmTransaction,
   sourceOutputs: VmSourceOutputs = result.sourceOutputs,
 ): readonly string[] {
@@ -151,7 +151,7 @@ function refusals(
 }
 
 /** True when the machine accepted every participant of the transaction. */
-function accepted(result: PerCallCallResult, transaction: VmTransaction): boolean {
+function accepted(result: FramedCallResult, transaction: VmTransaction): boolean {
   return refusals(result, transaction).length === 0;
 }
 
@@ -438,7 +438,7 @@ describe('fields the settlement does not refuse', () => {
 /**
  * The dynamic run a builder states.
  *
- * A per-call body holds a dynamic value in a run of chunk NFTs laid at its collection's covenant. The frame
+ * A framed body holds a dynamic value in a run of chunk NFTs laid at its collection's covenant. The frame
  * declares the run's records and the record that carries the value's byte length, and the body's own close hands
  * back the length and the chunk bytes it computed. This second settlement runs the proxied path (the direct path
  * declares a dynamic value's run only beside a mapping write), appends one element to a `Post[]`, and then asks
@@ -462,16 +462,16 @@ const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
 /** A title long enough that the appended element crosses the chunk boundary. */
 const TITLE = 't'.repeat(130);
 
-let proxySettled: PerCallProxyCallResult | undefined;
+let proxySettled: FramedProxyCallResult | undefined;
 
-function proxyComposition(): PerCallProxyCallResult {
+function proxyComposition(): FramedProxyCallResult {
   if (proxySettled === undefined) throw new Error('the proxied settlement was not built');
   return proxySettled;
 }
 
 /** The identifiers of the proxy participants the machine refuses on one transaction. */
 function proxyRefusals(
-  result: PerCallProxyCallResult,
+  result: FramedProxyCallResult,
   transaction: VmTransaction,
 ): readonly string[] {
   const vm = compositionMachine();
@@ -486,7 +486,7 @@ function proxyRefusals(
 
 /** The proxied transaction with one master's witness block rebuilt from `mutate`. */
 function withProxyBlock(
-  result: PerCallProxyCallResult,
+  result: FramedProxyCallResult,
   masterId: string,
   mutate: (block: WitnessBlock) => void,
 ): VmTransaction {
@@ -505,7 +505,7 @@ function withProxyBlock(
 
 describe('the settlement binds the dynamic run a builder states', () => {
   beforeAll(async () => {
-    const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'per-call' });
+    const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -519,7 +519,7 @@ describe('the settlement binds the dynamic run a builder states', () => {
     await fundShippedFacets(network);
     await network.addUtxo(binToHex(deployerLock), initUtxo);
     await network.addUtxo(binToHex(deployerLock), callUtxo);
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       implementationDeploy: {
@@ -533,7 +533,7 @@ describe('the settlement binds the dynamic run a builder states', () => {
       callerFunding: { utxo: initUtxo, funder: signature.unlockP2PKH() },
       vm: compositionMachine(),
     });
-    const result = await callPerCallProxyEntry({
+    const result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,

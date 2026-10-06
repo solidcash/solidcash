@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, HDSigner, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
-import type { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import type { FramedFunctionCall } from '../../../src/framed/call/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -34,13 +34,13 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function current() view returns (int) { return this.counter; }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const counter = artifacts.Counter!;
 
-/** The handle's call namespace, as the per-call path exposes it. */
+/** The handle's call namespace, as the framed path exposes it. */
 interface CounterCalls {
-  readonly add: (by: bigint) => PerCallFunctionCall;
-  readonly guarded: (by: bigint) => PerCallFunctionCall;
+  readonly add: (by: bigint) => FramedFunctionCall;
+  readonly guarded: (by: bigint) => FramedFunctionCall;
 }
 
 interface Deployed {
@@ -73,8 +73,8 @@ async function deploy(): Promise<Deployed> {
 }
 
 /** Calls one entry with one argument through the shipped call path. */
-function call(deployed: Deployed, functionName: string, by: bigint): ReturnType<typeof callPerCallEntry> {
-  return callPerCallEntry({
+function call(deployed: Deployed, functionName: string, by: bigint): ReturnType<typeof callFramedEntry> {
+  return callFramedEntry({
     provider: deployed.provider,
     artifact: counter,
     categoryId: deployed.categoryId,

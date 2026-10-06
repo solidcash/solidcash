@@ -8,7 +8,7 @@ import {
 import { Contract } from '../Contract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { Utxo, Unlocker } from '../interfaces.js';
-import { readPerCallState, type PerCallState } from '../per-call/deploy/records.js';
+import { readFramedState, type FramedState } from '../framed/deploy/records.js';
 import { StatefulContract } from '../stateful/StatefulContract.js';
 import { getContractState, getDataNftAddress } from '../stateful/covenant-helpers.js';
 import { StateReader } from '../stateful/StateReader.js';
@@ -355,7 +355,7 @@ type MockUtxoStorage = {
 type OracleTarget = {
   categoryId: string;
   layout: NonNullable<Artifact['stateLayout']>;
-  /** The direct convention's handle; a per-call target has none, its records are found by category. */
+  /** The direct convention's handle; a framed target has none, its records are found by category. */
   contract?: Contract;
 };
 
@@ -383,14 +383,14 @@ function oracleTargetsFromDeployment(deployment: { contract: unknown }): OracleT
     categoryId?: string;
     implementation?: { inner?: Contract; categoryId?: string };
     proxy?: { inner?: Contract; categoryId?: string };
-    perCallProxy?: unknown;
+    framedProxy?: unknown;
   };
   // Per-call: a proxy registers the implementation's artifact beside the proxy's category, whose records hold the
   // application state (the registers included) under the implementation's layout; a plain deployment registers its
   // stateful handle.
   const innerArtifact = wrapped.inner?.artifact;
-  if (innerArtifact?.composition?.convention === 'per-call') {
-    const categoryId = wrapped.perCallProxy === undefined ? wrapped.categoryId : wrapped.proxy?.categoryId;
+  if (innerArtifact?.composition?.convention === 'framed') {
+    const categoryId = wrapped.framedProxy === undefined ? wrapped.categoryId : wrapped.proxy?.categoryId;
     addTarget(categoryId, innerArtifact.stateLayout);
     return found;
   }
@@ -433,10 +433,10 @@ function replaceMockNftCommitment(
 }
 
 /**
- * Rewrites a per-call deployment's register records in place: read by category and decoded as its entries read
+ * Rewrites a framed deployment's register records in place: read by category and decoded as its entries read
  * them, re-encoded with the shipped pushdata encoder. A deployment whose records do not classify is left alone.
  */
-async function syncPerCallRegisters(
+async function syncFramedRegisters(
   provider: NetworkProvider,
   storage: MockUtxoStorage,
   target: OracleTarget,
@@ -444,9 +444,9 @@ async function syncPerCallRegisters(
   byRegister: Readonly<Record<string, bigint | Uint8Array>>,
 ): Promise<number> {
   const { categoryId, layout } = target;
-  let onChain: PerCallState;
+  let onChain: FramedState;
   try {
-    onChain = await readPerCallState(provider, categoryId, layout);
+    onChain = await readFramedState(provider, categoryId, layout);
   } catch {
     return 0;
   }
@@ -496,7 +496,7 @@ async function syncMockBlockOracleDeployments(
       ));
       if (touched.length === 0) continue;
       if (contract === undefined) {
-        updated += await syncPerCallRegisters(provider, storage, target, touched, byRegister);
+        updated += await syncFramedRegisters(provider, storage, target, touched, byRegister);
         continue;
       }
       let onChain;

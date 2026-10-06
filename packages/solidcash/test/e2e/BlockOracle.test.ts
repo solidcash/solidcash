@@ -469,7 +469,7 @@ describe('blobhash / blockhash', () => {
     const direct = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }');
     expect(direct.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['bn']);
 
-    // Computed n (any non-identifier expression) is recorded as a per-call-site <computed:i> key; the SDK
+    // Computed n (any non-identifier expression) is recorded as a framed-site <computed:i> key; the SDK
     // resolves n from the auto-derivation probe trace (the covenant computes it on-stack).
     const computed = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn + 1) == h); } }');
     expect(computed.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['<computed:0>']);
@@ -835,7 +835,7 @@ describe('blockhash(n) stateful reader', () => {
   });
 });
 
-// blockhash(block.number - K): a computed read whose n is NOT a call arg. The compiler records a per-call-site
+// blockhash(block.number - K): a computed read whose n is NOT a call arg. The compiler records a framed-site
 // <computed:i> key (own oracle slot); the SDK resolves n by extracting it from the auto-derivation probe trace
 // (the covenant computes block.number - K on-stack from the co-spent __block_number register), then co-spends
 // the (n->hash) oracle for it. Single source of truth - n is never re-derived in JS.

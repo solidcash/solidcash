@@ -3,7 +3,7 @@ import type { Artifact } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 
 /**
- * A mapping entry a per-call body accesses on both sides of a call.
+ * A mapping entry a framed body accesses on both sides of a call.
  *
  * A write that reads the entry it writes, a struct field write and a repeated write of one entry are lowered through a
  * cache the body reads once and writes back once. A call closes the segment the code before it runs in, and the callee
@@ -52,7 +52,7 @@ function published(artifact: Artifact, collection: string): { segment: unknown; 
 }
 
 const compile = (body: string): Artifact => compileStringMulti(LEDGER(body), {
-  composition: 'per-call', suppressWarnings: true,
+  composition: 'framed', suppressWarnings: true,
 }).Ledger!;
 
 /** The entry refused for its writes landing in two segments, with no write published. */
@@ -63,7 +63,7 @@ function refusedInTwoSegments(body: string, collection: string): void {
   expect(refused[0]).toContain(IN_TWO_SEGMENTS);
 }
 
-describe('a per-call entry cache a call runs between two accesses of', () => {
+describe('a framed entry cache a call runs between two accesses of', () => {
   it('refuses by name a compound update on both sides of a call', () => {
     refusedInTwoSegments(`balances[to] += 1; ${CALL} balances[to] += 2;`, 'balances');
   });

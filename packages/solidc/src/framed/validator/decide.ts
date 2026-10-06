@@ -7,7 +7,7 @@
  * or never reached. Nothing here touches a VM, a network or a filesystem.
  */
 
-import { inputAt, type PerCallTransaction, type ValidatorContext } from './model.js';
+import { inputAt, type FramedTransaction, type ValidatorContext } from './model.js';
 import {
   checkV1,
   checkV10,
@@ -53,7 +53,7 @@ const PROCEDURE: ReadonlyArray<readonly [ValidatorCheck, (state: DerivationState
  * validator it is asking about.
  */
 export function decideValidator(
-  transaction: PerCallTransaction,
+  transaction: FramedTransaction,
   context: ValidatorContext,
 ): ValidatorDecision {
   const state = createDerivationState(transaction, context);

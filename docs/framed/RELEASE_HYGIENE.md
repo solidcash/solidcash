@@ -1,6 +1,6 @@
 # Release hygiene: measured state of the section-3 readiness items
 
-Measured at `feat/per-call` = `48e4c4f62` (2026-10-06), all read-only. "Changed src" below means the 579 files
+Measured at `feat/framed` = `48e4c4f62` (2026-10-06), all read-only. "Changed src" below means the 579 files
 under `packages/solidc/src`, `packages/solidcash/src` and `packages/utils/src` that differ from
 `solidcash_v0.13.1` (`9fd8cd52b`). Nothing here has been fixed; each finding names the decision it needs.
 
@@ -50,11 +50,11 @@ sets one.
 
 25 of the 579 changed src files contain non-ASCII bytes. Sampled with `grep -oP` and decoded, they are UTF-8
 em dashes (`U+2014`) inside comments (for example 12 occurrences in
-`packages/solidcash/src/message-bus/compose-assemble.ts`, 3 in `packages/solidc/src/per-call/master/master-program.ts`).
+`packages/solidcash/src/message-bus/compose-assemble.ts`, 3 in `packages/solidc/src/framed/master/master-program.ts`).
 Repo-wide the count is 341 files under `packages/*/src`, dominated by the generated ANTLR files
 (`grammar/SolidCashParser.ts`, `grammar/SolidCashLexer.ts`) and `grammar/SolidCash.g4`. A mechanical ASCII pass
 would edit prose in 25 files of the branch; it is safe but large, so it belongs in its own commit (or in the W5
-rename commit, which already rewrites the per-call files' text).
+rename commit, which already rewrites the framed files' text).
 
 ## 4. Over-long lines (pre-existing, no action taken)
 

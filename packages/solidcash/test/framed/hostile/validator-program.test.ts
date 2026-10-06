@@ -5,8 +5,8 @@ import { createVirtualMachineBch2026ForProvider } from '../../../src/network/cre
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
 import {
   buildValidatorFacets, buildValidatorProgram, decideValidator,
-  type PerCallTransaction as ModelledTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
+  type FramedTransaction as ModelledTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
 import {
   emptyToken,
   materialise,

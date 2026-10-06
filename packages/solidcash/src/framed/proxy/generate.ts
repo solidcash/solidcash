@@ -1,5 +1,5 @@
 /**
- * Building the proxy artifact a per-call deployment runs behind.
+ * Building the proxy artifact a framed deployment runs behind.
  *
  * The proxy keeps the implementation's record: a call through the proxy is a `DELEGATE` frame of the
  * implementation's own code, so the record it reads and writes is the proxy's, and the commitment every write
@@ -10,7 +10,7 @@
  *
  * The generated contract is the shape the convention compiles — a single `fallback` that forwards the call data it
  * received to the address it holds in its `implementation` field — and nothing else. It is compiled with the
- * shipped per-call compiler at the implementation's record geometry, and the generated layout is checked against
+ * shipped framed compiler at the implementation's record geometry, and the generated layout is checked against
  * the implementation's rather than assumed.
  */
 
@@ -19,7 +19,7 @@ import {
   isMultiDataNftLayout, parseType, type Artifact, type StateLayout, type StateVariableInfo,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 
 /** The field the fallback forwards to; both the implementation and the generated proxy must declare it. */
 const IMPLEMENTATION_FIELD = 'implementation';
@@ -81,7 +81,7 @@ function requireExpressible(
 ): void {
   const base = baseTypeName(type);
   if (structNames.has(base) || parseType(base) !== undefined) return;
-  throw new PerCallProxyDeployError(
+  throw new FramedProxyDeployError(
     `cannot generate a proxy for "${owner}": ${where} has type "${type}", whose base "${base}" is neither a `
     + 'primitive type nor a struct the state layout publishes',
   );
@@ -118,7 +118,7 @@ function reachableStructs(
 export function generateProxySource(implementationArtifact: Artifact): string {
   const layout = implementationArtifact.stateLayout;
   if (layout === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `cannot generate a proxy for "${implementationArtifact.contractName}": it is not a stateful contract, so it `
       + 'has no record a proxy could keep',
     );
@@ -130,7 +130,7 @@ export function generateProxySource(implementationArtifact: Artifact): string {
   // proxy — or a record of the proxy's own, past the implementation's, which no implementation frame rewrites.
   const declared = layout.variables.find((variable) => variable.name === IMPLEMENTATION_FIELD);
   if (declared !== undefined && declared.type !== 'address') {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `cannot generate a proxy for "${implementationArtifact.contractName}": its "${IMPLEMENTATION_FIELD}" field `
       + `has type "${declared.type}", but a fallback forwards to an address`,
     );
@@ -285,13 +285,13 @@ export function readLayoutAgreement(implementationArtifact: Artifact, proxyArtif
  */
 function requireMirroredLayout(implementation: Artifact, generated: Artifact): void {
   if (generated.stateLayout === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the generated proxy for "${implementation.contractName}" compiled to a non-stateful contract`,
     );
   }
   const agreement = readLayoutAgreement(implementation, generated);
   if (!agreement.ok) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `cannot generate a proxy for "${implementation.contractName}": ${agreement.reason}`,
     );
   }
@@ -307,13 +307,13 @@ export function buildProxyArtifact(implementationArtifact: Artifact): Artifact {
   const source = generateProxySource(implementationArtifact);
   const layout = implementationArtifact.stateLayout!;
   const artifacts = compileStringMulti(source, {
-    composition: 'per-call',
+    composition: 'framed',
     // The record geometry the implementation was compiled with, so the same fields land in the same data NFTs.
     commitmentLimit: layout.commitmentLimit,
   });
   const generated = artifacts[proxyName(implementationArtifact)];
   if (generated === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the generated proxy for "${implementationArtifact.contractName}" did not compile to a contract`,
     );
   }

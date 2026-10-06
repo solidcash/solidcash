@@ -1,12 +1,12 @@
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster, satoshiContainerLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { type PerCallCallResult, type sendPerCallValue } from '../../../src/per-call/call/index.js';
+import { deployMaster, satoshiContainerLockingBytecode } from '../../../src/framed/deploy/index.js';
+import { type FramedCallResult, type sendFramedValue } from '../../../src/framed/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -49,7 +49,7 @@ export async function deploy(artifact: Artifact): Promise<Deployed> {
 }
 
 /** The call's options, less the entry and the value. */
-export function callerOf(deployed: Deployed): Parameters<typeof sendPerCallValue>[0] {
+export function callerOf(deployed: Deployed): Parameters<typeof sendFramedValue>[0] {
   return {
     provider: deployed.provider,
     artifact: deployed.artifact,
@@ -63,7 +63,7 @@ export function callerOf(deployed: Deployed): Parameters<typeof sendPerCallValue
 }
 
 /** The caller's options with its current coin: the largest tokenless UTXO at its lock, the last call's change. */
-export async function currentCaller(deployed: Deployed): Promise<Parameters<typeof sendPerCallValue>[0]> {
+export async function currentCaller(deployed: Deployed): Promise<Parameters<typeof sendFramedValue>[0]> {
   const coins = (await deployed.provider.getUtxosForLockingBytecode(deployed.callerLock))
     .filter((utxo) => utxo.token === undefined)
     .sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
@@ -71,7 +71,7 @@ export async function currentCaller(deployed: Deployed): Promise<Parameters<type
 }
 
 /** The value the broadcast pays into the contract's containers. */
-export function containerValue(result: PerCallCallResult, categoryId: string): bigint {
+export function containerValue(result: FramedCallResult, categoryId: string): bigint {
   const lock = binToHex(satoshiContainerLockingBytecode(categoryId));
   return (result.broadcast?.outputs ?? [])
     .filter((output) => binToHex(output.lockingBytecode) === lock)
@@ -112,5 +112,5 @@ export async function deployBesideWith(
 
 /** A contract's address: the validator address its category derives. */
 export function addressOf(artifact: Artifact, categoryId: string): Uint8Array {
-  return deployMaster(artifact, hexToBin(categoryId), perCallValidator.buildValidatorProgram()).address;
+  return deployMaster(artifact, hexToBin(categoryId), framedValidator.buildValidatorProgram()).address;
 }

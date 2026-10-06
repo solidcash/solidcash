@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { simulationProvider } from '../../../src/per-call/call/handle.js';
-import { registeredExternalFor } from '../../../src/per-call/proxy/external-calls.js';
+import { simulationProvider } from '../../../src/framed/call/handle.js';
+import { registeredExternalFor } from '../../../src/framed/proxy/external-calls.js';
 import {
   findDeploymentByCategory, findDeploymentByName, findDeploymentByLockingBytecode, registerDeployment,
 } from '../../../src/stateful/deployment-registry.js';
@@ -24,7 +24,7 @@ const PING_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping(int n) { require(n >= this.seen); }'
   + ' }';
 
-const ping = compileStringMulti(PING_SOURCE, { composition: 'per-call' }).Ping!;
+const ping = compileStringMulti(PING_SOURCE, { composition: 'framed' }).Ping!;
 const CATEGORY = '5c'.repeat(32);
 const LOCK = 'aa20' + '31'.repeat(32) + '87';
 

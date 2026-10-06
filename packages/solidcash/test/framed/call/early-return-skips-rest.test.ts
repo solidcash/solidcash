@@ -4,13 +4,13 @@ import {
   buildPushdataCommitment, concatBytes, encodeWitnessBlock, parsePushdataCommitment, splitFirstPush,
   type Artifact, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -35,7 +35,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   function setY(uint256 v) external { y = v; }'
   + '   fallback() external payable { if (y > 0) { if (y == 2) return; } x = x + 100; } }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
 
 /** A 32-byte outpoint hash whose bytes are not all the same. */
 function outpointHash(seed: number): string {
@@ -44,7 +44,7 @@ function outpointHash(seed: number): string {
   return binToHex(bytes);
 }
 
-type CallResult = Awaited<ReturnType<typeof callPerCallEntry>>;
+type CallResult = Awaited<ReturnType<typeof callFramedEntry>>;
 
 interface Deployed {
   readonly provider: MockNetworkProvider;
@@ -83,7 +83,7 @@ async function settle(world: Deployed, entry: string, args: readonly unknown[] =
   nonce += 1;
   const callerUtxo = { txid: outpointHash(nonce), vout: 0, satoshis: 200_000n };
   await world.provider.addUtxo(binToHex(encodeLockingBytecodeP2pkh(alicePkh)), callerUtxo);
-  const result = await callPerCallEntry({
+  const result = await callFramedEntry({
     provider: world.provider, artifact: world.artifact, categoryId: world.categoryId, functionName: entry,
     args: args as never, callerUtxo, callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh),
     funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
@@ -96,7 +96,7 @@ async function settle(world: Deployed, entry: string, args: readonly unknown[] =
 /** The deployment's `x`, read back from the chain with the shipped decoder. */
 async function heldX(world: Deployed): Promise<unknown> {
   const layout = world.artifact.stateLayout!;
-  const pools = await readPerCallDeployment(world.provider, world.categoryId, layout);
+  const pools = await readFramedDeployment(world.provider, world.categoryId, layout);
   return parsePushdataCommitment(pools.records[0]!.token!.nft!.commitment, layout, 0).x;
 }
 

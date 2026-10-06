@@ -22,5 +22,5 @@ export * from './external-library.js';
 export * from './script.js';
 export * from './source-map.js';
 export * from './state.js';
-export * from './per-call/index.js';
+export * from './framed/index.js';
 export * from './types.js';

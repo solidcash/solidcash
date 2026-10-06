@@ -1,5 +1,5 @@
 /**
- * The receipt half of per-call composition: reading an accepted composition's declared event outputs back into
+ * The receipt half of framed composition: reading an accepted composition's declared event outputs back into
  * decoded logs, each naming the emitting contract's `addrV(category)` and its fields in declared order.
  */
 

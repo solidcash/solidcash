@@ -109,7 +109,7 @@ import {
   loopRecordMints, planCallLoopWrites, publishedLoopTurns, type CallLoopWritePlan, type LoopRecordMint,
 } from '../call/entry-records.js';
 import type { MappingValueReader } from './call-resolution.js';
-import { PerCallProxyDeployError } from './errors.js';
+import { FramedProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceOn } from './hop-trace.js';
 import { reachedNodeValue } from './reached-values.js';
 import { writeRuns, type WriteActivationFacts } from './write-activation.js';
@@ -785,14 +785,14 @@ function nodeFieldValue(
 ): unknown {
   const collection = context.collections?.find((candidate) => candidate.name === collectionName);
   if (collection === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${context.fn.name}" entry reads field "${fieldName}" of mapping `
       + `"${collectionName}", which the artifact does not publish as a collection`,
     );
   }
   const key = nodeKey(keyLabel, context);
   if (key === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${context.fn.name}" entry reads field "${fieldName}" of mapping `
       + `"${collectionName}" at a key this hop cannot resolve (${keyLabel})`,
     );
@@ -811,7 +811,7 @@ function nodeFieldValue(
   if (commitment === undefined) return undefined;
   const raw = joinedNodeValue(collection, new Uint8Array(hexToBin(commitment)), deployment);
   if (raw === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${context.fn.name}" entry reads field "${fieldName}" of the node mapping `
       + `"${collectionName}" holds for this key, whose value this hop cannot reassemble from the deployment's `
       + 'chunks',
@@ -894,7 +894,7 @@ function orderedAccesses(
   return batch.slotIndices.map((slotIndex) => {
     const access = accesses.find((candidate) => (candidate.slotIndex ?? -1) === slotIndex);
     if (access === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's "${fn.name}" entry's sorted batch names slot ${slotIndex}, which its entry accesses `
         + 'do not describe',
       );
@@ -928,7 +928,7 @@ function planHopMappingBatches(request: HopEntryWritesRequest): readonly HopMapp
     // below, which names the batch this module plans rather than guessing at the loop.
     const loop = planHopLoopBatch(request, fn, accesses);
     if (loop !== undefined) return [loop];
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes ${accesses.length} mapping entry(ies) across `
       + '0 sorted batch(es), and this hop plans one batch to one collection',
     );
@@ -943,7 +943,7 @@ function planHopMappingBatches(request: HopEntryWritesRequest): readonly HopMapp
   const read = accesses.find((access) =>
     (access.slotIndex === undefined || !batched.has(access.slotIndex)) && !declaredRead(access));
   if (read !== undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry reads mapping "${read.collection}" beside the batch it `
       + 'writes, which this hop does not declare',
     );
@@ -970,7 +970,7 @@ function planHopMappingBatch(
 function requireHopCollection(request: HopEntryWritesRequest, name: string): ArtifactCollection {
   const collection = request.artifact.stateLayout?.collections?.find((candidate) => candidate.name === name);
   if (collection === undefined || collection.sorted !== true) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes mapping "${name}", which the artifact does not `
       + 'publish as a sorted collection',
     );
@@ -1003,7 +1003,7 @@ function resolveHopKey(
   if (evaluated !== undefined) return evaluated;
   const byName = encodedArgument(fn, args, label ?? '', structs);
   if (byName !== undefined) return byName;
-  throw new PerCallProxyDeployError(
+  throw new FramedProxyDeployError(
     `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" at a key this `
     + `hop cannot resolve from its call data (${label ?? '<unnamed>'})`,
   );
@@ -1055,7 +1055,7 @@ function planHopLoopBatch(
   // A chunkable value's node tail states the value's byte length, so the run of chunk records its write takes has
   // to be sized from the value itself. A loop stores its value per turn, which the hop does not compute.
   if (collection.chunkableValue === true) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes mapping "${collection.name}" in a run-time loop `
       + 'over its own call data, whose values chunk, so the run of chunk records the write takes cannot be sized '
       + 'from the call',
@@ -1110,7 +1110,7 @@ function planHopCollectionBatch(
   const undecided: Uint8Array[] = [];
   const writes = targets.map(({ access, keys, value }) => {
     if (keyTypes.length !== access.keyParams.length) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" with `
         + `${access.keyParams.length} key(s), which the collection's ${keyTypes.length} key type(s) do not cover`,
       );
@@ -1122,7 +1122,7 @@ function planHopCollectionBatch(
     const written = access.operations.filter((operation) => operation !== 'read');
     const isDelete = written.length === 1 && written[0] === 'delete';
     if (written.length !== 1 || (written[0] !== 'write' && !isDelete)) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's "${request.functionName}" entry touches mapping "${access.collection}" as `
         + `${access.operations.join('/')}, and this hop plans one write per target`,
       );
@@ -1147,7 +1147,7 @@ function planHopCollectionBatch(
     if (runs === false) return { keys: [...keys], value: new Uint8Array(0), stated: false, skipped: true };
     if (runs === undefined) {
       if (chunkable) {
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `the implementation's "${request.functionName}" entry writes mapping "${access.collection}", whose values `
           + 'chunk, under a condition this hop cannot decide from the frame\'s facts, so it cannot size the run of '
           + 'chunk records the write may take',
@@ -1155,7 +1155,7 @@ function planHopCollectionBatch(
       }
       undecided.push(keyToSlotMulti([...keys]));
     }
-    // A per-call body compiles `delete m[k]` as an upsert of the value type's default, so the node stays in place
+    // A framed body compiles `delete m[k]` as an upsert of the value type's default, so the node stays in place
     // and takes the default tail. The commitment is the body's to compute and is learned from its close, so only
     // the run the default takes has to be stated: an inline default is the empty value's own tail, which is one
     // record with no chunks.
@@ -1213,7 +1213,7 @@ function planHopCollectionBatch(
       if (commitment === undefined) continue;
       const value = joinedNodeValue(collection, new Uint8Array(hexToBin(commitment)), request.liveDeployment);
       if (value === undefined) {
-        throw new PerCallProxyDeployError(
+        throw new FramedProxyDeployError(
           `the implementation's "${request.functionName}" entry reads mapping "${access.collection}" a value this `
           + "hop cannot reassemble from the node the deployment holds, so it cannot witness the body's read",
         );
@@ -1250,7 +1250,7 @@ function planHopCollectionBatch(
   for (const node of collectionNodes) {
     const commitment = node.token?.nft?.commitment;
     if (commitment === undefined) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the deployment holds a node of collection "${collection.name}" with no commitment`,
       );
     }
@@ -1267,7 +1267,7 @@ function planHopCollectionBatch(
     return slot.length === 32 && slot.every((byte) => byte === 0);
   };
   if (!inventory.some(isHead)) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes mapping "${collection.name}", but the `
       + `deployment's collection "${collection.name}" has no head; a head is minted only at genesis, so this `
       + 'deployment was deployed without it',
@@ -1277,7 +1277,7 @@ function planHopCollectionBatch(
   const absent = undecided.find((slot) => !inventory.some((commitment) =>
     bytesEqual(decodeEntryCommitment(commitment).slot, slot)));
   if (absent !== undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes mapping "${collection.name}" under a condition `
       + 'this hop cannot decide from the frame\'s facts, at a key the collection does not hold, so it cannot declare '
       + 'whether the write creates the key\'s node',
@@ -1468,7 +1468,7 @@ function liveDynamicValue(
 ): LiveDynamicValue {
   const commitment = deployment.recordCommitments[nftIndex];
   if (commitment === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the deployment holds no record declaring dynamic "${variable}", so this hop cannot read the value its `
       + 'write starts from',
     );
@@ -1484,7 +1484,7 @@ function liveDynamicValue(
     try {
       chunks.push({ utxo, ...parseChunkCommitment(nft.commitment) });
     } catch {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the deployment holds a record at dynamic "${variable}"'s collection covenant whose commitment is not a `
         + 'chunk, so this hop cannot read the value its write starts from',
       );
@@ -1492,14 +1492,14 @@ function liveDynamicValue(
   }
   chunks.sort((left, right) => left.chunkIndex - right.chunkIndex);
   if (chunks.length !== chunkCountForLength(length)) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the deployment's dynamic "${variable}" declares ${length} byte(s), which is `
       + `${chunkCountForLength(length)} chunk(s), but ${chunks.length} chunk(s) sit at its collection covenant`,
     );
   }
   chunks.forEach((chunk, index) => {
     if (chunk.chunkIndex !== index) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the deployment's dynamic "${variable}" holds chunk ${chunk.chunkIndex} where chunk ${index} belongs`,
       );
     }
@@ -1602,7 +1602,7 @@ function resolveAppendedMappingValue(
   const stored = access.storedElementSource;
   if (stored === undefined) return undefined;
   if (access.arrayMutation !== 'push') {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry mutates mapping "${collection.name}" as `
       + `"${access.arrayMutation ?? 'indexed'}", and this hop plans only the element an append carries`,
     );
@@ -1615,7 +1615,7 @@ function resolveAppendedMappingValue(
   if (element === undefined) return undefined;
   const live = liveNodeValue(collection, keyToSlotMulti([...keys]), request);
   if (live === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${context.fn.name}" entry appends to mapping "${collection.name}" a value whose live `
       + "bytes this hop cannot reassemble from the deployment's chunks",
     );
@@ -1702,7 +1702,7 @@ function planHopDynamicRuns(request: HopEntryWritesRequest, batchCount: number):
   if (written.length === 1 && batchCount <= 1) return [planHopDynamicRun(request, fn, written[0]!)];
   const order = fn.dynamicWriteOrder ?? [];
   if (order.length !== written.length || !written.every((variable) => order.includes(variable))) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes ${written.length} dynamic value(s) beside `
       + `${batchCount} sorted collection(s), and the artifact publishes no order its frame declares their runs in`,
     );
@@ -1713,7 +1713,7 @@ function planHopDynamicRuns(request: HopEntryWritesRequest, batchCount: number):
 /**
  * Plans the run of chunk records a dynamic-state write occupies.
  *
- * A per-call body holds a dynamic value in a run of chunk NFTs at the value's own collection covenant, addressed
+ * A framed body holds a dynamic value in a run of chunk NFTs at the value's own collection covenant, addressed
  * from the frame's declared record block rather than from arithmetic. The run's records are the records the
  * transaction writes, so the hop has to declare them before the body runs; their commitments are what the body
  * computed, which no caller can state, so each declaration starts from a candidate and the derivation learns the
@@ -1750,7 +1750,7 @@ function planHopDynamicRun(
   const layout = request.artifact.stateLayout;
   const declared = layout?.variables.find((candidate) => candidate.name === variable);
   if (declared === undefined || declared.dynamic !== true) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes dynamic "${variable}", which the artifact does `
       + 'not publish as a dynamic state variable',
     );
@@ -1780,7 +1780,7 @@ function planHopDynamicRun(
     }
     const plan = planChunkRun({ layout, variable, spent, written });
     if (plan.spent.chunks.length > plan.written.chunks.length) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's "${request.functionName}" entry writes dynamic "${variable}" a value shorter than `
         + 'the one the deployment holds, which this hop does not plan',
       );
@@ -1806,13 +1806,13 @@ function planHopDynamicRun(
         ? 'growth' : 'record');
   }
   if (elementType === undefined || source === undefined) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes dynamic "${variable}" (${declared.type}), whose `
       + 'appended element the artifact publishes no source for, so the run of chunk records its write creates '
       + 'cannot be sized',
     );
   }
-  throw new PerCallProxyDeployError(
+  throw new FramedProxyDeployError(
     `the implementation's "${request.functionName}" entry writes dynamic "${variable}" (${declared.type}) an `
     + 'element the artifact publishes a source for but the hop\'s call data does not determine, so the run of '
     + 'chunk records its write creates cannot be sized',
@@ -1897,7 +1897,7 @@ function growthElementCount(
     const index = visible.findIndex((input) => input.name === growth.varyingArrayParam);
     const array = index < 0 ? undefined : request.args?.[index];
     if (!Array.isArray(array)) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's "${request.functionName}" entry appends to dynamic "${variable}" once per turn of a `
         + `run-time loop over "${growth.varyingArrayParam}", whose length this hop's call data does not carry, so `
         + 'the run of chunk records its write creates cannot be sized',
@@ -1906,7 +1906,7 @@ function growthElementCount(
     return array.length * growth.elements;
   }
   if (growth.looping === true) {
-    throw new PerCallProxyDeployError(
+    throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry appends to dynamic "${variable}" inside a run-time `
       + 'loop whose width the artifact does not pin to a call parameter, so the run of chunk records its write '
       + 'creates cannot be sized',
@@ -1963,7 +1963,7 @@ export function declaredRunWidth(
  * re-planned at a wider width keeps the candidates an earlier attempt learned.
  */
 function runChunkCandidate(variable: string, index: number): Uint8Array {
-  return sha256(new TextEncoder().encode(`per-call dynamic run\u0000${variable}\u0000${index}`));
+  return sha256(new TextEncoder().encode(`framed dynamic run\u0000${variable}\u0000${index}`));
 }
 
 /** One dynamic value the entry only reads: its live chunks, in run order, each with the id the block holds it under. */
@@ -1992,7 +1992,7 @@ function planHopReadRuns(request: HopEntryWritesRequest): readonly HopReadRun[] 
   return (fn.dynamicReads ?? []).filter((variable) => !written.has(variable)).map((variable): HopReadRun => {
     const declared = layout.variables.find((candidate) => candidate.name === variable);
     if (declared === undefined || declared.dynamic !== true) {
-      throw new PerCallProxyDeployError(
+      throw new FramedProxyDeployError(
         `the implementation's "${request.functionName}" entry reads dynamic "${variable}", which the artifact does `
         + 'not publish as a dynamic state variable',
       );
@@ -2095,7 +2095,7 @@ function requireTrailingReadRun(request: HopEntryWritesRequest, batch: HopMappin
   const chunkable = (request.artifact.stateLayout?.collections ?? [])
     .find((candidate) => candidate.name === batch.collection)?.chunkableValue === true;
   if (reads.length === 1 && (fn?.dynamicWrites ?? []).length === 0 && !writesDynamic && !chunkable) return;
-  throw new PerCallProxyDeployError(
+  throw new FramedProxyDeployError(
     `the implementation's "${request.functionName}" entry reads ${reads.map((name) => `"${name}"`).join(', ')} beside `
     + `a run-time loop's writes to "${batch.collection}", and its frame finds a run past the loop's records only `
     + 'when it is the one dynamic value the entry reads and no dynamic write or long mapping value follows it',

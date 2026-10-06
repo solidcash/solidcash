@@ -349,8 +349,8 @@ describe('a direct read of a mapping entry after a write the body does not keep'
     });
   }
 
-  it('leaves the per-call convention to its own refusal', () => {
+  it('leaves the framed convention to its own refusal', () => {
     expect(() => compileString(`${PRAGMA} contract Refused {${LOGS}${REFUSED[0].members} }`,
-      { composition: 'per-call' })).toThrow('is not supported on the per-call convention');
+      { composition: 'framed' })).toThrow('is not supported on the framed convention');
   });
 });

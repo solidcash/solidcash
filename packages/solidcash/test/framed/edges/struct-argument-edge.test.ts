@@ -28,7 +28,7 @@ import {
  *   segment the spelling through a local names), and the entry settles.
  */
 
-// `append` reads the length before its push: read after it in the same body, a per-call master answers the length
+// `append` reads the length before its push: read after it in the same body, a framed master answers the length
 // the array had before the push (reported beside this replica; not an edge shape).
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' struct Note { int kind; bytes from; bytes body; string memo; }'
@@ -79,7 +79,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function postDirect(int id, Note n) { this.lastLength = IArchive(this.archive).append(id, n); }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const deployed = edgeDeployment({
   scope: 'struct argument edge', callee: artifacts.Archive!, caller: artifacts.Desk!, interfaceName: 'IArchive',
 });

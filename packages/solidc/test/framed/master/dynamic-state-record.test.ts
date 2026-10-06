@@ -9,17 +9,17 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose state is a string, settled on the BCH-2026 machine.
+ * A framed master whose state is a string, settled on the BCH-2026 machine.
  *
  * A `string` state variable is not held in its data NFT: the NFT carries the value's length, and the bytes live in
  * a run of 120-byte chunk NFTs. The direct convention's SDK computes where that run starts from the entry's
- * physical block layout and hands the coordinate to the body as an argument. A per-call master takes no argument
+ * physical block layout and hands the coordinate to the body as an argument. A framed master takes no argument
  * list, so it derives the same coordinate from the record block its own frame declares and the layout's width, and
  * the body reads it from the head.
  *
@@ -50,7 +50,7 @@ const USER_INDEX = 1;
 const STATE_INDEX = 2;
 const CHUNK_INDEX = 3;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const program = fillPlaceholders(
   scriptToBytecode(asmToScript(artifact.bytecode)),
   artifact.composition!.placeholders,
@@ -190,9 +190,9 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose state is a string', () => {
-  it('is emitted as a per-call master', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+describe('a framed master whose state is a string', () => {
+  it('is emitted as a framed master', () => {
+    expect(artifact.composition?.convention).toBe('framed');
   });
 
   it('is accepted when the declared records chain from what the transaction spends to what it writes', () => {

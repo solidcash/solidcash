@@ -6,7 +6,7 @@ import {
   FrameKind, asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
@@ -44,7 +44,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     require(true); }'
   + ' }';
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 /** The callee's own dispatcher selector, read from the compiler's ABI rather than spelled out here. */
 const ADD_SELECTOR = new Uint8Array(Buffer.from(
   ARTIFACTS.Callee!.abi.find((entry) => entry.name === 'add')!.selector!, 'hex',
@@ -172,9 +172,9 @@ describe('an entry whose call runs inside a loop, behind an arm that skips it', 
     + '     require(true); }'
     + ' }';
 
-  const artifact = compileStringMulti(SOURCE_WITH_ARM, { composition: 'per-call' }).Caller!;
+  const artifact = compileStringMulti(SOURCE_WITH_ARM, { composition: 'framed' }).Caller!;
   const selector = new Uint8Array(
-    Buffer.from(compileStringMulti(SOURCE_WITH_ARM, { composition: 'per-call' }).Callee!.abi[0]!.selector!, 'hex'),
+    Buffer.from(compileStringMulti(SOURCE_WITH_ARM, { composition: 'framed' }).Callee!.abi[0]!.selector!, 'hex'),
   );
 
   it('accepts the calls the arm let run, over a tail declaring exactly those', () => {
@@ -191,9 +191,9 @@ describe('an entry whose call runs inside a loop, behind an arm that skips it', 
     );
     const calleeProgram = fillPlaceholders(
       scriptToBytecode(asmToScript(
-        compileStringMulti(SOURCE_WITH_ARM, { composition: 'per-call' }).Callee!.bytecode,
+        compileStringMulti(SOURCE_WITH_ARM, { composition: 'framed' }).Callee!.bytecode,
       )),
-      compileStringMulti(SOURCE_WITH_ARM, { composition: 'per-call' }).Callee!.composition!.placeholders,
+      compileStringMulti(SOURCE_WITH_ARM, { composition: 'framed' }).Callee!.composition!.placeholders,
       {
         category: categorySlotValue(CATEGORY_CALLEE),
         contractAddress: ADDRESS_CALLEE,

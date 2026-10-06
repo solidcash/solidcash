@@ -4,8 +4,8 @@ import {
   compileAndDeploy, composeAndDerive, entryName, hexOf, seededAddress, token, userInput, USER_LOCK,
   selectorOf, validatorFor,
 } from '../shapes/harness.js';
-import { categorySlotValue } from '../../../../solidc/test/per-call/master/validator-input.js';
-import type { CompositionDraftPlan, DraftInput, DraftMaster } from '../../../src/per-call/composer/index.js';
+import { categorySlotValue } from '../../../../solidc/test/framed/master/validator-input.js';
+import type { CompositionDraftPlan, DraftInput, DraftMaster } from '../../../src/framed/composer/index.js';
 
 type CompositionFeedback = ReturnType<typeof composeAndDerive>;
 

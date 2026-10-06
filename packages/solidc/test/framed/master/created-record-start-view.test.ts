@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue, type RecordEntry } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  created, declarationOf, deployPerCallMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
+  created, declarationOf, deployFramedMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
   type PlacedRecord,
 } from './record-spend.js';
 
@@ -15,7 +15,7 @@ import {
  * holds a created record's declared start view to nothing, so a caller cannot make a fresh record appear to start
  * from a commitment no input carries.
  *
- * The case runs the shipped path: the source is compiled with the per-call convention, deployed, and the machine's
+ * The case runs the shipped path: the source is compiled with the framed convention, deployed, and the machine's
  * verdict on the master's own input is the assertion. The positive control, the created record declared from the
  * empty commitment, sits beside the refusal: the same spend with that start view replaced.
  */
@@ -27,7 +27,7 @@ const TOTAL = 5n;
 const NON_EMPTY_START = new Uint8Array([0x01]);
 const EMPTY = new Uint8Array(0);
 
-const MASTER = deployPerCallMaster(
+const MASTER = deployFramedMaster(
   'pragma solidcash ^0.13.0; contract Holder { struct Account { uint total; mapping(address => uint) parts; }'
   + ' Account acc; function set(address k, uint v) { acc.parts[k] = v; } }',
   'created record start view',

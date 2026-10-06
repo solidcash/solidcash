@@ -4,12 +4,12 @@ import {
   asmToScript, chainCategory, hash256, scriptToBytecode, validatorAddress, validatorTemplateHash,
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
-import type { PerCallTransaction as ModelledTransaction } from '../../../../solidc/src/per-call/validator/index.js';
-import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
+import type { FramedTransaction as ModelledTransaction } from '../../../../solidc/src/framed/validator/index.js';
+import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
 import {
   deployMaster, verifyMasterDeployment, type DeployedMaster,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import { PROGRAM, accepted, decisionOf, expectRefusal, laidOut, reference } from './validator-machine.js';
 import { abbaPlan } from '../validator/plans.js';
 import { materialise } from '../validator/fixture.js';
@@ -37,7 +37,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const originalProgram = scriptToBytecode(asmToScript(artifact.bytecode));
 const placeholders = artifact.composition!.placeholders;
 

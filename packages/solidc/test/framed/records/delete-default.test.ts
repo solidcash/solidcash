@@ -1,7 +1,7 @@
 /**
  * Claim 5: `delete` writes the type default rather than unlinking the node.
  *
- * Spec: docs/per-call/SPEC_PER_CALL_TRANSACTION.md
+ * Spec: docs/framed/SPEC_FRAMED_TRANSACTION.md
  *   1459 - mapping node row: "Removed | Never unlinked: `delete` writes the default value".
  * Doc: packages/solidc/docs/verified-mappings.md 5.3 - "`delete m[k]` is encoded as an upsert of `default(V)` ...
  *   Nodes are not physically spliced out by ordinary source-level delete."

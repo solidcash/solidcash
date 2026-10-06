@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, utf8ToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, sha256 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import type { CompositionDraft } from '../../../src/per-call/composer/index.js';
+import type { CompositionDraft } from '../../../src/framed/composer/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv, carolPkh } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -65,7 +65,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const deed = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never).Deed!;
+const deed = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never).Deed!;
 
 interface Caller { readonly lock: Uint8Array; readonly funder: Unlocker }
 
@@ -99,7 +99,7 @@ async function deployWorld(): Promise<World> {
   const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const funder = wallet.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
   await fundShippedFacets(network);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: deed,
     proxyArtifact: buildProxyArtifact(deed),
@@ -125,8 +125,8 @@ async function deployWorld(): Promise<World> {
 /** One call through the proxy, from a fresh coin of the caller's; it has to settle. */
 async function settle(
   world: World, functionName: string, args: readonly FunctionArgument[], caller: Caller,
-): Promise<PerCallProxyCallResult> {
-  const result = await callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  const result = await callFramedProxyEntry({
     provider: world.network,
     implementationArtifact: deed,
     proxyArtifact: buildProxyArtifact(deed),
@@ -147,7 +147,7 @@ async function settle(
 
 /** A view's value, read from the proxy's records through the read path. */
 async function view(world: World, functionName: string, args: readonly FunctionArgument[]): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deed, categoryId: world.proxy, functionName, args: [...args],
     vm: compositionMachine(),
   });

@@ -5,7 +5,7 @@
  * the frame kind it produced in the callee. `ROOT` labels an execution a user entered; it is never a call kind.
  */
 
-import { INDEX_NONE, PerCallEncodingError } from './primitives.js';
+import { INDEX_NONE, FramedEncodingError } from './primitives.js';
 
 /** How an execution was entered: a user, a message call, a read-only call, a delegate or facet frame, or a deploy. */
 export const FrameKind = {
@@ -36,7 +36,7 @@ export function frameKindName(kind: number): string {
 /** Rejects a frame kind the wire format does not define. */
 export function assertFrameKind(kind: number): FrameKindValue {
   if (!(kind in FRAME_KIND_NAMES)) {
-    throw new PerCallEncodingError(`unknown frame kind: ${kind}`);
+    throw new FramedEncodingError(`unknown frame kind: ${kind}`);
   }
   return kind as FrameKindValue;
 }
@@ -100,10 +100,10 @@ export function isKeptEntry(entry: RecordEntry): boolean {
 /** Rejects an entry that is created and deleted at once, or that claims to move an index. */
 export function assertRecordEntry(entry: RecordEntry): void {
   if (entry.in === INDEX_NONE && entry.out === INDEX_NONE) {
-    throw new PerCallEncodingError('a record entry cannot be created and deleted by the same segment');
+    throw new FramedEncodingError('a record entry cannot be created and deleted by the same segment');
   }
   if (entry.in !== INDEX_NONE && entry.out !== INDEX_NONE && entry.in !== entry.out) {
-    throw new PerCallEncodingError(`a record entry recreates at its own index: got in=${entry.in} out=${entry.out}`);
+    throw new FramedEncodingError(`a record entry recreates at its own index: got in=${entry.in} out=${entry.out}`);
   }
 }
 

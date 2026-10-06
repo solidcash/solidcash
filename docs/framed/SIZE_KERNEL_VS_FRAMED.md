@@ -1,22 +1,22 @@
-# Artifact sizes: kernel vs per-call (W3)
+# Artifact sizes: kernel vs framed (W3)
 
 First pair, 2026-10-05, script `scripts/compare-convention-sizes.mjs`.
 
 | side | tree | artifact mtime (MarketplaceV1.json) |
 |---|---|---|
 | kernel | `.worktrees/kernel-beta-candidate` at `d7f3c7ad6`, direct convention, recompiled in 61 s | 2026-10-05 10:29 UTC |
-| per-call | `.worktrees/per-call`, `composition.convention = per-call`, recompiled in 62 s | 2026-10-05 10:23 UTC |
+| framed | `.worktrees/framed`, `composition.convention = framed`, recompiled in 62 s | 2026-10-05 10:23 UTC |
 
-Bytes are `asmToBytecode` of `artifact.bytecode` (the real script). Chars are the ASM string length. The BCH per-input limit is 10,000 bytes. Deployment UTXOs use the shipped defaults: per-call is `dataNftCount` plus 12 masters plus 4 validators; direct is `dataNftCount` plus one master. A per-call call spends one master per entry into that contract. The state-record bound on a call is `dataNftCount` (MarketplaceV1 is 2). Records a given title touches are counted with the title runs, not from the artifact. `composition.refusedEntries` is absent on every paired contract, so the refused count is 0.
+Bytes are `asmToBytecode` of `artifact.bytecode` (the real script). Chars are the ASM string length. The BCH per-input limit is 10,000 bytes. Deployment UTXOs use the shipped defaults: framed is `dataNftCount` plus 12 masters plus 4 validators; direct is `dataNftCount` plus one master. A framed call spends one master per entry into that contract. The state-record bound on a call is `dataNftCount` (MarketplaceV1 is 2). Records a given title touches are counted with the title runs, not from the artifact. `composition.refusedEntries` is absent on every paired contract, so the refused count is 0.
 
-The 2026-10-05 recompile put the interfaces into the per-call artifact directory as well. Kernel-only
+The 2026-10-05 recompile put the interfaces into the framed artifact directory as well. Kernel-only
 marketplace rows that remain are MarketplaceV2, MarketplaceV3, delegate artifacts, and a few application
 contracts. MistSwap and the Solidity corpus are in the sections below; they were compiled with `compileFile`,
 not the marketplace harness. Refused entries are 0 on every paired marketplace contract.
 
 ## Contracts present on both sides
 
-| contract | kernel bytes | per-call bytes | delta | kernel bodies | per-call bodies | kernel deploy | per-call deploy | over 10k |
+| contract | kernel bytes | framed bytes | delta | kernel bodies | framed bodies | kernel deploy | framed deploy | over 10k |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
 | FakeToken | 459090 | 24303 | -434787 | 448663 | 17863 | 2 | 17 | both |
 | MarketplaceDataV1 | 455980 | 110050 | -345930 | 437168 | 101036 | 3 | 18 | both |
@@ -26,13 +26,13 @@ not the marketplace harness. Refused entries are 0 on every paired marketplace c
 | UnicrowClaim | 16557 | 21801 | 5244 | 5438 | 15537 | 3 | 18 | both |
 | UnicrowDispute | 82223 | 31305 | -50918 | 68358 | 25426 | 3 | 18 | both |
 
-Interface artifacts on both sides have an empty script. A per-call call still spends one master per entry. MarketplaceV1's state-record bound is 2 (`deploy UTXOs` 18 = 2 + 12 masters + 4 validators).
+Interface artifacts on both sides have an empty script. A framed call still spends one master per entry. MarketplaceV1's state-record bound is 2 (`deploy UTXOs` 18 = 2 + 12 masters + 4 validators).
 
 ## MistSwap fixtures
 
-Compiled 2026-10-05 from `/Code/mistswap/mistswap/contracts` with `compileFile`. Both conventions use `solidityImportCompat`, `ecrecover: 'p2pkh'`, `forceStateful`, and the message bus with the kernel and the speed hint. Per-call adds `composition: 'per-call'`. All five files compiled. The compiler still warns that the direct scripts exceed 10,000 bytes.
+Compiled 2026-10-05 from `/Code/mistswap/mistswap/contracts` with `compileFile`. Both conventions use `solidityImportCompat`, `ecrecover: 'p2pkh'`, `forceStateful`, and the message bus with the kernel and the speed hint. Per-call adds `composition: 'framed'`. All five files compiled. The compiler still warns that the direct scripts exceed 10,000 bytes.
 
-| contract | direct bytes | per-call bytes | delta | per-call refused | over 10k |
+| contract | direct bytes | framed bytes | delta | framed refused | over 10k |
 |---|---:|---:|---:|---:|---|
 | ERC20Mock | 18922 | 22388 | 3466 | 0 | both |
 | MasterChef | 87777 | 42358 | -45419 | 5 | both |
@@ -40,13 +40,13 @@ Compiled 2026-10-05 from `/Code/mistswap/mistswap/contracts` with `compileFile`.
 | UniswapV2Factory | 52450 | 9433 | -43017 | 1 | direct only |
 | UniswapV2Pair | 20621 | 30534 | 9913 | 4 | both |
 
-Per-call deployment UTXOs are 17 to 21 (state records plus the default 12 masters and 4 validators). Direct deployment UTXOs are 2 to 5. MasterChef's five refusals are repeated `balanceOf` / `transferFrom` calls and a verified-mapping write behind an unfixed call. UniswapV2Factory's per-call script is 9,433 bytes, under the input limit, because `createPair` is refused. The other four per-call scripts are over 10,000 bytes.
+Per-call deployment UTXOs are 17 to 21 (state records plus the default 12 masters and 4 validators). Direct deployment UTXOs are 2 to 5. MasterChef's five refusals are repeated `balanceOf` / `transferFrom` calls and a verified-mapping write behind an unfixed call. UniswapV2Factory's framed script is 9,433 bytes, under the input limit, because `createPair` is refused. The other four framed scripts are over 10,000 bytes.
 
 ## Solidity corpus
 
-`examples/solidity-corpus` compiles `/Code/solidity/test/libsolidity/semanticTests` and `syntaxTests`: 5,202 files. Each file was compiled twice with `compileFile`, 8 second timeout, zero timeouts. Direct options are `solidityImportCompat: true`. Per-call adds `composition: 'per-call'`. Artifacts are paired by source path and contract name.
+`examples/solidity-corpus` compiles `/Code/solidity/test/libsolidity/semanticTests` and `syntaxTests`: 5,202 files. Each file was compiled twice with `compileFile`, 8 second timeout, zero timeouts. Direct options are `solidityImportCompat: true`. Per-call adds `composition: 'framed'`. Artifacts are paired by source path and contract name.
 
-| | direct | per-call |
+| | direct | framed |
 |---|---:|---:|
 | files compiled | 2574 | 2179 |
 | files that failed | 2628 | 3023 |
@@ -57,13 +57,13 @@ Per-call deployment UTXOs are 17 to 21 (state records plus the default 12 master
 | over 10,000 bytes | 6 | 48 |
 | refused entries | 0 | 86 on 56 artifacts |
 
-2,158 identities compiled on both sides. Per-call bytecode is larger on 2,008 of them, equal on 150, and smaller on none. The median growth is 3,668 bytes. Six are over 10,000 bytes on both sides. 38 more cross that line only under per-call.
+2,158 identities compiled on both sides. Per-call bytecode is larger on 2,008 of them, equal on 150, and smaller on none. The median growth is 3,668 bytes. Six are over 10,000 bytes on both sides. 38 more cross that line only under framed.
 
-About 400 files compile on the direct convention and not under per-call. The repeated reason is `PER_CALL_CODEGEN_UNAVAILABLE`: the contract needs a master the head cannot build, or it uses `new` to create a contract. Smaller groups are a constructor the head cannot serve, an address slot reserved twice, and `msg.data` on a single-entry master.
+About 400 files compile on the direct convention and not under framed. The repeated reason is `FRAMED_CODEGEN_UNAVAILABLE`: the contract needs a master the head cannot build, or it uses `new` to create a contract. Smaller groups are a constructor the head cannot serve, an address slot reserved twice, and `msg.data` on a single-entry master.
 
-Per-call MarketplaceV1 is 135,056 script bytes against 265,204 on the kernel side. Every paired application contract is over the 10,000-byte input limit on both conventions. Mocknet is what allows those spends. UnicrowClaim is the one paired contract whose per-call script is larger (21,801 vs 16,557).
+Per-call MarketplaceV1 is 135,056 script bytes against 265,204 on the kernel side. Every paired application contract is over the 10,000-byte input limit on both conventions. Mocknet is what allows those spends. UnicrowClaim is the one paired contract whose framed script is larger (21,801 vs 16,557).
 
-## Kernel-only contracts (no per-call artifact in this directory)
+## Kernel-only contracts (no framed artifact in this directory)
 
 | contract | bytes | over 10,000 | deploy UTXOs |
 |---|---:|---|---:|
@@ -83,5 +83,5 @@ Interface artifacts (IERC20 and the other `I*` files) have an empty script. They
 
 ## Still unpaired
 
-MarketplaceV2, MarketplaceV3, and the delegate artifacts in the kernel-only table have no per-call artifact
+MarketplaceV2, MarketplaceV3, and the delegate artifacts in the kernel-only table have no framed artifact
 in the marketplace directory. MistSwap and the Solidity corpus are recorded above.

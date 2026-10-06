@@ -7,7 +7,7 @@ import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
-import { type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
+import { type CompositionDraftPlan, type DraftMaster } from '../../../src/framed/composer/index.js';
 import { layoutWithFacets } from '../shapes/harness.js';
 
 /**

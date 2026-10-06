@@ -3,8 +3,8 @@ import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { VALUE_INLINE_LIMIT, bytesToHex, encodeChunkableValueTail, encodePushdataValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
-import { planMappingWrite } from '../../../src/per-call/composer/index.js';
-import { hopEntryWrites } from '../../../src/per-call/proxy/entry-writes.js';
+import { planMappingWrite } from '../../../src/framed/composer/index.js';
+import { hopEntryWrites } from '../../../src/framed/proxy/entry-writes.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 
 /**
@@ -34,7 +34,7 @@ const PAIR = [3n, 4n];
 const MEMO = 'm'.repeat(30);
 const TAG = 't'.repeat(30);
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Impl!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Impl!;
 
 describe('a chunking mapping value built from an array argument', () => {
   it('states the whole value, and the created node carries the commitment the shipped planner derives from it', () => {

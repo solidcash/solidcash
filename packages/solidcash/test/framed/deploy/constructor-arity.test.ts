@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Signer, getContractFactory } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
@@ -8,9 +8,9 @@ import type { StatefulContract } from '../../../src/stateful/StatefulContract.js
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * The argument count a per-call constructor is deployed with.
+ * The argument count a framed constructor is deployed with.
  *
- * A per-call artifact publishes no `constructorInputs`; its constructor's parameters are the `__construct` ABI
+ * A framed artifact publishes no `constructorInputs`; its constructor's parameters are the `__construct` ABI
  * entry. A factory deployment whose argument list does not match them (a stale deployment script's) is refused up
  * front, as ethers refuses it, naming the contract, the parameters it declares and the count it was given, rather
  * than stopping inside the constructor probe on a stack read. A value of the wrong kind names its parameter. The
@@ -32,7 +32,7 @@ const SOURCE = [
 ].join('\n');
 
 const artifact: Artifact = compileStringMulti(
-  SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never,
+  SOURCE, { solidityImportCompat: true, composition: 'framed' } as never,
 ).Settings!;
 
 /** A mock chain carrying the shipped validator facets, and a deployer holding fresh vout-0 coins. */
@@ -47,7 +47,7 @@ async function deployer(): Promise<Signer> {
   return signer;
 }
 
-describe('the argument count of a per-call constructor deployment', () => {
+describe('the argument count of a framed constructor deployment', () => {
   it('refuses one argument for three parameters with the contract, its parameters and the count', async () => {
     const signer = await deployer();
     const factory = getContractFactory(artifact, signer);

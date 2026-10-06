@@ -133,7 +133,7 @@ front-region already worked (the builder positions every slot); only the probe p
 ### Fixed-bound (`for (int i = 0; i < 3; i++)`)
 `UnrollFixedBoundEntryLoop` (guarded by `hasKeccakCall`) unrolls the loop into N syntactic calls
 BEFORE keccak counting, so each iteration becomes an independent slot resolved by the ordinary
-per-call path. `keccakInLoop` is NOT set.
+framed path. `keccakInLoop` is NOT set.
 
 ### Dynamic / runtime-bound (`for (int i = 0; i < n; i++)`)
 The iteration count is unknown at compile time, so the loop reads one side-car per iteration and

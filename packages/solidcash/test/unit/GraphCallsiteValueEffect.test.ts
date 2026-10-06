@@ -48,21 +48,21 @@ describe('graph source-edge value attribution', () => {
     };
     expect(plan([grouped], true, true).invocations.map((row) => row.callOptions)).toEqual([0, 2, 0]);
     delete grouped.batchInvocations![1].callValueEffect;
-    expect(() => plan([grouped], true, true)).toThrow(/omits per-callsite value metadata/);
+    expect(() => plan([grouped], true, true)).toThrow(/omits framedsite value metadata/);
   });
 
   it('requires recompilation for missing kernel value attribution', () => {
-    expect(() => plan([callsite(0)])).toThrow(/omits per-callsite value metadata/);
+    expect(() => plan([callsite(0)])).toThrow(/omits framedsite value metadata/);
   });
 
   it('keeps the singular unconditional legacy raw-value edge', () => {
     expect(plan([callsite(0)], false).invocations[1].callOptions).toBe(2);
-    expect(() => plan([callsite(0), callsite(1)], false)).toThrow(/omits per-callsite value metadata/);
+    expect(() => plan([callsite(0), callsite(1)], false)).toThrow(/omits framedsite value metadata/);
   });
 
   it('rejects invalid markers and duplicate source identities', () => {
     expect(() => plan([callsite(0, 'false' as unknown as boolean)]))
-      .toThrow(/invalid per-callsite value metadata/);
+      .toThrow(/invalid framedsite value metadata/);
     const grouped = { ...callsite(0, true), batchInvocations: [true, false].map((callValueEffect, index) => ({
       logicalIndex: index, sourceCallsiteId: 0, selector: '11111111', inputs: [], callValueEffect,
     })) };

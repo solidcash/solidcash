@@ -3,17 +3,17 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bita
 import {
   bytesToHex, parsePushdataCommitment, sha256, type Artifact, type StateValue,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { tryParseEventCommitment } from '../../../src/stateful/StateReader.js';
-import { deployMaster, eventLockingBytecode, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster, eventLockingBytecode, readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -22,7 +22,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * One call edge driven through the shipped cross-contract path: a callee deployed at its own category and a caller
  * behind its generated proxy, whose `initialize(address)` stores the callee's address.
  *
- * A case enters one of the caller's entries through the shipped proxy hop (`callPerCallProxyEntry`), which plans the
+ * A case enters one of the caller's entries through the shipped proxy hop (`callFramedProxyEntry`), which plans the
  * callee's frame from the caller's published call site, derives every participant, asks the BCH-2026 machine about
  * each and broadcasts. What the edge left is then read back from the chain: the records through the shipped
  * deployment reader, the events from the live outputs at their covenants through the shipped event decoder, and the
@@ -63,7 +63,7 @@ export interface EdgeRun {
   readonly proxyCategoryId: string;
   readonly implementationCategoryId: string;
   readonly changeAddress: string;
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly snapshot: SnapshotRestorer;
 }
 
@@ -102,7 +102,7 @@ async function deployEdge(contracts: EdgeContracts): Promise<EdgeRun> {
   for (const coin of [implementationFunding, proxyFunding]) await network.addUtxo(wallet.address, coin);
   await network.addUtxo(binToHex(USER_LOCK), initializeCoin);
   const proxy = buildProxyArtifact(caller);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: caller,
     proxyArtifact: proxy,
@@ -145,7 +145,7 @@ export async function deployBeside(run: EdgeRun, artifact: Artifact, label: stri
 /** One entered call: the coin it spends and the shipped hop's outcome. */
 export interface Entered {
   readonly coin: { txid: string; vout: number; satoshis: bigint };
-  readonly call: Promise<PerCallProxyCallResult>;
+  readonly call: Promise<FramedProxyCallResult>;
 }
 
 let entered = 0;
@@ -157,7 +157,7 @@ export async function enterEdge(
   entered += 1;
   const coin = funding(edgeId(run.scope, `${functionName} coin ${entered}`));
   await run.network.addUtxo(binToHex(USER_LOCK), coin);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider: run.network,
     implementationArtifact: run.caller,
     proxyArtifact: run.proxy,
@@ -178,7 +178,7 @@ export async function enterEdge(
 /** Enters one caller entry and requires the hop to settle it, every participant accepted and the result broadcast. */
 export async function settleEdge(
   run: EdgeRun, functionName: string, args: readonly FunctionArgument[],
-): Promise<PerCallProxyCallResult & { readonly txid: string }> {
+): Promise<FramedProxyCallResult & { readonly txid: string }> {
   const result = await (await enterEdge(run, functionName, args)).call;
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.accepted).toBe(true);
@@ -191,7 +191,7 @@ export async function fieldsOf(
   run: EdgeRun, artifact: Artifact, categoryId: string,
 ): Promise<Record<string, unknown>> {
   const layout = artifact.stateLayout!;
-  const pools = await readPerCallDeployment(run.network, categoryId, layout);
+  const pools = await readFramedDeployment(run.network, categoryId, layout);
   return Object.assign({}, ...pools.records.map((record, nftIndex) =>
     parsePushdataCommitment(record.token!.nft!.commitment, layout, nftIndex))) as Record<string, unknown>;
 }
@@ -234,7 +234,7 @@ export async function eventsOnChain(
 export async function readCallee(
   run: EdgeRun, functionName: string, args: readonly FunctionArgument[],
 ): Promise<readonly StateValue[]> {
-  const answered = await readPerCallEntry({
+  const answered = await readFramedEntry({
     provider: run.network, artifact: run.callee, categoryId: run.calleeCategoryId, functionName, args: [...args],
     vm: compositionMachine(),
   });

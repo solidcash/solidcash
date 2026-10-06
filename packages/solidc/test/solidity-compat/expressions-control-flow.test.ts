@@ -487,8 +487,8 @@ describe('parenthesised simple call target (foo)() / (L.f)() / (blockhash)(n)', 
   });
 });
 
-describe('foreign external fn-ptr parameter (per-call master index)', () => {
-  // A called `function(..) external` PARAM lowers to an address param + a bytes4 selector param + a per-call
+describe('foreign external fn-ptr parameter (framed master index)', () => {
+  // A called `function(..) external` PARAM lowers to an address param + a bytes4 selector param + a framed
   // `__internal__extcallMasterIdx<i>` the SDK fills. VM-verified in ForeignFunctionPointerParam.test.ts
   // (single + multi-call binding).
   it('lowers a called foreign fn-ptr param to address + selector + a master-index hidden param', () => {
@@ -627,7 +627,7 @@ describe('cast-wrapped low-level call targets', () => {
           ifFalse: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
         },
       },
-      // The serialized payload the per-call SDK reads to auto-wire the co-spent callee.
+      // The serialized payload the framed SDK reads to auto-wire the co-spent callee.
       dataSource: { kind: 'forward', paramIndex: 3 },
     }]);
   });

@@ -8,8 +8,8 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { mastersRecreatedInPlaceScript } from '../../../src/per-call/master/lifecycle.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { mastersRecreatedInPlaceScript } from '../../../src/framed/master/lifecycle.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { eventCovenantLock } from './event-input.js';
@@ -51,7 +51,7 @@ interface Deployed {
 }
 
 function deploy(source: string): Deployed {
-  const artifact = compileString(source, { composition: 'per-call' });
+  const artifact = compileString(source, { composition: 'framed' });
   const { placeholders } = artifact.composition!;
   const program = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), placeholders, {
     category: categorySlotValue(CATEGORY), contractAddress: ADDRESS,

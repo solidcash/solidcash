@@ -8,7 +8,7 @@ import {
   type RecordEntry, type StateLayout, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import { encodeEntryCommitment, keyToSlot, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -16,19 +16,19 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose entry writes two verified-mapping collections in one execution.
+ * A framed master whose entry writes two verified-mapping collections in one execution.
  *
  * `balances[to] += amount; allowances[owner][spender] += amount` is the shape a token's transfer-and-spend path
  * has: two collections, one of them keyed by two values, each target read from the value its node holds and
- * written back to the same node. A per-call master has no SDK plan, so it derives both collections' operands from
+ * written back to the same node. A framed master has no SDK plan, so it derives both collections' operands from
  * the records its own frame declares — one group per target, the collections in the order the body writes them,
  * and one created-record count over the body because the trailing region is the body's rather than a collection's.
  *
- * The shipped path runs whole: the source through `compileString` with the per-call convention, the program
+ * The shipped path runs whole: the source through `compileString` with the framed convention, the program
  * through `deployMaster`, and the BCH-2026 machine is asked for a verdict on the master's own input.
  */
 
-const CATEGORY = seededCategory('several collections per-call');
+const CATEGORY = seededCategory('several collections framed');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const TO = new Uint8Array(20).fill(0x33);
@@ -53,7 +53,7 @@ const MASTER_INDEX = 1;
 const BALANCES_NODE_INDEX = MASTER_INDEX + 1;
 const ALLOWANCES_NODE_INDEX = MASTER_INDEX + 2;
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM);
 const masterLock = encodeLockingBytecodeP2sh32(hash256(deployed.script));
@@ -185,9 +185,9 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry writes two mapping collections', () => {
+describe('a framed master whose entry writes two mapping collections', () => {
   it('publishes both collections and the entry point that writes them', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.composition?.convention).toBe('framed');
     // The layout spells the value type as the compiler's own reading of it, which is what the collections and
     // their covenant addresses are derived from.
     expect(stateLayout.collections?.map((collection) => collection.signature))

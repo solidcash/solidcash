@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   FrameKind,
@@ -7,11 +7,11 @@ import {
   scriptToBytecode, sha256, validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 import {
   composeDraft,
   createComposedDerivationHost,
@@ -20,7 +20,7 @@ import {
   UNFILLED_CALLEE_REF,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * Composing the draft from a plan, and driving the shipped derivation with it.
@@ -75,7 +75,7 @@ interface Fixture {
 }
 
 function buildFixture(): Fixture {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const program = (name: 'Caller' | 'Callee'): Uint8Array => {
     const artifact = artifacts[name]!;
     return fillPlaceholders(

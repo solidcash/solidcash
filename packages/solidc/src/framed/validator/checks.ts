@@ -39,7 +39,7 @@ import { ValidatorReason, type ExecutionStep } from './reasons.js';
 
 /** What the checks share: the transaction, what was parsed, and what was derived. */
 export interface DerivationState {
-  readonly transaction: import('./model.js').PerCallTransaction;
+  readonly transaction: import('./model.js').FramedTransaction;
   readonly context: import('./model.js').ValidatorContext;
   readonly validatorIndex: number;
   validatorInput?: InputView;

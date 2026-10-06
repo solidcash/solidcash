@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A plain root that reverts on its own check before the calls whose results the call path decodes, on the plain call
- * path (`callPerCallEntry`).
+ * path (`callFramedEntry`).
  *
  * `Desk.approve` is a Solidity-imported entry: its returns and its callees' are the `evm-abi-v1` tuple. It requires
  * the item to be in state 2, then reads the item's fee from a registry with a static call, releases that fee from an
@@ -59,7 +59,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 interface Chain {
   readonly world: World;
@@ -95,14 +95,14 @@ function chain(): Promise<Chain> {
 }
 
 /** The desk's approval of item `id`, which reaches the registry, the escrow and the log. */
-function approve(c: Chain, id: bigint): Promise<Outcome<PerCallCallResult>> {
+function approve(c: Chain, id: bigint): Promise<Outcome<FramedCallResult>> {
   return enterPlain(c.world, c.desk, 'approve', [id], Object.fromEntries([c.registry, c.escrow, c.log]
     .map((deployed) => [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
 }
 
 /** A view's value, read from a plain deployment's records and nodes through the read path. */
 async function view(c: Chain, deployed: PlainDeployment, functionName: string, args: FunctionArgument[]): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: c.world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName, args,
     vm: compositionMachine(),
   });

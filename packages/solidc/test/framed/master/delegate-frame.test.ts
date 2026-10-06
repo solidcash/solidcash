@@ -8,9 +8,9 @@ import {
   validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { buildMasterHeadScript } from '../../../src/per-call/master/master-head.js';
-import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { buildMasterHeadScript } from '../../../src/framed/master/master-head.js';
+import { findPlaceholderOffsets } from '../../../src/framed/master/master-program.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -59,7 +59,7 @@ const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const implArtifact = compileString(IMPL_SOURCE, { composition: 'per-call' });
+const implArtifact = compileString(IMPL_SOURCE, { composition: 'framed' });
 const implProgram = fillPlaceholders(
   scriptToBytecode(asmToScript(implArtifact.bytecode)),
   implArtifact.composition!.placeholders,
@@ -233,8 +233,8 @@ function evaluate(options: CompositionOptions = {}): { accepted: boolean; object
 }
 
 describe('a compiled master running as a delegate frame', () => {
-  it('is emitted as a per-call master', () => {
-    expect(implArtifact.composition?.convention).toBe('per-call');
+  it('is emitted as a framed master', () => {
+    expect(implArtifact.composition?.convention).toBe('framed');
   });
 
   it('is accepted when the record carries the caller\'s category', () => {

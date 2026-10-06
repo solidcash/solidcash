@@ -15,8 +15,8 @@ import {
   validatorAddress,
   type WitnessBlock,
 } from '@solidcash/utils';
-import { addressCheckScript } from '../../../src/per-call/validator/address-check.js';
-import { buildValidatorProgram } from '../../../src/per-call/validator/program.js';
+import { addressCheckScript } from '../../../src/framed/validator/address-check.js';
+import { buildValidatorProgram } from '../../../src/framed/validator/program.js';
 import { compositionMachine } from '../machine.js';
 
 /**

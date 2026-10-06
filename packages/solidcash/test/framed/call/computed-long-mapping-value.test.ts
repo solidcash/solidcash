@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { VALUE_INLINE_LIMIT, bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -103,7 +103,7 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const compiled = compileStringMulti(SOURCE, FIXTURE_OPTIONS as never);
@@ -127,7 +127,7 @@ const joinedNote = ([a, b]: readonly [string, string]): string => `${a} - ${b}`;
 /** The bytes a blob entry stores. */
 const joinedBlob = ([a, b]: readonly [Uint8Array, Uint8Array]): string => binToHex(a) + binToHex(b);
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 /** A coin a genesis or a hop is funded from; a genesis's txid becomes the category it mints. */
@@ -140,7 +140,7 @@ interface World {
   readonly network: MockNetworkProvider;
   readonly snapshot: SnapshotRestorer;
   readonly rootProxyCategoryId: string;
-  readonly enter: (functionName: string, args: readonly FunctionArgument[]) => Promise<PerCallProxyCallResult>;
+  readonly enter: (functionName: string, args: readonly FunctionArgument[]) => Promise<FramedProxyCallResult>;
 }
 
 /** The store and the checker plain, and the root behind its generated proxy. */
@@ -163,7 +163,7 @@ async function deployWorld(): Promise<World> {
   for (const id of [ROOT_IMPL_CATEGORY, ROOT_PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(id));
   await network.addUtxo(binToHex(ALICE_LOCK), funding(ROOT_INIT_TXID));
   await fundShippedFacets(network);
-  const root = await deployPerCallProxy({
+  const root = await deployFramedProxy({
     provider: network,
     implementationArtifact: Root!,
     proxyArtifact: buildProxyArtifact(Root!),
@@ -176,11 +176,11 @@ async function deployWorld(): Promise<World> {
   });
   expect(root.initialize.broadcast).toBeDefined();
   let coins = 0;
-  const enter = async (functionName: string, args: readonly FunctionArgument[]): Promise<PerCallProxyCallResult> => {
+  const enter = async (functionName: string, args: readonly FunctionArgument[]): Promise<FramedProxyCallResult> => {
     coins += 1;
     const coin = funding(idOf(`call coin ${coins}`));
     await network.addUtxo(binToHex(ALICE_LOCK), coin);
-    return callPerCallProxyEntry({
+    return callFramedProxyEntry({
       provider: network,
       implementationArtifact: Root!,
       proxyArtifact: buildProxyArtifact(Root!),
@@ -213,7 +213,7 @@ async function deployed(): Promise<World> {
 }
 
 /** The hop settled every participant and was broadcast. */
-function expectSettled(result: PerCallProxyCallResult): void {
+function expectSettled(result: FramedProxyCallResult): void {
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.accepted).toBe(true);
   expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -221,7 +221,7 @@ function expectSettled(result: PerCallProxyCallResult): void {
 
 /** One view entry, read from the live records: the root's through its proxy's category, the store's from its own. */
 async function readValue(world: World, contract: 'Root' | 'Store', functionName: string): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network,
     artifact: contract === 'Root' ? Root! : Store!,
     categoryId: contract === 'Root' ? world.rootProxyCategoryId : STORE_CATEGORY,

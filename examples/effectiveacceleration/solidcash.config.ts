@@ -20,9 +20,9 @@ export default defineConfig({
     // large mappings to the vmap trailing-output protocol.
     sortedMappingsAll: false,
   },
-  // Compile the per-call composition convention: every entry point is a master program, so a transaction that
+  // Compile the framed composition convention: every entry point is a master program, so a transaction that
   // reaches one contract several times settles its state exactly once.
-  composition: 'per-call',
+  composition: 'framed',
   typegen: {
     jsonArtifactModules: true,
     targets: [{

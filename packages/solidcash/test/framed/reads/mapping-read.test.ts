@@ -2,19 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { bytesToHex, encodeChunkableValueTail } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   entryRecordLockingBytecode,
-  readPerCallDeployment,
-} from '../../../src/per-call/deploy/index.js';
-import { participant, planMappingBatch } from '../../../src/per-call/composer/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  readFramedDeployment,
+} from '../../../src/framed/deploy/index.js';
+import { participant, planMappingBatch } from '../../../src/framed/composer/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a view whose state is a mapping, off chain.
@@ -45,7 +45,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true }).Registry!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Registry!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'tags')!;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
 
@@ -77,8 +77,8 @@ async function chain(provider: MockNetworkProvider, withNodes = true): Promise<v
 }
 
 /** The read of `tag(k)` through the shipped read module. */
-function read(provider: MockNetworkProvider, key: string): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+function read(provider: MockNetworkProvider, key: string): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider, artifact, categoryId: CATEGORY_HEX, functionName: 'tag', args: [key], vm: compositionMachine(),
   });
 }
@@ -98,7 +98,7 @@ describe('reading a view whose state is a mapping', () => {
   it('returns the value the key names, from the node the deployment layer classifies', async () => {
     const provider = new MockNetworkProvider();
     await chain(provider);
-    const deployment = await readPerCallDeployment(provider, CATEGORY_HEX, artifact.stateLayout!);
+    const deployment = await readFramedDeployment(provider, CATEGORY_HEX, artifact.stateLayout!);
     expect(deployment.nodesByCollection.get('tags')).toHaveLength(TAGS.length + 1);
 
     const result = await read(provider, 'DV');

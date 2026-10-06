@@ -8,10 +8,10 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../../solidcash/src/per-call/deploy/index.js';
+} from '../../../../solidcash/src/framed/deploy/index.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
@@ -22,7 +22,7 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * The first entries make the same one call on each of their paths, so the record has two segments, and the field the
  * body writes before the call is the first one's. The caller is its contract's only master, so it settles its record
  * alone and its own segments chain: the second begins where the first ended, and a change a re-entering frame makes
- * between them cannot be declared here (the composed re-entry is `solidcash/test/per-call/hostile/
+ * between them cannot be declared here (the composed re-entry is `solidcash/test/framed/hostile/
  * closed-field-across-call.test.ts`). What the caller's own input decides is where its code takes the field from
  * past the call: an arm that does not write it reads it again where the other arm would have, an arm starts from the
  * set of closed fields at the branch point rather than from the other arm's, a loop's turns read the field it
@@ -72,7 +72,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     for (int i = 0; i < 2; i = i + 1) { this.total = this.total + 1; } require(true); }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const callerArtifact = artifacts.Caller!;
 
 type Program = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];

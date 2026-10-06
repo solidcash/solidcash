@@ -3,14 +3,14 @@ import { layoutWithFacets } from '../shapes/harness.js';
 import {
   FrameKind, buildPushdataCommitment, type Artifact,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
-  VALIDATOR_PROGRAM_REASONS, decideValidator, type PerCallTransaction, type TokenShape,
-} from '../../../../solidc/src/per-call/validator/index.js';
-import { decideReference } from '../../../src/per-call/validator/reference/index.js';
+  VALIDATOR_PROGRAM_REASONS, decideValidator, type FramedTransaction, type TokenShape,
+} from '../../../../solidc/src/framed/validator/index.js';
+import { decideReference } from '../../../src/framed/validator/reference/index.js';
 import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+} from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, master, masterInput,
   rootOf, selectorOf, token, userInput, userInputs, validatorFor,
@@ -18,7 +18,7 @@ import {
 import {
   participant,
   type CompositionDraftPlan, type ContractBlock, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * A proxied call runs the implementation its record names, and the DELEGATE edge is what binds the two.
@@ -30,7 +30,7 @@ import {
  * `V5_DELEGATE_TARGET_MISMATCH` in the checks) and the frame must inherit the caller's value, sender and self.
  *
  * This case runs the whole shipped path: the proxy and two implementations through `compileStringMulti` with the
- * per-call convention, deployed at their own seeded categories, layered into a plan the shipped composer lays out
+ * framed convention, deployed at their own seeded categories, layered into a plan the shipped composer lays out
  * and assembles, and judged by the shipped derivation, the shipped reference model and the BCH-2026 machine. The
  * record always names the first implementation, `ImplA`. The control runs the master the record names; the hostile
  * runs `ImplB`'s master under that record, so the declared target (the record's address) is not the callee's code.
@@ -165,7 +165,7 @@ function planFor(
 
 interface Composed {
   readonly outcome: ReturnType<typeof composeAndDerive>;
-  readonly transaction: PerCallTransaction;
+  readonly transaction: FramedTransaction;
   readonly validatorIndex: number;
 }
 
@@ -186,7 +186,7 @@ function composeHop(hop: Hop): Composed {
 }
 
 /** The assembled transaction restated in the shape the derivation reads; nothing here decides anything. */
-function modelOf(outcome: ReturnType<typeof composeAndDerive>): PerCallTransaction {
+function modelOf(outcome: ReturnType<typeof composeAndDerive>): FramedTransaction {
   const program = outcome.draft.programFor(PROXY_MASTER);
   type VmToken = { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
   const shape = (holder: { readonly token?: VmToken }): TokenShape => (holder.token === undefined

@@ -1,6 +1,6 @@
 # W7 phase 1: clusters to land first
 
-Proposal only. No test was deleted. No suite was run. The scan covered 511 per-call test files. `it.each` does not drop vitest's reported case count. No percentage target.
+Proposal only. No test was deleted. No suite was run. The scan covered 511 framed test files. `it.each` does not drop vitest's reported case count. No percentage target.
 
 Live walls to keep, because the code still refuses the shape:
 
@@ -13,7 +13,7 @@ Live walls to keep, because the code still refuses the shape:
 
 Land in this order:
 
-1. Delete `packages/solidcash/test/per-call/pw7-measure.test.ts`. Two gated measurement cases. The toys and `many-masters` already settle the behaviour.
+1. Delete `packages/solidcash/test/framed/pw7-measure.test.ts`. Two gated measurement cases. The toys and `many-masters` already settle the behaviour.
 2. Delete the "is served" its in `edges/refused-contract-shapes.test.ts`. Each comment names the file that spends the shape. Keep the two "is refused by name" its.
 3. Delete the group-form compile `it` in `ahead/enumerable-set.test.ts`. `call/enumerable-set.test.ts` already settles that remove.
 4. Delete the push-length control `it`. Keep the two settlement its in that ahead file.

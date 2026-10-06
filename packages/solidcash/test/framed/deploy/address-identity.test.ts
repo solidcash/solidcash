@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator/index.js';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
+import { buildValidatorProgram } from '../../../../solidc/src/framed/validator/index.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { Signer, getContractFactory } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { addressToLockScript } from '../../../src/utils.js';
@@ -13,9 +13,9 @@ import {
 } from '../../../src/stateful/deployment-registry.js';
 
 /**
- * The address a deployed per-call contract reports.
+ * The address a deployed framed contract reports.
  *
- * A per-call contract is entered at `addrV(category)` - the validator pins both its callee frames and the recorded
+ * A framed contract is entered at `addrV(category)` - the validator pins both its callee frames and the recorded
  * call targets to that address - so a handle must report it, not a Solidity-facing logical address. The cases below
  * deploy through the shipped factory entry point (which is what assigns the logical CREATE address the handle would
  * otherwise present) and read the reported address back as the lock script, as the provider's registry, and as the
@@ -29,7 +29,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   constructor(int seed) { this.total = seed + 1; }'
   + '   function check(int v) { require(this.total == v); }'
   + ' }';
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 
 /** A signer over the relaxed mock, funded with fresh vout-0 token-free UTXOs (each its own txid). */
 async function fundedSigner(
@@ -45,7 +45,7 @@ async function fundedSigner(
   return { signer, provider };
 }
 
-describe('the address a per-call deployment reports', () => {
+describe('the address a framed deployment reports', () => {
   it('reports addrV(category), and the registry and the genesis agree', async () => {
     const { signer, provider } = await fundedSigner(2, 0xc1);
     const handle = await getContractFactory(artifact, signer).deploy(5n) as unknown as StatefulContract;

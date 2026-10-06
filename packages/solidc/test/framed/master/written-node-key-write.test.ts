@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  created, declarationOf, deployPerCallMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
+  created, declarationOf, deployFramedMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
   type PlacedRecord,
 } from './record-spend.js';
 import { refusalMessageOf } from './refused-entry.js';
 
 /**
- * A per-call master whose entry writes a mapping keyed by a value it reads out of a node the same body writes.
+ * A framed master whose entry writes a mapping keyed by a value it reads out of a node the same body writes.
  *
  * A deed's transfer debits the holder its record names, credits the recipient and moves the record:
  * `balances[owners[id]] -= 1; balances[to] += 1; owners[id] = to`, and its burn debits the holder and deletes the
@@ -20,12 +20,12 @@ import { refusalMessageOf } from './refused-entry.js';
  * so a debit of another party than the one the record names is refused by the frame. A mint keyed by its arguments
  * alone is one round, in the order the body writes it.
  *
- * Each case compiles the source with the per-call convention, deploys the master the way a deployment does, and asks
+ * Each case compiles the source with the framed convention, deploys the master the way a deployment does, and asks
  * the BCH-2026 machine for its verdict on the master's own input. The balance nodes of one transfer are linked as a
  * list holds them, since the batch's own walk holds its targets to one sorted list.
  */
 
-const DEED = deployPerCallMaster('pragma solidcash ^0.13.0;'
+const DEED = deployFramedMaster('pragma solidcash ^0.13.0;'
   + ' contract Deed {'
   + '   mapping(uint => address) owners;'
   + '   mapping(address => uint) balances;'
@@ -80,7 +80,7 @@ const verdictOf = (entry: string, args: readonly Uint8Array[], records: readonly
 /** `to` and `id` as an entry takes them, the deepest parameter first. */
 const toward = (to: Uint8Array): Uint8Array[] => [number(ID), to];
 
-describe('a per-call master keyed by a value it reads out of a node the same body writes', () => {
+describe('a framed master keyed by a value it reads out of a node the same body writes', () => {
   it('serves every entry, declaring the record\'s batch ahead of the balances whose key reads it', () => {
     expect(DEED.artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
     const fn = (name: string): (typeof DEED.artifact.abi)[number] =>
@@ -144,7 +144,7 @@ describe('a per-call master keyed by a value it reads out of a node the same bod
   });
 });
 
-describe('a per-call master refuses by name the keys it cannot derive out of a node the body writes', () => {
+describe('a framed master refuses by name the keys it cannot derive out of a node the body writes', () => {
   const unit = (body: string): string => 'pragma solidcash ^0.13.0;'
     + ' interface IPing { function ping() external; }'
     + ' contract Registry {'

@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -91,7 +91,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const registry = artifacts.Registry!;
 const view = artifacts.View!;
 const ledger = artifacts.Ledger!;
@@ -115,7 +115,7 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
   readonly changeAddress: string;
   readonly callCoin: { txid: string; vout: number; satoshis: bigint };
   readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
-  readonly externals: Record<string, PerCallProxyExternal>;
+  readonly externals: Record<string, FramedProxyExternal>;
 }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -144,7 +144,7 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
   }
   await fundShippedFacets(network);
 
-  const registryDeployment = await deployPerCallProxy({
+  const registryDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: registry,
     proxyArtifact: buildProxyArtifact(registry),
@@ -161,7 +161,7 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
   const ledgerAddress = deployMaster(ledger, hexToBin(LEDGER_CATEGORY), VALIDATOR_PROGRAM).address;
   const viewAddress = deployMaster(view, hexToBin(VIEW_CATEGORY), VALIDATOR_PROGRAM).address;
 
-  const rootDeployment = await deployPerCallProxy({
+  const rootDeployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -196,7 +196,7 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
 
 /** A hop's result, and the trace lines it printed. */
 interface TracedHop {
-  readonly result: PerCallProxyCallResult;
+  readonly result: FramedProxyCallResult;
   readonly traced: readonly string[];
 }
 
@@ -205,16 +205,16 @@ async function callWithTrace(
   network: MockNetworkProvider,
   funded: Awaited<ReturnType<typeof deployTwoChains>>,
 ): Promise<TracedHop> {
-  const previous = process.env.PER_CALL_HOP_TRACE;
-  process.env.PER_CALL_HOP_TRACE = '1';
+  const previous = process.env.FRAMED_HOP_TRACE;
+  process.env.FRAMED_HOP_TRACE = '1';
   const lines: string[] = [];
   const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array): boolean => {
     lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
     return true;
   }) as typeof process.stdout.write);
-  let result: PerCallProxyCallResult;
+  let result: FramedProxyCallResult;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: network,
       implementationArtifact: root,
       proxyArtifact: buildProxyArtifact(root),
@@ -231,8 +231,8 @@ async function callWithTrace(
     });
   } finally {
     spy.mockRestore();
-    if (previous === undefined) delete process.env.PER_CALL_HOP_TRACE;
-    else process.env.PER_CALL_HOP_TRACE = previous;
+    if (previous === undefined) delete process.env.FRAMED_HOP_TRACE;
+    else process.env.FRAMED_HOP_TRACE = previous;
   }
   return { result, traced: lines.filter((line) => line.startsWith('HOPTRACE ')).map((line) => line.trimEnd()) };
 }
@@ -241,7 +241,7 @@ let hopRun: Promise<TracedHop> | undefined;
 
 /**
  * The one hop both cases read, deployed and run once: the first case reads its result, the second its trace. The
- * trace only observes the draft (`src/per-call/proxy/hop-trace.ts`), so the traced hop settles as an untraced one.
+ * trace only observes the draft (`src/framed/proxy/hop-trace.ts`), so the traced hop settles as an untraced one.
  */
 function tracedHop(): Promise<TracedHop> {
   hopRun ??= (async (): Promise<TracedHop> => {

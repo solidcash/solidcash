@@ -16,13 +16,13 @@ import {
   type StateLayout,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
-import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
+import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode, type DeployedMaster,
-} from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, generateProxySource } from '../../../src/per-call/proxy/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, generateProxySource } from '../../../src/framed/proxy/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, composeAndDerive, entryName, hexOf, master, masterInput, rootOf,
   selectorOf, token, userInput, userInputs, validatorFor, type DeployedContract,
@@ -31,13 +31,13 @@ import { layoutWithFacets } from '../shapes/harness.js';
 import {
   createComposedDerivationHost, layOutChunkRun, participant, planChunkRun,
   type ChunkRecordPlacement, type CompositionDraftPlan, type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 
 /**
  * One appender entered through a proxy's fallback more than once.
  *
  * The implementation declares the address its proxy forwards to beside a dynamic `int[]`, and its `append` pushes
- * onto that array and emits an event. A per-call write rebuilds the record commitment from the fields the
+ * onto that array and emits an event. A framed write rebuilds the record commitment from the fields the
  * *writer's own source declares, so the generated proxy mirrors the implementation's fields exactly; the two
  * records carry the same bytes, and the deployment's shared-layout rule holds by construction.
  *
@@ -172,7 +172,7 @@ function deployed(name: string, category: Uint8Array, held: DeployedMaster): Dep
 function buildProxyFromSource(implementationArtifact: NonNullable<ReturnType<typeof compileStringMulti>['Impl']>):
 ReturnType<typeof buildProxyArtifact> {
   const generated = compileStringMulti(generateProxySource(implementationArtifact), {
-    composition: 'per-call', commitmentLimit: implementationArtifact.stateLayout!.commitmentLimit,
+    composition: 'framed', commitmentLimit: implementationArtifact.stateLayout!.commitmentLimit,
   });
   const artifact = generated[`${implementationArtifact.contractName}Proxy`];
   if (artifact === undefined) throw new Error('the generated proxy source did not compile to a contract');
@@ -213,7 +213,7 @@ function compileAndDeployHalf(): {
   readonly impl: DeployedContract;
   readonly layout: StateLayout;
 } {
-  const implementationArtifact = compileStringMulti(IMPL_SOURCE, { composition: 'per-call' }).Impl!;
+  const implementationArtifact = compileStringMulti(IMPL_SOURCE, { composition: 'framed' }).Impl!;
   // The generated proxy source, compiled by the same compiler this suite imports, so the composition, the
   // implementation it drives and the generated proxy are one build.
   const proxyArtifact = buildProxyFromSource(implementationArtifact);
@@ -440,7 +440,7 @@ function buildHubCall(forward = false): Built {
   const hubArtifact = compileStringMulti(forward
     ? forwardHubSource(proxy.address, encodeIntegerValue(APPEND.item), APPEND_COUNT)
     : hubSource(proxy.address, APPEND_COUNT), {
-    composition: 'per-call',
+    composition: 'framed',
   }).Hub!;
   const hub = deployed(hubArtifact.contractName, HUB_CATEGORY,
     deployMaster(hubArtifact, HUB_CATEGORY, VALIDATOR_PROGRAM));
@@ -850,6 +850,6 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     // with that selector. The implementation's one entry requires its own selector, as the EVM's dispatcher does, so
     // a frame whose selector names no entry of it is refused rather than run as `append()`.
     expect(() => settleOutcome(buildHubCall(true)))
-      .toThrowError(/PER_CALL_DERIVATION_STALLED: master "impl-1" of Impl\.append\(\) filled no witness at site 0/);
+      .toThrowError(/FRAMED_DERIVATION_STALLED: master "impl-1" of Impl\.append\(\) filled no witness at site 0/);
   });
 });

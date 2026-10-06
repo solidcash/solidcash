@@ -2,28 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, bytesEqual, bytesToHex } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  DEFAULT_MASTER_POOL_SIZE, deployMaster, readPerCallDeployment, readPerCallState, stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { deployPerCallProxy, proxyRecordParticipantId } from '../../../src/per-call/proxy/index.js';
+  DEFAULT_MASTER_POOL_SIZE, deployMaster, readFramedDeployment, readFramedState, stateRecordLockingBytecode,
+} from '../../../src/framed/deploy/index.js';
+import { deployFramedProxy, proxyRecordParticipantId } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A proxy deployment on the per-call path: two genesis transactions and one initialize hop.
+ * A proxy deployment on the framed path: two genesis transactions and one initialize hop.
  *
  * The implementation is a real contract with an `initialize` entry; the proxy is the one shape the convention
  * compiles for a forwarder — a single `address implementation` field and a fallback that delegatecalls it with the
  * call data it received. Both genesis transactions go through the shipped deployment entry point, which selects the
- * per-call genesis from the artifact; the initialize hop goes through the shipped composer and derivation. The
+ * framed genesis from the artifact; the initialize hop goes through the shipped composer and derivation. The
  * machine is then asked about every participant of the composition.
  *
- * The tests also pin where a per-call deployment mints its records: each sits at the data-NFT covenant its category
+ * The tests also pin where a framed deployment mints its records: each sits at the data-NFT covenant its category
  * derives, and the machine accepts the record's own spend under that covenant beside the masters and the validator
  * pool the deployment funds.
  */
@@ -44,7 +44,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 
 const ENTRY = 'initialize';
 
-// A per-call genesis mints the resolved pool first - masters, then validators - followed by the facet pool, the
+// A framed genesis mints the resolved pool first - masters, then validators - followed by the facet pool, the
 // contract's own record, and change. These indices read the default pool the deployment funds.
 const POOL = DEFAULT_MASTER_POOL_SIZE;
 const FACET_OUTPUTS = 1;
@@ -55,11 +55,11 @@ const GENESIS_OUTPUTS = RECORD_OUTPUT + 2;
 async function deployFresh(): Promise<{
   readonly provider: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
-  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
   readonly implCategory: string;
   readonly proxyCategory: string;
 }> {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -71,7 +71,7 @@ async function deployFresh(): Promise<{
   await fundShippedFacets(provider);
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider,
     implementationArtifact: artifacts.Impl!,
     proxyArtifact: artifacts.Proxy!,
@@ -96,7 +96,7 @@ function deploy(): ReturnType<typeof deployFresh> {
   return deployed;
 }
 
-describe('a per-call proxy deployment', () => {
+describe('a framed proxy deployment', () => {
   it('deploys the implementation first: its master, its validator and its own record', async () => {
     const { artifacts, deployment, implCategory } = await deploy();
     const layout = artifacts.Impl!.stateLayout!;
@@ -146,7 +146,7 @@ describe('a per-call proxy deployment', () => {
     const recordOut = deployment.proxy.tx.outputs[RECORD_OUTPUT]!;
     expect([...recordOut.lockingBytecode]).toStrictEqual([...stateRecordLockingBytecode(proxyCategory)]);
     // The covenant pins the record's own category and capability, so it is findable by address and by category.
-    const discovery = await readPerCallDeployment(provider, proxyCategory, artifacts.Proxy!.stateLayout!);
+    const discovery = await readFramedDeployment(provider, proxyCategory, artifacts.Proxy!.stateLayout!);
     expect(discovery.records.length).toBe(1);
     expect(discovery.records[0]!.token!.nft!.commitment).toBe(bytesToHex(recordOut.token!.nft!.commitment));
     expect(discovery.masters.length).toBe(POOL.masters);
@@ -159,7 +159,7 @@ describe('a per-call proxy deployment', () => {
       artifacts.Impl!, new Uint8Array(Buffer.from(implCategory, 'hex')), VALIDATOR_PROGRAM,
     );
 
-    const state = await readPerCallState(provider, proxyCategory, artifacts.Proxy!.stateLayout!);
+    const state = await readFramedState(provider, proxyCategory, artifacts.Proxy!.stateLayout!);
 
     expect(state.byNft.length).toBe(1);
     expect([...state.byNft[0]!.implementation as Uint8Array]).toStrictEqual([...implMaster.address]);

@@ -4,15 +4,15 @@ import {
   FrameKind, buildEntryNftCovenantScript, bytesToHex, computeCollectionHash, encodeIntegerValue,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { encodeEntryCommitment } from '../../../src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../src/utils.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, layOutMappingWrites, participant, planMappingWrite,
   type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
-} from '../../../src/per-call/composer/index.js';
-import { REAL_VALIDATOR_PROGRAM, seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../src/framed/composer/index.js';
+import { REAL_VALIDATOR_PROGRAM, seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';
 import { userInput, USER_LOCK } from '../shapes/harness.js';
 
 /**
@@ -46,7 +46,7 @@ const token = (
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } =>
   ({ category: CATEGORY, amount: 0n, nft: { capability, commitment } });
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Registry!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Registry!;
 const deployed = deployMaster(artifact, CATEGORY, REAL_VALIDATOR_PROGRAM);
 const entryLock = scriptToLockingBytecode(
   buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(artifact.stateLayout!.collections![0]!.signature)),

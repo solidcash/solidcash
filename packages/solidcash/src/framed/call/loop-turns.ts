@@ -1,7 +1,7 @@
 /**
  * The outputs and side-cars an entry's loops take.
  *
- * A per-call body that emits, sends or hashes inside a loop binds each effect where its source makes it: the k-th
+ * A framed body that emits, sends or hashes inside a loop binds each effect where its source makes it: the k-th
  * event at the k-th event output its frame lists, the k-th send at the k-th send output, the k-th hash at the k-th
  * side-car after its own input. Its artifact publishes the order those take as runs of each kind
  * (`PublishedLoopEffects` on the entry's stop-site row): a run the body makes once, or one a loop makes once per turn
@@ -17,8 +17,8 @@ import { readPublishedStopSites } from '../composer/index.js';
 import { makeCallResolver, type CallResolver, type HopCallInputs } from '../proxy/call-resolution.js';
 
 /** Raised for a looped effect a frame cannot lay: a recurrence the entry's own facts do not count. */
-export class PerCallLoopTurnsError extends Error {
-  public readonly name = 'PerCallLoopTurnsError';
+export class FramedLoopTurnsError extends Error {
+  public readonly name = 'FramedLoopTurnsError';
 
   public constructor(message: string) {
     super(message);
@@ -75,15 +75,15 @@ function turnsOf(domain: ExternalCallIterationDomainAbi, resolver: CallResolver,
   const initial = resolver.evaluate(domain.initialValue, 0);
   const step = resolver.evaluate(domain.stepValue, 0);
   if (typeof initial !== 'bigint' || typeof step !== 'bigint') {
-    throw new PerCallLoopTurnsError(`${where} runs a loop whose counter its own arguments do not fix`);
+    throw new FramedLoopTurnsError(`${where} runs a loop whose counter its own arguments do not fix`);
   }
-  if (step === 0n) throw new PerCallLoopTurnsError(`${where} runs a loop whose counter never advances`);
+  if (step === 0n) throw new FramedLoopTurnsError(`${where} runs a loop whose counter never advances`);
   let turns = 0;
   let counter = initial;
   for (; turns < domain.maximumIterations; turns += 1) {
     const holds = resolver.evaluate(domain.continueCondition, 0, new Map([[domain.counterName, counter]]));
     if (holds === undefined) {
-      throw new PerCallLoopTurnsError(
+      throw new FramedLoopTurnsError(
         `${where} runs a loop whose bound its own arguments do not fix, so the frame cannot state how many outputs `
         + 'and side-cars its turns take',
       );

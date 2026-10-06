@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { bytesToHex, validatorAddress } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { planCallLoopWrites } from '../../../src/per-call/call/entry-records.js';
-import { buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { planCallLoopWrites } from '../../../src/framed/call/entry-records.js';
+import { buildProxyArtifact, callFramedProxyEntry, deployFramedProxy } from '../../../src/framed/proxy/index.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -25,7 +25,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * require is reported with the entry's own reason, before any turn runs.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const category = (seed: number): string => binToHex(Uint8Array.from({ length: 32 }, (_unused, index) =>
   (seed * 29 + index * 11) & 0xff));
 const JOURNAL_CATEGORY = category(0x17);
@@ -64,7 +64,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 const DESK = ARTIFACTS.Desk!;
 const JOURNAL = ARTIFACTS.Journal!;
 const OPEN = 0n;
@@ -106,7 +106,7 @@ function allowlistOf(
 
 /** The desk deployed behind its generated proxy, and a function that calls one of its entries through the hop. */
 async function proxiedDesk(seed: number): Promise<{
-  readonly call: (entry: string, args: readonly unknown[]) => ReturnType<typeof callPerCallProxyEntry>;
+  readonly call: (entry: string, args: readonly unknown[]) => ReturnType<typeof callFramedProxyEntry>;
 }> {
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -128,7 +128,7 @@ async function proxiedDesk(seed: number): Promise<{
   const proxyFunding = { txid: category(seed + 101), vout: 0, satoshis: 500_000n };
   for (const utxo of [implementationFunding, proxyFunding]) await network.addUtxo(wallet.address, utxo);
   const signature = new SignatureTemplate(alicePriv);
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: DESK,
     proxyArtifact: buildProxyArtifact(DESK),
@@ -141,7 +141,7 @@ async function proxiedDesk(seed: number): Promise<{
   });
   expect(deployment.initialize.broadcast).toBeDefined();
   return {
-    call: async (entry, args) => callPerCallProxyEntry({
+    call: async (entry, args) => callFramedProxyEntry({
       provider: network,
       implementationArtifact: DESK,
       proxyArtifact: buildProxyArtifact(DESK),

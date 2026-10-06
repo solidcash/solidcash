@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { buildProxyArtifact, requirePerCallUpgrade } from '../../../src/per-call/proxy/index.js';
+import { buildProxyArtifact, requireFramedUpgrade } from '../../../src/framed/proxy/index.js';
 
 /**
  * The SDK half of the proxy-upgrade layout rule (spec 20, plan 4.7).
@@ -38,40 +38,40 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function ping() { require(this.deposits >= 0); }${FALLBACK} }`
   + ` contract VaultPing {${FIELDS}${DEPOSIT} function ping() { require(this.total >= 0); } }`;
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const v1 = artifacts.Vault!;
 const proxy = buildProxyArtifact(v1);
 
-describe('the SDK check before an upgrade behind a per-call proxy', () => {
+describe('the SDK check before an upgrade behind a framed proxy', () => {
   it('accepts a replacement that keeps every record, with new code', () => {
-    expect(() => requirePerCallUpgrade(proxy, v1, artifacts.VaultV2!)).not.toThrow();
+    expect(() => requireFramedUpgrade(proxy, v1, artifacts.VaultV2!)).not.toThrow();
   });
 
   it.each([
     ['a retyped field', 'VaultRetyped', 'state variable "total" changes type from int256 to uint256'],
     ['a reordered field', 'VaultReordered', 'state variable "total" moves from data NFT 0 field 0 to data NFT 0 field 1'],
   ])('refuses %s by name', (_what, contract, named) => {
-    expect(() => requirePerCallUpgrade(proxy, v1, artifacts[contract]!))
+    expect(() => requireFramedUpgrade(proxy, v1, artifacts[contract]!))
       .toThrow(`cannot upgrade proxy "VaultProxy" to "${contract}": ${named}`);
   });
 
   it('refuses a current implementation the proxy\'s records do not agree with', () => {
-    expect(() => requirePerCallUpgrade(proxy, artifacts.VaultReordered!, artifacts.VaultV2!))
+    expect(() => requireFramedUpgrade(proxy, artifacts.VaultReordered!, artifacts.VaultV2!))
       .toThrow(/"VaultReordered" is not the implementation its records agree with/);
   });
 
   it('refuses a returned value the deployed fallback cannot carry', () => {
     const quiet = artifacts.VaultQuiet!;
     const quietProxy = buildProxyArtifact(quiet);
-    expect(() => requirePerCallUpgrade(quietProxy, quiet, quiet)).not.toThrow();
-    expect(() => requirePerCallUpgrade(quietProxy, quiet, artifacts.VaultV2!))
+    expect(() => requireFramedUpgrade(quietProxy, quiet, quiet)).not.toThrow();
+    expect(() => requireFramedUpgrade(quietProxy, quiet, artifacts.VaultV2!))
       .toThrow(/entry "deposit" returns a value, and the proxy's fallback carries no result/);
   });
 
   it('refuses an entry whose selector an entry of the proxy\'s own would capture', () => {
     const pingProxy = artifacts.VaultPingProxy!;
-    expect(() => requirePerCallUpgrade(pingProxy, v1, artifacts.VaultV2!)).not.toThrow();
-    expect(() => requirePerCallUpgrade(pingProxy, v1, artifacts.VaultPing!))
+    expect(() => requireFramedUpgrade(pingProxy, v1, artifacts.VaultV2!)).not.toThrow();
+    expect(() => requireFramedUpgrade(pingProxy, v1, artifacts.VaultPing!))
       .toThrow(/entry "ping" has the selector of the proxy's own "ping"/);
   });
 });

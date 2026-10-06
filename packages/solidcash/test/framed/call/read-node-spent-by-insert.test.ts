@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, sha256, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti,
@@ -106,7 +106,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const registry = artifacts.Registry!;
 const members = artifacts.Members!;
 const roster = artifacts.Roster!;
@@ -199,7 +199,7 @@ async function deployWorld(): Promise<World> {
   ];
   for (const [artifact, args] of initialized) {
     const name = artifact.contractName;
-    const deployment = await deployPerCallProxy({
+    const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifact,
       proxyArtifact: buildProxyArtifact(artifact),
@@ -243,10 +243,10 @@ async function deployed(): Promise<World> {
 async function enter(
   world: World, artifact: Artifact, functionName: string, args: readonly FunctionArgument[], caller: Caller,
   provider: NetworkProvider = world.network,
-): Promise<{ readonly coin: Utxo; readonly call: Promise<PerCallProxyCallResult> }> {
+): Promise<{ readonly coin: Utxo; readonly call: Promise<FramedProxyCallResult> }> {
   const target = world.deployments.get(artifact)!;
   const coin = await coinAt(world.network, binToHex(caller.lock), functionName);
-  const call = callPerCallProxyEntry({
+  const call = callFramedProxyEntry({
     provider,
     implementationArtifact: artifact,
     proxyArtifact: buildProxyArtifact(artifact),
@@ -267,7 +267,7 @@ async function enter(
 /** Enters one call and requires it to settle: every participant accepted and the transaction broadcast. */
 async function settle(
   world: World, artifact: Artifact, functionName: string, args: readonly FunctionArgument[], caller = ADMIN,
-): Promise<PerCallProxyCallResult> {
+): Promise<FramedProxyCallResult> {
   const result = await (await enter(world, artifact, functionName, args, caller)).call;
   expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   expect(result.accepted).toBe(true);
@@ -283,7 +283,7 @@ function nodeOf(utxo: Utxo): ReturnType<typeof decodeEntryCommitment> {
 /** Every live node of one of a deployment's collections, the head included. */
 async function nodes(world: World, artifact: Artifact, collection: string): Promise<readonly Utxo[]> {
   const layout = { ...buildProxyArtifact(artifact).stateLayout!, collections: artifact.stateLayout!.collections };
-  const deployment = await readPerCallDeployment(world.network, world.deployments.get(artifact)!.proxy, layout);
+  const deployment = await readFramedDeployment(world.network, world.deployments.get(artifact)!.proxy, layout);
   return deployment.nodesByCollection.get(collection) ?? [];
 }
 
@@ -305,7 +305,7 @@ async function links(world: World, artifact: Artifact): Promise<ReadonlyMap<stri
 async function view(
   world: World, artifact: Artifact, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact, categoryId: world.deployments.get(artifact)!.proxy, functionName, args,
   });
   expect(read.accepted).toBe(true);
@@ -313,12 +313,12 @@ async function view(
 }
 
 /** The ids a hop places its participants under that start with `prefix`. */
-function placed(result: PerCallProxyCallResult, prefix: string): readonly string[] {
+function placed(result: FramedProxyCallResult, prefix: string): readonly string[] {
   return result.draft.layout.participants.map((participant) => participant.id).filter((id) => id.startsWith(prefix));
 }
 
 /** The views, as `in>out` hex, each record of the implementation frame's segment declares at a participant. */
-function declared(result: PerCallProxyCallResult, segment: number, id: string): readonly string[] {
+function declared(result: FramedProxyCallResult, segment: number, id: string): readonly string[] {
   const index = result.draft.layout.participants.find((participant) => participant.id === id)!.index;
   return result.draft.blockOf('implementation-master').segments[segment]!
     .filter((record) => record.in === index)
@@ -459,7 +459,7 @@ describe('a proxied entry that reads a node its own insert splices through', () 
     expect(at(DEFAULT_ADMIN_ROLE, CAROL.lock)).toBeGreaterThan(ADMIN_NODE);
     expect(await expectRefused(world, gate, 'grantRole', [ROLE, GRANTEE], CAROL,
       unsettled('grantRole', 'Gate', lineOf('"grant needs the admin role"'), 'grant needs the admin role')))
-      .toBeInstanceOf(PerCallProxyDeployError);
+      .toBeInstanceOf(FramedProxyDeployError);
     expect(await view(world, gate, 'hasRole', [ROLE, GRANTEE])).toBe(false);
   }, 600_000);
 
@@ -469,9 +469,9 @@ describe('a proxied entry that reads a node its own insert splices through', () 
       + `mapping "${collection}" under a key its batch also writes, which its frame reads as the segment began, `
       + 'before the write, whichever comes first in the source';
     expect(await expectRefused(world, members, 'add', [ADMIN.lock], ADMIN, reason('add', 'members')))
-      .toBeInstanceOf(PerCallProxyDeployError);
+      .toBeInstanceOf(FramedProxyDeployError);
     expect(await expectRefused(world, gate, 'grantRole', [DEFAULT_ADMIN_ROLE, ADMIN.lock], ADMIN,
-      reason('grantRole', '_roles__members'))).toBeInstanceOf(PerCallProxyDeployError);
+      reason('grantRole', '_roles__members'))).toBeInstanceOf(FramedProxyDeployError);
   }, 600_000);
 
   it('is refused by the frame when the shared node does not prove the read\'s key', async () => {
@@ -483,7 +483,7 @@ describe('a proxied entry that reads a node its own insert splices through', () 
     expect(await expectRefused(world, members, 'add', [ABOVE], ADMIN,
       unsettled('add', 'Members', lineOf('require(members[msg.sender]', 'function add'),
         'no source message'), hiding))
-      .toBeInstanceOf(PerCallProxyDeployError);
+      .toBeInstanceOf(FramedProxyDeployError);
   }, 600_000);
 
   it('is refused by the validator when the shared node is declared at a view other than the one spent', async () => {

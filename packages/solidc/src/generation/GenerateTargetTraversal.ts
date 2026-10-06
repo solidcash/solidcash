@@ -272,7 +272,7 @@ import { isNumericType } from '../utils.js';
 import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
-  SortedMappingCodegenPendingError, PerCallStaleReadError, PerCallAliasedReadError,
+  SortedMappingCodegenPendingError, FramedStaleReadError, FramedAliasedReadError,
   ChainedEntryElementReadError, ConditionalDeployError, DirectHeterogeneousDeployError,
   NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
@@ -292,34 +292,34 @@ import {
   buildMasterHeadScript, callCountSlotName, categoryOwnerSlotName, eventBaseSlotName, eventCountSlotName,
   eventOutputSlotName, recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName, sendBaseSlotName,
   sendCountSlotName, sendOutputSlotName, valueWitnessSlotName,
-} from '../per-call/master/master-head.js';
-import { loopEffectKinds } from '../per-call/master/loop-effects.js';
-import { callSiteCheckScript, sourceReadsCallResult } from '../per-call/master/call-site.js';
-import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../per-call/master/witness-reader.js';
+} from '../framed/master/master-head.js';
+import { loopEffectKinds } from '../framed/master/loop-effects.js';
+import { callSiteCheckScript, sourceReadsCallResult } from '../framed/master/call-site.js';
+import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../framed/master/witness-reader.js';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
   declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript,
   declaredRecordsKeptScript, declaredSegmentRecordCountScript, validatorSettledScript,
   type DeclaredViewCounts, type RecordSide,
-} from '../per-call/master/declared-view.js';
-import { canonicalPushScript } from '../per-call/master/argument-push.js';
+} from '../framed/master/declared-view.js';
+import { canonicalPushScript } from '../framed/master/argument-push.js';
 import {
-  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchDerivationRounds, perCallBatchKeys,
-  perCallBatchWriteFollowsEveryCall, perCallBatchWriteSegment, perCallLoopChains, perCallRunApartFromBatch,
-  type PerCallBatchKey,
+  deriveFramedTailShape, derivableBatchWitnessNames, framedBatchDerivationRounds, framedBatchKeys,
+  framedBatchWriteFollowsEveryCall, framedBatchWriteSegment, framedLoopChains, framedRunApartFromBatch,
+  type FramedBatchKey,
   callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, hasForwardingFallback, isOwnAddress,
   isProxyFallbackContract,
   ORIGIN_FRAME_SLOT, SENDER_FRAME_SLOT,
-} from '../per-call/master/support.js';
+} from '../framed/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, SKIPPED_TARGET_SENTINEL, batchDerivationSlotName,
   buildBatchTargetsDerivationScript,
-} from '../per-call/master/batch-witness-derivation.js';
+} from '../framed/master/batch-witness-derivation.js';
 import {
-  UNDECIDED_WRITE_ACTIVATION, isAlwaysActive, perCallEmitActivation, perCallWriteActivation,
-} from '../per-call/master/write-activation.js';
-import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
-import { genesisSpendCheck } from '../per-call/master/prologue.js';
+  UNDECIDED_WRITE_ACTIVATION, isAlwaysActive, framedEmitActivation, framedWriteActivation,
+} from '../framed/master/write-activation.js';
+import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../framed/master/frame-tail.js';
+import { genesisSpendCheck } from '../framed/master/prologue.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
 // array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
@@ -589,12 +589,12 @@ const PROXY_MASTER_ANCHOR_LOCAL = '(message_bus_proxy_master)';
 const GRAPH_EVENT_OWNER_LOCAL = '(graph_event_owner)';
 
 /**
- * The four frame values a per-call master head leaves, in top-to-bottom stack order, as the tracked names of a
+ * The four frame values a framed master head leaves, in top-to-bottom stack order, as the tracked names of a
  * dispatched entry body. A dispatched body reaches the frame through OP_INVOKE, which pops the selector and leaves
  * the head's values above the constructor parameters; seeding them here makes the body read `msg.sender`,
  * `address(this)`, `msg.value` and `tx.origin` from the head's slots instead of the direct path's sender category.
  */
-const PER_CALL_FRAME_SLOT_NAMES = [
+const FRAMED_FRAME_SLOT_NAMES = [
   '__internal__frameOrigin',
   '__internal__frameSender',
   '__internal__frameValue',
@@ -602,11 +602,11 @@ const PER_CALL_FRAME_SLOT_NAMES = [
 ] as const;
 
 /**
- * The call a per-call value send to a contract makes: a message call into the recipient's `receive()`, reached by
+ * The call a framed value send to a contract makes: a message call into the recipient's `receive()`, reached by
  * the selector every contract's `receive()` has, carrying no argument. Its target and value are the recipient and
  * the amount the body computed.
  */
-const PER_CALL_RECEIVE_SITE: MasterCallSite = {
+const FRAMED_RECEIVE_SITE: MasterCallSite = {
   kind: FrameKind.CALL,
   selector: computeFunctionSelector(computeFunctionSignature('__receive', [])),
   target: new Uint8Array(0),
@@ -617,20 +617,20 @@ const PER_CALL_RECEIVE_SITE: MasterCallSite = {
 };
 
 /**
- * Hidden invocation operand carrying the caller's contract address into a per-call subroutine.
+ * Hidden invocation operand carrying the caller's contract address into a framed subroutine.
  *
  * `address(this)` is a frame value in an entry body, but a subroutine runs in its own OP_INVOKE frame and cannot
  * read that slot. A body that reads its own address - or that makes an external self-call, whose `msg.sender` is
  * the contract - receives the value as this operand, exactly as a body that reads `msg.sender` receives it as a
  * hidden context. The name is internal and never reaches the ABI.
  */
-const PER_CALL_SELF_CONTEXT = '__internal__handlerSelf';
-/** The hidden operand a per-call subroutine that reads `tx.origin` receives it through. */
-const PER_CALL_ORIGIN_CONTEXT = '__internal__handlerOrigin';
-/** The hidden operand a per-call subroutine that reads `msg.value` receives it through. */
-const PER_CALL_VALUE_CONTEXT = '__internal__handlerValue';
-/** The hidden operand a per-call subroutine that reads `msg.sig` receives it through. */
-const PER_CALL_SELECTOR_CONTEXT = '__internal__handlerSelector';
+const FRAMED_SELF_CONTEXT = '__internal__handlerSelf';
+/** The hidden operand a framed subroutine that reads `tx.origin` receives it through. */
+const FRAMED_ORIGIN_CONTEXT = '__internal__handlerOrigin';
+/** The hidden operand a framed subroutine that reads `msg.value` receives it through. */
+const FRAMED_VALUE_CONTEXT = '__internal__handlerValue';
+/** The hidden operand a framed subroutine that reads `msg.sig` receives it through. */
+const FRAMED_SELECTOR_CONTEXT = '__internal__handlerSelector';
 
 /** True when a body reads the contract's own locking bytecode, `address(this)`. */
 function functionReadsOwnAddress(fn: FunctionDefinitionNode): boolean {
@@ -1105,7 +1105,7 @@ interface GenesisReadPlan {
 }
 
 /**
- * A per-call write of a verified mapping under other keys that a read of the mapping follows in its segment: the
+ * A framed write of a verified mapping under other keys that a read of the mapping follows in its segment: the
  * slot the write lands in, the entry as the source names it, and what says at run time whether it ran, when that is
  * not the write's own flag: a cache's dirty flag, or null where two paths' caches disagree and nothing does.
  */
@@ -1120,28 +1120,28 @@ interface AliasedSortedWrite {
  * holds the field's value there (`current`: no call has run since the slot was set) or a call has closed the segment
  * the slot was set in (`closed`).
  */
-interface PerCallFieldSegments {
+interface FramedFieldSegments {
   readonly current: ReadonlySet<number>;
   readonly closed: ReadonlySet<number>;
 }
 
-/** The segments of every followed field, and the segments the code can run in, at one point of a per-call body. */
-interface PerCallFieldSnapshot {
-  readonly fields: ReadonlyMap<string, PerCallFieldSegments>;
+/** The segments of every followed field, and the segments the code can run in, at one point of a framed body. */
+interface FramedFieldSnapshot {
+  readonly fields: ReadonlyMap<string, FramedFieldSegments>;
   readonly reached: ReadonlySet<number>;
 }
 
 /**
- * A data record a per-call close takes as written in the segment it closes: its data-NFT index and block offset, and
- * the run-time segments it is written in when only the paths reaching those were (`perCallRecordsWrittenHere`).
+ * A data record a framed close takes as written in the segment it closes: its data-NFT index and block offset, and
+ * the run-time segments it is written in when only the paths reaching those were (`framedRecordsWrittenHere`).
  */
-type PerCallWrittenRecord = readonly [nftIdx: number, offset: number, segments?: readonly number[]];
+type FramedWrittenRecord = readonly [nftIdx: number, offset: number, segments?: readonly number[]];
 
 /**
- * A record index no per-call declaration can name: a declared index is a two-byte field the frame reads as a script
+ * A record index no framed declaration can name: a declared index is a two-byte field the frame reads as a script
  * number, whose magnitude stays below this one.
  */
-const PER_CALL_UNDECLARABLE_INDEX = 0x8000n;
+const FRAMED_UNDECLARABLE_INDEX = 0x8000n;
 
 /** Where a sorted-mapping flow walk is: a branch arm or the code after an early return, and inside a loop. */
 interface SortedFlowScope {
@@ -1250,7 +1250,7 @@ const isAggregate = (type: unknown): boolean =>
   type instanceof StructType || type instanceof ArrayType || type instanceof TupleType;
 
 /** The name a batch derivation's emitted key is tracked under: its target and its position among that target's keys. */
-const perCallBatchKeyName = (slot: number, keyIndex: number): string => `(per_call_batch_key_${slot}_${keyIndex})`;
+const framedBatchKeyName = (slot: number, keyIndex: number): string => `(framed_batch_key_${slot}_${keyIndex})`;
 
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
@@ -1259,14 +1259,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   consoleLogs: LogEntry[] = [];
   requires: RequireStatement[] = [];
   finalStackUsage: Record<string, StackItem> = {};
-  /** Set when this compile emits a per-call master program; the body then answers its frame from tracked slots. */
-  private perCallMaster = false;
-  /** Bytes a per-call master's program holds before its head: its unit's free-function definitions, and nothing else. */
-  private perCallHeadPreludeLength = 0;
+  /** Set when this compile emits a framed master program; the body then answers its frame from tracked slots. */
+  private framedMaster = false;
+  /** Bytes a framed master's program holds before its head: its unit's free-function definitions, and nothing else. */
+  private framedHeadPreludeLength = 0;
   /** Each entry's own external calls, in execution order, keyed by entry name, one per record its body binds. */
-  private perCallEntryCallSites: ReadonlyMap<string, readonly MasterCallSite[]> = new Map();
+  private framedEntryCallSites: ReadonlyMap<string, readonly MasterCallSite[]> = new Map();
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
-  private perCallCallCount = 0;
+  private framedCallCount = 0;
   /**
    * The bodies this master cannot serve, by name, each with the fact that refuses it.
    *
@@ -1274,7 +1274,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * whenever it is run, and which function that is is published beside the artifact rather than only in a thrown
    * message.
    */
-  private perCallRefusedEntries: ReadonlyMap<string, string> = new Map();
+  private framedRefusedEntries: ReadonlyMap<string, string> = new Map();
   /** Functions refused for a loop guard their published recipe cannot carry; each is emitted as a refusal. */
   private loopGuardRefusals: ReadonlySet<string> = new Set();
   /**
@@ -1283,10 +1283,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * A body carries it when it reads `address(this)`, makes an external self-call, or calls a body that does
    * either. Memoized: the set depends only on the lowered AST, which code generation does not reshape.
    */
-  private perCallSelfContextCarriers?: Set<string>;
-  private perCallOriginCarriers?: Set<string>;
-  private perCallValueCarriers?: Set<string>;
-  private perCallSelectorCarriers?: Set<string>;
+  private framedSelfContextCarriers?: Set<string>;
+  private framedOriginCarriers?: Set<string>;
+  private framedValueCarriers?: Set<string>;
+  private framedSelectorCarriers?: Set<string>;
   /**
    * Which segment of its execution the body being emitted is in, counted by the external calls already emitted.
    *
@@ -1301,32 +1301,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * declared (the calls in the whole body). The head does not park it: it is state of the body, allocated before
    * the body's own control flow so every path reaches the epilogue with the same stack.
    */
-  private static readonly PER_CALL_CALLS_MADE = '__internal__perCallCallsMade';
-  /** How many listed sends a per-call body's value sends have made, which names the next listed output. */
-  private static readonly PER_CALL_SENDS_MADE = '__internal__perCallSendsMade';
-  /** How many events a per-call body that emits from a loop has emitted, which names its next listed output. */
-  private static readonly PER_CALL_EVENTS_MADE = '__internal__perCallEventsMade';
-  /** How many keccak256 side-cars a per-call body that hashes in a loop has read, which names the next one. */
-  private static readonly PER_CALL_HASHES_MADE = '__internal__perCallHashesMade';
+  private static readonly FRAMED_CALLS_MADE = '__internal__framedCallsMade';
+  /** How many listed sends a framed body's value sends have made, which names the next listed output. */
+  private static readonly FRAMED_SENDS_MADE = '__internal__framedSendsMade';
+  /** How many events a framed body that emits from a loop has emitted, which names its next listed output. */
+  private static readonly FRAMED_EVENTS_MADE = '__internal__framedEventsMade';
+  /** How many keccak256 side-cars a framed body that hashes in a loop has read, which names the next one. */
+  private static readonly FRAMED_HASHES_MADE = '__internal__framedHashesMade';
   /** The rest of the record list a batch derivation round leaves for the round that continues its walk. */
-  private static readonly PER_CALL_BATCH_RECORDS = '(per_call_batch_records)';
+  private static readonly FRAMED_BATCH_RECORDS = '(framed_batch_records)';
   /** The record count the batch's segment declares, as a derivation round leaves it for the next. */
-  private static readonly PER_CALL_BATCH_DECLARED = '(per_call_batch_declared)';
+  private static readonly FRAMED_BATCH_DECLARED = '(framed_batch_declared)';
   /**
    * True when the master's head parks its event (send) region as a run of consecutive outputs: the first output and
    * the declared count, which a body indexes from. Set for a master with a body that emits (sends) from a loop.
    */
-  private perCallEventRun = false;
-  private perCallSendRun = false;
+  private framedEventRun = false;
+  private framedSendRun = false;
   /**
    * True while the body being emitted makes events, sends or hashes inside a loop, so it binds each where its source
    * makes it, at the position its count of them names, and pins the count where it ends (`loop-effects.ts`).
    */
-  private perCallEventsAtSource = false;
-  private perCallSendsAtSource = false;
-  private perCallHashesAtSource = false;
-  private perCallCallsMadeActive = false;
-  private perCallSegmentIndex = 0;
+  private framedEventsAtSource = false;
+  private framedSendsAtSource = false;
+  private framedHashesAtSource = false;
+  private framedCallsMadeActive = false;
+  private framedSegmentIndex = 0;
   /**
    * Which call record of its own execution the body being emitted is at, counted the same way.
    *
@@ -1335,30 +1335,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * carried across a branch the way the stack is — saved at the branch point and restored for each arm — and the
    * arms are required to agree, which the admission has already established.
    */
-  private perCallOrdinal = 0;
+  private framedOrdinal = 0;
   /** The call sites already bound in this pass, so an argument's own call is not bound a second time. */
-  private perCallLoweredSites = new Set<ExternalFunctionCallNode>();
+  private framedLoweredSites = new Set<ExternalFunctionCallNode>();
   /**
    * The tracked name of the value each argument's own call left, so the expression it feeds reaches it wherever the
    * operands pushed since have put it.
    */
-  private perCallArgumentCallValues = new Map<ExternalFunctionCallNode, string>();
+  private framedArgumentCallValues = new Map<ExternalFunctionCallNode, string>();
   /**
    * The last segment each record block offset was touched in, which is where a frame that ends after a segment it
    * did not touch rebuilds the record: the record's value there is the one the frame left.
    */
-  private perCallRecordSegment = new Map<number, number>();
+  private framedRecordSegment = new Map<number, number>();
   /**
    * The segment a record read resolves against while a site is emitted for a known segment rather than the one the
    * body is currently in (a record rebuilt for a segment the body has already left).
    */
-  private perCallReadSegment: number | undefined;
+  private framedReadSegment: number | undefined;
   /**
    * The segment a body's sorted-batch write lands in, as the number of external calls its own code makes before the
    * write. The derivation reads the write's records where the body begins, and the batch verification reads the
    * write's own declaration, so both resolve against this segment rather than the one the frame ends in.
    */
-  private perCallBatchWriteSegment = 0;
+  private framedBatchWriteSegment = 0;
   /**
    * Whether the batch write's segment is the one the run's own declared call count names rather than a fixed index.
    *
@@ -1366,27 +1366,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * follows lands in the last one, whose index is the block's declared call count. The derivation then steps over
    * that many segments at run time, and the segment close at the body's end is the write's own segment.
    */
-  private perCallBatchWriteRuntime = false;
+  private framedBatchWriteRuntime = false;
   /**
    * Whether a call the source makes follows the batch write, so that a run can make it after the write: a close past
    * the write then closes the segment the run's own count names, which may or may not be the write's.
    */
-  private perCallCallFollowsBatchWrite = false;
+  private framedCallFollowsBatchWrite = false;
   /**
-   * True while a declared-view read resolves against a segment the source fixes (`perCallReadSegment`) in a body
+   * True while a declared-view read resolves against a segment the source fixes (`framedReadSegment`) in a body
    * whose calls vary on its paths: the walk then names that segment instead of the one the execution has reached.
    * The batch's write segment is one, where the write's spent records are declared kept at the views it wrote, and
    * the segment a derived key reads its record in is another.
    */
-  private perCallReadsWriteSegment = false;
+  private framedReadsWriteSegment = false;
   /**
    * True for a body whose batch and the run its dynamic write grows may land in different segments
-   * (`perCallRunApartFromBatch`): the run is addressed in its own segment, the last, past the records every segment
+   * (`framedRunApartFromBatch`): the run is addressed in its own segment, the last, past the records every segment
    * declares ahead of any group, and the batch's groups precede it only where the two segments are one.
    */
-  private perCallRunApart = false;
+  private framedRunApart = false;
   /** True while a declared-view read resolves against an apart body's run segment, the last its calls open. */
-  private perCallReadsRunSegment = false;
+  private framedReadsRunSegment = false;
   /**
    * The state fields whose pending stack value belongs to a closed segment, keyed as `pendingStateWrites` is.
    *
@@ -1394,70 +1394,70 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * have rewritten the record during the call. A read after the call resolves the field from the frame's own
    * declaration instead, until the body writes the field again, which makes the value current once more.
    */
-  private perCallStaleWrites = new Set<string>();
+  private framedStaleWrites = new Set<string>();
   /**
    * For a body whose calls vary on its paths, the segments each pending state field can be in where the code being
    * emitted runs; undefined in any other body, and from where the body leaves the shapes the walk follows (a loop, a
    * switch or an expression arm that calls or writes, a send made where the source sends), past which
-   * `perCallStaleWrites` decides alone.
+   * `framedStaleWrites` decides alone.
    *
    * That set is one answer for every path, so a call one arm makes, or a write one arm skips, leaves it wrong on the
    * other: a record written before a guarded call was held kept at the end on the side that skips the call, where
    * the epilogue rebuilds it. Each path has made its own number of calls, so where a field is current only in segments
-   * no path it is closed on reaches, the run's calls-made count tells the two apart (`perCallFieldState`).
+   * no path it is closed on reaches, the run's calls-made count tells the two apart (`framedFieldState`).
    */
-  private perCallFieldSegments: Map<string, PerCallFieldSegments> | undefined;
-  /** The segments the code being emitted can run in, while `perCallFieldSegments` is followed. */
-  private perCallReachedSegments: ReadonlySet<number> = new Set([0]);
+  private framedFieldSegments: Map<string, FramedFieldSegments> | undefined;
+  /** The segments the code being emitted can run in, while `framedFieldSegments` is followed. */
+  private framedReachedSegments: ReadonlySet<number> = new Set([0]);
   /**
-   * True for a body whose calls vary and whose walk stops somewhere (`perCallFieldWalkStops`). Past that point
-   * `perCallStaleWrites` decides alone, and it is one answer for paths that made different calls since a field's
+   * True for a body whose calls vary and whose walk stops somewhere (`framedFieldWalkStops`). Past that point
+   * `framedStaleWrites` decides alone, and it is one answer for paths that made different calls since a field's
    * write: a field a call closed on one of them would be rebuilt from the value written before that call, over the
    * change a frame re-entering this one made below it. Such a body decides its pending fields itself instead: one
    * the body's own sequence wrote where every path had made the same calls is current exactly where the run has
-   * made no call since (`perCallFieldsWrittenAt`), and every other one is held current on every path, read again
-   * after each call (`emitPerCallHeldFieldsReread`).
+   * made no call since (`framedFieldsWrittenAt`), and every other one is held current on every path, read again
+   * after each call (`emitFramedHeldFieldsReread`).
    */
-  private perCallFieldsAlwaysCurrent = false;
+  private framedFieldsAlwaysCurrent = false;
   /**
    * The pending fields the body's own sequence wrote where every path had made the same number of calls, with that
    * number, and has not written since. A field's slot holds its value exactly where the run's calls-made count is
    * still that number, and the segment's declaration holds it everywhere else, so no call reads it again. A construct
-   * that runs on some paths only and writes such a field holds it first (`emitPerCallFieldsHeldThrough`).
+   * that runs on some paths only and writes such a field holds it first (`emitFramedFieldsHeldThrough`).
    */
-  private perCallFieldsWrittenAt = new Map<string, number>();
+  private framedFieldsWrittenAt = new Map<string, number>();
   /** The fewest and the most calls the run can have made where the code being emitted runs; `most` may be unbounded. */
-  private perCallCallsLeast = 0;
-  private perCallCallsMost = 0;
+  private framedCallsLeast = 0;
+  private framedCallsMost = 0;
   /**
    * Set inside a switch or a lazily evaluated operand, whose arms are emitted one after another although each runs
    * from the same point: a call there does not raise the fewest calls made past it.
    */
-  private perCallCallsLeastFrozen = 0;
+  private framedCallsLeastFrozen = 0;
   /** The state writes in the body's own sequence of statements, which every path that reaches the next one made. */
-  private perCallSequentialWrites = new Set<Node>();
+  private framedSequentialWrites = new Set<Node>();
   /** The sends whose call into a contract the body makes where the source sends, so its end does not make it again. */
-  private perCallValueCallsAtSource = new Set<number>();
+  private framedValueCallsAtSource = new Set<number>();
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
-  private perCallReservesValidatorHash = false;
+  private framedReservesValidatorHash = false;
   /** Set when some entry of the compiled master returns a value, so the head parks the frame's `retval`. */
-  private perCallReturnsValue = false;
+  private framedReturnsValue = false;
   /** The size of the head's parked event region: the largest event count any body behind the head emits. */
-  private perCallMaxEventCount = 0;
+  private framedMaxEventCount = 0;
   /** The size of the head's parked send region: the most sends any body behind the head lists. */
-  private perCallSendCount = 0;
+  private framedSendCount = 0;
   /** Set when some body behind the head is payable, so a frame may carry value and a non-payable body refuses it. */
-  private perCallAcceptsValue = false;
+  private framedAcceptsValue = false;
   /** True when the master is the proxy shape, whose head leaves the call data as its fallback's parameter. */
-  private perCallProxyFallback = false;
+  private framedProxyFallback = false;
   /** True when the master's fallback forwards the call data it received, as the only body or a dispatched one. */
-  private perCallForwardingFallback = false;
-  /** True when this traversal compiles a dispatched per-call fallback, which the dispatcher hands its input on top. */
-  private perCallFallbackInputOnTop = false;
+  private framedForwardingFallback = false;
+  /** True when this traversal compiles a dispatched framed fallback, which the dispatcher hands its input on top. */
+  private framedFallbackInputOnTop = false;
   /** True when the master has one entry and no dispatcher, so a user's frame to it carries no selector. */
-  private perCallSoleEntry = false;
+  private framedSoleEntry = false;
   /** Long-value slots the head parks, which a body reads its own witness out of. */
-  private perCallValueWitnessCount = 0;
+  private framedValueWitnessCount = 0;
 
   getLocationDataForOptimisation(): FullLocationData {
     return normaliseSourceMapLocationData(this.locationData);
@@ -1666,7 +1666,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * The sorted scalar read is captured by the outcome pass in either convention: the capture decides on its own
    * profitability, so the reservation cannot depend on which convention is compiling. Leaving it out of the
-   * per-call half let the allocator hand id -18 to a helper while the captured read was also defined under it, and
+   * framed half let the allocator hand id -18 to a helper while the captured read was also defined under it, and
    * a program that defines one identifier twice cannot be evaluated at all - measured on the example project's
    * `EACCToken`, whose master defined -18 twice and stopped its genesis probe at `OP_DEFINE a previously-defined
    * function identifier`.
@@ -1916,7 +1916,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // last write. Pinning each intermediate value to the same fixed output is unsatisfiable (and reads stale input).
   private sortedCompositeWritesRemaining: Map<number, number> = new Map();
   private sortedCompositeValueCache: Map<number, string> = new Map();
-  // A per-call frame's last write to a sorted entry keeps the value it wrote for the reads after it: per slot, the
+  // A framed frame's last write to a sorted entry keeps the value it wrote for the reads after it: per slot, the
   // segment the kept value was written in, and the reads and writes of the slot the body has yet to emit.
   private sortedWrittenValueSegment: Map<number, number> = new Map();
   private sortedReadsAhead: Map<number, number> = new Map();
@@ -1932,8 +1932,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // reads the stale input. Only an invariant-key write would be sound (last-write-wins), which is pointless in
   // a loop, so any mapping write here is rejected (fail closed). Collection iteration is a distinct node.
   private plainLoopDepth = 0;
-  // The loop counter a per-call paging read advances with, set only while its entry coordinate is emitted.
-  private perCallPagingTurnAddend: string | undefined;
+  // The loop counter a framed paging read advances with, set only while its entry coordinate is emitted.
+  private framedPagingTurnAddend: string | undefined;
 
   // Dynamic-storage writes (string / unbounded bytes): the value is kept on the stack until the
   // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
@@ -1942,12 +1942,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }> = new Map();
 
   /**
-   * The value each dynamic variable held where a per-call frame pre-allocated its write, with a call able to follow,
-   * by the tracked name of the copy kept until the end (`emitPerCallDynamicOriginChecks`).
+   * The value each dynamic variable held where a framed frame pre-allocated its write, with a call able to follow,
+   * by the tracked name of the copy kept until the end (`emitFramedDynamicOriginChecks`).
    */
-  private perCallDynamicOrigins = new Map<string, string>();
+  private framedDynamicOrigins = new Map<string, string>();
   /** The dynamic variables whose copy the run census compared with the run the last segment begins with. */
-  private perCallDynamicOriginsCompared = new Set<string>();
+  private framedDynamicOriginsCompared = new Set<string>();
   private valueChunkTrailingCountActive = false;
   private static readonly VALUE_CHUNK_TRAILING_COUNT = '__internal__valueChunkTrailingCount';
   private scalarEntryInsertCountActive = false;
@@ -2000,8 +2000,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // of `visitContract`; see that method for why the emission-time list cannot be trusted alone.
   // X170. `outlined` marks a loop emitted into an OP_DEFINE'd body, which the SDK addresses from the INVOKING
   // ENTRY's footprint rather than its own - checked against every reaching entry instead of against `fn`.
-  // `widened` names the prior runs a per-call read stepped past at their declared width, the ones the body writes.
-  // `trails`, for a per-call loop frame's read, whether it found the run from the declaration's end.
+  // `widened` names the prior runs a framed read stepped past at their declared width, the ones the body writes.
+  // `trails`, for a framed loop frame's read, whether it found the run from the declaration's end.
   private dynamicReadBases: {
     fn: FunctionDefinitionNode; variable: string; priorNames: string[];
     outlined: boolean; trailingBase: number; iterCount: number; threaded?: boolean; widened?: string[];
@@ -2184,15 +2184,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertPendValName: string = '(pu_val)';   // deferred entry new value
   private sortedUpsertPendNextName: string = '(pu_next)'; // deferred entry nextKey (empty b'' = +inf)
   private sortedUpsertPendActive: boolean = false;        // the pending-defer registers are live on the stack
-  // A per-call run-time loop with no batch ahead of it creates its records as trailing outputs, so every mint names
+  // A framed run-time loop with no batch ahead of it creates its records as trailing outputs, so every mint names
   // the record by its position in the segment's declaration rather than by the direct convention's trailing band.
   // True while such a loop is emitted, carrying its entry slot; false for every other loop and convention.
-  private perCallDeclaredLoopOut: boolean = false;
-  private perCallDeclaredLoopSlot: number = -1;
-  // Loops of one collection whose records form one run (`perCallLoopChains`), by slot, for the function emitted;
+  private framedDeclaredLoopOut: boolean = false;
+  private framedDeclaredLoopSlot: number = -1;
+  // Loops of one collection whose records form one run (`framedLoopChains`), by slot, for the function emitted;
   // the running loop's place in such a run, while it is emitted.
-  private perCallLoopChain: ReadonlyMap<number, { readonly first: number; readonly last: boolean }> | undefined;
-  private perCallChainedLoop: { readonly first: boolean; readonly last: boolean } | undefined;
+  private framedLoopChain: ReadonlyMap<number, { readonly first: number; readonly last: boolean }> | undefined;
+  private framedChainedLoop: { readonly first: boolean; readonly last: boolean } | undefined;
   // READ ABSENCE CACHE: once a read authenticates and reproduces a real entry, its [slot,nextKey) interval can
   // prove any immediately following missing keys in that same gap without co-spending the entry again.
   private sortedUpsertReadProofSlotName: string = '(read_proof_slot)';
@@ -2257,12 +2257,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Fixed sorted-write slots under a branch/switch arm (or a helper reached from one). Each carries a runtime "write
   // ran" flag, and the epilogue preserves the co-spent node where the write did not run. Direct convention only.
   private conditionalSortedWriteFlagSlots: Set<number> = new Set();
-  // The flagged slots of a per-call master whose write the body does not make wherever it reaches it: a frame may
+  // The flagged slots of a framed master whose write the body does not make wherever it reaches it: a frame may
   // declare such a write skipped, and its access publishes the condition it runs under.
-  private perCallSkippableSlots: Set<number> = new Set();
+  private framedSkippableSlots: Set<number> = new Set();
   // Multi-slot sorted batches (`m[a] -= v; m[b] += v`) under a branch arm, keyed by lowest slot -> target slots. The
   // topology verifier pins slot/next, not value, and the per-slot flag above cannot follow a relinked predecessor, so
-  // one "batch ran" flag gates whole-batch node preservation on the arm not taken: the direct epilogue, or a per-call
+  // one "batch ran" flag gates whole-batch node preservation on the arm not taken: the direct epilogue, or a framed
   // master's batch transition.
   private conditionalSortedBatchFlags: Map<number, readonly number[]> = new Map();
   // Dynamic (chunk-backed) writes whose value+A$len slots were pushed before a conditional (branch/switch) with
@@ -2371,28 +2371,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private resolvedLibraries: Record<string, ExternalLibrary>;
 
-  /** The direct convention: not a per-call composition, whose marketplace bytes the size work leaves alone. */
+  /** The direct convention: not a framed composition, whose marketplace bytes the size work leaves alone. */
   private get directConvention(): boolean {
-    return this.compilerOptions.composition !== 'per-call';
+    return this.compilerOptions.composition !== 'framed';
   }
 
   constructor(private compilerOptions: CompilerOptions) {
     super();
     this.resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
-    this.perCallMaster = (compilerOptions as { __perCallMaster?: boolean }).__perCallMaster === true;
-    this.perCallEntryCallSites = (compilerOptions as {
-      __perCallEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
-    }).__perCallEntryCallSites ?? new Map();
-    this.perCallCallCount = (compilerOptions as { __perCallCallCount?: number }).__perCallCallCount ?? 0;
+    this.framedMaster = (compilerOptions as { __framedMaster?: boolean }).__framedMaster === true;
+    this.framedEntryCallSites = (compilerOptions as {
+      __framedEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
+    }).__framedEntryCallSites ?? new Map();
+    this.framedCallCount = (compilerOptions as { __framedCallCount?: number }).__framedCallCount ?? 0;
     // A refused body no selector reaches whose definition cannot be emitted is stubbed as a refused entry is.
-    this.perCallRefusedEntries = new Map([
-      ...((compilerOptions as { __perCallRefusedEntries?: ReadonlyMap<string, string> }).__perCallRefusedEntries ?? []),
-      ...((compilerOptions as { __perCallStubbedDefinitions?: ReadonlyMap<string, string> })
-        .__perCallStubbedDefinitions ?? []),
+    this.framedRefusedEntries = new Map([
+      ...((compilerOptions as { __framedRefusedEntries?: ReadonlyMap<string, string> }).__framedRefusedEntries ?? []),
+      ...((compilerOptions as { __framedStubbedDefinitions?: ReadonlyMap<string, string> })
+        .__framedStubbedDefinitions ?? []),
     ]);
-    this.perCallReservesValidatorHash = (compilerOptions as {
-      __perCallReservesValidatorHash?: boolean;
-    }).__perCallReservesValidatorHash === true;
+    this.framedReservesValidatorHash = (compilerOptions as {
+      __framedReservesValidatorHash?: boolean;
+    }).__framedReservesValidatorHash === true;
     this.loopGuardRefusals = new Set((compilerOptions as {
       __loopGuardRefusals?: ReadonlyMap<string, string>;
     }).__loopGuardRefusals?.keys() ?? []);
@@ -3097,7 +3097,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emitIndex: number, resolvedName: string | undefined, locationData: SingleLocationData,
   ): void {
     // A body whose master parks its events as a run lists the `emitIndex`-th at the run's first output plus it.
-    if (resolvedName === undefined && this.perCallMaster && this.perCallEventRun) {
+    if (resolvedName === undefined && this.framedMaster && this.framedEventRun) {
       this.emit(encodeInt(BigInt(this.getStackIndex(eventBaseSlotName()))), locationData);
       this.emit(Op.OP_PICK, locationData);
       if (emitIndex > 0) {
@@ -3106,7 +3106,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return;
     }
-    const name = resolvedName ?? this.perCallEventOutputSlotName(emitIndex);
+    const name = resolvedName ?? this.framedEventOutputSlotName(emitIndex);
     if (name === undefined) {
       this.emitBlockSlotIndex('event', emitIndex, locationData);
       return;
@@ -3116,19 +3116,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The tracked slot a per-call entry reads emit `emitIndex`'s listed output index from, when this is one.
+   * The tracked slot a framed entry reads emit `emitIndex`'s listed output index from, when this is one.
    *
-   * A per-call master has no block layout, so the index comes from the witness block's event list, which the head
+   * A framed master has no block layout, so the index comes from the witness block's event list, which the head
    * walks and leaves as a slot. A body that reaches an emit the head left no slot for refuses rather than reading a
    * layout offset that does not exist.
    */
-  private perCallEventOutputSlotName(emitIndex: number): string | undefined {
-    if (!this.perCallMaster) return undefined;
+  private framedEventOutputSlotName(emitIndex: number): string | undefined {
+    if (!this.framedMaster) return undefined;
     const name = eventOutputSlotName(emitIndex);
     if (!this.stack.includes(name)) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master head left no output slot for emit ${emitIndex} while compiling `
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master head left no output slot for emit ${emitIndex} while compiling `
         + `'${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -3136,8 +3136,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return name;
   }
 
-  /** The output slots a per-call master left for the events its entry emits, in emit order. */
-  private perCallEventOutputSlots(emitCount: number): string[] {
+  /** The output slots a framed master left for the events its entry emits, in emit order. */
+  private framedEventOutputSlots(emitCount: number): string[] {
     const names: string[] = [];
     for (let index = 0; index < emitCount; index += 1) {
       const name = eventOutputSlotName(index);
@@ -3338,7 +3338,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * [] -> [1 if the entry is present]. A per-call frame reads it at the coordinate its block declares. A node an
+   * [] -> [1 if the entry is present]. A framed frame reads it at the coordinate its block declares. A node an
    * earlier frame created declares the no-index sentinel there, which names no input, and only that coordinate reads
    * as absent. Any other is read at the input it names, so one that names none fails rather than skipping the checks
    * presence gates: settlement never visits a negative index, and reading one as absent admitted a declared view no
@@ -3507,17 +3507,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Emit OP_DEFINE for each free function
     for (const f of node.freeFunctions) {
       if (this.nativeLegacyMathFunctions.has(f) || f.functionId === undefined) continue;
-      // A per-call master holds only the definitions its bodies invoke: a body inlined at its call sites emits no
+      // A framed master holds only the definitions its bodies invoke: a body inlined at its call sites emits no
       // definition here, so compiling it would judge frame facts this program never carries.
       const reachable = reachableFreeFunctionIds.has(f.functionId);
-      if (this.perCallMaster && !reachable) continue;
+      if (this.framedMaster && !reachable) continue;
       this.emitFunctionDefine(f, reachable);
     }
     // A master's head follows the unit's definitions rather than opening the program, and the head is told how many
     // bytes those are: a definition is a data push of its body, a push of its identifier and OP_DEFINE, which the
     // machine executes in sequence leaving the stack as it found it, so the head reaches the same stack it would
     // have reached at offset zero.
-    if (this.perCallMaster) this.perCallHeadPreludeLength = this.output.length;
+    if (this.framedMaster) this.framedHeadPreludeLength = this.output.length;
 
     node.contract = this.visit(node.contract) as ContractNode;
 
@@ -3546,7 +3546,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A master that reserves the validator program hash slot must keep its head first: the pooling pass prepends
     // the definitions it shares, which would move a reserved slot into a body and leave the fill writing inside a
     // push. A master that stands alone reserves no such slot, so it keeps the program it had.
-    if (!this.perCallReservesValidatorHash) this.poolTopLevelConstants(node);
+    if (!this.framedReservesValidatorHash) this.poolTopLevelConstants(node);
 
     return node;
   }
@@ -3613,24 +3613,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Emits the head a per-call master opens with and registers the four frame values it leaves.
+   * Emits the head a framed master opens with and registers the four frame values it leaves.
    *
    * The head proves ownership and recreation, reads the frame from the input's own unlocking bytecode, checks it
    * as a root frame, and leaves `[origin, sender, value, self]` on the stack. Registering those names lets the
    * body reach each logical `msg.sender`, `msg.value`, `address(this)` and `tx.origin` by picking its slot.
    */
-  private emitPerCallMasterHead(node: ContractNode): void {
+  private emitFramedMasterHead(node: ContractNode): void {
     // The only bytes a master's program may hold before its head are the definitions of the unit's free functions,
     // emitted above as `body push, identifier push, OP_DEFINE` triples. Each is executed where it stands and leaves
     // the stack as it found it, so the head opens on the same stack it would have opened on at offset zero, and the
     // definitions are registered before any body can invoke one. Anything else before the head is a bug rather than
     // a shape, so it refuses by name.
-    if (this.output.length !== this.perCallHeadPreludeLength) {
+    if (this.output.length !== this.framedHeadPreludeLength) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        'a per-call master head must open the program apart from the unit\'s free-function definitions, but the '
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        'a framed master head must open the program apart from the unit\'s free-function definitions, but the '
         + 'program already has other bytes',
-        { contract: node.name, emittedBytes: this.output.length, definitions: this.perCallHeadPreludeLength },
+        { contract: node.name, emittedBytes: this.output.length, definitions: this.framedHeadPreludeLength },
       );
     }
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
@@ -3638,8 +3638,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // and any other is dispatched to for a selector no body has. It counts as an entry here so the head fixes the
     // tail, the return shape and the value checks for the body that actually runs.
     const fallbackAsEntry = isProxyFallbackContract(node);
-    this.perCallProxyFallback = fallbackAsEntry;
-    this.perCallForwardingFallback = hasForwardingFallback(node);
+    this.framedProxyFallback = fallbackAsEntry;
+    this.framedForwardingFallback = hasForwardingFallback(node);
     const entries = [
       ...node.functions.filter((fn) => fn.isEntryPoint),
       ...(node.receiveDef ? [node.receiveDef] : []),
@@ -3647,7 +3647,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ];
     // The head's own numbers are the ones the bodies it serves fix: a body it refuses is a stub that makes no
     // call, emits nothing and returns nothing, so it must not size the tail the head walks.
-    const served = entries.filter((fn) => !this.perCallRefusedEntries.has(fn.name));
+    const served = entries.filter((fn) => !this.framedRefusedEntries.has(fn.name));
     // The body whose frame the head opens on is the served entry when there is exactly one; with none, or with
     // several, the head opens on the shape that takes arguments, which is the one whose frame drops the block at
     // the bottom, because a dispatcher consumes the selector above it either way.
@@ -3659,15 +3659,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // themselves are bound where each entry's own source makes the call, and how many a block declares is what the
     // block says; the bound only tells the head whether the master can make a call at all, and sizes the tail it
     // walks. It is the largest any entry makes on every path, which is the number a body pins its own to.
-    const calls = [...this.perCallEntryCallSites.values()].flat();
-    const callCount = this.perCallCallCount;
+    const calls = [...this.framedEntryCallSites.values()].flat();
+    const callCount = this.framedCallCount;
     // Only a body whose every path makes a call on its context contract's records leaves its own records to the
     // validator on every frame. The one such site the convention admits is a forwarding fallback's delegatecall, which
     // its admission refuses unless every path makes it, so the head skips its walk only for a master whose bodies are
     // all such fallbacks; any other master with such a site asks each frame's block which calls it made.
     const contextCallsOnEveryPath = node.constructorDef === undefined && served.length > 0
-      && served.every((body) => (this.perCallEntryCallSites.get(body.name) ?? []).some((site) => site.forwarded));
-    const reservesValidatorHashSlot = this.perCallReservesValidatorHash;
+      && served.every((body) => (this.framedEntryCallSites.get(body.name) ?? []).some((site) => site.forwarded));
+    const reservesValidatorHashSlot = this.framedReservesValidatorHash;
     // A master is entered by a user or by another master as a callee; the three frame kinds are what the head
     // branches on. A message callee and a read-only callee are both entered by another master; a user's frame is
     // the root. A callee's unlocking bytecode carries the call data's selector, which a dispatcher consumes, so the
@@ -3680,14 +3680,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A forwarding fallback's one parameter is the frame's whole call-data band, which the head leaves as one
     // item, and any other fallback is reached through the dispatcher, so neither leaves a selector to drop.
     const callDataSelectorUnconsumed = dispatchBodyCount === 1 && node.fallbackDef === undefined;
-    this.perCallSoleEntry = callDataSelectorUnconsumed;
+    this.framedSoleEntry = callDataSelectorUnconsumed;
     const soleEntrySelector = callDataSelectorUnconsumed
       ? (entries[0] ?? node.constructorDef)?.functionSelector
       : undefined;
     // The head checks the whole tail, so it has to fix the event region's size and the send count. Every body the
     // dispatcher can run, the constructor included, fixes them; a shape whose counts the bodies do not fix refuses
     // by name here.
-    const tail = derivePerCallTailShape(
+    const tail = deriveFramedTailShape(
       served,
       node.constructorDef,
       // The emits the head has to account for are the ones its own bodies make: a refused body's emit is part of
@@ -3697,8 +3697,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     );
     if (tail.tail === undefined) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master head cannot check this contract's tail: ${tail.reason}`,
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master head cannot check this contract's tail: ${tail.reason}`,
         { contract: node.name, reason: tail.reason },
       );
     }
@@ -3711,16 +3711,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // returns: a returning one compares the value its own code computed against the slot, a void one requires it
     // empty.
     const returnsValue = served.some((candidate) => candidate.returnTypes.length > 0);
-    this.perCallReturnsValue = returnsValue;
-    this.perCallMaxEventCount = tail.tail.maxEventCount;
-    this.perCallSendCount = tail.tail.sendCount;
-    this.perCallValueWitnessCount = tail.tail.valueWitnessCount ?? 0;
-    this.perCallEventRun = tail.tail.eventRun === true;
-    this.perCallSendRun = tail.tail.sendRun === true;
+    this.framedReturnsValue = returnsValue;
+    this.framedMaxEventCount = tail.tail.maxEventCount;
+    this.framedSendCount = tail.tail.sendCount;
+    this.framedValueWitnessCount = tail.tail.valueWitnessCount ?? 0;
+    this.framedEventRun = tail.tail.eventRun === true;
+    this.framedSendRun = tail.tail.sendRun === true;
     // A payable body lets a frame carry value, which the head then requires the master's containers to receive.
     const acceptsValue = [...served, ...(node.constructorDef ? [node.constructorDef] : [])]
       .some((body) => body.modifiers.includes(FunctionModifier.PAYABLE));
-    this.perCallAcceptsValue = acceptsValue;
+    this.framedAcceptsValue = acceptsValue;
     this.emit(bytecodeToScript(Uint8Array.from(buildMasterHeadScript({
       blockOnTop,
       frameKinds,
@@ -3751,7 +3751,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A send's listed output index is left above the value slots and below the event region: the declared count,
     // then one slot per send position the entry fixes, registered in reverse so a body reads the `sendIndex`-th
     // send's output at its own slot. A run leaves its first output above the count instead.
-    if (this.perCallSendRun) {
+    if (this.framedSendRun) {
       this.pushToStack(sendCountSlotName());
       this.pushToStack(sendBaseSlotName());
     } else if (tail.tail.sendCount > 0) {
@@ -3763,7 +3763,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Above them the head leaves the event region: the declared count, then one output slot per
     // position up to the region size, first position topmost. Registering the count first and the positions in
     // reverse lets an inlined body read the count it pins and each emit's listed output index at a fixed depth.
-    if (this.perCallEventRun) {
+    if (this.framedEventRun) {
       this.pushToStack(eventCountSlotName());
       this.pushToStack(eventBaseSlotName());
     } else if (tail.tail.maxEventCount > 0) {
@@ -3795,7 +3795,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // adds its own width; that lets bodies whose layouts place the run at different widths share the base.
     // Registered above the record indices the base is copied from, so a body finds it where it would find the
     // direct path's operand.
-    if (this.perCallServesDynamicChunkBase(node)) {
+    if (this.framedServesDynamicChunkBase(node)) {
       this.emit(encodeInt(BigInt(this.getStackIndex(recordInputIndexSlotName()))), loc);
       this.emit(Op.OP_PICK, loc);
       this.pushToStack(DYNAMIC_CHUNK_BASE_PARAMETER);
@@ -3810,16 +3810,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * widths share the one parked base. A served body with no layout cannot be addressed at all, which is a bug in
    * the shape assessment rather than a shape, so it still refuses.
    */
-  private perCallServesDynamicChunkBase(node: ContractNode): boolean {
+  private framedServesDynamicChunkBase(node: ContractNode): boolean {
     const bodies = [node.constructorDef, ...node.functions].filter(
       (fn): fn is FunctionDefinitionNode => fn !== undefined && fn.usesDynamicChunkInputBase === true
-        && !this.perCallRefusedEntries.has(fn.name),
+        && !this.framedRefusedEntries.has(fn.name),
     );
     for (const fn of bodies) {
       if (fn.blockLayout === undefined) {
         throw new SolidcDiagnosticError(
-          'PER_CALL_CODEGEN_UNAVAILABLE',
-          `the per-call master cannot locate the chunk run of a dynamic value in '${fn.name}', which has no layout`,
+          'FRAMED_CODEGEN_UNAVAILABLE',
+          `the framed master cannot locate the chunk run of a dynamic value in '${fn.name}', which has no layout`,
           { contract: node.name, function: fn.name },
         );
       }
@@ -3833,12 +3833,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The head parks the block's base once for every body it serves, so each body adds its own width; that is what
    * lets bodies whose layouts differ share the one parked base.
    */
-  private perCallDynamicChunkWidth(): number {
+  private framedDynamicChunkWidth(): number {
     const layout = this.currentFunction.blockLayout;
     if (layout === undefined) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call body '${this.currentFunction.name}' has no layout to place its dynamic-value chunk run`,
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed body '${this.currentFunction.name}' has no layout to place its dynamic-value chunk run`,
         { function: this.currentFunction.name },
       );
     }
@@ -3853,7 +3853,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar',
     ).length;
     // A frame beside a batch declares every data record ahead of its groups, not only the ones its layout names
-    // (`perCallRecordsBeforeGroups`), so the run sits past those too.
+    // (`framedRecordsBeforeGroups`), so the run sits past those too.
     const unnamedRecords = this.batchTargetSlots().length === 0 ? 0
       : this.dataNftCount - layout.slots.filter((slot) => slot.kind === 'dataNft').length;
     return blockInputSize(layout) - sideCars + unnamedRecords - layout.slots.filter(
@@ -3867,12 +3867,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * first dynamic-value chunk.
    *
    * The direct convention takes that coordinate as an SDK-supplied argument, so the width is only added for a
-   * per-call frame, whose parked base is the raw record block base.
+   * framed frame, whose parked base is the raw record block base.
    */
   private emitDynamicChunkBasePick(loc: SingleLocationData, extraStackOffset = 0): void {
     this.emitPickCompilerRouteFrameValue(DYNAMIC_CHUNK_BASE_PARAMETER, loc, extraStackOffset);
-    if (this.perCallMaster) {
-      this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
+    if (this.framedMaster) {
+      this.emit(encodeInt(BigInt(this.framedDynamicChunkWidth())), loc);
       this.emit(Op.OP_ADD, loc);
       this.emitLoopDeclaredNodeCount(loc, 1 + extraStackOffset);
     }
@@ -3887,7 +3887,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * code holds it states the records the run really follows.
    */
   private emitLoopDeclaredNodeCount(loc: SingleLocationData, extraStackOffset = 0): void {
-    if (!this.perCallMaster || !this.runtimeLoopEntryOutputCountActive) return;
+    if (!this.framedMaster || !this.runtimeLoopEntryOutputCountActive) return;
     const depth = this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, true);
     if (depth < 0) return;
     this.emit(encodeInt(BigInt(depth + extraStackOffset)), loc);
@@ -3903,14 +3903,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * position the path has reached. Both arms of a branch share that position, so the descriptor that names it is
    * the one the skipped arm checks; a slot that names nothing else still refuses rather than binding another record.
    */
-  private perCallDescriptorIndex(node: ExternalFunctionCallNode): number {
-    const sites = this.perCallSitesForCurrentFunction();
+  private framedDescriptorIndex(node: ExternalFunctionCallNode): number {
+    const sites = this.framedSitesForCurrentFunction();
     const index = node.callInfo?.externalCallSlotIndex;
     if (index !== undefined && index >= 0) {
       if (sites[index] !== undefined) return index;
-      throw this.perCallUnboundSite(node, index, sites.length);
+      throw this.framedUnboundSite(node, index, sites.length);
     }
-    const position = this.perCallOrdinal;
+    const position = this.framedOrdinal;
     const namesThisCall = (site: MasterCallSite): boolean =>
       site.interfaceName === node.interfaceName && site.functionName === node.functionName;
     const atPosition = sites.findIndex((site) => site.ordinal === position && namesThisCall(site));
@@ -3919,16 +3919,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (byPosition >= 0) return byPosition;
     const byName = sites.findIndex(namesThisCall);
     if (byName >= 0) return byName;
-    throw this.perCallUnboundSite(node, index, sites.length);
+    throw this.framedUnboundSite(node, index, sites.length);
   }
 
   /** The refusal a call site raises when no descriptor names the record it has to bind. */
-  private perCallUnboundSite(
+  private framedUnboundSite(
     node: ExternalFunctionCallNode, index: number | undefined, siteCount: number,
   ): SolidcDiagnosticError {
     return new SolidcDiagnosticError(
-      'PER_CALL_CODEGEN_UNAVAILABLE',
-      `the per-call call site '${node.interfaceName}.${node.functionName}' has no record to bind `
+      'FRAMED_CODEGEN_UNAVAILABLE',
+      `the framed call site '${node.interfaceName}.${node.functionName}' has no record to bind `
       + `(slot ${index === undefined ? 'unset' : String(index)}, ${siteCount} site(s) for `
       + `'${this.currentFunction.name}')`,
       { interface: node.interfaceName, function: node.functionName, slot: index },
@@ -3943,28 +3943,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * caller uses the call's value, the record's `result` is left on the stack and decoded the way the direct path
    * decodes a return event, so a typed result reaches the body as the value it was recorded with.
    */
-  private emitPerCallCallSite(node: ExternalFunctionCallNode, locationData: SingleLocationData): void {
-    const index = this.perCallDescriptorIndex(node);
-    const sites = this.perCallSitesForCurrentFunction();
+  private emitFramedCallSite(node: ExternalFunctionCallNode, locationData: SingleLocationData): void {
+    const index = this.framedDescriptorIndex(node);
+    const sites = this.framedSitesForCurrentFunction();
     const site = sites[index]!;
     // The descriptor is the one the source means by this call, and the record it binds is the one at the position
     // the path has reached: a call inside a branch is at the same position on both arms, so the two arms bind their
     // own descriptors to the same record and only the arm that runs checks it. A body whose calls repeat has no
     // fixed position, so the record is the one the number of calls already made names.
-    const recordIndex = this.perCallOrdinal;
-    const runtimeIndex = this.perCallCallsMadeActive;
+    const recordIndex = this.framedOrdinal;
+    const runtimeIndex = this.framedCallsMadeActive;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_CALL_INDEX === '1') {
-      console.error('percall-site', JSON.stringify({
+      console.error('framed-site', JSON.stringify({
         function: this.currentFunction?.name,
         site: `${node.interfaceName}.${node.functionName}`,
         slotIndex: index,
         recordIndex,
         runtimeIndex,
-        callsMadeActive: this.perCallCallsMadeActive,
+        callsMadeActive: this.framedCallsMadeActive,
         slotOnStack: this.stack.includes(callCountSlotName()),
-        callsMadeTopIndex: this.stack.includes(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE)
-          ? this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE) : null,
+        callsMadeTopIndex: this.stack.includes(GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE)
+          ? this.getStackIndex(GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE) : null,
         modelLength: this.stack.length,
         isDefine: this.isDefineSubTraversal,
         siteCount: sites.length,
@@ -3981,17 +3981,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The position the check walks to is pushed first, so it sits beneath the values the check parks: the site's
     // own code reaches it directly below the tail once those are on the alternate stack.
     if (runtimeIndex) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(calls_made)');
     }
-    const identityArguments = computesDigest ? this.perCallIdentityArguments(node, site, index) : [];
-    if (computesTarget) this.emitPerCallComputedTarget(node);
+    const identityArguments = computesDigest ? this.framedIdentityArguments(node, site, index) : [];
+    if (computesTarget) this.emitFramedComputedTarget(node);
     // A call that carries value leaves the amount the code computes between the target and the digest: the check
     // parks the digest, then the value, then the target, and holds the record's `value` to the amount.
     const carriesValue = site.valueFromStack === true && node.callOptions?.value !== undefined;
     if (carriesValue) this.visit(node.callOptions!.value!);
-    if (computesDigest) this.emitPerCallArgumentDigest(node, site, locationData, identityArguments);
+    if (computesDigest) this.emitFramedArgumentDigest(node, site, locationData, identityArguments);
     // The check parks them on the alternate stack and consumes them where their fields are, so they leave the
     // frame here even though the check itself is emitted as raw bytes.
     if (computesDigest) this.popFromStack();
@@ -4012,7 +4012,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // model must carry it so the counter's depth is the real one; a used value that is not modelled makes the
       // increment pick the value instead and leave the counter where it was. The decode below re-pushes the value.
       if (usesResult) this.pushToStack('(callResult)');
-      this.emitPerCallCountOneCall(node, locationData);
+      this.emitFramedCountOneCall(node, locationData);
       if (usesResult) this.popFromStack();
     }
     if (!usesResult) return;
@@ -4043,17 +4043,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * must carry. The site compares the callee's own call data to nothing else — its hash binds both the selector
    * and the arguments to the bytes the caller forwarded.
    */
-  private emitPerCallForwardCallSite(
+  private emitFramedForwardCallSite(
     node: LowLevelCallStatementNode | LowLevelCallNode,
     locationData: SingleLocationData,
     usesResult: boolean,
   ): void {
-    const sites = this.perCallSitesForCurrentFunction();
+    const sites = this.framedSitesForCurrentFunction();
     const site = sites[node.callIndex];
     if (site === undefined || site.forwarded !== true) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call delegatecall at low-level site ${node.callIndex} has no forwarded descriptor for `
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed delegatecall at low-level site ${node.callIndex} has no forwarded descriptor for `
         + `'${this.currentFunction?.name ?? 'unknown'}'`,
         { function: this.currentFunction?.name, site: node.callIndex },
       );
@@ -4067,17 +4067,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // The target the caller's own code holds is emitted first, so it is parked beneath the digest the check reads.
     this.visit(node.targetExpression);
-    this.emitPerCallForwardedDigest(node, locationData);
+    this.emitFramedForwardedDigest(node, locationData);
     this.popFromStack(); // the digest the check parks
     this.popFromStack(); // the target the check parks
-    this.emit(bytecodeToScript(callSiteCheckScript(site, this.perCallOrdinal, usesResult, {
+    this.emit(bytecodeToScript(callSiteCheckScript(site, this.framedOrdinal, usesResult, {
       digestFromStack: true, targetFromStack: true, skipSelectorCheck: true,
     })), locationData);
     if (usesResult) this.pushToStack('(returnData)');
   }
 
   /** Leaves the digest a forwarded call records: the hash of the caller's received bytes past the selector push. */
-  private emitPerCallForwardedDigest(
+  private emitFramedForwardedDigest(
     node: LowLevelCallStatementNode | LowLevelCallNode,
     locationData: SingleLocationData,
   ): void {
@@ -4098,8 +4098,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * against the next segment. The value is replaced where it sits, so a body inside a loop reaches the epilogue
    * with the count its own execution made.
    */
-  private emitPerCallCountOneCall(node: Node, locationData: SingleLocationData): void {
-    const slot = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
+  private emitFramedCountOneCall(node: Node, locationData: SingleLocationData): void {
+    const slot = GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE;
     this.emit(encodeInt(BigInt(this.getStackIndex(slot))), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(calls_made)');
@@ -4115,13 +4115,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * being emitted rather than by a contract-wide list: two entries may call different methods, and entry b's site
    * 0 must resolve to entry b's own first call, not entry a's.
    */
-  private perCallSitesForCurrentFunction(): readonly MasterCallSite[] {
+  private framedSitesForCurrentFunction(): readonly MasterCallSite[] {
     const func = this.currentFunction;
-    const sites = func === undefined ? undefined : this.perCallEntryCallSites.get(func.name);
+    const sites = func === undefined ? undefined : this.framedEntryCallSites.get(func.name);
     if (sites === undefined) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master has no call descriptors for the function '${func?.name ?? 'unknown'}' whose body `
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master has no call descriptors for the function '${func?.name ?? 'unknown'}' whose body `
         + 'makes an external call',
         { function: func?.name },
       );
@@ -4145,17 +4145,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * block may not declare call records the body does not make, and the body may not run with fewer declared than
    * it makes.
    */
-  private emitPerCallCallCountCheck(node: FunctionDefinitionNode): void {
+  private emitFramedCallCountCheck(node: FunctionDefinitionNode): void {
     const slot = callCountSlotName();
     if (!this.stack.includes(slot)) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     // A body whose calls repeat pins the count it made where it ends, once it has made them; the check here is for
     // a body whose source fixes that number, which it can ask before anything runs.
-    if (this.perCallCallsMadeActive) return;
+    if (this.framedCallsMadeActive) return;
     this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(value)');
-    this.emit(encodeInt(BigInt(this.perCallExecutionCallCount())), loc);
+    this.emit(encodeInt(BigInt(this.framedExecutionCallCount())), loc);
     this.pushToStack('(value)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.popFromStack(2);
@@ -4169,7 +4169,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * spend the category's genesis outpoint, which no transaction spending a live master can. It is net zero on the
    * stack, reads no tracked slot, and names itself at its one verify.
    */
-  private emitPerCallGenesisGuard(node: FunctionDefinitionNode): void {
+  private emitFramedGenesisGuard(node: FunctionDefinitionNode): void {
     if (node.name !== '__construct' || this.isDefineSubTraversal) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(bytecodeToScript(genesisSpendCheck()), loc);
@@ -4187,12 +4187,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * rather than before it starts. Every path reaches it, so a frame declaring records the execution did not make
    * is refused however the run reached its end.
    */
-  private emitPerCallCallsMadeCheck(node: FunctionDefinitionNode): void {
-    this.emitPerCallMadeCheck(node, callCountSlotName(), GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
+  private emitFramedCallsMadeCheck(node: FunctionDefinitionNode): void {
+    this.emitFramedMadeCheck(node, callCountSlotName(), GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE);
   }
 
   /** Pins a count the body made where it ends, `made`, to the count the block declares in `declared`. */
-  private emitPerCallMadeCheck(node: FunctionDefinitionNode, declared: string, made: string): void {
+  private emitFramedMadeCheck(node: FunctionDefinitionNode, declared: string, made: string): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
     this.emit(encodeInt(BigInt(this.getStackIndex(declared))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -4211,12 +4211,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * sends take its first positions. A body that lists fewer never reads the rest, so it requires each to say no send
    * was made there: a listed output no code pins would otherwise count toward the value a record may give up (V7).
    */
-  private emitPerCallUnusedSendSlotsCheck(node: FunctionDefinitionNode): void {
+  private emitFramedUnusedSendSlotsCheck(node: FunctionDefinitionNode): void {
     // A body that sends pins the number of sends it listed where it makes them.
     if ((node.transferInfos?.length ?? 0) > 0) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     // A run lists no send for a body that makes none when its declared count is zero.
-    if (this.perCallSendRun && this.stack.includes(sendCountSlotName())) {
+    if (this.framedSendRun && this.stack.includes(sendCountSlotName())) {
       this.emit(encodeInt(BigInt(this.getStackIndex(sendCountSlotName()))), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_0, loc);
@@ -4234,9 +4234,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * Only a master with a payable body needs it per body; otherwise the head requires every frame's value to be zero.
    */
-  private emitPerCallCallValueCheck(node: FunctionDefinitionNode): void {
+  private emitFramedCallValueCheck(node: FunctionDefinitionNode): void {
     const slot = '__internal__frameValue';
-    if (!this.perCallAcceptsValue || node.modifiers.includes(FunctionModifier.PAYABLE)) return;
+    if (!this.framedAcceptsValue || node.modifiers.includes(FunctionModifier.PAYABLE)) return;
     if (!this.stack.includes(slot)) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
@@ -4248,11 +4248,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
   }
 
-  private emitPerCallEventCountCheck(node: FunctionDefinitionNode): void {
+  private emitFramedEventCountCheck(node: FunctionDefinitionNode): void {
     const slot = eventCountSlotName();
     if (!this.stack.includes(slot)) return;
     // A body that emits from a loop knows how many it emitted only where it ends, so it pins the count there.
-    if (this.perCallEventsAtSource) return;
+    if (this.framedEventsAtSource) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -4266,7 +4266,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Leaves the sorted-batch operands the body's own verification reads, derived from the master's witness block.
    *
-   * The direct convention receives these per logical target from its SDK; a per-call master has no such argument
+   * The direct convention receives these per logical target from its SDK; a framed master has no such argument
    * list, but its frame declares the records the write touches. Each target's operands are derived from the
    * target's runtime key and the block, registered as tracked slots the existing verification then consumes
    * unchanged. A body that writes several collections derives them in one walk, in the order the frame declares
@@ -4274,7 +4274,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * collection. The derivation is emitted at the top of the body, before the aliasing preflight snapshots the
    * witnesses, because a key the body computes is a value only the running code holds. A key the body reads out of a
    * node its own batch writes is read through the operands that node's group yields, so the walk runs in rounds
-   * (`perCallBatchDerivationRounds`): a round's keys are emitted once the rounds before it are derived, and it takes
+   * (`framedBatchDerivationRounds`): a round's keys are emitted once the rounds before it are derived, and it takes
    * the record list up where the round before it left it.
    *
    * A key is a parameter the body holds, a frame value the head left (the sender or the origin), or an expression
@@ -4282,34 +4282,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the operands are derived: it is not part of the body's frame, and leaving it would shift every depth the body
    * reads afterwards.
    */
-  private emitPerCallBatchWitnessDerivation(node: FunctionDefinitionNode): void {
+  private emitFramedBatchWitnessDerivation(node: FunctionDefinitionNode): void {
     const batches = node.sortedBatchInfo ?? [];
     if (batches.length === 0) return;
     // The write's records are declared in the segment the write lands in; the derivation reads that segment. A
     // fixed number of calls before the write names it outright; a body whose calls the source does not fix names it
     // by the block's declared call count, which locates the write only when no call follows it.
-    const fixedWriteSegment = perCallBatchWriteSegment(node);
-    const runtimeWriteSegment = fixedWriteSegment === undefined && perCallBatchWriteFollowsEveryCall(node);
+    const fixedWriteSegment = framedBatchWriteSegment(node);
+    const runtimeWriteSegment = fixedWriteSegment === undefined && framedBatchWriteFollowsEveryCall(node);
     // The admission rule refuses a body whose write's segment the derivation cannot locate. An internal body the
     // advisory check does not cover would otherwise be compiled with a segment the write does not land in, so fail
     // closed rather than deriving the operands from another segment.
     if (fixedWriteSegment === undefined && !runtimeWriteSegment) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master cannot locate the segment the verified-mapping write of '${node.name}' lands in`,
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master cannot locate the segment the verified-mapping write of '${node.name}' lands in`,
         { function: node.name },
       );
     }
-    this.perCallBatchWriteRuntime = runtimeWriteSegment;
-    this.perCallBatchWriteSegment = fixedWriteSegment ?? 0;
+    this.framedBatchWriteRuntime = runtimeWriteSegment;
+    this.framedBatchWriteSegment = fixedWriteSegment ?? 0;
     const constants = new Set(this.constantExpressions.keys());
     // The admission rule admits a contract only when every one of its bodies writes the derivable shape. An
     // internal body the advisory check does not cover would otherwise be compiled with a derivation its record
     // declarations do not fit, so refuse by name instead of emitting one that does not describe it.
     if (derivableBatchWitnessNames(node, constants) === undefined) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master has no derivation for the verified-mapping writes of '${node.name}'`,
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master has no derivation for the verified-mapping writes of '${node.name}'`,
         { function: node.name },
       );
     }
@@ -4318,7 +4318,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // is one walk, because the created-record count is the body's region rather than one collection's.
     const slots = batches.flatMap((batch) => batch.slotIndices);
     // One list of keys per target: a nested `m[a][b]` write carries two, and the slot hashes both.
-    const keys = new Map(slots.map((slot) => [slot, perCallBatchKeys(node, slot, constants) ?? []]));
+    const keys = new Map(slots.map((slot) => [slot, framedBatchKeys(node, slot, constants) ?? []]));
     // The write's segment declares the frame's own data-NFT state records, and the node of each key the body only
     // reads, before any target's group, so the derivation steps over them; a delegate frame declares the records of
     // the layout it mirrors, which is its caller's. A frame that runs on another contract's records addresses them
@@ -4327,21 +4327,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ? this.stack.length - this.getStackIndex(categoryOwnerSlotName())
       : undefined;
     const derivation = {
-      leadingRecords: this.perCallRecordsBeforeGroups(),
+      leadingRecords: this.framedRecordsBeforeGroups(),
       ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
-      ...(this.perCallBatchWriteRuntime
+      ...(this.framedBatchWriteRuntime
         ? { segmentFromDeclaredCallCount: true }
-        : { segmentIndex: this.perCallBatchWriteSegment }),
+        : { segmentIndex: this.framedBatchWriteSegment }),
     };
     // A key read out of a node the body's batch also writes is read through the operands that node's group yields,
     // so the walk runs in rounds, each round's keys emitted once the rounds before it are derived. A body whose keys
     // read no such node is one round. The batches were declared in the rounds' order before the body was emitted
     // (`stripFrameParameters`); a body they were not is refused rather than walked in another order than declared.
-    const rounds = perCallBatchDerivationRounds(node, constants);
+    const rounds = framedBatchDerivationRounds(node, constants);
     if (rounds === undefined || rounds.flat().join() !== slots.join()) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master cannot derive the verified-mapping writes of '${node.name}' in the order its frame `
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master cannot derive the verified-mapping writes of '${node.name}' in the order its frame `
         + 'declares them',
         { function: node.name },
       );
@@ -4351,24 +4351,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A later round's key reads a node the body reads and writes itself further on, so emitting it does not pass
       // one of the body's own reads: a write of the node still keeps its value for the reads after it.
       const readsAhead = index === 0 ? undefined : new Map(this.sortedReadsAhead);
-      const pushedKeys = this.emitPerCallBatchKeys(node, round, keys);
+      const pushedKeys = this.emitFramedBatchKeys(node, round, keys);
       if (readsAhead !== undefined) this.sortedReadsAhead = readsAhead;
       const keyDepths = round.map((slot) => keys.get(slot)!.map((key, keyIndex) => {
-        const name = key.expression !== undefined ? perCallBatchKeyName(slot, keyIndex)
+        const name = key.expression !== undefined ? framedBatchKeyName(slot, keyIndex)
           : key.frameSlot !== undefined ? this.frameValueSlotName(key.frameSlot) : key.paramName;
         const keyDepth = name === undefined ? -1 : this.getStackIndex(name, true);
         if (keyDepth < 0) {
           throw new SolidcDiagnosticError(
-            'PER_CALL_CODEGEN_UNAVAILABLE',
-            `the per-call master cannot derive the sorted-batch witness for slot ${slot} of `
+            'FRAMED_CODEGEN_UNAVAILABLE',
+            `the framed master cannot derive the sorted-batch witness for slot ${slot} of `
             + `'${node.name}': its key ${keyIndex} is not on the stack where the derivation runs`,
             { function: node.name, slot },
           );
         }
         return keyDepth;
       }));
-      const records = GenerateTargetTraversalWithLocation.PER_CALL_BATCH_RECORDS;
-      const declared = GenerateTargetTraversalWithLocation.PER_CALL_BATCH_DECLARED;
+      const records = GenerateTargetTraversalWithLocation.FRAMED_BATCH_RECORDS;
+      const declared = GenerateTargetTraversalWithLocation.FRAMED_BATCH_DECLARED;
       const resume = index === 0 ? undefined : {
         recordsDepth: this.getStackIndex(records),
         declaredDepth: this.getStackIndex(declared),
@@ -4376,7 +4376,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
       const last = index === rounds.length - 1;
       // A target whose write a branch guards may be declared skipped, as one kept record that is not its node.
-      const skippableTargets = round.flatMap((slot, position) => (this.perCallSkippableSlots.has(slot) ? [position] : []));
+      const skippableTargets = round.flatMap((slot, position) => (this.framedSkippableSlots.has(slot) ? [position] : []));
       const script = buildBatchTargetsDerivationScript({
         keyDepths,
         ...derivation,
@@ -4420,25 +4420,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Every expression key is pushed before the round's script runs: each pushed value sits above the frame, so a depth
    * read before a later push would be wrong. A parameter or frame key is already on the stack at its own depth.
    */
-  private emitPerCallBatchKeys(
-    node: FunctionDefinitionNode, round: readonly number[], keys: ReadonlyMap<number, readonly PerCallBatchKey[]>,
+  private emitFramedBatchKeys(
+    node: FunctionDefinitionNode, round: readonly number[], keys: ReadonlyMap<number, readonly FramedBatchKey[]>,
   ): string[] {
     const pushed: string[] = [];
     for (const slot of round) {
       for (const [keyIndex, key] of keys.get(slot)!.entries()) {
         if (key.expression === undefined) continue;
         const before = this.stack.length;
-        this.emitPerCallKeyExpression(key.expression, key.stateSegment);
+        this.emitFramedKeyExpression(key.expression, key.stateSegment);
         if (this.stack.length !== before + 1) {
           throw new SolidcDiagnosticError(
-            'PER_CALL_CODEGEN_UNAVAILABLE',
-            `the per-call master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
+            'FRAMED_CODEGEN_UNAVAILABLE',
+            `the framed master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
             + 'leave one value on the stack',
             { function: node.name, slot },
           );
         }
         // The visit tracks the value as a plain '(value)'; name it so its removal can find it again.
-        const name = perCallBatchKeyName(slot, keyIndex);
+        const name = framedBatchKeyName(slot, keyIndex);
         this.stack[0] = name;
         pushed.push(name);
       }
@@ -4455,23 +4455,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * record reads against the view that later segment declares, as the body's own read does there; a slot the body
    * already holds for a value belongs to the first segment, so the read does not take it.
    */
-  private emitPerCallKeyExpression(expression: ExpressionNode, segment: number | undefined): void {
+  private emitFramedKeyExpression(expression: ExpressionNode, segment: number | undefined): void {
     this.scopeDepth += 1;
     if (segment === undefined || segment === 0) {
       this.visit(expression);
       this.scopeDepth -= 1;
       return;
     }
-    const readSegment = this.perCallReadSegment;
-    const readsWriteSegment = this.perCallReadsWriteSegment;
-    const staleWrites = new Set(this.perCallStaleWrites);
-    this.perCallReadSegment = segment;
-    this.perCallReadsWriteSegment = true;
-    for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
+    const readSegment = this.framedReadSegment;
+    const readsWriteSegment = this.framedReadsWriteSegment;
+    const staleWrites = new Set(this.framedStaleWrites);
+    this.framedReadSegment = segment;
+    this.framedReadsWriteSegment = true;
+    for (const key of this.pendingStateWrites.keys()) this.framedStaleWrites.add(key);
     this.visit(expression);
-    this.perCallReadSegment = readSegment;
-    this.perCallReadsWriteSegment = readsWriteSegment;
-    this.perCallStaleWrites = staleWrites;
+    this.framedReadSegment = readSegment;
+    this.framedReadsWriteSegment = readsWriteSegment;
+    this.framedStaleWrites = staleWrites;
     this.scopeDepth -= 1;
   }
 
@@ -4482,21 +4482,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * local the body carries. The bytes the caller's code produced are what the record is bound to, so a builder
    * cannot pair the record with any other callee.
    */
-  private emitPerCallComputedTarget(node: ExternalFunctionCallNode): void {
+  private emitFramedComputedTarget(node: ExternalFunctionCallNode): void {
     // The visit emits the value and registers it on the stack model; the site drops that registration when its
     // check parks the value on the alternate stack.
     this.visit(node.addressExpression);
   }
 
   /**
-   * The parameter positions of a per-call site's run-time `address` arguments the caller holds as a 20-byte
+   * The parameter positions of a framed site's run-time `address` arguments the caller holds as a 20-byte
    * identity: a value read back through a Solidity ABI call result, which decodes to the identity (DECISIONS D13).
    *
    * The callee's call data carries the lock the identity names there, so the site digests the identity and its check
    * binds the call data to it by identity (`callSiteCheckScript`). A native result carries the lock itself, so a
    * native body names none.
    */
-  private perCallIdentityArguments(
+  private framedIdentityArguments(
     node: ExternalFunctionCallNode, site: MasterCallSite, slotIndex: number,
   ): readonly number[] {
     if (!(this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)) return [];
@@ -4516,7 +4516,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * so the digest is a fact about the values the caller acted on rather than a constant a builder could pair with
    * any call data.
    */
-  private emitPerCallArgumentDigest(
+  private emitFramedArgumentDigest(
     node: ExternalFunctionCallNode,
     site: MasterCallSite,
     loc: SingleLocationData,
@@ -4543,8 +4543,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           const parameter = node.parameters[index];
           if (parameter === undefined) {
             throw new SolidcDiagnosticError(
-              'PER_CALL_CODEGEN_UNAVAILABLE',
-              `the per-call call site '${node.interfaceName}.${node.functionName}' records a run-time argument `
+              'FRAMED_CODEGEN_UNAVAILABLE',
+              `the framed call site '${node.interfaceName}.${node.functionName}' records a run-time argument `
               + `at position ${index}, which the source does not pass`,
               { interface: node.interfaceName, function: node.functionName, position: index },
             );
@@ -4555,7 +4555,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.markArrayArgumentBlobEncoded(parameter);
           this.visit(parameter);
           // An address the caller holds as its identity is digested as that identity, which the site's check binds
-          // to the lock the callee's call data carries (`perCallIdentityArguments`).
+          // to the lock the callee's call data carries (`framedIdentityArguments`).
           if (identityArguments.includes(index)) {
             for (const operation of compileAddressToEvmIdentity()) this.emit(operation, loc);
           }
@@ -4651,10 +4651,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (routedFunction?.sortedBatchInfo ?? []).map((batch) => batch.collection),
     );
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
-    // A per-call master's program is the head first. A single entry point continues with its inlined body, which
+    // A framed master's program is the head first. A single entry point continues with its inlined body, which
     // reads the frame from the slots registered here; several continue with the selector dispatcher, whose bodies
     // are seeded with the same names in emitEntryPointFunctionDefine.
-    if (this.perCallMaster) this.emitPerCallMasterHead(node);
+    if (this.framedMaster) this.emitFramedMasterHead(node);
 
     // Register contract-level constants for inline substitution
     for (const cd of node.constantDefinitions) {
@@ -4728,8 +4728,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       msgDataCollector.visit(f);
       if (msgDataCollector.found) break;
     }
-    // A per-call master reads its call data from its own input wherever a body asks, so it keeps no redeem length.
-    this.contractUsesMsgData = msgDataCollector.found && !this.perCallMaster;
+    // A framed master reads its call data from its own input wherever a body asks, so it keeps no redeem length.
+    this.contractUsesMsgData = msgDataCollector.found && !this.framedMaster;
     const msgSigCollector = new MsgSigUsageCollector();
     for (const f of allNodeFunctions) {
       msgSigCollector.visit(f);
@@ -4749,9 +4749,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.contractUsesMsgValue = msgValueCollector.found;
 
-    // Also set contractUsesMsgData if fallback has a bytes parameter; a per-call fallback is handed the frame's call
+    // Also set contractUsesMsgData if fallback has a bytes parameter; a framed fallback is handed the frame's call
     // data by its head or its dispatcher instead.
-    if (node.fallbackDef && node.fallbackDef.parameters.length > 0 && !this.perCallMaster) {
+    if (node.fallbackDef && node.fallbackDef.parameters.length > 0 && !this.framedMaster) {
       this.contractUsesMsgData = true;
     }
 
@@ -5187,11 +5187,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return sub.dynamicReadBases.some(({ variable, priorNames, widened, trails }) =>
       this.dynamicReadPriorRuns(fn, variable).join(',') !== priorNames.join(',')
       || (widened !== undefined && this.dynamicReadWidenedPriors(fn, priorNames).join(',') !== widened.join(','))
-      || (trails !== undefined && trails !== this.perCallReadRunTrails(fn, variable)));
+      || (trails !== undefined && trails !== this.framedReadRunTrails(fn, variable)));
   }
 
   /**
-   * The prior runs a per-call read steps past at their declared width rather than their spent one: the ones the
+   * The prior runs a framed read steps past at their declared width rather than their spent one: the ones the
    * body writes. A prior is read before the body's own write of it marks it written, so the set is held to the
    * body's final footprint like the prior list is.
    */
@@ -5358,7 +5358,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!outlined) {
         const required = this.dynamicReadPriorRuns(fn, variable);
         const widenedRequired = this.dynamicReadWidenedPriors(fn, priorNames);
-        if (trails !== undefined && trails !== this.perCallReadRunTrails(fn, variable)) {
+        if (trails !== undefined && trails !== this.framedReadRunTrails(fn, variable)) {
           throw new Error(`Chunk-backed read of '${variable}' in '${fn.name}' addresses its run `
             + `${trails ? 'from the declaration\'s end' : 'past the loop\'s records'}, which footprint ${describe(fn)} `
             + 'does not. The per-body basis fixpoint did not converge.');
@@ -5931,27 +5931,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Cheap admission is throwaway: skip user/clone bodies that are not the verifier/route closure. The
       // binder pass still compiles every body for diagnostics and the shipped artifact.
       if (cheapAdmission && !keepAdmissionBody(f)) continue;
-      // A per-call master holds the definitions its own program can reach. A body the lowering already folded into
+      // A framed master holds the definitions its own program can reach. A body the lowering already folded into
       // its call sites has no invocation left, and a definition of it would be compiled with no entry whose call
       // descriptors its own calls could be bound to, so it is left out rather than compiled against a frame this
       // program never assembles.
-      if (this.perCallMaster && !f.isEntryPoint && !isInvoked) continue;
+      if (this.framedMaster && !f.isEntryPoint && !isInvoked) continue;
       if (!f.isEntryPoint || isInvoked) this.emitFunctionDefine(f, isInvoked);
     }
 
     // Build dispatcher: only include entry-point functions (external/public) + constructor
-    // A per-call frame always carries call data, so receive() is reached through its selector like any entry.
-    const perCallReceive = this.perCallMaster && node.receiveDef !== undefined;
+    // A framed frame always carries call data, so receive() is reached through its selector like any entry.
+    const framedReceive = this.framedMaster && node.receiveDef !== undefined;
     const entryFunctions = [
       ...node.functions.filter((f) => f.isEntryPoint),
-      ...(perCallReceive ? [node.receiveDef!] : []),
+      ...(framedReceive ? [node.receiveDef!] : []),
     ];
     const allFunctions = node.constructorDef
       ? [...entryFunctions, node.constructorDef]
       : entryFunctions;
 
     const hasFallback = !!node.fallbackDef;
-    const hasReceive = !!node.receiveDef && !perCallReceive;
+    const hasReceive = !!node.receiveDef && !framedReceive;
 
     const dispatchFunctions = [...allFunctions];
     if (hasFallback) dispatchFunctions.push(node.fallbackDef!);
@@ -5973,14 +5973,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && dispatchFunctions[0].modifiers.includes(FunctionModifier.DELEGATE)
       && (!node.isLibraryContract || node.isSplitFacet);
     const outlineLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    // A per-call proxy whose only entry body is its fallback has nothing to dispatch: the fallback is inlined, and
+    // A framed proxy whose only entry body is its fallback has nothing to dispatch: the fallback is inlined, and
     // the call data it takes is the user's, which the master's frame supplies to the body directly.
-    // A per-call fallback other than the proxy's is dispatched to, as the EVM's is. So is a direct one: a direct
+    // A framed fallback other than the proxy's is dispatched to, as the EVM's is. So is a direct one: a direct
     // input's own unlocking pushes are its call data, led by a selector (a delegatecall proxy's is its
     // implementation's, which the forwarded call data must begin with). The dispatcher consumes that selector, and
     // an inlined body would leave it on the stack, so the spend could not end with the one item a P2SH input needs.
     const fallbackIsSoleEntry = dispatchFunctions.length === 1 && dispatchFunctions[0] === node.fallbackDef
-      && allFunctions.length === 0 && this.perCallMaster && this.perCallProxyFallback;
+      && allFunctions.length === 0 && this.framedMaster && this.framedProxyFallback;
     if (fallbackIsSoleEntry
       || (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnNeedsSelectorDispatch)) {
       this.outlineSharedFunctionBodies(outlineLoc);
@@ -6282,9 +6282,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The usage probe compiles the same OP_DEFINE call ABI as the shipping pass. Preserve the recovery-context
       // widening or it can count a body with the old arity and silently select a different extraction plan.
       probe.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
-      probe.perCallProxyFallback = this.perCallProxyFallback;
-      probe.perCallForwardingFallback = this.perCallForwardingFallback;
-      probe.perCallSoleEntry = this.perCallSoleEntry;
+      probe.framedProxyFallback = this.framedProxyFallback;
+      probe.framedForwardingFallback = this.framedForwardingFallback;
+      probe.framedSoleEntry = this.framedSoleEntry;
       probe.emitFunctionDefinesAndDispatch(node);
       this.structSkipIds = new Map(probe.structSkipIds);
       this.structSkipTypes = new Map(probe.structSkipTypes);
@@ -6342,8 +6342,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     hasReceive: boolean,
   ): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    if (this.perCallMaster && hasFallback) {
-      this.emitPerCallFallbackDispatch(node, knownFunctions, loc);
+    if (this.framedMaster && hasFallback) {
+      this.emitFramedFallbackDispatch(node, knownFunctions, loc);
       return;
     }
 
@@ -6415,14 +6415,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * A per-call master's dispatcher beside a fallback, as the EVM dispatches: a selector a body has runs that body,
+   * A framed master's dispatcher beside a fallback, as the EVM dispatches: a selector a body has runs that body,
    * and any other runs the fallback, whose own selector is not one a call names.
    *
    * The call's argument pushes lie below everything the program pushed, so the fallback arm removes them until the
    * stack is the program's own. A fallback that takes its call data is handed the frame's band on top; the band of
    * a value send, the selector of `receive()` alone, is the EVM's empty call data.
    */
-  private emitPerCallFallbackDispatch(
+  private emitFramedFallbackDispatch(
     node: ContractNode,
     knownFunctions: FunctionDefinitionNode[],
     loc: SingleLocationData,
@@ -6458,23 +6458,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_ENDIF, loc);
-    if (fallback.parameters.length > 0) this.emitPerCallCallData(loc);
+    if (fallback.parameters.length > 0) this.emitFramedCallData(loc);
     this.emit(fallback.functionSelector!, loc);
     this.emit(Op.OP_INVOKE, loc);
     if (knownFunctions.length > 0) this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
-   * Leaves a per-call frame's call data: the pushes between its witness block and its redeem script, the selector's
+   * Leaves a framed frame's call data: the pushes between its witness block and its redeem script, the selector's
    * push first. A value send's, the selector of `receive()` alone, is the EVM's empty call data.
    */
-  private emitPerCallCallData(loc: SingleLocationData): void {
+  private emitFramedCallData(loc: SingleLocationData): void {
     this.emit(Op.OP_INPUTINDEX, loc);
     this.emit(Op.OP_INPUTBYTECODE, loc);
     this.emit(bytecodeToScript(dropLastPushScript()), loc);
     this.emit(bytecodeToScript(dropFirstPushScript()), loc);
     this.emit(Op.OP_DUP, loc);
-    this.emit(encodeDataPush(PER_CALL_RECEIVE_SITE.selector), loc);
+    this.emit(encodeDataPush(FRAMED_RECEIVE_SITE.selector), loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc);
@@ -6544,7 +6544,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // publishes the body to its signer; its own bodies, and an entry its route may invoke, are left to it.
     const busOwned = func.name.startsWith('__message_bus') || !!func.graphEmissionHandler
       || !!func.messageBusDetachedSignatureHandler;
-    const directOnly = this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'per-call';
+    const directOnly = this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed';
     if (emitDefinition && !busOwned && inlinesSignatureChecks(this.compilerOptions)
       && (!func.isEntryPoint || directOnly) && checksTransactionSignature(func, new Map())) {
       throw new SolidcDiagnosticError(
@@ -6940,12 +6940,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const subTraversal = new GenerateTargetTraversalWithLocation(this.compilerOptions);
 
       // Copy necessary context
-      subTraversal.perCallReturnsValue = this.perCallReturnsValue;
-      subTraversal.perCallForwardingFallback = this.perCallForwardingFallback;
-      subTraversal.perCallMaxEventCount = this.perCallMaxEventCount;
-      subTraversal.perCallSendCount = this.perCallSendCount;
-      subTraversal.perCallAcceptsValue = this.perCallAcceptsValue;
-      subTraversal.perCallValueWitnessCount = this.perCallValueWitnessCount;
+      subTraversal.framedReturnsValue = this.framedReturnsValue;
+      subTraversal.framedForwardingFallback = this.framedForwardingFallback;
+      subTraversal.framedMaxEventCount = this.framedMaxEventCount;
+      subTraversal.framedSendCount = this.framedSendCount;
+      subTraversal.framedAcceptsValue = this.framedAcceptsValue;
+      subTraversal.framedValueWitnessCount = this.framedValueWitnessCount;
       subTraversal.stateVariables = this.stateVariables;
       subTraversal.collectionCount = this.collectionCount;
       subTraversal.collectionDefinitions = this.collectionDefinitions;
@@ -7014,11 +7014,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.drop32Slot = this.drop32Slot;
       subTraversal.isSubroutineUseProbe = this.isSubroutineUseProbe;
 
-      // A per-call master's dispatched entry runs through OP_INVOKE, which pops the selector and leaves the head's
+      // A framed master's dispatched entry runs through OP_INVOKE, which pops the selector and leaves the head's
       // event output slots, then its four frame values, on top of the constructor params. Seed them above the
       // constructor names so this body reads `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from the
       // head's slots, as the inlined single-entry body does, and each emit's listed output index from its own.
-      if (this.perCallMaster) {
+      if (this.framedMaster) {
         // The seeded array is the frame top-first, so the list below runs topmost to deepest. The head leaves the
         // dynamic-chunk base topmost (it copies the record-input index above every other slot), above the
         // category-owner slot, `retval`, the call count, and the record and event slots below them.
@@ -7026,43 +7026,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           subTraversal.stack.push(DYNAMIC_CHUNK_BASE_PARAMETER);
         }
         if (this.stack.includes(categoryOwnerSlotName())) subTraversal.stack.push(categoryOwnerSlotName());
-        if (this.perCallReturnsValue) subTraversal.stack.push(retvalSlotName());
+        if (this.framedReturnsValue) subTraversal.stack.push(retvalSlotName());
         if (this.stack.includes(callCountSlotName())) subTraversal.stack.push(callCountSlotName());
         if (this.stack.includes(recordInputIndexSlotName())) {
           subTraversal.stack.push(recordInputIndexSlotName());
           subTraversal.stack.push(recordOutputIndexSlotName());
         }
         // The head parks one slot per event the region holds, so the body sees the whole region. The usage probe
-        // compiles these bodies without a head, so `perCallMaxEventCount` is unset there; falling back to the
+        // compiles these bodies without a head, so `framedMaxEventCount` is unset there; falling back to the
         // body's own count keeps the probe's stack deep enough for the body to read its own emit slots. A run is
         // its first output above the count, and the probe takes a body that makes a run as making one.
         const looped = loopEffectKinds(func);
-        subTraversal.perCallEventRun = this.perCallEventRun || looped.has('events');
-        subTraversal.perCallSendRun = this.perCallSendRun || looped.has('sends');
-        const eventRegion = subTraversal.perCallEventRun
-          ? 0 : Math.max(this.perCallMaxEventCount, func.emitInfos?.length ?? 0);
+        subTraversal.framedEventRun = this.framedEventRun || looped.has('events');
+        subTraversal.framedSendRun = this.framedSendRun || looped.has('sends');
+        const eventRegion = subTraversal.framedEventRun
+          ? 0 : Math.max(this.framedMaxEventCount, func.emitInfos?.length ?? 0);
         for (let index = 0; index < eventRegion; index += 1) {
           subTraversal.stack.push(eventOutputSlotName(index));
         }
-        if (subTraversal.perCallEventRun) subTraversal.stack.push(eventBaseSlotName());
-        if (eventRegion > 0 || subTraversal.perCallEventRun) subTraversal.stack.push(eventCountSlotName());
+        if (subTraversal.framedEventRun) subTraversal.stack.push(eventBaseSlotName());
+        if (eventRegion > 0 || subTraversal.framedEventRun) subTraversal.stack.push(eventCountSlotName());
         // The send region sits below the event region: one slot per position, first position topmost, then the
         // declared count. The usage probe falls back to the body's own count, as for events.
-        const sendRegion = subTraversal.perCallSendRun
-          ? 0 : Math.max(this.perCallSendCount, func.transferInfos?.length ?? 0);
+        const sendRegion = subTraversal.framedSendRun
+          ? 0 : Math.max(this.framedSendCount, func.transferInfos?.length ?? 0);
         for (let index = 0; index < sendRegion; index += 1) {
           subTraversal.stack.push(sendOutputSlotName(index));
         }
-        if (subTraversal.perCallSendRun) subTraversal.stack.push(sendBaseSlotName());
-        if (sendRegion > 0 || subTraversal.perCallSendRun) subTraversal.stack.push(sendCountSlotName());
+        if (subTraversal.framedSendRun) subTraversal.stack.push(sendBaseSlotName());
+        if (sendRegion > 0 || subTraversal.framedSendRun) subTraversal.stack.push(sendCountSlotName());
         // The head parks one slot per long value a body reads, below the event region and above the frame values,
         // so a body that reads a mapping value's witness finds it where the head left it. Slot 0 is the topmost of
         // them, the order the head pops them back in.
-        for (let slot = 0; slot < this.perCallValueWitnessCount; slot += 1) {
+        for (let slot = 0; slot < this.framedValueWitnessCount; slot += 1) {
           subTraversal.stack.push(valueWitnessSlotName(slot));
         }
-        subTraversal.stack.push(...PER_CALL_FRAME_SLOT_NAMES);
-        subTraversal.perCallFallbackInputOnTop = func.isFallback && func.parameters.length > 0;
+        subTraversal.stack.push(...FRAMED_FRAME_SLOT_NAMES);
+        subTraversal.framedFallbackInputOnTop = func.isFallback && func.parameters.length > 0;
       }
       // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
       // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
@@ -7193,7 +7193,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if ((globalThis as any).process?.env?.SOLIDCASH_NO_OUTLINE) return;
     // A speed-hinted body combining dynamic writes with authenticated collection reads needs stable source
     // instruction pointers for derivation. The contract survey already records that mixed journal shape; do
-    // not move its source spans into shared OP_DEFINE bodies during the faster compilation path. A per-call
+    // not move its source spans into shared OP_DEFINE bodies during the faster compilation path. A framed
     // frame derives from its own declarations, not from those instruction pointers, so its bodies still share.
     if (this.directConvention && this.compilerOptions.optimizeForCompilationSpeed === true
       && this.currentContractRequiresTraceStableBodies) return;
@@ -7905,7 +7905,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // there, so a caller of an unsupported function is refused at run time while the bodies it can serve compile
     // and settle. The reason is published on the artifact, which is what a builder reports. A function refused for
     // its loop guard is emitted the same way in either convention.
-    if ((this.perCallMaster && this.perCallRefusedEntries.has(node.name)) || this.loopGuardRefusals.has(node.name)) {
+    if ((this.framedMaster && this.framedRefusedEntries.has(node.name)) || this.loopGuardRefusals.has(node.name)) {
       const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_VERIFY, loc);
@@ -7981,7 +7981,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && this.journalWriterFunctionIds.has(node.functionId));
     this.functionHasReturnInLoop = node.body ? this.hasReturnInLoop(node.body, false) : false;
     // Rebuilt fresh each codegen pass (this node is revisited across derivation/subroutine sub-traversals);
-    // emitKeccakComputeCall pushes one entry per keccak256 call in emission order (its per-call slot index).
+    // emitKeccakComputeCall pushes one entry per keccak256 call in emission order (its framed slot index).
     if (node.keccakCompute) { node.keccakPreimageParams = []; node.keccakComputeSites = []; }
     // Same for ecrecoverPubKey: emitEcrecoverComputeCall pushes one arg-param entry per call; without this reset the
     // index (its length) accumulates across passes and the second pass reads a nonexistent block slot (2*i overflow).
@@ -7989,42 +7989,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
-    this.perCallCallsMadeActive = false;
-    this.perCallEventsAtSource = false;
-    this.perCallSendsAtSource = false;
-    this.perCallHashesAtSource = false;
-    this.perCallSegmentIndex = 0;
-    this.perCallOrdinal = 0;
-    this.perCallLoweredSites = new Set<ExternalFunctionCallNode>();
-    this.perCallArgumentCallValues = new Map<ExternalFunctionCallNode, string>();
-    this.perCallRecordSegment = new Map();
-    this.perCallReadSegment = undefined;
-    this.perCallBatchWriteSegment = 0;
-    this.perCallBatchWriteRuntime = false;
-    this.perCallReadsWriteSegment = false;
-    this.perCallRunApart = false;
-    this.perCallReadsRunSegment = false;
-    this.perCallDeclaredLoopOut = false;
-    this.perCallDeclaredLoopSlot = -1;
+    this.framedCallsMadeActive = false;
+    this.framedEventsAtSource = false;
+    this.framedSendsAtSource = false;
+    this.framedHashesAtSource = false;
+    this.framedSegmentIndex = 0;
+    this.framedOrdinal = 0;
+    this.framedLoweredSites = new Set<ExternalFunctionCallNode>();
+    this.framedArgumentCallValues = new Map<ExternalFunctionCallNode, string>();
+    this.framedRecordSegment = new Map();
+    this.framedReadSegment = undefined;
+    this.framedBatchWriteSegment = 0;
+    this.framedBatchWriteRuntime = false;
+    this.framedReadsWriteSegment = false;
+    this.framedRunApart = false;
+    this.framedReadsRunSegment = false;
+    this.framedDeclaredLoopOut = false;
+    this.framedDeclaredLoopSlot = -1;
     // Taken from the body as the function's visit begins, before any statement of it is rewritten.
-    this.perCallLoopChain = this.perCallMaster ? perCallLoopChains(node) : undefined;
-    this.perCallCallFollowsBatchWrite = this.perCallMaster && (node.sortedBatchInfo?.length ?? 0) > 0
-      && !perCallBatchWriteFollowsEveryCall(node);
-    this.perCallChainedLoop = undefined;
-    this.perCallStaleWrites = new Set();
-    this.perCallFieldSegments = undefined;
-    this.perCallReachedSegments = new Set([0]);
-    this.perCallFieldsAlwaysCurrent = false;
-    this.perCallFieldsWrittenAt = new Map();
-    this.perCallCallsLeast = 0;
-    this.perCallCallsMost = 0;
-    this.perCallCallsLeastFrozen = 0;
-    this.perCallSequentialWrites = new Set();
-    this.perCallValueCallsAtSource = new Set();
+    this.framedLoopChain = this.framedMaster ? framedLoopChains(node) : undefined;
+    this.framedCallFollowsBatchWrite = this.framedMaster && (node.sortedBatchInfo?.length ?? 0) > 0
+      && !framedBatchWriteFollowsEveryCall(node);
+    this.framedChainedLoop = undefined;
+    this.framedStaleWrites = new Set();
+    this.framedFieldSegments = undefined;
+    this.framedReachedSegments = new Set([0]);
+    this.framedFieldsAlwaysCurrent = false;
+    this.framedFieldsWrittenAt = new Map();
+    this.framedCallsLeast = 0;
+    this.framedCallsMost = 0;
+    this.framedCallsLeastFrozen = 0;
+    this.framedSequentialWrites = new Set();
+    this.framedValueCallsAtSource = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
-    this.perCallDynamicOrigins = new Map();
-    this.perCallDynamicOriginsCompared = new Set();
+    this.framedDynamicOrigins = new Map();
+    this.framedDynamicOriginsCompared = new Set();
     this.valueChunkTrailingCountActive = false;
     this.scalarEntryInsertCountActive = false;
     this.runtimeLoopEntryInputCountActive = false;
@@ -8090,13 +8090,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.transfersPreallocatedAtFunctionStart = false;
     this.condDeleteSlots = new Set();
     this.conditionalSortedWriteFlagSlots = new Set();
-    this.perCallSkippableSlots = new Set();
+    this.framedSkippableSlots = new Set();
     this.conditionalSortedBatchFlags = new Map();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
     this.conditionalEmitIndices = new Set();
-    // The per-call convention places events in its own witness blocks; it is left as it was.
-    this.eventSlotsByPath = !this.perCallMaster;
+    // The framed convention places events in its own witness blocks; it is left as it was.
+    this.eventSlotsByPath = !this.framedMaster;
     this.conditionalTokenContainerTransferIndices = new Set();
     this.tokenContainerSlots = node.tokenContainerAccesses ?? [];
     this.pendingTokenContainerTransfers = [];
@@ -8294,7 +8294,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Delegate tracking
     this.functionHasDelegatecall = node.lowLevelCalls?.some((c) => c.callMode === 'delegatecall') ?? false;
     this.currentFunctionIsDelegate = node.modifiers.includes(FunctionModifier.DELEGATE);
-    // A per-call frame carries a run of loops over one collection through its own loop chain instead.
+    // A framed frame carries a run of loops over one collection through its own loop chain instead.
     this.repeatedSortedUpsertLoopTotals = this.directConvention && !this.isDefineSubTraversal
       && !this.currentFunctionIsDelegate && !this.currentFunctionIsMessageBusRoute
       ? this.findRepeatedSortedUpsertLoopTotals(node.body) : new Map();
@@ -8303,9 +8303,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The parameter is NOT passed by the SDK - it's computed inline from OP_INPUTBYTECODE.
     // Entry-point compile only: as an internal subroutine (self low-level call lowering) the caller pushes
     // the payload as a declared arg, and _redeemPushSize does not exist on the subroutine's stack.
-    // A per-call master's caller pushes the received call data as the fallback's declared argument, so the body
+    // A framed master's caller pushes the received call data as the fallback's declared argument, so the body
     // reads that argument at its own depth instead of rebuilding it from the unlocking bytecode.
-    if (node.isFallback && node.parameters.length > 0 && !this.isDefineSubTraversal && !this.perCallMaster
+    if (node.isFallback && node.parameters.length > 0 && !this.isDefineSubTraversal && !this.framedMaster
       && !node.parameters[0].name.startsWith('__internal__')) {
       const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
       this.emitMsgData(loc);
@@ -8314,8 +8314,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const syntheticParams = node.parameters.slice(1);
       const visited = this.visitList(syntheticParams) as ParameterNode[];
       node.parameters = [node.parameters[0], ...visited];
-    } else if (this.perCallFallbackInputOnTop && node.isFallback) {
-      // The dispatcher hands a per-call fallback the call data it takes on top of the frame.
+    } else if (this.framedFallbackInputOnTop && node.isFallback) {
+      // The dispatcher hands a framed fallback the call data it takes on top of the frame.
       this.pushToStack(node.parameters[0].name);
     } else if (this.isDefineSubTraversal) {
       // Internal subroutine (invoked by functionId via OP_INVOKE): the caller pushes only the DECLARED args,
@@ -8496,21 +8496,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
-    // A per-call subroutine that reaches the contract's own address receives it as a hidden operand, placed
+    // A framed subroutine that reaches the contract's own address receives it as a hidden operand, placed
     // above the caller's other hidden contexts because the caller pushes it last (see visitUserFunctionCall).
     // The origin sits above even that: the caller pushes it right after the address, the value after the origin,
     // and the selector after the value.
-    if (this.isDefineSubTraversal && this.perCallMaster && this.perCallSelectorCarrierNames().has(node.name)) {
-      this.pushToStack(PER_CALL_SELECTOR_CONTEXT, true);
+    if (this.isDefineSubTraversal && this.framedMaster && this.framedSelectorCarrierNames().has(node.name)) {
+      this.pushToStack(FRAMED_SELECTOR_CONTEXT, true);
     }
-    if (this.isDefineSubTraversal && this.perCallMaster && this.perCallValueCarrierNames().has(node.name)) {
-      this.pushToStack(PER_CALL_VALUE_CONTEXT, true);
+    if (this.isDefineSubTraversal && this.framedMaster && this.framedValueCarrierNames().has(node.name)) {
+      this.pushToStack(FRAMED_VALUE_CONTEXT, true);
     }
-    if (this.isDefineSubTraversal && this.perCallMaster && this.perCallOriginCarrierNames().has(node.name)) {
-      this.pushToStack(PER_CALL_ORIGIN_CONTEXT, true);
+    if (this.isDefineSubTraversal && this.framedMaster && this.framedOriginCarrierNames().has(node.name)) {
+      this.pushToStack(FRAMED_ORIGIN_CONTEXT, true);
     }
-    if (this.isDefineSubTraversal && this.perCallMaster && this.perCallSelfContextCarrierNames().has(node.name)) {
-      this.pushToStack(PER_CALL_SELF_CONTEXT, true);
+    if (this.isDefineSubTraversal && this.framedMaster && this.framedSelfContextCarrierNames().has(node.name)) {
+      this.pushToStack(FRAMED_SELF_CONTEXT, true);
     }
     if (this.isDefineSubTraversal && node.graphEmissionHandler && node.usesMsgSender) {
       this.pushToStack('__internal__handlerMsgSender', true);
@@ -8747,7 +8747,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.planGenesisReads(node);
 
     // C1/piece-5: a conditional delegatecall needs a runtime "the delegate edge was reached" flag. The state
-    // covenant skip is per-function, the co-spend pin is per-callsite, so the epilogue must know which paths
+    // covenant skip is per-function, the co-spend pin is framedsite, so the epilogue must know which paths
     // actually delegated. Allocated only for a conditional callsite, so every straight-line delegatecall proxy
     // keeps byte-identical bytecode.
     this.delegateTakenFlagActive = this.functionHasDelegatecall && node.delegatecallIsConditional
@@ -8810,47 +8810,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // are fixed keeps byte-identical code and no slot.
     // A body that sends pays a contract through a call into its `receive()` after its own code, so how many calls
     // it makes is a fact of the recipients rather than of its source.
-    this.perCallCallsMadeActive = this.perCallMaster && !this.isDefineSubTraversal
+    this.framedCallsMadeActive = this.framedMaster && !this.isDefineSubTraversal
       && this.stack.includes(callCountSlotName())
       && (callsVaryOnPaths(this.currentFunction.body) || (node.transferInfos?.length ?? 0) > 0);
-    if (this.perCallCallsMadeActive) {
+    if (this.framedCallsMadeActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
-      this.pushToStack(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
+      this.pushToStack(GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE);
       // Such a body's paths reach a point after different calls, so its fields are followed path by path.
-      this.perCallFieldSegments = new Map();
-      this.perCallReachedSegments = new Set([0]);
+      this.framedFieldSegments = new Map();
+      this.framedReachedSegments = new Set([0]);
     }
-    this.perCallFieldsAlwaysCurrent = this.perCallCallsMadeActive && this.perCallFieldWalkStops(node.body);
-    if (this.perCallFieldsAlwaysCurrent) this.perCallSequentialWrites = this.perCallSequentialWritesOf(node.body);
+    this.framedFieldsAlwaysCurrent = this.framedCallsMadeActive && this.framedFieldWalkStops(node.body);
+    if (this.framedFieldsAlwaysCurrent) this.framedSequentialWrites = this.framedSequentialWritesOf(node.body);
     // A body that emits, sends or hashes inside a loop binds each where it makes it, at the position its count of
     // them names, so it carries the counts from its start, before its own control flow, as it carries its calls.
-    const looped = this.perCallMaster && !this.isDefineSubTraversal ? loopEffectKinds(node) : new Set<string>();
-    this.perCallEventsAtSource = looped.has('events');
-    this.perCallSendsAtSource = looped.has('sends');
-    this.perCallHashesAtSource = looped.has('hashes');
+    const looped = this.framedMaster && !this.isDefineSubTraversal ? loopEffectKinds(node) : new Set<string>();
+    this.framedEventsAtSource = looped.has('events');
+    this.framedSendsAtSource = looped.has('sends');
+    this.framedHashesAtSource = looped.has('hashes');
     for (const [atSource, counter] of [
-      [this.perCallEventsAtSource, GenerateTargetTraversalWithLocation.PER_CALL_EVENTS_MADE],
-      [this.perCallSendsAtSource, GenerateTargetTraversalWithLocation.PER_CALL_SENDS_MADE],
-      [this.perCallHashesAtSource, GenerateTargetTraversalWithLocation.PER_CALL_HASHES_MADE],
+      [this.framedEventsAtSource, GenerateTargetTraversalWithLocation.FRAMED_EVENTS_MADE],
+      [this.framedSendsAtSource, GenerateTargetTraversalWithLocation.FRAMED_SENDS_MADE],
+      [this.framedHashesAtSource, GenerateTargetTraversalWithLocation.FRAMED_HASHES_MADE],
     ] as const) {
       if (!atSource) continue;
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(counter);
     }
-    // A per-call body pins the number of calls its own source makes against the count the block declares, and the
-    // number of events it emits against the block's, before either is checked. A per-call master then derives the
+    // A framed body pins the number of calls its own source makes against the count the block declares, and the
+    // number of events it emits against the block's, before either is checked. A framed master then derives the
     // sorted-batch operands its own body verification reads, from the witness block the head already walked. Those
     // must exist before the aliasing preflight snapshots them, so the derivation runs here, where the write's
     // runtime key is live, rather than in the head.
     // Set before the derivation: a key it computes may read an element of the body's own dynamic run, and an apart
     // body reads that run in the run's own segment, as every other read of it does.
-    this.perCallRunApart = this.perCallMaster && !this.isDefineSubTraversal && perCallRunApartFromBatch(node);
-    if (this.perCallMaster) this.emitPerCallGenesisGuard(node);
-    if (this.perCallMaster) this.emitPerCallCallCountCheck(node);
-    if (this.perCallMaster) this.emitPerCallEventCountCheck(node);
-    if (this.perCallMaster) this.emitPerCallUnusedSendSlotsCheck(node);
-    if (this.perCallMaster) this.emitPerCallCallValueCheck(node);
-    if (this.perCallMaster) this.emitPerCallBatchWitnessDerivation(node);
+    this.framedRunApart = this.framedMaster && !this.isDefineSubTraversal && framedRunApartFromBatch(node);
+    if (this.framedMaster) this.emitFramedGenesisGuard(node);
+    if (this.framedMaster) this.emitFramedCallCountCheck(node);
+    if (this.framedMaster) this.emitFramedEventCountCheck(node);
+    if (this.framedMaster) this.emitFramedUnusedSendSlotsCheck(node);
+    if (this.framedMaster) this.emitFramedCallValueCheck(node);
+    if (this.framedMaster) this.emitFramedBatchWitnessDerivation(node);
     this.emitRuntimeAliasWitnessPreflight(node);
     // Source loops over the same collection share one physical entry run. Retain their proved widths until the
     // function exit, where one address census also covers paths which skip a later loop entirely.
@@ -8882,7 +8882,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && entry.operations.includes('write')
       && this.collectionDefinitions.some((collection) => collection.name === entry.collection && collection.sorted)
       && !node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(entry.slotIndex)));
-    // A per-call frame keeps its own scalar-insert coordinates and allocates no shared cursor.
+    // A framed frame keeps its own scalar-insert coordinates and allocates no shared cursor.
     if (!this.isDefineSubTraversal && this.directConvention && scalarWriteSlots.length > 1) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.SCALAR_ENTRY_INSERT_COUNT);
@@ -8949,15 +8949,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return false;
     };
-    // A per-call frame that writes both a sorted mapping and a dynamic state value declares the value's chunk
+    // A framed frame that writes both a sorted mapping and a dynamic state value declares the value's chunk
     // records in the same segment, past the batch's groups. The batch settlement holds those extra records to the
     // chunks the body pinned, so the running chunk width must count the dynamic-state chunks too. An apart body
     // whose fixed calls set the run's segment apart from its batch's declares none there.
-    const countsDynamicChunkRecords = this.perCallMaster && (node.sortedBatchInfo?.length ?? 0) > 0
+    const countsDynamicChunkRecords = this.framedMaster && (node.sortedBatchInfo?.length ?? 0) > 0
       && ((node.dynamicWrites?.length ?? 0) > 0 || this.pendingDynamicWrites.size > 0)
-      && this.perCallRunSharesBatchSegment() !== false;
+      && this.framedRunSharesBatchSegment() !== false;
     // The default composition counts no mapping value chunks before scalar NEW entries: they are authenticated
-    // by identity and the SDK appends computed chunks after the entries. A per-call frame keeps the running width.
+    // by identity and the SDK appends computed chunks after the entries. A framed frame keeps the running width.
     if (!this.directConvention && (hasChunkableMappingWrite(node.body) || countsDynamicChunkRecords)) {
       // Mapping value chunks precede the entry node which references their digest even when the function has no
       // unrelated dynamic-state write. Keep one path-stable running width so the INSERT verifier can cross the
@@ -8992,11 +8992,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.conditionalTransferIndices.add(slot.slotIndex);
         }
       }
-      // A per-call body's slots are all allocated here, so the branch and switch visitors' own conditionality
+      // A framed body's slots are all allocated here, so the branch and switch visitors' own conditionality
       // marking does not run for it. A transfer that sits inside a branch arm is one the execution may skip, so
       // mark it from the body itself: its verification then requires the send region's sentinel when its arm is not
       // taken. The direct convention keeps the marking its own pre-allocation sites publish.
-      if (this.perCallMaster) this.markConditionalTransferIndices(node.body);
+      if (this.framedMaster) this.markConditionalTransferIndices(node.body);
       this.transfersPreallocatedAtFunctionStart = true;
     }
 
@@ -9240,7 +9240,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasReturnEventB = node.returnTypes.length > 0 && node.isEntryPoint;
     const hasReturnEventA = (node.externalCalls ?? []).some((ec) => ec.hasReturnValues);
     const hasAnyStatefulAccess = this.hasStateAccess || hasEntryAccess || hasEventEmits || hasRuntimeLoopEvents
-      || hasRuntimeLoopTransfers || this.perCallEventsAtSource
+      || hasRuntimeLoopTransfers || this.framedEventsAtSource
       || hasTransfers || hasDeploys || hasTokenContainerAccess || hasExternalReads || hasExternalCalls
       || hasExternalOutStateReads || hasReturnEventB || hasReturnEventA;
 
@@ -9304,11 +9304,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // delegate implementation can authorize cardinality changes through graftDefaultProxy's derived variant;
         // the compiler-authored default remains strict so arbitrary mutable NFTs cannot be appended.
         //
-        // The per-call convention settles a contract's records through the census instead: a validator admits an
+        // The framed convention settles a contract's records through the census instead: a validator admits an
         // own-category mutable output only where a frame declared it, and a standalone master's own settlement walk
         // does the same. The delegate's frame pins every record it writes, so this coarse on-chain balance would
         // refuse the records a callee legitimately creates - the dynamic run an append grows, for one.
-        if (!this.perCallMaster) this.emitOwnCategoryMutableNftConservation(node);
+        if (!this.framedMaster) this.emitOwnCategoryMutableNftConservation(node);
         // C1/piece-5: on a path that did NOT reach the delegate edge, nothing authorized a state change - the
         // delegate never ran and a delegatecall function may not write its own state (C1/B). Freeze the proxy's
         // own data NFTs there.
@@ -9351,27 +9351,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && (!this.functionHasDelegatecall || this.currentFunctionIsDelegate)) {
         this.emitDynamicWriteVerification(node);
       }
-      // A per-call frame's dynamic write pre-allocated before a call: its run begins the last segment as it was read.
-      if (this.perCallDynamicOrigins.size > 0) this.emitPerCallDynamicOriginChecks(node);
+      // A framed frame's dynamic write pre-allocated before a call: its run begins the last segment as it was read.
+      if (this.framedDynamicOrigins.size > 0) this.emitFramedDynamicOriginChecks(node);
       if (!this.functionHasDelegatecall && (node.sortedBatchInfo?.length ?? 0) > 0) {
         this.emitGuardedSortedBatchTransitionVerification(node);
       }
-      if (this.perCallMaster && !isSelfdestruct) {
-        this.emitPerCallSegmentClose({ location: node.body.location, positionHint: PositionHint.END }, true);
+      if (this.framedMaster && !isSelfdestruct) {
+        this.emitFramedSegmentClose({ location: node.body.location, positionHint: PositionHint.END }, true);
       }
       // Read-only entry preservation: verify entries not written/deleted are preserved
       // Selfdestruct functions skip - all entries are destroyed
       if (!this.functionHasDelegatecall && hasEntryAccess && !isSelfdestruct) {
         this.emitReadOnlyEntryVerification(node);
       }
-      // After read-only preservation, in the order the SDK derives entry closes. A per-call master binds its flagged
+      // After read-only preservation, in the order the SDK derives entry closes. A framed master binds its flagged
       // slots in its single-target transition instead.
-      if (!this.functionHasDelegatecall && !this.perCallMaster && this.conditionalSortedWriteFlagSlots.size > 0
+      if (!this.functionHasDelegatecall && !this.framedMaster && this.conditionalSortedWriteFlagSlots.size > 0
         && !isSelfdestruct) {
         this.emitConditionalSortedWritePreservation(node);
       }
       // A conditional multi-slot batch's arm not taken: preserve every batch node under the batch's "ran" flag.
-      if (!this.functionHasDelegatecall && !this.perCallMaster && this.conditionalSortedBatchFlags.size > 0
+      if (!this.functionHasDelegatecall && !this.framedMaster && this.conditionalSortedBatchFlags.size > 0
         && !isSelfdestruct) {
         this.emitConditionalSortedBatchPreservation(node);
       }
@@ -9383,7 +9383,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const countsOwnCategoryNfts = !this.functionHasDelegatecall && !this.currentFunctionIsDelegate
         && isStatefulContract && !isSelfdestruct && !isUpgrade && !hasEntryAccess && !hasTokenContainerAccess
         && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys
-        && !this.perCallCensusSettlesOwnRecords();
+        && !this.framedCensusSettlesOwnRecords();
       if (!this.functionHasDelegatecall && isStatefulContract && !isSelfdestruct && !isUpgrade
         && !countsOwnCategoryNfts && node.name !== '__construct') {
         this.emitDirectCollectionCensus(node);
@@ -9408,18 +9408,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // A direct function that delegatecalls verifies its own reads and calls too: nothing the delegate runs binds
       // them. Per-call masters are left as they were.
-      const verifiesOwnReads = !this.functionHasDelegatecall || !this.perCallMaster;
+      const verifiesOwnReads = !this.functionHasDelegatecall || !this.framedMaster;
       if (verifiesOwnReads && hasExternalReads) {
         this.emitExternalReadVerification(node);
       }
-      if (hasExternalCalls && !node.graphEmissionHandler && !this.perCallMaster) {
+      if (hasExternalCalls && !node.graphEmissionHandler && !this.framedMaster) {
         this.emitExternalCallVerification(node);
       }
       if (verifiesOwnReads && hasExternalOutStateReads) {
         this.emitExternalOutStateVerification(node);
       }
       if (!this.functionHasDelegatecall && hasEventEmits) {
-        if (this.perCallMaster) this.publishPerCallEmitActivations(node);
+        if (this.framedMaster) this.publishFramedEmitActivations(node);
         this.emitEventCovenantVerification(node);
       }
       // SEC-15. Reserved frame event ordinals the route has no pending emit for. Must follow the call above:
@@ -9434,34 +9434,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasDeploys) {
         this.emitDeployCovenantVerification(node);
       }
-      // B-side: return event covenant verification for entry-point functions with return types. A per-call master
+      // B-side: return event covenant verification for entry-point functions with return types. A framed master
       // settles its entry's return against the witness `retval`, not against a return-event output, and a void
       // entry settles that the frame recorded nothing. A delegatecall body's own state is the delegate's to
       // settle, but a proxy fallback's return is its own frame's `retval` even though it forwards the call, so
-      // that body settles its `retval` here like any other per-call entry.
+      // that body settles its `retval` here like any other framed entry.
       const settlesProxyFallbackReturn = this.proxyFallbackRawReturn();
       if ((!this.functionHasDelegatecall || settlesProxyFallbackReturn) && node.isEntryPoint
         && !node.graphEmissionHandler && !this.blockEndsWithRevert(node.body)) {
-        if (this.perCallMaster) {
-          if (this.perCallReturnsValue) this.emitPerCallReturnCheck(node);
+        if (this.framedMaster) {
+          if (this.framedReturnsValue) this.emitFramedReturnCheck(node);
         } else if (node.returnTypes.length > 0) {
           this.emitReturnEventCovenantVerification(node);
         }
       }
       // A body whose calls repeat pins the number it made against the count the block declares, here, where the
       // body has made them all: the count is a value its own execution produced rather than one its source fixes.
-      if (this.perCallMaster && this.perCallCallsMadeActive && node.isEntryPoint
+      if (this.framedMaster && this.framedCallsMadeActive && node.isEntryPoint
         && !this.blockEndsWithRevert(node.body)) {
-        this.emitPerCallCallsMadeCheck(node);
+        this.emitFramedCallsMadeCheck(node);
       }
       // A body that emits from a loop pins the number of events it emitted, here, where it has emitted them all.
-      if (this.perCallMaster && this.perCallEventsAtSource && !this.blockEndsWithRevert(node.body)) {
-        this.emitPerCallMadeCheck(node, eventCountSlotName(), GenerateTargetTraversalWithLocation.PER_CALL_EVENTS_MADE);
+      if (this.framedMaster && this.framedEventsAtSource && !this.blockEndsWithRevert(node.body)) {
+        this.emitFramedMadeCheck(node, eventCountSlotName(), GenerateTargetTraversalWithLocation.FRAMED_EVENTS_MADE);
       }
-      // A-side: verify return event UTXO from external function calls with return values. A per-call master takes
+      // A-side: verify return event UTXO from external function calls with return values. A framed master takes
       // the result from its own witness record, not from a return-event output, so it has no return event to pin.
       // A function that delegatecalls reads its own calls' results too, so it pins them like any other.
-      if (!this.perCallMaster
+      if (!this.framedMaster
         && node.externalCalls && node.externalCalls.some((ec) => ec.hasReturnValues)) {
         this.emitExternalReturnEventVerification(node);
       }
@@ -9530,7 +9530,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // verification and are a documented residual. Upgrade has its own guarded-growth variant above.
       // See SECURITY-AUDIT C3.
       //
-      // A per-call master whose records a census always settles is exempt, as at C1: the count would refuse a node a
+      // A framed master whose records a census always settles is exempt, as at C1: the count would refuse a node a
       // sibling frame of its contract inserts, or a chunk one consumes, which that census admits as declared.
       if (countsOwnCategoryNfts) {
         const skipRetirement = this.beginAtomicSelfdestructExclusion(
@@ -9560,7 +9560,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A split root publishes the exact event offsets owned by its co-spent delegate-only facet. The facet pins
       // those proxy-category immutable outputs itself; emitting the root census too would duplicate authority and
       // make the earlier input, rather than the producing facet, decide the event family.
-      // A per-call proxy's fallback declares no event of its own: its `returnEvent` slot is where the delegate's
+      // A framed proxy's fallback declares no event of its own: its `returnEvent` slot is where the delegate's
       // returned bytes are recorded, and the events a delegated body emits are minted by that body's own frame
       // program, which emits them and is pinned by its own event declaration at the offsets they occupy. Pinning
       // this body instead admits only the offset this body's own layout names, which is not the offset the delegated
@@ -9568,8 +9568,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const splitDelegateOwnsImmutableEvents = node.splitDelegateEventOffsets !== undefined;
       // A forwarder with no local emit (a runtime-loop emit counts) leaves its events to the forced delegate's own
       // pin, which knows their offsets. The pin stays where no delegate co-spend is forced (SECURITY-AUDIT C1) and on
-      // a per-call master.
-      const delegateOwnsAllEvents = !this.perCallMaster && this.functionHasDelegatecall
+      // a framed master.
+      const delegateOwnsAllEvents = !this.framedMaster && this.functionHasDelegatecall
         && node.pinsDelegateCoSpend === true && !hasEventEmits && !hasRuntimeLoopEvents;
       if (node.name !== '__construct' && isStatefulContract
         && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
@@ -9662,12 +9662,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Runs a direct contract's constructor only in its category's genesis, by the per-call master's check: input 0
+   * Runs a direct contract's constructor only in its category's genesis, by the framed master's check: input 0
    * must spend `(category, 0)`, which only the deployment's probe does. Without it a live contract ran the arm for
    * anyone: an owner rewritten, a supply minted twice, a coin spent through a constructor that checks nothing.
    */
   private emitDirectGenesisGuard(node: FunctionDefinitionNode): void {
-    if (node.name !== '__construct' || this.isDefineSubTraversal || this.perCallMaster) return;
+    if (node.name !== '__construct' || this.isDefineSubTraversal || this.framedMaster) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(bytecodeToScript(genesisSpendCheck()), loc);
     this.requires.push({
@@ -10111,7 +10111,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitRevert(node: RevertNode): Node {
     // BCH has no revert-data channel. Evaluate custom-error arguments on the failing branch and leave them on
     // the VM stack behind OP_VERIFY's false operand so source-attributed debugging can verify the actual tuple.
-    // This also preserves Solidity's evaluation of argument expressions on a taken revert path. A per-call compile
+    // This also preserves Solidity's evaluation of argument expressions on a taken revert path. A framed compile
     // keeps the revert an unconditional OP_0 OP_VERIFY and only publishes where each argument sits.
     const errorArgumentTypes = node.errorDefinition?.parameters.map((parameter) => parameter.type.toString());
     const materializeErrorArgs = this.directConvention && node.errorName !== undefined
@@ -10419,45 +10419,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Evaluate condition and branch (existing logic)
     node.condition = this.visit(node.condition);
     // Read with the condition still beneath it.
-    this.emitPerCallFieldsHeldThrough(node, node, locationData);
+    this.emitFramedFieldsHeldThrough(node, node, locationData);
     this.popFromStack();
     // Each arm runs from here, so the fields' segments are restored for the second and joined past the branch, and
     // so are the calls the run can have made.
-    const fieldsAtBranch = this.perCallFieldSnapshot();
-    const callsAtBranch = this.perCallCallsSnapshot();
+    const fieldsAtBranch = this.framedFieldSnapshot();
+    const callsAtBranch = this.framedCallsSnapshot();
     // So is a fixed-calls body's stale set, which must hold on both paths past the branch: an arm that rejoins reads
-    // again each field it leaves closed where the other path can leave it current (`perCallFixedFields`).
-    const staleAtBranch = this.perCallFixedFields() ? new Set(this.perCallStaleWrites) : undefined;
+    // again each field it leaves closed where the other path can leave it current (`framedFixedFields`).
+    const staleAtBranch = this.framedFixedFields() ? new Set(this.framedStaleWrites) : undefined;
     const ifRejoins = !this.blockEndsInFailure(node.ifBlock);
     const elseRejoins = node.elseBlock === undefined || !this.blockEndsInFailure(node.elseBlock);
     const reread = (keys: Iterable<string>, loc: SingleLocationData): void => {
-      for (const key of [...keys]) if (this.perCallRefreshable(key)) this.emitPerCallFieldRefresh(key, node, loc);
+      for (const key of [...keys]) if (this.framedRefreshable(key)) this.emitFramedFieldRefresh(key, node, loc);
     };
     // The if arm's end, before the else arm is emitted: a field the else arm writes may be current where it ends.
     const settleIfArm = (): ReadonlySet<string> | undefined => {
       if (staleAtBranch === undefined || !ifRejoins) return undefined;
       if (node.elseBlock !== undefined && elseRejoins) {
-        const written = this.perCallFieldsWrittenIn(node.elseBlock);
-        reread([...this.perCallStaleWrites].filter((key) => written.has(key)),
+        const written = this.framedFieldsWrittenIn(node.elseBlock);
+        reread([...this.framedStaleWrites].filter((key) => written.has(key)),
           { location: node.ifBlock.location, positionHint: PositionHint.END });
       }
-      return new Set(this.perCallStaleWrites);
+      return new Set(this.framedStaleWrites);
     };
     // The else path's end, which starts from the branch point's set: a field the if arm left current. With no else
     // arm, one is emitted only where the reads are needed.
     const settleElsePath = (ifEnd: ReadonlySet<string> | undefined, enter: () => void): ReadonlySet<string> | undefined => {
       if (staleAtBranch === undefined || !elseRejoins) return undefined;
-      const closed = [...(node.elseBlock === undefined ? staleAtBranch : this.perCallStaleWrites)]
-        .filter((key) => ifEnd !== undefined && !ifEnd.has(key) && this.perCallRefreshable(key));
+      const closed = [...(node.elseBlock === undefined ? staleAtBranch : this.framedStaleWrites)]
+        .filter((key) => ifEnd !== undefined && !ifEnd.has(key) && this.framedRefreshable(key));
       if (node.elseBlock === undefined) {
-        this.perCallStaleWrites = new Set(staleAtBranch);
+        this.framedStaleWrites = new Set(staleAtBranch);
         if (closed.length > 0) {
           this.emit(Op.OP_ELSE, { location: node.ifBlock.location, positionHint: PositionHint.END });
           enter();
         }
       }
       reread(closed, { location: (node.elseBlock ?? node.ifBlock).location, positionHint: PositionHint.END });
-      return new Set(this.perCallStaleWrites);
+      return new Set(this.framedStaleWrites);
     };
 
     // Check if we're inside a return-type function AND a branch actually contains a return statement. Only then
@@ -10478,8 +10478,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // descriptor binds that record. The arms have to end at the same position for the join below to be a position
     // at all, which the admission establishes before the body is emitted; a disagreement here is a bug, not a shape,
     // so it stops the compile rather than emitting a program whose records and segments do not line up.
-    const segmentBeforeBranch = this.perCallSegmentIndex;
-    const ordinalBeforeBranch = this.perCallOrdinal;
+    const segmentBeforeBranch = this.framedSegmentIndex;
+    const ordinalBeforeBranch = this.framedOrdinal;
     this.emit(Op.OP_IF, { location: node.ifBlock.location, positionHint: PositionHint.START });
 
     if (hasReturnType) {
@@ -10489,10 +10489,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const staleAfterIf = settleIfArm();
       // Capture the stack state after if-block (may include return values)
       const stackAfterIf = [...this.stack];
-      const segmentAfterIf = this.perCallSegmentIndex;
-      const ordinalAfterIf = this.perCallOrdinal;
-      const fieldsAfterIf = this.perCallFieldSnapshot();
-      const callsAfterIf = this.perCallCallsSnapshot();
+      const segmentAfterIf = this.framedSegmentIndex;
+      const ordinalAfterIf = this.framedOrdinal;
+      const fieldsAfterIf = this.framedFieldSnapshot();
+      const callsAfterIf = this.framedCallsSnapshot();
 
       // Representative post-branch stack. When one branch aborts via revert its stack is
       // irrelevant (execution never reaches the code after the branch on that path), so the
@@ -10506,15 +10506,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ELSE, { location: node.elseBlock.location, positionHint: PositionHint.START });
         // Restore stack for else-block (both branches see same starting state)
         this.stack = [...stackBeforeBranch];
-        this.perCallSegmentIndex = segmentBeforeBranch;
-        this.perCallOrdinal = ordinalBeforeBranch;
-        this.perCallFieldRestore(fieldsAtBranch);
-        [this.perCallCallsLeast, this.perCallCallsMost] = callsAtBranch;
-        if (staleAtBranch !== undefined) this.perCallStaleWrites = new Set(staleAtBranch);
+        this.framedSegmentIndex = segmentBeforeBranch;
+        this.framedOrdinal = ordinalBeforeBranch;
+        this.framedFieldRestore(fieldsAtBranch);
+        [this.framedCallsLeast, this.framedCallsMost] = callsAtBranch;
+        if (staleAtBranch !== undefined) this.framedStaleWrites = new Set(staleAtBranch);
         node.elseBlock = this.visit(node.elseBlock);
         staleAfterElse = settleElsePath(staleAfterIf, () => {});
         const stackAfterElse = [...this.stack];
-        this.joinPerCallPosition(node, segmentAfterIf, ordinalAfterIf);
+        this.joinFramedPosition(node, segmentAfterIf, ordinalAfterIf);
         // A `require(false)` fails as a revert does: an assembly `revert` arm beside a returning one is such an arm.
         if (this.blockEndsInFailure(node.ifBlock) && !this.blockEndsInFailure(node.elseBlock)) {
           representative = stackAfterElse;
@@ -10523,9 +10523,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         staleAfterElse = settleElsePath(staleAfterIf, () => { this.stack = [...stackBeforeBranch]; });
         this.stack = [...stackAfterIf];
       }
-      if (staleAtBranch !== undefined) this.perCallFixedFieldsJoin(node, staleAfterIf, staleAfterElse);
-      this.perCallFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
-      this.perCallCallsAfterBranch(node, callsAtBranch, callsAfterIf);
+      if (staleAtBranch !== undefined) this.framedFixedFieldsJoin(node, staleAfterIf, staleAfterElse);
+      this.framedFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
+      this.framedCallsAfterBranch(node, callsAtBranch, callsAfterIf);
 
       const endLocationData = {
         location: node.elseBlock ? node.elseBlock.location : node.ifBlock.location,
@@ -10540,10 +10540,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       let stackDepth = this.stack.length; // AFTER pre-allocation
       const stackBeforeIf = [...this.stack];
       node.ifBlock = this.visit(node.ifBlock);
-      const segmentAfterIf = this.perCallSegmentIndex;
-      const ordinalAfterIf = this.perCallOrdinal;
-      const fieldsAfterIf = this.perCallFieldSnapshot();
-      const callsAfterIf = this.perCallCallsSnapshot();
+      const segmentAfterIf = this.framedSegmentIndex;
+      const ordinalAfterIf = this.framedOrdinal;
+      const fieldsAfterIf = this.framedFieldSnapshot();
+      const callsAfterIf = this.framedCallsSnapshot();
       this.removeScopedVariables(stackDepth, node.ifBlock);
       // A branch must leave the tracked stack at the height it found it, or every later read is compiled
       // against the wrong shape: the else arm below STARTS from this arm's model, and so does the code after
@@ -10564,13 +10564,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.elseBlock) {
         this.emit(Op.OP_ELSE, { location: node.elseBlock.location, positionHint: PositionHint.START });
         stackDepth = this.stack.length;
-        this.perCallSegmentIndex = segmentBeforeBranch;
-        this.perCallOrdinal = ordinalBeforeBranch;
-        this.perCallFieldRestore(fieldsAtBranch);
-        [this.perCallCallsLeast, this.perCallCallsMost] = callsAtBranch;
-        if (staleAtBranch !== undefined) this.perCallStaleWrites = new Set(staleAtBranch);
+        this.framedSegmentIndex = segmentBeforeBranch;
+        this.framedOrdinal = ordinalBeforeBranch;
+        this.framedFieldRestore(fieldsAtBranch);
+        [this.framedCallsLeast, this.framedCallsMost] = callsAtBranch;
+        if (staleAtBranch !== undefined) this.framedStaleWrites = new Set(staleAtBranch);
         node.elseBlock = this.visit(node.elseBlock);
-        this.joinPerCallPosition(node, segmentAfterIf, ordinalAfterIf);
+        this.joinFramedPosition(node, segmentAfterIf, ordinalAfterIf);
         this.removeScopedVariables(stackDepth, node.elseBlock);
         if (this.stack.length !== stackDepth && !this.blockEndsWithRevert(node.elseBlock)) {
           const enclosingDepth = this.stack.length;
@@ -10585,9 +10585,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         staleAfterElse = settleElsePath(staleAfterIf, () => { this.stack = [...stackBeforeIf]; });
         this.stack = stackAfterIf;
       }
-      if (staleAtBranch !== undefined) this.perCallFixedFieldsJoin(node, staleAfterIf, staleAfterElse);
-      this.perCallFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
-      this.perCallCallsAfterBranch(node, callsAtBranch, callsAfterIf);
+      if (staleAtBranch !== undefined) this.framedFixedFieldsJoin(node, staleAfterIf, staleAfterElse);
+      this.framedFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
+      this.framedCallsAfterBranch(node, callsAtBranch, callsAfterIf);
 
       const endLocationData = {
         location: node.elseBlock ? node.elseBlock.location : node.ifBlock.location,
@@ -10605,23 +10605,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The fields' followed segments past a branch: those its arms that fall through leave, the else arm's being the
    * branch point's when there is none.
    */
-  private perCallFieldsAfterBranch(
-    node: BranchNode, atBranch: PerCallFieldSnapshot | undefined, afterIf: PerCallFieldSnapshot | undefined,
+  private framedFieldsAfterBranch(
+    node: BranchNode, atBranch: FramedFieldSnapshot | undefined, afterIf: FramedFieldSnapshot | undefined,
   ): void {
-    const afterElse = node.elseBlock === undefined ? atBranch : this.perCallFieldSnapshot();
-    this.perCallFieldJoin([
+    const afterElse = node.elseBlock === undefined ? atBranch : this.framedFieldSnapshot();
+    this.framedFieldJoin([
       ...(this.blockEndsInFailure(node.ifBlock) ? [] : [afterIf]),
       ...(node.elseBlock !== undefined && this.blockEndsInFailure(node.elseBlock) ? [] : [afterElse]),
     ]);
   }
 
   /** The fewest and the most calls the run can have made where the code being emitted runs. */
-  private perCallCallsSnapshot(): readonly [least: number, most: number] {
-    return [this.perCallCallsLeast, this.perCallCallsMost];
+  private framedCallsSnapshot(): readonly [least: number, most: number] {
+    return [this.framedCallsLeast, this.framedCallsMost];
   }
 
   /** True when `node` reaches a call that counts toward the run's calls made, or a send that may make one. */
-  private perCallReachesCountedCall(node: Node): boolean {
+  private framedReachesCountedCall(node: Node): boolean {
     let reaches = false;
     walkInvocationAst(node, (child) => {
       if (child instanceof ExternalFunctionCallNode || isDirectOwnerTransferNode(child)) reaches = true;
@@ -10633,57 +10633,57 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Enters code that runs on some paths only and whose arms are emitted from one starting point (a switch, or an
    * operand evaluated lazily): a call there neither raises the fewest calls made nor leaves the most bounded.
    */
-  private perCallEnterLazyCalls(scope: Node): { readonly at: readonly [number, number]; readonly calls: boolean } {
-    const at = this.perCallCallsSnapshot();
-    const calls = this.perCallReachesCountedCall(scope);
-    if (calls) this.perCallCallsMost = Infinity;
-    this.perCallCallsLeastFrozen += 1;
+  private framedEnterLazyCalls(scope: Node): { readonly at: readonly [number, number]; readonly calls: boolean } {
+    const at = this.framedCallsSnapshot();
+    const calls = this.framedReachesCountedCall(scope);
+    if (calls) this.framedCallsMost = Infinity;
+    this.framedCallsLeastFrozen += 1;
     return { at, calls };
   }
 
-  /** Leaves code `perCallEnterLazyCalls` entered: the fewest calls made are those before it. */
-  private perCallLeaveLazyCalls(entered: { readonly at: readonly [number, number]; readonly calls: boolean }): void {
-    this.perCallCallsLeastFrozen -= 1;
-    [this.perCallCallsLeast, this.perCallCallsMost] = entered.at;
-    if (entered.calls) this.perCallCallsMost = Infinity;
+  /** Leaves code `framedEnterLazyCalls` entered: the fewest calls made are those before it. */
+  private framedLeaveLazyCalls(entered: { readonly at: readonly [number, number]; readonly calls: boolean }): void {
+    this.framedCallsLeastFrozen -= 1;
+    [this.framedCallsLeast, this.framedCallsMost] = entered.at;
+    if (entered.calls) this.framedCallsMost = Infinity;
   }
 
   /**
    * A loop or a switch in a body whose fields are always current is entered holding each dated field it writes
-   * (`emitPerCallFieldsHeldThrough`). Its turns or arms run from its start, so past it the run has made at least the
+   * (`emitFramedFieldsHeldThrough`). Its turns or arms run from its start, so past it the run has made at least the
    * calls made before it, and with a call inside, any number more.
    */
   visit(node: Node): Node {
-    if (!this.perCallFieldsAlwaysCurrent || !(node instanceof WhileNode || node instanceof DoWhileNode
+    if (!this.framedFieldsAlwaysCurrent || !(node instanceof WhileNode || node instanceof DoWhileNode
       || node instanceof CollectionIterationNode || node instanceof SwitchNode)) return super.visit(node);
-    this.emitPerCallFieldsHeldThrough(node, node, { location: node.location, positionHint: PositionHint.START });
+    this.emitFramedFieldsHeldThrough(node, node, { location: node.location, positionHint: PositionHint.START });
     if (node instanceof SwitchNode) {
-      const entered = this.perCallEnterLazyCalls(node);
+      const entered = this.framedEnterLazyCalls(node);
       const visited = super.visit(node);
-      this.perCallLeaveLazyCalls(entered);
+      this.framedLeaveLazyCalls(entered);
       return visited;
     }
-    const at = this.perCallCallsSnapshot();
-    const calls = this.perCallReachesCountedCall(node);
-    if (calls) this.perCallCallsMost = Infinity;
+    const at = this.framedCallsSnapshot();
+    const calls = this.framedReachesCountedCall(node);
+    if (calls) this.framedCallsMost = Infinity;
     const visited = super.visit(node);
-    [this.perCallCallsLeast, this.perCallCallsMost] = at;
-    if (calls) this.perCallCallsMost = Infinity;
+    [this.framedCallsLeast, this.framedCallsMost] = at;
+    if (calls) this.framedCallsMost = Infinity;
     return visited;
   }
 
   /** The calls the run can have made past a branch: the fewest and the most over its arms that fall through. */
-  private perCallCallsAfterBranch(
+  private framedCallsAfterBranch(
     node: BranchNode, atBranch: readonly [number, number], afterIf: readonly [number, number],
   ): void {
-    const afterElse = node.elseBlock === undefined ? atBranch : this.perCallCallsSnapshot();
+    const afterElse = node.elseBlock === undefined ? atBranch : this.framedCallsSnapshot();
     const paths = [
       ...(this.blockEndsInFailure(node.ifBlock) ? [] : [afterIf]),
       ...(node.elseBlock !== undefined && this.blockEndsInFailure(node.elseBlock) ? [] : [afterElse]),
     ];
     if (paths.length === 0) return;
-    this.perCallCallsLeast = Math.min(...paths.map(([least]) => least));
-    this.perCallCallsMost = Math.max(...paths.map(([, most]) => most));
+    this.framedCallsLeast = Math.min(...paths.map(([least]) => least));
+    this.framedCallsMost = Math.max(...paths.map(([, most]) => most));
   }
 
   /**
@@ -10694,23 +10694,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * and then the records the body binds, the segment its reads resolve against and the count it pins describe a
    * program the execution does not run: the compile stops instead of emitting one.
    */
-  private joinPerCallPosition(node: BranchNode, segmentAfterIf: number, ordinalAfterIf: number): void {
+  private joinFramedPosition(node: BranchNode, segmentAfterIf: number, ordinalAfterIf: number): void {
     // A body whose calls repeat reads the position it has reached from the frame's calls-made counter, so the
     // static positions the two arms ended at do not describe the records the execution binds and there is nothing
     // to join. A body that fixes its own calls still has to agree, because there its site indices are the records.
-    if (this.perCallCallsMadeActive) return;
+    if (this.framedCallsMadeActive) return;
     // An arm that reverts never reaches the join: the records of the arm that falls through are the execution's.
     if (this.blockEndsWithRevert(node.ifBlock)) return;
     if (node.elseBlock && this.blockEndsWithRevert(node.elseBlock)) return;
-    if (this.perCallSegmentIndex !== segmentAfterIf || this.perCallOrdinal !== ordinalAfterIf) {
+    if (this.framedSegmentIndex !== segmentAfterIf || this.framedOrdinal !== ordinalAfterIf) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'FRAMED_CODEGEN_UNAVAILABLE',
         `the arms of a branch in '${this.currentFunction?.name ?? 'unknown'}' make different numbers of calls, `
         + 'so the records the body binds are not the ones the execution makes',
         {
           function: this.currentFunction?.name,
           ifCalls: ordinalAfterIf,
-          elseCalls: this.perCallOrdinal,
+          elseCalls: this.framedOrdinal,
           location: node.location,
         },
       );
@@ -10920,7 +10920,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private computeUpgradeSignatureFenceIds(node: ContractNode): void {
     this.upgradeSignatureFenceIds = new Set();
-    if (this.perCallMaster) return;
+    if (this.framedMaster) return;
     const functions = [node.fallbackDef, node.receiveDef, ...node.functions]
       .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
     const byId = new Map(functions.filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn]));
@@ -11637,13 +11637,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Keep the established journal bank order: A$len above its dynamic value.
     this.emit(Op.OP_SWAP, locationData);
     [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
-    // A per-call frame pins the run in its last segment. Where a call can follow, it keeps the value read here, which
-    // the run must still hold where that segment begins (`emitPerCallDynamicOriginChecks`).
-    if (this.perCallDynamicOriginNeeded()) {
+    // A framed frame pins the run in its last segment. Where a call can follow, it keeps the value read here, which
+    // the run must still hold where that segment begins (`emitFramedDynamicOriginChecks`).
+    if (this.framedDynamicOriginNeeded()) {
       const originStackName = `__internal__dynwrite_origin_${sv.name}`;
       this.emit(Op.OP_OVER, locationData);
       this.pushToStack(originStackName);
-      this.perCallDynamicOrigins.set(sv.name, originStackName);
+      this.framedDynamicOrigins.set(sv.name, originStackName);
     }
 
     this.pendingStateWrites.set(key, stateWriteStackName);
@@ -11656,41 +11656,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * True where a per-call frame pre-allocates a dynamic write that a call can follow: a body whose calls vary, or one
+   * True where a framed frame pre-allocates a dynamic write that a call can follow: a body whose calls vary, or one
    * whose fixed calls are not all made before this point. The run is pinned in the frame's last segment, so a frame
    * running during such a call may rewrite it between the read here and the pin.
    */
-  private perCallDynamicOriginNeeded(): boolean {
-    return this.perCallMaster && this.readsRecordsFromFrame && !this.isDefineSubTraversal
-      && (this.perCallCallsMadeActive || this.perCallSegmentIndex < this.perCallExecutionCallCount());
+  private framedDynamicOriginNeeded(): boolean {
+    return this.framedMaster && this.readsRecordsFromFrame && !this.isDefineSubTraversal
+      && (this.framedCallsMadeActive || this.framedSegmentIndex < this.framedExecutionCallCount());
   }
 
   /**
    * Pre-allocates a dynamic write no branch or loop pre-allocated, where a call can follow it
-   * (`perCallDynamicOriginNeeded`): the write's own read of the value then takes the slot, and the frame keeps the
-   * value it read, at which its last segment must begin the run it pins there (`emitPerCallDynamicOriginChecks`).
+   * (`framedDynamicOriginNeeded`): the write's own read of the value then takes the slot, and the frame keeps the
+   * value it read, at which its last segment must begin the run it pins there (`emitFramedDynamicOriginChecks`).
    */
-  private perCallPreAllocateDynamicWrite(sv: StateVariableNode, loc: SingleLocationData): void {
+  private framedPreAllocateDynamicWrite(sv: StateVariableNode, loc: SingleLocationData): void {
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
-    if (sv.isDynamic !== true || this.pendingStateWrites.has(key) || !this.perCallDynamicOriginNeeded()) return;
+    if (sv.isDynamic !== true || this.pendingStateWrites.has(key) || !this.framedDynamicOriginNeeded()) return;
     this.preAllocateDynamicWrite(sv, key, loc);
   }
 
   /**
-   * Requires each dynamic value whose write a per-call frame pre-allocated before a call (`perCallDynamicOrigins`) to
+   * Requires each dynamic value whose write a framed frame pre-allocated before a call (`framedDynamicOrigins`) to
    * begin the frame's last segment, where the frame pins its run, as it was where the frame read it.
    *
    * The frame's code reads the value where it pre-allocates the write, and an arm that does not run the write pins
    * that value back. A frame that re-enters this contract during the call and rewrites the value leaves the last
    * segment beginning at its own run, which the pin would write back over: the change is lost, as a write that did
    * run but was pinned past the call loses it too. The run census compares the run the last segment begins with to
-   * the copy record by record (`emitPerCallChunkRunCensus`); a run it did not take is read from the last segment's
+   * the copy record by record (`emitFramedChunkRunCensus`); a run it did not take is read from the last segment's
    * own declaration here instead. Each copy leaves the stack here.
    */
-  private emitPerCallDynamicOriginChecks(node: FunctionDefinitionNode): void {
+  private emitFramedDynamicOriginChecks(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
-    for (const [name, origin] of this.perCallDynamicOrigins) {
-      if (!this.perCallDynamicOriginsCompared.has(name)) {
+    for (const [name, origin] of this.framedDynamicOrigins) {
+      if (!this.framedDynamicOriginsCompared.has(name)) {
         const sv = this.stateVariables.find((variable) => variable.name === name)!;
         this.emitDynamicReadLoop(sv, loc);
         this.emit(encodeInt(BigInt(this.getStackIndex(origin))), loc);
@@ -11705,8 +11705,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.removeFromStack(index);
     }
-    this.perCallDynamicOrigins = new Map();
-    this.perCallDynamicOriginsCompared = new Set();
+    this.framedDynamicOrigins = new Map();
+    this.framedDynamicOriginsCompared = new Set();
   }
 
   /**
@@ -11761,7 +11761,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(stackName);
     this.pendingStateWrites.set(key, stackName);
     this.preAllocatedStateWrites.add(key);
-    this.perCallFieldSet(key);
+    this.framedFieldSet(key);
   }
 
   /**
@@ -11917,8 +11917,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitDoWhile(node: DoWhileNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
-    this.perCallFieldsLostIn(node);
-    this.perCallFieldsCurrentThrough(node, node, locationData);
+    this.framedFieldsLostIn(node);
+    this.framedFieldsCurrentThrough(node, node, locationData);
 
     // PRE-ALLOCATE: scan loop body and pre-allocate slots before OP_BEGIN
 
@@ -12089,8 +12089,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitWhile(node: WhileNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
-    this.perCallFieldsLostIn(node);
-    this.perCallFieldsCurrentThrough(node, node, locationData);
+    this.framedFieldsLostIn(node);
+    this.framedFieldsCurrentThrough(node, node, locationData);
 
     // PRE-ALLOCATE: same as visitDoWhile - scan loop body and pre-allocate slots before OP_BEGIN
 
@@ -12276,8 +12276,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitCollectionIteration(node: CollectionIterationNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
-    this.perCallFieldsLostIn(node);
-    this.perCallFieldsCurrentThrough(node, node, locationData);
+    this.framedFieldsLostIn(node);
+    this.framedFieldsCurrentThrough(node, node, locationData);
     const endLocationData = { location: node.location, positionHint: PositionHint.END };
     const iterIdx = node.collectionIterationIndex;
     const collection = node.collection!;
@@ -12861,14 +12861,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(dynamicChunkSize)), locationData);
         this.emit(Op.OP_DIV, locationData);
       } else {
-        // A per-call frame keeps the count its own chunk runs are built with.
+        // A framed frame keeps the count its own chunk runs are built with.
         this.emitValueChunkCountFromLength(locationData);
       }
       this.emit(Op.OP_ADD, locationData);
     }
     // Mapping continuations are authenticated by identity and may live in separate output bands. Their total
     // width is not a positional prefix of scalar NEW entries (the SDK appends computed chunks after entries).
-    // A per-call frame still counts the value chunks its run declares ahead of them. The direct convention
+    // A framed frame still counts the value chunks its run declares ahead of them. The direct convention
     // leaves that cell on the frame and must not add it here.
     if (!this.directConvention && this.valueChunkTrailingCountActive) {
       this.emitPickCompilerRouteFrameValue(
@@ -12986,8 +12986,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitSwitch(node: SwitchNode): Node {
     const ops = node.switchOps;
     const locationData = { location: node.location, positionHint: PositionHint.START };
-    this.perCallFieldsLostIn(node);
-    this.perCallFieldsCurrentThrough(node, node, locationData);
+    this.framedFieldsLostIn(node);
+    this.framedFieldsCurrentThrough(node, node, locationData);
 
     // 1. PRE-ALLOCATE (same pattern as visitBranch)
     if (ops) {
@@ -13328,7 +13328,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitKeccakComputeCall(node: FunctionCallNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const fn = this.currentFunction;
-    // Slot-per-call: N keccak calls co-spend N side-cars (the last N inputs) recreated as the last N outputs.
+    // Slot-framed: N keccak calls co-spend N side-cars (the last N inputs) recreated as the last N outputs.
     // Record this call's preimage param in emission order (the SDK co-spends per that order), and read this
     // call's side-car at offset (N - i) from the end. i = its emission index; for a single call offset is 1
     // (the last input/output), byte-compatibly with the single-hash case.
@@ -13343,8 +13343,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A mixed straight-line + dynamic-loop function keeps the legacy one-call trailing window: loop iterations
     // use a separate forward index family discovered at runtime, so combining its syntactic call with a fixed
     // call would claim a batch member that is not in the trailing side-car.
-    // A per-call frame co-spends one side-car per call, placed beside its own input, so nothing is batched.
-    const batchable = !fn.keccakInLoop && !this.perCallMaster;
+    // A framed frame co-spends one side-car per call, placed beside its own input, so nothing is batched.
+    const batchable = !fn.keccakInLoop && !this.framedMaster;
     const batchIndex = batchable ? Math.floor(i / 3) : i;
     const withinBatch = batchable ? i % 3 : 0;
     const layoutBasis = fn.blockLayout ? fn : this.keccakSideCarBasis;
@@ -13366,7 +13366,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // a stateful call outside any keccak loop whose side-car slot the block layout never reserved. Checked
     // against the layout rather than against `keccakInLoop` so a slot-count disagreement is named too. A
     // stateless function has no block layout and reads count-relative, so it never reaches this lookup.
-    if (!this.perCallMaster && !this.keccakLoopActive && fn.blockLayout
+    if (!this.framedMaster && !this.keccakLoopActive && fn.blockLayout
       && !fn.blockLayout.slots.some((slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === batchIndex)) {
       const reason = fn.keccakInLoop
         ? 'keccak-loop-and-straight-line-mix-not-enabled'
@@ -13393,18 +13393,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, loc);
         return;
       }
-      if (this.perCallMaster) {
-        // A per-call frame's side-cars follow its own input, even in a frame that runs on its caller's records: each
+      if (this.framedMaster) {
+        // A framed frame's side-cars follow its own input, even in a frame that runs on its caller's records: each
         // recovery pair and its EVM keccak side-car first, then one keccak side-car per call in the order the body
         // makes them. A side-car recreates at its own index, so the input coordinate also reads the output.
         this.emit(Op.OP_INPUTINDEX, loc);
-        const atSource = this.perCallHashesAtSource;
+        const atSource = this.framedHashesAtSource;
         const step = 1 + 2 * (fn.ecrecoverCallCount ?? 0) + (fn.ecrecoverEvmCallCount ?? 0) + (atSource ? 0 : i);
         this.emit(encodeInt(BigInt(step)), loc);
         this.emit(Op.OP_ADD, loc);
         // A body that hashes in a loop reads the next side-car by the count it has read, the input index above it.
         if (atSource) {
-          const made = GenerateTargetTraversalWithLocation.PER_CALL_HASHES_MADE;
+          const made = GenerateTargetTraversalWithLocation.FRAMED_HASHES_MADE;
           this.emit(encodeInt(BigInt(this.getStackIndex(made) + 1)), loc);
           this.emit(Op.OP_PICK, loc);
           this.emit(Op.OP_ADD, loc);
@@ -13474,7 +13474,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
     // Absolute-forward reads (block-layout slot OR dynamic loop: input idx == output idx) use the STATEFUL covenant
     // (self-preserve via OP_INPUTINDEX); the count-relative stateless single/multi call uses offset-from-end.
-    const absoluteForward = this.perCallMaster || fn.blockLayout != null || this.keccakLoopActive
+    const absoluteForward = this.framedMaster || fn.blockLayout != null || this.keccakLoopActive
       || basisSlot !== undefined;
     if (this.keccakLoopActive) {
       // Dynamic loop: compare the covenant bytecode DIRECTLY (it is a compile-time constant) instead of hashing it.
@@ -13508,8 +13508,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_1ADD, loc);
       this.emitReplace(this.getStackIndex(this.keccakLoopCounterName) + 1, node);
     }
-    if (this.perCallMaster && this.perCallHashesAtSource) {
-      const made = GenerateTargetTraversalWithLocation.PER_CALL_HASHES_MADE;
+    if (this.framedMaster && this.framedHashesAtSource) {
+      const made = GenerateTargetTraversalWithLocation.FRAMED_HASHES_MADE;
       this.emit(encodeInt(BigInt(this.getStackIndex(made))), loc);
       this.emit(Op.OP_PICK, loc);
       this.pushToStack('(hashes_made)');
@@ -13579,8 +13579,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
       if (loop) { emitLoopSideCarIndex(role === 'A' ? 1n : 2n); return; }
-      if (this.perCallMaster) {
-        // A per-call frame's side-car pair is placed immediately after its own input, one pair per call, so the body
+      if (this.framedMaster) {
+        // A framed frame's side-car pair is placed immediately after its own input, one pair per call, so the body
         // locates A/B from `OP_INPUTINDEX`, not from the records' owner a frame that runs on its caller's records
         // reads. A self-preserving side-car recreates at its own index, so the input coordinate also reads the output.
         this.emit(Op.OP_INPUTINDEX, loc);
@@ -13630,20 +13630,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ecrecoverLayoutBasis?.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 0n,
     );
     const evmKeccakCallIndex = ordinaryKeccakCalls + j;
-    // A per-call frame co-spends one stateful side-car per projection, unbatched: the stateless covenant
+    // A framed frame co-spends one stateful side-car per projection, unbatched: the stateless covenant
     // self-preserves at an offset from the end of the outputs, which the frame's trailing outputs move.
-    const evmKeccakBatchIndex = this.perCallMaster ? 0 : Math.floor(evmKeccakCallIndex / 3);
-    const evmKeccakWithinBatch = this.perCallMaster ? 0 : evmKeccakCallIndex % 3;
+    const evmKeccakBatchIndex = this.framedMaster ? 0 : Math.floor(evmKeccakCallIndex / 3);
+    const evmKeccakWithinBatch = this.framedMaster ? 0 : evmKeccakCallIndex % 3;
     const totalStatefulKeccakCalls = ordinaryKeccakCalls
       + (ecrecoverLayoutBasis?.ecrecoverEvmCallCount ?? 0);
-    const evmKeccakBatchWidth = this.perCallMaster ? 1 : Math.min(3, totalStatefulKeccakCalls - evmKeccakBatchIndex * 3);
+    const evmKeccakBatchWidth = this.framedMaster ? 1 : Math.min(3, totalStatefulKeccakCalls - evmKeccakBatchIndex * 3);
     const ecrecoverKeccakSlot = (ecrecoverLayoutBasis?.blockLayout?.slots ?? []).find(
       (slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === evmKeccakBatchIndex,
     );
-    const statefulEvmKeccak = this.perCallMaster || ecrecoverKeccakSlot !== undefined;
+    const statefulEvmKeccak = this.framedMaster || ecrecoverKeccakSlot !== undefined;
     const keccakIdx = (isOutput = false, extra = 0): void => {
       if (loop) { emitLoopSideCarIndex(3n, extra); return; }
-      if (this.perCallMaster) {
+      if (this.framedMaster) {
         // The EVM projection's keccak side-car rides after every recovery pair, one per ecrecoverEvm call, so its
         // coordinate is the frame's own input plus the pairs plus this call's evm ordinal.
         this.emit(Op.OP_INPUTINDEX, loc);
@@ -13676,13 +13676,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[p] = this.visit(node.parameters[p]);
       if (reverseEvmScalars && p !== 1) this.emit(Op.OP_REVERSEBYTES, loc);
     }
-    // A per-call body answers the EVM's zero address for a recovery its precompile refuses, without reading the
+    // A framed body answers the EVM's zero address for a recovery its precompile refuses, without reading the
     // pair: the pair the composer co-spends there is one the body never binds.
-    const zeroOnRefusal = this.perCallMaster;
+    const zeroOnRefusal = this.framedMaster;
     // An `r` in range that no curve point has is refused by the precompile too; side-car A's pad proves it.
     const offCurveProof = zeroOnRefusal && !loop;
     // Elsewhere an address-returning recovery answers address(0) for an invalid recovery id alone (the default
-    // composition's rule); a per-call compile keeps the refusal handling above.
+    // composition's rule); a framed compile keeps the refusal handling above.
     const zeroOnInvalidV = returnsAddress && this.directConvention;
     if (zeroOnRefusal) {
       this.emitRecoveryAccepted(loc);
@@ -13955,7 +13955,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const loc = { location: node.location, positionHint: PositionHint.START };
       // SDK auto-injection keys on blockhashReads: a direct-identifier n is recorded by param name (the SDK
       // reads that arg to resolve addr(n)). ANY computed n (block.number - K, arbitrary arithmetic) is recorded
-      // as a per-call-site <computed:i> key with its own slot; the SDK resolves it from the auto-derivation
+      // as a framed-site <computed:i> key with its own slot; the SDK resolves it from the auto-derivation
       // probe trace (the covenant computes n on-stack), so it is never re-derived in JS.
       const nArg = node.parameters[0];
       // Each DISTINCT n rides its OWN consecutive oracle slot. The read ordinal = its position in
@@ -14105,10 +14105,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   // Whether this body's transaction signatures must sign all outputs: a direct upgrade, or a subroutine one reaches.
-  // A message-bus upgrade fences its signatures in the route, and per-call refuses upgrade entries.
+  // A message-bus upgrade fences its signatures in the route, and framed refuses upgrade entries.
   private fencesUpgradeSignatures(): boolean {
     const fn = this.currentFunction;
-    if (!fn || this.perCallMaster || this.currentFunctionIsMessageBusRoute
+    if (!fn || this.framedMaster || this.currentFunctionIsMessageBusRoute
       || fn.messageBusUpgradeRoute === true || fn.messageBusEligible === true) return false;
     return fn.modifiers.includes(FunctionModifier.UPGRADE)
       || (this.isDefineSubTraversal && fn.functionId !== undefined && this.upgradeSignatureFenceIds.has(fn.functionId));
@@ -14846,7 +14846,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (!this.stack.includes('__message_bus_graph_caller')) {
           throw new Error(`Missing authenticated graph caller while invoking '${targetFunc.name}'`);
         }
-      } else if (this.perCallMaster && node.fromThisCall) {
+      } else if (this.framedMaster && node.fromThisCall) {
         // An external self-call is a message call to the contract, so the callee's `msg.sender` is the
         // contract's own address, not the sender this frame carries.
         this.emitCallerSelfContext(contextLoc);
@@ -14859,7 +14859,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_msg_sender_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (this.perCallMaster && this.perCallSelfContextCarrierNames().has(targetFunc.name)) {
+    if (this.framedMaster && this.framedSelfContextCarrierNames().has(targetFunc.name)) {
       // The callee reaches its own address, so forward the caller's. A subroutine caller already holds one; an
       // entry body reads the frame's `self`.
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
@@ -14867,12 +14867,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_self_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (this.perCallMaster && this.perCallOriginCarrierNames().has(targetFunc.name)) {
+    if (this.framedMaster && this.framedOriginCarrierNames().has(targetFunc.name)) {
       this.emitTxOrigin({ location: node.location, positionHint: PositionHint.START });
       this.pushToStack(`(__handler_origin_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (this.perCallMaster && this.perCallValueCarrierNames().has(targetFunc.name)) {
+    if (this.framedMaster && this.framedValueCarrierNames().has(targetFunc.name)) {
       // An internal call keeps the caller's value; a self-call is a message call that carries none.
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (node.fromThisCall) this.emit(encodeInt(0n), contextLoc);
@@ -14880,7 +14880,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_value_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (this.perCallMaster && this.perCallSelectorCarrierNames().has(targetFunc.name)) {
+    if (this.framedMaster && this.framedSelectorCarrierNames().has(targetFunc.name)) {
       // An internal call keeps the caller's selector; a self-call is a message call to the callee's own.
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (node.fromThisCall && targetFunc.functionSelector) this.emit(targetFunc.functionSelector, contextLoc);
@@ -15875,12 +15875,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const endLoc = { location: node.location, positionHint: PositionHint.END };
     node.left = this.visit(node.left);
     // Read with the condition still beneath it.
-    this.perCallFieldsCurrentThrough(node.right, node, startLoc);
-    this.emitPerCallFieldsHeldThrough(node.right, node, startLoc);
+    this.framedFieldsCurrentThrough(node.right, node, startLoc);
+    this.emitFramedFieldsHeldThrough(node.right, node, startLoc);
     this.popFromStack(); // condition consumed by OP_IF
     // The right operand runs on some paths only, which the fields' segments do not follow where it calls or writes.
-    this.perCallFieldsLostIn(node.right);
-    const lazy = this.perCallEnterLazyCalls(node.right);
+    this.framedFieldsLostIn(node.right);
+    const lazy = this.framedEnterLazyCalls(node.right);
     this.emit(Op.OP_IF, startLoc);
     const snapshot = [...this.stack];
     if (node.operator === BinaryOperator.AND) {
@@ -15897,7 +15897,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.right = this.visit(node.right);
     }
     this.emit(Op.OP_ENDIF, endLoc);
-    this.perCallLeaveLazyCalls(lazy);
+    this.framedLeaveLazyCalls(lazy);
     return node;
   }
 
@@ -16204,30 +16204,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && node.expression instanceof NullaryOpNode
       && node.expression.operator === NullaryOperator.INPUT_INDEX
       && this.stack.includes('__internal__frameSelf')) {
-      // A per-call root frame's `address(this)` is its witness `self`, which the head checked against the reserved
+      // A framed root frame's `address(this)` is its witness `self`, which the head checked against the reserved
       // `addrX` constant. The input's own locking bytecode is the master lock, not the contract address.
       this.emit(encodeInt(BigInt(this.getStackIndex('__internal__frameSelf'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
       return node;
     }
-    if (this.perCallMaster && this.stack.includes(PER_CALL_SELF_CONTEXT)
+    if (this.framedMaster && this.stack.includes(FRAMED_SELF_CONTEXT)
       && node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
       && node.expression instanceof NullaryOpNode
       && node.expression.operator === NullaryOperator.INPUT_INDEX) {
-      // A per-call subroutine reads the contract address the caller forwarded; it is the same `self` the frame
+      // A framed subroutine reads the contract address the caller forwarded; it is the same `self` the frame
       // would have held inline, because a message call to the contract leaves `address(this)` unchanged.
-      this.emit(encodeInt(BigInt(this.getStackIndex(PER_CALL_SELF_CONTEXT))), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(FRAMED_SELF_CONTEXT))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
       return node;
     }
-    if (this.perCallMaster
+    if (this.framedMaster
       && node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
       && node.expression instanceof NullaryOpNode
       && node.expression.operator === NullaryOperator.INPUT_INDEX) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'FRAMED_CODEGEN_UNAVAILABLE',
         `address(this) is read outside the frame's slots while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -16378,13 +16378,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Evaluate condition
     node.condition = this.visit(node.condition);
     // Read with the condition still beneath it.
-    this.perCallFieldsCurrentThrough(node, node, locationData);
-    this.emitPerCallFieldsHeldThrough(node, node, locationData);
+    this.framedFieldsCurrentThrough(node, node, locationData);
+    this.emitFramedFieldsHeldThrough(node, node, locationData);
     this.popFromStack();
     // An arm that calls or writes a field runs on some paths only, which the fields' segments do not follow.
-    this.perCallFieldsLostIn(node.ifTrue);
-    this.perCallFieldsLostIn(node.ifFalse);
-    const lazy = this.perCallEnterLazyCalls(node);
+    this.framedFieldsLostIn(node.ifTrue);
+    this.framedFieldsLostIn(node.ifFalse);
+    const lazy = this.framedEnterLazyCalls(node);
 
     // OP_IF
     this.emit(Op.OP_IF, locationData);
@@ -16402,7 +16402,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // OP_ENDIF
     this.emit(Op.OP_ENDIF, { location: node.location, positionHint: PositionHint.END });
-    this.perCallLeaveLazyCalls(lazy);
+    this.framedLeaveLazyCalls(lazy);
 
     // Both branches leave one value on the stack
     return node;
@@ -17396,10 +17396,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       this.pushToStack(stackLabel);
     };
-    const state = this.pendingStateWrites.has(key) ? this.perCallFieldState(key) : 'closed';
+    const state = this.pendingStateWrites.has(key) ? this.framedFieldState(key) : 'closed';
     if (state === 'current') fromSlot();
     else if (state === 'closed') fromState();
-    else this.emitPerCallBySegment(state, fromSlot, fromState, locationData);
+    else this.emitFramedBySegment(state, fromSlot, fromState, locationData);
   }
 
   /**
@@ -17437,7 +17437,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(stackName);
       this.pendingStateWrites.set(key, stackName);
     }
-    this.perCallFieldWritten(sv, key, node);
+    this.framedFieldWritten(sv, key, node);
   }
 
   /**
@@ -17524,7 +17524,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fixedWidth = isFixedWidthType(elemType);
 
     // 1. Read array blob from state
-    this.perCallPreAllocateDynamicWrite(sv, locationData);
+    this.framedPreAllocateDynamicWrite(sv, locationData);
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
@@ -17572,7 +17572,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fixedWidth = isFixedWidthType(elemType);
 
     // 1. Read array blob from state
-    this.perCallPreAllocateDynamicWrite(sv, locationData);
+    this.framedPreAllocateDynamicWrite(sv, locationData);
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
@@ -17681,7 +17681,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fixedWidth = isFixedWidthType(elemType);
 
     // 1. Read array blob from state
-    this.perCallPreAllocateDynamicWrite(sv, locationData);
+    this.framedPreAllocateDynamicWrite(sv, locationData);
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
@@ -17791,7 +17791,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Delete(i) = swap element[i] with element[length-1], then pop last.
 
     // 1. Read array blob from state
-    this.perCallPreAllocateDynamicWrite(sv, locationData);
+    this.framedPreAllocateDynamicWrite(sv, locationData);
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length: [blob] -> [length, elements_blob]
@@ -18200,8 +18200,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     });
 
-    if (this.perCallEventsAtSource) {
-      this.emitPerCallEventAtSource(eventDef, node, locationData);
+    if (this.framedEventsAtSource) {
+      this.emitFramedEventAtSource(eventDef, node, locationData);
       return node;
     }
 
@@ -18292,7 +18292,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Binds an event where a per-call body that emits from a loop emits it, at the frame's next listed event output.
+   * Binds an event where a framed body that emits from a loop emits it, at the frame's next listed event output.
    *
    * Entry `[..., payload]`, exit `[...]`. The output is the event run's first output plus the events the body has
    * emitted so far, and it carries the payload as its commitment, at the event covenant of the records' owner, with
@@ -18301,10 +18301,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * builder that lists a placeholder learns the payload the body computed. The count moves on, and the body pins it
    * against the block's where it ends.
    */
-  private emitPerCallEventAtSource(
+  private emitFramedEventAtSource(
     eventDef: EventDefinitionNode, node: Node, locationData: SingleLocationData,
   ): void {
-    const made = GenerateTargetTraversalWithLocation.PER_CALL_EVENTS_MADE;
+    const made = GenerateTargetTraversalWithLocation.FRAMED_EVENTS_MADE;
     const pick = (name: string): void => {
       this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -18411,8 +18411,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Preallocate both runtime-selected values shared by mutually-exclusive emit arms. */
   private preAllocateEmit(emitIndex: number, locationData: SingleLocationData): void {
-    // A per-call body that binds its events where it emits them keeps no value for the epilogue.
-    if (this.perCallEventsAtSource) return;
+    // A framed body that binds its events where it emits them keeps no value for the epilogue.
+    if (this.framedEventsAtSource) return;
     this.emit(encodeInt(0n), locationData);
     this.pushToStack(`__internal__emit_${emitIndex}`);
     this.emit(encodeInt(0n), locationData);
@@ -18557,7 +18557,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.amount = this.visit(node.amount);
       this.emitReplace(this.getStackIndex(amtName), node);
       this.popFromStack();
-      this.emitPerCallValueCallAtSource(node.transferIndex, node);
+      this.emitFramedValueCallAtSource(node.transferIndex, node);
     } else {
       // Normal path (outside branches)
       node.lockingBytecode = this.visit(node.lockingBytecode);
@@ -18597,7 +18597,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.amount = this.visit(node.amount);
       this.emitReplace(this.getStackIndex(amtName), node);
       this.popFromStack();
-      this.emitPerCallValueCallAtSource(node.transferIndex, node);
+      this.emitFramedValueCallAtSource(node.transferIndex, node);
     } else {
       // Normal path (outside branches)
       node.addressExpression = this.visit(node.addressExpression);
@@ -18637,7 +18637,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.amount = this.visit(node.amount);
       this.emitReplace(this.getStackIndex(amtName), node);
       this.popFromStack();
-      this.emitPerCallValueCallAtSource(node.transferIndex, node);
+      this.emitFramedValueCallAtSource(node.transferIndex, node);
     } else {
       node.addressExpression = this.visit(node.addressExpression);
       this.popFromStack();
@@ -18923,10 +18923,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
-    // A per-call contract's own balance is the value of its satoshi containers (spec 4b).
-    if (this.perCallMaster && node.name === 'balance' && node.expression.type instanceof AddressType
+    // A framed contract's own balance is the value of its satoshi containers (spec 4b).
+    if (this.framedMaster && node.name === 'balance' && node.expression.type instanceof AddressType
       && isOwnAddress(node.expression)) {
-      this.emitPerCallOwnBalance(locationData);
+      this.emitFramedOwnBalance(locationData);
       return node;
     }
 
@@ -18954,9 +18954,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const authenticatedSlot = (addressParam === undefined
         ? undefined : this.externalCallSlots.find((slot) => slot.addressParam === addressParam))
         ?? this.externalCallSlots.find((slot) => slot.interfaceName === '__raw__');
-      // A per-call body has no co-spent input the target's code could be read from, so it answers `.code` from
+      // A framed body has no co-spent input the target's code could be read from, so it answers `.code` from
       // the target's own locking bytecode through the P2SH extractor rather than the fixed slot's master index.
-      if (authenticatedSlot && !this.perCallMaster) {
+      if (authenticatedSlot && !this.framedMaster) {
         // A factory deployment can expose a stable logical address whose locking bytecode differs from the
         // physical state covenant co-spent for this call. The external-call identity proof already binds that
         // logical address to the slot master. Use its non-empty locking bytecode as the authenticated code marker:
@@ -21904,8 +21904,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // this.balance - get own category, derive satoshi container lbc, loop over inputs
-    if (node.name === 'balance' && !node.stateVariable && this.perCallMaster) {
-      this.emitPerCallOwnBalance(locationData);
+    if (node.name === 'balance' && !node.stateVariable && this.framedMaster) {
+      this.emitFramedOwnBalance(locationData);
       return node;
     }
     if (node.name === 'balance' && !node.stateVariable) {
@@ -21972,10 +21972,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       this.pushToStack('(value)');
     };
-    const state = this.pendingStateWrites.has(key) ? this.perCallFieldState(key) : 'closed';
+    const state = this.pendingStateWrites.has(key) ? this.framedFieldState(key) : 'closed';
     if (state === 'current') fromSlot();
     else if (state === 'closed') fromState();
-    else this.emitPerCallBySegment(state, fromSlot, fromState, locationData);
+    else this.emitFramedBySegment(state, fromSlot, fromState, locationData);
     return node;
   }
 
@@ -22011,7 +22011,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 1. Evaluate expression -> raw value bytes on top, then register the chunk write. A chunk-packed
       // array's on-stack form is `pushdata(count)++elems`; strip the count only for a fixed-width element
       // type (recoverable as A$len/width) - variable-width keeps it. Strings/bytes (non-array) never strip.
-      this.perCallPreAllocateDynamicWrite(sv, locationData);
+      this.framedPreAllocateDynamicWrite(sv, locationData);
       node.expression = this.visit(node.expression);
       const stripCount = sv.type instanceof ArrayType && isFixedWidthType((sv.type as ArrayType).elementType);
       this.emitRegisterDynamicWrite(sv, key, locationData, stripCount, node, knownEmpty);
@@ -22024,7 +22024,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Encode to pushdata format
     this.emitPushdataEncode(sv.type, locationData);
 
-    this.perCallFieldWritten(sv, key, node);
+    this.framedFieldWritten(sv, key, node);
 
     if (this.pendingStateWrites.has(key)) {
       // The slot is already ON THE STACK (pre-allocated before a branch, OR pushed by an earlier write to this
@@ -22060,7 +22060,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The whole-array copy `d2 = d1` desugars to `delete d2; while (i < d1.length) d2.push(...)`, so this is
     // what made the copy append instead of replace.
     if (sv.isDynamic) {
-      this.perCallPreAllocateDynamicWrite(sv, locationData);
+      this.framedPreAllocateDynamicWrite(sv, locationData);
       this.emitDefaultValue(locationData, sv.type);
       this.pushToStack('(value)');
       const stripCount = sv.type instanceof ArrayType && isFixedWidthType(sv.type.elementType);
@@ -22087,7 +22087,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(stackName);
       this.pendingStateWrites.set(key, stackName);
     }
-    this.perCallFieldWritten(sv, key, node);
+    this.framedFieldWritten(sv, key, node);
 
     return node;
   }
@@ -22096,18 +22096,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * A scalar field written where the code being emitted runs: its record is touched in this segment, for the record
    * rebuild at the end of the body, and the field is current again, so a read resolves from the slot rather than the
    * declaration and a close takes the record as written here. A write in the body's own sequence where every path
-   * has made the same calls leaves the field current until the run's next call (`perCallFieldsWrittenAt`).
+   * has made the same calls leaves the field current until the run's next call (`framedFieldsWrittenAt`).
    */
-  private perCallFieldWritten(sv: StateVariableNode, key: string, node: Node): void {
-    if (this.perCallMaster && this.readsRecordsFromFrame) {
+  private framedFieldWritten(sv: StateVariableNode, key: string, node: Node): void {
+    if (this.framedMaster && this.readsRecordsFromFrame) {
       const blockOffset = this.compactOffsetMap.get(sv.nftIndex);
-      if (blockOffset !== undefined) this.perCallRecordSegment.set(blockOffset, this.perCallSegmentIndex);
+      if (blockOffset !== undefined) this.framedRecordSegment.set(blockOffset, this.framedSegmentIndex);
     }
-    this.perCallStaleWrites.delete(key);
-    this.perCallFieldSet(key);
-    if (this.perCallFieldsAlwaysCurrent && this.perCallSequentialWrites.has(node)
-      && this.perCallCallsLeast === this.perCallCallsMost) {
-      this.perCallFieldsWrittenAt.set(key, this.perCallCallsLeast);
+    this.framedStaleWrites.delete(key);
+    this.framedFieldSet(key);
+    if (this.framedFieldsAlwaysCurrent && this.framedSequentialWrites.has(node)
+      && this.framedCallsLeast === this.framedCallsMost) {
+      this.framedFieldsWrittenAt.set(key, this.framedCallsLeast);
     }
   }
 
@@ -22439,15 +22439,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * pushes its own operands above it before the digest reaches it: the number of calls made, and a target its code
    * holds.
    */
-  private lowerPerCallArgumentCalls(expression: Node): void {
+  private lowerFramedArgumentCalls(expression: Node): void {
     walkInvocationAst(expression, (candidate) => {
-      if (candidate instanceof ExternalFunctionCallNode && !this.perCallLoweredSites.has(candidate)) {
+      if (candidate instanceof ExternalFunctionCallNode && !this.framedLoweredSites.has(candidate)) {
         const before = this.stack.length;
         this.visit(candidate);
         if (this.stack.length !== before + 1) return;
-        const name = `(argument_call_value_${this.perCallArgumentCallValues.size})`;
+        const name = `(argument_call_value_${this.framedArgumentCallValues.size})`;
         this.stack[0] = name;
-        this.perCallArgumentCallValues.set(candidate, name);
+        this.framedArgumentCallValues.set(candidate, name);
       }
     });
   }
@@ -22459,8 +22459,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * binding a second record. The value is reached at the slot the model holds it in: the outer site's position and
    * computed target sit above it, so it is not the item directly beneath the digest being built.
    */
-  private emitPerCallArgumentCallValue(node: ExternalFunctionCallNode): void {
-    const name = this.perCallArgumentCallValues.get(node);
+  private emitFramedArgumentCallValue(node: ExternalFunctionCallNode): void {
+    const name = this.framedArgumentCallValues.get(node);
     const depth = name === undefined ? -1 : this.getStackIndex(name, true);
     if (depth < 0) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
@@ -22479,32 +22479,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.foldedIntoDeploy) return node;
     // A call an argument expression makes was already lowered into its own site for the call it feeds; visiting it
     // again would bind a second record, so the visit lifts the value it left on the frame for the digest instead.
-    if (this.perCallMaster && this.perCallLoweredSites.has(node)) {
-      this.emitPerCallArgumentCallValue(node);
+    if (this.framedMaster && this.framedLoweredSites.has(node)) {
+      this.emitFramedArgumentCallValue(node);
       return node;
     }
-    // A per-call master binds each call to its own witness record where the call is made: the body reads its
+    // A framed master binds each call to its own witness record where the call is made: the body reads its
     // block, walks to the site's record and checks kind, target, calleeRef and argsHash against what the source
     // says, then takes the call's result from the record. The head no longer checks the record; it only walks
     // past the call section to reach the segments, events and sends.
-    if (this.perCallMaster) {
+    if (this.framedMaster) {
       // A call an argument expression makes is its own site, and the execution reaches it before the call it feeds:
       // closing and binding the outer site first would number the two against the source's order and leave the
       // inner one sharing the outer's record. Lower the arguments' own sites first, marking them so the digest's
       // own visit reuses the value they left instead of binding the record a second time.
-      for (const parameter of node.parameters ?? []) this.lowerPerCallArgumentCalls(parameter);
-      this.emitPerCallSegmentClose({ location: node.location, positionHint: PositionHint.START }, false);
-      this.emitPerCallCallSite(node, { location: node.location, positionHint: PositionHint.START });
-      this.perCallLoweredSites.add(node);
+      for (const parameter of node.parameters ?? []) this.lowerFramedArgumentCalls(parameter);
+      this.emitFramedSegmentClose({ location: node.location, positionHint: PositionHint.START }, false);
+      this.emitFramedCallSite(node, { location: node.location, positionHint: PositionHint.START });
+      this.framedLoweredSites.add(node);
       // The call closes this segment; the code that follows runs in the next one, whose record views differ. Any
       // value written before the call is the closed segment's, so a later read resolves from the declaration.
-      this.perCallSegmentIndex += 1;
-      this.perCallOrdinal += 1;
-      for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
-      this.perCallFieldsCalled();
-      this.perCallCallCounted(true);
-      if (this.perCallFieldsAlwaysCurrent) {
-        this.emitPerCallHeldFieldsReread(node, { location: node.location, positionHint: PositionHint.END });
+      this.framedSegmentIndex += 1;
+      this.framedOrdinal += 1;
+      for (const key of this.pendingStateWrites.keys()) this.framedStaleWrites.add(key);
+      this.framedFieldsCalled();
+      this.framedCallCounted(true);
+      if (this.framedFieldsAlwaysCurrent) {
+        this.emitFramedHeldFieldsReread(node, { location: node.location, positionHint: PositionHint.END });
       }
       return node;
     }
@@ -24079,10 +24079,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // expected = ceil(length / DYNAMIC_CHUNK_SIZE); then initialize the scan. A dynamic state value keeps every
     // non-empty byte in its chunk records, unlike a sorted mapping value, which stays inline through 60 bytes.
-    // A per-call master keeps the mapping-value count, so its artifacts stay byte-identical.
+    // A framed master keeps the mapping-value count, so its artifacts stay byte-identical.
     this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_len)'))), loc);
     this.emit(Op.OP_PICK, loc);
-    if (this.perCallMaster) {
+    if (this.framedMaster) {
       this.emitValueChunkCountFromLength(loc);
     } else {
       this.emitDynamicChunkCountFromLength(loc);
@@ -24215,7 +24215,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const callInputParam = this.lowLevelCallCount === 1
       ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
-    if (this.compilerOptions.solidityImportCompat && target !== undefined && !this.perCallMaster
+    if (this.compilerOptions.solidityImportCompat && target !== undefined && !this.framedMaster
       && !this.isEmptyLiteralPayload(data) && this.getStackIndex(callInputParam, true) >= 0) {
       this.emitCompatLowLevelCallPin(data, target, callInputParam, locationData);
       return;
@@ -24620,15 +24620,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitLowLevelCall(node: LowLevelCallNode): Node {
     const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
 
-    // A per-call master's forwarded delegatecall leaves the two values its source reads, `(success, data)`, with
+    // A framed master's forwarded delegatecall leaves the two values its source reads, `(success, data)`, with
     // the data being the record's result: the call is checked where the source makes it, like the statement form.
-    if (this.perCallMaster && node.callMode === 'delegatecall') {
-      this.emitPerCallSegmentClose(locationData, false);
-      this.emitPerCallForwardCallSite(node, locationData, true);
-      this.perCallSegmentIndex += 1;
-      this.perCallOrdinal += 1;
-      for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
-      this.perCallFieldsCalled();
+    if (this.framedMaster && node.callMode === 'delegatecall') {
+      this.emitFramedSegmentClose(locationData, false);
+      this.emitFramedForwardCallSite(node, locationData, true);
+      this.framedSegmentIndex += 1;
+      this.framedOrdinal += 1;
+      for (const key of this.pendingStateWrites.keys()) this.framedStaleWrites.add(key);
+      this.framedFieldsCalled();
       return node;
     }
 
@@ -24673,16 +24673,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitLowLevelCallStatement(node: LowLevelCallStatementNode): Node {
     const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
 
-    // A per-call master binds a delegatecall to its own witness record where the call is made: the fallback hands
+    // A framed master binds a delegatecall to its own witness record where the call is made: the fallback hands
     // its own received call data to an address it holds, so the record states the frame kind and the target and
     // the site hashes the forwarded bytes. The call closes this segment, exactly as a typed external call does.
-    if (this.perCallMaster && node.callMode === 'delegatecall') {
-      this.emitPerCallSegmentClose(locationData, false);
-      this.emitPerCallForwardCallSite(node, locationData, false);
-      this.perCallSegmentIndex += 1;
-      this.perCallOrdinal += 1;
-      for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
-      this.perCallFieldsCalled();
+    if (this.framedMaster && node.callMode === 'delegatecall') {
+      this.emitFramedSegmentClose(locationData, false);
+      this.emitFramedForwardCallSite(node, locationData, false);
+      this.framedSegmentIndex += 1;
+      this.framedOrdinal += 1;
+      for (const key of this.pendingStateWrites.keys()) this.framedStaleWrites.add(key);
+      this.framedFieldsCalled();
       return node;
     }
 
@@ -25017,8 +25017,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     while (type instanceof ValueType) type = type.underlyingType;
     if (!(type instanceof AddressType)
       || !(this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat)) return;
-    // A per-call composition hashes an address key by its own bytes: its SDK declares every node by them.
-    if (this.compilerOptions.composition === 'per-call') return;
+    // A framed composition hashes an address key by its own bytes: its SDK declares every node by them.
+    if (this.compilerOptions.composition === 'framed') return;
     // A stored/native address and a decoded Solidity ABI word are the same mapping key. Keep the
     // normalization typed: bytes20/bytes32 and native SolidCash addresses retain exact-byte hashing.
     this.emit(Op.OP_SIZE, loc);
@@ -25128,7 +25128,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         `The verified-mapping read on '${collection.name}' in '${this.currentFunction.name}' has no allocated entry slot.`);
     }
     const cached = this.sortedCompositeValueCache.get(slotIndex);
-    // A value kept by a per-call write serves the reads of its own segment; past a call the next segment's view does.
+    // A value kept by a framed write serves the reads of its own segment; past a call the next segment's view does.
     if (cached !== undefined && this.sortedReadServed(slotIndex)) {
       const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
       if (debugEnv?.SOLIDC_DEBUG_DYNAMIC_FRAME === '1'
@@ -25174,7 +25174,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the proven [Hk32, slot32, nextKey32] layout.
     this.emitSortedKeyHash(node, slotIndex, loc);     // [Hk32]
     if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) === undefined) {
-      this.emitPerCallAliasedReadGuard(node, loc);
+      this.emitFramedAliasedReadGuard(node, loc);
     }
 
     // 2. Entry address = base(master category) wrapped in the collection's entry covenant. Track the categoryId so
@@ -25189,9 +25189,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 3. input[slot] bytecode == entryAddr (a real entry of this collection; omission -> mismatch -> revert),
     // then read its commitment -> slot32, nextKey32. A paged read names the turn's own node, which the frame
     // declares one past the slot's, so the coordinate counts the loop's counter while it is emitted.
-    this.perCallPagingTurnAddend = this.pagingTurnAddend(slotIndex);
+    this.framedPagingTurnAddend = this.pagingTurnAddend(slotIndex);
     this.emitEntryInputIndex(slotIndex, loc, 2);      // [Hk32, entryAddr, idx]
-    this.perCallPagingTurnAddend = undefined;
+    this.framedPagingTurnAddend = undefined;
     // Several absent keys in one verified map can share a single predecessor outpoint. A fixed route slot that
     // received a placeholder may use an earlier aliased slot, but the selected input is still authenticated
     // against this collection's entry covenant below.
@@ -25227,14 +25227,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) !== undefined) {
       if (this.readsPastBatchWrite()) this.emitCreatedTargetName(slotIndex, loc);
       // The node a write targets may be one an earlier frame created, which the frame names at its output alone.
-      this.emitPerCallBatchProofView(loc, () => this.emitPerCallNodeLockCheck(loc, true), 1); // [Hk32, entryAddr, commit]
+      this.emitFramedBatchProofView(loc, () => this.emitFramedNodeLockCheck(loc, true), 1); // [Hk32, entryAddr, commit]
       this.emit(Op.OP_NIP, loc);                      // [Hk32, commit]
     } else if (this.readsRecordsFromFrame) {
-      // A per-call frame reads the entry from the record its own segment declares; the transaction's input at the
+      // A framed frame reads the entry from the record its own segment declares; the transaction's input at the
       // coordinate may hold the value another frame left or none at all, so the declaration is the source and
       // settlement ties it to the transaction. Settlement ties commitments only, so the node the coordinate names
       // is held to this collection's address on both sides first.
-      this.emitPerCallNodeLockCheck(loc, true);       // [Hk32, entryAddr, idx]
+      this.emitFramedNodeLockCheck(loc, true);       // [Hk32, entryAddr, idx]
       this.emit(Op.OP_NIP, loc);                      // [Hk32, idx]  (drop entryAddr)
       this.emitRecordCommitmentRead('in', loc);       // [Hk32, commit]
     } else {
@@ -25308,7 +25308,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.passSortedEntryAccess(this.sortedReadsAhead, node.entrySlotIndex);
       // A read the flow walk left to a kept or chained value fails closed where the code emitting it holds none.
       if (this.sortedServedReads.has(node) && !this.sortedReadServed(node.entrySlotIndex)) {
-        throw new PerCallStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys),
+        throw new FramedStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys),
           'whose value the frame does not keep');
       }
       this.refuseUnservedDirectSortedRead(node);
@@ -25493,18 +25493,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * P2SH entryAddr (untracked, at tracker-relative depth addrDepth below the working area), category base == master
    * with mutable (0x01) capability, and commitment == field1||field2||field3 - a value entry commitment
    * slot(32)||nextKey(32)||value (field3 may be an empty value tail). Depths measured with outIdx on top. Consumes
-   * outIdx; leaves the working area unchanged. `perCallAddress`, when given, pushes the entry address a per-call
+   * outIdx; leaves the working area unchanged. `framedAddress`, when given, pushes the entry address a framed
    * frame compares the output's lock with in place of the pick at `addrDepth`.
    */
   private emitVerifySortedValueOutput(
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
-    untrackedItemsAtEntry = 1, topIsDeclaredOrdinal = false, perCallAddress?: () => void,
+    untrackedItemsAtEntry = 1, topIsDeclaredOrdinal = false, framedAddress?: () => void,
   ): void {
     // Keep output introspection in the caller's transaction frame. OP_INVOKE's isolated introspection frame can
     // reinterpret an absolute output coordinate when the same function body is published through a generated
     // delegate ABI (the body cache is shared by the ordinary and inferred-delegate variants). The verifier is
     // deliberately small; inlining preserves the exact checks without making their coordinate context implicit.
-    // A per-call compile keeps the shared helper wherever its frame allows it.
+    // A framed compile keeps the shared helper wherever its frame allows it.
     if (!this.directConvention) {
       const id = GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID;
       this.bumpSubroutineUse(id);
@@ -25527,16 +25527,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.emitVerifySortedValueOutputInline(
-      loc, addrDepth, f1Depth, f2Depth, f3Depth, false, untrackedItemsAtEntry, topIsDeclaredOrdinal, perCallAddress,
+      loc, addrDepth, f1Depth, f2Depth, f3Depth, false, untrackedItemsAtEntry, topIsDeclaredOrdinal, framedAddress,
     );
   }
 
   private emitVerifySortedValueOutputInline(
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
-    consumeFrame = false, untrackedItemsAtEntry = 1, topIsDeclaredOrdinal = false, perCallAddress?: () => void,
+    consumeFrame = false, untrackedItemsAtEntry = 1, topIsDeclaredOrdinal = false, framedAddress?: () => void,
   ): void {
     if (this.readsRecordsFromFrame) {
-      // A per-call frame closes against the view its own segment declares: the transaction's output at the
+      // A framed frame closes against the view its own segment declares: the transaction's output at the
       // coordinate may be another frame's write. Settlement ties the declaration to the transaction. A record the
       // frame never spent has no coordinate to resolve at, so the write names it by its position in the segment.
       // Settlement ties commitments only, and a commitment does not name its collection, so the output the record
@@ -25550,8 +25550,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ENDIF, loc);
       }
       this.emit(Op.OP_OUTPUTBYTECODE, loc);                                // [.., outIdx, outbc]
-      if (perCallAddress !== undefined) {
-        perCallAddress();
+      if (framedAddress !== undefined) {
+        framedAddress();
       } else {
         this.emit(encodeInt(BigInt(addrDepth + 1)), loc); this.emit(Op.OP_PICK, loc);
       }
@@ -25870,7 +25870,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. New value v at the bottom of the working area - kept tracked, consumed at the end. An int is BIN2NUM-
     // normalized to a minimal number (matches SDK bigIntToVmNumber); a bytesN value is CAT'd into the tail verbatim.
-    // A per-call swap-remove write's value is emitted one scope deeper, where an identifier is picked rather than
+    // A framed swap-remove write's value is emitted one scope deeper, where an identifier is picked rather than
     // rolled: the alias arm above skips it, so a last use rolled here would leave that arm a frame the other does not.
     const aliasArm = aliasOwner !== undefined && this.readsRecordsFromFrame;
     if (aliasArm) this.scopeDepth += 1;
@@ -25909,15 +25909,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
 
       // The proof index may alias another logical slot's physical input. Authenticate its address and require it is
-      // either the exact target node or the adjacent predecessor that brackets H(k). A per-call frame reads the
+      // either the exact target node or the adjacent predecessor that brackets H(k). A framed frame reads the
       // entry from the record its own segment declares, and holds the record spent at the coordinate to the address.
       this.emitMasterInputIndex(loc, 2);
       this.emit(Op.OP_FROMALTSTACK, loc); // parked proof offset; the created node's successor is now on top
       this.emit(Op.OP_ADD, loc);
-      // A head is minted only at genesis, so a predecessor is a node the transaction spends or, for a per-call frame,
+      // A head is minted only at genesis, so a predecessor is a node the transaction spends or, for a framed frame,
       // one an earlier frame created, which the frame names at its output alone.
       if (this.readsRecordsFromFrame) {
-        this.emitPerCallBatchProofView(loc, () => this.emitPerCallNodeLockCheck(loc, false), 1);
+        this.emitFramedBatchProofView(loc, () => this.emitFramedNodeLockCheck(loc, false), 1);
       } else {
         this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
         this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -25937,7 +25937,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
       // The written key's node sits where the frame declares it: an update rewrites the co-spent node in place,
       // so its output is the record the segment declares at the entry slot; an insert creates a trailing node,
-      // which the direct convention places at the entry slot's own output. A per-call frame addresses a spent
+      // which the direct convention places at the entry slot's own output. A framed frame addresses a spent
       // record's output at the coordinate its own proof names, and names a record it never spent by its position
       // in the segment's declared list.
       const declaredOrdinal = this.readsRecordsFromFrame && inBatch
@@ -25955,7 +25955,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_IF, loc);
         this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
         if (declaredOrdinal !== undefined) {
-          // A per-call frame recreates a spent record where it spent it, so the output the write proves sits at the
+          // A framed frame recreates a spent record where it spent it, so the output the write proves sits at the
           // record's own coordinate - the input the proof names - not at a block offset from the frame's first
           // declared record. A record the transaction creates has no input for the frame's own base to reach: its
           // declared input is the sentinel, so the coordinate the write proves the record at is negative. Such a
@@ -25969,7 +25969,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 0, loc);
           this.emit(Op.OP_ENDIF, loc);
         } else {
-          this.emitPerCallEntryIndex('out', slotIndex, loc);
+          this.emitFramedEntryIndex('out', slotIndex, loc);
         }
         this.emit(Op.OP_ELSE, loc);
         this.emitSortedPredecessorBracket(loc);
@@ -25998,8 +25998,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // that hash even though the write body (which normally consumes it) is skipped. Leaving it behind widens
         // the runtime stack and eventually corrupts the caller's frame. Balance the guard at its source.
         this.emit(Op.OP_ELSE, loc);
-        if (keptValue || this.perCallSkippableSlots.has(slotIndex)) {
-          // The hash holds the kept value's place, and the arm fails: a per-call frame derives an inactive row only
+        if (keptValue || this.framedSkippableSlots.has(slotIndex)) {
+          // The hash holds the kept value's place, and the arm fails: a framed frame derives an inactive row only
           // for a write a branch guards whose group its frame declares skipped, so a write that runs refuses that
           // declaration, and no read can take the hash as the value.
           this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc);
@@ -26067,9 +26067,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //    -> [v, Hk32, entryAddr, coSlot32, coNext32, coValue]
     this.emitEntryInputIndex(slotIndex, loc, 2);
     if (this.readsRecordsFromFrame) {
-      // A per-call frame reads the entry from the record its own segment declares rather than the transaction's
+      // A framed frame reads the entry from the record its own segment declares rather than the transaction's
       // input, which may hold another frame's value; the record spent at the coordinate is held to the address.
-      this.emitPerCallNodeLockCheck(loc, false);
+      this.emitFramedNodeLockCheck(loc, false);
       this.emitRecordCommitmentRead('in', loc);
     } else {
       this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
@@ -26490,12 +26490,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedCompositeValueCache.set(slotIndex, name);
   }
 
-  /** Counts a per-call master's reads and writes of each sorted entry slot, ahead of emitting its body. */
+  /** Counts a framed master's reads and writes of each sorted entry slot, ahead of emitting its body. */
   private countSortedEntryAccesses(fn: FunctionDefinitionNode): void {
     this.sortedWrittenValueSegment.clear();
     this.sortedReadsAhead.clear();
     this.sortedWritesAhead.clear();
-    if (!this.perCallMaster || fn.body === undefined) return;
+    if (!this.framedMaster || fn.body === undefined) return;
     const count = (counts: Map<number, number>, slot: number): void => {
       if (slot >= 0) counts.set(slot, (counts.get(slot) ?? 0) + 1);
     };
@@ -26524,7 +26524,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * True when a per-call frame's write to a sorted entry keeps the value it writes for the reads after it: the flow
+   * True when a framed frame's write to a sorted entry keeps the value it writes for the reads after it: the flow
    * walk admitted the write (`refuseStaleSortedReads`), and the code emitting it is the body's own straight line.
    */
   private sortedWriteMayKeepValue(node: MappingAssignNode | MappingDeleteNode): boolean {
@@ -26533,7 +26533,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Why a per-call frame's write to a sorted entry keeps no value for the reads after it, as the shape a refusal
+   * Why a framed frame's write to a sorted entry keeps no value for the reads after it, as the shape a refusal
    * names, or undefined when it keeps one: a straight-line write of a body whose calls the source fixes, the body's
    * last write to the entry, whose keys name one entry wherever the body reads the slot.
    */
@@ -26654,11 +26654,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedReadServed(slotIndex: number): boolean {
     const writtenIn = this.sortedWrittenValueSegment.get(slotIndex);
     return this.sortedCompositeValueCache.has(slotIndex)
-      && (writtenIn === undefined || writtenIn === this.perCallSegmentIndex);
+      && (writtenIn === undefined || writtenIn === this.framedSegmentIndex);
   }
 
   /**
-   * Refuses a per-call read whose key names the entry a write under other keys rewrote earlier in its segment.
+   * Refuses a framed read whose key names the entry a write under other keys rewrote earlier in its segment.
    *
    * Entry and exit `[..., Hk]`. The read proves its key against the view the segment declared before the write, and
    * a frame may declare one node at both: a write of another key leaves that view right only where the two keys
@@ -26668,11 +26668,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * last use has passed; a conditional write ran where its own flag is set. A write the frame holds no slot of, such
    * as a loop's, is refused where the body is compiled.
    */
-  private emitPerCallAliasedReadGuard(node: MappingAccessNode, loc: SingleLocationData): void {
+  private emitFramedAliasedReadGuard(node: MappingAccessNode, loc: SingleLocationData): void {
     for (const { slot, written, gate } of this.sortedAliasedReads.get(node) ?? []) {
       const operand = `__internal__vmapBatchSlot_${slot}`;
       if (this.getStackIndex(this.vmapWitnessName(operand), true) < 0) {
-        throw new PerCallAliasedReadError(node, this.sortedEntryText(node.collection!.name, node.keys), written);
+        throw new FramedAliasedReadError(node, this.sortedEntryText(node.collection!.name, node.keys), written);
       }
       this.emit(Op.OP_DUP, loc);
       this.emitPickVMapWitness(operand, loc);
@@ -26714,7 +26714,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Refuses, in a per-call frame, every read of a verified-mapping entry that runs in the segment of a write to it
+   * Refuses, in a framed frame, every read of a verified-mapping entry that runs in the segment of a write to it
    * whose value the frame does not keep: it would take the view the segment declared before the write. A push or a
    * pop reads the entry it rewrites, so it counts as such a read; a snapshot that only carries fields over into the
    * entry's next write does not (`carriesSnapshotOver`).
@@ -26726,7 +26726,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * A write of the collection under other keys names the read's entry wherever the keys agree at run time, which the
    * view the segment declared before it does not show. Such a read is recorded with the writes' slots for
-   * `emitPerCallAliasedReadGuard`, unless a literal sets the keys apart. A write the entry cache takes
+   * `emitFramedAliasedReadGuard`, unless a literal sets the keys apart. A write the entry cache takes
    * (`CacheMappingEntryInLoop`) only marks the cache dirty and reaches the entry where the cache is flushed, after
    * the reads between them, so the mark counts as the write, under the key `-1 - slot`, with the dirty flag as the
    * value that says at run time whether it ran.
@@ -26735,7 +26735,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedKeptWrites = new WeakSet();
     this.sortedServedReads = new WeakSet();
     this.sortedAliasedReads = new WeakMap();
-    if (!this.perCallMaster || fn.body === undefined) return;
+    if (!this.framedMaster || fn.body === undefined) return;
     // `gate` is a cache mark's dirty flag, or null where two paths' marks disagree.
     type Pending = { readonly shape?: string; readonly calls: number; readonly gate?: string | null };
     type Flow = Map<number, Pending> | undefined;
@@ -26833,7 +26833,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.sortedServedReads.add(node);
         return;
       }
-      throw new PerCallStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys), pending.shape);
+      throw new FramedStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys), pending.shape);
     };
     const write = (node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode, flow: Flow, scope: Scope):
     Flow => {
@@ -26848,7 +26848,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const pending = flow.get(slot);
       if (node instanceof MappingAssignNode && (node.arrayPush === true || node.arrayPop === true)
         && pending?.shape !== undefined && pending.calls === 0) {
-        throw new PerCallStaleReadError(node, this.sortedEntryText(node.collection?.name ?? node.name, node.keys),
+        throw new FramedStaleReadError(node, this.sortedEntryText(node.collection?.name ?? node.name, node.keys),
           pending.shape, node.arrayPush === true ? 'push' : 'pop');
       }
       const shape = chained && !scope.loop ? undefined
@@ -26935,7 +26935,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.stack[0] = name;
     this.pushToStack('(value)');
     this.sortedCompositeValueCache.set(slotIndex, name);
-    this.sortedWrittenValueSegment.set(slotIndex, this.perCallSegmentIndex);
+    this.sortedWrittenValueSegment.set(slotIndex, this.framedSegmentIndex);
     return true;
   }
 
@@ -26973,7 +26973,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private refuseDirectStaleSortedReads(fn: FunctionDefinitionNode): void {
     this.directKeptSortedWrites = new WeakSet();
     this.directServedSortedReads = new WeakSet();
-    if (this.perCallMaster || fn.body === undefined || this.ownsMessageBusParticipantBlock(fn)) return;
+    if (this.framedMaster || fn.body === undefined || this.ownsMessageBusParticipantBlock(fn)) return;
     type Pending = { readonly shape?: string; readonly write?: Node };
     type Flow = Map<number, Pending>;
     const isWrite = (node: Node): node is MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode =>
@@ -27085,7 +27085,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** True when a direct-convention write to a sorted entry keeps the value it writes for a read the walk served. */
   private directSortedWriteMayKeepValue(node: MappingAssignNode | MappingDeleteNode): boolean {
-    return this.directKeptSortedWrites.has(node) && !this.perCallMaster && !this.isDefineSubTraversal
+    return this.directKeptSortedWrites.has(node) && !this.framedMaster && !this.isDefineSubTraversal
       && this.scopeDepth === 0 && this.plainLoopDepth === 0;
   }
 
@@ -27119,7 +27119,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * later write whose key hash equals its own. Each such write keeps its value, and its key hash where the read
    * compares. A write in a branch arm, a loop, the code after an early return or an outlined helper keeps nothing,
    * so a read it may reach is refused, and a loop's writes reach the reads of its later turns, before them in the
-   * body as well; keys that are distinct literals never name one entry. On the per-call convention a read the same
+   * body as well; keys that are distinct literals never name one entry. On the framed convention a read the same
    * turn's write of its entry follows takes what the loop's earlier turns wrote from the node it holds instead
    * (`genesisTurnWrites`).
    */
@@ -27242,10 +27242,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The per-call constructor's reads that a loop's write of the same entry follows in the same turn, each with that
+   * The framed constructor's reads that a loop's write of the same entry follows in the same turn, each with that
    * write.
    *
-   * A per-call genesis runs a loop's sorted writes as one chain of inserts from the empty list's head, in the order
+   * A framed genesis runs a loop's sorted writes as one chain of inserts from the empty list's head, in the order
    * the loop walks its keys: a turn whose key is below the node the chain holds cannot be written, and one that
    * repeats it updates that node in place. So when a turn goes on to write the key it reads, the only node an
    * earlier turn wrote under that key is the held one, which the read takes where it holds the key, and the value
@@ -27255,7 +27255,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private genesisTurnWrites(fn: FunctionDefinitionNode): Map<Node, MappingAssignNode | MappingDeleteNode> {
     const served = new Map<Node, MappingAssignNode | MappingDeleteNode>();
-    if (!this.perCallMaster || fn.body === undefined) return served;
+    if (!this.framedMaster || fn.body === undefined) return served;
     const isLoop = (node: Node): boolean =>
       node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
     const barrier = (node: Node): boolean => {
@@ -28500,17 +28500,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The verification reads the proof node's declared view, which is the segment the write landed in rather than
     // the one the frame ends in: a later segment keeps a spent record at the view the write left. A body whose calls
     // vary walks the segment its run has reached, so a write segment the source fixes is named outright there.
-    const previousReadSegment = this.perCallReadSegment;
-    const previousReadsWriteSegment = this.perCallReadsWriteSegment;
-    if (this.perCallMaster) {
-      this.perCallReadSegment = this.perCallBatchWriteSegment;
-      this.perCallReadsWriteSegment = !this.perCallBatchWriteRuntime;
+    const previousReadSegment = this.framedReadSegment;
+    const previousReadsWriteSegment = this.framedReadsWriteSegment;
+    if (this.framedMaster) {
+      this.framedReadSegment = this.framedBatchWriteSegment;
+      this.framedReadsWriteSegment = !this.framedBatchWriteRuntime;
     }
     this.emitSortedBatchTransitionVerification(node);
-    this.perCallReadSegment = previousReadSegment;
-    this.perCallReadsWriteSegment = previousReadsWriteSegment;
+    this.framedReadSegment = previousReadSegment;
+    this.framedReadsWriteSegment = previousReadsWriteSegment;
     if (guard?.slotIndex !== undefined) this.emit(Op.OP_ENDIF, loc);
-    if (this.perCallMaster && this.getStackIndex(BATCH_EXTRA_RECORDS_SLOT, true) >= 0) {
+    if (this.framedMaster && this.getStackIndex(BATCH_EXTRA_RECORDS_SLOT, true) >= 0) {
       // Settlement admits a created record wherever the frame declares one, so every record the segment declares
       // past the batch's groups must be one of the value chunks this body pinned.
       this.emit(encodeInt(BigInt(this.getStackIndex(BATCH_EXTRA_RECORDS_SLOT))), loc);
@@ -28872,18 +28872,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * groups and value chunks to the batch walk, and the segment a dynamic write pins its chunk run in leaves the run
    * to the pins, so both check only the records before them.
    */
-  private emitPerCallSegmentClose(loc: SingleLocationData, atEnd: boolean): void {
+  private emitFramedSegmentClose(loc: SingleLocationData, atEnd: boolean): void {
     // A contract with no state has no records, so its frames have none to keep.
     if (this.isDefineSubTraversal || (this.stateVariables.length === 0 && this.collectionCount === 0)) return;
     const node = this.currentFunction;
-    const written = this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(atEnd) : [];
+    const written = this.readsRecordsFromFrame ? this.framedRecordsWrittenHere(atEnd) : [];
     // A record written here only on the paths whose calls reach one of its segments is closed on those paths alone.
     const onPathsWritten = (segments: readonly number[] | undefined, close: () => void): void => {
       if (segments === undefined) {
         close();
         return;
       }
-      this.emitPerCallInSegments(segments, loc);
+      this.emitFramedInSegments(segments, loc);
       this.emit(Op.OP_IF, loc);
       this.popFromStack();
       close();
@@ -28891,12 +28891,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     if (!atEnd) {
       for (const [nftIdx, offset, segments] of written) {
-        onPathsWritten(segments, () => this.emitPerCallRecordRebuildCheck(nftIdx, offset, loc));
+        onPathsWritten(segments, () => this.emitFramedRecordRebuildCheck(nftIdx, offset, loc));
       }
     }
     // A run-time loop's own records are the ones at its collection's lock, so a record past the loop's slot at any
     // other lock, such as a run the body only reads, is held kept like the ones before it. The lock sits beneath.
-    const loopLock = this.perCallLoopRecordLock(atEnd);
+    const loopLock = this.framedLoopRecordLock(atEnd);
     if (loopLock !== undefined) {
       this.emitMasterInputIndex(loc);
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -28917,7 +28917,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         exempt();
         continue;
       }
-      this.emitPerCallInSegments(segments, loc);
+      this.emitFramedInSegments(segments, loc);
       this.emit(Op.OP_IF, loc);
       this.popFromStack();
       exempt();
@@ -28925,7 +28925,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ELSE, loc);
       this.popFromStack(2);
       for (let pair = 0; pair < 2; pair += 1) {
-        this.emit(encodeInt(PER_CALL_UNDECLARABLE_INDEX), loc);
+        this.emit(encodeInt(FRAMED_UNDECLARABLE_INDEX), loc);
         this.pushToStack('(kept_exempt)');
       }
       this.emit(Op.OP_ENDIF, loc);
@@ -28942,30 +28942,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // write is in an earlier segment on every path, and with no call after the write every close past it is in the
     // write's. A value send closes a segment only where its recipient is a contract, which no position counts, so a
     // body that sends compares the two at every close.
-    const writeSegmentAtRunTime = batchWrite && !this.perCallBatchWriteRuntime && this.perCallCallsMadeActive
+    const writeSegmentAtRunTime = batchWrite && !this.framedBatchWriteRuntime && this.framedCallsMadeActive
       && ((node.transferInfos?.length ?? 0) > 0
-        || (this.perCallCallFollowsBatchWrite && this.perCallSegmentIndex >= this.perCallBatchWriteSegment));
+        || (this.framedCallFollowsBatchWrite && this.framedSegmentIndex >= this.framedBatchWriteSegment));
     const closesTheWriteSegment = batchWrite && !writeSegmentAtRunTime
-      && (this.perCallBatchWriteRuntime ? atEnd : this.perCallSegmentIndex === this.perCallBatchWriteSegment);
+      && (this.framedBatchWriteRuntime ? atEnd : this.framedSegmentIndex === this.framedBatchWriteSegment);
     if (closesTheWriteSegment) {
-      leadings.push(this.perCallRecordsBeforeGroups());
+      leadings.push(this.framedRecordsBeforeGroups());
     }
     // A run-time loop with no batch ahead of it declares its per-turn records itself, so every record from the
     // loop's slot on is one its own code wrote and verified: the records the frame declares before the slot are the
     // ones this segment must still hold kept.
-    if (this.perCallDeclaredLoopOut) {
-      leadings.push(this.perCallEntryOffset(this.perCallDeclaredLoopSlot) - 1);
+    if (this.framedDeclaredLoopOut) {
+      leadings.push(this.framedEntryOffset(this.framedDeclaredLoopSlot) - 1);
     }
     // An apart body's run follows the records every segment declares ahead of any group, which also leaves its
     // groups to the batch walk where they share the run's segment.
-    if (atEnd && this.perCallWritesDynamicField()) {
-      leadings.push(this.perCallDynamicChunkWidth() - 1 - (this.perCallRunApart ? this.batchTargetSlots().length : 0));
+    if (atEnd && this.framedWritesDynamicField()) {
+      leadings.push(this.framedDynamicChunkWidth() - 1 - (this.framedRunApart ? this.batchTargetSlots().length : 0));
     }
     const leading = leadings.length === 0 ? {}
       : { leading: Math.min(...leadings), ...(loopLock === undefined ? {} : { leadingAtLock: true }) };
-    if (this.perCallCallsMadeActive) {
+    if (this.framedCallsMadeActive) {
       // The segment is the one the execution's own calls have reached.
-      this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE))), loc);
       this.emit(Op.OP_PICK, loc);
       const kept = (options: { leading?: number; leadingAtLock?: boolean }): void => {
         this.emit(bytecodeToScript(declaredRecordsKeptScript({ runtimeCounts: true, exempt: written.length, ...options })),
@@ -28973,10 +28973,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
       if (writeSegmentAtRunTime) {
         this.emit(Op.OP_DUP, loc);
-        this.emit(encodeInt(BigInt(this.perCallBatchWriteSegment)), loc);
+        this.emit(encodeInt(BigInt(this.framedBatchWriteSegment)), loc);
         this.emit(Op.OP_NUMEQUAL, loc);
         this.emit(Op.OP_IF, loc);
-        kept({ leading: Math.min(...leadings, this.perCallRecordsBeforeGroups()) });
+        kept({ leading: Math.min(...leadings, this.framedRecordsBeforeGroups()) });
         this.emit(Op.OP_ELSE, loc);
         kept(leading);
         this.emit(Op.OP_ENDIF, loc);
@@ -28985,7 +28985,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     } else {
       this.emit(bytecodeToScript(declaredRecordsKeptScript({
-        segmentIndex: this.perCallSegmentIndex, callCount: this.perCallExecutionCallCount(), exempt: written.length,
+        segmentIndex: this.framedSegmentIndex, callCount: this.framedExecutionCallCount(), exempt: written.length,
         ...leading,
       })), loc);
     }
@@ -28993,22 +28993,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The collection hash of the nodes a per-call frame's run-time loop declares from its slot on, when the segment a
+   * The collection hash of the nodes a framed frame's run-time loop declares from its slot on, when the segment a
    * close checks holds nothing else of the body's own past them: no long mapping value, and no dynamic run, which only
    * the body's last segment pins. Undefined for any other close, and for loops over more than one collection.
    */
-  private perCallLoopRecordLock(atEnd: boolean): Uint8Array | undefined {
-    if (!this.perCallDeclaredLoopOut || this.valueChunkTrailingCountActive) return undefined;
-    if (atEnd && this.perCallWritesDynamicField()) return undefined;
-    const signature = this.perCallLoopRecordSignature();
+  private framedLoopRecordLock(atEnd: boolean): Uint8Array | undefined {
+    if (!this.framedDeclaredLoopOut || this.valueChunkTrailingCountActive) return undefined;
+    if (atEnd && this.framedWritesDynamicField()) return undefined;
+    const signature = this.framedLoopRecordSignature();
     return signature === undefined ? undefined : computeCollectionHash(signature);
   }
 
   /**
-   * The collection whose nodes a per-call frame's run-time loops declare from the loop's slot on, by position, when
+   * The collection whose nodes a framed frame's run-time loops declare from the loop's slot on, by position, when
    * those loops write one collection beside no batch; undefined for any other frame.
    */
-  private perCallLoopRecordSignature(): string | undefined {
+  private framedLoopRecordSignature(): string | undefined {
     if (!this.readsRecordsFromFrame || this.batchTargetSlots().length > 0) return undefined;
     const signatures = new Set((this.currentFunction.blockLayout?.slots ?? []).flatMap((slot) => (
       slot.kind === 'entry' && slot.slotIndex !== undefined && this.entrySlots[slot.slotIndex]?.inLoop === true
@@ -29021,7 +29021,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * no dynamic write, whose run a builder declares past it. A body whose footprint grows past that while it is emitted
    * is compiled again (`dynamicReadBasisUnstable`).
    */
-  private perCallReadRunTrails(fn: FunctionDefinitionNode, variable: string): boolean {
+  private framedReadRunTrails(fn: FunctionDefinitionNode, variable: string): boolean {
     const reads = fn.dynamicReads ?? [];
     return (fn.dynamicWrites ?? []).length === 0 && reads.length === 1 && reads[0] === variable;
   }
@@ -29034,20 +29034,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * with it. A record whose fields are current only on some paths is written here on those alone, which the
    * run-time segments it carries name.
    */
-  private perCallRecordsWrittenHere(atEnd: boolean): PerCallWrittenRecord[] {
-    const written: PerCallWrittenRecord[] = [];
+  private framedRecordsWrittenHere(atEnd: boolean): FramedWrittenRecord[] {
+    const written: FramedWrittenRecord[] = [];
     for (const [nftIdx, offset] of this.compactOffsetMap) {
       const keys = this.stateVariables.filter((sv) => sv.nftIndex === nftIdx)
         .map((sv) => ({ key: `${sv.nftIndex}:${sv.fieldIndex}`, dynamic: sv.isDynamic === true }))
         .filter(({ key }) => this.pendingStateWrites.has(key));
       const dynamic = keys.some((field) => field.dynamic);
-      const states = keys.map(({ key }) => this.perCallFieldState(key));
+      const states = keys.map(({ key }) => this.framedFieldState(key));
       const fresh = states.some((state) => state === 'current');
       if (atEnd ? dynamic || fresh : fresh && !dynamic) {
         written.push([nftIdx, offset]);
         continue;
       }
-      const segments = this.perCallSegmentsAnyCurrent(states);
+      const segments = this.framedSegmentsAnyCurrent(states);
       if (!dynamic && segments.length > 0) written.push([nftIdx, offset, segments]);
     }
     return written;
@@ -29056,14 +29056,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Whether the end's close takes a record of these fields as written in the body's last segment: on every path
    * (`'all'`), on none (`'none'`), or on the paths whose calls reach the run-time segments listed, as
-   * `perCallRecordsWrittenHere` decides there.
+   * `framedRecordsWrittenHere` decides there.
    */
-  private perCallRecordWrittenAtEnd(fields: readonly StateVariableNode[]): 'all' | 'none' | readonly number[] {
+  private framedRecordWrittenAtEnd(fields: readonly StateVariableNode[]): 'all' | 'none' | readonly number[] {
     const pending = fields.filter((sv) => this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
     if (pending.some((sv) => sv.isDynamic === true)) return 'all';
-    const states = pending.map((sv) => this.perCallFieldState(`${sv.nftIndex}:${sv.fieldIndex}`));
+    const states = pending.map((sv) => this.framedFieldState(`${sv.nftIndex}:${sv.fieldIndex}`));
     if (states.some((state) => state === 'current')) return 'all';
-    const segments = this.perCallSegmentsAnyCurrent(states);
+    const segments = this.framedSegmentsAnyCurrent(states);
     return segments.length > 0 ? segments : 'none';
   }
 
@@ -29077,14 +29077,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * from before the last call, and a frame re-entering this one below that call may have changed the field, which the
    * slot would write back over. A dynamic field's write lands where the epilogue pins its run, so it keeps its slot.
    */
-  private perCallFieldDeclaredAtEnd(
+  private framedFieldDeclaredAtEnd(
     key: string, record: 'all' | 'none' | readonly number[],
   ): 'declared' | { readonly segments: readonly number[]; readonly inSegments: boolean } | undefined {
-    const state = this.perCallFieldState(key);
+    const state = this.framedFieldState(key);
     if (state === 'current' || record === 'none') return undefined;
     if (record === 'all') {
       if (state !== 'closed') return { segments: state, inSegments: false };
-      return this.perCallFieldStateExact(key) && this.perCallStateVariable(key)?.isDynamic !== true
+      return this.framedFieldStateExact(key) && this.framedStateVariable(key)?.isDynamic !== true
         ? 'declared' : undefined;
     }
     const segments = state === 'closed' ? record : record.filter((segment) => !state.includes(segment));
@@ -29092,24 +29092,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Whether `perCallFieldState` holds on every path: in a body whose calls are fixed, where the stale set is kept one
-   * answer for all of them (`perCallFixedFields`), and where the walk follows the field and tells its paths apart.
+   * Whether `framedFieldState` holds on every path: in a body whose calls are fixed, where the stale set is kept one
+   * answer for all of them (`framedFixedFields`), and where the walk follows the field and tells its paths apart.
    */
-  private perCallFieldStateExact(key: string): boolean {
-    if (!this.perCallCallsMadeActive || this.perCallDecidesField(key)) return true;
-    const segments = this.perCallFieldSegments?.get(key);
+  private framedFieldStateExact(key: string): boolean {
+    if (!this.framedCallsMadeActive || this.framedDecidesField(key)) return true;
+    const segments = this.framedFieldSegments?.get(key);
     if (segments === undefined) return false;
     return segments.closed.size === 0 || segments.current.size === 0
       || [...segments.current].every((segment) => !segments.closed.has(segment));
   }
 
   /** The state variable a pending-write key names. */
-  private perCallStateVariable(key: string): StateVariableNode | undefined {
+  private framedStateVariable(key: string): StateVariableNode | undefined {
     return this.stateVariables.find((sv) => `${sv.nftIndex}:${sv.fieldIndex}` === key);
   }
 
   /** The run-time segments in which at least one of the field states is current, for a record none is current in. */
-  private perCallSegmentsAnyCurrent(states: readonly ('current' | 'closed' | readonly number[])[]): number[] {
+  private framedSegmentsAnyCurrent(states: readonly ('current' | 'closed' | readonly number[])[]): number[] {
     return [...new Set(states.flatMap((state) => (typeof state === 'string' ? [] : state)))]
       .sort((left, right) => left - right);
   }
@@ -29117,61 +29117,61 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Whether a pending state field's slot holds its value where the code being emitted runs: on every path
    * (`'current'`), on none (`'closed'`), or in the run-time segments listed, which no path it is closed on reaches. A
-   * field the walk does not follow, or one current and closed in a shared segment, takes `perCallStaleWrites`; a body
-   * whose fields are always current decides its own (`perCallFieldsAlwaysCurrent`).
+   * field the walk does not follow, or one current and closed in a shared segment, takes `framedStaleWrites`; a body
+   * whose fields are always current decides its own (`framedFieldsAlwaysCurrent`).
    */
-  private perCallFieldState(key: string): 'current' | 'closed' | readonly number[] {
-    if (this.perCallDecidesField(key)) {
+  private framedFieldState(key: string): 'current' | 'closed' | readonly number[] {
+    if (this.framedDecidesField(key)) {
       // Dated where every path had made `at` calls: current while the run has made no call since.
-      const at = this.perCallFieldsWrittenAt.get(key);
+      const at = this.framedFieldsWrittenAt.get(key);
       if (at === undefined) return 'current';
-      if (this.perCallCallsLeast > at) return 'closed';
-      return this.perCallCallsMost === at ? 'current' : [at];
+      if (this.framedCallsLeast > at) return 'closed';
+      return this.framedCallsMost === at ? 'current' : [at];
     }
-    const segments = this.perCallFieldSegments?.get(key);
+    const segments = this.framedFieldSegments?.get(key);
     if (segments !== undefined) {
       if (segments.closed.size === 0) return 'current';
       if (segments.current.size === 0) return 'closed';
       const current = [...segments.current].sort((left, right) => left - right);
       if (current.every((segment) => !segments.closed.has(segment))) return current;
     }
-    return this.perCallStaleWrites.has(key) ? 'closed' : 'current';
+    return this.framedStaleWrites.has(key) ? 'closed' : 'current';
   }
 
-  /** True for a pending field a body whose fields are always current decides itself (`perCallFieldsAlwaysCurrent`). */
-  private perCallDecidesField(key: string): boolean {
-    return this.perCallFieldsAlwaysCurrent && this.perCallRefreshable(key);
+  /** True for a pending field a body whose fields are always current decides itself (`framedFieldsAlwaysCurrent`). */
+  private framedDecidesField(key: string): boolean {
+    return this.framedFieldsAlwaysCurrent && this.framedRefreshable(key);
   }
 
   /**
    * A pending field's slot set where the code being emitted runs: current in every segment the run can be in, and
-   * held on every path from here, unless the write is one `perCallFieldWritten` dates.
+   * held on every path from here, unless the write is one `framedFieldWritten` dates.
    */
-  private perCallFieldSet(key: string): void {
-    this.perCallFieldSegments?.set(key, { current: this.perCallReachedSegments, closed: new Set() });
-    this.perCallFieldsWrittenAt.delete(key);
+  private framedFieldSet(key: string): void {
+    this.framedFieldSegments?.set(key, { current: this.framedReachedSegments, closed: new Set() });
+    this.framedFieldsWrittenAt.delete(key);
   }
 
   /** A call made where the code being emitted runs: the run is one segment on, past every slot it set before. */
-  private perCallFieldsCalled(): void {
-    const fields = this.perCallFieldSegments;
+  private framedFieldsCalled(): void {
+    const fields = this.framedFieldSegments;
     if (fields === undefined) return;
     const past = (segments: Iterable<number>): ReadonlySet<number> => new Set([...segments].map((at) => at + 1));
-    this.perCallReachedSegments = past(this.perCallReachedSegments);
+    this.framedReachedSegments = past(this.framedReachedSegments);
     for (const [key, { current, closed }] of fields) {
       fields.set(key, { current: new Set(), closed: past([...current, ...closed]) });
     }
   }
 
   /** The followed segments where the code being emitted runs, which a branch restores for its other arm. */
-  private perCallFieldSnapshot(): PerCallFieldSnapshot | undefined {
-    const fields = this.perCallFieldSegments;
-    return fields === undefined ? undefined : { fields: new Map(fields), reached: this.perCallReachedSegments };
+  private framedFieldSnapshot(): FramedFieldSnapshot | undefined {
+    const fields = this.framedFieldSegments;
+    return fields === undefined ? undefined : { fields: new Map(fields), reached: this.framedReachedSegments };
   }
 
-  private perCallFieldRestore(snapshot: PerCallFieldSnapshot | undefined): void {
-    this.perCallFieldSegments = snapshot === undefined ? undefined : new Map(snapshot.fields);
-    if (snapshot !== undefined) this.perCallReachedSegments = snapshot.reached;
+  private framedFieldRestore(snapshot: FramedFieldSnapshot | undefined): void {
+    this.framedFieldSegments = snapshot === undefined ? undefined : new Map(snapshot.fields);
+    if (snapshot !== undefined) this.framedReachedSegments = snapshot.reached;
   }
 
   /**
@@ -29179,14 +29179,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * segment it is current in on one of them, and closed likewise. A field one path does not follow is left to the
    * static set, and an arm the walk stopped following stops it past the branch.
    */
-  private perCallFieldJoin(paths: readonly (PerCallFieldSnapshot | undefined)[]): void {
+  private framedFieldJoin(paths: readonly (FramedFieldSnapshot | undefined)[]): void {
     if (paths.length === 0) return;
-    const followed = paths.filter((path): path is PerCallFieldSnapshot => path !== undefined);
+    const followed = paths.filter((path): path is FramedFieldSnapshot => path !== undefined);
     if (followed.length < paths.length) {
-      this.perCallFieldSegments = undefined;
+      this.framedFieldSegments = undefined;
       return;
     }
-    const joined = new Map<string, PerCallFieldSegments>();
+    const joined = new Map<string, FramedFieldSegments>();
     for (const key of new Set(followed.flatMap((path) => [...path.fields.keys()]))) {
       const each = followed.map((path) => path.fields.get(key));
       if (each.some((segments) => segments === undefined)) continue;
@@ -29195,20 +29195,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         closed: new Set(each.flatMap((segments) => [...segments!.closed])),
       });
     }
-    this.perCallFieldSegments = joined;
-    this.perCallReachedSegments = new Set(followed.flatMap((path) => [...path.reached]));
+    this.framedFieldSegments = joined;
+    this.framedReachedSegments = new Set(followed.flatMap((path) => [...path.reached]));
   }
 
   /**
    * Stops following the segments for the rest of the body where `node`, a construct whose code runs a number of
    * times the walk does not count, calls or writes a field: a loop, a switch, or an expression arm.
    */
-  private perCallFieldsLostIn(node: Node): void {
-    if (this.perCallFieldSegments !== undefined && this.perCallTouchesFields(node)) this.perCallFieldSegments = undefined;
+  private framedFieldsLostIn(node: Node): void {
+    if (this.framedFieldSegments !== undefined && this.framedTouchesFields(node)) this.framedFieldSegments = undefined;
   }
 
   /** True when `node` calls, sends or writes a state field anywhere inside it. */
-  private perCallTouchesFields(node: Node | undefined): boolean {
+  private framedTouchesFields(node: Node | undefined): boolean {
     let touches = false;
     walkInvocationAst(node, (child) => {
       if (child instanceof ExternalFunctionCallNode || child instanceof LowLevelCallNode
@@ -29222,9 +29222,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * True when the walk stops following a body somewhere: a loop, a switch or a lazily evaluated operand that calls,
-   * sends or writes (`perCallFieldsLostIn`), or a send the body makes where its source sends.
+   * sends or writes (`framedFieldsLostIn`), or a send the body makes where its source sends.
    */
-  private perCallFieldWalkStops(body: BlockNode | undefined): boolean {
+  private framedFieldWalkStops(body: BlockNode | undefined): boolean {
     let stops = false;
     walkInvocationAst(body, (node) => {
       if (stops) return;
@@ -29232,12 +29232,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         stops = true;
       } else if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
         || node instanceof SwitchNode) {
-        stops = this.perCallTouchesFields(node);
+        stops = this.framedTouchesFields(node);
       } else if (node instanceof BinaryOpNode
         && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
-        stops = this.perCallTouchesFields(node.right);
+        stops = this.framedTouchesFields(node.right);
       } else if (node instanceof TernaryOpNode) {
-        stops = this.perCallTouchesFields(node.ifTrue) || this.perCallTouchesFields(node.ifFalse);
+        stops = this.framedTouchesFields(node.ifTrue) || this.framedTouchesFields(node.ifFalse);
       }
     });
     return stops;
@@ -29245,49 +29245,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Reads every held field again, where a call has just closed the segment and opened the next
-   * (`perCallFieldsAlwaysCurrent`). Right after a call every field is closed on every path that made it, so the read
+   * (`framedFieldsAlwaysCurrent`). Right after a call every field is closed on every path that made it, so the read
    * is the field's value there whatever the body did before, and the field is held from here. A field dated where it
-   * was written (`perCallFieldsWrittenAt`) needs no read: past the call its declaration holds it.
+   * was written (`framedFieldsWrittenAt`) needs no read: past the call its declaration holds it.
    */
-  private emitPerCallHeldFieldsReread(node: Node, loc: SingleLocationData): void {
+  private emitFramedHeldFieldsReread(node: Node, loc: SingleLocationData): void {
     for (const key of [...this.pendingStateWrites.keys()]) {
-      if (this.perCallRefreshable(key) && !this.perCallFieldsWrittenAt.has(key)) {
-        this.emitPerCallFieldRefresh(key, node, loc);
+      if (this.framedRefreshable(key) && !this.framedFieldsWrittenAt.has(key)) {
+        this.emitFramedFieldRefresh(key, node, loc);
       }
     }
   }
 
   /** One more call the run makes where the code being emitted runs: on every path past it, or on some (`onEvery`). */
-  private perCallCallCounted(onEvery: boolean): void {
-    if (onEvery && this.perCallCallsLeastFrozen === 0) this.perCallCallsLeast += 1;
-    this.perCallCallsMost += 1;
+  private framedCallCounted(onEvery: boolean): void {
+    if (onEvery && this.framedCallsLeastFrozen === 0) this.framedCallsLeast += 1;
+    this.framedCallsMost += 1;
   }
 
   /**
    * Where a construct that runs on some paths only begins, in a body whose fields are always current: each dated
-   * field it writes (`perCallFieldsWrittenAt`) is read again where the run has made a call since its write, so it is
+   * field it writes (`framedFieldsWrittenAt`) is read again where the run has made a call since its write, so it is
    * held on every path from here, as the construct's own write leaves it on the paths that make it.
    */
-  private emitPerCallFieldsHeldThrough(scope: Node | undefined, node: Node, loc: SingleLocationData): void {
-    if (!this.perCallFieldsAlwaysCurrent || this.perCallFieldsWrittenAt.size === 0) return;
-    const written = this.perCallFieldsWrittenIn(scope);
-    for (const [key, at] of [...this.perCallFieldsWrittenAt]) {
+  private emitFramedFieldsHeldThrough(scope: Node | undefined, node: Node, loc: SingleLocationData): void {
+    if (!this.framedFieldsAlwaysCurrent || this.framedFieldsWrittenAt.size === 0) return;
+    const written = this.framedFieldsWrittenIn(scope);
+    for (const [key, at] of [...this.framedFieldsWrittenAt]) {
       if (!written.has(key)) continue;
-      if (this.perCallCallsLeast > at) {
-        this.emitPerCallFieldRefresh(key, node, loc);
-      } else if (this.perCallCallsMost !== at) {
-        this.emitPerCallInSegments([at], loc);
+      if (this.framedCallsLeast > at) {
+        this.emitFramedFieldRefresh(key, node, loc);
+      } else if (this.framedCallsMost !== at) {
+        this.emitFramedInSegments([at], loc);
         this.emit(Op.OP_NOTIF, loc);
         this.popFromStack();
-        this.emitPerCallFieldRefresh(key, node, loc);
+        this.emitFramedFieldRefresh(key, node, loc);
         this.emit(Op.OP_ENDIF, loc);
       }
-      this.perCallFieldsWrittenAt.delete(key);
+      this.framedFieldsWrittenAt.delete(key);
     }
   }
 
   /** The state writes in a body's own sequence of statements, reached through its nested blocks. */
-  private perCallSequentialWritesOf(body: BlockNode | undefined): Set<Node> {
+  private framedSequentialWritesOf(body: BlockNode | undefined): Set<Node> {
     const writes = new Set<Node>();
     const walk = (block: BlockNode | undefined): void => {
       for (const statement of block?.statements ?? []) {
@@ -29305,17 +29305,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * True while a per-call body whose calls are fixed is emitted. Each of its points is reached after the same calls
-   * on every path, so `perCallStaleWrites` is one answer for all of them, kept so where its paths rejoin: the second
+   * True while a framed body whose calls are fixed is emitted. Each of its points is reached after the same calls
+   * on every path, so `framedStaleWrites` is one answer for all of them, kept so where its paths rejoin: the second
    * arm of a branch starts from the set at the branch point, and a field one path leaves written where another
-   * leaves it closed is read again on the closed one (`emitPerCallFieldRefresh`).
+   * leaves it closed is read again on the closed one (`emitFramedFieldRefresh`).
    */
-  private perCallFixedFields(): boolean {
-    return this.perCallMaster && !this.isDefineSubTraversal && !this.perCallCallsMadeActive;
+  private framedFixedFields(): boolean {
+    return this.framedMaster && !this.isDefineSubTraversal && !this.framedCallsMadeActive;
   }
 
   /** The state fields `node` writes anywhere inside it, keyed as `pendingStateWrites` is. */
-  private perCallFieldsWrittenIn(node: Node | undefined): Set<string> {
+  private framedFieldsWrittenIn(node: Node | undefined): Set<string> {
     const keys = new Set<string>();
     walkInvocationAst(node, (child) => {
       if ((child instanceof StateAssignNode || child instanceof DeleteStateNode || child instanceof StateArrayPushNode
@@ -29328,8 +29328,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** True for a field whose slot a refresh can read again: a pending one held whole in its record. */
-  private perCallRefreshable(key: string): boolean {
-    return this.pendingStateWrites.has(key) && this.perCallStateVariable(key)?.isDynamic !== true;
+  private framedRefreshable(key: string): boolean {
+    return this.pendingStateWrites.has(key) && this.framedStateVariable(key)?.isDynamic !== true;
   }
 
   /**
@@ -29339,8 +29339,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * where the code being emitted runs: the one the frames that ran during the last call left. The slot is current
    * there afterwards, as it is on a path that wrote the field.
    */
-  private emitPerCallFieldRefresh(key: string, node: Node, loc: SingleLocationData): void {
-    const sv = this.perCallStateVariable(key)!;
+  private emitFramedFieldRefresh(key: string, node: Node, loc: SingleLocationData): void {
+    const sv = this.framedStateVariable(key)!;
     const fields = this.stateVariables.filter((field) => field.nftIndex === sv.nftIndex)
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
     this.emitStateFieldRead(sv, sv.type, fields, loc);
@@ -29348,8 +29348,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitPushdataEncode(sv.type, loc);
     this.emitReplace(this.getStackIndex(this.pendingStateWrites.get(key)!), node);
     this.popFromStack();
-    this.perCallStaleWrites.delete(key);
-    this.perCallFieldSet(key);
+    this.framedStaleWrites.delete(key);
+    this.framedFieldSet(key);
   }
 
   /**
@@ -29357,11 +29357,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Such a construct makes no call, so its write would leave the field current on the paths and turns that run it and
    * closed on the others; read again where the construct begins, the field is current on all of them.
    */
-  private perCallFieldsCurrentThrough(scope: Node | undefined, node: Node, loc: SingleLocationData): void {
-    if (!this.perCallFixedFields() || this.perCallStaleWrites.size === 0) return;
-    const written = this.perCallFieldsWrittenIn(scope);
-    for (const key of [...this.perCallStaleWrites]) {
-      if (written.has(key) && this.perCallRefreshable(key)) this.emitPerCallFieldRefresh(key, node, loc);
+  private framedFieldsCurrentThrough(scope: Node | undefined, node: Node, loc: SingleLocationData): void {
+    if (!this.framedFixedFields() || this.framedStaleWrites.size === 0) return;
+    const written = this.framedFieldsWrittenIn(scope);
+    for (const key of [...this.framedStaleWrites]) {
+      if (written.has(key) && this.framedRefreshable(key)) this.emitFramedFieldRefresh(key, node, loc);
     }
   }
 
@@ -29371,30 +29371,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * which no read at an arm's end settled, is refused by name: the record would be closed from a slot one path left
    * stale or from a declaration the other path's write is not in.
    */
-  private perCallFixedFieldsJoin(
+  private framedFixedFieldsJoin(
     node: BranchNode, ifEnd: ReadonlySet<string> | undefined, elseEnd: ReadonlySet<string> | undefined,
   ): void {
     if (ifEnd === undefined || elseEnd === undefined) {
       const rejoining = ifEnd ?? elseEnd;
-      if (rejoining !== undefined) this.perCallStaleWrites = new Set(rejoining);
+      if (rejoining !== undefined) this.framedStaleWrites = new Set(rejoining);
       return;
     }
     for (const key of new Set([...ifEnd, ...elseEnd])) {
-      if (ifEnd.has(key) === elseEnd.has(key) || !this.perCallRefreshable(key)) continue;
-      const variable = this.perCallStateVariable(key)!.name;
+      if (ifEnd.has(key) === elseEnd.has(key) || !this.framedRefreshable(key)) continue;
+      const variable = this.framedStateVariable(key)!.name;
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'FRAMED_CODEGEN_UNAVAILABLE',
         `the arms of a branch in '${this.currentFunction?.name ?? 'unknown'}' leave '${variable}' written since the `
         + 'last call on one path and as that call left it on the other',
         { function: this.currentFunction?.name, variable, location: node.location },
       );
     }
-    this.perCallStaleWrites = new Set([...ifEnd, ...elseEnd]);
+    this.framedStaleWrites = new Set([...ifEnd, ...elseEnd]);
   }
 
   /** Leaves whether the run's calls-made count is one of `segments`, tracked. Entry `[...]`, exit `[..., bool]`. */
-  private emitPerCallInSegments(segments: readonly number[], loc: SingleLocationData): void {
-    const callsMade = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
+  private emitFramedInSegments(segments: readonly number[], loc: SingleLocationData): void {
+    const callsMade = GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE;
     const first = segments[0]!;
     const last = segments[segments.length - 1]!;
     this.emitPickTrackedFromBottom(callsMade, loc);
@@ -29426,10 +29426,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Leaves the value `inSegments` leaves where the run's calls-made count is one of `segments`, and the one `elsewhere`
    * leaves anywhere else. Each pushes one tracked item.
    */
-  private emitPerCallBySegment(
+  private emitFramedBySegment(
     segments: readonly number[], inSegments: () => void, elsewhere: () => void, loc: SingleLocationData,
   ): void {
-    this.emitPerCallInSegments(segments, loc);
+    this.emitFramedInSegments(segments, loc);
     this.emit(Op.OP_IF, loc);
     this.popFromStack();
     const before = [...this.stack];
@@ -29443,7 +29443,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** True when the body writes a dynamic field, whose chunk run the epilogue pins in the body's last segment. */
-  private perCallWritesDynamicField(): boolean {
+  private framedWritesDynamicField(): boolean {
     return this.stateVariables.some((sv) => sv.isDynamic === true
       && this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
   }
@@ -29454,11 +29454,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * A field written since the segment's last call comes from the body's slot, any other from the segment's own
    * declared view, so the record is the one the segment's code computed.
    */
-  private emitPerCallRecordRebuildCheck(nftIdx: number, offset: number, loc: SingleLocationData): void {
+  private emitFramedRecordRebuildCheck(nftIdx: number, offset: number, loc: SingleLocationData): void {
     const fields = this.stateVariables.filter((sv) => sv.nftIndex === nftIdx)
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
-    const previousReadSegment = this.perCallReadSegment;
-    this.perCallReadSegment = this.perCallSegmentIndex;
+    const previousReadSegment = this.framedReadSegment;
+    this.framedReadSegment = this.framedSegmentIndex;
     let firstField = true;
     if (this.isMultiDataNft()) {
       this.emit(encodeNftIndexTag(nftIdx), loc);
@@ -29478,10 +29478,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack('(value)');
         this.emitPushdataEncode(fieldType, loc);
       };
-      const state = stackName === undefined ? 'closed' : this.perCallFieldState(key);
+      const state = stackName === undefined ? 'closed' : this.framedFieldState(key);
       if (state === 'current') fromSlot();
       else if (state === 'closed') fromDeclaration();
-      else this.emitPerCallBySegment(state, fromSlot, fromDeclaration, loc);
+      else this.emitFramedBySegment(state, fromSlot, fromDeclaration, loc);
       if (!firstField) {
         this.emit(Op.OP_CAT, loc);
         this.popFromStack(2);
@@ -29493,7 +29493,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.popFromStack(2);
-    this.perCallReadSegment = previousReadSegment;
+    this.framedReadSegment = previousReadSegment;
   }
 
   private emitSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
@@ -29546,7 +29546,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       void extra;
       commitmentField(copyProof, field);
     };
-    // A per-call frame's relink is the end view its write segment declares at the predecessor's output: a later frame
+    // A framed frame's relink is the end view its write segment declares at the predecessor's output: a later frame
     // may rewrite the node, and settlement chains the declared views to the transaction's output. It is read once per
     // target and parked beneath the batch blob while the recreated predecessor is checked: [endView, blob, predOut,
     // proof(top)].
@@ -29581,7 +29581,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return owner !== undefined && targets.includes(owner);
       });
       const aliasOwner = aliasWrite === undefined ? undefined : this.entrySlots[aliasWrite].aliasCondDeleteSlot;
-      // A per-call frame takes the general arm for a swap-remove pair too: where the keys meet, the write is a no-op
+      // A framed frame takes the general arm for a swap-remove pair too: where the keys meet, the write is a no-op
       // its frame declares skipped, as any skipped target.
       if (aliasWrite !== undefined && aliasOwner !== undefined && !this.readsRecordsFromFrame) {
         const fixedField = (field: 'slot' | 'next'): void => commitmentField(() => {
@@ -29596,7 +29596,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         arg(`__internal__vmapBatchPredOut_${aliasWrite}`, 1); this.emit(encodeInt(-2n), loc);
         bin(Op.OP_NUMEQUAL); bin(Op.OP_EQUALVERIFY);
       } else if (targets.length === 1 && this.readsRecordsFromFrame) {
-        this.emitPerCallSingleTargetTransition(targets[0], collectionHash, loc);
+        this.emitFramedSingleTargetTransition(targets[0], collectionHash, loc);
       } else if (targets.length === 1) {
         const slot = targets[0];
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
@@ -29812,7 +29812,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_ENDIF);
         }
       } else {
-        if (this.readsRecordsFromFrame) this.emitPerCallDistinctBatchTargets(node, targets, loc);
+        if (this.readsRecordsFromFrame) this.emitFramedDistinctBatchTargets(node, targets, loc);
         // Pack slot||plannedNext pairs while the main stack is clean, then keep the blob at the bottom of this
         // batch's altstack frame. Reverse pushes make OP_CAT materialize declaration order.
         for (const slot of [...targets].reverse()) {
@@ -29840,10 +29840,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
           this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
         };
-        // A per-call target whose group is declared skipped writes no node, so no link may name its slot: an equality
+        // A framed target whose group is declared skipped writes no node, so no link may name its slot: an equality
         // with that slot on top is kept only where the target is not skipped.
         const linkable = (other: number): void => {
-          if (!this.readsRecordsFromFrame || !this.perCallSkippableSlots.has(other)) return;
+          if (!this.readsRecordsFromFrame || !this.framedSkippableSlots.has(other)) return;
           arg(`__internal__vmapBatchPredOut_${other}`); this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
           bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_BOOLAND);
         };
@@ -29855,10 +29855,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
           arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_TOALTSTACK);
           proofIndex(slot);
-          // A per-call frame proves the gap against the proof node's first declaration in the write segment, the view
+          // A framed frame proves the gap against the proof node's first declaration in the write segment, the view
           // the batch started from, whether the transaction spends the node or an earlier frame created it.
           if (this.readsRecordsFromFrame) {
-            this.emitPerCallBatchProofView(loc);
+            this.emitFramedBatchProofView(loc);
           } else {
             this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
           }
@@ -29918,12 +29918,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // Recreated predecessor: preserve the authenticated proof input's locking bytecode. The per-target write
           // path independently binds that proof input to this collection's covenant address, so re-synthesizing the
           // address here is redundant and stack-fragile; input/output equality is both tighter and substantially leaner.
-          // A per-call frame's predecessor may be a node an earlier frame created, with no input to compare against,
+          // A framed frame's predecessor may be a node an earlier frame created, with no input to compare against,
           // so its output is held to the collection's covenant itself, and its declared end view is parked for the
           // relink checks below.
           if (this.readsRecordsFromFrame) {
             copyPredOut(); bin(Op.OP_OUTPUTBYTECODE);
-            this.emitPerCallCollectionAddress(collectionHash, loc);
+            this.emitFramedCollectionAddress(collectionHash, loc);
             bin(Op.OP_EQUALVERIFY);
             copyPredOut(); this.emitRecordCommitmentRead('out', loc);
             bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK);
@@ -29974,22 +29974,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             for (let item = 0; item < 3; item += 1) bin(Op.OP_TOALTSTACK);
           }
           bin(Op.OP_ENDIF);
-          if (this.readsRecordsFromFrame) this.emitPerCallKeptBatchTarget(slot, loc);
+          if (this.readsRecordsFromFrame) this.emitFramedKeptBatchTarget(slot, loc);
 
           bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // proof commitment
           bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // predecessor output index
-          if (this.readsRecordsFromFrame && this.perCallSkippableSlots.has(slot)) {
+          if (this.readsRecordsFromFrame && this.framedSkippableSlots.has(slot)) {
             bin(Op.OP_ELSE);
-            this.emitPerCallSkippedBatchTarget(slot, targets, loc);
+            this.emitFramedSkippedBatchTarget(slot, targets, loc);
           }
           bin(Op.OP_ENDIF);
         }
         bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // packed batch slot/next blob
       }
 
-      // A per-call master has no generic epilogue: a conditional batch that did not run (its flag clear) leaves every
+      // A framed master has no generic epilogue: a conditional batch that did not run (its flag clear) leaves every
       // node it spends unchanged. A target with a flag of its own, which stays clear wherever the batch's does, is
-      // bound where the general arm checks it (`emitPerCallKeptBatchTarget`); any other is bound here.
+      // bound where the general arm checks it (`emitFramedKeptBatchTarget`); any other is bound here.
       const batchRepr = Math.min(...targets);
       if (this.readsRecordsFromFrame && this.conditionalSortedBatchFlags.has(batchRepr)) {
         const flagName = GenerateTargetTraversalWithLocation.condSortedBatchFlagName(batchRepr);
@@ -30001,7 +30001,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (flagIndex >= 0 && unbound.length > 0) {
           this.emit(encodeInt(BigInt(flagIndex)), loc); bin(Op.OP_PICK);
           bin(Op.OP_NOTIF);
-          for (const slot of unbound) this.emitPerCallKeptProofNode(slot, loc, false);
+          for (const slot of unbound) this.emitFramedKeptProofNode(slot, loc, false);
           bin(Op.OP_ENDIF);
         }
       }
@@ -30010,7 +30010,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // must defer it until now because only their authenticated activity flags reveal which fixed rows exist.
       if (!this.isCompilerMessageBusRoute(node) && runtimeCollections.has(batch.collection)) continue;
 
-      // A per-call frame writes one record group of a collection the transaction may hold other records of: the
+      // A framed frame writes one record group of a collection the transaction may hold other records of: the
       // insert frame relinks a predecessor this frame never touches, so the transaction's collection census is not
       // this frame's to prove. The frame's own records are declared, and settlement ties those declarations to the
       // transaction's real inputs and outputs.
@@ -30216,7 +30216,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Refuses a per-call batch run two of whose targets name one entry.
+   * Refuses a framed batch run two of whose targets name one entry.
    *
    * Each target reads the first view its write segment declares for the node its proof names, and an update closes
    * against the last view the segment declares there, so two targets whose keys agree at run time both start from the
@@ -30227,7 +30227,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * it spends, and keys that differ in a literal never agree. A target declared skipped writes nothing, so it meets
    * another's key freely: a swap-remove write whose key meets its delete's is a no-op, and the delete wins.
    */
-  private emitPerCallDistinctBatchTargets(
+  private emitFramedDistinctBatchTargets(
     node: FunctionDefinitionNode, targets: readonly number[], loc: SingleLocationData,
   ): void {
     const keys = new Map<number, readonly Node[]>();
@@ -30252,7 +30252,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         // A target declared skipped names no node of its own: the other target alone writes the entry.
         for (const member of [slot, other]) {
-          if (!this.perCallSkippableSlots.has(member)) continue;
+          if (!this.framedSkippableSlots.has(member)) continue;
           this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${member}`, loc);
           this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
           this.emit(Op.OP_NUMNOTEQUAL, loc); this.emit(Op.OP_BOOLAND, loc);
@@ -30264,7 +30264,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Binds the group of a per-call batch target a branch guards, where its write did not run.
+   * Binds the group of a framed batch target a branch guards, where its write did not run.
    *
    * Entry and exit with the target's proof view on top of the alternate stack. No other code holds such a group: the
    * batch's own flag, where it has one, is set by any of its writes, so beside a write that ran a frame could declare
@@ -30272,7 +30272,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the group is the target's own node, and the view the segment ends it at keeps the slot and value the proof began
    * with, beside the successor the checks above admitted, which an insert of another target relinks.
    */
-  private emitPerCallKeptBatchTarget(slot: number, loc: SingleLocationData): void {
+  private emitFramedKeptBatchTarget(slot: number, loc: SingleLocationData): void {
     const flag = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
     if (!this.conditionalSortedWriteFlagSlots.has(slot) || this.getStackIndex(flag, true) < 0) return;
     // Each field read copies the parked proof.
@@ -30305,7 +30305,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Binds the one record a per-call batch target's skipped group keeps: the predecessor of a key its list does not
+   * Binds the one record a framed batch target's skipped group keeps: the predecessor of a key its list does not
    * hold.
    *
    * The derivation reads a group as skipped (`-2`) only from a record it declares kept, and the write site refuses
@@ -30313,14 +30313,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * predecessor its gap shares with the skipped key, and that target's own checks bind the record's end view. Where no
    * target the batch does not skip proves from the record, the segment ends it at the view it began it at.
    */
-  private emitPerCallSkippedBatchTarget(slot: number, targets: readonly number[], loc: SingleLocationData): void {
+  private emitFramedSkippedBatchTarget(slot: number, targets: readonly number[], loc: SingleLocationData): void {
     const arg = (name: string): void => this.emitPickVMapWitness(name, loc);
     let compared = false;
     for (const other of targets) {
       if (other === slot) continue;
       arg(`__internal__vmapBatchProof_${slot}`); arg(`__internal__vmapBatchProof_${other}`);
       this.emit(Op.OP_NUMEQUAL, loc);
-      if (this.perCallSkippableSlots.has(other)) {
+      if (this.framedSkippableSlots.has(other)) {
         arg(`__internal__vmapBatchPredOut_${other}`); this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
         this.emit(Op.OP_NUMNOTEQUAL, loc); this.emit(Op.OP_BOOLAND, loc);
       }
@@ -30328,12 +30328,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       compared = true;
     }
     if (compared) this.emit(Op.OP_NOTIF, loc);
-    this.emitPerCallKeptProofNode(slot, loc, false);
+    this.emitFramedKeptProofNode(slot, loc, false);
     if (compared) this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
-   * Leaves the view a per-call batch target's proof record began the write segment with.
+   * Leaves the view a framed batch target's proof record began the write segment with.
    *
    * Entry `[..., coordinate]`, exit `[..., view]`. The coordinate is the record's name: its input for a record the
    * transaction spends, or `-(out + 1)` for a record the group names at its output alone, a node an earlier frame
@@ -30344,7 +30344,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * genesis. `spentLock` holds a spent record to its collection; with `addressDepth`, the depth of the collection's
    * address beneath the coordinate, a created record's output is held to that covenant here too.
    */
-  private emitPerCallBatchProofView(
+  private emitFramedBatchProofView(
     loc: SingleLocationData, spentLock?: () => void, addressDepth?: number,
   ): void {
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
@@ -30373,7 +30373,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Leaves the address of the collection's entry covenant for the frame's records, as raw stack. */
-  private emitPerCallCollectionAddress(collectionHash: Uint8Array, loc: SingleLocationData): void {
+  private emitFramedCollectionAddress(collectionHash: Uint8Array, loc: SingleLocationData): void {
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
@@ -30381,7 +30381,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Requires the write segment to end a per-call batch target's node at the view it began the node at, as a write
+   * Requires the write segment to end a framed batch target's node at the view it began the node at, as a write
    * that did not run leaves it.
    *
    * The node is the one the target's proof names, not whichever record the declaration puts at the slot's position: a
@@ -30392,7 +30392,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * view a later frame reads bound to nothing, and refuse that frame's rewrite. With `parked`, the first view is the
    * proof view on top of the alternate stack, which stays there.
    */
-  private emitPerCallKeptProofNode(slot: number, loc: SingleLocationData, parked: boolean): void {
+  private emitFramedKeptProofNode(slot: number, loc: SingleLocationData, parked: boolean): void {
     this.emitPickVMapWitness(`__internal__vmapBatchProof_${slot}`, loc);
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_ADD, loc);
@@ -30410,7 +30410,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The one-target sorted-batch transition of a per-call frame, answered from its write segment's declarations.
+   * The one-target sorted-batch transition of a framed frame, answered from its write segment's declarations.
    *
    * Another frame may write the proof node before this one or rewrite it after, so the spent input and the written
    * output are other frames' views; settlement chains the declared ones to them in execution order. The proof is the
@@ -30421,7 +30421,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * A write a branch guards may not run. Its node is then kept, and a key the list does not hold gets no node: the
    * group declares the kept predecessor alone, which the derivation reads as skipped, and an insert is refused.
    */
-  private emitPerCallSingleTargetTransition(
+  private emitFramedSingleTargetTransition(
     slot: number, collectionHash: Uint8Array, loc: SingleLocationData,
   ): void {
     const arg = (name: string): void => this.emitPickVMapWitness(name, loc);
@@ -30439,7 +30439,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // it, its group may declare it skipped.
     const flagIndex = this.conditionalSortedWriteFlagSlots.has(slot)
       ? this.getStackIndex(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot), true) : -1;
-    const skippable = flagIndex >= 0 && this.perCallSkippableSlots.has(slot);
+    const skippable = flagIndex >= 0 && this.framedSkippableSlots.has(slot);
     if (skippable) {
       // A group declared skipped is one kept record, whose write site refuses it where the write ran.
       arg(predOut); this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc); this.emit(Op.OP_NUMEQUAL, loc);
@@ -30448,7 +30448,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     arg(`__internal__vmapBatchProof_${slot}`);
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_ADD, loc);
-    this.emitPerCallBatchProofView(loc);
+    this.emitFramedBatchProofView(loc);
     this.emit(Op.OP_TOALTSTACK, loc);
     proofField('next'); arg(`__internal__vmapBatchNext_${slot}`); this.emit(Op.OP_EQUALVERIFY, loc);
     proofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`); this.emit(Op.OP_EQUAL, loc);
@@ -30460,7 +30460,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(flagIndex)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_NOTIF, loc);
-      this.emitPerCallKeptProofNode(slot, loc, true);
+      this.emitFramedKeptProofNode(slot, loc, true);
       this.emit(Op.OP_ENDIF, loc);
     }
     this.emit(Op.OP_ELSE, loc);
@@ -30472,7 +30472,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     arg(predOut); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emitPerCallCollectionAddress(collectionHash, loc);
+    this.emitFramedCollectionAddress(collectionHash, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
     arg(predOut); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
     this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
@@ -30493,7 +30493,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the same slot. The direct convention's block-slot coordinate bases a delegate executor's entries on the block
    * its prologue authorized: the executor's own in a compact co-spend, the proxy master's in a balanced one, whose
    * entries sit in the proxy block. A bare OP_INPUTINDEX there names an input after the executor instead, so only
-   * a per-call composition keeps that implementation-relative coordinate.
+   * a framed composition keeps that implementation-relative coordinate.
    */
   private emitFixedEntryInputIndex(slotIndex: number, locationData: SingleLocationData): void {
     if (this.directConvention || !this.usesDelegateExecutorBlockBase() || this.readsRecordsFromFrame) {
@@ -30544,11 +30544,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // write, so every read during this iteration addresses the exact co-spend consumed by the transition body.
       const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
       if (this.readsRecordsFromFrame) {
-        // A per-call frame declares its records in its own witness block and the head parks their base, so the
-        // turn's node sits the slot's own per-call offset past that base, counted by the loop's counter - the
+        // A framed frame declares its records in its own witness block and the head parks their base, so the
+        // turn's node sits the slot's own framed offset past that base, counted by the loop's counter - the
         // coordinate the paged read of the same collection already uses. The trailing band is the direct
         // convention's layout of a transaction this frame does not build.
-        this.emitPerCallEntryIndex('in', slotIndex, locationData);
+        this.emitFramedEntryIndex('in', slotIndex, locationData);
         this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopCounterName) + extraStackOffset + 1)), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.emit(Op.OP_ADD, locationData);
@@ -30582,11 +30582,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? layoutOffset - this.countDataNftSlotsBefore(layoutOffset) : layoutOffset;
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else if (this.readsRecordsFromFrame) {
-      // A per-call frame's records are separate UTXOs, so an entry does not sit at a fixed offset from the input
+      // A framed frame's records are separate UTXOs, so an entry does not sit at a fixed offset from the input
       // the frame runs on: the frame's own witness block declares where its record block is and the head parks that
       // base. A read that skipped it would address an unrelated input, which the record read then fails to resolve.
       // A read the sorted batch carries keeps the proof's own coordinate, which is relative to the active input.
-      this.emitPerCallEntryIndex('in', slotIndex, locationData);
+      this.emitFramedEntryIndex('in', slotIndex, locationData);
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
   }
 
@@ -30629,7 +30629,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? layoutOffset - this.countDataNftSlotsBefore(layoutOffset) : layoutOffset;
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else if (this.readsRecordsFromFrame) {
-      // A per-call frame's records are separate UTXOs, so an entry output is not at a fixed offset from the input
+      // A framed frame's records are separate UTXOs, so an entry output is not at a fixed offset from the input
       // the frame runs on: the frame's witness block declares the output block base and the head parks it there.
       // The input coordinate takes this branch; without it the close reads the contract's record block instead.
       const proofName = `__internal__vmapBatchProof_${slotIndex}`;
@@ -30643,12 +30643,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, locationData);
         return;
       }
-      this.emitPerCallEntryIndex('out', slotIndex, locationData);
+      this.emitFramedEntryIndex('out', slotIndex, locationData);
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
     // This coordinate can copy an authenticated proxy anchor from a large live mapping frame. Outlining only a
     // prefix (PICK/ADD) changes that top-relative frame even if the verifier consuming the coordinate remains
     // inline, so keep the complete coordinate calculation at the call site as one indivisible authority. A
-    // per-call frame reads its coordinates from its own witness block, which its bodies share as outlined spans.
+    // framed frame reads its coordinates from its own witness block, which its bodies share as outlined spans.
     // A split-facet delegate coordinate is bottom-ordinal (OP_DEPTH, not a top-relative PICK of the live frame),
     // and the same sequence is emitted for every entry slot. Pinning it forces every facet entry to carry its
     // own copy and keeps the surrounding epilogue from being shared.
@@ -30748,7 +30748,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * The collection addresses a write pins - a sorted entry's address and a value chunk's address - belong to the
    * records' owner's contract, so a frame that runs on another contract's records derives them from that owner's
-   * category. The head leaves the owner's input index in a slot for a per-call body, whose value a frame that owns
+   * category. The head leaves the owner's input index in a slot for a framed body, whose value a frame that owns
    * its records already is; every other convention reads the executing input.
    */
   private emitRecordsCategoryBase(locationData: SingleLocationData, extraStackOffset = 0, directInlineTake = false): void {
@@ -30759,9 +30759,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitMasterInputIndex(locationData, extraStackOffset);
     }
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    // Sites that took the base inline before the owner slot reached them keep that form outside per-call: a shared
+    // Sites that took the base inline before the owner slot reached them keep that form outside framed: a shared
     // take's OP_INVOKE splits the region the outliner would have extracted whole.
-    if (directInlineTake && !this.perCallMaster) this.emitTakeFirst32Inline(locationData);
+    if (directInlineTake && !this.framedMaster) this.emitTakeFirst32Inline(locationData);
     else this.emitTakeFirst32(locationData);
   }
 
@@ -30773,7 +30773,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // owner must inline this check so emitMasterInputIndex can read that authenticated owner from the local frame;
     // invoking the shared helper would silently compare against the executing implementation input instead.
     // Raw emit: callers manage the stack tracker.
-    if (!this.perCallMaster && !this.usesMessageBusOwnerBlockBase()
+    if (!this.framedMaster && !this.usesMessageBusOwnerBlockBase()
       && !this.usesProxyStateBlockBase()
       && this.invokeSubroutineIfDefined(
         GenerateTargetTraversalWithLocation.CAT_BASE_EQ_MASTER_SUBROUTINE_ID, locationData)) {
@@ -30782,7 +30782,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_DROP, locationData);
-    // A per-call body names the records' owner through the head's slot: a frame that runs on its caller's records
+    // A framed body names the records' owner through the head's slot: a frame that runs on its caller's records
     // uses the caller's category, so comparing against the executing input would refuse a record the frame owns.
     if (this.stack.includes(categoryOwnerSlotName())) {
       this.emit(encodeInt(BigInt(this.getStackIndex(categoryOwnerSlotName()) + untrackedStackItems)), locationData);
@@ -30805,7 +30805,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const nftIdx of sortedNftIndices) {
       const compactOffset = this.compactOffsetMap.get(nftIdx)!;
       // data NFT category base matches master's
-      // The contract's own record block: the frame's own declaration in a per-call master, and otherwise the
+      // The contract's own record block: the frame's own declaration in a framed master, and otherwise the
       // one authority for the base, which is the active input or the authenticated owner of a frame that has one.
       if (this.readsRecordsFromFrame) this.emitRecordBlockBase('in', locationData);
       else this.emitMasterInputIndex(locationData);
@@ -30872,12 +30872,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // other record's scalar writes happened where their own code ran, which is the segment a read or write of it
         // last registered. Resolving a read for a dynamic write would close it against a declaration that still holds
         // the value from before the write.
-        const previousReadSegment = this.perCallReadSegment;
-        const recordAtEnd = this.perCallMaster ? this.perCallRecordWrittenAtEnd(sortedFields) : 'all';
-        if (this.perCallMaster) {
-          this.perCallReadSegment = recordAtEnd === 'all'
-            ? this.perCallSegmentIndex
-            : this.perCallRecordSegment.get(compactOffset) ?? this.perCallSegmentIndex;
+        const previousReadSegment = this.framedReadSegment;
+        const recordAtEnd = this.framedMaster ? this.framedRecordWrittenAtEnd(sortedFields) : 'all';
+        if (this.framedMaster) {
+          this.framedReadSegment = recordAtEnd === 'all'
+            ? this.framedSegmentIndex
+            : this.framedRecordSegment.get(compactOffset) ?? this.framedSegmentIndex;
         }
 
         let firstField = true;
@@ -30890,7 +30890,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         for (const sv of sortedFields) {
           const key = `${sv.nftIndex}:${sv.fieldIndex}`;
           const stackName = this.pendingStateWrites.get(key);
-          const declared = stackName ? this.perCallFieldDeclaredAtEnd(key, recordAtEnd) : undefined;
+          const declared = stackName ? this.framedFieldDeclaredAtEnd(key, recordAtEnd) : undefined;
 
           if (stackName && declared !== undefined) {
             // A field a call closed is the record's own declared value on the paths the end does not hold the record
@@ -30908,9 +30908,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             if (declared === 'declared') {
               fromDeclaration();
             } else if (declared.inSegments) {
-              this.emitPerCallBySegment(declared.segments, fromDeclaration, fromSlot, locationData);
+              this.emitFramedBySegment(declared.segments, fromDeclaration, fromSlot, locationData);
             } else {
-              this.emitPerCallBySegment(declared.segments, fromSlot, fromDeclaration, locationData);
+              this.emitFramedBySegment(declared.segments, fromSlot, fromDeclaration, locationData);
             }
           } else if (stackName) {
             const dynamicBaseIndex = sv.isDynamic
@@ -30982,7 +30982,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
         this.emit(Op.OP_EQUALVERIFY, locationData);
         this.popFromStack(2);
-        this.perCallReadSegment = previousReadSegment;
+        this.framedReadSegment = previousReadSegment;
 
       } else {
         // Read-only NFT: verify commitment preservation (input == output)
@@ -31032,7 +31032,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < this.entrySlots.length; i++) {
       // Loop-write entries are NEW (minted from master, no co-spent input entry) and have no fixed block slot.
       if (this.entrySlots[i].inLoop) continue;
-      // A per-call batch target is not at a fixed block slot: its frame declares the node it spends, and settlement
+      // A framed batch target is not at a fixed block slot: its frame declares the node it spends, and settlement
       // holds that input to a mutable NFT of the contract's category.
       if (this.readsRecordsFromFrame
         && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)) continue;
@@ -31049,7 +31049,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_0, locationData);
         this.emit(Op.OP_GREATERTHAN, locationData);
       } else {
-        // Ordinary entry points use physical fixed-slot presence. A per-call frame records a node an earlier frame
+        // Ordinary entry points use physical fixed-slot presence. A framed frame records a node an earlier frame
         // created at the sentinel coordinate, which names no input, so presence is read the read-only way there and
         // a created node takes the `false` arm rather than reading a category at a coordinate that holds no input.
         this.emitReadOnlyEntryExistsCheck(i, locationData);
@@ -32376,15 +32376,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotIndex = writeNode.entrySlotIndex >= 0 ? writeNode.entrySlotIndex
       : this.entrySlots.findIndex((slot) => slot.collection === collection.name && slot.inLoop);
     if (slotIndex < 0 || !this.entrySlots[slotIndex]) return false;
-    // A per-call frame with no batch ahead of this loop creates its records as trailing outputs, so every mint of
+    // A framed frame with no batch ahead of this loop creates its records as trailing outputs, so every mint of
     // the loop - the body's own and the teardown's pending flush - names the record by its position in the frame's
     // declaration. The flag is held from the loop's setup to the end of the function, so the segment close that
     // exempts those records sees it too.
-    this.perCallDeclaredLoopOut = this.readsRecordsFromFrame && this.batchTargetSlots().length === 0
+    this.framedDeclaredLoopOut = this.readsRecordsFromFrame && this.batchTargetSlots().length === 0
       && this.entrySlots[slotIndex]?.inLoop === true;
-    this.perCallDeclaredLoopSlot = slotIndex;
-    const chain = this.perCallDeclaredLoopOut ? this.perCallLoopChainOf(slotIndex) : undefined;
-    this.perCallChainedLoop = chain === undefined ? undefined : { first: chain.first === slotIndex, last: chain.last };
+    this.framedDeclaredLoopSlot = slotIndex;
+    const chain = this.framedDeclaredLoopOut ? this.framedLoopChainOf(slotIndex) : undefined;
+    this.framedChainedLoop = chain === undefined ? undefined : { first: chain.first === slotIndex, last: chain.last };
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
     // SDK metadata: leading FIXED key params + the VARYING key array + the per-key VALUE array + the op.
@@ -32686,11 +32686,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (existingInfo && (existingInfo.fixedKeySources?.length ?? 0) === 0 && fixedKeySources.length > 0) {
       existingInfo.fixedKeySources = fixedKeySources;
     }
-    // A per-call frame refuses a repeated key in its own planner; the direct SDK needs to be told not to merge one.
-    const readsWrittenEntry = this.compilerOptions.composition !== 'per-call'
+    // A framed frame refuses a repeated key in its own planner; the direct SDK needs to be told not to merge one.
+    const readsWrittenEntry = this.compilerOptions.composition !== 'framed'
       && this.loopReadsWrittenEntry(block, writeNode, slotIndex);
     if (existingInfo && readsWrittenEntry) existingInfo.readsWrittenEntry = true;
-    const siblingEffect = this.compilerOptions.composition !== 'per-call'
+    const siblingEffect = this.compilerOptions.composition !== 'framed'
       && this.loopBodyHasSiblingEffect(block, writeNode);
     if (existingInfo && siblingEffect) existingInfo.siblingEffect = true;
     if (!existingInfo) {
@@ -32803,15 +32803,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedEntryAddress(collectionHash, loc);
     this.stack[0] = this.sortedUpsertLoopAddrName;
 
-    const chained = this.perCallChainedLoop;
+    const chained = this.framedChainedLoop;
     if (chained !== undefined && (this.sortedUpsertLoopInputCountParam || this.sortedUpsertLoopOutputCountParam)) {
-      throw new Error(`a per-call run of loops over '${collection.name}' cannot carry a counted loop's cardinality`);
+      throw new Error(`a framed run of loops over '${collection.name}' cannot carry a counted loop's cardinality`);
     }
     if (chained !== undefined && !chained.first) {
       // A loop that continues a run counts on from the counters the run's earlier loop left.
       for (const [carry, counter] of [
-        [this.perCallLoopCarryName(collection.name, 'in'), this.sortedUpsertLoopCounterName],
-        [this.perCallLoopCarryName(collection.name, 'out'), this.sortedUpsertLoopOutCounterName],
+        [this.framedLoopCarryName(collection.name, 'in'), this.sortedUpsertLoopCounterName],
+        [this.framedLoopCarryName(collection.name, 'out'), this.sortedUpsertLoopOutCounterName],
       ] as const) {
         const depth = this.getStackIndex(carry);
         this.emit(encodeInt(BigInt(depth)), loc);
@@ -33052,11 +33052,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitBytesNonEmpty(loc);
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
-    // outIdx = master + write-path trailing base + outCounter (U=1). A per-call frame with no batch ahead of the loop
+    // outIdx = master + write-path trailing base + outCounter (U=1). A framed frame with no batch ahead of the loop
     // names the deferred node by its position in the segment's declaration instead, so the shared close reads the
     // record the plan declared for it rather than an output the direct band happens to address.
-    if (this.perCallDeclaredLoopOut) {
-      this.emit(encodeInt(BigInt(-this.perCallEntryOffset(this.perCallDeclaredLoopSlot))), loc);
+    if (this.framedDeclaredLoopOut) {
+      this.emit(encodeInt(BigInt(-this.framedEntryOffset(this.framedDeclaredLoopSlot))), loc);
       this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + 1)), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_SUB, loc);
     } else {
@@ -33069,7 +33069,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(this.sortedUpsertLoopAddrName) + 1,
       this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1,
-      1, this.perCallDeclaredLoopOut, () => this.emitPickTrackedFromBottom(this.sortedUpsertLoopAddrName, loc));
+      1, this.framedDeclaredLoopOut, () => this.emitPickTrackedFromBottom(this.sortedUpsertLoopAddrName, loc));
     // outCounter += 1
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.emitReplace(this.getStackIndex(outCtr) + 1, { location: loc.location } as unknown as Node);
@@ -33099,10 +33099,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hk = '(credit_hk)';
     const amt = '(credit_amt)';
     // mintIdx: push output index master + blockSize + outCounter + add (u = untracked count currently above). A
-    // per-call frame with no batch ahead of the loop names the record by its declared position, as above.
+    // framed frame with no batch ahead of the loop names the record by its declared position, as above.
     const mintIdx = (add: number, u: number): void => {
-      if (this.perCallDeclaredLoopOut) {
-        this.emit(encodeInt(BigInt(-this.perCallEntryOffset(this.perCallDeclaredLoopSlot))), loc);
+      if (this.framedDeclaredLoopOut) {
+        this.emit(encodeInt(BigInt(-this.framedEntryOffset(this.framedDeclaredLoopSlot))), loc);
         if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_SUB, loc); }
         this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_SUB, loc);
@@ -33196,7 +33196,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     mintIdx(0, 0); // P' outIdx U=1
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
       this.getStackIndex(pSlot) + 1, this.getStackIndex(hk) + 1, this.getStackIndex(pVal) + 1,
-      1, this.perCallDeclaredLoopOut, pickAddress); // P' = pSlot|Hk|pVal -> U=0
+      1, this.framedDeclaredLoopOut, pickAddress); // P' = pSlot|Hk|pVal -> U=0
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.emitReplace(this.getStackIndex(outCtr) + 1, node); // outCounter += 1 -> U=0
     this.emit(encodeInt(BigInt(this.getStackIndex(amt))), loc); this.emit(Op.OP_PICK, loc);          // amt copy U=1
@@ -33211,7 +33211,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     mintIdx(0, 0); // outIdx U=1
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
       this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1,
-      1, this.perCallDeclaredLoopOut, pickAddress); // -> U=0
+      1, this.framedDeclaredLoopOut, pickAddress); // -> U=0
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.emitReplace(this.getStackIndex(outCtr) + 1, node); // outCounter += 1 -> U=0
     this.emit(Op.OP_0, loc); this.emitReplace(this.getStackIndex(pSlot) + 1, node); // clear pending -> U=0
@@ -34481,21 +34481,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const amtIdx = (): number => this.getStackIndex('(credit_amt)');
     const physicalCommitment = `(kernel_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
     // Emit `master + blockSize + <persistent counter> + add`, leaving an output/input index on top (U untracked above).
-    // A per-call frame with no sorted batch ahead of the loop creates its records as trailing outputs, so the turn's
+    // A framed frame with no sorted batch ahead of the loop creates its records as trailing outputs, so the turn's
     // output is named by its position in the segment's declared list - the negative ordinal a batch's created record
     // uses - with the loop's own counter subtracted past the records the frame declares before them.
-    const declaredOut = this.perCallDeclaredLoopOut;
+    const declaredOut = this.framedDeclaredLoopOut;
     const pushIdx = (counterName: string, add: number, u: number): void => {
       const side = counterName === this.sortedUpsertLoopOutCounterName ? 'out' : 'in';
       const declaredSide = declaredOut && side === 'out';
       if (declaredSide) {
         // The loop's records follow the ones the frame declares before the slot, and the negative form names the
         // position the shared close reads: the ordinal of the record `add + counter` places past that base.
-        this.emit(encodeInt(BigInt(-this.perCallEntryOffset(slotIndex))), loc);
+        this.emit(encodeInt(BigInt(-this.framedEntryOffset(slotIndex))), loc);
       } else if (this.readsRecordsFromFrame) {
         // The frame's own witness declares the loop's nodes past the slot's coordinate, so the turn's node is the
         // frame's parked base plus that offset, counted by the loop's own counter.
-        this.emitPerCallEntryIndex(side, slotIndex, loc);
+        this.emitFramedEntryIndex(side, slotIndex, loc);
       } else if (side === 'out') {
         this.emitTrailingWriteOutputBase(blockSize, loc, undefined, u);
       } else {
@@ -34576,7 +34576,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       pushIdx(this.sortedUpsertLoopCounterName, 0, 0); // [.., nodeIdx]
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
       if (this.readsRecordsFromFrame) {
-        // A per-call frame names the entry address by its stable bottom ordinal: `pushIdx` leaves a number of
+        // A framed frame names the entry address by its stable bottom ordinal: `pushIdx` leaves a number of
         // untracked operands that depends on how the frame resolves the turn's index, so the fixed top-relative depth
         // the direct convention uses picks a neighbouring value whenever that count differs from the one the site was
         // written for. The direct convention keeps its own form, and with it its byte identity.
@@ -35178,11 +35178,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (collection === null) throw new Error('Missing runtime-loop collection while settling cardinality');
     // A loop a later loop of its run continues counts nothing yet: the run's last loop counts the collection's nodes
     // once, with the counters every loop of the run carried on.
-    const carries = this.perCallChainedLoop !== undefined && !this.perCallChainedLoop.last;
-    this.perCallChainedLoop = undefined;
+    const carries = this.framedChainedLoop !== undefined && !this.framedChainedLoop.last;
+    this.framedChainedLoop = undefined;
     if (carries) {
-      this.stack[this.getStackIndex(this.sortedUpsertLoopCounterName)] = this.perCallLoopCarryName(collection, 'in');
-      this.stack[this.getStackIndex(this.sortedUpsertLoopOutCounterName)] = this.perCallLoopCarryName(collection, 'out');
+      this.stack[this.getStackIndex(this.sortedUpsertLoopCounterName)] = this.framedLoopCarryName(collection, 'in');
+      this.stack[this.getStackIndex(this.sortedUpsertLoopOutCounterName)] = this.framedLoopCarryName(collection, 'out');
     }
     const repeated = this.repeatedSortedUpsertLoopTotals.get(collection);
     if (repeated) {
@@ -35212,7 +35212,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.getStackIndex(vmapRuntimeOutputCountName(collection), true) >= 0;
     let localScanAddress = false;
     if (carries && hasThreadedCardinality) {
-      throw new Error(`a per-call run of loops over '${collection}' cannot consume a threaded cardinality`);
+      throw new Error(`a framed run of loops over '${collection}' cannot consume a threaded cardinality`);
     }
     if (carries) {
       // Counted at the run's last loop.
@@ -35464,8 +35464,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // stateful and stateless reads use the same absolute-forward covenant (self-preserve via OP_INPUTINDEX).
   private emitLoopKeccakSetup(block: Node, loc: SingleLocationData): boolean {
     if (this.keccakLoopActive) return false;
-    // A per-call body counts the side-cars it reads from its own start, wherever its loops are.
-    if (this.perCallMaster) return false;
+    // A framed body counts the side-cars it reads from its own start, wherever its loops are.
+    if (this.framedMaster) return false;
     // The kernel's row dispatcher is a transport loop, not a source-level repetition of the selected handler.
     // Semantic links from its typed handler call can make the recursive scan see a handler's keccak node; using
     // the row counter as a dynamic side-car ordinal then moves an ordinary fixed compute slot past blockSize.
@@ -35907,28 +35907,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * one the execution opens, so a body whose calls are fixed names it, and one whose calls vary leaves it to the frame
    * (undefined), which compares the two as it runs. A body that is not apart always shares it.
    */
-  private perCallRunSharesBatchSegment(): boolean | undefined {
-    if (!this.perCallRunApart) return true;
-    if (this.perCallCallsMadeActive) return undefined;
-    return this.perCallExecutionCallCount() === this.perCallBatchWriteSegment;
+  private framedRunSharesBatchSegment(): boolean | undefined {
+    if (!this.framedRunApart) return true;
+    if (this.framedCallsMadeActive) return undefined;
+    return this.framedExecutionCallCount() === this.framedBatchWriteSegment;
   }
 
   /** Leaves, untracked, whether an apart body's run segment is its batch's: the declared call count names the run's. */
-  private emitPerCallRunSegmentIsBatchSegment(loc: SingleLocationData): void {
+  private emitFramedRunSegmentIsBatchSegment(loc: SingleLocationData): void {
     this.emitPickTrackedFromBottom(callCountSlotName(), loc);
-    this.emit(encodeInt(BigInt(this.perCallBatchWriteSegment)), loc);
+    this.emit(encodeInt(BigInt(this.framedBatchWriteSegment)), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
   }
 
   /**
-   * Adds the records the batch's groups put ahead of a per-call body's run in the segment the run is addressed in.
+   * Adds the records the batch's groups put ahead of a framed body's run in the segment the run is addressed in.
    *
    * Entry and exit `[..., coordinate]`. A run that shares its batch's segment sits past the groups and their surplus.
    * An apart body's run is declared in its own segment, where the batch declares nothing unless the two are one, so
    * there the coordinate drops the targets the layout width counts.
    */
-  private emitPerCallRunBatchRecords(loc: SingleLocationData): void {
-    const shares = this.perCallRunSharesBatchSegment();
+  private emitFramedRunBatchRecords(loc: SingleLocationData): void {
+    const shares = this.framedRunSharesBatchSegment();
     if (shares === true) {
       this.emitSortedBatchRecordSurplus(loc);
       return;
@@ -35941,7 +35941,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       dropTargets();
       return;
     }
-    this.emitPerCallRunSegmentIsBatchSegment(loc);
+    this.emitFramedRunSegmentIsBatchSegment(loc);
     this.emit(Op.OP_IF, loc);
     this.emitSortedBatchRecordSurplus(loc);
     this.emit(Op.OP_ELSE, loc);
@@ -35950,9 +35950,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Adds the records a per-call body's sorted batch declares past the run's own layout slots.
+   * Adds the records a framed body's sorted batch declares past the run's own layout slots.
    *
-   * A per-call segment declares one record per batch target, so the dynamic run's records begin after the targets.
+   * A framed segment declares one record per batch target, so the dynamic run's records begin after the targets.
    * A target spliced into a predecessor the live list does not hold declares the relinked predecessor as well, so
    * the run's own record sits one position later for every spliced target. The write loop states that surplus; the
    * read loop addresses the same record, so it states it too. Either loop without it names the record the surplus
@@ -35964,9 +35964,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSortedBatchRecordSurplus(loc: SingleLocationData, extraStackOffset = 0): void {
     if (this.getStackIndex('__internal__vmapBatchTrailingCount', true) < 0) return;
     const batchSlots = (this.currentFunction.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices);
-    const perCallInserts = this.perCallMaster && batchSlots.length > 0
+    const framedInserts = this.framedMaster && batchSlots.length > 0
       && batchSlots.every((slot) => this.getStackIndex(`__internal__vmapBatchPredOut_${slot}`, true) >= 0);
-    if (!perCallInserts) {
+    if (!framedInserts) {
       this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1 + extraStackOffset);
       this.emit(Op.OP_ADD, loc);
       return;
@@ -36090,7 +36090,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, loc);
         this.emit(encodeInt(BigInt(CHUNK)), loc);
         this.emit(Op.OP_DIV, loc); // ceil(size/CHUNK); top stays tracked as (dyn_wprior_k)
-        // A per-call frame declares each earlier run at the wider of its two versions, so a later run starts past
+        // A framed frame declares each earlier run at the wider of its two versions, so a later run starts past
         // the chunks that run consumes as well as the ones it creates.
         if (this.readsRecordsFromFrame) {
           const prior = writesInDeclOrder.find(([, write]) => write.valueStackName === writtenValueStackNames[k])!;
@@ -36154,7 +36154,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)') + 1)), loc); // +1: outIdx-partial untracked
         this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_ADD, loc); // [..., outIdx]
-        // (a) locking bytecode == chunk address; (b) category base == master + mutable. A per-call frame writes the
+        // (a) locking bytecode == chunk address; (b) category base == master + mutable. A framed frame writes the
         // run its own segment declares rather than one at the arithmetic band: the band names the record, and the
         // record's own declared index is where the transaction actually carries the chunk. A created chunk is a
         // trailing output beside the events, so its index differs from the band; the declared index is what the
@@ -36193,7 +36193,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (declaredIndexOnStack) this.emit(Op.OP_DROP, loc); // -> [..., outIdx]
         // (c) commitment == expected. The direct convention keeps the TIGHT pattern
         // <expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY so the SDK trace extractor
-        // (extractCommitmentsFromTrace) reads each chunk's expected commitment; a per-call frame closes against the
+        // (extractCommitmentsFromTrace) reads each chunk's expected commitment; a framed frame closes against the
         // view its own segment declares, so a run one frame wrote is the run the next frame settles.
         this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_expected)') + 1)), loc); // +1: outIdx on top
         this.emit(Op.OP_PICK, loc); // [..., outIdx, expected]
@@ -36239,13 +36239,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Orphan-bound: exactly nNew outputs carry the chunk address (no extra/duplicate chunk outputs that
       // would corrupt a future read). Old-chunk consumption: all old chunks (ceil(oldLen/CHUNK)) are
       // co-spent as inputs, so a shrink/replace leaves no stale chunk behind. Another frame's run may share a
-      // per-call transaction, so a per-call frame holds its own segment's run to both facts record by record.
+      // framed transaction, so a framed frame holds its own segment's run to both facts record by record.
       if (this.readsRecordsFromFrame) {
         // A sorted batch's walk holds the records past its groups to the chunks the body pins; without one, nothing
         // follows the last run, nor in an apart body's run segment that is not its batch's.
         const lastWrite = writesInDeclOrder[writesInDeclOrder.length - 1]![0] === name;
-        const shares = (node.sortedBatchInfo?.length ?? 0) > 0 ? this.perCallRunSharesBatchSegment() : false;
-        this.emitPerCallChunkRunCensus({
+        const shares = (node.sortedBatchInfo?.length ?? 0) > 0 ? this.framedRunSharesBatchSegment() : false;
+        this.emitFramedChunkRunCensus({
           sv,
           chunkHash,
           coordinate: { loc, blockSize, hasReturnEventSlot, writesInDeclOrder, fReadTempNames, wPriorTempNames },
@@ -36256,16 +36256,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitDynamicOldChunkConsumption(sv, loc);
       }
 
-      // A per-call frame's sorted-batch settlement holds the segment's records past the batch's groups to the
+      // A framed frame's sorted-batch settlement holds the segment's records past the batch's groups to the
       // value chunks this body pinned; those records include this variable's dynamic-state chunks, so add nNew to
       // the running chunk width before nNew is dropped. A direct frame's running width is a different quantity
-      // (the mapping-value chunks it places before a NEW node), so this stays a per-call adjustment. A run the
+      // (the mapping-value chunks it places before a NEW node), so this stays a framed adjustment. A run the
       // census pinned declares one record per chunk of the wider of its two versions, so a shrink's consumed
       // chunks count too. An apart body's run is past its batch's groups only where the two segments are one.
-      const runSharesBatch = this.perCallRunSharesBatchSegment();
-      if (this.perCallMaster && this.valueChunkTrailingCountActive && runSharesBatch !== false) {
+      const runSharesBatch = this.framedRunSharesBatchSegment();
+      if (this.framedMaster && this.valueChunkTrailingCountActive && runSharesBatch !== false) {
         if (runSharesBatch === undefined) {
-          this.emitPerCallRunSegmentIsBatchSegment(loc);
+          this.emitFramedRunSegmentIsBatchSegment(loc);
           this.emit(Op.OP_IF, loc);
         }
         this.emitPickCompilerRouteFrameValue(
@@ -36308,10 +36308,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.removeFromStack(idx);
       }
     }
-    // A per-call frame's segment close leaves the whole dynamic region to the runs, so the chunks of a value the frame
+    // A framed frame's segment close leaves the whole dynamic region to the runs, so the chunks of a value the frame
     // only reads, which lead that region, are held kept here.
     if (this.readsRecordsFromFrame && fReadTempNames.length > 0) {
-      this.emitPerCallReadOnlyRunsKept({
+      this.emitFramedReadOnlyRunsKept({
         loc, blockSize, hasReturnEventSlot, writesInDeclOrder, fReadTempNames, wPriorTempNames: [],
       });
     }
@@ -36336,7 +36336,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The sorted-batch settlement runs after this verification and reads the trailing chunk count to hold the
       // segment's extra records to the chunks the body pinned, so the slot outlives the write that parked it.
       if (tmp === GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT
-        && this.perCallMaster && (node.sortedBatchInfo?.length ?? 0) > 0) continue;
+        && this.framedMaster && (node.sortedBatchInfo?.length ?? 0) > 0) continue;
       const idx = this.getStackIndex(tmp);
       this.emit(encodeInt(BigInt(idx)), loc);
       this.emit(Op.OP_ROLL, loc);
@@ -36349,7 +36349,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Leaves the coordinate a written dynamic value's first chunk sits at, before the chunk's own offset is added.
    *
    * Entry `[...]`, exit `[..., coordinate]` with the coordinate untracked. The write loop adds each chunk's offset to
-   * it, and a per-call frame's run census turns it into the position of the run's first declared record.
+   * it, and a framed frame's run census turns it into the position of the run's first declared record.
    */
   private emitDynamicWriteRunCoordinate(options: DynamicWriteRunCoordinate): void {
     const { loc, blockSize, hasReturnEventSlot, writesInDeclOrder, fReadTempNames, wPriorTempNames } = options;
@@ -36373,13 +36373,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(CHUNK)), loc); this.emit(Op.OP_DIV, loc);
         this.emit(Op.OP_SUB, loc);
       }
-    } else if (returningExternalSlots.length > 0 && !this.perCallMaster) {
+    } else if (returningExternalSlots.length > 0 && !this.framedMaster) {
       // A published input base is the old chunk's input index. It is the output coordinate only while every
       // returning call is inactive (witness -1) and the write still happens (MasterChef.deposit): the
       // replacement then stays on that index. A call that ran publishes its event after the callee block, and
       // the replacement follows that event, so the old index is an OP_TRUE pad. Measured on refresh beside
       // balanceOf and bump: input base 2 is the pad and the chunk is the output after the last return event.
-      // A per-call frame locates the run from its own record block instead, so it takes the branch below.
+      // A framed frame locates the run from its own record block instead, so it takes the branch below.
       const emitAfterReturnEvent = (): void => {
         // Returning co-spends publish their event after every callee block and before this caller's dynamic
         // chunks. Anchor to the authenticated last return-event index that ran rather than summing
@@ -36478,19 +36478,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (!this.usesDelegateTransactionSuffix()) {
       // Returning-call bases include collection-iteration inputs within emitAfterReturnEvent above; an explicit
-      // dynamic base already includes them and must not count them again. A per-call frame with a returning call
+      // dynamic base already includes them and must not count them again. A framed frame with a returning call
       // took the reconstruction branch and adds them here as it always has.
-      if (returningExternalSlots.length > 0 && this.perCallMaster) this.emitAddCollectionIterCounts(loc);
+      if (returningExternalSlots.length > 0 && this.framedMaster) this.emitAddCollectionIterCounts(loc);
       // The absolute dynamic witness locates the first INPUT chunk. A fixed sorted batch can mint an output-only
       // predecessor before the replacement chunks, so even a nonnegative input base must advance past that output
-      // band. The batch count excludes entry proofs already in the input base. A per-call run's own record sits
+      // band. The batch count excludes entry proofs already in the input base. A framed run's own record sits
       // after the batch's target slots and the extra records a splice declares.
-      this.emitPerCallRunBatchRecords(loc);
-      if (this.runtimeLoopEntryOutputCountActive && !this.perCallMaster) {
+      this.emitFramedRunBatchRecords(loc);
+      if (this.runtimeLoopEntryOutputCountActive && !this.framedMaster) {
         // Runtime mapping entries are verified inline before the epilogue's newly written dynamic chunks. Their
         // exact width can differ from the source iteration count (an insert may emit predecessor + NEW), so use
         // the accumulated on-chain output counters rather than reconstructing this offset from ABI arguments.
-        // A per-call frame's base already counts the nodes its own loops declared, so it adds the total once.
+        // A framed frame's base already counts the nodes its own loops declared, so it adds the total once.
         this.emitPickCompilerRouteFrameValue(
           GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, loc, 1,
         );
@@ -36511,7 +36511,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc, 1);
         this.emit(encodeInt(0n), loc);
         this.emit(Op.OP_LESSTHAN, loc);
-        const anchoredWitnesses = returningExternalSlots.length > 0 && !this.perCallMaster
+        const anchoredWitnesses = returningExternalSlots.length > 0 && !this.framedMaster
           ? this.returnOutputWitnessNames(returningExternalSlots, returningExternalSlots.length) : [];
         if (anchoredWitnesses.length > 0) {
           // [base, roi < 0]: the running base and the flag sit untracked above the tracked stack.
@@ -36604,7 +36604,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Holds a per-call frame's declared run of a written dynamic value to the chunks its code consumes and creates.
+   * Holds a framed frame's declared run of a written dynamic value to the chunks its code consumes and creates.
    *
    * The write loop pins the chunks the written value holds. This census pins the rest of the run, position by
    * position from the run's first declared record: each of the `ceil(oldLen / 120)` chunks the value held when the
@@ -36616,11 +36616,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * no chunk is minted that a later read could take for the value's own. The run's width, its record count, is left
    * tracked as `(dyn_run_width)`.
    *
-   * A value whose write the frame pre-allocated before a call keeps the value it read there (`perCallDynamicOrigins`),
+   * A value whose write the frame pre-allocated before a call keeps the value it read there (`framedDynamicOrigins`),
    * which the run must still be where the segment begins: the header is its length and each chunk consumed is its
    * chunk, so a frame that rewrote the value during the call is refused rather than written over.
    */
-  private emitPerCallChunkRunCensus(options: {
+  private emitFramedChunkRunCensus(options: {
     readonly sv: StateVariableNode;
     readonly chunkHash: Uint8Array;
     readonly coordinate: DynamicWriteRunCoordinate;
@@ -36634,16 +36634,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
 
     // The chunk count the value held when the segment began, from the header the segment declares it starts at.
-    const origin = this.perCallDynamicOrigins.get(sv.name);
+    const origin = this.framedDynamicOrigins.get(sv.name);
     if (origin === undefined) {
       this.emitSpentChunkCount(sv, '(dyn_run_old)', loc);
     } else {
       // The header is the length of the value the frame read, whose chunks the loop below compares.
       const CHUNK = 120;
-      const previousReadSegment = this.perCallReadSegment;
-      this.perCallReadSegment = this.perCallSegmentIndex;
+      const previousReadSegment = this.framedReadSegment;
+      this.framedReadSegment = this.framedSegmentIndex;
       this.emitReadDynamicLen(sv, '(dyn_run_old)', loc);
-      this.perCallReadSegment = previousReadSegment;
+      this.framedReadSegment = previousReadSegment;
       pick(origin);
       this.emit(Op.OP_SIZE, loc);
       this.emit(Op.OP_NIP, loc);
@@ -36653,7 +36653,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
       this.emit(encodeInt(BigInt(CHUNK)), loc);
       this.emit(Op.OP_DIV, loc);
-      this.perCallDynamicOriginsCompared.add(sv.name);
+      this.framedDynamicOriginsCompared.add(sv.name);
     }
     // The run's width covers both versions: the old chunks consumed and the new ones created.
     pick('(dyn_run_old)');
@@ -36760,7 +36760,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (closesSegment !== false) {
       // Nothing is declared past the run: `'apart'` asks that only where the run's segment is not its batch's.
       if (closesSegment === 'apart') {
-        this.emitPerCallRunSegmentIsBatchSegment(loc);
+        this.emitFramedRunSegmentIsBatchSegment(loc);
         this.emit(Op.OP_NOTIF, loc);
       }
       this.emitDeclaredSegmentRecordCount(loc); // [..., count]
@@ -36787,10 +36787,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitSpentChunkCount(sv: StateVariableNode, trackName: string, loc: SingleLocationData): void {
     const CHUNK = 120;
-    const previousReadSegment = this.perCallReadSegment;
-    this.perCallReadSegment = this.perCallSegmentIndex;
+    const previousReadSegment = this.framedReadSegment;
+    this.framedReadSegment = this.framedSegmentIndex;
     this.emitReadDynamicLen(sv, trackName, loc);
-    this.perCallReadSegment = previousReadSegment;
+    this.framedReadSegment = previousReadSegment;
     this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
     this.emit(Op.OP_ADD, loc);
     this.emit(encodeInt(BigInt(CHUNK)), loc);
@@ -36837,14 +36837,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Holds the chunks of the dynamic values a per-call frame only reads, beside a write, kept.
+   * Holds the chunks of the dynamic values a framed frame only reads, beside a write, kept.
    *
    * Those runs lead the frame's dynamic region, one chunk per record from the region's first declared record, as
    * many as their headers count. The read loop already tied each to its value's chunk address; here each is
    * required unchanged, at its own index or, beside another master under a validator, at the output an earlier
    * frame created it at. Without it the write's region would let a read-only chunk be rewritten.
    */
-  private emitPerCallReadOnlyRunsKept(coordinate: DynamicWriteRunCoordinate): void {
+  private emitFramedReadOnlyRunsKept(coordinate: DynamicWriteRunCoordinate): void {
     const { loc, fReadTempNames } = coordinate;
     const pick = (name: string, untracked = 0): void => {
       this.emit(encodeInt(BigInt(this.getStackIndex(name) + untracked)), loc);
@@ -36940,7 +36940,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       tagged: this.isMultiDataNft(),
     };
     const offset = this.compactOffsetMap.get(sv.nftIndex)!;
-    // A per-call master's record block is where its own frame declared it, so the read is written where it is
+    // A framed master's record block is where its own frame declared it, so the read is written where it is
     // made: the index a shared helper would bake in is a depth the invoking frame does not share.
     if (this.readsRecordsFromFrame) {
       this.emitStateFieldReadInline({ offset, decode }, loc, side);
@@ -36989,8 +36989,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, loc);
     // A source read marks the record touched in this segment; a read emitted for a known earlier segment (the
     // record rebuilt at the end of the body) does not, so the marker keeps naming the frame's last real touch.
-    if (this.perCallReadSegment === undefined) {
-      this.perCallRecordSegment.set(read.offset, this.perCallSegmentIndex);
+    if (this.framedReadSegment === undefined) {
+      this.framedRecordSegment.set(read.offset, this.framedSegmentIndex);
     }
     this.emitRecordCommitmentRead(side, loc);
     this.emitStateFieldDecodeInline(read.decode, loc);
@@ -37039,7 +37039,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Holds the mapping node a per-call frame names at a coordinate to its collection's covenant.
+   * Holds the mapping node a framed frame names at a coordinate to its collection's covenant.
    *
    * Entry and exit `[..., addr, coordinate]`. A frame reads a node's views from its own declaration and settlement
    * ties them to the commitments at the coordinate, but a commitment does not name its collection: collections keyed
@@ -37048,7 +37048,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * coordinate of a node an earlier frame created names its output, where the input is no record of the category;
    * a negative one names a record this frame creates, whose output its own write holds to the address.
    */
-  private emitPerCallNodeLockCheck(loc: SingleLocationData, output: boolean): void {
+  private emitFramedNodeLockCheck(loc: SingleLocationData, output: boolean): void {
     if (output) {
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
       this.emit(Op.OP_IF, loc);
@@ -37083,23 +37083,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * be in.
    */
   private declaredViewCounts(loc: SingleLocationData): DeclaredViewCounts {
-    if (!this.perCallCallsMadeActive) {
+    if (!this.framedCallsMadeActive) {
       return {
-        segmentIndex: this.perCallReadsRunSegment
-          ? this.perCallExecutionCallCount() : this.perCallReadSegment ?? this.perCallSegmentIndex,
-        callCount: this.perCallExecutionCallCount(),
+        segmentIndex: this.framedReadsRunSegment
+          ? this.framedExecutionCallCount() : this.framedReadSegment ?? this.framedSegmentIndex,
+        callCount: this.framedExecutionCallCount(),
       };
     }
-    if (this.perCallReadsRunSegment) {
+    if (this.framedReadsRunSegment) {
       // An apart body's run segment, the last its calls open, whose index the block's declared call count is.
       this.emitPickTrackedFromBottom(callCountSlotName(), loc);
-    } else if (this.perCallReadsWriteSegment && this.perCallReadSegment !== undefined) {
+    } else if (this.framedReadsWriteSegment && this.framedReadSegment !== undefined) {
       // The batch's write segment, which the source fixes, rather than the one the execution has reached.
-      this.emit(encodeInt(BigInt(this.perCallReadSegment)), loc);
+      this.emit(encodeInt(BigInt(this.framedReadSegment)), loc);
     } else {
       // By the frame's stable bottom ordinal: a site may hold working operands above the frame the model does not
       // track.
-      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE, loc);
+      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE, loc);
     }
     this.emit(Op.OP_SWAP, loc); // the count beneath the record the read is about
     return { runtimeCounts: true };
@@ -37125,8 +37125,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** True when the code being emitted runs in a segment the source fixes after the one the batch writes land in. */
   private readsPastBatchWrite(): boolean {
-    return !this.perCallBatchWriteRuntime && !this.perCallCallsMadeActive
-      && (this.perCallReadSegment ?? this.perCallSegmentIndex) > this.perCallBatchWriteSegment;
+    return !this.framedBatchWriteRuntime && !this.framedCallsMadeActive
+      && (this.framedReadSegment ?? this.framedSegmentIndex) > this.framedBatchWriteSegment;
   }
 
   /**
@@ -37141,10 +37141,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.emitDeclaredGroupRecordOrdinal(this.batchTargetOrdinal(slotIndex)!, 1, loc);
     this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc); // -(ordinal + 1) -> ordinal
-    const readSegment = this.perCallReadSegment;
-    this.perCallReadSegment = this.perCallBatchWriteSegment;
+    const readSegment = this.framedReadSegment;
+    this.framedReadSegment = this.framedBatchWriteSegment;
     this.emitDeclaredOrdinalIndexRead('out', loc);
-    this.perCallReadSegment = readSegment;
+    this.framedReadSegment = readSegment;
     this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc); // out -> -(out + 1)
     this.emit(Op.OP_ENDIF, loc);
   }
@@ -37162,7 +37162,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDeclaredGroupRecordOrdinal(
     declaredOrdinal: number, recordOffset: number, locationData: SingleLocationData,
   ): void {
-    this.emit(encodeInt(BigInt(-(this.perCallRecordsBeforeGroups() + declaredOrdinal + recordOffset + 1))),
+    this.emit(encodeInt(BigInt(-(this.framedRecordsBeforeGroups() + declaredOrdinal + recordOffset + 1))),
       locationData);
     for (const prior of this.batchTargetSlots().slice(0, declaredOrdinal)) {
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${prior}`, locationData);
@@ -37176,7 +37176,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Leaves the commitment a dynamic value's chunk site reads or closes against.
    *
    * Entry `[..., coordinate]`, exit `[..., view]`. The direct convention reads the transaction's own chunk at the
-   * coordinate. A per-call frame instead selects the record its own segment declares at the run's position: the
+   * coordinate. A framed frame instead selects the record its own segment declares at the run's position: the
    * coordinate the loop computed fixes that position past the frame's declared record block, so it names the
    * ordinal, and the record's declared view carries the commitment. That is what lets a created chunk be declared
    * wherever the plan places it — beside per-append event outputs, which a fixed band offset cannot be reconciled
@@ -37304,20 +37304,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Leaves how many records the running segment declares, resolved the way the segment's own views are. */
   private emitDeclaredSegmentRecordCount(loc: SingleLocationData): void {
-    if (!this.perCallCallsMadeActive) {
+    if (!this.framedCallsMadeActive) {
       this.emit(bytecodeToScript(declaredSegmentRecordCountScript({
-        segmentIndex: this.perCallReadsRunSegment
-          ? this.perCallExecutionCallCount() : this.perCallReadSegment ?? this.perCallSegmentIndex,
-        callCount: this.perCallExecutionCallCount(),
+        segmentIndex: this.framedReadsRunSegment
+          ? this.framedExecutionCallCount() : this.framedReadSegment ?? this.framedSegmentIndex,
+        callCount: this.framedExecutionCallCount(),
       })), loc);
       return;
     }
-    if (this.perCallReadsRunSegment) {
+    if (this.framedReadsRunSegment) {
       this.emitPickTrackedFromBottom(callCountSlotName(), loc);
-    } else if (this.perCallReadsWriteSegment && this.perCallReadSegment !== undefined) {
-      this.emit(encodeInt(BigInt(this.perCallReadSegment)), loc);
+    } else if (this.framedReadsWriteSegment && this.framedReadSegment !== undefined) {
+      this.emit(encodeInt(BigInt(this.framedReadSegment)), loc);
     } else {
-      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE, loc);
+      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE, loc);
     }
     this.emit(bytecodeToScript(declaredSegmentRecordCountScript({ runtimeCounts: true })), loc);
   }
@@ -37361,21 +37361,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * that number: a body whose arms each make a call names one descriptor per arm, so the count is asked of the
    * body itself and the list is only the fallback for a body the walk does not reach.
    */
-  private perCallExecutionCallCount(): number {
+  private framedExecutionCallCount(): number {
     const name = this.currentFunction?.name ?? '';
     const walk = callsOnEveryPath(this.currentFunction?.body);
     return ('pathCount' in walk ? walk.pathCount : undefined)
-      ?? this.perCallEntryCallSites.get(name)?.length ?? 0;
+      ?? this.framedEntryCallSites.get(name)?.length ?? 0;
   }
 
   /**
    * True when the program reads its data-NFT block through the slots the head left.
    *
-   * A per-call master whose contract has state carries them: its own frame's block declares where its records
+   * A framed master whose contract has state carries them: its own frame's block declares where its records
    * are, and the sites read that declaration instead of a fixed offset from the input the frame runs on.
    */
   private get readsRecordsFromFrame(): boolean {
-    return this.perCallMaster && this.stack.includes(recordInputIndexSlotName());
+    return this.framedMaster && this.stack.includes(recordInputIndexSlotName());
   }
 
   /**
@@ -37420,15 +37420,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * record the frame does not name — one its owner declares past the implementation's, for instance — sit where
    * the band-and-offset count would otherwise put the node. A position past the declaration is a read that names a
    * node the running frame never made, and keeps the count: the frame parks the declared input and output of the
-   * record its block opens with, so the entry sits its per-call offset past that base, which the pick addresses by
+   * record its block opens with, so the entry sits its framed offset past that base, which the pick addresses by
    * the frame's stable bottom ordinal rather than a top-relative depth.
    */
-  private emitPerCallEntryIndex(side: 'in' | 'out', slotIndex: number, loc: SingleLocationData): void {
-    this.emit(encodeInt(BigInt(this.perCallEntryOffset(slotIndex) - 1)), loc);
+  private emitFramedEntryIndex(side: 'in' | 'out', slotIndex: number, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.framedEntryOffset(slotIndex) - 1)), loc);
     // A paging read names a different node each turn, and the frame declares one per turn past the slot's own; the
     // counter is how many turns in the read is, so the position counts it. Every other read leaves the slot's own.
-    if (this.perCallPagingTurnAddend !== undefined) {
-      this.emitPickTrackedFromBottom(this.perCallPagingTurnAddend, loc);
+    if (this.framedPagingTurnAddend !== undefined) {
+      this.emitPickTrackedFromBottom(this.framedPagingTurnAddend, loc);
       this.emit(Op.OP_ADD, loc);
     }
     this.emit(Op.OP_DUP, loc); // the position, kept for the branch that counts it
@@ -37445,7 +37445,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The loop counter a per-call paging read's key advances with, or `undefined` when the key is not a paged one.
+   * The loop counter a framed paging read's key advances with, or `undefined` when the key is not a paged one.
    *
    * A getter that walks a collection by its own argument and a loop counter reads `cells[start + i]`, which the
    * artifact publishes as a sum over the argument and the counter. The frame declares one node per turn, so the
@@ -37453,7 +37453,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * is. A key whose operands the arguments alone name — or whose counter the frame does not carry — is not paged.
    */
   private pagingTurnAddend(slotIndex: number): string | undefined {
-    if (!this.perCallMaster || this.plainLoopDepth === 0) return undefined;
+    if (!this.framedMaster || this.plainLoopDepth === 0) return undefined;
     const keyParams = this.entrySlots[slotIndex]?.keyParams ?? [];
     if (keyParams.length !== 1) return undefined;
     const names = [...keyParams[0]!.matchAll(/id:([A-Za-z_$][\w$]*)/g)].map((match) => match[1]!);
@@ -37469,9 +37469,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * or every one beside a batch, then the node of each entry slot no batch writes, in the order the block layout
    * lists them.
    */
-  private perCallEntryOffset(entrySlot: number): number {
+  private framedEntryOffset(entrySlot: number): number {
     // A loop that continues another loop's run of records addresses them from that run's first loop.
-    const slotIndex = this.perCallLoopChainOf(entrySlot)?.first ?? entrySlot;
+    const slotIndex = this.framedLoopChainOf(entrySlot)?.first ?? entrySlot;
     const offset = this.getBlockSlotOffset('entry', slotIndex);
     const batched = new Set(this.batchTargetSlots());
     const earlier = this.currentFunction.blockLayout!.slots.filter((slot) => slot.kind === 'entry'
@@ -37480,28 +37480,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The run of records a per-call frame's loop at `slot` continues, when two loops of its collection share one.
+   * The run of records a framed frame's loop at `slot` continues, when two loops of its collection share one.
    *
    * Each loop's teardown counts the transaction's nodes of its collection, so two loops that write one collection
    * keep their counters across each other and count once, at the run's last loop; the artifact publishes their turns
    * as one run (`PublishedWriteSegment.turns`). Any other frame, and any other loop, has none.
    */
-  private perCallLoopChainOf(slot: number): { readonly first: number; readonly last: boolean } | undefined {
-    if (!this.perCallMaster || this.currentFunction === undefined) return undefined;
-    this.perCallLoopChain ??= perCallLoopChains(this.currentFunction);
-    return this.perCallLoopChain.get(slot);
+  private framedLoopChainOf(slot: number): { readonly first: number; readonly last: boolean } | undefined {
+    if (!this.framedMaster || this.currentFunction === undefined) return undefined;
+    this.framedLoopChain ??= framedLoopChains(this.currentFunction);
+    return this.framedLoopChain.get(slot);
   }
 
   /** The tracked name a loop's counter takes between the loops of one run of records over `collection`. */
-  private perCallLoopCarryName(collection: string, side: 'in' | 'out'): string {
+  private framedLoopCarryName(collection: string, side: 'in' | 'out'): string {
     return `(sorted_upsert_carry_${side}_${collection})`;
   }
 
   /**
-   * The records a per-call frame declares before its batch's groups: every data record, then the node of each
+   * The records a framed frame declares before its batch's groups: every data record, then the node of each
    * entry slot no batch writes.
    */
-  private perCallRecordsBeforeGroups(): number {
+  private framedRecordsBeforeGroups(): number {
     const batched = new Set(this.batchTargetSlots());
     return this.dataNftCount + (this.currentFunction.blockLayout?.slots ?? []).filter((slot) =>
       slot.kind === 'entry' && slot.slotIndex !== undefined && !batched.has(slot.slotIndex)).length;
@@ -37541,7 +37541,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     delegate: boolean = false,
   ): void {
     const emitIndex = (side: 'in' | 'out', extraStackOffset = 0): void => {
-      // A per-call frame addresses its records by its own segment's declaration, so the delegate executor's
+      // A framed frame addresses its records by its own segment's declaration, so the delegate executor's
       // adjacent block is a base for the direct convention only.
       if (delegate && !this.readsRecordsFromFrame) this.emitMasterInputIndex(loc, extraStackOffset);
       else this.emitRecordBlockBase(side, loc);
@@ -37549,7 +37549,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
     };
     if (this.readsRecordsFromFrame && !delegate) {
-      // A per-call frame reads a data record's fields from the record its own segment declares, and settlement ties
+      // A framed frame reads a data record's fields from the record its own segment declares, and settlement ties
       // them to the commitments at the coordinate; a commitment names no lock, so a record at any lock that merely
       // preserves itself would pass. Hold both sides to the data-NFT covenant, which pins the owner's category and
       // runs D1/D2, so the UTXO the frame treats as its state is a genuine record and never a plain UTXO, a mapping
@@ -37636,7 +37636,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     /** Leaves the record's commitment for this side: the frame's own declaration, or the transaction's own UTXO. */
     const emitCommitment = (side: 'in' | 'out'): void => {
-      // A per-call frame answers from the segment it is running in. Another frame of the same transaction may write
+      // A framed frame answers from the segment it is running in. Another frame of the same transaction may write
       // this record later, so the transaction's output carries that frame's value rather than this one's, and the
       // record's input carries whatever the frame before declared; the declaration is the only side this frame's
       // own settlement accounts for.
@@ -37653,7 +37653,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Tracks an operand a per-call site leaves above the frame before it picks the frame's record bases by depth.
+   * Tracks an operand a framed site leaves above the frame before it picks the frame's record bases by depth.
    * The direct convention's picks are left as they are.
    */
   private trackFrameOperand(): void {
@@ -38118,7 +38118,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * takes, so a run the body only reads, or a body that writes such a value beside it, declares records past the
    * run: its position then cannot come from the declaration's own width.
    */
-  private perCallRunClosesSegment(sv: StateVariableNode): boolean {
+  private framedRunClosesSegment(sv: StateVariableNode): boolean {
     return (this.currentFunction.dynamicWrites ?? []).includes(sv.name)
       && !this.valueChunkTrailingCountActive;
   }
@@ -38130,13 +38130,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * one past the base, and the run's records are the declaration's last, so the run leads the declared width less
    * its own count.
    *
-   * A per-call frame counts the records a run-time loop declares only as its turns mint them, so a body that
+   * A framed frame counts the records a run-time loop declares only as its turns mint them, so a body that
    * addresses the run before those turns has no count to add: the segment's own declaration states where the run
    * sits for the execution whatever turns the loop took. The run's width covers both versions of the value, the
    * chunks the segment started with and the ones it writes, both of which its declaration of the data record
    * states.
    */
-  private emitPerCallDeclaredRunOffset(sv: StateVariableNode, loc: SingleLocationData): void {
+  private emitFramedDeclaredRunOffset(sv: StateVariableNode, loc: SingleLocationData): void {
     const CHUNK = 120;
     this.emitReadDynamicLen(sv, '(dyn_rwidth)', loc, 0, 'out');
     this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
@@ -38168,8 +38168,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitDynamicReadLoop(sv: StateVariableNode, loc: SingleLocationData): void {
     // An apart body reads its run where the run is declared, in the run's own segment, whichever one the read runs in.
-    const readsRunSegment = this.perCallReadsRunSegment;
-    this.perCallReadsRunSegment = this.perCallRunApart;
+    const readsRunSegment = this.framedReadsRunSegment;
+    this.framedReadsRunSegment = this.framedRunApart;
     const CHUNK = 120;
     const lenType = new IntType(false, 32);
     const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
@@ -38185,14 +38185,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // `verifyDynamicReadBases`, which refuses on disagreement and on an unresolvable invoker set. See that
     // method for why a blanket refusal was wrong and why an empty invoker set must still refuse.
     const priorNames = this.dynamicReadPriorRuns(basisFunction, sv.name);
-    // A per-call frame declares a written run at the wider of its two versions, so a run read past one starts past
+    // A framed frame declares a written run at the wider of its two versions, so a run read past one starts past
     // the chunks that run creates as well as the ones it consumes.
     const widenedPriors = this.readsRecordsFromFrame
       ? this.dynamicReadWidenedPriors(basisFunction, priorNames) : undefined;
     // A run a loop frame only reads trails the loop's records, so it is found from the declaration's end.
-    const trailsLoop = this.perCallMaster && !this.isDefineSubTraversal && this.readsRecordsFromFrame
-      && !this.valueChunkTrailingCountActive && this.perCallLoopRecordSignature() !== undefined;
-    const readRunTrails = trailsLoop && this.perCallReadRunTrails(this.currentFunction, sv.name);
+    const trailsLoop = this.framedMaster && !this.isDefineSubTraversal && this.readsRecordsFromFrame
+      && !this.valueChunkTrailingCountActive && this.framedLoopRecordSignature() !== undefined;
+    const readRunTrails = trailsLoop && this.framedReadRunTrails(this.currentFunction, sv.name);
     this.dynamicReadBases.push({
       fn: this.currentFunction,
       variable: sv.name,
@@ -38219,7 +38219,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(dyn_rchunkaddr)');
     this.emitSortedEntryAddress(chunkHash, loc);
     this.stack[0] = '(dyn_rchunkaddr)';
-    // A per-call frame reads a chunk an earlier frame created only when a validator settles that frame's view.
+    // A framed frame reads a chunk an earlier frame created only when a validator settles that frame's view.
     const readsDeclaredRun = this.readsRecordsFromFrame;
     if (readsDeclaredRun) {
       this.emit(bytecodeToScript(validatorSettledScript()), loc);
@@ -38272,23 +38272,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const threadedBase = this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
     // The run a body writes is declared in the frame's last segment, where the epilogue pins it, so a read made
     // before the calls the frame makes resolves it there rather than in the segment it is running in.
-    const runInLastSegment = this.perCallMaster && this.runtimeLoopEntryOutputCountActive
-      && this.perCallRunClosesSegment(sv);
+    const runInLastSegment = this.framedMaster && this.runtimeLoopEntryOutputCountActive
+      && this.framedRunClosesSegment(sv);
     if (explicitBase >= 0) {
       // No untracked value has been pushed in this branch yet: the absolute base is still at its tracked depth.
       // Adding one here asks OP_PICK for exactly one item below the runtime stack when the witness is the oldest
       // value in the frame (e.g. a compact direct delegate). The outlined branch below first pushes the master
       // index, so its +1 remains required.
-      // A per-call frame parks the raw record block base, so its own layout width turns it into the run's first
+      // A framed frame parks the raw record block base, so its own layout width turns it into the run's first
       // chunk coordinate; the direct convention's argument already carries that width.
       this.emit(encodeInt(BigInt(explicitBase)), loc);
       this.emit(Op.OP_PICK, loc);
-      if (this.perCallMaster) {
+      if (this.framedMaster) {
         if (runInLastSegment) {
           // The body declares run-time loop records, which the frame counts only as its turns mint them: a read
           // made before those turns has no count to add, so the run's position comes from the segment's own
           // declaration of the records instead.
-          this.emitPerCallDeclaredRunOffset(sv, loc);
+          this.emitFramedDeclaredRunOffset(sv, loc);
         } else if (readRunTrails) {
           // The run the body only reads is the declaration's last family, past however many records the loop's
           // turns have declared in this segment: base + 1 + declaredCount - the run's own count.
@@ -38299,14 +38299,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_1ADD, loc);
           this.emit(Op.OP_ADD, loc);
         } else {
-          this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
+          this.emit(encodeInt(BigInt(this.framedDynamicChunkWidth())), loc);
           this.emit(Op.OP_ADD, loc);
           // The run follows the nodes the body's own loops declared for this frame, which is a count the frame
           // carries: a loop that took no turn declared none.
           this.emitLoopDeclaredNodeCount(loc, 1);
           // The read addresses the same record the write does, so it states the same batch surplus: without it the
           // run's coordinate names the record a spliced target's extra declaration displaced.
-          this.emitPerCallRunBatchRecords(loc);
+          this.emitFramedRunBatchRecords(loc);
         }
       }
       // Values below -1 encode an inactive-write route while retaining its read-only chunk coordinate:
@@ -38347,7 +38347,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)') + 1)), loc); // +1: inputIdx-partial untracked
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_ADD, loc);
-    // (a) input bytecode == chunk address; (b) category base == master + mutable. A per-call frame addresses the
+    // (a) input bytecode == chunk address; (b) category base == master + mutable. A framed frame addresses the
     // run through the record its own segment declares, and another frame in the same execution may have created
     // the chunk this one reads, so the transaction need not carry an input at the coordinate - the declaration is
     // the source and settlement ties it to the transaction. The direct convention reads the co-spent chunk itself.
@@ -38367,7 +38367,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, loc);
       this.emitVerifyCatBaseEqMaster(loc, 2); // consumes cat -> [..., inputIdx]
     }
-    // (c) commitment -> chunkIndex (== i) ++ chunkData. A per-call frame reads its own segment's declared view of
+    // (c) commitment -> chunkIndex (== i) ++ chunkData. A framed frame reads its own segment's declared view of
     // the record at the coordinate, so the run one frame wrote is the run the next frame reads, and holds the record
     // to the value's own chunk address on both sides it declares.
     if (readsDeclaredRun) {
@@ -38440,7 +38440,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(idx);
     }
     this.stack[this.getStackIndex('(dyn_racc)')] = '(value)';
-    this.perCallReadsRunSegment = readsRunSegment;
+    this.framedReadsRunSegment = readsRunSegment;
   }
 
   /**
@@ -38480,21 +38480,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Emits the output index a transfer pays.
    *
-   * A per-call master has no fixed position for a send: the recipient lock is a run-time value, and the frame's
+   * A framed master has no fixed position for a send: the recipient lock is a run-time value, and the frame's
    * witness block lists the output the send went to. The head leaves each listed index as a tracked slot, so the
    * body pins the lock and the value it computed at exactly the output the block named. The direct convention
    * reads the index from the frame's block layout instead.
    */
   private emitTransferOutputIndex(transferIndex: number, locationData: SingleLocationData): void {
-    if (!this.perCallMaster) {
+    if (!this.framedMaster) {
       this.emitBlockSlotIndex('transfer', transferIndex, locationData);
       return;
     }
     const name = sendOutputSlotName(transferIndex);
     if (!this.stack.includes(name)) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master head left no output slot for transfer ${transferIndex} while compiling `
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master head left no output slot for transfer ${transferIndex} while compiling `
         + `'${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -38508,7 +38508,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * happen.
    *
    * The region parks the two-byte sentinel for a position the execution sent nothing at, and its script-number
-   * value is negative, which no output index is. A per-call send on one branch of a conditional still owns its
+   * value is negative, which no output index is. A framed send on one branch of a conditional still owns its
    * region position, so requiring the sentinel there keeps the block's declared count and the sends the body made
    * in step: a witness cannot list an output for a send the body did not make.
    */
@@ -38516,8 +38516,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const name = sendOutputSlotName(transferIndex);
     if (!this.stack.includes(name)) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master head left no output slot for transfer ${transferIndex} while compiling `
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master head left no output slot for transfer ${transferIndex} while compiling `
         + `'${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -38537,8 +38537,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * 3. Verify output has no tokens (OP_OUTPUTTOKENCATEGORY == empty)
    */
   private emitTransferCovenantVerification(node: FunctionDefinitionNode): void {
-    if (this.perCallMaster) {
-      this.emitPerCallValueSends(node);
+    if (this.framedMaster) {
+      this.emitFramedValueSends(node);
       return;
     }
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
@@ -38579,11 +38579,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(lbIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
-      // A per-call listed send pays a P2PKH lock (W2): a value for a contract is a `CALL` into its `receive()`, so a
+      // A framed listed send pays a P2PKH lock (W2): a value for a contract is a `CALL` into its `receive()`, so a
       // plain output to one is no payment (T35).
-      if (this.perCallMaster) this.emit(bytecodeToScript(assertP2pkhShapeScript()), locationData);
+      if (this.framedMaster) this.emit(bytecodeToScript(assertP2pkhShapeScript()), locationData);
 
-      // Compute output index: the witness-listed send slot for a per-call master, the block slot otherwise.
+      // Compute output index: the witness-listed send slot for a framed master, the block slot otherwise.
       this.emitTransferOutputIndex(transferIndex, locationData);
       this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       this.pushToStack('(value)');
@@ -38617,8 +38617,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (node.graphEmissionHandler && node.graphEffectFrame) {
           this.emit(Op.OP_ELSE, locationData);
           this.emitNotTakenGraphTransferSlotBinding(transferIndex, locationData);
-        } else if (this.perCallMaster) {
-          // A per-call send the execution did not make still owns its region position, and the position must say
+        } else if (this.framedMaster) {
+          // A framed send the execution did not make still owns its region position, and the position must say
           // so: the body requires the no-index sentinel there rather than leaving a listed output unclaimed.
           this.emit(Op.OP_ELSE, locationData);
           this.requireSendSlotAbsent(transferIndex, locationData);
@@ -38631,15 +38631,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `address(this).balance` in a per-call frame (spec 4b): the value of the containers the transaction spends at the
+   * `address(this).balance` in a framed frame (spec 4b): the value of the containers the transaction spends at the
    * container lock of the contract whose records the frame runs on, the caller's for a delegate frame, with the
    * frame's value credited and the sends the body has made so far taken out, as the EVM's balance stands there.
    */
-  private emitPerCallOwnBalance(loc: SingleLocationData): void {
+  private emitFramedOwnBalance(loc: SingleLocationData): void {
     const owner = categoryOwnerSlotName();
     if (!this.stack.includes(owner) || !this.stack.includes('__internal__frameValue')) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'FRAMED_CODEGEN_UNAVAILABLE',
         `the balance is read where the frame's slots are not, while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -38667,7 +38667,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * A per-call value send's call into a contract, made where the source sends (spec 4b).
+   * A framed value send's call into a contract, made where the source sends (spec 4b).
    *
    * The code chooses by the lock's length: a user's lock is a listed send, pinned once the body's own code has run,
    * and any other lock is a `CALL` into the recipient's `receive()` carrying the amount. That call closes the segment
@@ -38677,14 +38677,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * it, as the EVM's storage does after a call; a user's lock leaves the field as written, so both arms leave the
    * same frame. A send in an outlined body is left to the body's end, as before.
    */
-  private emitPerCallValueCallAtSource(transferIndex: number, node: Node): void {
-    if (!this.perCallMaster || this.isDefineSubTraversal || !this.perCallCallsMadeActive) return;
+  private emitFramedValueCallAtSource(transferIndex: number, node: Node): void {
+    if (!this.framedMaster || this.isDefineSubTraversal || !this.framedCallsMadeActive) return;
     const lock = `__internal__transfer_lb_${transferIndex}`;
     const amount = `__internal__transfer_amt_${transferIndex}`;
     if (this.getStackIndex(lock, true) < 0 || this.getStackIndex(amount, true) < 0) return;
     // A send to a contract is a call the recipient's lock decides at run time, which the fields' segments do not
     // follow: the static set decides from here, as the send's own close and the reads after it always have.
-    this.perCallFieldSegments = undefined;
+    this.framedFieldSegments = undefined;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
     this.emit(encodeInt(BigInt(this.getStackIndex(lock))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -38693,22 +38693,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(25n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
     // A body that sends from a loop lists a send to a user's lock where it makes it too, at its next listed output.
-    if (this.perCallSendsAtSource) {
+    if (this.framedSendsAtSource) {
       this.emit(Op.OP_IF, loc);
-      this.emitPerCallListedSend(lock, amount, loc);
+      this.emitFramedListedSend(lock, amount, loc);
       this.emit(Op.OP_ELSE, loc);
     } else {
       this.emit(Op.OP_NOTIF, loc);
     }
     const closes = this.stateVariables.length > 0 || this.collectionCount > 0;
-    const written = closes && this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(false) : [];
-    this.emitPerCallSegmentClose(loc, false);
-    this.emitPerCallReceiveCallSite(node, lock, amount, loc);
-    this.perCallCallCounted(false);
-    if (this.perCallFieldsAlwaysCurrent) this.emitPerCallHeldFieldsReread(node, loc);
-    else this.emitPerCallWrittenFieldsReread(written, node, loc);
+    const written = closes && this.readsRecordsFromFrame ? this.framedRecordsWrittenHere(false) : [];
+    this.emitFramedSegmentClose(loc, false);
+    this.emitFramedReceiveCallSite(node, lock, amount, loc);
+    this.framedCallCounted(false);
+    if (this.framedFieldsAlwaysCurrent) this.emitFramedHeldFieldsReread(node, loc);
+    else this.emitFramedWrittenFieldsReread(written, node, loc);
     this.emit(Op.OP_ENDIF, loc);
-    this.perCallValueCallsAtSource.add(transferIndex);
+    this.framedValueCallsAtSource.add(transferIndex);
   }
 
   /**
@@ -38717,37 +38717,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The slot stays current, so a read resolves from it and the record is rebuilt from it where the next segment
    * closes; its value is now the one the frames that ran during the call left.
    */
-  private emitPerCallWrittenFieldsReread(
-    written: readonly PerCallWrittenRecord[], node: Node, loc: SingleLocationData,
+  private emitFramedWrittenFieldsReread(
+    written: readonly FramedWrittenRecord[], node: Node, loc: SingleLocationData,
   ): void {
     for (const [nftIdx] of written) {
       const fields = this.stateVariables.filter((sv) => sv.nftIndex === nftIdx)
         .sort((a, b) => a.fieldIndex - b.fieldIndex);
       for (const sv of fields) {
         const key = `${sv.nftIndex}:${sv.fieldIndex}`;
-        if (!this.perCallRefreshable(key) || this.perCallStaleWrites.has(key)) continue;
-        this.emitPerCallFieldRefresh(key, node, loc);
+        if (!this.framedRefreshable(key) || this.framedStaleWrites.has(key)) continue;
+        this.emitFramedFieldRefresh(key, node, loc);
       }
     }
   }
 
   /**
-   * A per-call body's value sends, pinned once its own code has run and its last segment is closed (spec 4b).
+   * A framed body's value sends, pinned once its own code has run and its last segment is closed (spec 4b).
    *
    * A send to a user's lock is a listed send: the next listed output pays that lock the amount, with no token. A
    * send to any other lock is a call into the recipient's `receive()`, which the body made where it sent. A send in
    * an outlined body made no call there, so it is made here, bound at the next call record, and the segment after it
    * runs no code of this frame, so its records are kept. The block lists exactly the sends made.
    */
-  private emitPerCallValueSends(node: FunctionDefinitionNode): void {
+  private emitFramedValueSends(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
-    const sendsMade = GenerateTargetTraversalWithLocation.PER_CALL_SENDS_MADE;
+    const sendsMade = GenerateTargetTraversalWithLocation.FRAMED_SENDS_MADE;
     // A body that sends from a loop made every send where its source made it, counting from its start.
-    if (!this.perCallSendsAtSource) {
+    if (!this.framedSendsAtSource) {
       this.emit(Op.OP_0, loc);
       this.pushToStack(sendsMade);
     }
-    for (const transfer of this.perCallSendsAtSource ? [] : this.pendingTransfers) {
+    for (const transfer of this.framedSendsAtSource ? [] : this.pendingTransfers) {
       const { transferIndex, lockingBytecodeStackName: lock, amountStackName: amount } = transfer;
       if (this.getStackIndex(lock, true) < 0 || this.getStackIndex(amount, true) < 0) {
         throw new TransferFrameUnavailableError(node, transferIndex);
@@ -38767,11 +38767,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(25n), loc);
       this.emit(Op.OP_NUMEQUAL, loc);
       this.emit(Op.OP_IF, loc);
-      this.emitPerCallListedSend(lock, amount, loc);
-      if (!this.perCallValueCallsAtSource.has(transferIndex)) {
+      this.emitFramedListedSend(lock, amount, loc);
+      if (!this.framedValueCallsAtSource.has(transferIndex)) {
         this.emit(Op.OP_ELSE, loc);
-        this.emitPerCallReceiveCallSite(node, lock, amount, loc);
-        this.emitPerCallKeptAfterCall(loc);
+        this.emitFramedReceiveCallSite(node, lock, amount, loc);
+        this.emitFramedKeptAfterCall(loc);
       }
       this.emit(Op.OP_ENDIF, loc);
       if (conditional) this.emit(Op.OP_ENDIF, loc);
@@ -38789,9 +38789,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Pins the next listed output to a user's lock and amount, and counts the send. */
-  private emitPerCallListedSend(lock: string, amount: string, loc: SingleLocationData): void {
-    const sendsMade = GenerateTargetTraversalWithLocation.PER_CALL_SENDS_MADE;
-    if (this.perCallSendRun) {
+  private emitFramedListedSend(lock: string, amount: string, loc: SingleLocationData): void {
+    const sendsMade = GenerateTargetTraversalWithLocation.FRAMED_SENDS_MADE;
+    if (this.framedSendRun) {
       // The run's first output plus the number of sends made.
       this.emit(encodeInt(BigInt(this.getStackIndex(sendBaseSlotName()))), loc);
       this.emit(Op.OP_PICK, loc);
@@ -38846,8 +38846,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The head's call count does not cover the call, so the site itself requires the validator that binds the
    * recipient (T35).
    */
-  private emitPerCallReceiveCallSite(node: Node, lock: string, amount: string, loc: SingleLocationData): void {
-    const callsMade = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
+  private emitFramedReceiveCallSite(node: Node, lock: string, amount: string, loc: SingleLocationData): void {
+    const callsMade = GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE;
     const pick = (name: string): void => {
       this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
       this.emit(Op.OP_PICK, loc);
@@ -38856,17 +38856,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     pick(callsMade);
     pick(lock);
     pick(amount);
-    this.emit(bytecodeToScript(callSiteCheckScript(PER_CALL_RECEIVE_SITE, 0, false, {
+    this.emit(bytecodeToScript(callSiteCheckScript(FRAMED_RECEIVE_SITE, 0, false, {
       targetFromStack: true, valueFromStack: true, indexFromStack: true, requiresValidator: true,
     })), loc);
     this.popFromStack(3);
-    this.emitPerCallCountOneCall(node, loc);
+    this.emitFramedCountOneCall(node, loc);
   }
 
   /** Keeps the records of the segment after a call made once the body's own code has run, where it runs no code. */
-  private emitPerCallKeptAfterCall(loc: SingleLocationData): void {
+  private emitFramedKeptAfterCall(loc: SingleLocationData): void {
     if (this.isDefineSubTraversal || (this.stateVariables.length === 0 && this.collectionCount === 0)) return;
-    this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.FRAMED_CALLS_MADE))), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(bytecodeToScript(declaredRecordsKeptScript({ runtimeCounts: true, exempt: 0 })), loc);
   }
@@ -40589,7 +40589,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack('(value)');
 
-        // Resolve the event output index: the witness-block slot under per-call, the block slot otherwise.
+        // Resolve the event output index: the witness-block slot under framed, the block slot otherwise.
         this.emitEventOutputIndex(emitIndex, undefined, locationData);
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
         this.pushToStack('(value)');
@@ -40755,7 +40755,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ENDIF, locationData);
       } else if (isConditionalEmit && graphHandlerEventWidth === 0) {
         this.emit(Op.OP_ELSE, locationData);
-        if (this.perCallMaster) this.emitPerCallSkippedEventClose(emitIndex, locationData);
+        if (this.framedMaster) this.emitFramedSkippedEventClose(emitIndex, locationData);
         else this.emitNotTakenEventSlotBinding(emitIndex, locationData);
         this.emit(Op.OP_ENDIF, locationData);
       } else if (isConditionalEmit) {
@@ -40812,14 +40812,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * SEC-10 in a per-call frame: a skipped emit's listed output carries the empty commitment, which the body closes
+   * SEC-10 in a framed frame: a skipped emit's listed output carries the empty commitment, which the body closes
    * against as it closes a reached emit's payload, with the empty payload above the commitment. The head proved the
    * listed output exists, and a builder that lists it under a condition the frame's facts do not decide learns the
    * skip from this close (`EmitAbi.activation`).
    *
    * Leaves the tracked stack unchanged: every value it pushes is consumed in the same span.
    */
-  private emitPerCallSkippedEventClose(emitIndex: number, locationData: SingleLocationData): void {
+  private emitFramedSkippedEventClose(emitIndex: number, locationData: SingleLocationData): void {
     this.emitEventOutputIndex(emitIndex, undefined, locationData);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
     this.emit(Op.OP_0, locationData);
@@ -40827,15 +40827,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Publishes on each conditional emit of a per-call entry the condition it runs under (`perCallEmitActivation`), from
+   * Publishes on each conditional emit of a framed entry the condition it runs under (`framedEmitActivation`), from
    * which a builder decides whether the frame's listed output carries the payload or the empty commitment. A
    * constructor's emits publish none: its genesis learns each from the frame's own close, as it learns a payload.
    */
-  private publishPerCallEmitActivations(node: FunctionDefinitionNode): void {
+  private publishFramedEmitActivations(node: FunctionDefinitionNode): void {
     if (node.name === '__construct') return;
     for (const info of node.emitInfos ?? []) {
       if (!this.conditionalEmitIndices.has(info.emitIndex)) continue;
-      const activation = perCallEmitActivation(node, info.emitIndex, this.constantExpressions);
+      const activation = framedEmitActivation(node, info.emitIndex, this.constantExpressions);
       if (!isAlwaysActive(activation)) info.activation = activation;
     }
   }
@@ -42195,12 +42195,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * True when `body` is a per-call fallback forwarding the call data it received. A dispatcher may reach it beside
+   * True when `body` is a framed fallback forwarding the call data it received. A dispatcher may reach it beside
    * other entries, and it settles its return and its events as the sole-body proxy's does: without that, a forged
    * `retval` passed and the delegated result was framed twice.
    */
   private isForwardingFallbackBody(body: FunctionDefinitionNode | undefined): boolean {
-    return this.perCallMaster && this.perCallForwardingFallback && body?.isFallback === true;
+    return this.framedMaster && this.framedForwardingFallback && body?.isFallback === true;
   }
 
   /**
@@ -42222,18 +42222,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Settles the entry's return against the frame's witness `retval`.
    *
-   * A per-call master does not write a return-event output: the head read the frame's `retval` and left it as a
+   * A framed master does not write a return-event output: the head read the frame's `retval` and left it as a
    * tracked slot, so an entry that returns a value compares the blob its own `return` built against that slot,
    * and a void entry requires the frame to have recorded nothing. Either way a frame that recorded the wrong
    * bytes is refused, which keeps the caller's record of the call and the callee's own computation the same value.
    */
-  private emitPerCallReturnCheck(node: FunctionDefinitionNode): void {
+  private emitFramedReturnCheck(node: FunctionDefinitionNode): void {
     const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
     const retvalIndex = this.getStackIndex(retvalSlotName(), true);
     if (retvalIndex < 0) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the per-call master left no \`retval\` slot while compiling '${node.name}'`,
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `the framed master left no \`retval\` slot while compiling '${node.name}'`,
         { function: node.name },
       );
     }
@@ -43193,7 +43193,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName())) {
-      // A per-call frame's records belong to the input the head parked as their owner: the frame's own input for a
+      // A framed frame's records belong to the input the head parked as their owner: the frame's own input for a
       // frame that owns its records, and its caller's for a frame that runs on them. Every state and entry site is
       // an offset from that input, so a frame that runs on its caller's records resolves them where the caller's
       // block put them instead of against an input of its own that holds none.
@@ -43902,7 +43902,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * True when a census settles the records of every frame this per-call master runs, so C3's count adds nothing.
+   * True when a census settles the records of every frame this framed master runs, so C3's count adds nothing.
    *
    * A frame that is its category's only master and made no delegate call runs the head's own walk, which admits an
    * own-category mutable token only at a record its segments declare (S2, S3). Beside another master of the contract,
@@ -43911,8 +43911,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * from records its own caller supplies, so the count binds nothing that caller cannot route around. A head that can
    * forward a delegate call asks the frame's block whether it made one, so every frame is settled by one of them.
    */
-  private perCallCensusSettlesOwnRecords(): boolean {
-    return this.perCallMaster;
+  private framedCensusSettlesOwnRecords(): boolean {
+    return this.framedMaster;
   }
 
   // C3: conserve the count of co-spent own-category MUTABLE (0x01) NFTs (data + entry NFTs) input->output. In
@@ -44243,7 +44243,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // honestly sit beside is the return carrier at its witnessed `__internal__returnOutputIdx`. Exempting the class
     // there admits a third own-category immutable appended beside the delegated emitReturn pair, which a reader
     // can take for the call's return; keeping it in the census admits the witnessed carrier alone.
-    const facetWitnessesItsReturnCarrier = !this.perCallMaster && this.currentContractIsSplitFacet
+    const facetWitnessesItsReturnCarrier = !this.framedMaster && this.currentContractIsSplitFacet
       && this.currentFunctionIsDelegate && this.usesDelegateExecutorBlockBase()
       && hasReturnSlot && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
     if (!facetWitnessesItsReturnCarrier) {
@@ -44256,8 +44256,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_IF, loc);
     // Leave one `allowed` boolean on top of [cat, base, j], then OP_VERIFY it.
-    const perCallSlots = this.perCallMaster ? this.perCallEventOutputSlots(node.emitInfos?.length ?? 0) : undefined;
-    if (this.perCallMaster && this.perCallEventRun) {
+    const framedSlots = this.framedMaster ? this.framedEventOutputSlots(node.emitInfos?.length ?? 0) : undefined;
+    if (this.framedMaster && this.framedEventRun) {
       // A run's listed outputs are the head's checked span, `[first, first + count)`.
       this.emit(Op.OP_DUP, loc);                   // [cat, base, j, j]
       this.emitPickTrackedFromBottom(eventBaseSlotName(), loc);
@@ -44265,11 +44265,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitPickTrackedFromBottom(eventCountSlotName(), loc);
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_WITHIN, loc);                // [cat, base, j, allowed]
-    } else if (perCallSlots !== undefined) {
-      // A per-call master has no block layout: the event outputs are the ones the witness block lists, which the
+    } else if (framedSlots !== undefined) {
+      // A framed master has no block layout: the event outputs are the ones the witness block lists, which the
       // head has already checked for category and capability, so those listed indices are the admitted ones.
       this.emit(encodeBool(false), loc);           // [cat, base, j, allowed]
-      for (const slot of perCallSlots) {
+      for (const slot of framedSlots) {
         this.emit(Op.OP_OVER, loc);                // [cat, base, j, allowed, j]
         this.emitPickTrackedFromBottom(slot, loc); // [cat, base, j, allowed, j, listed]
         this.emit(Op.OP_NUMEQUAL, loc);            // [cat, base, j, allowed, match]
@@ -44419,7 +44419,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_BOOLOR, loc);                // [cat, base, j, allowed']
       this.emit(Op.OP_ENDIF, loc);
     }
-    if (this.perCallMaster) {
+    if (this.framedMaster) {
       // This census over the transaction's own-category outputs is the contract's, and a contract that runs on
       // several masters has it decided by the validator, whose listed set is the union over the frames that run on
       // the contract's records — a master's own block names only the events its own entry lists. So the census is
@@ -44526,7 +44526,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A direct merge evaluates the same script on every consumed master. OP_INPUTINDEX is the current input,
     // not the surviving master; the direct transaction's survivor is always input 0. Composed routes carry an
     // explicit physical owner and must keep using that authenticated coordinate.
-    // A per-call compile keeps the master index its frame resolves.
+    // A framed compile keeps the master index its frame resolves.
     if (!this.directConvention || this.usesMessageBusOwnerBlockBase() || this.usesProxyStateBlockBase()) {
       this.emitMasterInputIndex(locationData, extraStackOffset);
     } else {
@@ -45025,12 +45025,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * True for a pure read of a collection the function also writes in sorted order. The writes rewrite their targets
    * and predecessors, never this node, so the master keeps it as it keeps any read: the node's own read-only path
-   * cannot, since beside the minting master it may take the write path. A per-call frame, a slot another may alias
+   * cannot, since beside the minting master it may take the write path. A framed frame, a slot another may alias
    * at runtime, and a collection a loop writes keep the exemption.
    */
   private preservesSortedRead(slotIndex: number): boolean {
     const info = this.entrySlots[slotIndex];
-    return !this.perCallMaster
+    return !this.framedMaster
       && !info.operations.includes('write') && !info.operations.includes('delete')
       && info.aliasCondDeleteSlot === undefined && (info.runtimeAliasPriorSlots?.length ?? 0) === 0
       && this.entrySlots.every((other) => !(other.runtimeAliasPriorSlots?.includes(slotIndex) ?? false)
@@ -45078,7 +45078,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // If entry exists, verify preservation
     this.emit(Op.OP_IF, locationData);
 
-    // Verify commitment: the record keeps its value. A per-call frame reads the view its own segment declares
+    // Verify commitment: the record keeps its value. A framed frame reads the view its own segment declares
     // for the record, exactly as a state-record close does: another frame of the same transaction may have
     // rewritten the record's input or output, so the transaction's pair is not this frame's view. A frame that
     // addresses its records directly reads the transaction's own pair.
@@ -45093,7 +45093,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (this.readsRecordsFromFrame) {
       // The declared output coordinate, which the head parked; the frame's own input need not sit beside it.
-      this.emitPerCallEntryIndex('out', i, locationData);
+      this.emitFramedEntryIndex('out', i, locationData);
       this.emitRecordCommitmentRead('out', locationData);
     } else {
       this.emitEntryOutputIndex(i, locationData, 1); // +1 for the untracked commitment
@@ -45144,15 +45144,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Push a false "batch ran" flag, below the body's locals, for each multi-slot sorted batch whose every write sits
    * under a branch arm. Any of the batch's upserts sets it; where it stays false the direct epilogue
-   * (emitConditionalSortedBatchPreservation) or a per-call master's batch transition binds every node unchanged.
+   * (emitConditionalSortedBatchPreservation) or a framed master's batch transition binds every node unchanged.
    * Same guards as the per-slot allocator: a message-bus route allocates nothing and keeps its bytes.
    */
   private allocateConditionalSortedBatchFlags(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
     const messageBusDisabled = (this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean })
       .__messageBusExplicitlyDisabled === true;
-    const direct = messageBusDisabled && this.compilerOptions.composition !== 'per-call' && !this.perCallMaster;
-    if (!direct && !this.perCallMaster) return;
+    const direct = messageBusDisabled && this.compilerOptions.composition !== 'framed' && !this.framedMaster;
+    if (!direct && !this.framedMaster) return;
     const batches = (node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1);
     if (batches.length === 0) return;
     const conditional = new Set<number>();
@@ -45176,16 +45176,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot: the direct
-   * epilogue or the per-call batch transition binds the node where it stays false. Loop, alias and invoked writes get
-   * none, nor does a direct multi-slot batch's target or a per-call one the body makes wherever it reaches it.
+   * epilogue or the framed batch transition binds the node where it stays false. Loop, alias and invoked writes get
+   * none, nor does a direct multi-slot batch's target or a framed one the body makes wherever it reaches it.
    */
   private allocateConditionalSortedWriteFlags(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
     // A message-bus route settles its entry slots through its own handler machinery.
     const messageBusDisabled = (this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean })
       .__messageBusExplicitlyDisabled === true;
-    const direct = messageBusDisabled && this.compilerOptions.composition !== 'per-call' && !this.perCallMaster;
-    if (!direct && !this.perCallMaster) return;
+    const direct = messageBusDisabled && this.compilerOptions.composition !== 'framed' && !this.framedMaster;
+    if (!direct && !this.framedMaster) return;
     const slots = new Set<number>();
     const invokedWrites = new Set<number>();
     this.collectConditionalSortedWriteSlots(node.body, false, slots, new Map(), invokedWrites);
@@ -45195,8 +45195,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // An invoked subroutine cannot set this frame's flag.
       if (invokedWrites.has(slotIndex)) continue;
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
-      // Alias writes carry their own key-inequality gate; a per-call master's swap-remove write is a target as any.
-      if ((info.aliasCondDeleteSlot !== undefined && !this.perCallMaster)
+      // Alias writes carry their own key-inequality gate; a framed master's swap-remove write is a target as any.
+      if ((info.aliasCondDeleteSlot !== undefined && !this.framedMaster)
         || (info.runtimeAliasPriorSlots?.length ?? 0) > 0) continue;
       if (this.collectionDefinitions.find((c) => c.name === info.collection)?.sorted !== true) continue;
       const inSingleSlotBatch = node.sortedBatchInfo?.some(
@@ -45207,34 +45207,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ) ?? false;
       // A constructor arm completes only in the genesis derivation (no spend of a live master is its category's
       // genesis), which mints a key no run wrote at its unwritten value, so it keeps the transitions that allow it.
-      const activation = this.perCallMaster && node.name !== '__construct'
-        ? perCallWriteActivation(node, slotIndex, this.constantExpressions) : undefined;
+      const activation = this.framedMaster && node.name !== '__construct'
+        ? framedWriteActivation(node, slotIndex, this.constantExpressions) : undefined;
       const mayNotRun = activation !== undefined && !isAlwaysActive(activation);
-      // A per-call master binds a one-slot batch target in its single-target transition, and a multi-slot batch's
-      // target the body may skip in the batch transition (`emitPerCallKeptBatchTarget`): the batch's own flag, which
+      // A framed master binds a one-slot batch target in its single-target transition, and a multi-slot batch's
+      // target the body may skip in the batch transition (`emitFramedKeptBatchTarget`): the batch's own flag, which
       // any of its writes sets, cannot tell which ran. In a direct multi-slot batch a relinked predecessor changes
       // without an upsert of its own, which a flag would refuse.
-      if (this.perCallMaster ? !inSingleSlotBatch && !(inMultiSlotBatch && mayNotRun) : inMultiSlotBatch) {
+      if (this.framedMaster ? !inSingleSlotBatch && !(inMultiSlotBatch && mayNotRun) : inMultiSlotBatch) {
         continue;
       }
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex));
       this.conditionalSortedWriteFlagSlots.add(slotIndex);
-      // A per-call frame may skip a flagged write the body does not make wherever it reaches it, so its access
+      // A framed frame may skip a flagged write the body does not make wherever it reaches it, so its access
       // publishes the condition the write runs under. A multi-slot batch's target is published only where the frame's
       // facts can decide it: one they cannot stays planned as written, its group the key's node.
       if (mayNotRun && (inSingleSlotBatch || activation !== UNDECIDED_WRITE_ACTIVATION)) {
         info.activation = activation;
-        this.perCallSkippableSlots.add(slotIndex);
+        this.framedSkippableSlots.add(slotIndex);
       }
     }
-    // A per-call swap-remove write is a no-op wherever its key meets the delete of its batch that follows it, so its
+    // A framed swap-remove write is a no-op wherever its key meets the delete of its batch that follows it, so its
     // frame may declare it skipped there, whether a branch guards it or not.
-    if (this.perCallMaster && node.name !== '__construct') {
+    if (this.framedMaster && node.name !== '__construct') {
       for (const batch of node.sortedBatchInfo ?? []) {
         for (const slot of batch.slotIndices) {
           const owner = this.entrySlots[slot]?.aliasCondDeleteSlot;
-          if (owner !== undefined && batch.slotIndices.includes(owner)) this.perCallSkippableSlots.add(slot);
+          if (owner !== undefined && batch.slotIndices.includes(owner)) this.framedSkippableSlots.add(slot);
         }
       }
     }
@@ -45364,8 +45364,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * collection a batch, runtime-loop or iteration verifier counts is left to it.
    */
   private emitDirectCollectionCensus(node: FunctionDefinitionNode): void {
-    if (this.isDefineSubTraversal || this.perCallMaster || this.readsRecordsFromFrame) return;
-    if (this.compilerOptions.composition === 'per-call') return;
+    if (this.isDefineSubTraversal || this.framedMaster || this.readsRecordsFromFrame) return;
+    if (this.compilerOptions.composition === 'framed') return;
     if ((this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean }).__messageBusExplicitlyDisabled !== true) {
       return;
     }
@@ -45553,9 +45553,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // locals remain empty when the selected handler runs through OP_INVOKE, so treating them as the transfer
     // authority would compare (for example) `5000 <= 4000 + 0` and reject the authenticated 1000-sat output.
     // GRAPH_TRANSFER_REACHED below is the occurrence aggregate for precisely this route shape.
-    // A per-call master has no satoshi container: its value sends are the witness block's listed sends, and the
+    // A framed master has no satoshi container: its value sends are the witness block's listed sends, and the
     // value accounting for them is the records' own floor rather than a co-spent container's balance.
-    if (!this.perCallMaster && this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
+    if (!this.framedMaster && this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
       && !this.graphTransferFlagActive) {
       // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
       // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot.
@@ -45634,38 +45634,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * The functions whose body reaches the contract's own address, directly or through a body it calls.
    *
-   * A per-call subroutine cannot read `address(this)` from the calling frame, so a body that needs it receives
+   * A framed subroutine cannot read `address(this)` from the calling frame, so a body that needs it receives
    * it as a hidden operand. The need propagates through named internal calls: a body that calls such a body has
    * to forward the value, so it carries one too. The set is derived from the lowered bodies and memoized.
    */
-  private perCallSelfContextCarrierNames(): Set<string> {
-    if (this.perCallSelfContextCarriers !== undefined) return this.perCallSelfContextCarriers;
-    this.perCallSelfContextCarriers = this.perCallCarrierNames(
+  private framedSelfContextCarrierNames(): Set<string> {
+    if (this.framedSelfContextCarriers !== undefined) return this.framedSelfContextCarriers;
+    this.framedSelfContextCarriers = this.framedCarrierNames(
       (fn) => functionReadsOwnAddress(fn) || functionMakesExternalSelfCall(fn),
     );
-    return this.perCallSelfContextCarriers;
+    return this.framedSelfContextCarriers;
   }
 
   /** The functions that read `tx.origin`, directly or through a function they call, which a call leaves unchanged. */
-  private perCallOriginCarrierNames(): Set<string> {
-    this.perCallOriginCarriers ??= this.perCallCarrierNames(functionReadsOrigin);
-    return this.perCallOriginCarriers;
+  private framedOriginCarrierNames(): Set<string> {
+    this.framedOriginCarriers ??= this.framedCarrierNames(functionReadsOrigin);
+    return this.framedOriginCarriers;
   }
 
   /** The functions that read `msg.value`, directly or through a function they call. */
-  private perCallValueCarrierNames(): Set<string> {
-    this.perCallValueCarriers ??= this.perCallCarrierNames(functionReadsValue);
-    return this.perCallValueCarriers;
+  private framedValueCarrierNames(): Set<string> {
+    this.framedValueCarriers ??= this.framedCarrierNames(functionReadsValue);
+    return this.framedValueCarriers;
   }
 
   /** The functions that read `msg.sig`, directly or through a function they call. */
-  private perCallSelectorCarrierNames(): Set<string> {
-    this.perCallSelectorCarriers ??= this.perCallCarrierNames(functionReadsSelector);
-    return this.perCallSelectorCarriers;
+  private framedSelectorCarrierNames(): Set<string> {
+    this.framedSelectorCarriers ??= this.framedCarrierNames(functionReadsSelector);
+    return this.framedSelectorCarriers;
   }
 
   /** The functions that reach a seed, directly or through the functions they call. */
-  private perCallCarrierNames(seeded: (fn: FunctionDefinitionNode) => boolean): Set<string> {
+  private framedCarrierNames(seeded: (fn: FunctionDefinitionNode) => boolean): Set<string> {
     const byName = new Map<string, FunctionDefinitionNode>();
     for (const fn of this.userFunctionDefs.values()) byName.set(fn.name, fn);
     const directCalls = new Map<string, Set<string>>();
@@ -45701,10 +45701,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Push the caller's contract address as an invocation operand, or refuse when no frame slot holds it. */
   private emitCallerSelfContext(locationData: SingleLocationData): void {
     const slot = this.stack.includes('__internal__frameSelf') ? '__internal__frameSelf'
-      : this.stack.includes(PER_CALL_SELF_CONTEXT) ? PER_CALL_SELF_CONTEXT : undefined;
+      : this.stack.includes(FRAMED_SELF_CONTEXT) ? FRAMED_SELF_CONTEXT : undefined;
     if (slot === undefined) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'FRAMED_CODEGEN_UNAVAILABLE',
         `the contract's own address is not in the frame while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -45728,9 +45728,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       return;
     }
-    if (this.perCallMaster) {
+    if (this.framedMaster) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'FRAMED_CODEGEN_UNAVAILABLE',
         `tx.origin is read outside the frame's slots while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -45873,17 +45873,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * This is a compile-time constant: zero runtime cost.
    */
   private emitMsgSig(locationData: SingleLocationData): void {
-    const selectorSlot = this.stack.includes(PER_CALL_SELECTOR_CONTEXT) ? PER_CALL_SELECTOR_CONTEXT
+    const selectorSlot = this.stack.includes(FRAMED_SELECTOR_CONTEXT) ? FRAMED_SELECTOR_CONTEXT
       : this.stack.includes('__internal__handlerMsgSig') ? '__internal__handlerMsgSig' : undefined;
     if (selectorSlot !== undefined) {
       this.emit(encodeInt(BigInt(this.getStackIndex(selectorSlot))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }
-    // A per-call fallback runs for a selector no body has and receive() for a value send's empty call data, so
+    // A framed fallback runs for a selector no body has and receive() for a value send's empty call data, so
     // their msg.sig is the call data's selector, the EVM's first four calldata bytes: zero when it is empty.
-    if (this.perCallMaster && (this.currentFunction.isFallback || this.currentFunction.isReceive)) {
-      this.emitPerCallCallData(locationData);
+    if (this.framedMaster && (this.currentFunction.isFallback || this.currentFunction.isReceive)) {
+      this.emitFramedCallData(locationData);
       this.emit(Op.OP_SIZE, locationData);
       this.emit(Op.OP_IF, locationData);
       this.emit(encodeInt(1n), locationData);
@@ -45915,18 +45915,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., msgData]
    */
   private emitMsgData(locationData: SingleLocationData): void {
-    // A per-call frame's call data is its own input's; a master with one entry has no selector in a user's frame, so
+    // A framed frame's call data is its own input's; a master with one entry has no selector in a user's frame, so
     // its call data would not be the one a caller's frame carries.
-    if (this.perCallMaster) {
-      if (this.perCallSoleEntry) {
+    if (this.framedMaster) {
+      if (this.framedSoleEntry) {
         throw new SolidcDiagnosticError(
-          'PER_CALL_CODEGEN_UNAVAILABLE',
+          'FRAMED_CODEGEN_UNAVAILABLE',
           'msg.data in a master with one entry: a user\'s frame to it carries no selector, so its call data is not '
           + 'the call data a caller\'s frame carries',
           { function: this.currentFunction?.name },
         );
       }
-      this.emitPerCallCallData(locationData);
+      this.emitFramedCallData(locationData);
       return;
     }
     if (this.stack.includes('__internal__handlerMsgData')) {
@@ -46032,7 +46032,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** The stack item this body's `tx.origin` reads, or undefined when its frame carries none. */
   private txOriginSlotName(): string | undefined {
     if (this.stack.includes(ORIGIN_FRAME_SLOT)) return ORIGIN_FRAME_SLOT;
-    return this.stack.includes(PER_CALL_ORIGIN_CONTEXT) ? PER_CALL_ORIGIN_CONTEXT : undefined;
+    return this.stack.includes(FRAMED_ORIGIN_CONTEXT) ? FRAMED_ORIGIN_CONTEXT : undefined;
   }
 
   /**
@@ -46060,9 +46060,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       return;
     }
-    if (this.perCallMaster) {
+    if (this.framedMaster) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'FRAMED_CODEGEN_UNAVAILABLE',
         `msg.sender is read outside the frame's slots while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -46103,7 +46103,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitMsgValue(locationData: SingleLocationData): void {
     const valueSlot = this.stack.includes('__internal__frameValue') ? '__internal__frameValue'
-      : this.stack.includes(PER_CALL_VALUE_CONTEXT) ? PER_CALL_VALUE_CONTEXT : undefined;
+      : this.stack.includes(FRAMED_VALUE_CONTEXT) ? FRAMED_VALUE_CONTEXT : undefined;
     if (valueSlot !== undefined) {
       this.emit(encodeInt(BigInt(this.getStackIndex(valueSlot))), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -46126,9 +46126,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       return;
     }
-    if (this.perCallMaster) {
+    if (this.framedMaster) {
       throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'FRAMED_CODEGEN_UNAVAILABLE',
         `msg.value is read outside the frame's slots while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
         {},
       );
@@ -46485,12 +46485,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * Stack before: [..., lbc]
    * Stack after:  [..., redeemScript]
-   * Runtime VERIFY-fails if not P2SH20 or P2SH32; a per-call body answers empty code there instead.
+   * Runtime VERIFY-fails if not P2SH20 or P2SH32; a framed body answers empty code there instead.
    */
   private emitCode(locationData: SingleLocationData): void {
     // Stack: [lbc]
-    if (this.perCallMaster) {
-      // A per-call target that is no P2SH lock holds no script: a user's P2PKH lock and the zero address answer
+    if (this.framedMaster) {
+      // A framed target that is no P2SH lock holds no script: a user's P2PKH lock and the zero address answer
       // empty code, as the EVM answers an account that has none.
       this.emit(Op.OP_SIZE, locationData);
       this.emit(Op.OP_DUP, locationData);

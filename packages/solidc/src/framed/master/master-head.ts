@@ -135,7 +135,7 @@ export function eventCountSlotName(): string {
 /**
  * The tracked slot holding the base of the contract's data-NFT input block, as the frame's own block declared it.
  *
- * A per-call master's records are separate UTXOs, so a body that read them at a fixed offset from its own input
+ * A framed master's records are separate UTXOs, so a body that read them at a fixed offset from its own input
  * would only be right when the transaction happens to lay them out that way. The frame's first segment declares
  * where the block is, and the head leaves that declaration on the stack for the state sites to read.
  */
@@ -151,7 +151,7 @@ export function recordOutputIndexSlotName(): string {
 /**
  * The tracked slot holding the frame's witness `retval`, the value the execution returned.
  *
- * A per-call master does not write a return-event output: the head parks the recorded value and the entry's body
+ * A framed master does not write a return-event output: the head parks the recorded value and the entry's body
  * compares the blob its own `return` computed against it, so the record of the call and the callee's own
  * computation agree about one value.
  */

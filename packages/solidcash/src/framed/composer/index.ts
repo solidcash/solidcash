@@ -1,5 +1,5 @@
 /**
- * The composer core for per-call composition: the resumable derivation driver, master and validator selection
+ * The composer core for framed composition: the resumable derivation driver, master and validator selection
  * from the deployment pools, block layout, and witness assembly over the frozen composition codecs.
  */
 

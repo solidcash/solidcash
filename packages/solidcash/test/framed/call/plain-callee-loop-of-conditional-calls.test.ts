@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { concatBytes, encodeWitnessBlock, splitFirstPush, type WitnessBlock } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
-  compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
  * A plain callee whose loop makes a call on each turn an earlier call's result admits, with arguments read from that
- * result, on the plain call path (`callPerCallEntry`).
+ * result, on the plain call path (`callFramedEntry`).
  *
  * A desk releases a deal the vault holds: `Vault.release` marks the deal's record and calls `Claimer.claim`, which
  * calls back into the vault for the deal's three shares and then, once per share above zero, asks the vault to send
@@ -96,7 +96,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 const ID = 7n;
 /** The deal's amount: shares of 60, 0 and 40. */
@@ -108,7 +108,7 @@ const PAYEES = [0x41, 0x42, 0x43].map((fill) => encodeLockingBytecodeP2pkh(new U
 async function enter(
   world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
   reached: readonly PlainDeployment[] = [],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
     [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
   expect(outcome.error?.message).toBeUndefined();
@@ -120,7 +120,7 @@ async function enter(
 async function view(
   world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -132,7 +132,7 @@ interface Released {
   readonly world: World;
   readonly token: PlainDeployment;
   readonly vault: PlainDeployment;
-  readonly result: PerCallCallResult;
+  readonly result: FramedCallResult;
 }
 
 let releaseRun: Promise<Released> | undefined;
@@ -156,7 +156,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -165,7 +165,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 
 /** `base` (the settled transaction by default) with one master's witness block replaced by `block`. */
 function withBlock(
-  result: PerCallCallResult, master: string, block: WitnessBlock,
+  result: FramedCallResult, master: string, block: WitnessBlock,
   base: VmTransaction = result.transaction as VmTransaction,
 ): VmTransaction {
   const forged = structuredClone(base);
@@ -179,7 +179,7 @@ function withBlock(
 }
 
 /** The master of the one frame of `result` that ran `identity`. */
-function frameOf(result: PerCallCallResult, identity: string): string {
+function frameOf(result: FramedCallResult, identity: string): string {
   const frames = result.completed.filter((frame) => frame.functionName === identity);
   expect(frames).toHaveLength(1);
   return frames[0]!.master;

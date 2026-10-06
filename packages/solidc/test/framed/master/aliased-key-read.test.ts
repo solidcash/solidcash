@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue, type RecordEntry } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import { compileString } from '../../../src/compiler.js';
-import { PerCallAliasedReadError } from '../../../src/Errors.js';
+import { FramedAliasedReadError } from '../../../src/Errors.js';
 import {
-  created, declarationOf, deployPerCallMaster, evaluateMasterSpend, head, node, spent,
+  created, declarationOf, deployFramedMaster, evaluateMasterSpend, head, node, spent,
   type DeployedMaster, type PlacedRecord,
 } from './record-spend.js';
 
 /**
- * A per-call body that reads one key of a verified mapping after it wrote another key of the mapping in the segment.
+ * A framed body that reads one key of a verified mapping after it wrote another key of the mapping in the segment.
  *
  * The read proves its key against the view its segment declared before the write, and a segment may declare one node
  * twice: a predecessor that a read and an insert share is declared kept for the read and relinked for the insert, and
@@ -24,13 +24,13 @@ import {
 
 const PRAGMA = 'pragma solidcash ^0.13.0;';
 const STATE = ' uint count; mapping(uint => uint) balances;';
-const ALIASED = deployPerCallMaster(`${PRAGMA} contract Aliased {${STATE}`
+const ALIASED = deployFramedMaster(`${PRAGMA} contract Aliased {${STATE}`
   + ' function debit(uint a, uint b, uint x) { balances[a] = balances[a] - x; count = balances[b]; }'
   + ' function credit(uint a, uint b, uint x) { balances[a] = balances[a] + x; count = balances[b]; }'
   + ' function readThenDebit(uint a, uint b, uint x) { count = balances[b]; balances[a] = balances[a] - x; }'
   + ' }', 'aliased key read');
 /** A cached write in an arm marks its cache dirty there; a write beside a field write keeps its own run flag. */
-const CONDITIONAL = deployPerCallMaster(`${PRAGMA} contract Conditional {${STATE} uint total;`
+const CONDITIONAL = deployFramedMaster(`${PRAGMA} contract Conditional {${STATE} uint total;`
   + ' function maybeDebit(uint a, uint b, uint x, bool c) {'
   + '   if (c) { balances[a] = balances[a] - x; } count = balances[b]; }'
   + ' function maybeSet(uint a, uint b, uint x, bool c) { if (c) { balances[a] = x; total = x; } count = balances[b]; }'
@@ -83,7 +83,7 @@ const accepts = (
   on: DeployedMaster, entry: string, args: Uint8Array[], spend: { records: PlacedRecord[]; declared?: RecordEntry[] },
 ): boolean => evaluateMasterSpend(on, { entry, args, ...spend }).accepted;
 
-describe('a per-call read of one key after a write of another that names the same entry', () => {
+describe('a framed read of one key after a write of another that names the same entry', () => {
   it('settles the read of a distinct key, which takes the value its own node holds', () => {
     const spend = (count: bigint): PlacedRecord[] =>
       twoNodes(data(ALIASED, count), nodeOf(SLOT_B, 9n), nodeOf(SLOT_A, 50n), nodeOf(SLOT_A, 42n));
@@ -138,20 +138,20 @@ describe('a per-call read of one key after a write of another that names the sam
 /** The aliased-read refusal a contract with `members` draws, or undefined when it compiles. */
 function refusal(members: string): string | undefined {
   try {
-    compileString(`${PRAGMA} contract Refused {${STATE}${members} }`, { composition: 'per-call' });
+    compileString(`${PRAGMA} contract Refused {${STATE}${members} }`, { composition: 'framed' });
     return undefined;
   } catch (error) {
-    if (error instanceof PerCallAliasedReadError) return error.message;
+    if (error instanceof FramedAliasedReadError) return error.message;
     throw error;
   }
 }
 
-describe('a per-call read after a write of its collection the frame holds no slot of', () => {
+describe('a framed read after a write of its collection the frame holds no slot of', () => {
   const LOOP = ' for (uint i = 0; i < ks.length; i++) { balances[ks[i]] = v; }';
 
   it('refuses a read after a loop\'s writes, naming the read and the write', () => {
     expect(refusal(` function f(uint[] ks, uint v, uint b) {${LOOP} count = balances[b]; }`)).toContain(
-      'a read of `balances[b]` after a write of `balances[ks[i]]` in its segment is not supported on the per-call '
+      'a read of `balances[b]` after a write of `balances[ks[i]]` in its segment is not supported on the framed '
       + 'convention, where the two keys may name one entry: read it before the write',
     );
   });

@@ -16,7 +16,7 @@ import { Opcodes, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { hash256, sha256 } from '../hash.js';
 import { CATEGORY_LENGTH } from './transcript.js';
 import { CONTRACT_LOCK_LENGTH, P2PKH_LOCK_LENGTH } from './canonical.js';
-import { PerCallEncodingError, concatBytes, encodeMinimalDataPush } from './primitives.js';
+import { FramedEncodingError, concatBytes, encodeMinimalDataPush } from './primitives.js';
 
 /** A token capability: none, mutable, or minting. */
 export const TokenCapability = { NONE: 0x00, MUTABLE: 0x01, MINTING: 0x02 } as const;
@@ -33,11 +33,11 @@ export const CATEGORY_PIN_LENGTH = CATEGORY_LENGTH + 1;
  */
 export function categoryPin(category: Uint8Array, capability: number): Uint8Array {
   if (category.length !== CATEGORY_LENGTH) {
-    throw new PerCallEncodingError(`a category is ${CATEGORY_LENGTH} bytes: got ${category.length}`);
+    throw new FramedEncodingError(`a category is ${CATEGORY_LENGTH} bytes: got ${category.length}`);
   }
   if (capability !== TokenCapability.NONE && capability !== TokenCapability.MUTABLE
     && capability !== TokenCapability.MINTING) {
-    throw new PerCallEncodingError(`unknown token capability: ${capability}`);
+    throw new FramedEncodingError(`unknown token capability: ${capability}`);
   }
   if (capability === TokenCapability.NONE) return Uint8Array.from(category);
   return concatBytes([category, new Uint8Array([capability])]);
@@ -118,7 +118,7 @@ export function validatorRedeemScript(category: Uint8Array, validatorTemplate: U
 export function validatorAddress(category: Uint8Array, validatorTemplate: Uint8Array): Uint8Array {
   const lock = encodeLockingBytecodeP2sh32(hash256(validatorRedeemScript(category, validatorTemplate)));
   if (lock.length !== CONTRACT_LOCK_LENGTH) {
-    throw new PerCallEncodingError(`a contract lock is ${CONTRACT_LOCK_LENGTH} bytes: got ${lock.length}`);
+    throw new FramedEncodingError(`a contract lock is ${CONTRACT_LOCK_LENGTH} bytes: got ${lock.length}`);
   }
   return lock;
 }

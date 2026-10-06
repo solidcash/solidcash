@@ -3,13 +3,13 @@ import { binToHex } from '@bitauth/libauth';
 import {
   encodeIntegerValue, buildPushdataCommitment, bytesToHex, parsePushdataCommitment, FrameKind, type RecordEntry,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { readComputedDeclaration } from '../../../src/per-call/deploy/declaration.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
+import { readComputedDeclaration } from '../../../src/framed/deploy/declaration.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant, reportCompositionRefusal,
   type CompositionDraftPlan, type CompositionRefusal,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import {
   USER_LOCK, compileAndDeploy, entryName, hexOf, layoutWithFacets, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
@@ -196,7 +196,7 @@ function derive(entry: string, amount: bigint, callee: Callee, views: Parameters
 
 /** Expects the writer refused at its own frame, the re-entered frame accepting, with the views at the close. */
 function expectRefusedAtWriter(outcome: ReturnType<typeof derive>, declared: Uint8Array, computed: Uint8Array): void {
-  expect(outcome.code).toBe('PER_CALL_DERIVATION_STALLED');
+  expect(outcome.code).toBe('FRAMED_DERIVATION_STALLED');
   expect(outcome.report.accepted).toBe(false);
   expect(outcome.report.innermost!.master).toBe('set-1');
   expect(outcome.report.refusals.map((refusal) => refusal.master)).not.toContain('bump-1');

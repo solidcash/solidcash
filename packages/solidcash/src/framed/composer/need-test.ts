@@ -17,7 +17,7 @@
  * here would add nothing.
  */
 
-import { sha256, splitLastPush, categoryPin, TokenCapability, PerCallEncodingError } from '@solidcash/utils';
+import { sha256, splitLastPush, categoryPin, TokenCapability, FramedEncodingError } from '@solidcash/utils';
 import { FrameKind } from '@solidcash/utils';
 
 /** What a planned entry says about itself, in the terms the rule is stated in. */
@@ -175,7 +175,7 @@ export function recogniseValidator(utxo: ValidatorUtxo, expected: ValidatorExpec
   try {
     redeemScript = splitLastPush(utxo.unlockingBytecode).payload;
   } catch (error) {
-    if (error instanceof PerCallEncodingError) {
+    if (error instanceof FramedEncodingError) {
       return { recognised: false, reason: `the validator's unlocking bytecode carries no redeem script: ${error.message}` };
     }
     throw error;

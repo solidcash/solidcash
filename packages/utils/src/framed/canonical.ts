@@ -18,7 +18,7 @@
 
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
 import { sha256 } from '../hash.js';
-import { PerCallEncodingError, bytesEqual, concatBytes, encodeMinimalDataPush } from './primitives.js';
+import { FramedEncodingError, bytesEqual, concatBytes, encodeMinimalDataPush } from './primitives.js';
 
 /** Length of a P2PKH locking bytecode, which is how a user's address appears. */
 export const P2PKH_LOCK_LENGTH = 25;
@@ -34,7 +34,7 @@ export const EVM_SELECTOR_LENGTH = 4;
 
 /** A minimal push of one value, in the one encoding the wire format allows. */
 export function encodeArgumentPayload(value: Uint8Array): Uint8Array {
-  if (!(value instanceof Uint8Array)) throw new PerCallEncodingError('an argument must be a byte array');
+  if (!(value instanceof Uint8Array)) throw new FramedEncodingError('an argument must be a byte array');
   return encodeMinimalDataPush(value);
 }
 
@@ -59,7 +59,7 @@ export function encodeCallDataArguments(values: readonly Uint8Array[]): Uint8Arr
  */
 export function argsHash(selector: Uint8Array, argumentPushes: Uint8Array): Uint8Array {
   if (selector.length !== SELECTOR_LENGTH) {
-    throw new PerCallEncodingError(`a selector is ${SELECTOR_LENGTH} bytes: got ${selector.length}`);
+    throw new FramedEncodingError(`a selector is ${SELECTOR_LENGTH} bytes: got ${selector.length}`);
   }
   return sha256(concatBytes([selector, argumentPushes]));
 }
@@ -67,21 +67,21 @@ export function argsHash(selector: Uint8Array, argumentPushes: Uint8Array): Uint
 /** Restates the selector form an alternate selector scheme uses. */
 export function evmSelectorBytes(selector: Uint8Array): Uint8Array {
   if (selector.length !== EVM_SELECTOR_LENGTH) {
-    throw new PerCallEncodingError(`a distinct selector is ${EVM_SELECTOR_LENGTH} bytes: got ${selector.length}`);
+    throw new FramedEncodingError(`a distinct selector is ${EVM_SELECTOR_LENGTH} bytes: got ${selector.length}`);
   }
   return selector;
 }
 
 /** A minimal script number, which is the canonical encoding of an integer value. */
 export function encodeIntegerValue(value: bigint): Uint8Array {
-  if (typeof value !== 'bigint') throw new PerCallEncodingError('an integer value must be a bigint');
+  if (typeof value !== 'bigint') throw new FramedEncodingError('an integer value must be a bigint');
   return bigIntToVmNumber(value);
 }
 
 /** Reads a minimal script number back. */
 export function decodeIntegerValue(encoded: Uint8Array): bigint {
   const result = vmNumberToBigInt(encoded);
-  if (typeof result === 'string') throw new PerCallEncodingError(`not a minimal script number: ${result}`);
+  if (typeof result === 'string') throw new FramedEncodingError(`not a minimal script number: ${result}`);
   return result;
 }
 
@@ -108,7 +108,7 @@ export function isAddressValue(value: Uint8Array): boolean {
 /** Rejects a value that claims to be an address but has a length no address form uses. */
 export function assertAddressValue(value: Uint8Array, what: string): void {
   if (!isAddressValue(value)) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `${what} is ${value.length} byte(s), and an address is either ${P2PKH_LOCK_LENGTH} (user) `
       + `or ${CONTRACT_LOCK_LENGTH} (contract)`,
     );

@@ -43,7 +43,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function inExpression(bool flag) { if (flag) { ${B_AT}.f(1); } ${C_AT}.g(${C_AT}.h(2) + 1); require(true); }`
   + ' }';
 
-const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'per-call' });
+const ARTIFACTS = compileStringMulti(SOURCE, { composition: 'framed' });
 const CALLER = deployChunkRunContract(ARTIFACTS.Caller!, label('caller'));
 const B = deployChunkRunContract(ARTIFACTS.B!, label('b'));
 const C = deployChunkRunContract(ARTIFACTS.C!, label('c'));

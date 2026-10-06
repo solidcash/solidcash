@@ -3,14 +3,14 @@ import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexT
 import {
   buildPushdataCommitment, bytesToHex, hash256, INDEX_NONE, validatorAddress, type Artifact, type StateLayout,
 } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry } from '../../../src/framed/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -29,7 +29,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * loop-then-call body below settles through the head the transaction spends.
  */
 
-const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const FACET_SATOSHIS = 10_000n;
 const AMOUNT = 42n;
 const TURNS = 2n;
@@ -126,7 +126,7 @@ interface Deployed {
   readonly network: MockNetworkProvider;
   readonly impl: Artifact;
   readonly callee: Artifact;
-  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
   readonly funded: {
     readonly proxyCategoryId: string;
     readonly implementationCategoryId: string;
@@ -147,7 +147,7 @@ async function deployed(source: string, options: {
   readonly args?: readonly unknown[];
   readonly broadcast?: boolean;
 } = {}): Promise<Deployed> {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'framed' });
   const impl = artifacts.Impl!;
   const callee = artifacts.Other!;
   const signature = new SignatureTemplate(alicePriv);
@@ -163,7 +163,7 @@ async function deployed(source: string, options: {
     fundingUtxo: calleeFunding, funder, changeAddress: funderContract.address, provider: network,
   });
 
-  for (const [index, code] of perCallValidator.buildValidatorFacets().entries()) {
+  for (const [index, code] of framedValidator.buildValidatorFacets().entries()) {
     await network.addUtxo(hexOf(encodeLockingBytecodeP2sh32(hash256(code))), {
       txid: (0x70 + index).toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: FACET_SATOSHIS,
     });
@@ -176,7 +176,7 @@ async function deployed(source: string, options: {
   for (const coin of [implFunding, proxyFunding]) await network.addUtxo(funderContract.address, coin);
   for (const coin of [hopCoin, callCoin]) await network.addUtxo(hexOf(deployerLock), coin);
 
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: impl,
     proxyArtifact: buildProxyArtifact(impl),
@@ -207,8 +207,8 @@ async function deployed(source: string, options: {
 /** The call the entry's own source makes, made through the shipped hop with the callee it names. */
 async function callMove(
   run: Deployed, functionName: string, args: readonly unknown[],
-): Promise<Awaited<ReturnType<typeof callPerCallProxyEntry>>> {
-  return callPerCallProxyEntry({
+): Promise<Awaited<ReturnType<typeof callFramedProxyEntry>>> {
+  return callFramedProxyEntry({
     provider: run.network,
     implementationArtifact: run.impl,
     proxyArtifact: buildProxyArtifact(run.impl),
@@ -244,14 +244,14 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
   it('publishes the segment the write lands in, which is the one the call opened', () => {
     // The call precedes the loop, so the write lands in the segment the call opened and every turn of the loop
     // runs there with it: the artifact says so rather than leaving the segment to a builder's guess.
-    expect(publishedWrites(compileStringMulti(CALL_THEN_LOOP_SOURCE, { composition: 'per-call' }).Impl!, 'move'))
+    expect(publishedWrites(compileStringMulti(CALL_THEN_LOOP_SOURCE, { composition: 'framed' }).Impl!, 'move'))
       .toStrictEqual({
         writeSegment: 1, writeSegments: [{ record: 0, segment: 1, writtenVariables: ['total'] }],
       });
     // A write the loop carries lands in the segment the code before the loop runs in, so the same body with the
     // loop first names the segment the frame opens with. That body is published here; the machine pair below is
     // taken on the call-then-loop body, which is the one the hop is driven for.
-    expect(publishedWrites(compileStringMulti(LOOP_THEN_CALL_SOURCE, { composition: 'per-call' }).Impl!, 'move'))
+    expect(publishedWrites(compileStringMulti(LOOP_THEN_CALL_SOURCE, { composition: 'framed' }).Impl!, 'move'))
       .toStrictEqual({
         writeSegment: 0, writeSegments: [{ record: 0, segment: 0, writtenVariables: ['total'] }],
       });

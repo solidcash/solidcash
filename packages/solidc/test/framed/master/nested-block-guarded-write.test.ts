@@ -1,22 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { encodeIntegerValue } from '@solidcash/utils';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
-import { deployPerCallMaster, evaluateMasterSpend, node, spent, type PlacedRecord } from './record-spend.js';
+import { deployFramedMaster, evaluateMasterSpend, node, spent, type PlacedRecord } from './record-spend.js';
 
 /**
- * A per-call write a branch guards, held in a nested block.
+ * A framed write a branch guards, held in a nested block.
  *
  * A write the entry cache does not take (a single plain `m[k] = v`) stays where the source puts it, and the
  * if-conversion leaves a branch alone whose arm holds a block rather than the write itself. The walk that gives a
  * guarded sorted write its "ran" flag stepped over a nested block statement, so `if (c) { { m[a] = x; } }`, or a branch
  * inside a `{ ... }` scope, got no flag: where `c` is false nothing bound the node, and the frame could declare it
  * rewritten to any value. The walk now enters a nested block, so the batch transition keeps the node where the flag
- * stays clear (`emitPerCallKeptBatchTarget`). A write an `unchecked` block holds was already reached and stays so.
+ * stays clear (`emitFramedKeptBatchTarget`). A write an `unchecked` block holds was already reached and stays so.
  * Each verdict is the BCH-2026 machine's on the master's own input.
  */
 
 const PRAGMA = 'pragma solidcash ^0.13.0;';
-const LEDGER = deployPerCallMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
+const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
   + ' function put(uint a, uint b, uint x, bool c) { if (c) { { balances[a] = x; } } balances[b] -= x; }'
   + ' function wrap(uint a, uint b, uint x, bool c) {'
   + ' { if (c) { require(x > 0); balances[a] = x; } } balances[b] -= x; }'
@@ -54,7 +54,7 @@ const updates = (entry: Entry, after: Record<Key, bigint>): PlacedRecord[] =>
 const accepts = (entry: Entry, c: Uint8Array, after: Record<Key, bigint>): boolean =>
   evaluateMasterSpend(LEDGER, { entry, args: [c, X, KEY_B, KEY_A], records: updates(entry, after) }).accepted;
 
-describe('a per-call write a branch guards, held in a nested block', () => {
+describe('a framed write a branch guards, held in a nested block', () => {
   it.each<Entry>(['put', 'wrap', 'tick'])('%s: keeps the skipped node and settles the taken write', (entry) => {
     // Before the walk entered the block, `put` and `wrap` accepted this: no flag stayed clear to bind the node.
     expect(accepts(entry, NO, { a: 99n, b: 42n })).toBe(false);

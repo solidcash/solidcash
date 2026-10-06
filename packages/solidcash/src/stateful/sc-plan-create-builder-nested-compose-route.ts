@@ -358,7 +358,7 @@ export async function planCreateBuilderNestedComposeRoute(
   // Producer identity is only as exact as the entry point behind it. `selectedFn` above is a legacy
   // name match kept for layout and return typing; under an overloaded callee it can name a different
   // dispatch target than this callsite, so it never authorizes a value-chunk producer path. An
-  // ordinary interface edge publishes no per-callsite selector, so an overloaded name fails closed
+  // ordinary interface edge publishes no framedsite selector, so an overloaded name fails closed
   // here until the compiler publishes the selector it already resolves and bakes into the covenant.
   const producerSelector = host.resolvePreparedProducerEntry(
     proxyCallee

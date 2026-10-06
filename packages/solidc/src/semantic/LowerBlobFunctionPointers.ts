@@ -45,7 +45,7 @@ import AstTraversal from '../ast/AstTraversal.js';
  *                __FnPtr_S(__a).__call(v)  with runtime selector bytes4(__b.split(4)[0]) + fnPtrCall
  *
  * A sliced-address LOCAL is an audited external-call target (SynthesizeExternalAddressLocals hoists it), and the
- * runtime selector + per-call master index reuse the param machinery. A param stored into such a field is a
+ * runtime selector + framed master index reuse the param machinery. A param stored into such a field is a
  * blob too (bytes), so the store `s.fn = y` is a plain bytes copy. Runs after the fixed-method struct-field pass
  * (which lowers `s.fn = IFace(a).m` fields to interface-typed) - only received-value fn-ptr fields remain here.
  */

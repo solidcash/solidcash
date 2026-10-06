@@ -54,7 +54,7 @@ describe('keccak256 builtin (side-car library)', () => {
     expect(artifact.abi.find((f) => f.name === 'verify')?.externalLibraries).toEqual(['keccak256']);
   });
 
-  // Stateless keccak256 (single-call any length, multi-call slot-per-call, complex/nested args, negatives) is
+  // Stateless keccak256 (single-call any length, multi-call slot-framed, complex/nested args, negatives) is
   // the compute result-NFT model, exercised in KeccakResultNft.test.ts. This file keeps the cases still on the
   // INLINE model - STATEFUL contracts and keccak-in-a-called-external - pending stateful compute (block-layout
   // slot; see docs/keccak-result-nft.md section 13).
@@ -214,7 +214,7 @@ describe('keccak256 builtin (stateful contracts)', () => {
     await expect(sc.chain(seed, 4n, wrong).send()).rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
   });
 
-  // General (non-hash-chain) dynamic loop: each iteration's preimage depends on a per-call value, so the probe
+  // General (non-hash-chain) dynamic loop: each iteration's preimage depends on a framed value, so the probe
   // must read the ACTUAL arg off the trace (not assume h = keccak(h)). Also confirms the derived state commits.
   const SALTED_CHAIN = `
   contract Salted() {

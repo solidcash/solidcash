@@ -1022,7 +1022,7 @@ corrected model/offset at that emitter, not a global addressing change.
 
 **The fix (general, no application naming):** `_createBuilder` now re-derives a participant's chunkable-value
 production once per `(owner, resource)` over every reached writer row of that owner, in graph order, instead of
-trusting the per-callsite derivation that only saw its own row. Added:
+trusting the framedsite derivation that only saw its own row. Added:
 
 - `PreparedAtomicNode.deriveRouteValueChunkProductions(rows)` - attached in both prepared-node construction
   branches; re-runs `refreshChunkableRouteWitnesses` with an explicit complete row list.

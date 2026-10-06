@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { decodeTransaction, encodeTransactionOutput, hexToBin } from '@bitauth/libauth';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
   addressOfCategory, enterPlain, newWorld, type PlainDeployment,
@@ -54,11 +54,11 @@ function expectFundedAtDust(outputs: readonly DecodedOutput[]): void {
   for (const output of outputs) expect(output.valueSatoshis).toBeGreaterThanOrEqual(dustThreshold(output));
 }
 
-describe('per-call wide record dust', () => {
+describe('framed wide record dust', () => {
   it('deploys a record over 252 bytes and settles a call that rewrites it wider', async () => {
     const world = await newWorld(0x5d);
     const artifact = compileStringMulti(SOURCE, {
-      solidityImportCompat: true, composition: 'per-call', commitmentLimit: COMMITMENT_LIMIT,
+      solidityImportCompat: true, composition: 'framed', commitmentLimit: COMMITMENT_LIMIT,
     } as never).Wide!;
     const deployment = await deployStatefulContract(artifact, [WIDE] as never, {
       provider: world.network,
@@ -83,7 +83,7 @@ describe('per-call wide record dust', () => {
     expect(widthOf(callRecords)).toBeGreaterThan(widthOf(genesisRecords));
     expectFundedAtDust(callRecords);
 
-    const read = await readPerCallEntry({
+    const read = await readFramedEntry({
       provider: world.network, artifact, categoryId: deployment.categoryId, functionName: 'last', args: [],
       vm: compositionMachine(),
     });

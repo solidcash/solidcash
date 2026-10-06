@@ -8,18 +8,18 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { publishedRefusals } from '../../../../solidc/test/framed/master/refused-entry.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * A read that hops through a proxy into another contract's view.
@@ -94,7 +94,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function guarded() view returns (int) { return IStore(0x${hex(STORE_ADDRESS)}).guard(); }`
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const reader = artifacts.Reader!;
 const store = artifacts.Store!;
 const peer = artifacts.Peer!;
@@ -205,8 +205,8 @@ async function fundStateless(
 /** The reader's own read of the store's implementation, named at the store's proxy category. */
 function read(
   provider: MockNetworkProvider, functionName: string,
-): ReturnType<typeof readPerCallEntry> {
-  return readPerCallEntry({
+): ReturnType<typeof readFramedEntry> {
+  return readFramedEntry({
     provider,
     artifact: reader,
     categoryId: READER_HEX,
@@ -268,7 +268,7 @@ describe('a view whose return type is a struct', () => {
       + ' }';
     // A struct is one pushdata blob the entry's own `return` leaves, so a struct-returning view is admitted like one
     // returning a fixed-size array: the entry has a master the read can plan and a `retval` blob to decode.
-    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([]);
+    expect(publishedRefusals(compileStringMulti(source, { composition: 'framed' }))).toStrictEqual([]);
   });
 
   it('reads a struct carrying a string list back, decoded through the shipped decoder', async () => {
@@ -277,11 +277,11 @@ describe('a view whose return type is a struct', () => {
       + '   struct Item { int id; string[] labels; }'
       + '   function item() view returns (Item) { return Item(7, ["a", "b"]); }'
       + ' }';
-    const catalog = compileStringMulti(source, { composition: 'per-call' }).Catalog!;
+    const catalog = compileStringMulti(source, { composition: 'framed' }).Catalog!;
     const provider = new MockNetworkProvider();
     await fundStateless(provider, catalog, CATALOG_CATEGORY, 'd');
 
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider, artifact: catalog, categoryId: CATALOG_HEX, functionName: 'item', vm: compositionMachine(),
     });
 

@@ -256,8 +256,8 @@ describe('X129 - MockNetworkProvider fails closed when the installed decider ign
     const iterations = 20_000;
     const started = process.hrtime.bigint();
     for (let index = 0; index < iterations; index += 1) assertConsensusOverridesHonoured('BCH_2026_05');
-    const perCallMicroseconds = Number(process.hrtime.bigint() - started) / iterations / 1_000;
-    expect(perCallMicroseconds, `cached assert cost ${perCallMicroseconds.toFixed(3)} us per call`)
+    const framedMicroseconds = Number(process.hrtime.bigint() - started) / iterations / 1_000;
+    expect(framedMicroseconds, `cached assert cost ${framedMicroseconds.toFixed(3)} us per call`)
       .toBeLessThan(50);
   });
 });

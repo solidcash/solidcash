@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../../../solidc/src/compiler.js';
-import { refusalOf } from '../../../../solidc/test/per-call/master/refused-entry.js';
+import { refusalOf } from '../../../../solidc/test/framed/master/refused-entry.js';
 
 /**
- * Which proxy shapes compile for per-call composition, and which are refused by name.
+ * Which proxy shapes compile for framed composition, and which are refused by name.
  *
  * The design binds a proxied call to the proxy's own settled implementation: the proxy's master reads the
  * implementation from its state and names it as the delegate target, forwarding the call data it received. A
@@ -16,14 +16,14 @@ import { refusalOf } from '../../../../solidc/test/per-call/master/refused-entry
 /** The compile's thrown diagnostic, or an error when the convention served the source. */
 function thrownOf(source: string, options: Record<string, unknown> = {}): { code?: string; message: string } {
   try {
-    compileString(source, { composition: 'per-call', ...options });
+    compileString(source, { composition: 'framed', ...options });
   } catch (error) {
     return { code: (error as { code?: string }).code, message: (error as Error).message };
   }
-  throw new Error('the shipped per-call compiler served the source, so there is no refusal to record');
+  throw new Error('the shipped framed compiler served the source, so there is no refusal to record');
 }
 
-describe('a proxy does not compile for per-call composition', () => {
+describe('a proxy does not compile for framed composition', () => {
   it('refuses a fallback that delegates to itself, by name', () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Proxy {'
@@ -31,7 +31,7 @@ describe('a proxy does not compile for per-call composition', () => {
       + '   fallback(bytes input) external { address(this).delegatecall(input); require(true); }'
       + ' }';
     const refusal = refusalOf(source);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toBe('Proxy.__fallback(): a low-level call needs the witness `calls[]` checks, which '
       + 'are not emitted yet');
   });
@@ -45,17 +45,17 @@ describe('a proxy does not compile for per-call composition', () => {
       + '   address implementation;'
       + '   fallback(bytes input) external { implementation.delegatecall(input); require(true); }'
       + ' }';
-    expect(() => compileString(source, { composition: 'per-call' })).not.toThrow();
+    expect(() => compileString(source, { composition: 'framed' })).not.toThrow();
   });
 
   it('refuses a delegatecall whose call data is not the entry\'s own, by name', () => {
     // The target here is a caller-supplied parameter and the data is a constant, so the compiler's delegatecall
-    // security gate has to be lifted before the per-call shape is reached. The per-call refusal is the one recorded:
+    // security gate has to be lifted before the framed shape is reached. The framed refusal is the one recorded:
     // a forwarded call carries the entry's own received call data, and this one carries something else.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Proxy { function set(address target) { target.delegatecall(hex"aabbccdd"); require(true); } }';
     const refusal = refusalOf(source, undefined, { allowUnsafeOperations: true });
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('a low-level call needs the witness `calls[]` checks, which are not emitted yet');
   });
 
@@ -66,11 +66,11 @@ describe('a proxy does not compile for per-call composition', () => {
       + ' contract Proxy { address implementation;'
       + '   function set(bytes data) { implementation.delegatecall(data); require(true); } }';
     const refusal = refusalOf(source, undefined, { allowUnsafeOperations: true });
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('a low-level call needs the witness `calls[]` checks, which are not emitted yet');
   });
 
-  it('refuses an unbound delegatecall target before the per-call shape is reached', () => {
+  it('refuses an unbound delegatecall target before the framed shape is reached', () => {
     // The same body without the unsafe opt-out: the delegatecall security gate names the proxy's identity problem.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Proxy { function set(address target, bytes data) { target.delegatecall(data); require(true); } }';

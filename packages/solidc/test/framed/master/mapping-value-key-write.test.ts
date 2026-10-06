@@ -3,13 +3,13 @@ import { encodeDataPush } from '@bitauth/libauth';
 import { encodeChunkableValueTail, encodeIntegerValue } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import {
-  created, declarationOf, deployPerCallMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
+  created, declarationOf, deployFramedMaster, distinctBytes, evaluateMasterSpend, head, node, spent,
   type PlacedRecord,
 } from './record-spend.js';
 import { refusalMessageOf } from './refused-entry.js';
 
 /**
- * A per-call master whose entry writes a mapping keyed by a value it reads out of another mapping.
+ * A framed master whose entry writes a mapping keyed by a value it reads out of another mapping.
  *
  * "Credit the party the record names": `owed[deals[id].payee] += deals[id].amount`, and the same release through a
  * memory copy of the record (`Deal memory d = deals[id]; owed[d.payee] += d.amount`). The master derives the write's
@@ -20,11 +20,11 @@ import { refusalMessageOf } from './refused-entry.js';
  * the derivation now follows it to `deals[id]`. A key read out of a node the same body writes is derived once that
  * node's own group is (`written-node-key-write.test.ts`).
  *
- * Each case compiles the source with the per-call convention, deploys the master the way a deployment does, and asks
+ * Each case compiles the source with the framed convention, deploys the master the way a deployment does, and asks
  * the BCH-2026 machine for its verdict on the master's own input: the `deals` node kept ahead of the `owed` group.
  */
 
-const ESCROW = deployPerCallMaster('pragma solidcash ^0.13.0;'
+const ESCROW = deployFramedMaster('pragma solidcash ^0.13.0;'
   + ' contract Escrow {'
   + '   struct Deal { address payee; uint amount; }'
   + '   mapping(uint => Deal) deals;'
@@ -72,7 +72,7 @@ const verdictOf = (entry: string, id: bigint, records: readonly PlacedRecord[]):
   return objection === undefined ? { accepted } : { accepted, objection };
 };
 
-describe('a per-call master keyed by a value it reads out of another mapping', () => {
+describe('a framed master keyed by a value it reads out of another mapping', () => {
   it('compiles both spellings with the key published as the field of the record the body reads', () => {
     expect(ESCROW.artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
     const label = (entry: string): string | undefined => ESCROW.artifact.abi.find((fn) => fn.name === entry)
@@ -112,7 +112,7 @@ describe('a per-call master keyed by a value it reads out of another mapping', (
   }
 });
 
-describe('a per-call master keyed by a value it reads out of a node the same body writes', () => {
+describe('a framed master keyed by a value it reads out of a node the same body writes', () => {
   it('serves the entry: the key is derived once the node\'s own group is (written-node-key-write)', () => {
     // A transfer debits the holder its token record names and then moves the record.
     const ledger = 'pragma solidcash ^0.13.0;'

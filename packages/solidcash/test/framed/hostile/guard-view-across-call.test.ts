@@ -4,19 +4,19 @@ import {
   FrameKind, buildPushdataCommitment, bytesToHex, concatBytes, decodeWitnessBlock, encodeWitnessBlock,
   parsePushdataCommitment, sha256, splitFirstPush, validatorAddress, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant, reportCompositionRefusal,
   type CompositionDraftPlan, type CompositionRefusal,
-} from '../../../src/per-call/composer/index.js';
+} from '../../../src/framed/composer/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import {
@@ -50,7 +50,7 @@ const HOP_SOURCE = [
   '}',
 ].join('\n');
 
-const hopArtifacts = compileStringMulti(HOP_SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const hopArtifacts = compileStringMulti(HOP_SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const guardedProxy = buildProxyArtifact(hopArtifacts.Guarded!);
 const CALLER = encodeLockingBytecodeP2pkh(alicePkh);
 const IMPLEMENTATION = 'implementation-master';
@@ -62,7 +62,7 @@ function coin(label: string): { txid: string; vout: number; satoshis: bigint } {
   return { txid: bytesToHex(sha256(utf8ToBin(`guard view across call ${label}`))), vout: 0, satoshis: 5_000_000n };
 }
 
-let poked: PerCallProxyCallResult | undefined;
+let poked: FramedProxyCallResult | undefined;
 
 beforeAll(async () => {
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -78,7 +78,7 @@ beforeAll(async () => {
   const ping = await deployStatefulContract(hopArtifacts.Ping!, [], {
     provider: network, fundingUtxo: pingCoin!, changeAddress, funder,
   });
-  const deployment = await deployPerCallProxy({
+  const deployment = await deployFramedProxy({
     provider: network,
     implementationArtifact: hopArtifacts.Guarded!,
     proxyArtifact: guardedProxy,
@@ -91,7 +91,7 @@ beforeAll(async () => {
     callerFunding: { utxo: initCoin!, funder: callerFunder, changeAddress },
     vm: compositionMachine(),
   });
-  poked = await callPerCallProxyEntry({
+  poked = await callFramedProxyEntry({
     provider: network,
     implementationArtifact: hopArtifacts.Guarded!,
     proxyArtifact: guardedProxy,
@@ -107,7 +107,7 @@ beforeAll(async () => {
   });
 });
 
-function settled(): PerCallProxyCallResult {
+function settled(): FramedProxyCallResult {
   if (poked === undefined) throw new Error('the guarded call was not settled');
   return poked;
 }
@@ -307,7 +307,7 @@ function reenter(views: Parameters<typeof reentryPlan>[0]): { readonly code?: st
 describe('a callee calling back into a guarded entry of the contract that called it', () => {
   it('is refused by the guard\'s own reason in the re-entered frame, the record declared as the code leaves it', () => {
     const { code, report } = reenter({ enter: [[CLEAR, HELD], [HELD, CLEAR]], bump: [HELD, HELD] });
-    expect(code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(code).toBe('FRAMED_DERIVATION_STALLED');
     expect(report.accepted).toBe(false);
     expect(report.innermost!.master).toBe('bump-1');
     expect(report.innermost!.reason.message).toBe('reentrant');
@@ -317,7 +317,7 @@ describe('a callee calling back into a guarded entry of the contract that called
     // The re-entered frame would pass the guard and bump the count, but the frame that set the guard closes the
     // record against the clear view at its call and refuses before any callee is reached.
     const { code, report } = reenter({ enter: [[CLEAR, CLEAR], [BUMPED, BUMPED]], bump: [CLEAR, BUMPED] });
-    expect(code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(code).toBe('FRAMED_DERIVATION_STALLED');
     expect(report.innermost!.master).toBe('enter-1');
     expect(report.refusals.map((refusal) => refusal.master)).not.toContain('bump-1');
   });

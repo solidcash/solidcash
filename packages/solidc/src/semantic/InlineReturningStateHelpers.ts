@@ -1102,13 +1102,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return returns === 1;
   }
 
-  // The entry access that makes a helper the inliner's. Under the per-call composition (`keepSelfMessageCalls`)
+  // The entry access that makes a helper the inliner's. Under the framed composition (`keepSelfMessageCalls`)
   // that is an entry it reads, or a sorted entry it writes (`writesSortedEntry`); elsewhere any entry it touches.
   private touchesOwnEntry(fn: FunctionDefinitionNode): boolean {
     return this.keepSelfMessageCalls ? this.readsEntry(fn) || this.writesSortedEntry(fn) : this.touchesEntry(fn);
   }
 
-  // The same split for the fallback and event-only checks: per-call reads an entry, elsewhere touches one.
+  // The same split for the fallback and event-only checks: framed reads an entry, elsewhere touches one.
   private entryAccessed(fn: FunctionDefinitionNode): boolean {
     return this.keepSelfMessageCalls ? this.readsEntry(fn) : this.touchesEntry(fn);
   }
@@ -1148,7 +1148,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       || n instanceof MappingFieldAssignNode || n instanceof MappingDeleteNode) && this.sortedCollectionNames.has(n.name));
   }
 
-  /** A per-call `this.f()` whose callee reads its own message stays the call it is (`readsMessageField`). */
+  /** A framed `this.f()` whose callee reads its own message stays the call it is (`readsMessageField`). */
   private keepsMessageCall(call: FunctionCallNode, callee: FunctionDefinitionNode): boolean {
     return this.keepSelfMessageCalls && call.fromThisCall === true
       && readsMessageField(callee, (name) => this.funcByName.get(name), (fn) => this.nodesOf(fn));

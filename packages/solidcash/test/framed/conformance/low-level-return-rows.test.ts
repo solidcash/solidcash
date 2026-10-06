@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -16,10 +16,10 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * OpenZeppelin's SafeERC20 makes the token call as a low-level `CALL` whose calldata is `abi.encodeCall` of the
  * named method, decodes the returned `bool`, and re-raises the callee's revert when the call failed. The row is
- * driven through the shipped path: the shipped compiler under the per-call convention, the shipped deployment and
- * the shipped `callPerCallEntry`, with the shipped decoder for whatever the entry answers or writes.
+ * driven through the shipped path: the shipped compiler under the framed convention, the shipped deployment and
+ * the shipped `callFramedEntry`, with the shipped decoder for whatever the entry answers or writes.
  *
- * The per-call convention lowers a low-level call whose calldata names an interface method to the typed call it
+ * The framed convention lowers a low-level call whose calldata names an interface method to the typed call it
  * denotes. A call to *another* contract is pinned by the refusal it meets on the plain call path: the path plans
  * the callee frame, and the row's target is no deployment's. The spelling whose target is the entry's own
  * address is served, and it exercises the same lowering and the same `bool` decode: a true answer runs the entry
@@ -78,7 +78,7 @@ async function enter(
   const coin = freshCoin();
   await deployed.provider.addUtxo(binToHex(deployed.callerLock), coin);
   try {
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       provider: deployed.provider, artifact, categoryId: deployed.categoryId, functionName, args: args as never,
       callerUtxo: coin, callerLockingBytecode: deployed.callerLock, funder: deployed.funder,
       vm: compositionMachine(),
@@ -138,7 +138,7 @@ const TO = new Uint8Array(25).fill(0x33);
 
 describe('spec section 23 row 11: low-level call, bool return decoding, revert re-raise', () => {
   it('serves a true answer: the entry decodes the bool and runs through', async () => {
-    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
+    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'framed', solidityImportCompat: true }).Ledger!;
     expect(ledger.composition?.refusedEntries).toBeUndefined();
     const deployed = await selfDeployed(ledger);
     const entered = await enter(deployed, ledger, 'move', [TO, 5n]);
@@ -148,7 +148,7 @@ describe('spec section 23 row 11: low-level call, bool return decoding, revert r
   }, 120_000);
 
   it('serves a false answer as the caller\'s own revert, the bool the low-level call decoded', async () => {
-    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
+    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'framed', solidityImportCompat: true }).Ledger!;
     const deployed = await selfDeployed(ledger);
     const entered = await enter(deployed, ledger, 'move', [TO, 0n]);
     // The callee returned false, so the caller's own `require(abi.decode(data, (bool)))` refuses.
@@ -157,7 +157,7 @@ describe('spec section 23 row 11: low-level call, bool return decoding, revert r
   }, 120_000);
 
   it('refuses the cross-contract spelling by name: its target is no deployment\'s', async () => {
-    const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'per-call', solidityImportCompat: true });
+    const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'framed', solidityImportCompat: true });
     // The body compiles and publishes the callee it lowered the low-level call to.
     const callSite = artifacts.Caller!.composition?.stopSites?.entries
       .find((entry) => entry.functionName === 'Caller.move()')?.calls[0];

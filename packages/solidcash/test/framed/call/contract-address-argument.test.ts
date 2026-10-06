@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
@@ -9,8 +9,8 @@ import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../../../src/utils.js';
-import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -56,7 +56,7 @@ const SOURCE = [
 ].join('\n');
 
 const artifacts = compileStringMulti(SOURCE, {
-  solidityImportCompat: true, composition: 'per-call', commitmentLimit: 10_000_000,
+  solidityImportCompat: true, composition: 'framed', commitmentLimit: 10_000_000,
 } as never);
 
 /** The owner: the user who deploys both contracts and calls the setter. */
@@ -108,8 +108,8 @@ function chain(): Promise<Chain> {
 /** One call of the setter, entered by the given user's own coin. */
 async function enter(
   world: Chain, callerLock: Uint8Array, callerPriv: Uint8Array, args: readonly FunctionArgument[],
-): Promise<PerCallCallResult> {
-  return callPerCallEntry({
+): Promise<FramedCallResult> {
+  return callFramedEntry({
     provider: world.provider,
     artifact: world.artifact,
     categoryId: world.categoryId,
@@ -130,7 +130,7 @@ function identityOf(lock: Uint8Array): string {
 
 /** A view's value, read from the deployment's records through the read path, as hex. */
 async function viewHex(world: Chain, functionName: string): Promise<string> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.provider, artifact: world.artifact, categoryId: world.categoryId, functionName, args: [],
     vm: compositionMachine(),
   });

@@ -8,7 +8,7 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { assertPlaceholders, fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { assertPlaceholders, fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
@@ -16,7 +16,7 @@ import { categorySlotValue, dataRecordLock, seededCategory } from './validator-i
 /**
  * A contract whose constructor body runs behind the master head.
  *
- * A per-call master dispatches its entry points by selector behind one head, and a constructor is one more body the
+ * A framed master dispatches its entry points by selector behind one head, and a constructor is one more body the
  * head can reach: it shares the same frame, so the head precedes it exactly as it precedes an entry. The constructor
  * is where a contract's immutable references are established, so the program has to carry its body, and the value it
  * stores has to be the value an entry later reads.
@@ -46,7 +46,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function check(bytes20 admin) { require(this.deployer == hash160(admin)); }'
   + ' }';
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const stateLayout = artifact.stateLayout!;
 const program = fillPlaceholders(
   scriptToBytecode(asmToScript(artifact.bytecode)),
@@ -171,9 +171,9 @@ function verdict(options: Options): boolean {
   })) === true;
 }
 
-describe('a per-call master for a contract with a constructor', () => {
+describe('a framed master for a contract with a constructor', () => {
   it('publishes the convention, its deployment slots, and the constructor as a dispatched body', () => {
-    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.composition?.convention).toBe('framed');
     assertPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders);
     // The constructor is not an entry point, but it is a selector the head's dispatcher reaches, so the program
     // carries its body and the ABI publishes the selector.

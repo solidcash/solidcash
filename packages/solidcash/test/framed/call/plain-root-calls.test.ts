@@ -3,17 +3,17 @@ import { binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   concatBytes, encodeIntegerValue, encodeResultList, encodeWitnessBlock, splitFirstPush, type WitnessBlock,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import type { PerCallCallResult } from '../../../src/per-call/call/index.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
-  USER_LOCK, compilePerCall, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
+  USER_LOCK, compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
 
 /**
- * A plain deployment whose entry calls out beside its own state, on the plain call path (`callPerCallEntry`).
+ * A plain deployment whose entry calls out beside its own state, on the plain call path (`callFramedEntry`).
  *
  * A vault pulls a token from the depositor and credits the depositor's deposit, the credit after the pull and, in
  * the second spelling, before it. The token is a frame of its own contract, entered by the vault, and the credit is
@@ -106,7 +106,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compilePerCall(SOURCE);
+const artifacts = compileFramed(SOURCE);
 
 /** The vault's fee recipient on the payout chain, a holder of its own. */
 const FEE_LOCK = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x6f), 0x88, 0xac]);
@@ -190,7 +190,7 @@ function keeperChain(): Promise<KeeperChain> {
 async function settleOn(
   world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
   reached: readonly PlainDeployment[],
-): Promise<PerCallCallResult> {
+): Promise<FramedCallResult> {
   const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
     [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
   expect(outcome.error).toBeUndefined();
@@ -200,12 +200,12 @@ async function settleOn(
 }
 
 /** One vault entry that has to settle: entered by the depositor, reaching the token, and broadcast. */
-function settle(c: Chain, functionName: string, args: readonly FunctionArgument[]): Promise<PerCallCallResult> {
+function settle(c: Chain, functionName: string, args: readonly FunctionArgument[]): Promise<FramedCallResult> {
   return settleOn(c.world, c.vault, functionName, args, [c.token]);
 }
 
 /** The keeper's harvest to `to`, which has to settle: the strategy it calls sweeps its balance of the token there. */
-function harvest(k: KeeperChain, to: Uint8Array): Promise<PerCallCallResult> {
+function harvest(k: KeeperChain, to: Uint8Array): Promise<FramedCallResult> {
   return settleOn(k.world, k.keeper, 'harvest', [to], [k.strategy, k.token]);
 }
 
@@ -213,7 +213,7 @@ function harvest(k: KeeperChain, to: Uint8Array): Promise<PerCallCallResult> {
 async function view(
   world: World, deployed: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
 ): Promise<unknown> {
-  const read = await readPerCallEntry({
+  const read = await readFramedEntry({
     provider: world.network, artifact: deployed.artifact, categoryId: deployed.categoryId, functionName,
     args: [...args], vm: compositionMachine(),
   });
@@ -234,7 +234,7 @@ type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
 /** The participants the machine refuses on a transaction, by id. */
-function refusedOn(result: PerCallCallResult, transaction: VmTransaction): readonly string[] {
+function refusedOn(result: FramedCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
     inputIndex: placed.index, sourceOutputs: result.sourceOutputs, transaction,
@@ -243,7 +243,7 @@ function refusedOn(result: PerCallCallResult, transaction: VmTransaction): reado
 
 /** The settled transaction, or `transaction` when given, with one master's witness block replaced by `block`. */
 function withBlock(
-  result: PerCallCallResult, master: string, block: WitnessBlock, transaction: VmTransaction = result.transaction,
+  result: FramedCallResult, master: string, block: WitnessBlock, transaction: VmTransaction = result.transaction,
 ): VmTransaction {
   const forged = structuredClone(transaction) as VmTransaction;
   const index = result.draft.layout.participants.find((placed) => placed.id === master)!.index;
@@ -263,7 +263,7 @@ async function balances(c: Pick<Chain, 'world' | 'token'>, holders: readonly Uin
 }
 
 /** The master of the one frame of `result` that ran `entry`. */
-function frameOf(result: PerCallCallResult, entry: string): string {
+function frameOf(result: FramedCallResult, entry: string): string {
   const frames = result.completed.filter((frame) => frame.functionName.endsWith(`.${entry}()`));
   expect(frames).toHaveLength(1);
   return frames[0]!.master;
@@ -273,7 +273,7 @@ function frameOf(result: PerCallCallResult, entry: string): string {
  * The settled transaction with the result of the first call `caller` made stated as `stated`, in the caller's record
  * of it and in the `read` frame's own `retval` alike, so the two still agree.
  */
-function withStatedResult(result: PerCallCallResult, caller: string, read: string, stated: Uint8Array): VmTransaction {
+function withStatedResult(result: FramedCallResult, caller: string, read: string, stated: Uint8Array): VmTransaction {
   const readBlock = structuredClone(result.draft.blockOf(read)) as WitnessBlock;
   const callerBlock = structuredClone(result.draft.blockOf(caller)) as WitnessBlock;
   expect(callerBlock.calls[0]!.result).toStrictEqual(readBlock.retval);

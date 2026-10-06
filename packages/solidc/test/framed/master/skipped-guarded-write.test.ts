@@ -6,7 +6,7 @@ import {
   buildEntryNftCovenantScript, computeCollectionHash, encodeWitnessBlock, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
+import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/framed/deploy/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
@@ -14,7 +14,7 @@ import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
 /**
- * A per-call master whose verified-mapping write a branch guards, asked about frames that declare the write taken and
+ * A framed master whose verified-mapping write a branch guards, asked about frames that declare the write taken and
  * skipped.
  *
  * The body runs the write only where `amount > 5`, and the entry access publishes that condition as its activation.
@@ -22,10 +22,10 @@ import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
  * the predecessor that proves the key absent when it does not. The master accepts exactly the declaration of the path
  * the body takes: a skipped write that declares an insert would create a node no code wrote, whatever value it
  * carries, and a write that runs refuses a group declared skipped. The whole shipped path runs: the source through
- * `compileString` with the per-call convention, the program through `deployMaster`, and the BCH-2026 machine.
+ * `compileString` with the framed convention, the program through `deployMaster`, and the BCH-2026 machine.
  */
 
-const CATEGORY = seededCategory('skipped guarded write per-call');
+const CATEGORY = seededCategory('skipped guarded write framed');
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const TO = new Uint8Array(20).fill(0x33);
 
@@ -37,7 +37,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifact = compileString(SOURCE, { composition: 'per-call' });
+const artifact = compileString(SOURCE, { composition: 'framed' });
 const deployed = deployMaster(artifact, CATEGORY, REAL_VALIDATOR_PROGRAM);
 verifyMasterDeployment(deployed, artifact, CATEGORY, REAL_VALIDATOR_PROGRAM);
 const masterLock = encodeLockingBytecodeP2sh32(hash256(deployed.script));
@@ -146,7 +146,7 @@ const update = (amount: number, value: number): Spend => ({
   records: [{ in: NODE_INDEX, out: NODE_INDEX, viewIn: HELD, viewOut: node(value) }],
 });
 
-describe('a per-call master whose verified-mapping write a branch guards', () => {
+describe('a framed master whose verified-mapping write a branch guards', () => {
   it('publishes the condition the write runs under', () => {
     const access = artifact.abi.find((entry) => entry.name === 'set')?.entryAccesses?.[0];
     expect(access?.activation).toStrictEqual({

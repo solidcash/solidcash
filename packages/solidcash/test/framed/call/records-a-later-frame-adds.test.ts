@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, parsePushdataCommitment, sha256, validatorAddress, type Artifact } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
-  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import { deploymentStateValues } from '../../../src/per-call/proxy/external-calls.js';
+  buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import { deploymentStateValues } from '../../../src/framed/proxy/external-calls.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -118,14 +118,14 @@ const FIXTURE_OPTIONS = {
   suppressWarnings: true,
   ecrecover: 'p2pkh',
   sortedMappingsAll: false,
-  composition: 'per-call',
+  composition: 'framed',
 } as const;
 
 const compiled = compileStringMulti(SOURCE, FIXTURE_OPTIONS as never);
 const vault = compiled.Vault!;
 const root = compiled.Root!;
 
-/** A per-call contract's address, which its category fixes before anything is deployed. */
+/** A framed contract's address, which its category fixes before anything is deployed. */
 const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
 
 /** A coin a genesis or a hop is funded from; a genesis's txid becomes the category it mints. */
@@ -143,7 +143,7 @@ function namedRecords(artifact: Artifact, entry: string): readonly number[] {
 /** The vault plain, the root behind its proxy, and an entry of the root to call. */
 async function deployed(): Promise<{
   readonly network: MockNetworkProvider;
-  readonly enter: (functionName: string) => Promise<PerCallProxyCallResult>;
+  readonly enter: (functionName: string) => Promise<FramedProxyCallResult>;
 }> {
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -159,7 +159,7 @@ async function deployed(): Promise<{
   const [initCoin, callCoin] = ['initialize', 'call'].map((label) => funding(idOf(`${label} coin`)));
   for (const coin of [initCoin!, callCoin!]) await network.addUtxo(binToHex(CALLER), coin);
   await fundShippedFacets(network);
-  const proxy = await deployPerCallProxy({
+  const proxy = await deployFramedProxy({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -172,7 +172,7 @@ async function deployed(): Promise<{
   });
   expect(proxy.initialize.broadcast).toBeDefined();
   expect(binToHex(proxy.proxy.address)).toBe(binToHex(rootAddress));
-  const enter = (functionName: string): Promise<PerCallProxyCallResult> => callPerCallProxyEntry({
+  const enter = (functionName: string): Promise<FramedProxyCallResult> => callFramedProxyEntry({
     provider: network,
     implementationArtifact: root,
     proxyArtifact: buildProxyArtifact(root),
@@ -191,17 +191,17 @@ async function deployed(): Promise<{
 }
 
 /** The vault's input index for each of its data records in the composed transaction, by data-record index. */
-function vaultRecordInputs(result: PerCallProxyCallResult): readonly number[] {
+function vaultRecordInputs(result: FramedProxyCallResult): readonly number[] {
   return [0, 1].map((nftIndex) => result.draft.layout.participants
     .find((placed) => placed.id === `Vault-record-${nftIndex}`)!.index);
 }
 
 /** The vault's record values after the call, and the value the root kept from the read. */
-async function settledValues(network: MockNetworkProvider, result: PerCallProxyCallResult): Promise<{
+async function settledValues(network: MockNetworkProvider, result: FramedProxyCallResult): Promise<{
   readonly rounds: unknown; readonly status: unknown; readonly seen: unknown;
 }> {
   const layout = vault.stateLayout!;
-  const state = deploymentStateValues(layout, VAULT_CATEGORY, await readPerCallDeployment(network, VAULT_CATEGORY, layout));
+  const state = deploymentStateValues(layout, VAULT_CATEGORY, await readFramedDeployment(network, VAULT_CATEGORY, layout));
   const rootLayout = buildProxyArtifact(root).stateLayout!;
   const field = rootLayout.variables.find((variable) => variable.name === 'seen')!;
   const seen = parsePushdataCommitment(binToHex(result.writtenCommitments[field.nftIndex]!), rootLayout, field.nftIndex)
@@ -242,7 +242,7 @@ describe('a contract whose later frame in a hop declares a record its earlier fr
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     const layout = vault.stateLayout!;
-    const deployment = await readPerCallDeployment(network, VAULT_CATEGORY, layout);
+    const deployment = await readFramedDeployment(network, VAULT_CATEGORY, layout);
     expect(deploymentStateValues(layout, VAULT_CATEGORY, deployment).fee).toBe(MARK);
   }, 300_000);
 
@@ -251,7 +251,7 @@ describe('a contract whose later frame in a hop declares a record its earlier fr
     // `claimOnce` needs record 1 right after record 0 and `audit` needs record 2 there.
     await expect(enter('runAndAudit')).rejects.toThrow(/reads its data records of "Vault" side by side/);
     const layout = vault.stateLayout!;
-    const deployment = await readPerCallDeployment(network, VAULT_CATEGORY, layout);
+    const deployment = await readFramedDeployment(network, VAULT_CATEGORY, layout);
     expect(deploymentStateValues(layout, VAULT_CATEGORY, deployment).rounds).toBe(0n);
   }, 300_000);
 });

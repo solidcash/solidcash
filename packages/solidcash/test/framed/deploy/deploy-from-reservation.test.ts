@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { HDSigner, StatefulContract, type Utxo } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { CreateLookahead } from '../../../src/per-call/deploy/create-lookahead.js';
+import { CreateLookahead } from '../../../src/framed/deploy/create-lookahead.js';
 
 /**
  * A factory's child deployment funded by the connected signer leaves a reserved genesis coin alone.

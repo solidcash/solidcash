@@ -4,16 +4,16 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileStringMulti } from 'solidc';
 import { formatArtifact } from '@solidcash/utils';
-import { HDSigner, type PerCallProxyHandle } from 'solidcash';
+import { HDSigner, type FramedProxyHandle } from 'solidcash';
 import { upgrades } from '../../src/index.js';
 import { expect as chaiExpect } from '../../src/chai.js';
 import { createHardhatRuntimeEnvironment } from '../../src/hre.js';
 import { resolveConfig } from '../../src/config.js';
 
 /**
- * The chai revert matchers against a per-call contract.
+ * The chai revert matchers against a framed contract.
  *
- * A per-call refusal names the frame's own source reason and, for a custom error, the argument tuple it was raised
+ * A framed refusal names the frame's own source reason and, for a custom error, the argument tuple it was raised
  * with. The matchers compare that reason exactly and read that tuple, so a failure whose reason differs, and a
  * failure the harness produced rather than the contract, both fail the assertion instead of passing because some
  * unrelated message happened to contain the expected text.
@@ -56,11 +56,11 @@ afterEach(() => {
 });
 
 function projectWithCompiledContract(): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solidcash-per-call-revert-matcher-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solidcash-framed-revert-matcher-'));
   temporaryDirectories.push(directory);
   const artifacts = path.join(directory, 'solidcash', 'Ledger.scash');
   fs.mkdirSync(artifacts, { recursive: true });
-  for (const [name, artifact] of Object.entries(compileStringMulti(SOURCE, { composition: 'per-call' }))) {
+  for (const [name, artifact] of Object.entries(compileStringMulti(SOURCE, { composition: 'framed' }))) {
     fs.writeFileSync(path.join(artifacts, `${name}.json`), formatArtifact(artifact, 'json'));
   }
   return directory;
@@ -91,7 +91,7 @@ async function deployLedger(): Promise<{
   const [signer] = await hre.ethers.getSigners(1);
   const deployment = await upgrades.deployProxy(
     hre.ethers.getContractFactory('Ledger', signer) as never, [5n],
-  ) as unknown as PerCallProxyHandle;
+  ) as unknown as FramedProxyHandle;
   return {
     calls: deployment as unknown as LedgerCalls,
     connect: (connected) => (deployment as unknown as { connect: (r: unknown) => LedgerCalls }).connect(connected),
@@ -99,7 +99,7 @@ async function deployLedger(): Promise<{
   };
 }
 
-describe('the chai revert matchers and a per-call contract', () => {
+describe('the chai revert matchers and a framed contract', () => {
   it('passes when the contract\'s own reason matches the expectation', async () => {
     const { calls } = await deployLedger();
     await chaiExpect(calls.record(50n)).to.be.revertedWith('amount too large');

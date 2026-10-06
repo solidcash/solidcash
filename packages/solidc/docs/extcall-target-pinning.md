@@ -54,7 +54,7 @@ verified "co-spend == caller's choice", which is no check at all. The user caugh
 
 **Invariant this design must preserve:** the expected address in the identity check must be a value the
 **contract author fixed** (a constant baked into the code) or a value the **contract itself controls**
-(self-pinned state) — never a per-call caller input.
+(self-pinned state) — never a framed caller input.
 
 ## 3. Target forms and their sound treatment
 
@@ -148,7 +148,7 @@ has (it is just initial state). "Debug mode" names a convenience: the SDK's mock
 co-spend of a mock contract for a seeded target. The emitted script is byte-identical whether you seed a
 mock or a mainnet address, so nothing debug-only can leak into production — a mainnet deployer who
 initialises `sv` to some address is simply deploying a contract that calls that address, which is a normal
-deployment choice, not a relaxation. The forgery in Phase-1 was a *per-call caller witness*; a genesis
+deployment choice, not a relaxation. The forgery in Phase-1 was a *framed caller witness*; a genesis
 seed is a *deploy-time deployer choice* — categorically different.
 
 The *only* difference between a debug run and production is which address the deployer seeds at genesis.
@@ -181,13 +181,13 @@ choice; the on-chain script is byte-identical to production. No forgery is intro
     contract's own code, exactly as in the EVM. The compiler's guarantee is narrow and correct: **the
     call goes to whatever the genuine self-pinned state holds.** Write access control is the author's
     responsibility, identical to EVM `sv = a`. This is fundamentally different from the Phase-1 forgery,
-    where the target was a *per-call transaction witness* chosen at spend time with no state write and no
+    where the target was a *framed transaction witness* chosen at spend time with no state write and no
     covenant at all.
 - **Literal/constant:** the expected address is a code-baked constant; caller-independent by construction.
   Un-satisfiable for a non-BCH-locking-bytecode value → fails closed. A genuine locking-bytecode literal
   is called for real.
 
-The forgery vector (caller-chosen target) is structurally absent: no per-call caller input feeds the
+The forgery vector (caller-chosen target) is structurally absent: no framed caller input feeds the
 identity check in any of the three sound forms.
 
 ## 7. Corpus scope (honest)
@@ -264,7 +264,7 @@ reasoning is not enough).
 
 ### Verdict
 
-**Fundamentally sound.** The forgery vector — a per-call value the *caller* chooses at spend time feeding
+**Fundamentally sound.** The forgery vector — a framed value the *caller* chooses at spend time feeding
 the identity check — is structurally absent in all three sound forms:
 
 - parameter: the caller choosing the target *is* the semantics of `IFoo(paramAddr).m()`;

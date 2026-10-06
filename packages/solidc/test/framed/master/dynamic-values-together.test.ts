@@ -13,7 +13,7 @@ import {
 } from './chunk-run-input.js';
 
 /**
- * A per-call master whose entry writes two dynamic values, settled on the BCH-2026 machine.
+ * A framed master whose entry writes two dynamic values, settled on the BCH-2026 machine.
  *
  * The segment declares the values' runs in the order the values are declared, each one record per chunk of the wider
  * of its spent and written versions, so a later run starts past every record of the runs before it: past the chunks
@@ -39,7 +39,7 @@ const FOREIGN_CHUNK = chunk(0, distinctBytes(6, 0x63));
 const ORPHAN_CHUNK = chunk(1, distinctBytes(4, 0x65));
 
 const deploy = (source: string, label: string): ChunkRunContract =>
-  deployChunkRunContract(compileString(source, { composition: 'per-call' }), label);
+  deployChunkRunContract(compileString(source, { composition: 'framed' }), label);
 
 /** A spent and a written version of one value. */
 type Versions = readonly [Uint8Array, Uint8Array];
@@ -52,7 +52,7 @@ const pairSource = (type: string, entry: string): string => 'pragma solidcash ^0
   + ' }';
 
 // A `bytes` pair runs the same census at its own chunk address, which `dynamic-bytes-record.test.ts` drives.
-describe('a per-call master that overwrites two string values', () => {
+describe('a framed master that overwrites two string values', () => {
   const type = 'string';
   const pair = deploy(
     pairSource(type, `function set(${type} x, ${type} y) { this.first = x; this.second = y; }`), `${type} pair`,
@@ -66,8 +66,8 @@ describe('a per-call master that overwrites two string values', () => {
       ],
     }, mutation).accepted;
 
-  it('is emitted as a per-call master', () => {
-    expect(pair.artifact.composition?.convention).toBe('per-call');
+  it('is emitted as a framed master', () => {
+    expect(pair.artifact.composition?.convention).toBe('framed');
     expect(pair.artifact.composition!.refusedEntries).toBeUndefined();
   });
 
@@ -146,7 +146,7 @@ describe('a per-call master that overwrites two string values', () => {
   });
 });
 
-describe('a per-call master that appends to two string values', () => {
+describe('a framed master that appends to two string values', () => {
   // Both values are read and written back, so the later value's read loop steps past the earlier value's run too.
   const append = deploy(pairSource('string',
     'function add(string x, string y) {'
@@ -276,7 +276,7 @@ const KINDS: readonly ElementKind[] = [
   },
 ];
 
-describe.each(KINDS)('a per-call master that writes a string beside $label', (kind) => {
+describe.each(KINDS)('a framed master that writes a string beside $label', (kind) => {
   const mixSource = (entry: string, order: 'label first' | 'items first' = 'label first'): string =>
     'pragma solidcash ^0.13.0;'
     + ' contract Mix {'
@@ -324,9 +324,9 @@ describe.each(KINDS)('a per-call master that writes a string beside $label', (ki
       ],
     }, mutation).accepted;
 
-  it('is emitted as a per-call master for every entry, with the shapes crossing chunk boundaries as stated', () => {
+  it('is emitted as a framed master for every entry, with the shapes crossing chunk boundaries as stated', () => {
     for (const contract of [grow, shrink, pushFirst, itemsFirst]) {
-      expect(contract.artifact.composition?.convention).toBe('per-call');
+      expect(contract.artifact.composition?.convention).toBe('framed');
       expect(contract.artifact.composition!.refusedEntries).toBeUndefined();
     }
     expect(kind.encode(held(kind.perChunk)).length).toBeLessThanOrEqual(120);
@@ -397,7 +397,7 @@ describe.each(KINDS)('a per-call master that writes a string beside $label', (ki
   });
 });
 
-describe('a per-call master that pops a uint256[] to nothing beside a string', () => {
+describe('a framed master that pops a uint256[] to nothing beside a string', () => {
   const shrink = deploy('pragma solidcash ^0.13.0; contract Mix { string public label; uint[] public items;'
     + ' function shrink(string x) { this.label = x; this.items.pop(); } }', 'uint256 pop to nothing');
   const popLast = (label: Versions, mutation: ChunkRunMutation = {}): boolean => evaluateChunkRuns(shrink, {
@@ -419,7 +419,7 @@ describe('a per-call master that pops a uint256[] to nothing beside a string', (
   });
 });
 
-describe('a per-call master that writes a mapping beside its dynamic values', () => {
+describe('a framed master that writes a mapping beside its dynamic values', () => {
   // The batch's walk holds every record past its group to the records the body pinned: a run counts the wider of
   // its two versions, so a shrink's consumed chunks are among them.
   const ledgerSource = (values: string, entry: string): string => 'pragma solidcash ^0.13.0;'
@@ -475,9 +475,9 @@ describe('a per-call master that writes a mapping beside its dynamic values', ()
       ],
     }, mutation).accepted;
 
-  it('is emitted as a per-call master for both entries', () => {
+  it('is emitted as a framed master for both entries', () => {
     for (const contract of [one, two]) {
-      expect(contract.artifact.composition?.convention).toBe('per-call');
+      expect(contract.artifact.composition?.convention).toBe('framed');
       expect(contract.artifact.composition!.refusedEntries).toBeUndefined();
     }
   });

@@ -8,7 +8,7 @@ import {
   scriptToBytecode, sha256, validatorAddress, type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
@@ -18,14 +18,14 @@ import {
 } from './validator-input.js';
 
 /**
- * A per-call master whose entry writes a mapping keyed by a scalar value of its own record.
+ * A framed master whose entry writes a mapping keyed by a scalar value of its own record.
  *
  * The id counter (`items[nextId] = amount`) carries no argument for its key: the master derives the slot from the
  * record its frame declares, read where the body reads the value. A key read after an increment on the same straight
  * line is the value the increment leaves, so the derivation folds the assignment over the declared record, as the
  * published key label does. A key read after a call is read in the segment the call opens, from the record that
  * segment declares: a frame of the same contract the call re-enters may have rewritten it, which settlement chains
- * between the two segments. Each case runs the source through `compileStringMulti` with the per-call convention,
+ * between the two segments. Each case runs the source through `compileStringMulti` with the framed convention,
  * fills the reserved slots the way a deployment does, and asks the BCH-2026 machine for its verdict on the master's
  * own input; a group declared at a key the record does not name is refused. A key behind a write no straight line
  * folds, or read after calls the source does not fix, is refused by name.
@@ -48,7 +48,7 @@ const ledger = (body: string, parameters = 'uint amount'): string => 'pragma sol
   + ' }';
 
 const compile = (body: string, parameters?: string): Artifact =>
-  compileStringMulti(ledger(body, parameters), { composition: 'per-call' }).Ledger!;
+  compileStringMulti(ledger(body, parameters), { composition: 'framed' }).Ledger!;
 /** The key read where the body begins, the key read after the increment ahead of it, and the key read after a call. */
 const COUNTER = compile('items[nextId] = amount; nextId = nextId + 1;');
 const FOLDED = compile('nextId = nextId + 1; items[nextId] = amount;');
@@ -195,7 +195,7 @@ function verdict(
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master keyed by a scalar value of its own record', () => {
+describe('a framed master keyed by a scalar value of its own record', () => {
   it('serves the key read where the body begins, as the record the frame declares holds it', () => {
     expect(COUNTER.composition?.refusedEntries ?? []).toStrictEqual([]);
     expect(COUNTER.abi.find((entry) => entry.name === 'open')?.entryAccesses?.[0]?.keyParams)
@@ -246,7 +246,7 @@ describe('a per-call master keyed by a scalar value of its own record', () => {
   });
 });
 
-describe('a per-call master keyed by a record value it cannot hold where the derivation runs', () => {
+describe('a framed master keyed by a record value it cannot hold where the derivation runs', () => {
   it('refuses a key read after an arm that may rewrite it', () => {
     expect(refusalMessageOf(ledger('if (amount > 5) { nextId = 9; } items[nextId] = amount;')))
       .toBe('Ledger.open(): the body writes a mapping at slot 0 whose key 0 \'state:nextId\' reads the state value '

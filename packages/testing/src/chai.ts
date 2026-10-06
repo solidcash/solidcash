@@ -246,8 +246,8 @@ function errorMessage(error: unknown): string {
   return String((error as { message?: unknown })?.message ?? error);
 }
 
-/** The contract's own reason a per-call failure named, and the argument tuple when it named a custom error. */
-interface PerCallFailure {
+/** The contract's own reason a framed failure named, and the argument tuple when it named a custom error. */
+interface FramedFailure {
   readonly reason?: string;
   /** Absent when the refusal named no argument tuple, which a `.withArgs` assertion must then refuse. */
   readonly errorArgs?: readonly unknown[];
@@ -266,7 +266,7 @@ function describeFrameRefusalReason(reason: {
 }
 
 /**
- * The frame reason a per-call refusal message names, or undefined when the message names no frame.
+ * The frame reason a framed refusal message names, or undefined when the message names no frame.
  *
  * A refusal that reached the machine reports the innermost frame's own source reason as
  * `frame "<master>" of <entry> at line <n>: <reason> (<objection>)`. A construction or planner failure does not
@@ -284,27 +284,27 @@ function frameReasonFromRefusalMessage(message: string): string | undefined {
 }
 
 /**
- * The contract's own reason a per-call failure carries, or undefined when the failure is not a per-call refusal.
+ * The contract's own reason a framed failure carries, or undefined when the failure is not a framed refusal.
  *
- * `PerCallCompositionRefusedError` publishes the refusal report directly; the proxy hop reports the same frame
+ * `FramedCompositionRefusedError` publishes the refusal report directly; the proxy hop reports the same frame
  * description inside its message. Both carry the custom-error argument tuple a `.withArgs` assertion reads; a
  * failure that names no frame (a construction error, a planner refusal, an unsupported shape) yields a result
  * with no `reason` and does not satisfy a contract-reason expectation.
  */
-function perCallFailure(error: unknown): PerCallFailure | undefined {
+function framedFailure(error: unknown): FramedFailure | undefined {
   const name = (error as { name?: unknown })?.name;
   const record = error as {
     report?: { innermost?: { reason?: { message?: string; error?: { name?: string } } } };
     errorArgs?: readonly unknown[];
     message?: string;
   };
-  if (name === 'PerCallCompositionRefusedError') {
+  if (name === 'FramedCompositionRefusedError') {
     return {
       reason: describeFrameRefusalReason(record?.report?.innermost?.reason),
       ...(record?.errorArgs === undefined ? {} : { errorArgs: record.errorArgs }),
     };
   }
-  if (name === 'PerCallProxyDeployError') {
+  if (name === 'FramedProxyDeployError') {
     return {
       reason: frameReasonFromRefusalMessage(String(record?.message ?? '')),
       ...(record?.errorArgs === undefined ? {} : { errorArgs: record.errorArgs }),
@@ -822,7 +822,7 @@ class Assertion {
   /**
    * One revert assertion, plus the facts a `.withArgs(...)` continuation reads.
    *
-   * A per-call contract's refusal names its own frame's reason and, for a custom error, the argument tuple it was
+   * A framed contract's refusal names its own frame's reason and, for a custom error, the argument tuple it was
    * raised with; the reason is compared exactly, and a failure the harness produced (a construction error, a
    * planner refusal, an unsupported shape) does not satisfy a contract-reason expectation. A direct-convention
    * contract or a mock provider exposes no such frame reason: on a relaxed network its runtime error must still
@@ -830,9 +830,9 @@ class Assertion {
    */
   private revertExpectation(reason: RegExp | string): {
     promise: Promise<void>;
-    outcome: { perCall: boolean; errorArgs?: readonly unknown[] };
+    outcome: { framed: boolean; errorArgs?: readonly unknown[] };
   } {
-    const outcome: { perCall: boolean; errorArgs?: readonly unknown[] } = { perCall: false };
+    const outcome: { framed: boolean; errorArgs?: readonly unknown[] } = { framed: false };
     const maximumInputBytes = (this.actual as any)?.parentContract?.inner?.provider
       ?.consensusLimits?.maximumInputBytes ?? 10_000;
     const relaxed = maximumInputBytes > 10_000;
@@ -841,18 +841,18 @@ class Assertion {
     const viewRead = this.actual?.parentContract?.inner?.artifact?.abi
       ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
       ?.writesState === false;
-    const perCallCall = typeof (this.actual as { compose?: unknown })?.compose === 'function';
-    if (!this.negate && (perCallCall || (!viewRead && relaxed))) {
-      // A per-call call is awaited rather than `.send()`-ed: a read-only entry is read, a writing entry is sent,
+    const framedCall = typeof (this.actual as { compose?: unknown })?.compose === 'function';
+    if (!this.negate && (framedCall || (!viewRead && relaxed))) {
+      // A framed call is awaited rather than `.send()`-ed: a read-only entry is read, a writing entry is sent,
       // so a pass-through expectation never broadcasts a read the way a forced `send()` would.
-      const started = perCallCall
+      const started = framedCall
         ? Promise.resolve(this.actual)
         : Promise.resolve(typeof this.actual?.send === 'function' ? this.actual.send() : this.actual);
       const promise = started.then(
         () => { throw new Error(`expected transaction to revert with ${String(reason)}, but it succeeded`); },
         (error) => {
-          const failure = perCallFailure(error);
-          if (!perCallCall && failure === undefined) {
+          const failure = framedFailure(error);
+          if (!framedCall && failure === undefined) {
             // A failed layout/derivation is not the Solidity require named in the assertion, and a relaxed-network
             // revert must name the expected reason in its runtime error. The error is kept for `.withArgs`.
             if (isConstructionFailure(error)) throw error;
@@ -863,7 +863,7 @@ class Assertion {
             this.hasObservedRevertError = true;
             return;
           }
-          outcome.perCall = true;
+          outcome.framed = true;
           if (failure?.errorArgs !== undefined) outcome.errorArgs = failure.errorArgs;
           if (failure?.reason !== undefined && matchesRevertReason(failure.reason, reason)) return;
           if (failure?.reason !== undefined) {
@@ -888,7 +888,7 @@ class Assertion {
   /**
    * Custom-error revert with optional argument verification.
    *
-   * A per-call contract reports the contract's own error arguments, so `.withArgs(...)` is compared against them;
+   * A framed contract reports the contract's own error arguments, so `.withArgs(...)` is compared against them;
    * a refusal that carries no tuple is refused loudly rather than passed without checking. Local models and
    * source-attributed compiled covenants can attach the executed tuple to the error. Require that evidence for
    * `.withArgs(...)`; a name-only diagnostic must not silently satisfy an argument assertion.
@@ -898,11 +898,11 @@ class Assertion {
     const p = promise as Promise<void> & { withArgs: (...a: any[]) => Promise<void> };
     p.withArgs = async (...expected: any[]): Promise<void> => {
       await promise;
-      const actualArgs = outcome.perCall ? outcome.errorArgs : await this.revertArgumentTuple();
+      const actualArgs = outcome.framed ? outcome.errorArgs : await this.revertArgumentTuple();
       if (actualArgs === undefined) {
-        // Arguments are verified only against an observed tuple: a per-call refusal that named none, or a name-only
+        // Arguments are verified only against an observed tuple: a framed refusal that named none, or a name-only
         // diagnostic, refuses rather than passing without checking.
-        throw new Error(outcome.perCall
+        throw new Error(outcome.framed
           ? `cannot verify custom error ${name} arguments: the failure carried no argument tuple`
           : `Custom error ${name}: cannot yet verify its arguments`);
       }

@@ -8,7 +8,7 @@ import {
   scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
@@ -45,7 +45,7 @@ const ALL_REFUSED_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Choice!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed' }).Choice!;
 const program = fillPlaceholders(
   scriptToBytecode(asmToScript(artifact.bytecode)),
   artifact.composition!.placeholders,
@@ -110,7 +110,7 @@ function spendSelector(programBytes: Uint8Array, selector: Uint8Array): boolean 
 
 describe('a body the master cannot serve', () => {
   it('is refused by name while the entries the master can serve keep compiling', () => {
-    const reasons = publishedRefusals(compileStringMulti(SOURCE, { composition: 'per-call' }));
+    const reasons = publishedRefusals(compileStringMulti(SOURCE, { composition: 'framed' }));
     expect(reasons.map((refused) => refused.functionName).sort()).toStrictEqual([
       'Choice.bad()', 'Choice.callsBad()',
     ]);
@@ -131,8 +131,8 @@ describe('a body the master cannot serve', () => {
   it('refuses a contract whose every body is unsupported, rather than refusing the unit', () => {
     // Nothing is served, so the master is a dispatcher over refusals; a builder reads which function is missing
     // from the published reasons instead of from a compile that fails.
-    const artifacts = compileStringMulti(ALL_REFUSED_SOURCE, { composition: 'per-call' });
-    expect(artifacts.Only?.composition?.convention).toBe('per-call');
+    const artifacts = compileStringMulti(ALL_REFUSED_SOURCE, { composition: 'framed' });
+    expect(artifacts.Only?.composition?.convention).toBe('framed');
     expect(refusalOf(ALL_REFUSED_SOURCE, 'Only').message).toContain('returns a function pointer');
   });
 });
@@ -160,7 +160,7 @@ const REFUSED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
-const refusedCallArtifact = compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'per-call' }).Feed!;
+const refusedCallArtifact = compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'framed' }).Feed!;
 const refusedCallProgram = fillPlaceholders(
   scriptToBytecode(asmToScript(refusedCallArtifact.bytecode)),
   refusedCallArtifact.composition!.placeholders,
@@ -171,7 +171,7 @@ const refusedCallSelector = (name: string): Uint8Array =>
 
 describe('a refused call-making entry', () => {
   it('is refused by name and publishes no call site', () => {
-    const refusals = publishedRefusals(compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'per-call' }));
+    const refusals = publishedRefusals(compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'framed' }));
     expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Feed.pick()']);
     expect(refusals.find((refused) => refused.functionName === 'Feed.pick()')!.reason)
       .toContain('is in a body that switches');
@@ -210,7 +210,7 @@ const SERVED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
-const servedCallArtifact = compileStringMulti(SERVED_CALL_SOURCE, { composition: 'per-call' }).Feed!;
+const servedCallArtifact = compileStringMulti(SERVED_CALL_SOURCE, { composition: 'framed' }).Feed!;
 const servedCallProgram = fillPlaceholders(
   scriptToBytecode(asmToScript(servedCallArtifact.bytecode)),
   servedCallArtifact.composition!.placeholders,
@@ -221,7 +221,7 @@ const servedCallSelector = (name: string): Uint8Array =>
 
 describe('a call-making entry the master serves', () => {
   it('publishes no refusal and the call site for the read it makes', () => {
-    const refusals = publishedRefusals(compileStringMulti(SERVED_CALL_SOURCE, { composition: 'per-call' }));
+    const refusals = publishedRefusals(compileStringMulti(SERVED_CALL_SOURCE, { composition: 'framed' }));
     expect(refusals).toStrictEqual([]);
     const entry = servedCallArtifact.composition!.stopSites!.entries
       .find((candidate) => candidate.functionName === 'Feed.readBack()')!;
@@ -243,7 +243,7 @@ describe('a call-making entry the master serves', () => {
  *
  * Solidity has no `delegate` keyword, so the direct convention infers the proxy-implementation surface from an
  * `initializer`/`reinitializer` modifier and hands each such entry the co-spent proxy master's input index as
- * `__internal__proxyMasterIndex`. That operand belongs to the direct convention's state base: a per-call master
+ * `__internal__proxyMasterIndex`. That operand belongs to the direct convention's state base: a framed master
  * reads the records its own frame declares, and its head establishes a `DELEGATE` frame kind where the proxy
  * relationship applies, so no body carries the marking or the operand under this convention.
  */
@@ -259,7 +259,7 @@ const INITIALIZER_SOURCE = 'pragma solidity ^0.8.19;'
 describe('a Solidity-compatible proxy implementation', () => {
   it('is served, and no entry carries the proxy-master operand', () => {
     const artifacts = compileStringMulti(INITIALIZER_SOURCE, {
-      composition: 'per-call', solidityImportCompat: true,
+      composition: 'framed', solidityImportCompat: true,
     });
     expect(publishedRefusals(artifacts)).toStrictEqual([]);
     for (const artifact of Object.values(artifacts)) {
@@ -272,7 +272,7 @@ describe('a Solidity-compatible proxy implementation', () => {
   });
 
   it('keeps the marking and the operand under the direct convention', () => {
-    // The control for the inference the per-call convention skips: the direct build still marks the surface and
+    // The control for the inference the framed convention skips: the direct build still marks the surface and
     // still publishes the operand its delegate frame addresses through.
     const direct = compileString(INITIALIZER_SOURCE, { solidityImportCompat: true });
     const initialize = direct.abi.find((entry) => entry.name === 'initialize')!;
@@ -299,7 +299,7 @@ const STORE_BEFORE = 42n;
 const STORE_WRITTEN = 7n;
 
 const storeArtifact = compileString(INITIALIZER_WRITE_SOURCE, {
-  composition: 'per-call', solidityImportCompat: true,
+  composition: 'framed', solidityImportCompat: true,
 });
 const storeProgram = fillPlaceholders(
   scriptToBytecode(asmToScript(storeArtifact.bytecode)),
@@ -405,7 +405,7 @@ const BAD_REASON = 'the entry point \'bad\' returns a function pointer, but a fr
   + 'scalar value the entry computed, which a composite value is not yet';
 
 const refusalsOfConstructor = (name: string, members: string): ReturnType<typeof publishedRefusals> =>
-  publishedRefusals(compileStringMulti(constructorRunning(name, members), { composition: 'per-call' }));
+  publishedRefusals(compileStringMulti(constructorRunning(name, members), { composition: 'framed' }));
 
 describe('a constructor that runs a body the master cannot serve', () => {
   it('is refused by name with the body it runs, however it reaches the body', () => {

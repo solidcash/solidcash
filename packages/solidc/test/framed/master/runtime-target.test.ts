@@ -11,7 +11,7 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -87,7 +87,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 
 /** Fills one compiled contract's deployment slots, the way a deployment fills them. */
 function deploy(name: string, category: Uint8Array, address: Uint8Array): Uint8Array {

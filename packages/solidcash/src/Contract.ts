@@ -902,9 +902,9 @@ export class Contract<
     // across all call sites (~2900 unlocking bytes fund one block), so keccak256(keccak256(x)) and
     // multiple keccak256(...) calls are funded. The per-input ~3-block budget limit caps what can fit, so
     // beyond that the tx fails on budget regardless.
-    const blocksPerCall = Math.max(1, Math.floor(inputBytes / 136) + 1);
+    const blocksFramed = Math.max(1, Math.floor(inputBytes / 136) + 1);
     const calls = abiFunction.externalLibraryCalls?.keccak256 ?? 1;
-    const totalBlocks = Math.min(3, calls * blocksPerCall);
+    const totalBlocks = Math.min(3, calls * blocksFramed);
     return new Uint8Array(totalBlocks * 2900);
   }
 }

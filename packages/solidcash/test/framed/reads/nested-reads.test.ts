@@ -8,16 +8,16 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
-import { readPerCallEntry, type PerCallReadOptions } from '../../../src/per-call/read/index.js';
+} from '../../../src/framed/deploy/index.js';
+import { readFramedEntry, type FramedReadOptions } from '../../../src/framed/read/index.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * Reading a view that reads another contract's view off chain, through the shipped read module.
@@ -109,7 +109,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
       + ' contract A {'
       + `   function peek() view returns (int) { return IB(0x${hex(ADDRESS_B)}).value(); }`
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const bArtifact = artifacts.B!;
     const commitment = new Uint8Array(Buffer.from(buildPushdataCommitment(bArtifact.stateLayout!, { v: 7n }, 0), 'hex'));
 
@@ -118,7 +118,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
     await fund(provider, { artifact: bArtifact, category: B, categoryHex: B_HEX, seed: 'b', records: [commitment] });
 
     const before = transactionCount(provider);
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider,
       artifact: artifacts.A!,
       categoryId: A_HEX,
@@ -145,7 +145,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
       + ' contract A {'
       + `   function top() view returns (int) { return IB(0x${hex(ADDRESS_B)}).mid(); }`
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const cArtifact = artifacts.C!;
     const commitment = new Uint8Array(Buffer.from(buildPushdataCommitment(cArtifact.stateLayout!, { c: 42n }, 0), 'hex'));
 
@@ -155,7 +155,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
     await fund(provider, { artifact: cArtifact, category: C, categoryHex: C_HEX, seed: 'c', records: [commitment] });
 
     const before = transactionCount(provider);
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider,
       artifact: artifacts.A!,
       categoryId: A_HEX,
@@ -185,7 +185,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
       + ' contract A {'
       + `   function probe() view returns (int) { return IB(0x${hex(ADDRESS_B)}).grab(); }`
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const bArtifact = artifacts.B!;
     // The record holds zero, which the callee's own guard refuses.
     const zero = new Uint8Array(Buffer.from(buildPushdataCommitment(bArtifact.stateLayout!, { v: 0n }, 0), 'hex'));
@@ -195,7 +195,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
     await fund(provider, { artifact: bArtifact, category: B, categoryHex: B_HEX, seed: 'b', records: [zero] });
 
     const before = transactionCount(provider);
-    const result = await readPerCallEntry({
+    const result = await readFramedEntry({
       provider,
       artifact: artifacts.A!,
       categoryId: A_HEX,
@@ -235,7 +235,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
       + `     return IB(0x${hex(ADDRESS_B)}).at(index);`
       + '   }'
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const bArtifact = artifacts.B!;
     const two = new Uint8Array(Buffer.from(buildPushdataCommitment(bArtifact.stateLayout!, { n: 2n }, 0), 'hex'));
 
@@ -246,7 +246,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
     await provider.addUtxo(bytesToHex(deployMaster(bArtifact, B, VALIDATOR_PROGRAM).lockingBytecode),
       utxo('b211'.padEnd(64, 'd'), 20_000n, B_HEX, 'minting', empty));
 
-    const read = (index: bigint): ReturnType<typeof readPerCallEntry> => readPerCallEntry({
+    const read = (index: bigint): ReturnType<typeof readFramedEntry> => readFramedEntry({
       provider, artifact: artifacts.A!, categoryId: A_HEX, functionName: 'page', args: [index],
       externals: { IB: { artifact: bArtifact, categoryId: B_HEX } }, vm: compositionMachine(),
     });
@@ -272,13 +272,13 @@ describe('reading a view that reads another contract\'s view off chain', () => {
       + ' contract A {'
       + `   function top() view returns (int) { return IB(0x${hex(ADDRESS_B)}).mid(); }`
       + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(source, { composition: 'framed' });
     const provider = new MockNetworkProvider();
     await fund(provider, { artifact: artifacts.A!, category: A, categoryHex: A_HEX, seed: 'a', withValidator: true });
 
     // Only the first contract of the chain is supplied, so the second contract's call names a contract the caller
     // did not supply.
-    const options: PerCallReadOptions = {
+    const options: FramedReadOptions = {
       provider,
       artifact: artifacts.A!,
       categoryId: A_HEX,
@@ -286,7 +286,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
       externals: { IB: { artifact: artifacts.B!, categoryId: B_HEX } },
       vm: compositionMachine(),
     };
-    await expect(readPerCallEntry(options)).rejects.toThrow(
+    await expect(readFramedEntry(options)).rejects.toThrow(
       /entry "B\.mid\(\)" makes 1 external call\(s\): "IC\.leaf\(\)" .* is not supplied in externals/,
     );
   });

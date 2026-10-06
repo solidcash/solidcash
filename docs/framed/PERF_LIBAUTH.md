@@ -1,6 +1,6 @@
 # Libauth fork performance (W1)
 
-Measured 2026-10-05 on `feat/per-call` at `57dfa942e`.
+Measured 2026-10-05 on `feat/framed` at `57dfa942e`.
 
 | cell | libauth | SDK overrides |
 |---|---|---|
@@ -71,7 +71,7 @@ In-place `OP_DEFINE` x441 is the same speed on stock and the fork (under 1 ms). 
 | 1024 | 71.897 | 70.995 | 0.610 | 0.660 |
 | 4096 | 132.497 | 132.264 | 0.519 | 0.537 |
 
-At 4 KB bodies that is about 250 times. SDK overrides do not touch the clone. A debug trace that clones every step pays this. A single `stateEvaluate` clones once, at the start, so a normal per-call execution does not.
+At 4 KB bodies that is about 250 times. SDK overrides do not touch the clone. A debug trace that clones every step pays this. A single `stateEvaluate` clones once, at the start, so a normal framed execution does not.
 
 ## What the fork makes redundant
 
@@ -103,8 +103,8 @@ No dependency change is in the tree. The measured case for the PR is the encodeD
 ## Marketplace titles
 
 The four-cell matrix has not been repeated on marketplace titles. Every marketplace number in
-`PERF_KERNEL_VS_PERCALL.md` is stock `@bitauth/libauth` from `node_modules`, with the SDK overrides on.
-That doc records the proxied per-call lane (take job 62.208 s, approve result 131.787 s, worker CPU 80.9
+`PERF_KERNEL_VS_FRAMED.md` is stock `@bitauth/libauth` from `node_modules`, with the SDK overrides on.
+That doc records the proxied framed lane (take job 62.208 s, approve result 131.787 s, worker CPU 80.9
 percent VM), the kernel proxied lane (take job 126.242 s, approve result 111.212 s, no CPU profile), and
-the no-proxy per-call sanity titles (approve sanity 1044.307 s, refund sanity 718.767 s, worker CPU 89.5
+the no-proxy framed sanity titles (approve sanity 1044.307 s, refund sanity 718.767 s, worker CPU 89.5
 percent VM). Kernel transaction bytes, fee, and input counts were not collected on that kernel run.

@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import * as composer from '../../../src/per-call/composer/index.js';
+import * as composer from '../../../src/framed/composer/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
-} from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+  FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallResult,
+} from '../../../src/framed/proxy/index.js';
+import type { FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv, carolPkh, carolPriv } from '../../fixture/vars.js';
@@ -22,7 +22,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * A proxied root's entry that only reads a dynamic state value, through the shipped hop.
  *
  * `Board` keeps a struct array whose elements carry a string, so the array is a dynamic value: its record holds the
- * byte length and the bytes sit in a run of chunk records, which a per-call body reads from its frame's own
+ * byte length and the bytes sit in a run of chunk records, which a framed body reads from its frame's own
  * declaration, past the records its block layout names. `initialize` appends one element, and three entries only
  * read it: `check` (the run alone), `checkAllowed` (the run behind a nested-mapping read, whose node the layout names
  * ahead of the run) and `checkBeside` (the run read on both sides of a `view` call to a plain `Pinger`). These are
@@ -40,7 +40,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * compiler's: a verified batch's body holds the records past its groups to the chunks it writes
  * (`countsDynamicChunkRecords` counts `dynamicWrites` only), and a run-time loop's nodes, one per turn, do not keep
  * the run one layout width past the frame's first declared record, where the body reads it. The file runs only
- * under `PER_CALL_AHEAD=1`.
+ * under `FRAMED_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -103,7 +103,7 @@ type ArtifactMap = ReturnType<typeof compileStringMulti>;
 let compiledRun: ArtifactMap | undefined;
 /** The contracts, compiled once and only when the file runs. */
 function compiled(): ArtifactMap {
-  compiledRun ??= compileStringMulti(SOURCE, { composition: 'per-call' });
+  compiledRun ??= compileStringMulti(SOURCE, { composition: 'framed' });
   return compiledRun;
 }
 
@@ -122,7 +122,7 @@ function funding(txid: string): Utxo {
 interface World {
   readonly network: MockNetworkProvider;
   readonly board: { readonly proxy: string; readonly implementation: string };
-  readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
+  readonly externals: Readonly<Record<string, FramedProxyExternal>>;
   readonly changeAddress: string;
   /** Hands out a fresh coin id per hop, distinct from every category. */
   readonly nextCoin: () => Utxo;
@@ -130,7 +130,7 @@ interface World {
 
 /** What a hop left: its result, or its error with the last draft built and the stalls the settle caught. */
 interface Outcome {
-  readonly result?: PerCallProxyCallResult;
+  readonly result?: FramedProxyCallResult;
   readonly error?: Error;
   readonly draft?: composer.CompositionDraft;
   readonly stalls: readonly string[];
@@ -147,10 +147,10 @@ async function enter(
   await world.network.addUtxo(binToHex(caller.lock), coin);
   const hosts = vi.spyOn(composer, 'createComposedDerivationHost');
   const derivations = vi.spyOn(composer, 'deriveComposition');
-  let result: PerCallProxyCallResult | undefined;
+  let result: FramedProxyCallResult | undefined;
   let error: Error | undefined;
   try {
-    result = await callPerCallProxyEntry({
+    result = await callFramedProxyEntry({
       provider: world.network,
       implementationArtifact: board,
       proxyArtifact: buildProxyArtifact(board),
@@ -184,7 +184,7 @@ async function enter(
 }
 
 /** The hop settled: every verdict accepted and the transaction broadcast. */
-function expectSettled(outcome: Outcome): PerCallProxyCallResult {
+function expectSettled(outcome: Outcome): FramedProxyCallResult {
   expect(outcome.error).toBeUndefined();
   expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
   expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -194,7 +194,7 @@ function expectSettled(outcome: Outcome): PerCallProxyCallResult {
 
 /** The hop was refused before anything was broadcast, by the board's own `reason` at its line in `entry`. */
 function expectOwnRefusal(outcome: Outcome, entry: string, reason: string): void {
-  expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
+  expect(outcome.error).toBeInstanceOf(FramedProxyDeployError);
   expect(outcome.coinLive).toBe(true);
   expect(outcome.error!.message).toContain(`the implementation's "${entry}" entry did not settle through the proxy: `
     + `frame "implementation-master" of Board.${entry}() at line ${lineOf(`"${reason}"`, `function ${entry}(`)}: `
@@ -202,7 +202,7 @@ function expectOwnRefusal(outcome: Outcome, entry: string, reason: string): void
 }
 
 /** The ids of the participants a settled hop's draft placed that start with `prefix`. */
-function placed(result: PerCallProxyCallResult, prefix: string): readonly string[] {
+function placed(result: FramedProxyCallResult, prefix: string): readonly string[] {
   return result.draft.layout.participants.map((participant) => participant.id)
     .filter((id) => id.startsWith(prefix));
 }
@@ -229,7 +229,7 @@ async function deployWorld(): Promise<World> {
   await fundShippedFacets(network);
   const initCoin = nextCoin();
   await network.addUtxo(binToHex(ALICE_LOCK), initCoin);
-  const board = await deployPerCallProxy({
+  const board = await deployFramedProxy({
     provider: network,
     implementationArtifact: Board!,
     proxyArtifact: buildProxyArtifact(Board!),
@@ -255,7 +255,7 @@ async function deployWorld(): Promise<World> {
   return world;
 }
 
-describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a proxied root entry that only reads a dynamic value', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: a proxied root entry that only reads a dynamic value', () => {
   it('publishes each entry\'s read of the array, and a mapping slot ahead of the run for the allowlist check', () => {
     const board = compiled().Board!;
     const row = (name: string): (typeof board.abi)[number] => board.abi.find((entry) => entry.name === name)!;

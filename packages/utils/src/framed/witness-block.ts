@@ -27,7 +27,7 @@ import {
   ByteReader,
   ByteWriter,
   INDEX_NONE,
-  PerCallEncodingError,
+  FramedEncodingError,
   bytesEqual,
   bytesToHex,
   concatBytes,
@@ -93,7 +93,7 @@ export interface WitnessBlock {
 export function encodeWitnessBlock(block: WitnessBlock): Uint8Array {
   assertFrameKind(block.kind);
   if (block.segments.length !== block.calls.length + 1) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `a witness block has one more segment than calls: got ${block.segments.length} segment(s) `
       + `for ${block.calls.length} call(s)`,
     );
@@ -101,15 +101,15 @@ export function encodeWitnessBlock(block: WitnessBlock): Uint8Array {
   for (const [index, call] of block.calls.entries()) {
     assertFrameKind(call.kind);
     if (call.kind === 0) {
-      throw new PerCallEncodingError(`call ${index} records a root frame, which is never a call kind`);
+      throw new FramedEncodingError(`call ${index} records a root frame, which is never a call kind`);
     }
     if (call.argsHash.length !== ARGS_HASH_LENGTH) {
-      throw new PerCallEncodingError(
+      throw new FramedEncodingError(
         `call ${index} has a ${call.argsHash.length}-byte args hash, expected ${ARGS_HASH_LENGTH}`,
       );
     }
     if (call.calleeRef === INDEX_NONE) {
-      throw new PerCallEncodingError(`call ${index} has no callee`);
+      throw new FramedEncodingError(`call ${index} has no callee`);
     }
   }
   for (const segment of block.segments) {
@@ -157,11 +157,11 @@ export function decodeWitnessBlock(payload: Uint8Array): WitnessBlock {
   const reader = new ByteReader(payload);
   const magic = reader.readBytes(2);
   if (!bytesEqual(magic, WITNESS_BLOCK_MAGIC)) {
-    throw new PerCallEncodingError(`not a witness block: magic ${bytesToHex(magic)}`);
+    throw new FramedEncodingError(`not a witness block: magic ${bytesToHex(magic)}`);
   }
   const version = reader.readByte();
   if (version !== WITNESS_BLOCK_VERSION) {
-    throw new PerCallEncodingError(`unsupported witness block version: ${version}`);
+    throw new FramedEncodingError(`unsupported witness block version: ${version}`);
   }
 
   const kind = assertFrameKind(reader.readByte());
@@ -176,12 +176,12 @@ export function decodeWitnessBlock(payload: Uint8Array): WitnessBlock {
   const calls = reader.readCounted16((inner, index): CallRecord => {
     const callKind = assertFrameKind(inner.readByte());
     if (callKind === 0) {
-      throw new PerCallEncodingError(`call ${index} records a root frame, which is never a call kind`);
+      throw new FramedEncodingError(`call ${index} records a root frame, which is never a call kind`);
     }
     const target = inner.readLp16();
     const callValue = inner.readUint64();
     const calleeRef = inner.readUint16();
-    if (calleeRef === INDEX_NONE) throw new PerCallEncodingError(`call ${index} has no callee`);
+    if (calleeRef === INDEX_NONE) throw new FramedEncodingError(`call ${index} has no callee`);
     return {
       kind: callKind,
       target,
@@ -210,7 +210,7 @@ export function decodeWitnessBlock(payload: Uint8Array): WitnessBlock {
   reader.assertEnd();
 
   if (segments.length !== calls.length + 1) {
-    throw new PerCallEncodingError(
+    throw new FramedEncodingError(
       `a witness block has one more segment than calls: got ${segments.length} segment(s) `
       + `for ${calls.length} call(s)`,
     );
@@ -230,7 +230,7 @@ export function decodeWitnessBlock(payload: Uint8Array): WitnessBlock {
  * bytecode, so one encoding exists for any given payload.
  */
 export function splitFirstPush(unlockingBytecode: Uint8Array): { payload: Uint8Array; rest: Uint8Array } {
-  if (unlockingBytecode.length === 0) throw new PerCallEncodingError('empty unlocking bytecode');
+  if (unlockingBytecode.length === 0) throw new FramedEncodingError('empty unlocking bytecode');
   const opcode = unlockingBytecode[0]!;
   const body = unlockingBytecode.subarray(1);
   if (opcode === 0x00) return { payload: new Uint8Array(0), rest: body };
@@ -247,16 +247,16 @@ export function splitFirstPush(unlockingBytecode: Uint8Array): { payload: Uint8A
   } else if (opcode === 0x4e) {
     lengthFieldBytes = 4;
   } else {
-    throw new PerCallEncodingError(`unlocking bytecode does not begin with a push: opcode ${opcode}`);
+    throw new FramedEncodingError(`unlocking bytecode does not begin with a push: opcode ${opcode}`);
   }
 
-  if (body.length < lengthFieldBytes) throw new PerCallEncodingError('truncated push length');
+  if (body.length < lengthFieldBytes) throw new FramedEncodingError('truncated push length');
   let length = lengthFieldBytes === 0 ? opcode : 0;
   for (let index = lengthFieldBytes - 1; index >= 0; index -= 1) {
     length = length * 256 + body[index]!;
   }
   const afterLength = body.subarray(lengthFieldBytes);
-  if (afterLength.length < length) throw new PerCallEncodingError('truncated push payload');
+  if (afterLength.length < length) throw new FramedEncodingError('truncated push payload');
   return { payload: afterLength.subarray(0, length), rest: afterLength.subarray(length) };
 }
 
@@ -267,7 +267,7 @@ export function splitFirstPush(unlockingBytecode: Uint8Array): { payload: Uint8A
  * script that consumes them.
  */
 export function splitLastPush(unlockingBytecode: Uint8Array): { leading: Uint8Array; payload: Uint8Array } {
-  if (unlockingBytecode.length === 0) throw new PerCallEncodingError('empty unlocking bytecode');
+  if (unlockingBytecode.length === 0) throw new FramedEncodingError('empty unlocking bytecode');
   let offset = 0;
   let lastPushStart = 0;
   while (offset < unlockingBytecode.length) {
@@ -312,10 +312,10 @@ export function readOwnWitnessBlock(
   const { payload, rest } = splitFirstPush(unlockingBytecode);
   const block = decodeWitnessBlock(payload);
   if (!bytesEqual(payload, encodeWitnessBlock(expected))) {
-    throw new PerCallEncodingError('the first push is not the witness block this execution used');
+    throw new FramedEncodingError('the first push is not the witness block this execution used');
   }
   if (rest.length === 0) {
-    throw new PerCallEncodingError('unlocking bytecode carries no redeem-script push');
+    throw new FramedEncodingError('unlocking bytecode carries no redeem-script push');
   }
   const { leading, payload: redeemScript } = splitLastPush(rest);
   return { block, argumentPushes: leading, redeemScript };

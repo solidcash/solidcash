@@ -1,6 +1,6 @@
 # W9 inventory refresh (no removals)
 
-Taken 2026-10-05 against `feat/per-call` `57dfa942e`. `git rev-list --count feat/per-call..HEAD` per worktree. Nothing was removed, archived, or checked out.
+Taken 2026-10-05 against `feat/framed` `57dfa942e`. `git rev-list --count feat/framed..HEAD` per worktree. Nothing was removed, archived, or checked out.
 
 | worktree | branch | not in HEAD | dirty | last commit |
 |---|---|---:|---:|---|
@@ -20,7 +20,7 @@ Taken 2026-10-05 against `feat/per-call` `57dfa942e`. `git rev-list --count feat
 | .worktrees/kernel-perf-tip | detached | 0 | 5 | 2026-08-27 24af483ee |
 | .worktrees/kernel-return-helper-isolated | detached | 22 | 3 | 2026-09-09 7dc8238b2 |
 | .worktrees/noproxy-integration-TnMN8e | codex/eacc-noproxy-integration | 0 | 0 | 2026-10-02 557ea0176 |
-| .worktrees/per-call | feat/per-call | 0 | 0 | 2026-10-05 57dfa942e |
+| .worktrees/framed | feat/framed | 0 | 0 | 2026-10-05 57dfa942e |
 | .worktrees/release-readiness | codex/release-readiness-final | 1 | 0 | 2026-08-11 cf9bdd3ff |
 | .worktrees/solidhat-marketplace-mock | codex/solidhat-marketplace-mock | 2 | 0 | 2026-09-16 729ed5874 |
 | /root/.grok/worktrees/code-cashscript/2026-10-01-ce834b2b | detached | 19 | 6 | 2026-10-02 308e291c5 |

@@ -3,28 +3,28 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { Interface, id } from 'ethers';
 import { computeFunctionSelectorHex, hash160, validatorAddress } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { framedValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
 /**
  * S0, the conformance suite (spec R3, plan D7): the single-contract rows of the reference contexts in
- * `docs/per-call/probes/this-call-msg-sender/ref.sol`, the EVM against the per-call path.
+ * `docs/framed/probes/this-call-msg-sender/ref.sol`, the EVM against the framed path.
  *
- * Each row is its own contract, so a row the per-call path refuses leaves the others running. The EVM side compiles
- * it with solc and runs it in `@ethereumjs/evm`, entered by an EOA; the per-call side compiles it for the per-call
+ * Each row is its own contract, so a row the framed path refuses leaves the others running. The EVM side compiles
+ * it with solc and runs it in `@ethereumjs/evm`, entered by an EOA; the framed side compiles it for the framed
  * convention with Solidity compatibility, deploys it and calls it through the shipped call path, entered by a user's
  * coin. Each answer is compared by role: the user who entered, or the contract itself (what its `self()` answers).
- * Every row's entry writes, so the per-call answer comes from a frame the user's coin enters. A row the per-call
+ * Every row's entry writes, so the framed answer comes from a frame the user's coin enters. A row the framed
  * path does not serve yet is pinned with the refusal it meets, beside the answer the EVM gives. A selector is
- * compared by the function it selects: the EVM hashes a signature with keccak256, and the per-call dispatcher with
+ * compared by the function it selects: the EVM hashes a signature with keccak256, and the framed dispatcher with
  * SHA-256.
  */
 
@@ -40,9 +40,9 @@ interface Row {
   readonly members: string;
   /** The EVM's answer, which the live EVM run is checked against first. */
   readonly evm: Role;
-  /** The refusal the per-call path meets today, for a row it does not serve yet. */
+  /** The refusal the framed path meets today, for a row it does not serve yet. */
   readonly refusal?: RegExp;
-  /** The value the user's call carries, in wei on the EVM and in satoshis per-call. */
+  /** The value the user's call carries, in wei on the EVM and in satoshis framed. */
   readonly value?: bigint;
 }
 
@@ -96,7 +96,7 @@ const ROWS: readonly Row[] = [
   },
 ];
 
-/** Rows beyond the reference file: where `tx.origin` is read, which the per-call path threads to a subroutine. */
+/** Rows beyond the reference file: where `tx.origin` is read, which the framed path threads to a subroutine. */
 const ORIGIN_ROWS: readonly Row[] = [
   {
     label: 'tx.origin read in an internal helper', entry: 'originViaHelper', evm: 'EOA',
@@ -172,7 +172,7 @@ const SIG_ROWS: readonly Row[] = [
 
 /**
  * Rows beyond the reference file: `msg.data`, which an internal call keeps and a self-call replaces. Each compares
- * digests of two reads, since the EVM's calldata and a per-call frame's call data encode a call apart.
+ * digests of two reads, since the EVM's calldata and a framed frame's call data encode a call apart.
  */
 const DATA_ROWS: readonly Row[] = [
   {
@@ -261,11 +261,11 @@ async function evmAnswer(row: Row): Promise<Role> {
   return address === eoa.toString() ? 'EOA' : address === contract.toString() ? 'A' : address as never;
 }
 
-/** The row's answer on the per-call path, by role, or the refusal it meets. */
-async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly refusal?: string }> {
+/** The row's answer on the framed path, by role, or the refusal it meets. */
+async function framedAnswer(row: Row): Promise<{ readonly role?: Role; readonly refusal?: string }> {
   let artifact;
   try {
-    artifact = compileStringMulti(sourceOf(row), { composition: 'per-call', solidityImportCompat: true } as never).A!;
+    artifact = compileStringMulti(sourceOf(row), { composition: 'framed', solidityImportCompat: true } as never).A!;
   } catch (error) {
     return { refusal: String((error as Error).message) };
   }
@@ -281,17 +281,17 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
     provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
   });
   const user = encodeLockingBytecodeP2pkh(alicePkh);
-  const call = async (entry: string, txid: string, value?: bigint): ReturnType<typeof callPerCallEntry> => {
+  const call = async (entry: string, txid: string, value?: bigint): ReturnType<typeof callFramedEntry> => {
     const callerUtxo = { txid, vout: 0, satoshis: 300_000n };
     await provider.addUtxo(binToHex(user), callerUtxo);
-    return callPerCallEntry({
+    return callFramedEntry({
       provider, artifact: artifact!, categoryId: deployment.categoryId, functionName: entry, args: [],
       callerUtxo, callerLockingBytecode: user, funder: signature.unlockP2PKH(), vm: compositionMachine(),
       ...(value === undefined ? {} : { value }),
     });
   };
   // What `self()` answers: a Solidity `address` is the hash160 of the lock the contract's category derives.
-  const lock = validatorAddress(hexToBin(deployment.categoryId), perCallValidator.buildValidatorProgram());
+  const lock = validatorAddress(hexToBin(deployment.categoryId), framedValidator.buildValidatorProgram());
   const self = binToHex(hash160(lock));
   let answered;
   try {
@@ -312,12 +312,12 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
   return { role: address === binToHex(alicePkh) ? 'EOA' : address === self ? 'A' : address as never };
 }
 
-describe('S0: the single-contract reference rows, the EVM against the per-call path', () => {
+describe('S0: the single-contract reference rows, the EVM against the framed path', () => {
   for (const row of ALL_ROWS) {
-    it(`${row.label}: the EVM answers ${String(row.evm)}${row.refusal === undefined ? ', and so does per-call' : ''}`,
+    it(`${row.label}: the EVM answers ${String(row.evm)}${row.refusal === undefined ? ', and so does framed' : ''}`,
       async () => {
         expect(await evmAnswer(row)).toBe(row.evm);
-        const answer = await perCallAnswer(row);
+        const answer = await framedAnswer(row);
         if (row.refusal === undefined) expect(answer).toStrictEqual({ role: row.evm });
         else expect(answer.refusal).toMatch(row.refusal);
       }, 120_000);

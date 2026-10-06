@@ -1,11 +1,11 @@
 import { expect } from 'vitest';
 import {
-  PerCallEncodingError,
+  FramedEncodingError,
   bytesToHex,
   hexToBytes,
-} from '../../src/per-call/primitives.js';
-import type { CallRecord, WitnessBlock } from '../../src/per-call/witness-block.js';
-import type { RecordEntry } from '../../src/per-call/frames.js';
+} from '../../src/framed/primitives.js';
+import type { CallRecord, WitnessBlock } from '../../src/framed/witness-block.js';
+import type { RecordEntry } from '../../src/framed/frames.js';
 import type { BlockVector, CallVector, RecordEntryVector } from './vectors/witness-block.js';
 
 /** Parses one of the vectors' hex strings. */
@@ -47,14 +47,14 @@ export const toWitnessBlock = (vector: BlockVector): WitnessBlock => ({
 });
 
 /** Runs `run` and asserts it is rejected as malformed, optionally matching the message. */
-export const expectPerCallRejection = (run: () => unknown, messagePattern?: RegExp): void => {
+export const expectFramedRejection = (run: () => unknown, messagePattern?: RegExp): void => {
   let caught: unknown;
   try {
     run();
   } catch (error) {
     caught = error;
   }
-  expect(caught, 'expected the call to be rejected').toBeInstanceOf(PerCallEncodingError);
+  expect(caught, 'expected the call to be rejected').toBeInstanceOf(FramedEncodingError);
   if (messagePattern !== undefined) {
     expect((caught as Error).message).toMatch(messagePattern);
   }

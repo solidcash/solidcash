@@ -1,5 +1,5 @@
 /**
- * The effects a per-call body makes once per turn of a loop: the events it emits, the value sends it lists and the
+ * The effects a framed body makes once per turn of a loop: the events it emits, the value sends it lists and the
  * keccak256 side-cars it reads.
  *
  * A body binds such an effect where its source makes it, in the order the execution reaches it: the k-th event at

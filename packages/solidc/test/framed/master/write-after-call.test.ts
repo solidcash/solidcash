@@ -8,7 +8,7 @@ import {
   type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { refusalMessageOf } from './refused-entry.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
@@ -21,7 +21,7 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  *
  * A write that a call precedes lands in a later segment than the one the body begins in, so the sorted-batch
  * operands the write's verification consumes have to be derived from the write's own segment's declaration rather
- * than the body's first. The whole shipped path runs: the sources through `compileStringMulti` with the per-call
+ * than the body's first. The whole shipped path runs: the sources through `compileStringMulti` with the framed
  * convention, the reserved slots filled the way a deployment fills them, and the machine's verdict on the caller's
  * own input is the assertion. A write behind a call whose occurrence the source does not fix keeps its refusal
  * (`refused-entry-shapes.test.ts`).
@@ -60,9 +60,9 @@ const TWO_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const callerArtifact = artifacts.Caller!;
-const twoCallArtifacts = compileStringMulti(TWO_CALL_SOURCE, { composition: 'per-call' });
+const twoCallArtifacts = compileStringMulti(TWO_CALL_SOURCE, { composition: 'framed' });
 
 type Program = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<Program['transaction']>;
@@ -272,7 +272,7 @@ function verdict(options: Options = {}): { accepted: boolean; objection?: string
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry writes a verified mapping after an external call', () => {
+describe('a framed master whose entry writes a verified mapping after an external call', () => {
   it('derives the write witness from the segment the write lands in and is accepted', () => {
     const outcome = verdict();
     expect(outcome.accepted, outcome.objection).toBe(true);
@@ -291,7 +291,7 @@ describe('a per-call master whose entry writes a verified mapping after an exter
   });
 });
 
-describe('a per-call master whose entry deletes a mapping entry beside a call elsewhere', () => {
+describe('a framed master whose entry deletes a mapping entry beside a call elsewhere', () => {
   const DELETE_SOURCE = 'pragma solidcash ^0.13.0;'
     + ' interface ICallee { function ping(); }'
     + ` contract Callee { function ping() { require(true); } }`
@@ -340,7 +340,7 @@ const WRITE_FIRST_PLAIN_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-describe('a per-call master whose write precedes a call in the same body', () => {
+describe('a framed master whose write precedes a call in the same body', () => {
   it('serves the entry, whose records are declared in the frame\'s opening segment', () => {
     expect(refusalMessageOf(WRITE_FIRST_SOURCE)).toBe('');
     expect(refusalMessageOf(WRITE_FIRST_PLAIN_SOURCE)).toBe('');
@@ -363,9 +363,9 @@ const SAME_CALL_BRANCH_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const sameCallBranchArtifacts = compileStringMulti(SAME_CALL_BRANCH_SOURCE, { composition: 'per-call' });
+const sameCallBranchArtifacts = compileStringMulti(SAME_CALL_BRANCH_SOURCE, { composition: 'framed' });
 
-describe('a per-call master whose write follows a branch whose arms call the same number of times', () => {
+describe('a framed master whose write follows a branch whose arms call the same number of times', () => {
   it('serves the entry and settles in the machine', () => {
     expect(refusalMessageOf(SAME_CALL_BRANCH_SOURCE)).toBe('');
     const outcome = verdict({ calls: 1, callerUnit: sameCallBranchArtifacts });
@@ -392,9 +392,9 @@ const VARYING_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const varyingCallArtifacts = compileStringMulti(VARYING_CALL_SOURCE, { composition: 'per-call' });
+const varyingCallArtifacts = compileStringMulti(VARYING_CALL_SOURCE, { composition: 'framed' });
 
-describe('a per-call master whose write follows a branch whose arms call a different number of times', () => {
+describe('a framed master whose write follows a branch whose arms call a different number of times', () => {
   it('settles over the arm that made one call, reading the segment that call opened', () => {
     const outcome = verdict({ calls: 1, amount: 42, callerUnit: varyingCallArtifacts });
     expect(outcome.accepted, outcome.objection).toBe(true);
@@ -431,7 +431,7 @@ const REMOVE_AFTER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const removeAfterCallArtifacts = compileStringMulti(REMOVE_AFTER_CALL_SOURCE, { composition: 'per-call' });
+const removeAfterCallArtifacts = compileStringMulti(REMOVE_AFTER_CALL_SOURCE, { composition: 'framed' });
 
 /**
  * A removal whose own body makes no call, in a contract whose other entry does. Its records are declared in the
@@ -449,7 +449,7 @@ const REMOVE_ONLY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function removeTag(address t) { delete tags[t]; require(true); }'
   + ' }';
 
-describe('a per-call master whose entry removes a mapping entry', () => {
+describe('a framed master whose entry removes a mapping entry', () => {
   it('serves a removal the entry makes after its own call', () => {
     // The removal's write is a mapping write on the target node, so the walker sees it where the call precedes it.
     expect(refusalMessageOf(REMOVE_AFTER_CALL_SOURCE)).toBe('');

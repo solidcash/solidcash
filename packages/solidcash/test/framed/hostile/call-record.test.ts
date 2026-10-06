@@ -10,16 +10,16 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
   type CompositionDraftPlan,
   type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
-import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
+} from '../../../src/framed/composer/index.js';
+import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
+import { REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend } from '../../../../solidc/test/framed/master/validator-input.js';
 
 /**
  * The record a caller writes for an external call, bound to the callee that actually ran it.
@@ -28,7 +28,7 @@ import { REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend } from '../../..
  * arguments in its own call data. The body binds that record where the call is made, so a record whose callee is
  * not the covered callee, or whose digest is not the callee's call data, is refused.
  *
- * The whole shipped path runs here: real source through `compileStringMulti` with the per-call option, the shipped
+ * The whole shipped path runs here: real source through `compileStringMulti` with the framed option, the shipped
  * deployment filling the reserved slots, the composer laying the composition out and assembling it, and the
  * BCH-2026 machine answering on the assembled transaction. Each control rewrites one record field through the same
  * builder the composer used, so the only difference from the accept is the field under test.
@@ -69,7 +69,7 @@ const token = (
 
 /** The compiled, deployed and planned composition: a caller, its callee and the validator that covers both. */
 function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType<typeof compileStringMulti> } {
-  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
   const caller = deployMaster(artifacts.Caller!, CATEGORY_CALLER, VALIDATOR_PROGRAM);
   const callee = deployMaster(artifacts.Callee!, CATEGORY_CALLEE, VALIDATOR_PROGRAM);
   const validator = validatorSpend(CATEGORY_CALLER, { roots: [0], masters: [0, 2], settles: [] });

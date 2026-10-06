@@ -8,8 +8,8 @@ import {
 } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
 import { compileString } from '../src/index.js';
-import { deployPerCallMaster, distinctBytes, evaluateMasterSpend, node, spent } from './per-call/master/record-spend.js';
-import { deployChunkRunContract, evaluateChunkRuns } from './per-call/master/chunk-run-input.js';
+import { deployFramedMaster, distinctBytes, evaluateMasterSpend, node, spent } from './framed/master/record-spend.js';
+import { deployChunkRunContract, evaluateChunkRuns } from './framed/master/chunk-run-input.js';
 
 /**
  * An index outside [0, length) fails on the BCH-2026 machine, as Solidity's index check reverts, on both conventions.
@@ -53,10 +53,10 @@ const P = 'pragma solidcash ^0.13.0;';
 function conventions(members: string, label: string): Array<[string, (args: readonly Arg[]) => boolean]> {
   const source = `${P} contract C { ${members} }`;
   const direct = compileString(source, { messageBus: false });
-  const master = deployPerCallMaster(source, label);
+  const master = deployFramedMaster(source, label);
   return [
     ['direct', (args) => settleDirect(direct, args)],
-    ['per-call', (args) => evaluateMasterSpend(master, { args: [...args].reverse().map(push), records: [] }).accepted],
+    ['framed', (args) => evaluateMasterSpend(master, { args: [...args].reverse().map(push), records: [] }).accepted],
   ];
 }
 
@@ -146,7 +146,7 @@ describe('a memory index outside the length', () => {
     const negative = `${P} contract C { function f(uint e) { uint[] memory a = new uint[](2); require(a[-1] == e); } }`;
     const past = `${P} contract C { function f(uint e) { uint[3] memory a; uint p; assembly { p := a }`
       + ' require(a[3] == e); } }';
-    for (const options of [{ messageBus: false }, { composition: 'per-call' as const }]) {
+    for (const options of [{ messageBus: false }, { composition: 'framed' as const }]) {
       expect(() => compileString(negative, options)).toThrow('Index out of bounds');
       expect(() => compileString(past, options)).toThrow('Index 3 out of bounds');
     }
@@ -167,7 +167,7 @@ describe('a memory index evaluated once', () => {
   it('calls a function in the index once, for a word read, a word write and a byte read, per call', () => {
     // The load evaluated its address at both ends and once more in the check, so `next()` ran three times; the
     // record now steps n once, and the body's own `this.n == before + 1` holds.
-    const master = deployPerCallMaster(`${P} contract C { ${ONCE_MEMBERS} }`, 'memory index once');
+    const master = deployFramedMaster(`${P} contract C { ${ONCE_MEMBERS} }`, 'memory index once');
     const spend = (entry: string, e: bigint, after: bigint): boolean => evaluateMasterSpend(master, {
       entry,
       args: [encodeIntegerValue(e)],
@@ -257,11 +257,11 @@ describe('a negative index into a value blob', () => {
     expectBounds(variable, 'variable argument', [[blobs, 1n, second]], [[blobs, -1n, second]]);
   });
 
-  it('refuses a negative per-call index into a mapping\'s fixed-width or variable-width array value', () => {
+  it('refuses a negative framed index into a mapping\'s fixed-width or variable-width array value', () => {
     const id = encodeIntegerValue(7n);
     const slot = keyToSlotMulti([id]);
     const kinds = [distinctBytes(4, 0x15), distinctBytes(4, 0x3c)];
-    const fixed = deployPerCallMaster(`${P} contract C { mapping(uint => bytes4[]) logs;`
+    const fixed = deployFramedMaster(`${P} contract C { mapping(uint => bytes4[]) logs;`
       + ' function at(uint id, int i, bytes4 e) { require(this.logs[id][i] == e); } }', 'negative mapping fixed');
     const fixedNode = node(slot, undefined, encodeChunkableValueTail(encodePushdataValue(kinds, 'bytes4[]')));
     const fixedAt = (i: bigint, e: Uint8Array): boolean => evaluateMasterSpend(fixed, {
@@ -271,7 +271,7 @@ describe('a negative index into a value blob', () => {
     for (const e of [kinds[0]!, kinds[1]!, new Uint8Array(4)]) expect(fixedAt(-1n, e)).toBe(false);
 
     const notes = [distinctBytes(2, 0x52), distinctBytes(5, 0x6e)];
-    const variable = deployPerCallMaster(`${P} contract C { mapping(uint => bytes[]) notes;`
+    const variable = deployFramedMaster(`${P} contract C { mapping(uint => bytes[]) notes;`
       + ' function at(uint id, int i, bytes e) { require(this.notes[id][i] == e); } }', 'negative mapping variable');
     const variableNode = node(slot, undefined, encodeChunkableValueTail(encodePushdataValue(notes, 'bytes[]')));
     const variableAt = (i: bigint, e: Uint8Array): boolean => evaluateMasterSpend(variable, {
@@ -281,11 +281,11 @@ describe('a negative index into a value blob', () => {
     expect(variableAt(-1n, notes[1]!)).toBe(false);
   });
 
-  it('refuses a negative per-call index into a state array, read or written', () => {
+  it('refuses a negative framed index into a state array, read or written', () => {
     const values = [5n, 600n];
     const items = packFixedWidthArray(values, 'uint256');
     const contract = (entry: string, label: string): ReturnType<typeof deployChunkRunContract> => deployChunkRunContract(
-      compileString(`${P} contract Ledger { uint[] public items; ${entry} }`, { composition: 'per-call' }), label,
+      compileString(`${P} contract Ledger { uint[] public items; ${entry} }`, { composition: 'framed' }), label,
     );
     const check = contract('function check(int index, uint value) { uint count = this.items.length;'
       + ' require(this.items[index] == value); require(count > 0); }', 'negative state read');

@@ -4,17 +4,17 @@ import {
   concatBytes, encodeWitnessBlock, splitFirstPush, validatorAddress,
   type Artifact, type StateLayout, type WitnessBlock,
 } from '@solidcash/utils';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment } from '../../../src/stateful/SortedList.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { deploymentStateValues, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';
+import { deploymentStateValues, type FramedProxyExternal } from '../../../src/framed/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -73,7 +73,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'per-call' } as never);
+const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
 const token = artifacts.Token!;
 const proxiedToken = artifacts.ProxiedToken!;
 const basket = artifacts.Basket!;
@@ -142,7 +142,7 @@ async function deployedChain(): Promise<Chain> {
         provider: network, fundingUtxo: await walletCoin(), changeAddress: wallet.address, funder: walletFunder,
       })).categoryId;
     const deployProxied = async (artifact: Artifact, args: readonly Uint8Array[] = []): Promise<Proxied> => {
-      const deployment = await deployPerCallProxy({
+      const deployment = await deployFramedProxy({
         provider: network,
         implementationArtifact: artifact,
         proxyArtifact: buildProxyArtifact(artifact),
@@ -181,7 +181,7 @@ async function deployedChain(): Promise<Chain> {
 }
 
 /** Both tokens, each under its own name, so each call is matched to its deployment by the address it targets. */
-function tokenExternals(chain: Chain): Record<string, PerCallProxyExternal> {
+function tokenExternals(chain: Chain): Record<string, FramedProxyExternal> {
   return {
     TokenA: { artifact: token, categoryId: chain.tokenA },
     TokenB: { artifact: token, categoryId: chain.tokenB },
@@ -189,8 +189,8 @@ function tokenExternals(chain: Chain): Record<string, PerCallProxyExternal> {
 }
 
 /** Both proxied tokens, each as the hop names a callee behind its proxy. */
-function proxiedExternals(chain: Chain): Record<string, PerCallProxyExternal> {
-  const external = (deployment: Proxied): PerCallProxyExternal => ({
+function proxiedExternals(chain: Chain): Record<string, FramedProxyExternal> {
+  const external = (deployment: Proxied): FramedProxyExternal => ({
     artifact: proxiedToken,
     categoryId: deployment.proxy,
     proxyArtifact: buildProxyArtifact(proxiedToken),
@@ -201,10 +201,10 @@ function proxiedExternals(chain: Chain): Record<string, PerCallProxyExternal> {
 
 /** Enters one of a basket deployment's entries through the hop. */
 async function enterBasket(
-  chain: Chain, over: Proxied, externals: Record<string, PerCallProxyExternal>,
+  chain: Chain, over: Proxied, externals: Record<string, FramedProxyExternal>,
   functionName: string, args: readonly bigint[],
-): Promise<PerCallProxyCallResult> {
-  return callPerCallProxyEntry({
+): Promise<FramedProxyCallResult> {
+  return callFramedProxyEntry({
     provider: chain.network,
     implementationArtifact: basket,
     proxyArtifact: buildProxyArtifact(basket),
@@ -231,7 +231,7 @@ async function tokenState(
   const layout: StateLayout = artifact === token ? token.stateLayout! : {
     ...buildProxyArtifact(artifact).stateLayout!, collections: artifact.stateLayout!.collections ?? [],
   };
-  const deployment = await readPerCallDeployment(chain.network, categoryId, layout);
+  const deployment = await readFramedDeployment(chain.network, categoryId, layout);
   const balances = (deployment.nodesByCollection.get('balances') ?? [])
     .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
     .filter((node) => node.slot.some((byte) => byte !== 0))
@@ -239,7 +239,7 @@ async function tokenState(
   return { supply: deploymentStateValues(layout, categoryId, deployment).supply, balances };
 }
 
-const blockNames = (result: PerCallProxyCallResult): readonly string[] =>
+const blockNames = (result: FramedProxyCallResult): readonly string[] =>
   result.draft.layout.blocks.map((block) => block.contract);
 
 describe('one entry reaching two deployments of one contract', () => {
@@ -306,7 +306,7 @@ describe('one entry reaching two deployments of one contract', () => {
 
   it('credits each deployment through the plain call path', async () => {
     const chain = await deployedChain();
-    const result = await callPerCallEntry({
+    const result = await callFramedEntry({
       provider: chain.network,
       artifact: plainBasket,
       categoryId: chain.plainBasket,
@@ -330,7 +330,7 @@ describe('one entry reaching two deployments of one contract', () => {
  * The settled transaction with each token frame's declarations of its own record moved to the other deployment's
  * record, at the views the other record's own frame declares: a builder that confused the two deployments.
  */
-function swappedRecords(result: PerCallProxyCallResult, recordA: number, recordB: number): VmTransaction {
+function swappedRecords(result: FramedProxyCallResult, recordA: number, recordB: number): VmTransaction {
   const transaction = structuredClone(result.transaction) as VmTransaction;
   const blocks = new Map(['callee-master-1', 'callee-master-2'].map((master) => [
     master, structuredClone(result.draft.blockOf(master)) as WitnessBlock,
@@ -353,7 +353,7 @@ function swappedRecords(result: PerCallProxyCallResult, recordA: number, recordB
 }
 
 /** The participants the machine refuses on a transaction built from a settled hop. */
-function refusedParticipants(result: PerCallProxyCallResult, transaction: VmTransaction): readonly string[] {
+function refusedParticipants(result: FramedProxyCallResult, transaction: VmTransaction): readonly string[] {
   const vm = compositionMachine();
   return result.draft.layout.participants
     .filter((placed) => vm.stateSuccess(vm.evaluate({

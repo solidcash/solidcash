@@ -4,13 +4,13 @@ import {
   buildPushdataCommitment, concatBytes, decodeWitnessBlock, encodeWitnessBlock, parsePushdataCommitment,
   splitFirstPush, type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { deploymentStateValues } from '../../../src/per-call/proxy/external-calls.js';
-import { participant } from '../../../src/per-call/composer/index.js';
-import type { PerCallProxyCallResult } from '../../../src/per-call/proxy/index.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
+import { deploymentStateValues } from '../../../src/framed/proxy/external-calls.js';
+import { participant } from '../../../src/framed/composer/index.js';
+import type { FramedProxyCallResult } from '../../../src/framed/proxy/index.js';
 import {
-  USER_LOCK, compilePerCall, deployPlain, deployProxied, enterPlain, enterProxied, newWorld, refusedVerdicts,
+  USER_LOCK, compileFramed, deployPlain, deployProxied, enterPlain, enterProxied, newWorld, refusedVerdicts,
   type Outcome, type PlainDeployment, type ProxiedDeployment, type World,
 } from '../ahead/composition-world.js';
 
@@ -105,7 +105,7 @@ const RESERVE = 100n;
 
 interface Chain {
   readonly world: World;
-  readonly artifacts: ReturnType<typeof compilePerCall>;
+  readonly artifacts: ReturnType<typeof compileFramed>;
   readonly deed: PlainDeployment;
   readonly locker: ProxiedDeployment;
   readonly lender: ProxiedDeployment;
@@ -117,7 +117,7 @@ interface Chain {
 let chainRun: Promise<Chain> | undefined;
 function chain(): Promise<Chain> {
   chainRun ??= (async (): Promise<Chain> => {
-    const artifacts = compilePerCall(SOURCE);
+    const artifacts = compileFramed(SOURCE);
     const world = await newWorld(0x5a);
     const deed = await deployPlain(world, artifacts.Deed!);
     const locker = await deployProxied(world, artifacts.Locker!, [deed.address]);
@@ -151,7 +151,7 @@ async function nodesHolding(
   world: World, categoryId: string, layout: NonNullable<Artifact['stateLayout']>, collection: string,
   value: Uint8Array,
 ): Promise<number> {
-  const pools = await readPerCallDeployment(world.network, categoryId, layout);
+  const pools = await readFramedDeployment(world.network, categoryId, layout);
   const wanted = binToHex(value);
   return (pools.nodesByCollection.get(collection) ?? [])
     .filter((utxo) => (utxo.token?.nft?.commitment ?? '').includes(wanted)).length;
@@ -161,7 +161,7 @@ async function nodesHolding(
 async function lenderState(c: Chain): Promise<readonly unknown[]> {
   const layout = proxyLayoutOf(c.lender);
   const state = deploymentStateValues(layout, c.lender.proxyCategoryId,
-    await readPerCallDeployment(c.world.network, c.lender.proxyCategoryId, layout));
+    await readFramedDeployment(c.world.network, c.lender.proxyCategoryId, layout));
   return [state.reserve, state.repaid, state.loans];
 }
 
@@ -174,7 +174,7 @@ function expectSettled<T extends Verdicts>(outcome: Outcome<T>): T {
   return outcome.result!;
 }
 
-let repaidLoan: PerCallProxyCallResult | undefined;
+let repaidLoan: FramedProxyCallResult | undefined;
 
 describe('a call back into the hop\'s own root', () => {
   it('mints two deeds to the user and approves the locker (setup, plain roots)', async () => {

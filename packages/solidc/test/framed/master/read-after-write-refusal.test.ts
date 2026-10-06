@@ -3,13 +3,13 @@ import { encodeDataPush } from '@bitauth/libauth';
 import { encodeChunkableValueTail, encodeIntegerValue, encodePushdataValue } from '@solidcash/utils';
 import { keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import { compileString } from '../../../src/compiler.js';
-import { PerCallStaleReadError } from '../../../src/Errors.js';
+import { FramedStaleReadError } from '../../../src/Errors.js';
 import {
-  deployPerCallMaster, distinctBytes, evaluateMasterSpend, node, spent, type DeployedMaster, type PlacedRecord,
+  deployFramedMaster, distinctBytes, evaluateMasterSpend, node, spent, type DeployedMaster, type PlacedRecord,
 } from './record-spend.js';
 
 /**
- * A per-call body that reads a verified-mapping entry after a write the frame does not keep, in the same segment, is
+ * A framed body that reads a verified-mapping entry after a write the frame does not keep, in the same segment, is
  * refused at compile time.
  *
  * A frame closes each write against the view its segment declares after the write, and a read later in the segment
@@ -28,15 +28,15 @@ const STATE = ' uint public count; mapping(uint => bytes4[]) logs; mapping(uint 
   + ' mapping(uint => mapping(uint => bytes4[])) grid;';
 
 const readOf = (entry: string, shape: string): string => `a read of \`${entry}\` after its write ${shape} is not `
-  + 'supported on the per-call convention: read it before the write, or into a local';
+  + 'supported on the framed convention: read it before the write, or into a local';
 
 /** The stale-read refusal a contract with `members` draws, or undefined when it compiles. */
-function refusal(members: string, options: Record<string, unknown> = { composition: 'per-call' }): string | undefined {
+function refusal(members: string, options: Record<string, unknown> = { composition: 'framed' }): string | undefined {
   try {
     compileString(`${PRAGMA} interface IPing { function ping(); } contract Refused {${members} }`, options);
     return undefined;
   } catch (error) {
-    if (error instanceof PerCallStaleReadError) return error.message;
+    if (error instanceof FramedStaleReadError) return error.message;
     throw error;
   }
 }
@@ -91,7 +91,7 @@ const REFUSED: readonly { readonly shape: string; readonly body: string; readonl
   {
     shape: 'a push after a whole write of the entry',
     body: ' function f(uint a, uint b, bytes4 k, bytes4[] kinds) { this.grid[a][b] = kinds; this.grid[a][b].push(k); }',
-    message: 'a push on `grid[a][b]` after its write when the body writes it again is not supported on the per-call '
+    message: 'a push on `grid[a][b]` after its write when the body writes it again is not supported on the framed '
       + 'convention: update a local and write the entry once',
   },
   {
@@ -104,7 +104,7 @@ const REFUSED: readonly { readonly shape: string; readonly body: string; readonl
 
 const ARB = ' struct Arb { uint fee; uint buyer; uint seller; } uint public count; mapping(uint => Arb) arbs;';
 
-describe('a per-call read of a mapping entry after a write the frame does not keep', () => {
+describe('a framed read of a mapping entry after a write the frame does not keep', () => {
   for (const { shape, body, message } of REFUSED) {
     it(`refuses ${shape}, naming the entry and the shape`, () => {
       expect(refusal(`${STATE}${body}`)).toContain(message);
@@ -120,7 +120,7 @@ describe('a per-call read of a mapping entry after a write the frame does not ke
   it('refuses the same bodies on the direct convention, whose read would take the entry the transaction spends', () => {
     for (const { body, message } of REFUSED.slice(0, 3)) {
       expect(() => refusal(`${STATE}${body}`, {}))
-        .toThrow(message.replace('the per-call convention', 'the direct convention'));
+        .toThrow(message.replace('the framed convention', 'the direct convention'));
     }
   });
 
@@ -132,7 +132,7 @@ describe('a per-call read of a mapping entry after a write the frame does not ke
   });
 });
 
-const NEIGHBOURS = deployPerCallMaster(`${PRAGMA} contract Neighbours {${STATE}`
+const NEIGHBOURS = deployFramedMaster(`${PRAGMA} contract Neighbours {${STATE}`
   + ' function readThenArm(uint id, bytes4 k, bool b) { this.count = this.logs[id].length;'
   + '   if (b) { this.logs[id].push(k); } }'
   + ' function pushThenRead(uint id, bytes4 k) { this.logs[id].push(k); this.count = this.logs[id].length; }'
@@ -162,7 +162,7 @@ PlacedRecord[] {
 const accepts = (master: DeployedMaster, entry: string, args: Uint8Array[], records: PlacedRecord[]): boolean =>
   evaluateMasterSpend(master, { entry, args, records }).accepted;
 
-describe('the neighbours a per-call frame serves beside the refused reads', () => {
+describe('the neighbours a framed frame serves beside the refused reads', () => {
   it('reads the entry before an arm\'s push: the length from before the push is the honest one', () => {
     const args = [YES, ADDED, ID];
     expect(accepts(NEIGHBOURS, 'readThenArm', args, logsSpend(0n, 1n, [HELD], [HELD, ADDED]))).toBe(true);
@@ -188,7 +188,7 @@ describe('the neighbours a per-call frame serves beside the refused reads', () =
   });
 });
 
-const SNAPSHOTS = deployPerCallMaster(`${PRAGMA} contract Snapshots {${ARB}`
+const SNAPSHOTS = deployFramedMaster(`${PRAGMA} contract Snapshots {${ARB}`
   + ' function approve(uint id, bool b, bool s) {'
   + '   if (b) { Arb memory x = arbs[id]; arbs[id] = Arb(x.fee, 1, x.seller); }'
   + '   if (s) { Arb memory y = arbs[id]; arbs[id] = Arb(y.fee, y.buyer, 1); } }'

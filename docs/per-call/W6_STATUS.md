@@ -166,6 +166,38 @@ Context, still useful when reading those three sites:
   required 43528). `vmAccepts(await call.build())` passes, so the route itself is accepted; the sibling titles
   in the same file that pass supply `createBareP2pkhFeeFunder(provider, 500_000n)` explicitly.
 
+### Kernel row-loop capacity (density budget)
+
+Measured in `KernelLoopCompose.test.ts`: 4 failures, 140 passing. Two of them are BCH-2026 operation-cost
+density overruns of a few *bytes'* worth of budget on input 0, where the budget is
+`800 * (41 + unlockingBytecode.length)` and the unlocking bytecode carries the whole 2.3-3.6 KB route covenant:
+
+- `settles a lazy returning-helper event in a scalar-state continuation` — marked input 0:
+  `Maximum operation cost: 1894400 (density control length: 2368); operation cost following operation: 1894476`.
+  76 units over, i.e. under a single byte of budget.
+- `enforces the recursive event domain step and 64-frame resource bound` — `contract.call.descend(63n, 1n).build()`
+  fails in auto-derivation: `VM failed at ip 254 opcode 104 ... Maximum operation cost: 2900800 (density control
+  length: 3626); operation cost following operation: 2903057`. 2257 units over (2.8 bytes of budget) for the 64
+  frames the compiler hard-codes as this recurrence's `maximumIterations` (`LowerTailRecursion.ts` publishes a
+  constant 64); the test requires `descend(63n, 1n)` to build and `descend(1n, 0n)` / the tampered-metadata case
+  to reject.
+
+The two established density-reserve mechanisms do not cover these frames: `kernelRouteDensityReserveBytes`
+(`Contract.ts`) is gated on `__internal__kernelJournalAccessStreams` and the SDK pushes a zero-length reserve for
+every other compiler route, and `PER_CALL_MASTER_PADDING_BYTES` pads only the per-call master script. Neither is
+available to a kernel row-loop route, and adding a blanket padding block to every kernel route would move the
+bytecode sizes pinned across the kernel test corpus, so this needs a shape-scoped compiler decision rather than an
+SDK patch.
+
+The other two in the same file fail inside the route covenant itself:
+
+- `settles affine varying-key recursive sets and deletes through rank streams` — `execute('fill')`
+  (`contract.batch([{ function: 'fill', args: [3n] }])`) fails `input 0` with an OP_VERIFY in the route frame.
+- `settles selected counter domains and freezes mixed collection/effect domains` — the composed return
+  (`returned.send()`) is refused by `messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY
+  operation.` with `requireStatement: { ip: 280, line: 76 }`, i.e. a route `require` at line 76 of the generated
+  route helpers.
+
 ### Pre-existing, not kernel-specific
 
 - `AtomicMessageBusCompose` — 3 titles, recorded in `W6_BASELINE.md` as pre-existing kernel rows; they fail in

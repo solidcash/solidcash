@@ -2371,7 +2371,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private resolvedLibraries: Record<string, ExternalLibrary>;
 
-  /** The direct convention: not a framed composition, whose marketplace bytes the size work leaves alone. */
+  /** The direct convention: not a framed composition, whose application bytes the size work leaves alone. */
   private get directConvention(): boolean {
     return this.compilerOptions.composition !== 'framed';
   }
@@ -36504,7 +36504,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // is above the tracked stack here, hence the +1 pick offset. The SDK compacts that slot only while no
       // return event is pending, so a base anchored on a witnessed callee return - already the physical output
       // after the return band - is not stepped down; it steps down only when no returning call ran and the
-      // anchor fell back to the block base (measured on a no-proxy marketplace entry: anchor 32, covenant 31).
+      // anchor fell back to the block base (measured on a no-proxy application entry: anchor 32, covenant 31).
       const roiIdx = hasReturnEventSlot && this.currentFunction.blockLayout?.trailingBase === undefined
         ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
       if (roiIdx >= 0) {
@@ -36581,7 +36581,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The last event is the physically last one: the MAXIMUM of the witnessed return-output indices, not the last
     // slot in declaration order. Several callsites of one callee share one physical participant, so a shared
     // callsite publishes its event in the writer's in-block slot at an early output; measured on a no-proxy
-    // marketplace entry, a shared approve/transferFrom writer's slot named output 18 while an earlier-declared
+    // application entry, a shared approve/transferFrom writer's slot named output 18 while an earlier-declared
     // slot named 31, and anchoring on the later-declared slot pointed the chunk covenant at a return-event
     // carrier. A call that did not run binds -1, which never wins the maximum; when none ran, the maximum plus one
     // is zero and the run starts where no returning call precedes it.

@@ -7851,7 +7851,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             try {
               // A numeric key's on-stack form is its minimal VM number, so 0 is the EMPTY byte string. Falling
               // through to the pushdata encoder hashes 0x00 instead, which is a different vmap slot: measured on
-              // the no-proxy MarketplaceV1 whitelist getter, the covenant wrote whitelistWorkers[0][worker] at
+              // the no-proxy application's whitelist getter, the covenant wrote whitelistWorkers[0][worker] at
               // sha256(sha256(empty) ++ sha256(worker-lockscript)) while the read looked up
               // sha256(sha256(0x00) ++ sha256(worker-lockscript)), co-spent the neighbouring head sentinel and
               // halted on the entry covenant's OP_VERIFY.

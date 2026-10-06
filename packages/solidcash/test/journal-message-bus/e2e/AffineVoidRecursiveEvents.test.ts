@@ -143,12 +143,10 @@ describe('affine void recursive event settlement', () => {
     await expect(contract.call.descend(128n, 0n, 248n, 2n, 1n).build()).resolves.toBeDefined();
     await expect(contract.call.descend(130n, 0n, 252n, 2n, 1n).build())
       .rejects.toThrow(/exceeds its compiler-published maximum/);
-    const inexact = await contract.call.descend(5n, 10n, 20n, 2n, 3n).build();
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: 0,
-      sourceOutputs: generateLibauthSourceOutputs(inexact.inputs),
-      transaction: inexact.buildLibauthTransaction(),
-    }))).not.toBe(true);
+    // descend(5, stride 2) visits 5, 3, 1, -1, ... and never lands on 0, so the affine frame guard refuses
+    // it during derivation ("recursive affine frame count must be exact") instead of building for a VM miss.
+    await expect(contract.call.descend(5n, 10n, 20n, 2n, 3n).build())
+      .rejects.toThrow(/recursive affine frame count must be exact/);
   }, 180_000);
 
   it('settles every pre-recursion frame, rejects a forged event, and enforces the frame bound', async () => {

@@ -33,12 +33,13 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * fails naming that, instead of scattering opaque assertion failures.
  *
  * MEASURED AT 0.0.8. `createVirtualMachineBch2026ForProvider(provider)` agrees with the decider on every shape
- * tried: P2PKH and `decrement(3)` at `operationCostBudgetPerByte` 150 and 800, `maximumStackItemBytes: 8`,
- * `decrement(40)` on the relaxed default, in both dust regimes. A bare `createVirtualMachineBch2026()`
- * diverges in BOTH directions:
+ * tried: P2PKH at `operationCostBudgetPerByte` 150 and 800, `decrement(3)` at 140 and 800,
+ * `maximumStackItemBytes: 8`, `decrement(40)` on the relaxed default, in both dust regimes. A bare
+ * `createVirtualMachineBch2026()` diverges in BOTH directions:
  *
- * - FAIL-OPEN under a strict profile: it accepts a P2PKH spend (row 1) and a `decrement(3)` (row 2) that the
- *   decider refuses at 150 x density.
+ * - FAIL-OPEN under a strict profile: it accepts a P2PKH spend (row 1, refused at 150 x density) and a
+ *   `decrement(3)` (row 2). Single-byte helper ids shortened that recursive body until 150 x density accepts
+ *   it; 140 still refuses it, which is the budget rows 2, 2b, and 6 pin.
  * - FAIL-CLOSED under the relaxed default: it refuses `decrement(40)` at the stock 800 x density that
  *   the decider accepts (row 4).
  *
@@ -56,7 +57,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *   10,000. The gate's premise holds and that criticism is withdrawn.
  *
  * Measurement A - a `recursiveStateHandler` that settles at base and is refused once the limits are read - is
- * FALSIFIED at 0.0.8 by row 2: `forProvider` refuses `decrement(3)` at `operationCostBudgetPerByte: 150`, and
+ * FALSIFIED at 0.0.8 by row 2: `forProvider` refuses `decrement(3)` at `operationCostBudgetPerByte: 140`, and
  * so does the decider, byte-identically. It held only at 0.0.7, where nothing enforced the budget.
  *
  * THE REPAIR IS FAIL-OPEN IF THIS TREE IS EVER AT 0.0.7, measured both ways. At 0.0.7 the decider applies the
@@ -244,19 +245,20 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     expect(assembled.builder).toBeDefined();
     expect(assembled.preflight).toBeDefined();
 
-    const provider = costProfile(150, false);
+    // 140, not 150: the shortened recursive body fits 150 x density (row 6 records the same calibration).
+    const provider = costProfile(140, false);
     const builder = assembled.builder!;
     builder.provider = provider;
 
-    // The repaired gate refuses, quoting the published 150 x density.
+    // The repaired gate refuses, quoting the published 140 x density.
     let preflightError: string | undefined;
     try { assembled.preflight!(builder); } catch (error) { preflightError = (error as Error).message; }
-    const density = assertDensityCeiling(preflightError!, 150);
+    const density = assertDensityCeiling(preflightError!, 140);
     expect(density).toBe(DENSITY_BASE + unlockingBytecodeLength(builder, 0));
 
     // A bare VM accepts these exact finalized bytes. That is the fail-open the provider-faithful gate closes.
     expect(evaluateAll(createVirtualMachineBch2026(), builder)).toBeUndefined();
-    expect(assertDensityCeiling(evaluateAll(createVirtualMachineBch2026ForProvider(provider), builder)!, 150))
+    expect(assertDensityCeiling(evaluateAll(createVirtualMachineBch2026ForProvider(provider), builder)!, 140))
       .toBe(density);
 
     for (const input of builder.inputs) {
@@ -267,7 +269,7 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     try { await provider.sendRawTransaction(builder.build()); } catch (e) { submitError = (e as Error).message; }
     expect(submitError, 'the decider accepted what the repaired gate refused').toBeDefined();
     expect(submitError).toMatch(/mandatory-script-verify-flag-failed/);
-    expect(assertDensityCeiling(submitError!, 150)).toBe(density);
+    expect(assertDensityCeiling(submitError!, 140)).toBe(density);
   });
 
   it('2b. the same refusal holds with dust ON, so the regime is not what produces it', async () => {
@@ -275,13 +277,13 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     // differs between the two providers.
     const assemblyProvider = costProfile(800, true);
     const assembled = await sendCapturingPreflightInput(await recursionContract(assemblyProvider), 3n);
-    const provider = costProfile(150, true);
+    const provider = costProfile(140, true);
     expect(provider.policy.enforceDust).toBe(true);
     const builder = assembled.builder!;
     builder.provider = provider;
     let preflightError: string | undefined;
     try { assembled.preflight!(builder); } catch (error) { preflightError = (error as Error).message; }
-    const density = assertDensityCeiling(preflightError!, 150);
+    const density = assertDensityCeiling(preflightError!, 140);
     for (const input of builder.inputs) {
       const unlockable = input as typeof input & { unlocker: { generateLockingBytecode: () => Uint8Array } };
       await provider.addUtxo(binToHex(unlockable.unlocker.generateLockingBytecode()), input);
@@ -289,7 +291,7 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     let submitError: string | undefined;
     try { await provider.sendRawTransaction(builder.build()); } catch (e) { submitError = (e as Error).message; }
     expect(submitError).toBeDefined();
-    expect(assertDensityCeiling(submitError!, 150)).toBe(density);
+    expect(assertDensityCeiling(submitError!, 140)).toBe(density);
     expect(density).toBe(DENSITY_BASE + unlockingBytecodeLength(builder, 0));
   });
 
@@ -377,9 +379,8 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     // DECIDES for `.build()`; it now reads the provider through `LibauthTemplate` -> `debugTemplate` ->
     // `createProgram`, both halves landed together so an optional parameter nobody supplies could not read as
     // provider-aware while behaving bare.
-    // 140 rather than the 150 the other rows use: the budget is calibrated against this shape's operation
-    // cost, and helper ids drawn from the single-byte pool shortened the recursive body enough that 150 no
-    // longer refuses it. See X130 row 1, which pins the same shape at the same budget.
+    // 140, the same budget as rows 2 and 2b: single-byte helper ids shortened the recursive body enough that
+    // 150 x density no longer refuses it. See X130 row 1, which pins the same shape at the same budget.
     const provider = costProfile(140, false);
     let buildError: string | undefined;
     try {

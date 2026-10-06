@@ -7898,6 +7898,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    // A nested loop that does not own a new upsert must keep the enclosing loop's stream. Each function starts
+    // from an empty map so a previous function's stream cannot satisfy this one.
+    this.sortedUpsertLoopContexts = new Map();
     // A body the master cannot serve is emitted as a refusal: the selector still reaches it and the program fails
     // there, so a caller of an unsupported function is refused at run time while the bodies it can serve compile
     // and settle. The reason is published on the artifact, which is what a builder reports. A function refused for
@@ -30178,13 +30181,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           [vmapRuntimeInputCountName(collection), false],
           [vmapRuntimeOutputCountName(collection), true],
         ] as const) {
-          const expected = `(__vmap_runtime_expected_${output ? 'out' : 'in'}_${collection})`;
+          // The read loop can leave untracked journal items above this frame. A top-relative pick of the
+          // witness then compares the scan with that residue. The altstack holds the authenticated width.
           this.emitPickVMapWitness(name, loc);
-          this.pushToStack(expected);
-          this.emitVerifyChunkUtxoCount(expected, output, loc, addr);
-          const depth = this.getStackIndex(expected);
-          this.emit(encodeInt(BigInt(depth)), loc); bin(Op.OP_ROLL); bin(Op.OP_DROP);
-          this.removeFromStack(depth);
+          this.emit(Op.OP_TOALTSTACK, loc);
+          this.emitVerifyChunkUtxoCount(
+            `(__vmap_runtime_expected_${output ? 'out' : 'in'}_${collection})`, output, loc, addr,
+            { expectedOnAltstack: true },
+          );
         }
         const depth = this.getStackIndex(addr);
         this.emit(encodeInt(BigInt(depth)), loc); bin(Op.OP_ROLL); bin(Op.OP_DROP);
@@ -31199,7 +31203,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
       const idx = (n as unknown as { entrySlotIndex?: number }).entrySlotIndex;
-      if (n instanceof MappingAssignNode && typeof idx === 'number' && idx >= 0
+      // A compiler-owned read stream is settled by the sorted-upsert loop, not by this entry-mint counter.
+      // Counting it here pins the collection's outputs to zero beside the upsert's reproduced nodes.
+      if (n instanceof MappingAssignNode && !n.messageBusRuntimeReadOnly && typeof idx === 'number' && idx >= 0
         && (this.entrySlots[idx]?.inLoop || this.currentFunction.entryAccesses?.[idx]?.inLoop)) {
         found = n;
         return;
@@ -31553,12 +31559,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedInsertLoopCollection = null;
   }
 
+  /**
+   * Route inlining prefixes a handler local with `__rh<depth>_`. The counter permutation keeps its marker after
+   * that prefix, so a starts-with check on the bare marker misses the name the route actually pushes.
+   */
+  private isVmapCounterPermutationName(name: string): boolean {
+    let rest = name;
+    for (;;) {
+      const prefixed = /^__rh\d+_(.*)$/.exec(rest);
+      if (!prefixed) break;
+      rest = prefixed[1];
+    }
+    return rest.startsWith(VMAP_COUNTER_PERM_PREFIX);
+  }
+
   /** The compiler-owned logical-key permutation embedded anywhere in a lowered runtime write. */
   private runtimeCounterPermutationName(root: Node, seen = new WeakSet<object>()): string | undefined {
     if (seen.has(root)) return undefined;
     seen.add(root);
     if (root instanceof ArrayAccessNode && root.array instanceof IdentifierNode
-      && root.array.name.startsWith(VMAP_COUNTER_PERM_PREFIX)) return root.array.name;
+      && this.isVmapCounterPermutationName(root.array.name)) return root.array.name;
     for (const [key, value] of Object.entries(root)) {
       if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
         'referencedContract', 'stateVariable', 'collection', 'type', 'symbol'].includes(key)) continue;
@@ -32205,6 +32225,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * The route publishes one `bytes[]` access vector per batch row. A handler parameter is that row's vector.
+   * Inlined route code still names the route parameter, so select `__message_bus_row` before reading a stream.
+   */
+  private kernelJournalAccessVector(): ExpressionNode {
+    const location = this.currentFunction.location;
+    const parameter = this.currentFunction.parameters.find(
+      (item) => item.name === KERNEL_JOURNAL_ACCESS_STREAMS,
+    );
+    const name = new IdentifierNode(KERNEL_JOURNAL_ACCESS_STREAMS);
+    name.location = location;
+    const perRow = parameter?.type instanceof ArrayType && parameter.type.elementType instanceof ArrayType;
+    if (!perRow) {
+      name.type = new ArrayType(new BytesType());
+      return name;
+    }
+    name.type = parameter.type;
+    const row = new IdentifierNode('__message_bus_row');
+    row.type = PrimitiveType.INT;
+    row.location = location;
+    const selected = new ArrayAccessNode(name, row);
+    selected.type = new ArrayType(new BytesType());
+    selected.location = location;
+    return selected;
+  }
+
+  /**
    * Select one stream: [encoded streams, stream ordinal, expected vector count, collection hash]
    * -> [count || collection || tuple payload].
    */
@@ -32333,7 +32379,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ? [writeNode.index] : writeNode.keys;
     const deterministicArrayName = (root: Node): string | undefined => {
       if (root instanceof ArrayAccessNode && root.array instanceof IdentifierNode
-        && root.array.name.startsWith(VMAP_COUNTER_PERM_PREFIX)) return root.array.name;
+        && this.isVmapCounterPermutationName(root.array.name)) return root.array.name;
       for (const [key, value] of Object.entries(root)) {
         if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
           || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
@@ -32579,6 +32625,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+    // A route-inlined counter key is `perm[rank] + K`. Its array name carries an `__rhN_` prefix, so the
+    // key-source canonical form does not name it. The permutation walk is the same marker the setup uses.
+    if (varyingArrayParam === undefined) {
+      const permutation = this.runtimeCounterPermutationName(writeNode);
+      if (permutation !== undefined) varyingArrayParam = permutation;
+    }
+    if (varyingArrayParam !== undefined) this.sortedUpsertLoopVaryingArrayParam = varyingArrayParam;
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
     const hasValue = !!mutation || !!valueArrayParam || !!valueScalarParam || valueConst !== undefined
       || !!valueRuntimeLocal || !!(writeNode instanceof MappingAssignNode
@@ -32759,10 +32812,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if ((this.isCompilerMessageBusRoute() || this.hasMessageBusParticipantOwner())
       && this.sortedUpsertLoopJournalAccessStreamIndex !== undefined
       && this.getStackIndex(KERNEL_JOURNAL_ACCESS_STREAMS, true) >= 0) {
-      const vectorValue = new IdentifierNode(KERNEL_JOURNAL_ACCESS_STREAMS);
-      vectorValue.type = new ArrayType(new BytesType());
-      vectorValue.location = this.currentFunction.location;
-      this.visit(vectorValue);
+      this.visit(this.kernelJournalAccessVector());
       this.emit(encodeInt(BigInt(this.sortedUpsertLoopJournalAccessStreamIndex)), loc);
       this.emit(encodeInt(BigInt(this.currentFunction.sortedUpsertLoopInfo?.length ?? 0)), loc);
       this.emit(collectionHash, loc);
@@ -32910,7 +32960,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.sortedUpsertGrouped = false;
       if (this.emitSortedUpsertLoopSetup(block, loc)) contexts.push(this.captureSortedUpsertLoopContext());
       markExecutionGroup();
-      this.sortedUpsertLoopContexts = new Map(contexts.map((context) => [context.streamKey, context]));
+      // Replacing an empty result would drop the enclosing loop's stream. A nested loop that does not allocate
+      // its own upsert still executes that stream's read or write.
+      if (contexts.length > 0) {
+        this.sortedUpsertLoopContexts = new Map(contexts.map((context) => [context.streamKey, context]));
+      }
       return contexts;
     }
     this.sortedUpsertGrouped = true;
@@ -32957,7 +33011,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(index)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
       this.removeFromStack(index);
     }
-    this.sortedUpsertLoopContexts = new Map(contexts.map((context) => [context.streamKey, context]));
+    if (contexts.length > 0) {
+      this.sortedUpsertLoopContexts = new Map(contexts.map((context) => [context.streamKey, context]));
+    }
     return contexts;
   }
 
@@ -37920,10 +37976,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The linear route parked this total before the address build. A named pick still reads the
       // placeholder zero the main frame keeps so later drops have a slot to remove.
       this.emit(Op.OP_FROMALTSTACK, loc);
-    } else if (this.isCompilerMessageBusRoute()) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(expectedCountName) + 1)), loc);
-      this.emit(Op.OP_PICK, loc);
     } else {
+      // A route ABI width sits under handler residue. A constant top-relative depth counts that residue and
+      // compares the scan with the wrong item. OP_DEPTH measures the residue, so the bottom ordinal holds.
+      // The DUP above is included in that depth and does not change the distance from the bottom.
       this.emitPickTrackedFromBottom(expectedCountName, loc);
     }
     this.emit(Op.OP_EQUALVERIFY, loc);

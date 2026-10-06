@@ -200,6 +200,12 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
   that pins superseded behaviour is updated or removed with a reason in the commit message; nothing is skipped
   silently; (5) final gate: each suite once more, sequentially.
 - Pitfall: compile caches key on compiler source hashes; harness fixtures do not (see the recipe).
+- Status, 2026-10-06 (pointers, not decisions): the marketplace lane was red at HEAD for two reasons, both fixed -
+  `246cdfd74` made a framed deployment report the logical CREATE address at `getAddress()` (`cee831dc2`, row D22), and
+  a framed read never published the typed result projection, which `7088b6d6e` then exposed by removing the matcher's
+  bridge for untyped byte pairs (`8c4671242`). Both are recorded in `MARKETPLACE_RED_AT_HEAD.md`. With them, the four
+  sampled proxied titles pass 4/4 and the whole `packages/solidcash` framed config is 1815 passed with seven
+  pre-existing `call/` failures; the full 66-title ladder and the other suites have not been re-run yet.
 
 ### W7. Test count reduction
 - Phase 1, by the shape of the code (no coverage tools yet): cluster test files by subject using

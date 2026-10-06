@@ -18568,6 +18568,72 @@ function compileStringSplitUnchecked(
     }
   }
 
+  // Four or more shards means one more co-spent input than the root plus two facets. The smallest facet is
+  // often cheaper as ordinary root bodies: the root already spends one input, and those entries no longer need
+  // a delegate of their own. Keep the move only when that rebuilt root still fits the whole-spend cap. An
+  // explicit maxShardBytes is a redeem-script tuning knob; callers that set it are asking for that packing,
+  // so the move is limited to the default consensus budget.
+  if (budgetWholeSpend && groups.length >= 3) {
+    const smallest = [...groups].sort((left, right) => measure(left) - measure(right)
+      || groupKey(left).localeCompare(groupKey(right)))[0];
+    const active = groups.filter((group) => group !== smallest);
+    let trialRootFits = false;
+    try {
+      const trial = cloneAst(probe, 'split-root-resident');
+      const trialRoutes = new Map<string, {
+        facet: string; link: string; delegateEventOffsets?: number[];
+        censusedCollectionSignatures?: string[];
+      }>();
+      active.forEach((group, index) => {
+        const artifact = measuredArtifacts.get(groupKey(group));
+        if (!artifact) return;
+        const link = `__facetAddr_${index}`;
+        for (const plan of group) {
+          const handler = (artifact.abi as readonly AbiFunction[]).find((fn) => fn.name === plan.name);
+          const layout = handler?.blockLayout;
+          const dataOffsets = (layout?.slots ?? [])
+            .filter((slot) => slot.kind === 'dataNft').map((slot) => slot.offset);
+          const delegateEventOffsets = (layout?.slots ?? []).filter((slot) => slot.kind === 'event')
+            .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
+          const censusedCollectionSignatures = [...new Set((handler?.sortedBatchInfo ?? [])
+            .map((batch) => {
+              const signature = artifact.stateLayout?.collections?.find(
+                (collection) => collection.name === batch.collection,
+              )?.signature;
+              if (signature === undefined) {
+                throw new Error(`Missing split-delegate collection signature for '${batch.collection}'`);
+              }
+              return signature;
+            }))];
+          trialRoutes.set(plan.name, {
+            facet: `${logicalName}__Facet${index}`,
+            link,
+            ...(delegateEventOffsets.length > 0 && { delegateEventOffsets }),
+            ...(censusedCollectionSignatures.length > 0 && { censusedCollectionSignatures }),
+          });
+        }
+      });
+      prepareSplitRoot(trial.contract, trialRoutes);
+      trial.contract.implements = [];
+      trial.contract.parentInvocations = [];
+      for (const fn of trial.contract.functions) {
+        fn.overrideBases = [];
+        fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
+      }
+      const trialOptions = { ...merged, messageBus: false };
+      const trialRoot = compileResolvedAst(
+        trial, code, trialOptions, false, true, true, true, true, true, undefined,
+        splitPreLowersFnPtrArrays(trialOptions),
+      );
+      const trialLimit = maxShardBytes - spendReserve(trialRoot, trialRoot.constructorInputs);
+      trialRootFits = byteSize(trialRoot) <= trialLimit;
+    } catch {
+      // The root-resident attempt did not compile. The facet partition below still fits.
+      trialRootFits = false;
+    }
+    if (trialRootFits) groups = active;
+  }
+
   const facets: ArtifactMap = {};
   const facetRecords: Array<{ name: string; link: string; plans: PlannedFunction[]; artifact: Artifact }> = [];
   groups.sort((a, b) => a.map((p) => p.name).join(',').localeCompare(b.map((p) => p.name).join(',')));

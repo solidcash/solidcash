@@ -30614,7 +30614,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // prefix (PICK/ADD) changes that top-relative frame even if the verifier consuming the coordinate remains
     // inline, so keep the complete coordinate calculation at the call site as one indivisible authority. A
     // per-call frame reads its coordinates from its own witness block, which its bodies share as outlined spans.
-    if (!this.directConvention) return;
+    // A split-facet delegate coordinate is bottom-ordinal (OP_DEPTH, not a top-relative PICK of the live frame),
+    // and the same sequence is emitted for every entry slot. Pinning it forces every facet entry to carry its
+    // own copy and keeps the surrounding epilogue from being shared.
+    if (!this.directConvention || this.usesDelegateExecutorBlockBase()) return;
     const coordinateEndIp = this.getMostRecentInstructionPointer();
     for (let ip = coordinateStartIp; ip <= coordinateEndIp; ip += 1) {
       this.requires.push({ ip, line: locationData.location.start.line });
@@ -43359,6 +43362,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, locationData);
     // Keep the complete anchor-relative calculation inline: outlining a prefix changes the top-relative PICK
     // depth and would silently turn the physical output coordinate back into an invoked-frame-local coordinate.
+    // Delegate resource bases are bottom-ordinal and identical across the facet's entries; pinning them
+    // duplicates that sequence into every function instead of letting one shared body serve the epilogue.
+    if (this.usesDelegateExecutorBlockBase()) return;
     const coordinateEndIp = this.getMostRecentInstructionPointer();
     for (let ip = coordinateStartIp; ip <= coordinateEndIp; ip += 1) {
       this.requires.push({ ip, line: locationData.location.start.line });

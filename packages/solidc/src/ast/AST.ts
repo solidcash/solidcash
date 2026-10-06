@@ -838,6 +838,9 @@ export class FunctionDefinitionNode extends Node implements Named {
    * LowerCollectionJournalHelpers selects and updates those physical caches at runtime without expanding the
    * dispatcher's branches into their Cartesian product. */
   collectionJournalRuntimeAliases?: boolean;
+  /** Pooled kernel key lanes chosen at one handler call. The decoded row argument is matched to these lane
+   * witnesses with a linear compare, instead of cloning the handler for every combination of pools. */
+  collectionJournalLinearKeyPools?: Array<{ argumentName: string; lanes: string[] }>;
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;

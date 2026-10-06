@@ -11442,9 +11442,41 @@ function synthesizeMessageBusRoute(
       // Select each physical lane before invoking the handler, rather than silently using only the first pool.
       const pooledKeys = fn.messageBusKeyWitnesses?.filter((binding) =>
         binding.keyPool !== undefined && binding.entryTupleGroup === undefined) ?? [];
+      // Two pools of eight are 64 arms and fit in an input. A third pool is 512 and does not. Keep one
+      // outer if-else and pass every later key decoded.
+      const fullPoolProduct = pooledKeys.reduce(
+        (product, key) => product * (key.keyPool?.length ?? 1), 1,
+      );
+      const stampedLinearPools = new Set<string>();
+      const stampLinearPool = (key: NonNullable<typeof pooledKeys[number]>): void => {
+        const argumentName = decodedName(key.inputIndex);
+        // Two collections can share one user key. The decoded name is then the same, and each
+        // collection still needs its own lanes or the later write never publishes a witness.
+        const stampKey = `${argumentName}:${key.routeInput}`;
+        if (stampedLinearPools.has(stampKey) || !key.keyPool) return;
+        stampedLinearPools.add(stampKey);
+        const clone = contract.functions.find((candidate) => candidate.name === invokeName);
+        if (!clone) throw new Error(`Message-bus key-pool handler '${invokeName}' is missing`);
+        clone.collectionJournalRuntimeAliases = true;
+        clone.collectionJournalLinearKeyPools = [
+          ...(clone.collectionJournalLinearKeyPools ?? []),
+          { argumentName, lanes: [...key.keyPool] },
+        ];
+      };
       const dispatchWithKeyPools = (poolIndex: number, baseArgs: string[]): string => {
         const pooledKey = pooledKeys[poolIndex];
         if (!pooledKey?.keyPool) return dispatchFor(baseArgs);
+        const productThroughHere = pooledKeys.slice(0, poolIndex + 1).reduce(
+          (product, key) => product * (key.keyPool?.length ?? 1), 1,
+        );
+        if (poolIndex > 0 && fullPoolProduct > 64 && productThroughHere > 8) {
+          const linearArgs = baseArgs.map((argument) => (
+            argument === pooledKey.routeInput || (pooledKey.keyPool?.includes(argument) ?? false)
+              ? decodedName(pooledKey.inputIndex) : argument
+          ));
+          stampLinearPool(pooledKey);
+          return dispatchWithKeyPools(poolIndex + 1, linearArgs);
+        }
         const selectedKey = swappableShared && swappableVarying === pooledKey
           ? `(${decodedName(swappableShared.inputIndex)} == ${witnessName(swappableShared)} ? `
             + `${decodedName(pooledKey.inputIndex)} : ${decodedName(swappableShared.inputIndex)})`
@@ -13605,6 +13637,10 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  // Key-pool lanes are stamped on the handler while the route text is built. The batch census runs on this
+  // route, so it has to see the same lanes or it keeps splitting the upsert capsule past a lane temp.
+  const linearKeyPools = contract.functions.flatMap((fn) => fn.collectionJournalLinearKeyPools ?? []);
+  if (linearKeyPools.length > 0) route.collectionJournalLinearKeyPools = linearKeyPools;
   // Stamp only the generated dispatch guard, not a similarly spelled statement in a source handler. The
   // collection-journal pass may discharge it after proving the complete route uses one pending-value pool.
   const fixedChunkableSelectors = new Set([...fixedChunkableWriteHandlers].map(selector));

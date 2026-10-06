@@ -28810,6 +28810,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     const resolved = this.vmapWitnessName(name);
+    const linearKeyPools = (this.currentFunction.collectionJournalLinearKeyPools?.length ?? 0) > 0;
+    // A linear handler has no caller frame, so the restored snapshot's bottom ordinal stays put when lane
+    // temps sit beside the capsule. The route's caller frame makes that same ordinal land on an ABI value;
+    // its snapshot is above the residue and a top-relative pick is the one that names it.
+    if (resolved.startsWith('__vmap_snapshot_') && linearKeyPools && !this.isDefineSubTraversal
+      && !this.isCompilerMessageBusRoute()) {
+      this.emitPickTrackedFromBottom(resolved, loc);
+      return;
+    }
+    if (this.isCompilerMessageBusRoute() && linearKeyPools && resolved.startsWith('__vmap_snapshot_')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(resolved) + extraStackOffset)), loc);
+      this.emit(Op.OP_PICK, loc);
+      return;
+    }
     if (this.isCompilerMessageBusRoute() && this.vmapUpsertWitnessSnapshotNames?.includes(name)) {
       this.emitCopyUpsertVMapWitness(name, loc);
       return;
@@ -29473,6 +29487,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.location, positionHint: PositionHint.START };
     const runtimeCollections = new Set(this.vmapRuntimeCollections(node));
     const cardinalityScanned = new Set<string>();
+    // The route keeps a top-relative replace. Its caller frame sits below the tracked names, so a bottom
+    // ordinal would overwrite an ABI value and leave the named count at zero. A linear handler has no
+    // caller frame; the include flag is the untracked item a depth-1 replace would overwrite.
+    const linearHandlerPools = (node.collectionJournalLinearKeyPools?.length ?? 0) > 0
+      && !this.isCompilerMessageBusRoute(node);
+    // Lane temps on a linear route leave that same replace one slot off. Proof picks stay on the main
+    // stack, so the route keeps its running totals on the altstack instead of a named main-stack slot.
+    const linearRoute = (node.collectionJournalLinearKeyPools?.length ?? 0) > 0
+      && this.isCompilerMessageBusRoute(node);
+    const replaceNamed = (name: string): void => {
+      if (linearHandlerPools) {
+        this.emitReplaceAtBottomOrdinal(this.stack.length - this.getStackIndex(name), loc);
+        return;
+      }
+      this.emitReplace(this.getStackIndex(name) + 1, node);
+    };
     const arg = (name: string, extra = 0): void => {
       this.emitPickVMapWitness(name, loc, extra);
     };
@@ -29525,6 +29555,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     const zero32 = (): void => this.emitFixedWidthConstant(new Uint8Array(32), loc);
     const bin = (op: Op): void => this.emit(op, loc);
+    const parkCount = (): void => { bin(Op.OP_TOALTSTACK); };
+    const addParked = (): void => {
+      bin(Op.OP_FROMALTSTACK); bin(Op.OP_ADD); bin(Op.OP_TOALTSTACK);
+    };
 
     for (const batch of node.sortedBatchInfo ?? []) {
       const collectionHash = computeCollectionHash(this.entrySlots[batch.slotIndices[0]].collectionSignature);
@@ -29984,8 +30018,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(encodeInt(-2n), loc); bin(Op.OP_NUMEQUAL); bin(Op.OP_SUB);
         }
       }
+      if (linearRoute && this.isCompilerMessageBusRoute(node)
+        && runtimeCollections.has(batch.collection)) {
+        this.emitPickVMapWitness(vmapRuntimeOutputCountName(batch.collection), loc);
+        bin(Op.OP_ADD);
+      }
+      if (linearRoute) {
+        parkCount();
+        this.emit(encodeInt(0n), loc);
+      }
       this.pushToStack(expected);
-      if (this.isCompilerMessageBusRoute(node)
+      if (!linearRoute && this.isCompilerMessageBusRoute(node)
         && runtimeCollections.has(batch.collection)) {
         // The immutable snapshot is untracked; OP_ADD leaves the named expected accumulator in place.
         this.emitPickVMapWitness(vmapRuntimeOutputCountName(batch.collection), loc);
@@ -30001,16 +30044,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_EQUAL); bin(Op.OP_NOT); bin(Op.OP_BOOLAND);
         }
         bin(Op.OP_SWAP); bin(Op.OP_DROP); // include
-        arg(expected, 1); bin(Op.OP_ADD);
-        this.emitReplace(this.getStackIndex(expected) + 1, node);
+        if (linearRoute) addParked();
+        else {
+          arg(expected, 1); bin(Op.OP_ADD);
+          replaceNamed(expected);
+        }
       }
       for (let i = 0; i < this.entrySlots.length; i++) {
         const info = this.entrySlots[i];
         if (info.collection !== batch.collection || targets.includes(i)
           || info.operations.includes('write') || info.operations.includes('delete')) continue;
         this.emitSlotExistsCheck('entry', i, loc);
-        arg(expected, 1); bin(Op.OP_ADD);
-        this.emitReplace(this.getStackIndex(expected) + 1, node);
+        if (linearRoute) addParked();
+        else {
+          arg(expected, 1); bin(Op.OP_ADD);
+          replaceNamed(expected);
+        }
       }
 
       const inputExpected = `(__vmap_batch_input_expected_${batch.collection})`;
@@ -30029,6 +30078,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_ADD); bin(Op.OP_NIP); // [distinct positive proof count]
         }
       } else this.emit(encodeInt(0n), loc);
+      if (linearRoute) {
+        parkCount();
+        this.emit(encodeInt(0n), loc);
+      }
       this.pushToStack(inputExpected);
       for (let i = 0; !directSmallCensus && i < targets.length; i++) {
         const slot = targets[i];
@@ -30040,20 +30093,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_BOOLAND);
         }
         bin(Op.OP_SWAP); bin(Op.OP_DROP);
-        arg(inputExpected, 1); bin(Op.OP_ADD);
-        this.emitReplace(this.getStackIndex(inputExpected) + 1, node);
+        if (linearRoute) addParked();
+        else {
+          arg(inputExpected, 1); bin(Op.OP_ADD);
+          replaceNamed(inputExpected);
+        }
       }
       for (let i = 0; i < this.entrySlots.length; i++) {
         const info = this.entrySlots[i];
         if (info.collection !== batch.collection || targets.includes(i)
           || info.operations.includes('write') || info.operations.includes('delete')) continue;
         this.emitSlotExistsCheck('entry', i, loc);
-        arg(inputExpected, 1); bin(Op.OP_ADD);
-        this.emitReplace(this.getStackIndex(inputExpected) + 1, node);
+        if (linearRoute) addParked();
+        else {
+          arg(inputExpected, 1); bin(Op.OP_ADD);
+          replaceNamed(inputExpected);
+        }
       }
       if (this.isCompilerMessageBusRoute(node) && runtimeCollections.has(batch.collection)) {
         this.emitPickVMapWitness(vmapRuntimeInputCountName(batch.collection), loc);
-        this.emit(Op.OP_ADD, loc);
+        if (linearRoute) addParked();
+        else this.emit(Op.OP_ADD, loc);
         cardinalityScanned.add(batch.collection);
       }
 
@@ -30063,8 +30123,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(addr);
       this.emitSortedEntryAddress(collectionHash, loc);
       this.stack[0] = addr;
-      this.emitVerifyChunkUtxoCount(inputExpected, false, loc, addr);
-      this.emitVerifyChunkUtxoCount(expected, true, loc, addr);
+      const countOpts = linearRoute ? { expectedOnAltstack: true } : undefined;
+      this.emitVerifyChunkUtxoCount(inputExpected, false, loc, addr, countOpts);
+      this.emitVerifyChunkUtxoCount(expected, true, loc, addr, countOpts);
       for (const name of [addr, inputExpected, expected]) {
         const depth = this.getStackIndex(name);
         this.emit(encodeInt(BigInt(depth)), loc); bin(Op.OP_ROLL); bin(Op.OP_DROP);
@@ -37762,7 +37823,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitVerifyChunkUtxoCount(
     expectedCountName: string, isOutput: boolean, loc: SingleLocationData, addrName: string = '(dyn_chunkaddr)',
-    opts?: { addrOnAltstack?: boolean },
+    opts?: { addrOnAltstack?: boolean; expectedOnAltstack?: boolean },
   ): void {
     const countOp = isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT;
     const bytecodeOp = isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE;
@@ -37824,7 +37885,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // The loop consumes its index and leaves the scanner-owned count on top.
     this.emit(Op.OP_DUP, loc);
-    if (this.isCompilerMessageBusRoute()) {
+    if (opts?.expectedOnAltstack) {
+      // The linear route parked this total before the address build. A named pick still reads the
+      // placeholder zero the main frame keeps so later drops have a slot to remove.
+      this.emit(Op.OP_FROMALTSTACK, loc);
+    } else if (this.isCompilerMessageBusRoute()) {
       this.emit(encodeInt(BigInt(this.getStackIndex(expectedCountName) + 1)), loc);
       this.emit(Op.OP_PICK, loc);
     } else {

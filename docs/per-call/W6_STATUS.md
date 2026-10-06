@@ -60,9 +60,33 @@ Context, still useful when reading those three sites:
 
 ### Production defects (unchanged)
 
-- `MessageBusDelegateClassesE3` — both titles. The not-taken conditional-delegate spend that requests a forged
-  commitment now refuses at input 0 instead of settling on the preserved value; the sibling not-taken spend
-  that requests nothing still settles.
+- `MessageBusDelegateClassesE3` — both titles, and the covenant is right; the SDK is what emits the wrong value.
+  `spendProxy` builds a `StatefulTransactionBuilder` spend of `E3CondProxy.up(bytes input, bool flag)` (source:
+  `if (flag) { impl.delegatecall(input); }`) with `.setState('counter', settledCounter)`.
+
+  - The forged title (`[false]`, request 999, implementation not co-spent) must settle as `ACCEPTED counter=5`:
+    the covenant preserves the proxy's data NFT on a path that did not reach the delegate edge, so the requested
+    forged value is never emitted. `SOLIDC_DEBUG_FAILURE_POINT=1` shows the refusal at input 0 in
+    `E3CondProxy.up` at ip 200/201 inside `OP_IF ... OP_VERIFY` — the not-taken preserve check — with the input
+    Data NFT commitment `55` and the emitted output commitment `02e703` (= marker `02` + little-endian 999, the
+    requested value). The covenant refused the transaction the SDK built.
+  - Published metadata that distinguishes the shape: `fn.writesState === true` with `lowLevelCalls[0] =
+    { callMode: 'delegatecall', occurrence: 'conditional', maximumOccurrences: 1, target: { kind:
+    'constructorArg', name: 'impl' } }`, and `readStateEffect(entry)` reports `ownStateEvidence: []` with the
+    delegate/low-level call only under `otherEffectEvidence` — no published evidence that this handler changes
+    its own state variable. No guard expression is published for the low-level call, so the SDK cannot evaluate
+    "flag is false" from metadata; the taken/not-taken decision has to come from the VM trace
+    (`sc-derive-full-phase2-*`, `computed-output-repair`, `trace-verified-value-helpers` — the "exact footprint
+    derivation" the test's own comment names).
+  - The siblings constrain any fix: `[false]`, request 5, no implementation settles (`ACCEPTED counter=5`, passes
+    today); `[true]`, request 6, implementation co-spent settles; `[true]`, request 999, no implementation
+    refuses at input 0 (passes today). The second failing title's `wrote` case (`[false]`, request 6,
+    implementation co-spent) must refuse at input **2**, the implementation, and currently refuses at input 0 —
+    i.e. the same root cause, surfaced one input earlier.
+  - Not attempted: the only shape-level fix is to treat a stated state change as unproven when the handler's own
+    state has no published writer other than a conditional delegate edge, and to take the emitted commitment
+    from the trace instead. That silently drops a caller's explicit `setState` for every handler matching the
+    pattern, so it needs the kernel author's intent and a wider net than one file, not a local patch.
 - `KernelPhysicalCallerWithScidCompose` — OP_VERIFY at input 4 in `CallerCheck.touch` line 5
   (`require(msg.sender == expected)`): the proxy's `address(this)` does not satisfy `msg.sender` for the
   nested-caller-beside-SCID shape.

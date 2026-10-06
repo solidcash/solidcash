@@ -222,6 +222,17 @@ export function appendDynamicChunks(
         count: commitments.length,
       });
     }
+    // A returning call that ran leaves the old chunk index as an OP_TRUE pad and places the
+    // replacement one output later. A funder parked on that next slot must move; appending the
+    // chunk after the callee makes the covenant read the funder instead.
+    const baseOutput = base >= 0 ? builder.outputs[base] : undefined;
+    const baseLock = baseOutput?.to instanceof Uint8Array ? baseOutput.to : undefined;
+    const tombstoneAtBase = baseLock?.length === 1 && baseLock[0] === 0x51;
+    const followsReturnEvent = !inPlace && tombstoneAtBase && commitments.length > 0
+      && commitments.every((_commitment, offset) => {
+        const occupant = builder.outputs[base + 1 + offset];
+        return occupant !== undefined && occupant.token === undefined;
+      });
     for (const [chunkIndex, commitment] of commitments.entries()) {
       const chunkOutput = {
         to: dv.lockingBytecode,
@@ -234,7 +245,12 @@ export function appendDynamicChunks(
       };
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
       if (inPlace) builder.outputs[base + chunkIndex] = chunkOutput;
-      else builder.addOutput(chunkOutput);
+      else if (followsReturnEvent) {
+        const outputIndex = base + 1 + chunkIndex;
+        const displaced = builder.outputs[outputIndex];
+        builder.outputs[outputIndex] = chunkOutput;
+        if (displaced) builder.addOutput(displaced);
+      } else builder.addOutput(chunkOutput);
     }
     if (inPlace) {
       // A shrinking write consumes every old chunk, but only the new prefix may remain at this

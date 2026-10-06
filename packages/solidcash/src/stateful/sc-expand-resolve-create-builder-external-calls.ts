@@ -81,6 +81,49 @@ export function repeatedTypedLoopRefusal(call: ExternalCallAbi): Error {
     + 'connect a signer before sending');
 }
 
+/** Counter names of compiler `loopIndex` sources nested in a published callsite. */
+function collectLoopCounters(value: unknown, seen = new Set<object>(), out = new Set<string>()): Set<string> {
+  if (!value || typeof value !== 'object' || seen.has(value as object)) return out;
+  seen.add(value as object);
+  const node = value as { kind?: string; source?: { kind?: string; counterName?: string } };
+  if (node.kind === 'source' && node.source?.kind === 'loopIndex' && node.source.counterName) {
+    out.add(node.source.counterName);
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    if (Array.isArray(child)) {
+      for (const item of child) collectLoopCounters(item, seen, out);
+    } else {
+      collectLoopCounters(child, seen, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * A loop-nested call with no published domain still runs only when its loop body runs. When it shares a
+ * counter with an array-element callsite and that state array is empty, this invocation reaches no row.
+ */
+function zeroTripSharedArrayLoop(
+  call: ExternalCallAbi,
+  calls: readonly ExternalCallAbi[],
+  state: Record<string, StateValue> | undefined,
+): boolean {
+  if (call.occurrence !== 'loop' || call.loopArrayVar || call.iterationDomain || !state) return false;
+  const counters = collectLoopCounters(call);
+  if (counters.size === 0) return false;
+  const arrays = new Set<string>();
+  for (const other of calls) {
+    if (!other.loopArrayVar) continue;
+    const shared = collectLoopCounters(other);
+    if ([...counters].some((name) => shared.has(name))) arrays.add(other.loopArrayVar);
+  }
+  if (arrays.size !== 1) return false;
+  const arrayName = [...arrays][0];
+  if (arrayName === undefined) return false;
+  const value = state[arrayName];
+  return Array.isArray(value) && value.length === 0;
+}
+
 function containsReturningExpression(value: unknown, seen = new Set<object>()): boolean {
   if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
   seen.add(value as object);
@@ -194,6 +237,21 @@ export async function expandResolveCreateBuilderExternalCalls(
         if (!(error instanceof ExternalExpressionUnresolvedConditionError)) throw error;
       }
     }
+    if (externalCalls.length === 0) {
+      return {
+        externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],
+        callerStateSnapshot,
+      };
+    }
+  }
+
+  // A loop-nested call that shares its counter with an array-element sibling is unreachable when that
+  // array is empty. The covenant skips the epilogue in that case; omitting the callsite here matches it.
+  if (!overrideExternalCalls && externalCalls?.some((call) => call.occurrence === 'loop'
+    && !call.loopArrayVar && !call.iterationDomain)) {
+    callerStateSnapshot ??= (await host.getFullState()).state;
+    const published = externalCalls;
+    externalCalls = externalCalls.filter((call) => !zeroTripSharedArrayLoop(call, published, callerStateSnapshot));
     if (externalCalls.length === 0) {
       return {
         externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],

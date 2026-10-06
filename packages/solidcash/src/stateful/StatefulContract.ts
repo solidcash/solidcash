@@ -7248,13 +7248,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       registeredSelf ? registeredExecutionLockingBytecode(registeredSelf) ?? this.inner.lockingBytecode
         : this.inner.lockingBytecode,
     );
-    // Local delegate resources execute at the implementation input, while an outgoing CALL is made in the
-    // authenticated proxy/state-owner context. Keep that edge identity as one category+bytecode pair and use it
-    // for both call arguments derived from address(this) and the callee's msg.sender.
+    // The registry lock is the bytecode a frame presents as address(this) and as the caller's
+    // msg.sender. A CREATE anchor (_logicalAddress) is a different script; substituting it fails
+    // the covenant's hash160(self) check against the input that is actually executing.
     const registeredSelfAddress = registeredSelf?.lockingBytecode
       ? hexToBin(registeredSelf.lockingBytecode) : hexToBin(this.inner.lockingBytecode);
-    const authenticatedSelfAddress = this._logicalAddress === undefined
-      ? registeredSelfAddress : addressToLockScript(this._logicalAddress);
+    const authenticatedSelfAddress = registeredSelfAddress;
     const publicSelfAddress = authenticatedSelfAddress;
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,

@@ -1276,6 +1276,17 @@ function buildVirtualMachineBch2026ForProvider(
         recorded = copy === NOT_PLAIN_DATA ? undefined : {
           program: copy, declared: Uint8Array.from(close.declared), computed: Uint8Array.from(close.computed),
         };
+      } else if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_RECORDED_CLOSE === '1') {
+        // Why a run's close was not kept: the reading that follows it must trace the program again instead.
+        console.error('recorded-close-declined', JSON.stringify({
+          close: close === undefined ? 'none' : 'kept',
+          stateOverride: options?.stateOverride !== undefined,
+          error: stop.error === undefined ? 'none' : String(stop.error).slice(0, 80),
+          instructionsMatch: close === undefined ? null : stop.instructions === close.instructions,
+          ip: stop.ip,
+          closeIp: close === undefined ? null : close.ip,
+        }));
       }
       return state;
     };

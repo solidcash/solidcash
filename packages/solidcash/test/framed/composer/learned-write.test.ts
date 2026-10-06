@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, bytesToHex } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   USER_LOCK, compileAndDeploy, entryName, hexOf, master, masterInput, rootOf, seededAddress, selectorOfSignature,
@@ -200,6 +202,27 @@ const SPLIT_BEFORE = splitCommitment(5n);
 const SPLIT_MIDDLE = splitCommitment(6n);
 const SPLIT_WRITTEN = splitCommitment(8n);
 
+/**
+ * A machine of its own, with every traced reading (`boundedDebug`) counted.
+ *
+ * `compositionMachine()` caches its machine per provider, so a wrapper installed on it would count for every test in
+ * the file. A provider of its own keeps the count to the test that asks for it, with the same relaxed limit profile.
+ */
+function tracedMachine(): { readonly vm: ReturnType<typeof compositionMachine>; readonly traces: () => number } {
+  const provider = new MockNetworkProvider({ consensusLimits: { ...COMPOSITION_LIMITS } });
+  const vm = createVirtualMachineBch2026ForProvider(provider, undefined, { standard: false });
+  const machine = vm as unknown as { boundedDebug?: (program: never) => unknown };
+  const traced = machine.boundedDebug;
+  let count = 0;
+  if (traced !== undefined) {
+    machine.boundedDebug = (program: never): unknown => {
+      count += 1;
+      return traced(program);
+    };
+  }
+  return { vm, traces: () => count };
+}
+
 function buildSplitPlan(): {
   readonly plan: CompositionDraftPlan;
   readonly artifacts: typeof SPLIT_COMPILED.artifacts;
@@ -269,6 +292,21 @@ function buildSplitPlan(): {
 }
 
 describe('a frame that writes on both sides of a call', () => {
+  it('reads each unstated declaration it learns without exceeding one traced reading per value', () => {
+    // A reading costs a stepped re-run of the master: the machine's failed-close record does not answer a composer
+    // program (the declines are visible under `SOLIDC_DEBUG_RECORDED_CLOSE=1`). The walk learns one value per
+    // iteration, so the number of traced readings is bounded by the number of declarations; batching them into one
+    // run is the W4 lever this count measures.
+    const { plan, artifacts } = buildSplitPlan();
+    const { vm, traces } = tracedMachine();
+    const { host, draft } = createComposedDerivationHost({ vm, artifacts: [artifacts.Ledger!, artifacts.Callee!], plan });
+    deriveDepthFirst(rootOf('Ledger', 'bump', SPLIT_LEDGER), host);
+    // Both values are still learned from the body's own closes, so the count is not paid for a different outcome.
+    expect(draft.blockOf(SPLIT_LEDGER).segments.flat().map((entry) => bytesToHex(entry.viewOut)))
+      .toStrictEqual([bytesToHex(SPLIT_MIDDLE), bytesToHex(SPLIT_WRITTEN)]);
+    expect(traces()).toBeLessThanOrEqual(2);
+  });
+
   it('learns each segment\'s write and settles every participant', () => {
     const { plan, artifacts, recordIndex } = buildSplitPlan();
     const { host, draft } = createComposedDerivationHost({

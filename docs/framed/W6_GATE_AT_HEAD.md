@@ -69,6 +69,16 @@ The five `test/e2e` rows are `KernelIndependentComputedChunks` (1) and `KernelMi
 `test:kernel-beta:local` in its `--tests-only` mode runs the `journal-message-bus` suites, which carry the
 baseline rows listed above, so its result would restate those rows rather than add information.
 
+## Open item: D22 awaits the user's confirmation
+
+`DECISIONS.md` row D22 carries the condition "the user should confirm the framed identity semantics before this
+lands in a release". The question was put to the user with this gate's results and the user declined to answer, so
+the row is still unconfirmed. It is live on the branch either way: a framed deployment's `getAddress()`/`target`
+is `_framedAddress ?? _logicalAddress ?? this.address`, which is what the proxied ladder passes with and what
+`cee831dc2` installed. Nothing has been pushed, so the release is staged locally and revertible in one command:
+
+    git -C /Code/cashscript reset --hard 9fd8cd52b
+
 ## Regtest: blocked by image availability
 
 W6's suite list also names a `yarn test:regtest` subset on the regtest stack, and section 3 asks for real-node runs

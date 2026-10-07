@@ -120,3 +120,46 @@ would have to be reverted when model B lands.
 `examples/effectiveacceleration/artifacts/**` is generated and untracked. The copies on disk predated the rename
 and carried `composition.convention: per-call`; the gate recipe's "fixtures recompiled first" applies to them as
 well as to `.marketplace`. They were regenerated in place for the runs this note reports.
+
+## Round 3, 2026-10-07: the fee accounting and the satoshi container
+
+### The batch-predecessor fee shortfall: 2 titles, `328e02615`
+
+`KernelMultiContinuationResourceCompose.test.ts` failed `Transaction fee of 33353 satoshis ... below the minimum
+relay fee (43528 satoshis ...)`. Cause: the phase-3 final-layout reassert
+(`reassertMaterializedBatchPredecessorOutputs`) materializes a 10000-satoshi batch-predecessor output *after*
+`measureAndFundCovenantFee` has sized the funder, so the fee is measured against a nine-output frame and the
+transaction ships ten. The deficit is 10175 satoshis (43528 - 33353); the 10000 is the output's amount and the
+rest is the byte it costs. Fix: run the same materialization on the measured builder before sizing the funder. A
+send that materializes no predecessor output gets a byte-identical measured shape and therefore the same fee;
+`reassertMaterializedBatchPredecessorOutputs` returns without writing unless the carrier publishes predecessor
+metadata. Both titles pass and the whole file is 12/12.
+
+### The dropped satoshi container: 1 title, `40b437c60`
+
+`selectedSatoshiContainerRequired` dropped the satoshi container when the reached transfer's predicate was
+provably false, so a handler that reads `msg.value` satisfied its `require(msg.value == 0)` vacuously with no
+container co-spent (`FixedConditionalTransferSecurity` - "binds true/false and if/else paths ..."). The narrowing is
+now keyed on the handler's published `usesMsgValue` metadata: an eligible handler that reads `msg.value` keeps the
+container; one that never reads it keeps the old narrowing.
+
+### Dropped: the recipient projection
+
+The first version of that commit also projected fewer address value-args to EVM identities (keeping a transfer
+recipient native). It fixed the two typed fixed-effect titles and broke five `KernelRealUnicrowProxyArbitration`
+titles, whose frames address the projected identity:
+
+    MessageBusDiagnosticError: L3_VM_RESOURCE_LIMIT: BCH-2026 preflight failed at input 260:
+    Program called an OP_SPLIT operation with an invalid index. stack item length: 108; requested split index: 115.
+
+Isolated by reverting one file at a time: reverting `message-bus.ts` (the projection) passes the Unicrow title,
+reverting `selected-satoshi-container.ts` leaves it failing. Net-negative, so that half is not in the branch and
+the two typed fixed-effect titles stay failing; a finer discriminator than "a forward transfer recipient" is needed
+before it can come back.
+
+### Gate numbers at `40b437c60`
+
+`solidcash` falls from 30 to **26 failures, every one a `W6_BASELINE.md` row and none new versus round 2** (the
+four that stopped failing are the two fee titles, the container title, and the previously load-induced
+`enclosed-node-update` timeout). `test/e2e` stays at 5 baseline rows, the framed config at 3, and `solidc` has one
+load-induced timeout that passes alone (689/689) - lerna stops at it, so the other packages are run separately.

@@ -69,6 +69,15 @@ The five `test/e2e` rows are `KernelIndependentComputedChunks` (1) and `KernelMi
 `test:kernel-beta:local` in its `--tests-only` mode runs the `journal-message-bus` suites, which carry the
 baseline rows listed above, so its result would restate those rows rather than add information.
 
+## Regtest: blocked by image availability
+
+W6's suite list also names a `yarn test:regtest` subset on the regtest stack, and section 3 asks for real-node runs
+because mocknet relaxes consensus limits. That could not run here: the stack needs
+`mainnet/bitcoin-cash-node:v29.0.0` and `cculianu/fulcrum:latest`, neither is present in the local Docker image
+store, and both `docker pull` attempts ended at their 900 s timeout with
+`error getting credentials - err: signal: terminated`. No container was created. The regtest item therefore stays
+open, and this note is the evidence, not a claim that it passed.
+
 ## Marketplace ladders
 
 One full ladder per lane, after the suites, each with a cold fixture compile (`MARKETPLACE_FIXTURE_STALE_OK` was

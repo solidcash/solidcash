@@ -28,6 +28,16 @@ export function decodeSelectedHandlerArguments(
   return cursor === bytes.length ? args : undefined;
 }
 
+/**
+ * A handler that reads `msg.value` authenticates it against the co-spent satoshi container, so an inactive
+ * transfer branch must still publish the pass-through container that a taken `require(msg.value == 0)` reads.
+ */
+function handlerAuthenticatesMsgValue(artifact: Artifact, selector: string | undefined): boolean {
+  if (selector === undefined) return false;
+  return (artifact.messageBus?.handlers ?? []).some((handler) => handler.eligible === true
+    && handler.usesMsgValue === true && handler.selector.toLowerCase() === selector.toLowerCase());
+}
+
 /** Narrow a shared route resource only from every selected handler's exact compiler-published layout. */
 export function selectedSatoshiContainerRequired(
   artifact: Artifact,
@@ -48,6 +58,10 @@ export function selectedSatoshiContainerRequired(
     const required = (handler!.transferCount ?? 0) > 0
       || handler!.blockLayout!.slots.some((slot) => slot.kind === 'satoshiContainer');
     if (!required) return false;
+    // A msg.value handler authenticates its taken branch against the container, so an inactive transfer must
+    // not drop it: the container stays co-spent as a pass-through instead of satisfying `msg.value == 0`
+    // vacuously. Handlers that never read msg.value keep the reached-transfer narrowing below.
+    if (handlerAuthenticatesMsgValue(artifact, selectors[index])) return true;
     const args = rowArguments?.[index];
     const transfers = handler!.transfers;
     // Omit a union resource only when every published transfer is provably inactive from immutable row

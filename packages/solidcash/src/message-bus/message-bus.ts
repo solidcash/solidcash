@@ -432,14 +432,26 @@ export function projectMessageBusHandlerArguments(
   const abiFunction = resolveMessageBusAbiFunction(artifact, functionName, selector);
   if (!handler || !abiFunction) return [...args];
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
-  const callTargetAddressIndexes = new Set<number>();
+  const nativeAddressIndexes = new Set<number>();
   for (const call of abiFunction.externalCalls ?? []) {
     if (call.addressSource?.kind === 'forward' && typeof call.addressSource.paramIndex === 'number') {
-      callTargetAddressIndexes.add(call.addressSource.paramIndex);
+      nativeAddressIndexes.add(call.addressSource.paramIndex);
     }
   }
+  // A BCH transfer recipient is reproduced as an output locking bytecode, not an EVM identity. Keep those
+  // value-args native like call targets so the authenticated emission row and the composed output agree on
+  // the exact lock bytes instead of a hash-160 projection of them.
+  for (const transfer of abiFunction.transfers ?? []) {
+    if (transfer.recipient.kind === 'forward' && typeof transfer.recipient.paramIndex === 'number') {
+      nativeAddressIndexes.add(transfer.recipient.paramIndex);
+    }
+  }
+  for (const loop of abiFunction.runtimeLoopTransfers ?? []) {
+    const index = handler.inputs.findIndex((input) => input.name === loop.permutationParam);
+    if (index >= 0) nativeAddressIndexes.add(index);
+  }
   return args.map((argument, index) => {
-    if (callTargetAddressIndexes.has(index)) return argument;
+    if (nativeAddressIndexes.has(index)) return argument;
     const inputType = handler.inputs[index]?.type;
     if (inputType === undefined) return argument;
     if (structs?.some((definition) => definition.name === inputType)

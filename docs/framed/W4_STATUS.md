@@ -143,3 +143,11 @@ only way to get it under 20 reliably is the perf work in `W4_WINS.md`, not a tim
    proxied `take job sanity checks` and `approve result and review sanity checks`, and compare against the W2
    numbers (1044.3 s / 718.8 s no-proxy; 62.2 s / 131.8 s proxied).
 3. Then decide the timeout and re-run the size diff, which must come back to 135056 for `MarketplaceV1`.
+
+## Round-2 measurement, 2026-10-07 (`270ff36d3`)
+
+The no-proxy ladder ran alone and finished 65/65 in 10228.56 s. Its slowest title was
+`approve result and review > sanity checks` at **1106.3 s (18.4 min)**, so the 20-minute budget is met when the
+box carries only that lane; no title exceeded 1200 s. The harness cap stays at 30 minutes because the loaded run
+of the same title measured 1360.99 s (`ba005c658`'s timings), and a cap that flakes under load is worse than a
+larger one. The per-title list is in `{SCRATCH}/w4-titles.log`.

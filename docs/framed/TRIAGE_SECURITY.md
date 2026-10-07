@@ -7,11 +7,31 @@ Surveyed 2026-10-05 on `feat/framed` at `57dfa942e`. Each finding is fixed or na
 | id | status | where it stands |
 |---|---|---|
 | F1 contract caller identified by presence | known limitation on the direct convention; specified for framed | The audit's direct path treats a co-spent master as the caller. Per-call frames carry `sender` and the validator checks the edge (`V5` in `SPEC_FRAMED_TRANSACTION.md`). The direct / kernel path is unchanged. |
-| F2 signature hash type not checked | fixed for the signatures the authorization checks | `DECISIONS.md` D10: the sighash-ALL fence of `kernelV2SignatureFence` landed in `e40c15ed2`, extended to every signature that authorization checks in `765bb888a`. |
+| F2 signature hash type not checked | partially fixed: unfenced on the direct convention's ordinary
+entries and its `msg.sender` path | See the F2 note below the table. |
 | F9 forgeable logical-address anchors | known limitation until model B | Model B (an address is the full locking script) is deferred. `DECISIONS.md` still records it as not scheduled. This release does not adopt identity20 mapping keys for framed. |
 | F10 message-bus builder chooses the caller | known limitation of the direct convention | The graph path's caller identity is the builder's. Per-call does not read `artifact.messageBus` for its frames. |
 | F11 proxy initialization front-run | known limitation | The audit leaves proxy initialization as a second, permissionless transaction (open point 5). Not closed in this triage. |
 | S2 one signature can authorize many calls | known limitation | Recorded residual. No framed receipts in this release. |
+
+
+### F2, corrected 2026-10-07
+
+A sighash-ALL fence exists in exactly three places:
+
+- the direct **upgrade** authorization: `GenerateTargetTraversal.ts:14100-14104` for `checkSig` and
+  `14154-14223` for `checkMultiSig`, gated by `fencesUpgradeSignatures()` seeded from upgrade entry points at
+  `10930-10952`;
+- the message-bus route: `compiler.ts:9836-9837`, emitted at `13542-13549`, and only for handlers that reach a
+  `checkSig`;
+- the framed master root caller: `master-head.ts:1128-1150`.
+
+A direct convention's ordinary entry, and the `msg.sender` / `tx.origin` shape this finding is about, carry no
+fence: the emitted script's first op for a plain `checkSig` entry is `OP_CHECKSIGVERIFY`, which accepts any valid
+hash type. The fence commit is `85636dfde` (as `DECISIONS.md:24` records), not `e40c15ed2`, which relaxed the
+data-NFT census instead; the row above also conflated the route fence with the direct-upgrade fence. The direct
+path needs the fence, or the warning now in the README stands, before a release presents `msg.sender` as
+authorization.
 
 ## State-bus transcript (`SECURITY-AUDIT.md`, 2026-07, on the line that became `solidcash_v0.13.1`)
 

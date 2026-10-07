@@ -71,6 +71,15 @@ export default class PruneInlinedConstantBranches extends AstTraversal {
   private immutableBindings = new Set<string>();
   private nonZero = new Set<string>();
 
+  /**
+   * `dropLiteralArms` false keeps a literal-decided arm: a framed entry publishes the write it holds as an entry
+   * access with the condition it runs under, so the frame can declare the record a skipped write keeps. The
+   * nonzero-address facts are still carried either way.
+   */
+  constructor(private readonly dropLiteralArms: boolean = true) {
+    super();
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const survey = new BindingSurvey();
     survey.visit(node.body);
@@ -110,8 +119,9 @@ export default class PruneInlinedConstantBranches extends AstTraversal {
   }
 
   visitBranch(node: BranchNode): Node {
-    const selected = this.nonZeroTruth(node.condition)
-      ?? (this.usesInlinedConstant(node.condition) ? this.truth(node.condition) : undefined);
+    const selected = !this.dropLiteralArms ? undefined
+      : this.nonZeroTruth(node.condition)
+        ?? (this.usesInlinedConstant(node.condition) ? this.truth(node.condition) : undefined);
     if (selected === undefined) {
       const before = new Set(this.nonZero);
       node.condition = this.visit(node.condition);

@@ -15379,9 +15379,12 @@ function compileResolvedAst(
   }
   // Physical-slot discovery must see only reachable writes in a helper expanded with a literal argument (for
   // example a generic mint/burn helper called with a zero endpoint). Keep this before SymbolTableTraversal,
-  // which allocates entry/data slots from the body it receives.
+  // which allocates entry/data slots from the body it receives. A framed entry keeps the literal-decided arms:
+  // it publishes the skipped write's access and condition so the frame can declare the record that write keeps.
   if (hasInternalHelpers || hasInternallyCalledPublicEntry) {
-    ast = ast.accept(new PruneInlinedConstantBranches()) as Ast;
+    ast = ast.accept(new PruneInlinedConstantBranches(
+      mergedCompilerOptions.composition !== 'framed',
+    )) as Ast;
   }
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
   // resolved by straight-line dataflow into its side effects + the mapping it finally aliases, and inlined at call

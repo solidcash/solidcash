@@ -9420,14 +9420,22 @@ export default class SymbolTableTraversal extends AstTraversal {
               return { kind: 'literal', type: 'bigint', value: member.value.toString() };
             }
           }
-          const writtenValue = this.dominatingStateFieldValue(expression, serializationProgramPoint, seen);
-          if (writtenValue) return serializeExpression(writtenValue, seen);
-          const inner = serializeExpression(expression.expression, seen);
           const fieldType = expression.type
             ?? expression.structType?.fields.find((field) => field.name === expression.name)?.type
             ?? (expression.expression.type instanceof StructType
               ? expression.expression.type.fields.find((field) => field.name === expression.name)?.type
               : undefined);
+          const writtenValue = this.dominatingStateFieldValue(expression, serializationProgramPoint, seen);
+          if (writtenValue !== undefined) {
+            const folded = serializeExpression(writtenValue, seen);
+            // A framed condition reads a field, so the value keeps the field's declared type whatever wrote it:
+            // the literal a dominating write folded to must not read back as the literal's own bigint type. The
+            // direct convention publishes the folded expression as it stands, so it is left unchanged.
+            return this.compilerOptions.composition !== 'framed'
+              || folded === undefined || fieldType === undefined
+              ? folded : { ...folded, type: fieldType.toString() };
+          }
+          const inner = serializeExpression(expression.expression, seen);
           // A local whose writes were followed already holds the value this field reads.
           if (inner !== undefined && followedValues.has(inner)) {
             return fieldOf(inner, expression.name, fieldType?.toString());
@@ -10078,12 +10086,20 @@ export default class SymbolTableTraversal extends AstTraversal {
         const atBranch = owner !== undefined ? dominatingStatements(owner)
           : framed ? undefined : dominatingStatements(expression);
         const atCall = priorStatements;
-        if (atBranch !== undefined || !framed) priorStatements = atBranch;
+        const callPoint = serializationProgramPoint;
+        if (atBranch !== undefined || !framed) {
+          priorStatements = atBranch;
+          // The field-write fold reads `serializationProgramPoint`, not `priorStatements`: under the framed
+          // composition it must be the predicate's own read point, or an arm's write still folds into the field
+          // the predicate reads. The direct convention publishes as it stands.
+          if (framed) serializationProgramPoint = expression;
+        }
         let serialized: ExternalCallExpression;
         try {
           serialized = serializeExpression(expression) ?? { kind: 'missing', name: expression.constructor.name };
         } finally {
           priorStatements = atCall;
+          serializationProgramPoint = callPoint;
         }
         return negated
           ? { kind: 'unary', operator: '!', expression: serialized } as ExternalCallExpression

@@ -22,9 +22,10 @@ either fixed, or left with the reason written down. Nothing is skipped silently.
 - Verified: both files whole (7 passed / 3 passed), `KernelSelfdestructStateCompose` 1/1, `e2e/Upgrade.test.ts`
   24/24, `KernelProxyUpgradeThenCompose` 3/3, and the negative titles still refuse.
 
-### The framed `call/` rows: 4 of 7, `a001e8c8f`
+### The framed `call/` rows: 4 of 7, `31bfe3cb7`
 
-- Fixed: both `branch-predicate-after-arm-write.test.ts` titles and both `skipped-batch-write.test.ts` titles.
+- Fixed: two of the three `branch-predicate-after-arm-write.test.ts` titles (the third, "refuses the plan the
+  arm-folded predicate implied", was already passing) and both `skipped-batch-write.test.ts` titles.
 - Causes: a call site's published branch condition was resolved at the call instead of at the branch
   (`serializeGuard` left `serializationProgramPoint` at the call while resetting `priorStatements`), so the arm's
   own write folded into the predicate it reads; and `PruneInlinedConstantBranches` dropped a literal-decided arm

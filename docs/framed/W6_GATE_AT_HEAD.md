@@ -111,12 +111,20 @@ open, and this note is the evidence, not a claim that it passed.
 ## Marketplace ladders
 
 One full ladder per lane, after the suites, each with a cold fixture compile (`MARKETPLACE_FIXTURE_STALE_OK` was
-never set).
+never set). Round 1 ran at `ab8a97acb`:
 
 | lane | compile | ladder | result |
 |---|---|---|---|
-| proxied | 9 sources -> 19 artifacts | 2402 s | **66 passed of 66**, exit 0 |
-| no-proxy | 22 sources -> 26 artifacts | 9899 s | **65 passed of 65**, exit 0 |
+| proxied | 9 sources -> 19 artifacts | 2402 s* | **66 passed of 66**, exit 0 |
+| no-proxy | 22 sources -> 26 artifacts | 9899 s* | **65 passed of 65**, exit 0 |
+
+`*` the two round-1 vitest durations are the ones recorded in the commits that reported them (`cb919bcb9`,
+`b2c7d12e8`); the full round-1 logs were later overwritten by round 2 at the same paths, and what survives on disk
+is `gate-ladder-proxied.out` and `gate-ladder-noproxy.out`, which carry the pass counts, the compile lines and the
+end timestamps (03:40:17Z and 06:28:40Z).
+
+Round 2 ran at `270ff36d3`. The proxied lane is **66 passed of 66** in 2587.56 s (`gate2-ladder-proxied.log`); the
+no-proxy lane's result is appended below when its run finishes.
 
 The no-proxy lane had never finished green: the run at `19f6c28b5` lost two titles to the per-title cap, and both
 passed alone. At this revision every title passed inside the 30-minute cap, the slowest being the arbitrate and

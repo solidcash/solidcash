@@ -86,7 +86,12 @@ never set).
 | lane | compile | ladder | result |
 |---|---|---|---|
 | proxied | 9 sources -> 19 artifacts | 2402 s | **66 passed of 66**, exit 0 |
-| no-proxy | 22 sources -> 26 artifacts | see below | see below |
+| no-proxy | 22 sources -> 26 artifacts | 9899 s | **65 passed of 65**, exit 0 |
+
+The no-proxy lane had never finished green: the run at `19f6c28b5` lost two titles to the per-title cap, and both
+passed alone. At this revision every title passed inside the 30-minute cap, the slowest being the arbitrate and
+refund sanity checks (771 s and 514 s). The harness copy was refreshed from this revision with
+`git archive` and `tsc -b tsconfig.packages.json --force` before the fixture compile.
 
 The proxied run refreshed nothing but `packages/solidc/dist` first (a full `tsc -b tsconfig.packages.json`), removed
 `.marketplace/cache` and `node_modules/.experimental-vitest-cache`, and recompiled the fixture cold, so the

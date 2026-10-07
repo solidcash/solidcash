@@ -71,4 +71,16 @@ baseline rows listed above, so its result would restate those rows rather than a
 
 ## Marketplace ladders
 
-One full ladder per lane, after the suites. Results appended when the runs finish.
+One full ladder per lane, after the suites, each with a cold fixture compile (`MARKETPLACE_FIXTURE_STALE_OK` was
+never set).
+
+| lane | compile | ladder | result |
+|---|---|---|---|
+| proxied | 9 sources -> 19 artifacts | 2402 s | **66 passed of 66**, exit 0 |
+| no-proxy | 22 sources -> 26 artifacts | see below | see below |
+
+The proxied run refreshed nothing but `packages/solidc/dist` first (a full `tsc -b tsconfig.packages.json`), removed
+`.marketplace/cache` and `node_modules/.experimental-vitest-cache`, and recompiled the fixture cold, so the
+artifacts came from this revision's compiler rather than from the compile cache. The no-proxy run uses the same
+recipe in the harness copy at `/tmp/grok-goal-4b830698eeec/implementer/w4/harness`, refreshed from this revision
+and retargeted to `/Code/effectiveacceleration.ai/contract-noproxy`.

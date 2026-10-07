@@ -9260,6 +9260,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const unsafeTier = isUnsafe ? (node.unsafeTier ?? 0) : null;
     const isUpgrade = node.messageBusUpgradeRoute === true
       || node.modifiers.includes(FunctionModifier.UPGRADE);
+    // A direct upgrade may mint the data NFTs a longer layout needs. A message-bus upgrade appends inside the
+    // final existing data NFT, and its route verifier already pins the participant block, so it keeps the
+    // balanced census: the participant co-spends its own detached verifier NFT alongside the state, and the
+    // exact-census pre-check would count that verifier as an extra own-category mutable input.
+    const upgradeMintsDataNfts = isUpgrade && node.messageBusEligible !== true
+      && node.messageBusUpgradeRoute !== true;
     const isSelfdestruct = node.modifiers.includes(FunctionModifier.SELFDESTRUCT);
     const isSplit = node.modifiers.includes(FunctionModifier.SPLIT);
     const isMerge = node.modifiers.includes(FunctionModifier.MERGE);
@@ -9483,7 +9489,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
-          this.emitOwnCategoryMutableNftConservation(node, true);
+          this.emitOwnCategoryMutableNftConservation(node, upgradeMintsDataNfts);
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -9513,7 +9519,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
-          this.emitOwnCategoryMutableNftConservation(node, true);
+          this.emitOwnCategoryMutableNftConservation(node, upgradeMintsDataNfts);
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -43925,8 +43931,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // co-spends an UN-accessed data/entry NFT and DESTROYS it (flag=2, or an output-free flag=1) - which the
   // sub-covenant self-authorizes given the master's minting NFT is present - drops the output count below the
   // input count and is rejected. Mirrors emitMintingNftUniqueness (balance = inputs - outputs), asserting == 0.
-  // The upgrade variant also requires exactly the old data-NFT input population and discounts only a contiguous run
-  // of new data NFTs at the canonical covenant. Residual: flag=1 corruption that re-emits a 0x01-of-C output keeps
+  // The direct-upgrade variant also requires exactly the old data-NFT input population and discounts only a
+  // contiguous run of new data NFTs at the canonical covenant. A message-bus upgrade keeps the balanced census
+  // because it appends inside the final existing data NFT and co-spends the participant's detached verifier, and
+  // its route verifier already pins the block. Residual: flag=1 corruption that re-emits a 0x01-of-C output keeps
   // the count balanced (see SECURITY-AUDIT C3), and the run's length and commitments are not checked.
   private emitOwnCategoryMutableNftConservation(
     node: FunctionDefinitionNode, allowUpgradeDataNftGrowth = false,
@@ -43991,8 +43999,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (loop_i)
 
     if (allowUpgradeDataNftGrowth) {
-      // An upgrade co-spends every old data NFT, and no entry/chunk NFT. This also keeps a destroyed, unaccessed
-      // mutable input from being masked by minting an extra data NFT.
+      // A direct upgrade co-spends every old data NFT, and no entry/chunk NFT. This also keeps a destroyed,
+      // unaccessed mutable input from being masked by minting an extra data NFT.
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(BigInt(this.dataNftCount)), loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);

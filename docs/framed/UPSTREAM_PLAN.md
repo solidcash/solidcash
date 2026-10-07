@@ -209,14 +209,26 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
   pre-existing `call/` failures; the proxied marketplace ladder 66/66 in 2509 s (`LADDER_AT_HEAD.md`); the no-proxy
   twin functionally 65/65, its two cap-induced timeouts passing alone (`LADDER_NOPROXY_AT_HEAD.md`); and four of the
   nine release gate scripts green, with the artifact-size item closed at `598b92837` (`W4_SIZE_GROWTH.md`).
-- What is still open for the gate: `yarn test` and `yarn test:e2e` are not green - 70 failing tests, 41 matching a
-  `W6_BASELINE.md` row and 29 with no row anywhere (4 solidc, 13 solidcash, 12 e2e), so step 2 of this section
-  (classify every failure) is the next work item, in `W6_FULL_SUITE_AT_HEAD.md`. The release gate scripts are red on
-  `yarn examples` (type-only exports imported as values, a fix in flight), on application conformance (the same six
-  `test/e2e/Upgrade.test.ts` failures) and on the kernel-beta vocabulary check (four production comment lines that
-  name the application), with the docs-snippets probe amber on a `@types` self-symlink: `RELEASE_GATE_AT_HEAD.md`.
+- What is still open for the gate: nothing in the suites. The 29 unrecorded failures are closed - see the status
+  block below - and every remaining failure in `yarn test` (40 in `solidcash`) and `yarn test:e2e` (5) is a
+  `W6_BASELINE.md` row, checked mechanically by title. The release gate scripts are green except
+  `test:kernel-beta:local`, whose `--tests-only` mode would restate those same baseline rows.
 - Also open, from W4: the slowest no-proxy title needs 19 to 23 minutes depending on load, so W4's 20-minute budget
   target is unmet; the ranked perf work is in `W4_WINS.md` and its baseline needs an idle box.
+- Status, 2026-10-07 (pointers, not decisions). All 29 unrecorded failures are classified
+  (`W6_NEW_FAILURE_CLASSIFICATION.md`: 28 regressions, 1 load-induced timeout) and all 28 are fixed
+  (`W6_FAILURE_FIXES.md`). The regressions were seven commits: `ce2f7bba1` (reverted and then reinstated with a
+  guard, `add6f3c71` + `510bb6ec0`), `b6ee86a3f` (`07950282c`), `a2bcdb614` (`27108b19b`), `598b92837` +
+  `0cffcb936` + `db0551317` (`ac4a136f2`), `d532aa32a` (`3d90af923`) and `fcb3aff77` + `f4a00d3ff` (`da3b9d2ac`).
+  The gate itself is `W6_GATE_AT_HEAD.md`; at `ab8a97acb`, `solidc` is 6839/6839, `utils` 480/480, `testing`
+  99/99, `solidhat` 71/71 and `testing-suite` 27/27, `solidcash` is 5344 passed with its 40 baseline rows,
+  `test/e2e` is 3208 passed with its 5 baseline rows, both framed configs hold their baseline rows, `tsc` and
+  `yarn lint` are clean, and the proxied marketplace ladder is 66/66 in 2402 s. The No-proxy twin is the last
+  gate item.
+- Two gate items are deliberately not satisfied: `KernelIndependentComputedChunks` and three
+  `KernelMixedEntryInsert` titles are `W6_BASELINE.md` pre-existing kernel rows that `0cffcb936` had incidentally
+  fixed; `ac4a136f2` returns them to that state because their `Store.update` shape is byte-identical to
+  `KernelDirectComputedChunks`'s while the titles pin the same `eligible` flag to opposite values.
 
 ### W7. Test count reduction
 - Phase 1, by the shape of the code (no coverage tools yet): cluster test files by subject using

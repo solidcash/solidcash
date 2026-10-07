@@ -23,9 +23,16 @@ those stretches are noted below where they limit attribution.
 
 The causes, one per group:
 
-- G1: the new rule nested trailing statements into any preceding block holding a return, even one that already
-  ends every path. The dead tail then landed inside the aborting arm, and the rule also accepted a path the
-  unconfined-return refusal had rejected. `add6f3c71` reverts that hunk; no test depended on it.
+- G1: the rule nested trailing statements into any preceding block holding a return, even one that already ends
+  every path. The dead tail then landed inside the aborting arm, and the rule also accepted a path the
+  unconfined-return refusal had rejected.
+  `add6f3c71` reverted the hunk, which fixed both solidc titles and broke
+  `packages/solidcash/test/e2e/AssemblyReturnHalts.test.ts` - that file fails to compile without the rule
+  (`UnsupportedReturnError` from `refuseUnconfinedReturns` on the `frame` shape, whose block hides a conditional
+  assembly return and does not end every path). `510bb6ec0` reinstates the rule with two guards:
+  `!endsEveryPath(stmt)` keeps the switch shape's dead tail from being nested, and
+  `holdsAssemblyReturn(stmt.statements)` keeps the yul-evm storage-pointer shape unconfined so its refusal
+  stands. All three tests are green, and the solidc package suite is 6839/6839.
 - G2: `containsProducerResult` dropped the whole pre-call require, and the side-car recipe is derived only from
   `externalCalls[].preCallRequires`, so no recipe was produced. `07950282c` exempts a Keccak/`ECDSA.recover`
   compute call from the producer-result rejection.

@@ -123,8 +123,15 @@ never set). Round 1 ran at `ab8a97acb`:
 is `gate-ladder-proxied.out` and `gate-ladder-noproxy.out`, which carry the pass counts, the compile lines and the
 end timestamps (03:40:17Z and 06:28:40Z).
 
-Round 2 ran at `270ff36d3`. The proxied lane is **66 passed of 66** in 2587.56 s (`gate2-ladder-proxied.log`); the
-no-proxy lane's result is appended below when its run finishes.
+Round 2 ran at `270ff36d3`. Both lanes are green:
+
+| lane | compile | ladder | result |
+|---|---|---|---|
+| proxied | 9 sources -> 19 artifacts | 2587.56 s | **66 passed of 66**, exit 0 |
+| no-proxy | 22 sources -> 26 artifacts | 10228.56 s | **65 passed of 65**, exit 0 |
+
+The round-2 logs are `gate2-ladder-proxied.log` and `gate2-ladder-noproxy.log`; the no-proxy run refreshed the
+harness copy from `270ff36d3` before compiling, and neither lane set `MARKETPLACE_FIXTURE_STALE_OK`.
 
 The no-proxy lane had never finished green: the run at `19f6c28b5` lost two titles to the per-title cap, and both
 passed alone. At this revision every title passed inside the 30-minute cap, the slowest being the arbitrate and

@@ -6954,6 +6954,12 @@ export class StatefulTransactionBuilder {
     void discovery.discoveryProbeFailure;
 
     // -- Phase 2: measure shape -> compute fee -> fund --
+    // The phase-3 final-layout reassert republishes a batch predecessor output past the measured frame,
+    // so measuring the pre-reassert shape sizes the funder without the sats that extra output needs. Apply
+    // the same predecessor materialization to the measured builder first, so the deficit it exposes is
+    // included in the funder. A transaction that gains no predecessor output measures the same shape as
+    // before and keeps its current fee.
+    this._reassertMaterializedBatchPredecessorOutputs(covenantBuilder);
     const { neededFee, dustMinimum: DUST_MINIMUM } = await measureAndFundCovenantFee(
       this._measureAndFundCovenantFeeHost(), covenantBuilder, provider,
     );

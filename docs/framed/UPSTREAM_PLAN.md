@@ -243,8 +243,13 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
 - Target to agree with the user (e.g. -30..40% of `it`s) with no loss of line/branch coverage and green ladders.
 
 ### W8. Rebase onto the most recent CashScript
+- Status, 2026-10-07: **deferred by the user** ("keep the brief only; no merge this session"). The brief is
+  `W8_MERGE_PREP.md`; it records that the `cashscript` remote already exists and is reachable, that the distance is
+  22 upstream commits against 7,489 of ours with 65 paths changed on both sides, and that the rename makes the work
+  a port rather than a merge resolution. Nothing was merged.
 - A literal rebase of 7342 commits is not practical; merge upstream into the branch instead (or cherry-pick).
-- Steps: `git remote add cashscript https://github.com/CashScript/cashscript.git && git fetch cashscript`; list the
+- Steps: the remote already exists and is fetched (see the status line); otherwise
+  `git remote add cashscript https://github.com/CashScript/cashscript.git && git fetch cashscript`. Then list the
   upstream commits since the fork point `a34616620` (and the 8 local `master` commits not in HEAD); classify them
   (grammar/compiler features, SDK/network providers, utils, libauth bumps, docs, tooling); decide per class
   (merge / adapt / skip with reason); do the merge in a scratch worktree; resolve in parallel by area (the kernel-beta

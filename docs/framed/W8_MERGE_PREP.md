@@ -1,5 +1,12 @@
 # W8 preparation: upstream merge distance, conflict surface, and port plan
 
+Status, 2026-10-07: **deferred by the user**. Asked whether to run the merge in this session, the user answered
+"keep the brief only; no merge this session", so the merge is deliberately not executed and this brief is the
+deliverable for W8. Removing the W9 worktrees is deferred on the same footing ("remove nothing yet"). Nothing has
+been merged, fetched into the branch, or checked out. Verified again on 2026-10-07: the `cashscript` remote is
+configured and reachable (`git ls-remote` returns a tip; upstream `master` has moved on by one commit since the
+measurement below), so an agent picking W8 up can start from section 5 without a setup step.
+
 Read-only measurement at `feat/framed` = `48e4c4f62` (2026-10-06). Nothing merged, fetched, or checked out.
 
 ## 1. The remote already exists (corrects the plan's setup note)

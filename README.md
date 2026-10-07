@@ -93,6 +93,28 @@ Using the SolidCash SDK, you can import contract artifact files, create new inst
   console.log(txDetails);
 ```
 
+## Composition conventions and sender binding
+
+A stateful contract compiles under one of two composition conventions, selected by `composition` in
+`solidcash.config.ts`:
+
+- **`direct`** (the default) composes several contracts into one transaction with the fewest UTXOs. Its
+  `msg.sender` is **not authenticated**: for an external call the emitted check takes the locking bytecode of the
+  only co-spent minting token of the category the caller supplies, and never proves that contract made the call
+  (audit finding F1); a nested kernel row binds the caller slot by block offset, `require(sourceOffset < ownerSize)`
+  (F10). Do not treat `msg.sender` as an authorization check under this convention - use a signature
+  (`checkSig`) or a framed contract instead. `docs/framed/TRIAGE_SECURITY.md` records the findings.
+- **`framed`** binds the sender on chain at the validator (V5 in `packages/solidc/src/framed/.../validator/program.ts`;
+  master head at `master-head.ts`), at the cost of a larger deployment (one UTXO per master and validator, 12
+  masters and 4 validators by default) and larger scripts.
+
+Size is the practical limit for both. The marketplace-scale fixture exceeds the BCH per-input script limit of
+10,000 bytes - 7 of its 19 compiled artifacts do, and a composed call's largest unlocking script measures 24,937
+bytes - so its lanes run against a mock network with relaxed limits and only two small applications are proven on
+a real regtest node. The measured numbers, the regtest evidence and the mock-versus-real limits are in
+`docs/framed/REGTEST_AT_HEAD.md` and `docs/framed/PERF_KERNEL_VS_FRAMED.md`. Treat this release as a **mocknet
+beta** for anything at marketplace scale.
+
 ## Examples
 
 If you want to see SolidCash in action and check out its usage, there are several example contracts in the [`examples/`](/examples) directory. The `.scash` files contain example contracts, and the `.ts` files contain example usage of the SolidCash SDK to interact with these contracts.

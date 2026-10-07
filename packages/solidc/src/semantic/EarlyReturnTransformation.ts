@@ -435,6 +435,22 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
       continue;
     }
 
+    // A lowered assembly block can hide a conditional assembly return (`{ if c { return(0, 32) } }`) from the
+    // branch rule above. Statements after that block run on the fall-through path, so nest them into the block and
+    // let the same rule place them on the arm that does not return. Only a block that holds an assembly return is
+    // nested: a block hiding a high-level return (a lowered storage-pointer `result.slot := s.slot`, which ends in a
+    // return of a pointer the block may not have assigned) keeps its trailing statements where the unconfined-return
+    // check refuses them. A block that ends every path already drops what follows it, so it is left alone.
+    if (stmt instanceof BlockNode && holdsReturn(stmt) && remaining.length > 0
+      && !endsEveryPath(stmt) && holdsAssemblyReturn(stmt.statements ?? [])) {
+      const nested = nestEarlyReturns([...(stmt.statements ?? []), ...remaining]);
+      const block = new BlockNode(nested);
+      block.location = stmt.location;
+      block.symbolTable = stmt.symbolTable;
+      result.push(block);
+      break;
+    }
+
     // Recurse into a block holding a return, as a lowering that keeps a write-back beside its return builds one
     // (`{ flush; return; }` in a branch arm, which therefore ends in a return too).
     if (stmt instanceof BlockNode && holdsReturn(stmt)) {

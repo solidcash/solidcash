@@ -79,6 +79,26 @@ is `_framedAddress ?? _logicalAddress ?? this.address`, which is what the proxie
 
     git -C /Code/cashscript reset --hard 9fd8cd52b
 
+## Round 2, 2026-10-07: the baseline-row fixes at `270ff36d3`
+
+Two fixes for `W6_BASELINE.md` rows landed after the first gate (`W6_BASELINE_FIXES.md`): `e01ea5f4d` (the
+kernel upgrade route, 7 titles) and `31bfe3cb7` (four of the seven framed `call/` titles; its first version
+regressed `solidc/test/solidity-compat/expressions-control-flow.test.ts` and was narrowed to the framed
+composition before landing). The suites were run again at that revision:
+
+| command | round 1 (`ab8a97acb`) | round 2 (`270ff36d3`) |
+|---|---|---|
+| `yarn test` -> `solidc` | 6839 passed, 0 failed | 6839 passed, 0 failed |
+| `yarn test` -> `solidcash` | 5344 passed, **40 failed** | 5354 passed, **30 failed** |
+| `yarn test:e2e` | 3208 passed, 5 failed | 3208 passed, 5 failed |
+| `packages/solidcash` framed config | 1815 passed, 7 failed | 1819 passed, 3 failed |
+
+Of the 30 `solidcash` failures, 29 are `W6_BASELINE.md` rows (checked by title) and 1 is load-induced:
+`test/framed/call/enclosed-node-update.test.ts` - "chains the read to the view the update left, and broadcasts"
+timed out at 300 s inside the concurrent lerna run and passes in 2.9 s alone and in the framed config. The
+eleven titles that stopped failing are the seven upgrade rows and the four framed rows listed in
+`W6_BASELINE_FIXES.md`.
+
 ## Regtest: blocked by image availability
 
 W6's suite list also names a `yarn test:regtest` subset on the regtest stack, and section 3 asks for real-node runs

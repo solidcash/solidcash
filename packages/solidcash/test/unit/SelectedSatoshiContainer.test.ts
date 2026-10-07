@@ -80,6 +80,29 @@ describe('selected satoshi-container resources', () => {
       ['01020304'])).toBe(true);
   });
 
+  it('keeps the container for an eligible handler that authenticates msg.value, and drops it otherwise', () => {
+    const conditional: AbiFunction = { ...active, inputs: [{ name: 'active', type: 'bool' }], transfers: [{
+      transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 },
+      amount: { kind: 'literal', type: 'bigint', value: '1000' },
+      condition: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+    }] };
+    const selected = { ...artifact, abi: [inactive, conditional] } as Artifact;
+    const withHandler = (overrides: Record<string, unknown>): Artifact => ({
+      ...selected,
+      messageBus: { handlers: [{ selector: 'aabbccdd', eligible: true, usesMsgValue: true,
+        inputs: [{ name: 'active', type: 'bool' }], ...overrides }] },
+    }) as unknown as Artifact;
+    // The reached transfer is provably inactive, but a handler that authenticates `msg.value` reads the container
+    // in its taken branch, so the container must stay co-spent as a pass-through instead of being dropped.
+    expect(selectedSatoshiContainerRequired(withHandler({}), ['aabbccdd'], [[false]])).toBe(true);
+    expect(selectedSatoshiContainerRequired(selected, ['aabbccdd'], [[false]])).toBe(false);
+    // A handler that never reads `msg.value`, or is not eligible, keeps the reached-transfer narrowing.
+    expect(selectedSatoshiContainerRequired(withHandler({ usesMsgValue: false }), ['aabbccdd'], [[false]]))
+      .toBe(false);
+    expect(selectedSatoshiContainerRequired(withHandler({ eligible: false }), ['aabbccdd'], [[false]]))
+      .toBe(false);
+  });
+
   it('does not query a container for an explicitly inactive shared route slot', async () => {
     const getUtxos = vi.fn(async () => []);
     const route: MessageBusRuntimeAbiFunction = { ...active, messageBusActiveSatoshiContainer: false };

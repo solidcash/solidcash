@@ -251,10 +251,12 @@ it.runIf(!hasArtifacts)('skips the shipped published-facts suite: no compiled ar
   expect(hasArtifacts).toBe(false);
 });
 
-/** Every shipped artifact in the compiled output directory. */
+/** Every shipped contract artifact in the compiled output directory that publishes a framed stop-site table. */
 function shippedArtifacts(): readonly Artifact[] {
   return readdirSync(ARTIFACTS_DIR).filter((name) => name.endsWith('.json'))
-    .map((name) => loadArtifact(name));
+    .map((name) => loadArtifact(name))
+    // An interface's artifact carries no framed composition: it has no bodies to publish a table for.
+    .filter((artifact) => artifact.composition?.stopSites !== undefined);
 }
 
 /** A non-zero, non-palindromic byte string of `width` bytes, so a byte-order mistake cannot hide. */

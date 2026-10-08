@@ -5968,7 +5968,14 @@ export class StatefulTransactionBuilder {
           const index = inputIndexOf(chunk);
           return index >= 0 && index < firstPredecessor;
         }).length;
-        return firstPredecessor - writtenChunksBefore;
+        // The predecessor input keeps the returnEvent funder pad, but a plain returning call materializes no
+        // output there: the covenant compacts its output base by one (emitTrailingWriteOutputBase). The entry
+        // recreations occupy those compacted coordinates, matching the delegate path's mapPredToCompactedOutput.
+        const returnEventOffset = this.blockLayout?.slots
+          .find((slot) => slot.kind === 'returnEvent')?.offset;
+        const compact = this._unmaterializedReturnEventCompact(this.blockLayout);
+        const base = firstPredecessor - writtenChunksBefore;
+        return compact > 0 && base > (returnEventOffset ?? 0) ? base - compact : base;
       }
       return this.getRuntimeLoopEventOutputBase() - this._trailingLoopEntryOutputCount();
     }

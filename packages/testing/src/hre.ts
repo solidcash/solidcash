@@ -13,11 +13,11 @@ import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
+import type { Network, NetworkProvider, ConstructorArgument, Utxo } from 'solidcash';
 import type {
-  Network, NetworkProvider, ContractRunner, ConnectedStatefulContract,
-  SplitContract, SplitDeployOptions, DeployedContract, DeployContractOptions,
-  ConstructorArgument, Utxo,
-} from 'solidcash';
+  ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
+  DeployedContract, DeployContractOptions,
+} from 'solidcash/dist/stateful/index.js';
 import { Network as Networks } from 'solidcash/dist/interfaces.js';
 import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from 'solidcash/dist/network/MockNetworkProvider.js';
 import RegtestNetworkProvider from 'solidcash/dist/network/RegtestNetworkProvider.js';

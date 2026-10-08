@@ -9,7 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@bitauth/libauth": "^3.1.0-next.8",
+    "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist",
     "@noble/ciphers": "^1.0.0",
     "@solidcash/testing": "^0.13.0",
     "ethers": "^6.17.0",

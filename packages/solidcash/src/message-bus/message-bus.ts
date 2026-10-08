@@ -3,7 +3,7 @@ import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets
 import {
   ArrayType, addressToGraphEmissionBytes, decodePushdataValue, encodePushdataValue,
   MAX_MESSAGE_BUS_BLOB_BYTES, parseArrayTypeString, parseType,
-  type Artifact, type StateValue, scriptToBytecode,
+  type Artifact, type ArgSource, type StateValue, scriptToBytecode,
   type StructDefinitionInfo, type ExternalCallExpression, type ExternalResultEncoding,
 } from '@solidcash/utils';
 import {
@@ -416,6 +416,23 @@ export function projectAddressFieldsInStateValue(
 }
 
 /**
+ * The user-visible parameter a call target forwards, if the target is a plain forwarded identifier.
+ *
+ * A typed `IFoo(addr).m()` publishes the target as a bare `forward` source, while a lowered low-level
+ * `addr.call(payload)` publishes it as a source expression wrapping that same `forward`. Both name the
+ * parameter verbatim, so both must resolve it; only the wrapper shape differs.
+ */
+function forwardedAddressParamIndex(source: ArgSource | undefined): number | undefined {
+  if (!source) return undefined;
+  if (source.kind === 'forward') {
+    return typeof source.paramIndex === 'number' ? source.paramIndex : undefined;
+  }
+  const inner = source.kind === 'expression' ? source.expression : undefined;
+  if (inner?.kind === 'source') return forwardedAddressParamIndex(inner.source);
+  return undefined;
+}
+
+/**
  * Reproduce the address representation seen by a Solidity-compatible kernel handler after its row is decoded.
  * Value addresses use the ABI-word lane; an address which selects an outgoing call target stays native because
  * the caller covenant must compare that exact locking bytecode with the authenticated participant identity.
@@ -434,9 +451,8 @@ export function projectMessageBusHandlerArguments(
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const nativeAddressIndexes = new Set<number>();
   for (const call of abiFunction.externalCalls ?? []) {
-    if (call.addressSource?.kind === 'forward' && typeof call.addressSource.paramIndex === 'number') {
-      nativeAddressIndexes.add(call.addressSource.paramIndex);
-    }
+    const paramIndex = forwardedAddressParamIndex(call.addressSource);
+    if (paramIndex !== undefined) nativeAddressIndexes.add(paramIndex);
   }
   // A param forwarded into an external call is encoded as that call's row argument in the callee's word
   // lane, so it must stay projected even when the same param is also a transfer recipient.

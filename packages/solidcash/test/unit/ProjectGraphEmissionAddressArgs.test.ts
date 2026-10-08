@@ -74,6 +74,48 @@ describe('projectGraphEmissionAddressArgs', () => {
     expect(projected[1]).toEqual(target);
   });
 
+  it('retains a native low-level call target forwarded through a source expression', () => {
+    // A lowered `addr.call(payload)` reached through an inlined `if` publishes its target as a source
+    // expression wrapping the forwarded parameter, unlike the bare `forward` a typed `IFoo(addr).m()` emits.
+    // Both name the same parameter, so both must keep it native: the caller covenant compares that exact
+    // locking bytecode with the participant identity, and the route's `addr.code.length` predicate tests the
+    // 23/35-byte lock, not a 32-byte ABI word.
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface IT { function approve(address spender, uint256 value) external returns (bool); }
+      library L {
+        function callBool(address target, bytes memory payload) internal returns (bool) {
+          (bool ok, bytes memory returned) = target.call(payload);
+          return ok && returned.length == 0 && target.code.length > 0;
+        }
+        function callVoid(address target, bytes memory payload) internal {
+          (bool ok, bytes memory returned) = target.call(payload);
+          require(ok && returned.length == 0);
+        }
+        function invoke(address target, address spender, uint256 value) internal {
+          bytes memory payload = abi.encodeCall(IT.approve, (spender, value));
+          if (!callBool(target, payload)) { callVoid(target, payload); }
+        }
+      }
+      contract C {
+        function act(address value, address target, address spender, uint256 amount, bool run) public {
+          if (run) { L.invoke(target, spender, amount); }
+          require(value != address(0));
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const value = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x31), 0x88, 0xac);
+    const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
+    const projected = projectMessageBusHandlerArguments(
+      artifact, 'act', undefined, [value, target, value, 7n, true],
+    );
+
+    expect(projected[0]).toEqual(addressToGraphEmissionBytes(value));
+    expect(projected[1]).toEqual(target);
+  });
+
   it('keeps a BCH transfer recipient native unless it is also forwarded into an external call', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       interface ITarget { function ping(address to, uint amount) external; }

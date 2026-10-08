@@ -857,6 +857,9 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   messageBusEligible?: boolean;
   messageBusRejectionReason?: string;
+  /** Stable index of this eligible handler in the route's eligible dispatch set, the ordinal witness names use.
+   * Published on the handler so the SDK never re-derives the filtered-list ordering. */
+  messageBusWitnessOrdinal?: number;
   /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
   messageBusDispatched?: boolean;
   /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param

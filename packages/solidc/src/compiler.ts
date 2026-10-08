@@ -3466,7 +3466,7 @@ function compileDetachedMessageBusVerifierUncached(
   ast = ast.accept(new TypeCheckTraversal(
     true, false, compilerOptions.rootFileId, compilerOptions.composition === 'framed',
   )) as Ast;
-  ast = ast.accept(new EnsureFinalRequireTraversal(false, true)) as Ast;
+  ast = ast.accept(new EnsureFinalRequireTraversal(false, true, false)) as Ast;
   const traversal = new GenerateTargetTraversal({
     ...compilerOptions,
     messageBus: false,
@@ -9567,6 +9567,9 @@ function synthesizeMessageBusRoute(
     resourceShapedHandler = undefined;
   }
   eligible = selection.survivors;
+  // Stamp each eligible handler with its stable dispatch ordinal, so the published handler and the SDK's witness
+  // name mapping never re-derive (and potentially disagree on) the filtered eligible ordering.
+  eligible.forEach((fn, handlerIndex) => { fn.messageBusWitnessOrdinal = handlerIndex; });
   const fixedChunkableWriteHandlers = new Set(eligible.filter((fn) =>
     fn.messageBusFixedChunkableWriteMaxRows === 1
     && fixedChunkableWriteCollectionByHandler.has(fn)));
@@ -16098,6 +16101,7 @@ function compileResolvedAst(
   const finalRequireStarted = Date.now();
   ast = ast.accept(new EnsureFinalRequireTraversal(
     mergedCompilerOptions.enforceFinalRequire, mergedCompilerOptions.allowUnsafeOperations,
+    !(mergedCompilerOptions.messageBus || mergedCompilerOptions.messageBusKernel),
   )) as Ast;
   profileLog('resolved:finalRequire', finalRequireStarted, { contract: contractName });
 
@@ -17757,6 +17761,7 @@ function compileResolvedAst(
           };
         })(),
         eligible: fn.messageBusEligible === true,
+        ...(fn.messageBusWitnessOrdinal !== undefined && { witnessOrdinal: fn.messageBusWitnessOrdinal }),
         // X72. A published refusal must carry a reason. Route synthesis names one for every entry point that
         // exists when it runs, but it can run BEFORE a later pass appends one (SynthesizeBlockOracle's
         // `__updateBlockOracle`), and those reached the artifact as `eligible: false` with the key absent.
@@ -19452,6 +19457,7 @@ function compileReferencedContracts(
     )) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
       compilerOptions.enforceFinalRequire, compilerOptions.allowUnsafeOperations,
+      !(compilerOptions.messageBus || compilerOptions.messageBusKernel),
     )) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;

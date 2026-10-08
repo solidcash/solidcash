@@ -9376,7 +9376,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitAutoCovenantVerification(node);
       }
     } else if (unsafeTier !== null && unsafeTier >= 1) {
-      // Tiered unsafe: emit only the checks for this tier
+      // Tiered unsafe: emit only the checks for this tier. Value-moving statements (transfers, token containers)
+      // are refused earlier in SymbolTableTraversal for unsafe(1)/unsafe(2), so a value-draining body never
+      // reaches codegen.
       this.emitMasterSelfPreservation(node);
       this.emitMintingNftUniqueness(node);
       if (unsafeTier >= 2) {
@@ -9881,6 +9883,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (node.expression) {
       node.expression = this.visit(node.expression);
+      this.emitAssignmentRangeCheck(node.type, node.expression.type, {
+        location: node.location, positionHint: PositionHint.END,
+      });
       this.popFromStack();
     } else {
       // Uninitialized declaration: emit the type's zero value (same machinery as `delete`).
@@ -9947,9 +9952,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Evaluate the RHS, leaving one value per slot on the stack (rightmost slot's value on top).
     if (node.tupleExpressions) {
-      node.tupleExpressions = node.tupleExpressions.map((e) => this.visit(e) as ExpressionNode);
+      node.tupleExpressions = node.tupleExpressions.map((e, i) => {
+        const visited = this.visit(e) as ExpressionNode;
+        if (!node.elements[i]?.skip) {
+          this.emitAssignmentRangeCheck(node.elements[i]?.type, visited.type, loc);
+        }
+        return visited;
+      });
     } else {
       node.tuple = this.visit(node.tuple);
+      // A single tuple RHS (`(uint8 a, uint8 b) = f()`) leaves each value on the stack without a per-slot visit;
+      // range-check each narrowed slot by copying it to the top, checking, and dropping the copy.
+      const tupleSources = node.tuple.type instanceof TupleType ? node.tuple.type.elements : undefined;
+      if (tupleSources && tupleSources.length === node.elements.length) {
+        for (let i = node.elements.length - 1; i >= 0; i -= 1) {
+          if (node.elements[i].skip) continue;
+          const targetType = node.elements[i].type;
+          const sourceType = tupleSources[i];
+          if (!(targetType instanceof IntType) && !(targetType instanceof FixedType)) continue;
+          if (sourceType === targetType) continue;
+          if (sourceType !== PrimitiveType.INT && sourceType !== PrimitiveType.BIGINT
+            && !(sourceType instanceof IntType) && !(sourceType instanceof FixedType)
+            && !(sourceType instanceof EnumType)) continue;
+          const depth = node.elements.length - 1 - i;
+          this.emit(encodeInt(BigInt(depth)), loc);
+          this.emit(Op.OP_PICK, loc);
+          if (targetType instanceof IntType) this.emitIntBoundsCheck(targetType, loc);
+          else this.emitFixedBoundsCheck(targetType, loc);
+          this.emit(Op.OP_DROP, loc);
+        }
+      }
     }
 
     // Existing-lvalue slots: assign each value top-down into its variable's slot; drop skipped values.
@@ -10000,6 +10032,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  /**
+   * Emit a range check when a bounded int/fixed target is assigned from an expression that is not already that
+   * same bounded type. A generic `int`/`bigint` expression (for example `uint8 x = 200 + 100`, or a `bigint`
+   * value assigned to `uint256`) is only implicitly convertible at type-check time, not range-checked, so the
+   * runtime value can exceed the declared range. The scalar/literal checks in the type checker cover bare
+   * literals, not computed expressions.
+   */
+  private emitAssignmentRangeCheck(
+    targetType: Type | undefined, sourceType: Type | undefined, locationData: SingleLocationData,
+  ): void {
+    if (!(targetType instanceof IntType) && !(targetType instanceof FixedType)) return;
+    // Same TYPE skips (two uint256 instances, or the very same object). Only a WIDER source (generic int/bigint,
+    // or a bounded type that is not this one) needs pinning; comparing to the same bounded type would re-check a
+    // value its producer already checked, and that redundant guard bloats hot paths.
+    if (sourceType === targetType
+      || (sourceType !== undefined && targetType !== undefined
+        && sourceType.toString() === targetType.toString())) return;
+    if (sourceType !== PrimitiveType.INT && sourceType !== PrimitiveType.BIGINT
+      && !(sourceType instanceof IntType) && !(sourceType instanceof FixedType)
+      && !(sourceType instanceof EnumType)) return;
+    if (targetType instanceof IntType) this.emitIntBoundsCheck(targetType, locationData);
+    else this.emitFixedBoundsCheck(targetType, locationData);
+  }
+
   visitAssign(node: AssignNode): Node {
     const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
     if (env?.SOLIDC_DEBUG_DYNAMIC_FRAME === '1'
@@ -10030,6 +10086,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || (node.expression as { type?: { constructor?: { name?: string } } })?.type?.constructor?.name === 'StructType';
     try {
       node.expression = this.visit(node.expression);
+      this.emitAssignmentRangeCheck(node.identifier.type, node.expression.type, {
+        location: node.location, positionHint: PositionHint.END,
+      });
     } finally {
       this.encodingReferenceDataValue = outerReferenceDataValue;
     }
@@ -13395,19 +13454,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  // Verify a value cast to an enum lies within the enum's member-value range.
+  // Verify a value cast to an enum is an actual member. Contiguous enums use a cheap range check; non-contiguous
+  // ones (`enum E { A, B = 5 }`) would admit gap values with a range check, so verify exact membership instead.
   private emitEnumBoundsCheck(type: EnumType, locationData: SingleLocationData): void {
     if (this.uncheckedDepth > 0) return;
     const values = type.members.map((m) => m.value);
     const min = values.reduce((a, b) => (b < a ? b : a), values[0]);
     const max = values.reduce((a, b) => (b > a ? b : a), values[0]);
+    if (max - min + 1n === BigInt(values.length)) {
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(min), locationData);
+      this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+      this.emit(Op.OP_VERIFY, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(max), locationData);
+      this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+      this.emit(Op.OP_VERIFY, locationData);
+      return;
+    }
+    // Non-contiguous: value == member0 || value == member1 || ... (leaves the value on the stack untouched).
+    // Seed the accumulator with the first comparison, then for each further member copy the value from below the
+    // accumulator with OP_OVER, compare, and OR in. DUPing the top would re-compare the accumulated bool, not the
+    // value.
     this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(min), locationData);
-    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(max), locationData);
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(encodeInt(values[0]), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    for (let i = 1; i < values.length; i += 1) {
+      this.emit(Op.OP_OVER, locationData);
+      this.emit(encodeInt(values[i]), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_BOOLOR, locationData);
+    }
     this.emit(Op.OP_VERIFY, locationData);
   }
 
@@ -15208,6 +15285,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
       } else {
         node.parameters[i] = this.visit(argument);
+        // Internal-helper bodies are OP_DEFINE subroutines whose parameters skip enforceFunctionParameterTypes
+        // (their operands are assumed already checked at the producing site), but a bigint/int (or wider bounded)
+        // source is only implicitly convertible to the bounded parameter type and is never range-checked. Pin the
+        // narrowing at the call site so a negative value cannot enter a uintN-typed helper and defeat accounting.
+        const targetParameterType = targetFunc.parameters[i]?.type;
+        const effectiveParameterType = targetParameterType instanceof ValueType
+          ? targetParameterType.underlyingType : targetParameterType;
+        this.emitAssignmentRangeCheck(effectiveParameterType, node.parameters[i].type, locationData);
       }
       pushedArgs += 1;
     }
@@ -15506,6 +15591,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Evaluate arguments in REVERSE order so the first param ends up on top.
     for (let i = node.parameters.length - 1; i >= 0; i--) {
       node.parameters[i] = this.visit(node.parameters[i]);
+      // Function-pointer calls share the internal-helper boundary: the invoked subroutine's bounded parameters
+      // are not re-checked in the callee, so pin a wide-to-bounded narrowing argument at the call site.
+      const targetParameterType = funcType.parameterTypes[i];
+      const effectiveParameterType = targetParameterType instanceof ValueType
+        ? targetParameterType.underlyingType : targetParameterType;
+      this.emitAssignmentRangeCheck(effectiveParameterType, node.parameters[i].type, locationData);
     }
     // Push the functionId value on top (the callee evaluates to it), then OP_INVOKE consumes it plus the args.
     node.callee = this.visit(node.callee) as ExpressionNode;
@@ -15541,7 +15632,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Evaluate return expressions - they will be left on the stack
     if (preserveDeployDependency) this.scopeDepth += 1;
-    node.expressions = this.visitList(node.expressions) as ExpressionNode[];
+    node.expressions = node.expressions.map((expression, index) => {
+      const visited = this.visit(expression) as ExpressionNode;
+      // A return narrows into the declared result type exactly like an assignment: `function f() internal
+      // returns (uint256) { bigint b = -100; return b; }` leaves a raw out-of-range value unless pinned here
+      // (the call-site parameter check does not cover the callee's own return expression).
+      this.emitAssignmentRangeCheck(returnTypes[index], visited.type, locationData);
+      return visited;
+    }) as ExpressionNode[];
     if (preserveDeployDependency) this.scopeDepth -= 1;
 
     // For entry-point functions with return types (B-side):
@@ -16720,11 +16818,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (elemType === PrimitiveType.BOOL) {
       this.emit(Op.OP_BIN2NUM, locationData);
     } else if (elemType instanceof IntType) {
-      // Convert fixed-width sign-magnitude bytes back to VM number
+      // Convert fixed-width sign-magnitude bytes back to VM number, then refuse an out-of-range element.
       this.emit(Op.OP_BIN2NUM, locationData);
+      this.emitDecodedNumericRangeCheck(elemType, locationData);
     } else if (elemType instanceof FixedType) {
-      // Convert fixed-width sign-magnitude bytes back to VM number
+      // Convert fixed-width sign-magnitude bytes back to VM number, then refuse an out-of-range element.
       this.emit(Op.OP_BIN2NUM, locationData);
+      this.emitDecodedNumericRangeCheck(elemType, locationData);
     } else if (elemType instanceof ArrayType && elemType.bound !== undefined) {
       // A fixed-inner row is stored tight (no count prefix); reframe it into a proper array value by prepending
       // its element count, so `a[i]` behaves like a normal array (and `a[i][j]` can index into it).
@@ -16792,6 +16892,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(type.maxValue), locationData);
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData);
+  }
+
+  /**
+   * Hard range check for a value decoded from attacker-controlled bytes (array element, struct field, pushdata
+   * decode). Unlike the arithmetic bounds check, this ignores `uncheckedDepth`: decoded data is never wrapped,
+   * it is rejected. Uses the same sign-byte padding test as `emitIntBoundsCheck`, so a negative VM number
+   * produced by `OP_BIN2NUM` from an out-of-range element is refused before it can reach an accounting guard.
+   * Stack before: [..., value] -> Stack after: [..., value]
+   */
+  private emitDecodedNumericRangeCheck(type: IntType | FixedType, locationData: SingleLocationData): void {
+    this.emit(Op.OP_DUP, locationData);
+    if (type.signed) {
+      this.emit(Op.OP_1, locationData);
+      this.emit(encodeInt(BigInt(type.bits - 1)), locationData);
+      this.emit(Op.OP_LSHIFTNUM, locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    const width = type.bits / 8;
+    this.emit(encodeInt(BigInt(width + 1)), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(encodeInt(BigInt(width)), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(hexToBin('00'), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
   }
 
   // Emit modular wrapping for bounded integer types (unchecked mode).
@@ -17241,6 +17366,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Encode new value
       node.value = this.visit(node.value);
+      this.emitAssignmentRangeCheck(elemType, node.value.type, locationData);
       this.emitEncodeElementPacked(elemType, locationData);
 
       // Reassemble: left ++ new_value ++ remainder
@@ -17266,6 +17392,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Encode new value
       node.value = this.visit(node.value);
+      this.emitAssignmentRangeCheck(elemType, node.value.type, locationData);
       this.emitPushdataEncode(elemType, locationData);
 
       // Reassemble: left ++ encoded_new ++ remainder
@@ -17875,6 +18002,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Encode new value
       node.value = this.visit(node.value);
+      this.emitAssignmentRangeCheck(elemType, node.value.type, locationData);
       this.emitEncodeElementPacked(elemType, locationData);
 
       // Reassemble: left ++ new_value ++ remainder
@@ -17899,6 +18027,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Encode new value
       node.value = this.visit(node.value);
+      this.emitAssignmentRangeCheck(elemType, node.value.type, locationData);
       this.emitPushdataEncode(elemType, locationData);
 
       // Reassemble: left ++ encoded_new ++ remainder
@@ -21847,6 +21976,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * After `emitGenericPushdataDecode` leaves `[value, remainder]`, refuse an out-of-range numeric value in place
+   * without disturbing the remainder. No-op for non-bounded types (bytes, string, bigint, function pointers).
+   * Stack before: [value, remainder] -> Stack after: [value, remainder]
+   */
+  private emitPushdataDecodedBoundsCheck(type: Type, locationData: SingleLocationData): void {
+    if (!(type instanceof IntType) && !(type instanceof FixedType)) return;
+    this.emit(Op.OP_SWAP, locationData); // [remainder, value]
+    this.emitDecodedNumericRangeCheck(type, locationData);
+    this.emit(Op.OP_SWAP, locationData); // [value, remainder]
+  }
+
+  /**
    * Generic pushdata decoder for variable-size types.
    * Stack before: [encoded_blob]
    * Stack after: [decoded_value] [remainder]
@@ -21864,7 +22005,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.intDecodeIntSlot.id === undefined) {
         this.intDecodeIntSlot.id = this.allocateCompactHelperId();
       }
-      if (this.invokeSubroutineIfDefined(this.intDecodeIntSlot.id, locationData)) return;
+      if (this.invokeSubroutineIfDefined(this.intDecodeIntSlot.id, locationData)) {
+        this.emitPushdataDecodedBoundsCheck(type, locationData);
+        return;
+      }
     }
     if (this.subroutineDefined.get(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID)) {
       this.emit(encodeInt(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID), locationData);
@@ -21875,6 +22019,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_BIN2NUM, locationData);
         this.emit(Op.OP_SWAP, locationData);
       }
+      this.emitPushdataDecodedBoundsCheck(type, locationData);
       return;
     }
 
@@ -22006,6 +22151,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(0n), locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_ENDIF, locationData);
+    this.emitPushdataDecodedBoundsCheck(type, locationData);
   }
 
   /**
@@ -22173,6 +22319,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 1. Evaluate expression
     node.expression = this.visit(node.expression);
+
+    // 1a. Pin a wide-to-bounded narrowing before the value is committed: `this.shares = bigintExpr` must not
+    // persist an out-of-range value (the decode-time check would brick the field on its next read).
+    this.emitAssignmentRangeCheck(sv.type, node.expression.type, locationData);
 
     // 2. Encode to pushdata format
     this.emitPushdataEncode(sv.type, locationData);
@@ -26591,6 +26741,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // 2. Visit value expression, encode to pushdata
       node.expression = this.visit(node.expression);
+      this.emitAssignmentRangeCheck(collection.innermostValueType, node.expression.type, locationData);
       this.emitPushdataEncode(collection.innermostValueType, locationData);
       // Replace the pre-allocated value slot
       this.emitReplace(this.getStackIndex(valueStackName), node);
@@ -26613,6 +26764,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // 2. Visit value expression, encode to pushdata
       node.expression = this.visit(node.expression);
+      this.emitAssignmentRangeCheck(collection.innermostValueType, node.expression.type, locationData);
       this.emitPushdataEncode(collection.innermostValueType, locationData);
       this.popFromStack();
       const valueStackName = `__entry_value_enc_${slotIndex}`;
@@ -42635,34 +42787,50 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, locationData); // returnIdx >= 0
     }
 
-    // H2: bind the caller's return read to the genuine callee return event by enforcing UNIQUENESS. The caller
-    // reads the return from a free witness index; nothing pinned it to the output the callee constrained, so an
-    // attacker could mint a second (category-C, none-cap, FT-0, OP_TRUE) output with a forged commitment and
-    // point the witness at it (the co-spent callee master authorizes minting category-C outputs). For a single
-    // returning call there is exactly ONE such output (the callee's genuine return; regular events carry a
-    // P2SH32 covenant bytecode, not OP_TRUE). Count them and require == 1 so no forged twin can exist.
+    // H2: bind each caller return read to the genuine callee return event by enforcing per-callee UNIQUENESS. The
+    // caller reads a return from a free witness index; nothing pinned it to the output the callee constrained, so
+    // an attacker could mint an extra (category-C, none-cap, FT-0, OP_TRUE) output with a forged commitment and
+    // point the witness at it (the co-spent callee master authorizes minting category-C outputs). Count the
+    // OP_TRUE + category-C outputs per callee and require the count to equal that callee's genuine returning-call
+    // count, so no forged twin can exist alongside any number of honest returns. Regular events carry a P2SH32
+    // covenant bytecode (not OP_TRUE) and never match.
     //
-    // Loop-nested returns on the same callee (a scalar result plus an indexed array result) still emit
-    // OP_TRUE + category-C outputs. Filtering them out of returningSlots made
-    // uniqueness fire with expected=1 while two honest MD return events exist (2 vs 1 OP_VERIFY).
-    if (returningSlots.length === 1) {
-      const only = returningSlots[0];
-      const sameCalleeReturns = this.externalCallSlots.filter((candidate) => {
-        if (!candidate.hasReturnValues) return false;
-        if (only.addressStateVar && candidate.addressStateVar === only.addressStateVar) return true;
-        if (only.addressParam && candidate.addressParam === only.addressParam) return true;
-        if (only.addressLiteral && candidate.addressLiteral === only.addressLiteral) return true;
-        return false;
-      });
-      if (sameCalleeReturns.length === 1) {
-        this.emitSingleReturnEventUniqueness(only, locationData);
+    // Group by callee address identity (not by slot): every slot targeting the same contract shares its category.
+    // A runtime-loop return (`data.tagAt(i)`) produces one return event PER ITERATION, so its count is not a
+    // compile-time constant; skip uniqueness for a callee that has any loop return (the old single-slot workaround
+    // already did this). Slots with no address identity (msg.sender / loop-array / function-pointer targets) are
+    // left to their per-slot identity checks, as before.
+    const returnGroups = new Map<string, { slot?: ExternalCallSlot; count: number; looped: boolean }>();
+    for (const slot of this.externalCallSlots) {
+      if (!slot.hasReturnValues) continue;
+      const identity = slot.addressParam ? `param:${slot.addressParam}`
+        : slot.addressStateVar ? `state:${slot.addressStateVar}`
+          : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
+      if (identity === '') continue;
+      const looped = slot.inlineLoopDispatch || this.isExternalCallSlotLoopNested(slot);
+      const existing = returnGroups.get(identity);
+      if (existing) {
+        existing.looped = existing.looped || looped;
+        if (!looped) {
+          existing.count += 1;
+          existing.slot ??= slot;
+        }
+      } else {
+        returnGroups.set(identity, { slot: looped ? undefined : slot, count: looped ? 0 : 1, looped });
+      }
+    }
+    for (const { slot, count, looped } of returnGroups.values()) {
+      if (!looped && slot !== undefined && count > 0) {
+        this.emitReturnEventUniqueness(slot, count, locationData);
       }
     }
   }
 
-  // H2 helper: require exactly one output matching the return-event fingerprint of `slot`'s callee category
-  // (32-byte none-cap category == B, locking bytecode == OP_TRUE). Mirrors emitMintingNftUniqueness' output loop.
-  private emitSingleReturnEventUniqueness(slot: ExternalCallSlot, loc: SingleLocationData): void {
+  // H2 helper: require exactly `expectedCount` outputs matching the return-event fingerprint of `slot`'s callee
+  // category (32-byte none-cap category == B, locking bytecode == OP_TRUE). Mirrors emitMintingNftUniqueness'
+  // output loop. `expectedCount` is the number of genuine returning calls to that callee, so any forged twin is
+  // refused whether the call site is single or one of several.
+  private emitReturnEventUniqueness(slot: ExternalCallSlot, expectedCount: number, loc: SingleLocationData): void {
     // Compute B's 32-byte category from the co-spent callee master (per-slot runtime index or base+offset).
     this.emitSlotMasterIndex(slot, loc);
     this.emit(Op.OP_DUP, loc);
@@ -42715,8 +42883,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.popFromStack(); // (loop_j)
 
-    this.emit(encodeInt(1n), loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc); // exactly one genuine return event
+    this.emit(encodeInt(BigInt(expectedCount)), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // exactly the genuine return events, no forged twin
     this.popFromStack(); // (re_count)
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (b_cat)

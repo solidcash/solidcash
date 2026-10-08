@@ -369,7 +369,11 @@ export class Contract<
             const generateUnlockingBytecode = (): Uint8Array => (
               createUnlockingBytecode(this.addressType, this.bytecodeBin, [], undefined)
             );
-            const generateLockingBytecode = (): Uint8Array => addressToLockScript(this.address);
+            // p2s (raw-script) contracts carry their hex address as the raw bytecode, which addressToLockScript
+            // cannot parse as a CashAddress; the raw bytes already exist on the contract.
+            const generateLockingBytecode = (): Uint8Array => (
+              this.addressType === 'p2s' ? this.bytecodeBin : addressToLockScript(this.address)
+            );
             return {
               generateUnlockingBytecode, generateLockingBytecode, contract: this, params: [], abiFunction: f,
             } as ContractUnlocker;
@@ -686,8 +690,12 @@ export class Contract<
       const signingBytecodeForArgument = (inputName: string): Uint8Array => {
         const match = /^__message_bus_sig_(\d+)_(\d+)(?:_(\d+))?(?:_r\d+|_rows)$/.exec(inputName);
         if (!match) return signingBytecode;
-        // Witness handler ordinals index the route's eligible dispatch set, not the complete diagnostic list.
-        const handler = this.artifact.messageBus?.handlers.filter((candidate) => candidate.eligible)[Number(match[1])];
+        // Witness handler ordinals index the route's eligible dispatch set. The compiler publishes each eligible
+        // handler's stable ordinal, so this never re-derives (and disagrees on) the filtered eligible ordering.
+        const ordinal = Number(match[1]);
+        const handlers = this.artifact.messageBus?.handlers ?? [];
+        const handler = handlers.find((candidate) => candidate.witnessOrdinal === ordinal)
+          ?? handlers.filter((candidate) => candidate.eligible)[ordinal];
         const parameterBody = handler?.transactionSignaturePolicy?.coveredBytecodes
           ?.find((candidate) => candidate.parameterIndex === Number(match[2])
             && candidate.leafIndex === Number(match[3] ?? 0))?.bytecode;
@@ -815,7 +823,11 @@ export class Contract<
         return unlockingBytecode;
       };
 
-      const generateLockingBytecode = (): Uint8Array => addressToLockScript(this.address);
+      // p2s (raw-script) contracts carry their hex address as the raw bytecode, which addressToLockScript cannot
+      // parse as a CashAddress; the raw bytes already exist on the contract.
+      const generateLockingBytecode = (): Uint8Array => (
+        this.addressType === 'p2s' ? this.bytecodeBin : addressToLockScript(this.address)
+      );
 
       return {
         generateUnlockingBytecode,

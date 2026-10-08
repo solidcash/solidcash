@@ -276,7 +276,9 @@ export async function upgradeStatefulContract<T extends Artifact>(
   // for the change output that will be included in the final transaction.
   const fundingSatoshis = options.fundingUtxo?.satoshis ?? 5000n; // 5000 for dummy funder
   const totalNewNftCost = dataNftAmount * BigInt(Math.max(newNftCount, 0));
-  const changeAddr = options.changeAddress ?? newContract.address;
+  // Default leftover funding satoshis to the funder's own lock (the H4 rule), never the new contract's covenant
+  // address: the funder may not control that covenant, and the surplus belongs to whoever funded it.
+  const changeAddr = options.changeAddress ?? options.funder?.generateLockingBytecode() ?? newContract.address;
   builder.addOutput({ to: changeAddr, amount: 1000n }); // placeholder for fee estimation
   const actualUpgradeFee = options.fee ?? await computeFeeFromBuilder(builder);
   const changeAmount = fundingSatoshis - totalNewNftCost - actualUpgradeFee;

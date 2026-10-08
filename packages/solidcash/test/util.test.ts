@@ -204,4 +204,29 @@ describe('utils', () => {
       expect(regtestAddressP2sh20Tokens).toEqual(expectedRegtestAddressP2sh20Tokens);
     });
   });
+
+  describe('token amount and category hardening', () => {
+    it('rejects an input token amount above the 64-bit consensus limit', () => {
+      expect(() => validateInput({
+        txid: 'aa'.repeat(32), vout: 0, satoshis: 100n,
+        token: { category: 'bb'.repeat(32), amount: 0x1_0000_0000_0000_0000n },
+      })).toThrow('Invalid input token amount');
+    });
+
+    it('rejects an output token amount above the 64-bit consensus limit', () => {
+      expect(() => validateOutput({
+        to: new Uint8Array([0x00]), amount: 1000n,
+        token: { category: 'aa'.repeat(32), amount: 0x1_0000_0000_0000_0000n },
+      })).toThrow('Invalid output token amount');
+    });
+
+    it('normalizes a mixed-case input token category to lowercase', () => {
+      const input = {
+        txid: 'aa'.repeat(32), vout: 0, satoshis: 100n,
+        token: { category: 'AaBb'.repeat(16), amount: 10n },
+      };
+      validateInput(input);
+      expect(input.token.category).toBe('aabb'.repeat(16));
+    });
+  });
 });

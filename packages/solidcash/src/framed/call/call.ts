@@ -2337,9 +2337,31 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
         + `${source.valueSatoshis}`,
       );
     }
-    const token = source.token === undefined
-      ? {}
-      : { token: libauthTokenDetailsToSolidCashTokenDetails(source.token) };
+    const derivedToken = source.token === undefined
+      ? undefined
+      : libauthTokenDetailsToSolidCashTokenDetails(source.token);
+    // Fail closed on a live-UTXO token mismatch: the composer derived this token from the covenant input, and a
+    // provider that returns a same-satoshis-but-different-token UTXO would otherwise make us sign a transaction
+    // whose unlock never matches the UTXO. Surface it as a caller error, not a broadcast failure.
+    if (derivedToken !== undefined) {
+      const live = real.token;
+      if (live === undefined
+        || live.category.toLowerCase() !== derivedToken.category.toLowerCase()
+        || live.amount !== derivedToken.amount
+        || (live.nft === undefined) !== (derivedToken.nft === undefined)) {
+        throw new FramedCallError(
+          `the call's "${placed.id}" spends a UTXO whose token does not match the derived input`,
+        );
+      }
+      if (live.nft !== undefined && derivedToken.nft !== undefined
+        && (live.nft.capability !== derivedToken.nft.capability
+          || live.nft.commitment.toLowerCase() !== derivedToken.nft.commitment.toLowerCase())) {
+        throw new FramedCallError(
+          `the call's "${placed.id}" spends a UTXO whose NFT does not match the derived input`,
+        );
+      }
+    }
+    const token = derivedToken === undefined ? {} : { token: derivedToken };
     const utxo: Utxo = { txid: real.txid, vout: real.vout, satoshis: source.valueSatoshis, ...token };
     const sequence = derivedInputs[placed.index]?.sequenceNumber;
     builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode),

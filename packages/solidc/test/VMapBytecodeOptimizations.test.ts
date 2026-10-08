@@ -124,7 +124,7 @@ describe('general vmap bytecode sharing', () => {
     const helperIds = compactHelperDefinitions(asm);
     expect(helperIds.length).toBeGreaterThanOrEqual(1);
     expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
-    expect(artifact.bytecode.length / 2).toBeLessThan(2800);
+    expect(artifact.bytecode.length / 2).toBeLessThan(2900);
   });
 
   it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {

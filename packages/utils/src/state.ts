@@ -320,11 +320,17 @@ const VM_NUMBER_MAX_BYTE_LENGTH = 150;
 
 /** Check if a type string represents an int-like type (int, int8, uint256, fixed128x18, etc.) */
 function isIntLikeType(type: string): boolean {
-  return type === 'bigint' || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type);
+  return type === 'bigint' || type === 'int' || type === 'uint' || type === 'fixed' || type === 'ufixed'
+    || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type);
 }
 
 /** Parse a bounded int/fixed type string and return its min/max range, or undefined for unbounded 'bigint'. */
 function parseBoundedIntRange(type: string): { min: bigint; max: bigint } | undefined {
+  // Solidity-parity aliases: `int`/`uint` are bounded 256-bit, `fixed`/`ufixed` are 128x18.
+  if (type === 'int') return { min: -(1n << 255n), max: (1n << 255n) - 1n };
+  if (type === 'uint') return { min: 0n, max: (1n << 256n) - 1n };
+  if (type === 'fixed') return { min: -(1n << 127n), max: (1n << 127n) - 1n };
+  if (type === 'ufixed') return { min: 0n, max: (1n << 128n) - 1n };
   // Match int8, uint16, int128, uint256, etc.
   const intMatch = type.match(/^(u?)(int)(\d+)$/);
   if (intMatch) {
@@ -1546,6 +1552,14 @@ export function packFixedWidthElement(value: PrimitiveStateValue, elementType: s
     if (typeof numeric !== 'bigint') {
       throw new Error(`packFixedWidthElement: '${elementType}' requires a bigint or safe integer`);
     }
+    // Reject out-of-range or negative elements the same way the scalar path does, so a `uint[]` element cannot
+    // carry a negative VM number into a commitment the covenant then trusts.
+    if (numeric < t.minValue || numeric > t.maxValue) {
+      throw new Error(
+        `packFixedWidthElement: value ${numeric} out of range for type '${elementType}' `
+        + `(min: ${t.minValue}, max: ${t.maxValue})`,
+      );
+    }
     return encodeIntAsFixedBytes(numeric, t.byteWidth);
   }
   if ((t instanceof BytesType && t.bound !== undefined) || t === PrimitiveType.PUBKEY) {
@@ -1568,7 +1582,17 @@ export function packFixedWidthElement(value: PrimitiveStateValue, elementType: s
 export function unpackFixedWidthElement(bytes: Uint8Array, elementType: string): PrimitiveStateValue {
   const t = parseTypeStrict(elementType);
   if (t === PrimitiveType.BOOL) return bytes.length > 0 && bytes[0] !== 0;
-  if (t instanceof IntType || t instanceof FixedType) return decodeIntFixedWidth(bytes);
+  if (t instanceof IntType || t instanceof FixedType) {
+    const decoded = decodeIntFixedWidth(bytes);
+    // Detect an out-of-range or negative value written into a bounded element commitment.
+    if (decoded < t.minValue || decoded > t.maxValue) {
+      throw new Error(
+        `unpackFixedWidthElement: value ${decoded} out of range for type '${elementType}' `
+        + `(min: ${t.minValue}, max: ${t.maxValue})`,
+      );
+    }
+    return decoded;
+  }
   if ((t instanceof BytesType && t.bound !== undefined) || t === PrimitiveType.PUBKEY) return bytes;
   // A fixed-inner array element (a `uint256[N]` row): unpack the tight row into its nested element array.
   if (t instanceof ArrayType && t.bound !== undefined) {

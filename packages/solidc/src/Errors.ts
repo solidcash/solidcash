@@ -1259,6 +1259,18 @@ export class UnauthenticatedSelfdestructError extends SolidCashError {
   }
 }
 
+export class UnauthorizedLifecycleError extends SolidCashError {
+  constructor(node: Node, funcName: string, kind: 'upgrade' | 'deploy' | 'split' | 'merge') {
+    const effect = kind === 'upgrade' ? 'replace the contract bytecode'
+      : kind === 'deploy' ? 'deploy child contracts'
+        : kind === 'split' ? 'fork the contract into new threads'
+          : 'consolidate the contract threads';
+    super(node, `Function '${funcName}' is a ${kind} entry without an unconditional trusted-key signature check `
+      + `(require(checkSig(s, key)) where the caller cannot choose key). Any caller could ${effect}. `
+      + 'Add genuine authorization, or set allowUnsafeOperations only if permissionless operation is intentional.');
+  }
+}
+
 export class NestedSelfdestructError extends SolidCashError {
   constructor(node: Node, funcName: string) {
     super(node, `Function '${funcName}' places selfdestruct inside conditional or nested control flow. `

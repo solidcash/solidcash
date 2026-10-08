@@ -18347,6 +18347,37 @@ export function hasAuthorizingSignatureGuard(
     && operations.every((target) => guards.some((guard) => dominates(guard, target)));
 }
 
+/**
+ * True when `fn` carries a trusted-key signature check directly in its top-level statement list (or inside a
+ * transparent `unchecked` block), so the check runs unconditionally and authorizes every lifecycle effect in the
+ * body. A guard nested in a branch, loop or switch is conditional and does not count. Reuses SEC-16's trusted-key
+ * definition: the key operand of checkSig/checkMultiSig/checkDataSig must be one the caller cannot choose.
+ */
+export function hasUnconditionalAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
+  const isTrusted = (expression: ExpressionNode): boolean => {
+    if (expression instanceof FunctionCallNode) {
+      const keyArg = SIGNATURE_GUARD_KEY_ARG[expression.identifier.name];
+      const key = keyArg === undefined ? undefined : expression.parameters[keyArg];
+      return key !== undefined && !keyIsCallerChosen(key, fn);
+    }
+    return expression instanceof BinaryOpNode && expression.operator === BinaryOperator.AND
+      && (isTrusted(expression.left) || isTrusted(expression.right));
+  };
+  const walk = (statements: StatementNode[] | undefined): boolean => {
+    if (!statements) return false;
+    for (const statement of statements) {
+      if (statement instanceof ConsoleStatementNode) continue;
+      if (statement instanceof RequireNode && isTrusted(statement.expression)) return true;
+      if (statement instanceof UncheckedNode && walk(statement.block.statements)) return true;
+      // Any other top-level statement (declaration, state read/write, emit, branch, loop, ...) does not itself
+      // authorize, but a later top-level trusted require still runs unconditionally, so keep scanning. A require
+      // nested inside a branch/loop/switch is conditional and is simply skipped (never recursed into).
+    }
+    return false;
+  };
+  return walk(fn.body?.statements);
+}
+
 // True if `type` is, or transitively contains, a function-pointer type (mapping value, array element,
 // or struct field).
 function typeReferencesFunctionPointer(type: Type): boolean {

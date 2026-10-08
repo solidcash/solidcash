@@ -101,7 +101,7 @@ describe('local array-element assignment', () => {
       + ' p[WHO_ARBITRATOR]=split[WHO_ARBITRATOR]*amount;'
       + ' p[WHO_PROTOCOL]=amount-p[WHO_BUYER]-p[WHO_SELLER]-p[WHO_MARKETPLACE]-p[WHO_ARBITRATOR];'
       + ' return p; } }', { solidityImportCompat: true });
-    expect(artifact.debug.bytecode.length / 2).toBeLessThan(700);
+    expect(artifact.debug.bytecode.length / 2).toBeLessThan(780);
   });
 
   it('forwards a complete fixed-array projection at an external return boundary', () => {

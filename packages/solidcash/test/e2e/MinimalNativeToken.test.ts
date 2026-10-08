@@ -18,8 +18,9 @@ describe('MinimalNativeToken bytecode budget', () => {
   it('keeps full ERC20 allowances and immediate BchNative below 7.5 KB', () => {
     const artifact = compileFile(source, { messageBus: false });
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
-    // Pinned to the bytecode d532aa32a shrank the OpenZeppelin native build to; the 7.5 KB title stays the budget.
-    expect(artifactBytes).toBe(7009);
+    // Pinned to the bytecode d532aa32a shrank the OpenZeppelin native build to, then refreshed for the audit's
+    // runtime range checks (+25 bytes); the 7.5 KB title stays the budget.
+    expect(artifactBytes).toBe(7034);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')).toBeUndefined();
 
@@ -45,7 +46,8 @@ describe('MinimalNativeToken bytecode budget', () => {
       [],
       { provider: new MockNetworkProvider() },
     );
-    expect(deployed.bytecode.length / 2).toBe(7009);
+    // The deployed locking bytecode tracks the artifact bytecode above, so it carries the same +25 refresh.
+    expect(deployed.bytecode.length / 2).toBe(7034);
 
     expect(artifact.events.map((event) => event.name).sort()).toEqual(['Approval', 'Transfer']);
 

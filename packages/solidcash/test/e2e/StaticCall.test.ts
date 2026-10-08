@@ -179,7 +179,8 @@ describe('StatefulFunctionCall.staticCall() - exact loop-array returns', () => {
       }>;
     };
     const provisional = encodePushdataValue([0n], 'int[]', artifact.structs);
-    const resolved = encodePushdataValue(Uint8Array.of(41), 'int', producerArtifact.structs);
+    // 41n encodes to the single byte 41, which is the raw form this probe used to pass as a Uint8Array.
+    const resolved = encodePushdataValue(41n, 'int', producerArtifact.structs);
     let commitmentResolutions = 0;
     const builder: ProbeBuilder = {
       __derivedReturnBlob: provisional,

@@ -569,7 +569,9 @@ describe('Dynamic Arrays', () => {
         + ' uint256[5] memory p; p[B]=amount/10; p[S]=amount/5; p[M]=amount/5; p[A]=amount/10;'
         + ' p[P]=amount-p[B]-p[S]-p[M]-p[A];'
         + ' require(p[B]==10 && p[S]==20 && p[M]==20 && p[P]==40 && p[A]==10); } }');
-      expect(artifact.debug.bytecode.length / 2).toBeLessThan(1250);
+      // The coalesced shape is 1188 bytes without the audit's runtime range checks and 1250 with them (+62), so
+      // the ceiling moves to keep the headroom this budget was pinned with.
+      expect(artifact.debug.bytecode.length / 2).toBeLessThan(1320);
 
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });

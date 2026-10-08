@@ -43,9 +43,22 @@ The second row needs more cost than any single input can ever fund: the maximum 
   invoked ~19 times per frame". It does not reproduce. The cost is a per-frame laid-out frame settlement body
   executed once per frame (title 1: 4,648 executed instructions for `descend(6)`, ~40% in a 306-instruction body
   invoked once per frame; title 2: ~51% of 5,966).
-- **Refuted lead 2**: deleting the unreachable effect-kind arms is a win. It is net-negative. Those bytes are part
-  of the density-control length, so dropping 49 charged-but-stepped-over instructions saves 4,900 cost and loses
-  39,200 budget (-34,300 headroom). `scripts/density-headroom.ts` is the model to check any deletion against.
+- **Corrected lead 2** (first increment, `W4_FRAME_COST_PROFILE.md`): whether deleting a stepped-over arm is a
+  win depends on how often it is stepped over. An arm inside the frame/settlement/verify loop is charged once per
+  iteration (64-65x per run), so removing 49 charged instructions there saves `49 x 100 x 65 = 318,500` cost and
+  loses `49 x 800 = 39,200` budget - net positive. The earlier per-run arithmetic (saves 4,900, loses 39,200)
+  holds only for an arm charged once. Check every deletion against `scripts/density-headroom.ts` with the real
+  iteration count, not per run.
+- **The first increment's ceiling** (`W4_FRAME_COST_PROFILE.md`): the complete stepped-over charge is only
+  21-35% of a row's cost, while the required cut is 23.9-68.2% of cost, i.e. 85-325% of that pool. So no
+  arm-deletion or reordering reaches the bar. The structural move is to take the mutually-exclusive record-kind
+  arms and encoder switches off the step-over path - outline them into `OP_DEFINE` bodies so `OP_INVOKE`
+  dispatches past them - while keeping their bytes in the script, because the script is the density-control
+  length. Per row: the recursive-event row needs 85.2% of its pool, the guarded tail-call row 112%, mixed
+  pre/post 184%, affine-counter 169%, pre-only 325% (and its full cost already exceeds the 8,039,200 maximum any
+  input can fund). This is why the increment landed no emission change: a real answer is a structural codegen
+  project, and the event-lock hoist alone (3.7% of one row) would refresh the kernel corpus pins for no
+  acceptance gain.
 - Cost composition at 64 frames (title 6): 95.9% instruction count (36,590 x 100), 2.8% pushed bytes, 1.3%
   hashing. Of 554 charged instructions per frame, 406 are executed and 147.6 are charged-but-stepped-over
   (`installSparseProbeBranchSkips`, `createVirtualMachine.ts:778` — BCH-2025 charges every stepped-over
@@ -77,6 +90,14 @@ The second row needs more cost than any single input can ever fund: the maximum 
   emitted bytecode is expected on some shapes; where it happens, confirm the density headroom went up, not down.
 - The project reports its per-block ledger even if it does not reach the acceptance bar: which blocks it removed,
   what each was worth, and what the remaining gap is.
+
+## Progress
+
+- 2026-10-08, first increment (`W4_FRAME_COST_PROFILE.md`): the six rows are profiled, the lever pool is
+  quantified, and the event-lock hoist is recorded as worth 3.7% of one row. No emission change landed, because
+  the profile shows the required cut is 85-325% of the only pool a reordering can reach. Next increment: the
+  structural move (outlining the mutually-exclusive arms so the VM dispatches past them without losing their
+  bytes from the control length), which must be built and measured as one change, not incrementally.
 
 ## Risks
 

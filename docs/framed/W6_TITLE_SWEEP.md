@@ -13,7 +13,7 @@ whole-file before/after. The gate log this sweep starts from is `w8-solidcash.lo
 (26 solidcash rows, 5 e2e rows). The rows are the `W6_BASELINE.md` rows, so none of them is a new regression
 from the framed work.
 
-## Green after this sweep (14 of 31)
+## Green after this sweep (16 of 31)
 
 | # | title (file) | cause | fix | pin |
 |---:|---|---|---|---|
@@ -30,6 +30,8 @@ from the framed work.
 | 16 | `settles an existing chunked struct fixed-array update before a wide external result` (KernelChunkedMappingStructCompose) | `GenerateTargetTraversal.emitPushdataEncode` applied the Solidity ABI address lane to every address leaf inside a `graphEmissionHandler`, including the struct value a field write lowers to, so each address leaf shrank 35 -> 32 bytes and the route's value digest no longer matched the SDK's value chunks | suppress the lane for a state struct value (`encodingReferenceDataValue`) | the title itself plus 20 sibling files |
 | 19 | `settles selected counter domains and freezes mixed collection/effect domains` (KernelLoopCompose) | two reds. First: `getLoopEntryOutputBase` returned the raw predecessor input index for a runtime-loop write, so the entry band landed one coordinate late (`0764ac086`, merged). Second: `StatefulContract._createBuilder`'s `singleTargetRowBatch` sized the batch from the runtime route's own narrowed `sortedBatchInfo`, so a union batch projected to a single lane was misread as a standalone one-slot batch and the INSERT predecessor was planned at the fixed entry slot; the builder then appended it at `masterIndex + blockSize` = 142 and the compose compaction left `vmapBatchPredOut_0` naming no output | read the compiled batch width from the published route (`entryArtifact.messageBus.route.sortedBatchInfo`) and require it to be 1 for the single-target layout | `test/unit/UnionRouteSingleRowPredOut.test.ts` |
 
+| 24, 25 | `does not materialize a forged proxy state when a conditional delegate edge is not taken`, `settles a not-taken spend that preserves state, and refuses one that writes` (MessageBusDelegateClassesE3) | the SDK materialized the caller's requested state unconditionally; nothing published the conditional delegate edge's guard, so on the path that did not reach the edge the covenant's own-state freeze refused the spend (the emitted commitment was `02e703`, the requested 999) | the compiler publishes `lowLevelCalls[].condition` (the enclosing source predicates, reusing the existing `ExternalCallExpression` vocabulary) and the SDK preserves the input commitment when every delegate edge is conditional and every published guard evaluates false for the call's own arguments; fails closed for a missing guard, a true guard, an unconditional edge, or an unresolvable argument | `packages/solidc/test/generation/fallback-receive-abi.test.ts` (the one moved `lowLevelCalls` pin, updated; 30 lines added) |
+
 Verification for each: the whole file green before merging, then re-run on the merged tree
 (`merge-verify.log`, `merge-verify2.log` in the sweep scratch), with the sibling files that share the changed
 engine also green: FixedConditional 8/8, KernelLegacyObservableParity 3/3, KernelLoopCompose 142/144 (the two
@@ -39,16 +41,15 @@ KernelSegmentedJournalCarrier 1) all green, `KernelRealUnicrowProxyArbitration` 
 3/3 (the pair a dropped projection half once broke), `AtomicMessageBusCapacity` 11 passed / 2 skipped,
 `KernelDensityBoundedCompose` 2/2, `KernelHandlerLoopStreamScope` 1/1, `StaticCall` 12/12.
 
-## Still red (17), with what each one needs
+## Still red (15), with what each one needs
 
-### Needs a decision (7)
+### Needs a decision (5)
 
 | # | title | the decision |
 |---:|---|---|
 | 1, 2 | `preserves FakeToken.json identity across the marketplace fixture transfer/approve sequence`, `... across transfer to another account` (LogicalIdentityPreservation) | D22 (`cee831dc2`, `DECISIONS.md`): `StatefulContract.getAddress()`/`target` is `_framedAddress ?? _logicalAddress ?? this.address`, so the contract reports the framed execution lock while the SCID identity anchor is minted at the logical CREATE address. Measured: swapping the first two operands makes both green (`2 passed | 19 skipped`) and regresses the proxied marketplace title `approve result and review sanity checks`. D22's own row already asks for this confirmation. |
 | 3 | `carries the caller's reported address whole inside a long packed payload, to the receipt and the chain` (framed/call/plain-caller-identity) | packed `uint160(address)`: `packages/solidc/test/Casts.test.ts:162` is green and pins the narrowed 20-byte Solidity identity (`OP_3 OP_SPLIT OP_NIP`); the title expects the verbatim 35-byte lock. This is not the deferred model B — model B narrows too. Measured: the payload is 122 bytes with a 20-byte identity, and the per-call line's `packedAddressAsUint` special case was removed by kernel-line `e5fd28bcc`. |
 | 22 | `uses the authenticated proxy identity for address(this) and a nested caller beside its SCID anchor` (KernelPhysicalCallerWithScidCompose) | both operands at `ip 153` are 35-byte locks: the caller's logical/proxy SCID address lock (the anchor input's lock and the `expected` route param) against the co-spent minting master input's physical lock. `emitMsgSender` takes the category branch and `emitMsgSenderMintingVerification` returns the physical minting master's `OP_UTXOBYTECODE`; `emitLogicalMsgSenderAnchorVerification`, which binds the anchor's SCID record tail, is skipped because the handler has no `__internal__msgSenderAnchorIdx` (injected only under solidityImportCompat; `AUDIT_MSG_SENDER.md` F14 records its consumer as removed in `c78c135b7`). Audit F4/S3 — the deferred address representation. |
-| 24, 25 | `does not materialize a forged proxy state when a conditional delegate edge is not taken`, `settles a not-taken spend that preserves state, and refuses one that writes` (MessageBusDelegateClassesE3) | the not-taken preserve can only be read from the conditional edge's runtime reachability, i.e. the VM trace. Reaching it needs `computed-output-repair.ts:canApplyRepairedNftCommitment` to stop skipping the preserve proposal and needs recipe mode's "VM validates only" finalization gate (`materialization-mode.ts`) opened for a state write. No published-metadata discriminator exists: `writesState === true` with `ownStateEvidence: []` and a `conditional` `lowLevelCalls[0]` also matches the green taken spend, and `sourceEffectOrder: 'unsupported-flow'` separates conditional from straight-line but not taken from not-taken. |
 | 27 | `keeps a direct writer and delegated writer in separate continuation ranges` (KernelIndependentComputedChunks) | `KernelDirectComputedChunks.test.ts:30` pins `Store.update` `eligible === false` and is green; this title needs the atomic composer to batch that same row, which `encodeMessageBatch` refuses for a non-eligible row. Toggling the compiler admission makes the title pass and breaks four green pins (`KernelDirectComputedChunks` x2, `KernelDirectWitnessAbi`, `WitnessAbiPublication`) plus the `KernelLoopCompose` recursion-fold delete. This is the `ac4a136f2` trade-off returning. |
 
 ### Needs a compiler cost reduction, not a fix (6)
@@ -115,7 +116,8 @@ Intermediate confirmation: at `13964264c` (before `a9248461a`) the same suite wa
 
 ## Not satisfied by this sweep
 
-The instruction was "make all titles green individually, then run full e2e". 14 of 31 are green individually.
-The other 17 are not blocked on effort: 7 need a product/representation decision, 6 need a compiler
-per-frame-cost project, and 4 need either a design decision (11, 12) or more time on a localized cause
-(5, 13). The release gate therefore remains the `W6_BASELINE.md` row set, now 17 rows instead of 31.
+The instruction was "make all titles green individually, then run full e2e". 16 of 31 are green individually.
+The other 15 are not blocked on effort: 5 need a product/representation decision, 6 need the compiler
+per-frame-cost project (`W4_FRAME_COST_PROJECT.md`, whose first increment measures why a reordering cannot reach
+the bar), and 4 need either a design decision (11, 12) or more time on a localized cause (5, 13). The release gate
+therefore remains the `W6_BASELINE.md` row set, now 15 rows instead of 31.

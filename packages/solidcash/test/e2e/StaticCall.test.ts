@@ -106,11 +106,13 @@ describe('StatefulFunctionCall.staticCall() - value-returning reads', () => {
     expect(Object.keys(pt as object)).toEqual(['x', 'y']); // accessor non-enumerable
   });
 
-  it('multi-value (tuple) reads fail closed with a clear message (not yet supported)', async () => {
+  it('multi-value (tuple) reads resolve one component per declared output', async () => {
     const sc = await deploy() as unknown as { set: Function; both: Function };
     await (sc.set(5n, 9n) as { send: () => Promise<unknown> }).send();
-    await expect((sc.both() as { staticCall: () => Promise<unknown> }).staticCall())
-      .rejects.toThrow(/multi-value \(tuple\) reads are not yet supported/);
+    // `both()` declares two outputs. The read event carries one encoded component per declared output, and the
+    // decoder fails closed when the carrier does not decode to exactly that tuple (see `deriveReturnValue`), so
+    // a short or mistyped carrier cannot silently produce a wrong pair.
+    expect(await (sc.both() as { staticCall: () => Promise<bigint[]> }).staticCall()).toEqual([5n, 9n]);
   });
 
   it('a read does not consume state (repeatable, no mutation)', async () => {

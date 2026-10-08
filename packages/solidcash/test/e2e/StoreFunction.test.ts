@@ -9,6 +9,10 @@ import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { decodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 
+// Every fixture here deploys a child through a deliberately unguarded deploy entry (these tests cover the
+// store_function mechanic, not caller authorization), so compile with the explicit permissionless opt-in.
+const DEPLOY_OPTS = { solidityImportCompat: true, allowUnsafeOperations: true } as const;
+
 describe('split (two tx)', () => {
   // Split store_function: install() deploys Other and stores its method as a fn-ptr; run() co-spends the
   // deployed Other through the stored pointer in a later tx.
@@ -22,7 +26,7 @@ describe('split (two tx)', () => {
   }`;
 
   describe('store_function split: deploy a child, store its method as a fn-ptr, call it later', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, DEPLOY_OPTS);
     const cArtifact = arts.C;
     const otherArtifact = arts.Other;
     const provider = createTestProvider();
@@ -89,7 +93,7 @@ describe('one tx via local', () => {
   }`;
 
   describe('one-tx store_function via a local fn-ptr (deploy + fold-call)', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, DEPLOY_OPTS);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
@@ -143,7 +147,7 @@ describe('one tx via state ptr', () => {
   }`;
 
   describe('one-tx store_function via a STATE pointer (deploy + store + fold-call)', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, DEPLOY_OPTS);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
@@ -199,7 +203,7 @@ describe('one tx via state ptr', () => {
   }`;
 
   describe('one-tx store_function via a STATE pointer, value-returning (result = stored(7) = 9)', () => {
-    const arts = compileStringMulti(RET_SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(RET_SRC, DEPLOY_OPTS);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
@@ -248,7 +252,7 @@ describe('interprocedural fold', () => {
   }`;
 
   describe('store_function core: interprocedural deploy fold through a store helper', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, DEPLOY_OPTS);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
@@ -305,7 +309,7 @@ describe('literal corpus form', () => {
   }`;
 
   describe('store_function ev/eval chain: this.result = ev(x) folds to 9', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, DEPLOY_OPTS);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
@@ -358,7 +362,7 @@ describe('value-returning callee', () => {
   }`;
 
   describe('store_function split: value-returning freshly-deployed method + capture return', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, DEPLOY_OPTS);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
@@ -414,7 +418,7 @@ describe('returning corpus form', () => {
   }`;
 
   describe('store_function corpus (returning form): t() -> 9', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, DEPLOY_OPTS);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
@@ -476,7 +480,7 @@ describe('return-event x deploy', () => {
   }`;
 
   describe('return-event x deploy: value-returning entry that also deploys', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, DEPLOY_OPTS);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 

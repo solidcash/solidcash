@@ -40,10 +40,12 @@ contract Factory {
 }
 `;
 
+// These fixtures exercise the deploy mechanic (child genesis folding) without caller authorization: the
+// factory's deploy entry is deliberately unguarded, so compile with the explicit permissionless opt-in.
 describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const factoryArtifact = compileString(FACTORY, { solidityImportCompat: true });
+  const factoryArtifact = compileString(FACTORY, { solidityImportCompat: true, allowUnsafeOperations: true });
   const childArtifact = compileString(CHILD, { solidityImportCompat: true });
 
   let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
@@ -121,7 +123,7 @@ describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () =
         function make(int32 seed) public {
           RecordCollectionChild child = new RecordCollectionChild(seed); require(true);
         }
-      }`);
+      }`, { allowUnsafeOperations: true });
     const make = artifacts.GenesisCoordinator.abi.find((candidate) => candidate.name === 'make')!;
     expect(make.deployTargets?.[0]).toMatchObject({
       entryNftCount: 6,

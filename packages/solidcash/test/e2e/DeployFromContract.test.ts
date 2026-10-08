@@ -103,15 +103,17 @@ const UNTYPED_DEPLOY_FACTORY = `contract UntypedFactory() {
 describe('StatefulContract.deployFrom()', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const factoryArtifacts = compileStringMulti(FACTORY);
+  // Each factory fixture exercises the deployFrom mechanic with a deliberately unguarded deploy entry
+  // (permissionless child deploy), so compile with the explicit opt-in.
+  const factoryArtifacts = compileStringMulti(FACTORY, { allowUnsafeOperations: true });
   const factoryArtifact = factoryArtifacts.Factory;
   const childArtifact = factoryArtifacts.Child;
-  const create3Artifacts = compileStringMulti(CREATE3_FACTORY);
+  const create3Artifacts = compileStringMulti(CREATE3_FACTORY, { allowUnsafeOperations: true });
   const create3FactoryArtifact = create3Artifacts.Create3Factory;
-  const overwriteArtifacts = compileStringMulti(OVERWRITE_FACTORY);
+  const overwriteArtifacts = compileStringMulti(OVERWRITE_FACTORY, { allowUnsafeOperations: true });
   const overwriteFactoryArtifact = overwriteArtifacts.OverwriteFactory;
   const noDeployArtifact = compileString(NO_DEPLOY_FACTORY);
-  const untypedDeployArtifact = compileString(UNTYPED_DEPLOY_FACTORY);
+  const untypedDeployArtifact = compileString(UNTYPED_DEPLOY_FACTORY, { allowUnsafeOperations: true });
 
   describe('deploy modifier in artifact ABI', () => {
     it('should include deploy in ABI modifiers', () => {

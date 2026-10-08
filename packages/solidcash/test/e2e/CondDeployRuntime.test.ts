@@ -8,6 +8,10 @@ import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+// Each factory here exercises a conditional/loop/multi-site deploy with a deliberately unguarded deploy entry
+// (these tests cover the deploy mechanic, not caller authorization), so compile with the explicit opt-in.
+const DEPLOY_OPTS = { allowUnsafeOperations: true } as const;
+
 // A conditional deploy: `if (c == 1) new Child()` inside a factory function. The genesis is verified INLINE at
 // the creation site (emitInlineDeployVerification), so when the branch fires the child genesis is co-spent and
 // the covenant checks it; when the branch is not taken there is no child. This test proves the FIRED path is
@@ -41,7 +45,7 @@ contract CondFactory(bytes20 owner) {
 describe('conditional deploy runtime (if (c==1) new Child())', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const factoryArtifact = compileString(COND_FACTORY);
+  const factoryArtifact = compileString(COND_FACTORY, DEPLOY_OPTS);
   const childArtifact = compileString(CHILD);
 
   let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
@@ -126,7 +130,7 @@ contract LoopFactory(bytes20 owner) {
 describe('loop deploy runtime (for (i<n) new Child()) - N=1 via existing deployFrom', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const loopArtifact = compileString(LOOP_FACTORY);
+  const loopArtifact = compileString(LOOP_FACTORY, DEPLOY_OPTS);
   const childArtifact = compileString(CHILD);
 
   let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
@@ -237,7 +241,7 @@ contract DoWhileFactory(bytes20 owner) {
 describe('do-while deploy runtime (do { new Child() } while (i<n))', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const dwArtifact = compileString(DOWHILE_FACTORY);
+  const dwArtifact = compileString(DOWHILE_FACTORY, DEPLOY_OPTS);
   const childArtifact = compileString(CHILD);
 
   it('makeN(2) via a do-while mints + verifies TWO children (counter 0 and 1)', async () => {
@@ -294,7 +298,7 @@ contract MultiFactory(bytes20 owner) {
 describe('multi-site deploy runtime (straight-line + conditional, same contract)', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const multiArtifact = compileString(MULTI_FACTORY);
+  const multiArtifact = compileString(MULTI_FACTORY, DEPLOY_OPTS);
   const childArtifact = compileString(CHILD);
 
   const deployFactory = async (seed: string): Promise<Awaited<ReturnType<typeof StatefulContract.deploy>>['contract']> => {
@@ -366,7 +370,7 @@ describe('multi-site deploy runtime (straight-line + conditional, same contract)
 describe('deploy sugar forwards fundingUtxos (factory.makeN(n).deploy({ fundingUtxos }))', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const loopArtifact = compileString(LOOP_FACTORY);
+  const loopArtifact = compileString(LOOP_FACTORY, DEPLOY_OPTS);
   const childArtifact = compileString(CHILD);
 
   it('makeN(2).deploy({ fundingUtxos: [g0, g1] }) mints two children via the sugar path', async () => {
@@ -416,7 +420,7 @@ contract ValueFactory(bytes20 owner) {
 describe('deploy with value (new Child{value: x}())', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const valueArtifact = compileString(VALUE_FACTORY);
+  const valueArtifact = compileString(VALUE_FACTORY, DEPLOY_OPTS);
   const childArtifact = compileString(CHILD);
 
   it('co-spends the factory satoshi container + materializes the 5000-sat transfer to the child', async () => {
@@ -483,7 +487,7 @@ contract CondValueFactory(bytes20 owner) {
 describe('conditional deploy with value (if (c==1) new Child{value:5000}())', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const cvArtifact = compileString(COND_VALUE_FACTORY);
+  const cvArtifact = compileString(COND_VALUE_FACTORY, DEPLOY_OPTS);
   const childArtifact = compileString(CHILD);
 
   const deployFactory = async (seed: string): Promise<Awaited<ReturnType<typeof StatefulContract.deploy>>['contract']> => {
@@ -553,7 +557,7 @@ contract LoopValueFactory(bytes20 owner) {
 describe('loop deploy with value (for (i<n) new Child{value:5000}())', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const loopValueArtifact = compileString(LOOP_VALUE_FACTORY);
+  const loopValueArtifact = compileString(LOOP_VALUE_FACTORY, DEPLOY_OPTS);
   const childArtifact = compileString(CHILD);
 
   it('makeN(2): two children each funded 5000 from the container (20000 -> 10000), two interleaved transfers', async () => {

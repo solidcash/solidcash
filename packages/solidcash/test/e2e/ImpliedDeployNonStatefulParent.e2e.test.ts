@@ -24,7 +24,9 @@ const PARENT_SRC = `
 
 describe('implied deploy from a non-stateful parent (forced stateful)', () => {
   const childArtifact = compileString(CHILD_SRC);
+  // The fixture exercises the implied-deploy mechanic; the parent's deploy entry is deliberately unguarded.
   const parentArtifact = compileString(PARENT_SRC, {
+    allowUnsafeOperations: true,
     importResolver: (importPath: string, currentFile: string): ResolvedImport | undefined => {
       const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
       let resolved = dir + importPath.replace('./', '');

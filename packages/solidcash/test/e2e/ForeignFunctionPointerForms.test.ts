@@ -792,7 +792,8 @@ describe('contract member', () => {
   }`;
 
   describe('contract-member fn-ptr value via direct `o.method` syntax', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    // install() is a deliberately unguarded deploy entry (this fixture tests the member fn-ptr form).
+    const arts = compileStringMulti(SRC, { solidityImportCompat: true, allowUnsafeOperations: true });
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 

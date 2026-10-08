@@ -23,7 +23,9 @@ contract TokenDeployFactory(){
     this.childCount = this.childCount + 1;
   }
 }`;
-const factoryArtifact = compileString(FACTORY);
+// Token container transfer to a new child on deploy: the factory's deploy entry is deliberately unguarded
+// (permissionless child deploy), so compile with the explicit opt-in.
+const factoryArtifact = compileString(FACTORY, { allowUnsafeOperations: true });
 const childArtifact = compileString(CHILD);
 
 describe('token transfer to a new child on deploy (deployFrom)', () => {
@@ -110,7 +112,7 @@ contract MultiTokenFactory(){
     this.cc = this.cc + 1;
   }
 }`;
-const multiArtifact = compileString(MULTI_FACTORY);
+const multiArtifact = compileString(MULTI_FACTORY, { allowUnsafeOperations: true });
 const multiChildArtifact = compileString(MULTI_CHILD);
 
 describe('multi-category token transfer on deploy (deployFrom)', () => {

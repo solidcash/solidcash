@@ -13,7 +13,8 @@
     "examples/testing-suite"
   ],
   "resolutions": {
-    "ws": "8.21.0"
+    "ws": "8.21.0",
+    "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist"
   },
   "devDependencies": {
     "@noble/hashes": "^1.4.0",

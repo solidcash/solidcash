@@ -1,7 +1,9 @@
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import type { AbiFunction } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { kernelRouteDensityReserveBytes, kernelRouteEffectDensityReserveBytes } from '../../src/Contract.js';
+import {
+  kernelRouteDensityReserveBytes, kernelRouteEffectDensityReserveBytes, kernelRouteSignatureDensityReserveBytes,
+} from '../../src/Contract.js';
 import { encodeKernelEntryJournalAccesses } from '../../src/stateful/KernelEntryJournal.js';
 
 const stream = (ordinals: readonly number[]): Uint8Array => encodeKernelEntryJournalAccesses(
@@ -72,5 +74,29 @@ describe('kernel route effect density reserve', () => {
       route({ ...effectFrame, eventWidth: 0 }), 'kernel-row-loop',
     )).toBe(0);
     expect(kernelRouteEffectDensityReserveBytes({} as AbiFunction, 'kernel-row-loop')).toBe(0);
+  });
+});
+
+describe('kernel route signature density reserve', () => {
+  const signatureRoute = (inputs: readonly string[]): AbiFunction =>
+    ({ inputs: inputs.map((name) => ({ name })) } as unknown as AbiFunction);
+  const leaves = ['__message_bus_sig_0_0_0_rows', '__message_bus_sig_0_0_1_rows'];
+
+  it('reserves one signature check per reserved signature-row leaf and nothing else', () => {
+    const reserved = kernelRouteSignatureDensityReserveBytes(
+      signatureRoute(['batchBlob', '__internal__activeVerifierIndex', ...leaves]), 'kernel-row-loop',
+    );
+    expect(reserved).toBe(Math.ceil((leaves.length * ConsensusBch2026.signatureCheckCost)
+      / ConsensusBch2026.operationCostBudgetPerByte));
+    expect(reserved).toBeGreaterThan(0);
+
+    // A route with no reserved signature leaf keeps the zero-length reserve.
+    expect(kernelRouteSignatureDensityReserveBytes(
+      signatureRoute(['batchBlob', '__internal__activeVerifierIndex']), 'kernel-row-loop',
+    )).toBe(0);
+    // A legacy unroll route does not walk a reserved band, so it needs no reserve either.
+    expect(kernelRouteSignatureDensityReserveBytes(
+      signatureRoute(leaves), 'legacy-unroll',
+    )).toBe(0);
   });
 });

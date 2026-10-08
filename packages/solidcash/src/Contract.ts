@@ -112,6 +112,35 @@ export function kernelRouteEffectDensityReserveBytes(
   );
 }
 
+// A kernel row-loop route that reserves signature-row witness leaves carries the reconstruction and CHECKSIG
+// program for those leaves, and that program IS the input's density control length. The framed outline pass
+// shrinks the program, so a route can lose budget without losing the reserved verification work it must still
+// perform. MEASURED on the composite-signature route (2 reserved leaves): the outline removed 14 script bytes,
+// i.e. 11,200 units of budget, for only 8,957 units of cost, leaving input 0 53 units over; a one-byte reserve
+// does not help because turning the discarded OP_0 slot into a non-empty push costs about 800 units by itself.
+// Price one reserved signature check per leaf instead, as the journal and effect reserves price their work.
+const KERNEL_ROUTE_SIGNATURE_ROW_INPUT = /^__message_bus_sig_\d+_\d+(?:_\d+)?_rows$/;
+
+/**
+ * Size the discarded density reserve for a kernel row-loop route that reserves signature-row witness leaves.
+ * Only a route whose ABI declares those leaves needs it; every other route keeps the zero-length reserve, so
+ * unrelated pinned unlocking-bytecode lengths are unaffected.
+ */
+/** @internal Exported for exact boundary tests; not re-exported from the package API. */
+export function kernelRouteSignatureDensityReserveBytes(
+  abiFunction: AbiFunction, convention: string | undefined,
+): number {
+  if (convention !== 'kernel-row-loop') return 0;
+  const leaves = abiFunction.inputs
+    .filter((input) => KERNEL_ROUTE_SIGNATURE_ROW_INPUT.test(input.name)).length;
+  if (leaves < 1) return 0;
+  return Math.min(
+    KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES,
+    Math.ceil((leaves * ConsensusBch2026.signatureCheckCost)
+      / ConsensusBch2026.operationCostBudgetPerByte),
+  );
+}
+
 /** Attach the V5 canonical manifest to the root compiler-route frame, without changing its ABI arguments. */
 export function withCompilerRouteMessageEnvelope(
   unlocker: ContractUnlocker, messageEnvelope: Uint8Array, maximumInputBytes: number,
@@ -866,7 +895,8 @@ export class Contract<
       const reservedPositionalPush = scriptToBytecode([
         new Uint8Array(kernelJournalRoute
           ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
-          : kernelRouteEffectDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)),
+          : kernelRouteEffectDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)
+            + kernelRouteSignatureDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)),
       ]);
       let cachedOrdinary: Uint8Array | undefined;
       let cachedCompilerRoute: Uint8Array | undefined;

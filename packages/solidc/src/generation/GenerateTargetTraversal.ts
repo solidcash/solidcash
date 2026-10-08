@@ -9882,10 +9882,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }));
     }
     if (node.expression) {
+      // A bare integer literal is the one source the type checker range-checks against the declared type, so a
+      // runtime guard for it only bloats the code (the compiler-generated route declares its row temps as
+      // `int256 x = 0`). A computed expression still needs the guard and keeps it.
+      const needsRangeCheck = !(node.expression instanceof IntLiteralNode);
       node.expression = this.visit(node.expression);
-      this.emitAssignmentRangeCheck(node.type, node.expression.type, {
-        location: node.location, positionHint: PositionHint.END,
-      });
+      if (needsRangeCheck) {
+        this.emitAssignmentRangeCheck(node.type, node.expression.type, {
+          location: node.location, positionHint: PositionHint.END,
+        });
+      }
       this.popFromStack();
     } else {
       // Uninitialized declaration: emit the type's zero value (same machinery as `delete`).

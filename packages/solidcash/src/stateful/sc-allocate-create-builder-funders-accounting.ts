@@ -120,9 +120,13 @@ export async function allocateCreateBuilderFunders(
     // Dynamic trailing outputs are addressed after the compiler's complete fixed block. If that block includes
     // inactive returnEvent slots, compacting them shifts predecessor, chunk, or runtime-event inputs left of
     // their published outputs. Chunk covenants independently require output[inputIndex] to recreate the NFT.
+    // A read-only chunk run (`iterationEntryInputs`) only has a published output coordinate on an atomic
+    // participant, which is already pinned by `overrides?.omitLocalFeeTail`; a direct compact frame instead
+    // omits the slot, so the run must land at the compacted coordinate the direct dynamic-read bytecode and
+    // `getChunkOutputBase` both subtract to.
     const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
       || sortedLoopCommitments.size > 0
-      || iterationEntryInputs.length > 0
+      || (iterationEntryInputs.length > 0 && overrides?.omitLocalFeeTail === true)
       || dynamicChunkInputs.length > 0
       || trailingDisposalInputs.length > 0
       || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0;

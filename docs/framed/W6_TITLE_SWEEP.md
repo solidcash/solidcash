@@ -13,7 +13,7 @@ whole-file before/after. The gate log this sweep starts from is `w8-solidcash.lo
 (26 solidcash rows, 5 e2e rows). The rows are the `W6_BASELINE.md` rows, so none of them is a new regression
 from the framed work.
 
-## Green after this sweep (16 of 31)
+## Green after this sweep (18 of 31)
 
 | # | title (file) | cause | fix | pin |
 |---:|---|---|---|---|
@@ -31,6 +31,8 @@ from the framed work.
 | 19 | `settles selected counter domains and freezes mixed collection/effect domains` (KernelLoopCompose) | two reds. First: `getLoopEntryOutputBase` returned the raw predecessor input index for a runtime-loop write, so the entry band landed one coordinate late (`0764ac086`, merged). Second: `StatefulContract._createBuilder`'s `singleTargetRowBatch` sized the batch from the runtime route's own narrowed `sortedBatchInfo`, so a union batch projected to a single lane was misread as a standalone one-slot batch and the INSERT predecessor was planned at the fixed entry slot; the builder then appended it at `masterIndex + blockSize` = 142 and the compose compaction left `vmapBatchPredOut_0` naming no output | read the compiled batch width from the published route (`entryArtifact.messageBus.route.sortedBatchInfo`) and require it to be 1 for the single-target layout | `test/unit/UnionRouteSingleRowPredOut.test.ts` |
 
 | 24, 25 | `does not materialize a forged proxy state when a conditional delegate edge is not taken`, `settles a not-taken spend that preserves state, and refuses one that writes` (MessageBusDelegateClassesE3) | the SDK materialized the caller's requested state unconditionally; nothing published the conditional delegate edge's guard, so on the path that did not reach the edge the covenant's own-state freeze refused the spend (the emitted commitment was `02e703`, the requested 999) | the compiler publishes `lowLevelCalls[].condition` (the enclosing source predicates, reusing the existing `ExternalCallExpression` vocabulary) and the SDK preserves the input commitment when every delegate edge is conditional and every published guard evaluates false for the call's own arguments; fails closed for a missing guard, a true guard, an unconditional edge, or an unresolvable argument | `packages/solidc/test/generation/fallback-receive-abi.test.ts` (the one moved `lowLevelCalls` pin, updated; 30 lines added) |
+| 5 | `settles a refund-like entry: a call, a mapping write in a later segment, and a dynamic write after the last call` (framed/call/write-segments-settlement) | a merge-integration regression: kernel commit `dc9f1e77f` ("follow reachable free helpers in automatic graph selection") moved the interface-receiver test in `InlineExternalCallHelpers.makesExternalCall` out of its guard, so the framed compile inlines the void external-call helper with fresh `__inl` copies; `SymbolTableTraversal.classifyKeySource` then published the mapping write's key as `{kind:'expression', label:'id:to'}` instead of `{kind:'param', paramName:'to'}`, the framed master materialized the expression at its batch-witness derivation, and the segment close compared the wrong declared-records operands | `SymbolTableTraversal.ts`: a local named by a compiler-owned `__sp`/`__rh`/`__inl` copy whose initializer is a bare identifier naming the enclosing function's own parameter is classified as that parameter | `packages/solidc/test/framed/master/inlined-param-key-source.test.ts` |
+| 12 | `advances past a reached conditional opaque-return row in a delegated root` (AtomicMessageBusCompose) | the SDK's `projectMessageBusHandlerArguments` collected `nativeAddressIndexes` only from a bare `forward` `addressSource`; a lowered low-level `addr.call(payload)` reached through an inlined `if` publishes its target as `{kind:'expression', expression:{kind:'source', source:{kind:'forward', paramIndex}}}`, so the target was ABI-projected to a 32-byte word and the graph route's `.code.length` predicate (`size == 23 \|\| size == 35`) read code as absent, took the `else` arm and tried to consume rows the composer had pruned | resolve a forwarded target parameter through both shapes (`forwardedAddressParamIndex`), keeping the call target's native locking bytecode | `packages/solidcash/test/unit/ProjectGraphEmissionAddressArgs.test.ts` (new case) |
 
 Verification for each: the whole file green before merging, then re-run on the merged tree
 (`merge-verify.log`, `merge-verify2.log` in the sweep scratch), with the sibling files that share the changed
@@ -41,7 +43,7 @@ KernelSegmentedJournalCarrier 1) all green, `KernelRealUnicrowProxyArbitration` 
 3/3 (the pair a dropped projection half once broke), `AtomicMessageBusCapacity` 11 passed / 2 skipped,
 `KernelDensityBoundedCompose` 2/2, `KernelHandlerLoopStreamScope` 1/1, `StaticCall` 12/12.
 
-## Still red (15), with what each one needs
+## Still red (13), with what each one needs
 
 ### Needs a decision (5)
 
@@ -84,40 +86,46 @@ of the density-control length, so dropping 49 charged instructions saves 4,900 c
 (-34,300 headroom). This is the compiler defect the repo already names in `424fea1b1`, and it is a restructuring
 of the emitted per-frame settlement, not a bounded fix.
 
-### Needs more work on a localized cause (4)
+### Needs more work on a localized cause (2)
 
 | # | title | state |
 |---:|---|---|
 | 11 | `preserves a pooled long mapping return across event-emitting writes` (AtomicMessageBusCompose) | consensus size interlock: input 1 is 13,179 bytes at this tip (the earlier 10,627 reading was taken at `9fd44ec92`), the callee artifact bytecode is 9,968, and `SOLIDC_DEBUG_NO_OUTLINE=1` only reaches 9,696. Needs a ~3.2 KB codegen reduction for this shape, or routing the callee participant through the verifier/delegate so its input stops pushing the whole contract (a participant-layout decision). |
-| 12 | `advances past a reached conditional opaque-return row in a delegated root` (same file) | `address.code.length` boundary: the composer evaluates `addressCodeLength` on the native 35-byte lock (code present) while the route holds the 20-byte EVM identity (`size == 23 \|\| size == 35` is false), so the route takes the `else` arm and consumes a second `approve` row. Accepting size 20 removes that cause and exposes a second misalignment at `GenerateTargetTraversal.ts:23700-23707`, where the 2-byte frame `0164` is read as a u16le result length (25601). Two independent defects. |
 | 13 | `learns computed ecrecover arguments under the shared atomic graph lock` (same file) | feature gap: `computeSideCarRecipesOf` authors compute recipes only from `func.externalCalls[].preCallRequires`, and `ComputedRecoverSink.recover` has none; the operand `bytes32(bytes(sourceHash).reverse())` also needs a `reverse` recipe operand that `replayable`/`evaluateComputeRecipeExpression` do not have. Body-level recipe authoring touches recipe-mode planner authority. |
-| 5 | `settles a refund-like entry: a call, a mapping write in a later segment, and a dynamic write after the last call` (framed/call/write-segments-settlement) | the regression does enter at merge `1f818ffd0` (green at `d8166489d`, red at the merge), but the earlier localization is refuted: `emitPerCallSegmentClose`, the whole SDK `src/per-call/**`, and the `framedBatchWriteSegment` helpers are byte-identical across the merge, and reverting, `===`-ing or `!atEnd`-ing the `framedCallFollowsBatchWrite` term all leave it red. The defect is in the master head/witness machinery the merge rebuilt. Bisecting inside the merge needs the fixture compiled with each kernel-line revision (several intermediates do not `tsc -b`). |
 
 ## Verification on the merged tree
 
-At the sweep tip `1f83ff8fb`, in the per-call worktree:
+Final tree `459af4da3`, in the per-call worktree, all four suites run in sequence with the machine otherwise idle:
 
 | suite | result |
 |---|---|
-| `yarn workspace solidcash test` (everything but `test/e2e`) | `16 failed \| 5374 passed \| 167 skipped \| 5 todo (5562)` |
+| `yarn workspace solidcash test` (everything but `test/e2e`) | `12 failed \| 5379 passed \| 167 skipped \| 5 todo (5563)` |
 | `yarn test:e2e` (the full e2e) | `1 failed \| 3212 passed \| 24 skipped \| 3 todo (3240)` |
-| `yarn workspace solidc test` | `6848 passed` |
+| `yarn workspace solidc test` | `2 failed \| 6848 passed (6850)` |
 | `yarn workspace @solidcash/utils test` | `480 passed` |
 
-The 17 reds are exactly the rows below, in these files: `AffineVoidRecursiveEvents` (5),
-`AtomicMessageBusCompose` (3), `LogicalIdentityPreservation` (2), `MessageBusDelegateClassesE3` (2),
-`KernelLoopCompose` (1), `KernelPhysicalCallerWithScidCompose` (1), `framed/call/write-segments-settlement` (1),
-`framed/call/plain-caller-identity` (1), `test/e2e/KernelIndependentComputedChunks` (1). All 14 titles fixed
-above are green, no file that was green before the sweep went red, and `solidc` is fully green (round 3 still
-carried one load-induced timeout there).
+The 13 reds are exactly the rows below, in these files: `AffineVoidRecursiveEvents` (5),
+`AtomicMessageBusCompose` (2), `LogicalIdentityPreservation` (2), `KernelPhysicalCallerWithScidCompose` (1),
+`KernelLoopCompose` (1), `framed/call/plain-caller-identity` (1), `test/e2e/KernelIndependentComputedChunks` (1).
+All 18 titles fixed above are green and no file that was green before the sweep went red.
 
-Intermediate confirmation: at `13964264c` (before `a9248461a`) the same suite was `17 failed | 5372 passed`, so
-`a9248461a` removed exactly the one expected row and added none.
+The two `solidc` failures are not assertions and not this sweep's: both are `Error: Test timed out in 60000ms`
+(`KernelAdmission.test.ts` "keeps resource recurrence sources fenced…", 63,170 ms, and `KernelLoopRoute.test.ts`
+"keeps 'source-ordered non-associative recurr…' proportional…", 61,123 ms). They pass alone with `--maxWorkers=1`
+(58 s and 92 s), and they fail the same way at `1f83ff8fb` - the tip whose earlier run reported `solidc` fully
+green - reproduced in an isolated worktree of that revision just now (`2 failed | 6846 passed`). They are a
+timeout-margin flake of the same class already recorded for this repository, not a regression from any fix above.
+
+Intermediate confirmations, each showing only the expected delta and no new red:
+- `13964264c`: `17 failed | 5372 passed` (before `a9248461a`, which removed exactly one row).
+- `597deca2d`: `14 failed | 5376 passed` (the E3 pair green).
 
 ## Not satisfied by this sweep
 
-The instruction was "make all titles green individually, then run full e2e". 16 of 31 are green individually.
-The other 15 are not blocked on effort: 5 need a product/representation decision, 6 need the compiler
-per-frame-cost project (`W4_FRAME_COST_PROJECT.md`, whose first increment measures why a reordering cannot reach
-the bar), and 4 need either a design decision (11, 12) or more time on a localized cause (5, 13). The release gate
-therefore remains the `W6_BASELINE.md` row set, now 15 rows instead of 31.
+The instruction was "make all titles green individually, then run full e2e". 18 of 31 are green individually. The
+other 13 are not blocked on effort: 5 need a product/representation decision (two are the D22 identity row the
+user chose to keep, one is the outstanding `uint160(address)` row, one is a batch-eligibility pin contradiction,
+one is the `msg.sender` physical-versus-logical row), 6 need the compiler per-frame-cost project
+(`W4_FRAME_COST_PROJECT.md`, whose first increment measures why no reordering reaches the bar), and 2 need either
+a ~3.2 KB codegen size reduction or a body-level compute-recipe authoring path. The release gate therefore remains
+the `W6_BASELINE.md` row set, now 13 rows instead of 31.

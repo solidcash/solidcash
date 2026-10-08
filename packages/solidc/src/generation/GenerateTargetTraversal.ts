@@ -9940,6 +9940,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     } else {
       this.popFromStack();
+      this.renameReassignedVariable(node.identifier.name);
       this.pushToStack(node.identifier.name);
     }
     if (runtimeAssignDebug) {
@@ -9949,6 +9950,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
     }
     return node;
+  }
+
+  // Outside of a loop/branch, a reassignment leaves the old value on the stack (it gets dropped with the rest of the
+  // stack at the end of the function). We make that old slot anonymous, so a later read (e.g. a console.log after the
+  // variable's final use, which resolves through `finalStackUsage`) can never bind the new value's name to it.
+  private renameReassignedVariable(name: string): void {
+    const stackIndex = this.getStackIndex(name, true);
+    if (stackIndex !== -1) this.stack[stackIndex] = '(value)';
   }
 
   // `(x op= rhs)` as an expression: perform the assignment (updates x's slot in place), then COPY x back onto

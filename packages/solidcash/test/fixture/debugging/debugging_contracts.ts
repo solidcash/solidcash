@@ -268,6 +268,14 @@ contract Test(pubkey owner) {
       require(inputValue > 0);
     }
   }
+
+  function test_log_reassigned_after_final_use(int a) {
+    int v = a;
+    v = v + 1;
+    require(v == 2);
+    console.log('v:', v);
+    require(a == 1);
+  }
 }
 `;
 

@@ -73,6 +73,14 @@ describe('Debugging tests', () => {
       expect(transaction).not.toLog(/Hello First Function/);
     });
 
+    it('should log the current value of a reassigned variable after its final use', async () => {
+      const transaction = new TransactionBuilder({ provider })
+        .addInput(contractUtxo, contractTestLogs.unlock.test_log_reassigned_after_final_use(1n))
+        .addOutput({ to: contractTestLogs.address, amount: 10000n });
+
+      expect(transaction).toLog(new RegExp('^\\[Input #0] Test.scash:65 v: 2$'));
+    });
+
     it('should only log console.log statements from the called function when there are many constructor parameters', async () => {
       const contractTestMultipleConstructorParameters = new Contract(
         artifactTestMultipleConstructorParameters,

@@ -4,7 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileStringSplit } from 'solidc';
 import { formatSplitArtifactBundle } from '@solidcash/utils';
-import { deriveLogicalCreateAddress } from 'solidcash/dist/stateful/index.js';
+import { deriveLogicalCreateAddress } from 'solidcash/stateful';
 import { createHardhatRuntimeEnvironment } from '../src/hre.js';
 import { resolveConfig } from '../src/config.js';
 

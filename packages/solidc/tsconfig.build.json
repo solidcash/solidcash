@@ -6,7 +6,9 @@
     "types": [
       "node",
       "vitest/globals"
-    ]
+    ],
+    "module": "esnext",
+    "moduleResolution": "node"
   },
   "include": [
     "src/**/*",

@@ -4,7 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { formatArtifact } from '@solidcash/utils';
-import { deriveLogicalCreateAddress } from 'solidcash/dist/stateful/index.js';
+import { deriveLogicalCreateAddress } from 'solidcash/stateful';
 import { hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { createHardhatRuntimeEnvironment } from '../src/hre.js';
 import { resolveConfig } from '../src/config.js';

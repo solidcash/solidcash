@@ -5,7 +5,7 @@
  * so after `time.increase(...)` / `mine(...)` a `updater.syncOnce()` pushes the advanced block.timestamp/number
  * into the contract - the same way Hardhat's `time.increase` moves `block.timestamp` for ported contracts.
  */
-import type { RpcLike } from 'solidcash/dist/oracle/index.js';
+import type { RpcLike } from 'solidcash/oracle';
 
 interface BlockTimeProvider {
   getBlockHeight(): Promise<number>;

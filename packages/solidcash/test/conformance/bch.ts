@@ -4,7 +4,7 @@
 // (via debug()) and throws FailedRequireError iff a require() failed. So resolve = PASS, throw = MISMATCH.
 import { compileString } from '../direct-compile.js';
 import { Contract, TransactionBuilder, MockNetworkProvider, FailedRequireError, randomUtxo } from 'solidcash';
-import { StatefulContract } from 'solidcash/dist/stateful/index.js';
+import { StatefulContract } from 'solidcash/stateful';
 import { setupStatefulUtxos } from '../test-util.js';
 
 export type BchArtifact = ReturnType<typeof compileString>;

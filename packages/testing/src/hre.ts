@@ -17,14 +17,14 @@ import type { Network, NetworkProvider, ConstructorArgument, Utxo } from 'solidc
 import type {
   ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
   DeployedContract, DeployContractOptions,
-} from 'solidcash/dist/stateful/index.js';
+} from 'solidcash/stateful';
 import { Network as Networks } from 'solidcash/dist/interfaces.js';
 import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from 'solidcash/dist/network/MockNetworkProvider.js';
 import RegtestNetworkProvider from 'solidcash/dist/network/RegtestNetworkProvider.js';
 import ElectrumNetworkProvider from 'solidcash/dist/network/ElectrumNetworkProvider.js';
 import BitcoinRpcNetworkProvider from 'solidcash/dist/network/BitcoinRpcNetworkProvider.js';
 import Signer from 'solidcash/dist/Signer.js';
-import { HDSigner, signersFromMnemonic } from 'solidcash/dist/HDSigner.js';
+import { HDSigner, signersFromMnemonic } from 'solidcash/hdsigner';
 import { ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract } from 'solidcash/dist/stateful/ContractFactory.js';
 import type { SplitContractBundle } from 'solidcash/dist/stateful/SplitContractBundle.js';
 import { randomUtxo } from 'solidcash/dist/utils.js';

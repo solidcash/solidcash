@@ -114,7 +114,7 @@ export class Contract {
           } }).hre;
           // Prefer live registry hit (KashiPair.init does new ethers.Contract(await pair.asset(), ERC20abi)).
           try {
-            const solidcash = await import('solidcash/dist/stateful/index.js');
+            const solidcash = await import('solidcash/stateful');
             const provider = hre?.ethers?.provider as {
               getUtxos?: (a: string) => Promise<Array<{ token?: { category?: string; nft?: { capability?: string } } }>>;
             } | undefined;

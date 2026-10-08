@@ -72,6 +72,12 @@ export interface NestedOutputReassertHost {
   readonly requiredNftIndices: readonly number[];
   readonly stateRawCommitments: ReadonlyMap<number, string>;
   readonly stateUpdates: ReadonlyMap<string, StateValue>;
+  /**
+   * The executing handler's own state is frozen by the covenant on this call: its only delegate edges are
+   * conditional and every published guard evaluates false. The requested root-state updates are then
+   * unauthorized and the fixed-state reassert must keep the input commitments.
+   */
+  readonly preserveOwnState?: boolean;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly builderOptions: {
@@ -482,7 +488,7 @@ export function reassertFixedStateOutputs(
     dataNftUtxos: host.dataNftUtxos,
     requiredDataNftIndices: host.requiredNftIndices,
     rawCommitments: host.stateRawCommitments,
-    updates: host.stateUpdates,
+    updates: host.preserveOwnState === true ? new Map() : host.stateUpdates,
     // Mirror build(): the active participant's complete state is rebuilt after applying direct updates.
     preserveUntouched: false,
   }];

@@ -4617,6 +4617,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           ...(callsiteShapes[index].maximumOccurrences !== undefined && {
             maximumOccurrences: callsiteShapes[index].maximumOccurrences,
           }),
+          ...(callsiteShapes[index].condition !== undefined && {
+            condition: callsiteShapes[index].condition,
+          }),
         }));
         // A Solidity-compat call/staticcall site pins its co-spent callee to the call's target (see
         // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.

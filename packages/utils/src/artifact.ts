@@ -688,6 +688,13 @@ export interface AbiFunction {
     /** Exact compiler-proven ceiling (one for a branch, literal trip count for a fixed loop). */
     maximumOccurrences?: number;
     /**
+     * Runtime predicate guarding this callsite, serialized from its enclosing source branches in the same
+     * `ExternalCallExpression` vocabulary an external call's `condition` uses. A `conditional` row whose
+     * predicate the compiler could not name publishes none: absence reads as unknown reachability, never as
+     * an unconditional edge.
+     */
+    condition?: ExternalCallExpression;
+    /**
      * Where the call's TARGET address came from. Published by every compiler that knows how to answer, with
      * `computed` as the always-available fallback, so an absent `target` identifies an artifact compiled
      * before the field existed - it is never a claim that the target is fixed. Read it with

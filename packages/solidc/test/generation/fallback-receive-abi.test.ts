@@ -187,10 +187,40 @@ describe('Fallback/Receive ABI metadata', () => {
       }
     `);
     const forward = artifact.abi.find((f) => f.name === 'forward');
+    // The conditional row also publishes the guard that decides whether the edge is reached, in the same
+    // expression vocabulary external calls use, so a spend can tell taken from not-taken before it settles.
     expect(forward!.lowLevelCalls).toEqual([{
       callMode: 'delegatecall', dataParamIndex: 1, occurrence: 'conditional', maximumOccurrences: 1,
+      condition: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
       target: { kind: 'parameter', name: 'target' },
       targetSource: { kind: 'forward', paramIndex: 0 },
     }]);
+  });
+
+  it('serializes a negated guard and the conjunction of nested arms', () => {
+    const artifact = compileString(`
+      pragma solidcash >=0.8.0;
+      contract GuardShapes() {
+        function ifNot(address target, bytes payload, bool enabled) external {
+          if (!enabled) { target.delegatecall(payload); }
+          require(payload.length > 0);
+        }
+        function nested(address target, bytes payload, bool first, bool second) external {
+          if (first) { if (second) { target.delegatecall(payload); } }
+          require(payload.length > 0);
+        }
+      }
+    `);
+    const ifNot = artifact.abi.find((f) => f.name === 'ifNot');
+    expect(ifNot!.lowLevelCalls![0].condition).toEqual({
+      kind: 'unary', operator: '!', expression: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+    });
+    const nested = artifact.abi.find((f) => f.name === 'nested');
+    expect(nested!.lowLevelCalls![0].condition).toEqual({
+      kind: 'binary',
+      operator: '&&',
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+      right: { kind: 'source', source: { kind: 'forward', paramIndex: 3 } },
+    });
   });
 });

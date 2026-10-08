@@ -560,6 +560,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     dataParamIndex?: number;
     occurrence?: 'once' | 'conditional' | 'loop';
     maximumOccurrences?: number;
+    /** Serialized lexical predicates guarding a `conditional` callsite, in the external-call expression vocabulary. */
+    condition?: ExternalCallExpression;
     // Solidity-compat call/staticcall sites: the target and payload as an opaque `__raw__` call serializes its
     // addressSource and payload argument, published so the SDK can co-spend the pinned callee.
     targetSource?: import('@solidcash/utils').ArgSource;

@@ -592,7 +592,9 @@ export {
 export { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
 import { type CreateBuildDebugStagesHost } from './stb-create-build-debug-stages.js';
 import { type CreateBuildSessionPreludeHost } from './stb-create-build-session-prelude.js';
-import { type SeedOwnerCurrentStateHost } from './stb-seed-owner-current-state.js';
+import {
+  ownStatePreservedOnUntakenConditionalDelegate, type SeedOwnerCurrentStateHost,
+} from './stb-seed-owner-current-state.js';
 import { runSendDiscoveryProbe } from './stb-run-send-discovery-probe.js';
 import { type MaterializeReturnEventOutputsHost } from './stb-materialize-return-event-outputs.js';
 import { type MaterializeLowLevelCallOutputsHost } from './stb-materialize-low-level-call-outputs.js';
@@ -1428,6 +1430,7 @@ export class StatefulTransactionBuilder {
       requiredNftIndices: this.requiredNftIndices,
       stateRawCommitments: this.stateRawCommitments,
       stateUpdates: this.stateUpdates,
+      preserveOwnState: this._preserveOwnStateOnUntakenDelegateEdge(),
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
       externalCallStateUpdates: this.externalCallStateUpdates,
       builderOptions: this.builderOptions,
@@ -2150,7 +2153,20 @@ export class StatefulTransactionBuilder {
       dataNftUtxos: this.dataNftUtxos,
       stateLayout: this.stateLayout,
       stateUpdates: this.stateUpdates,
+      preserveOwnState: this._preserveOwnStateOnUntakenDelegateEdge(),
     };
+  }
+
+  /**
+   * A delegatecall handler skips its own state covenant for the whole body; the compiler freezes its own data
+   * NFTs on every path that did not reach a conditional delegate edge. When every published edge guard
+   * evaluates false for this call's arguments, no state write is authorized, so the requested updates must not
+   * be materialized. Read from the same unlocker the executor will present.
+   */
+  private _preserveOwnStateOnUntakenDelegateEdge(): boolean {
+    const unlocker = this.masterUtxo.unlocker;
+    return isContractUnlocker(unlocker)
+      && ownStatePreservedOnUntakenConditionalDelegate(unlocker.abiFunction, unlocker.params);
   }
 
   private _materializeOwnerEventNftOutputsHost(): MaterializeOwnerEventNftOutputsHost {

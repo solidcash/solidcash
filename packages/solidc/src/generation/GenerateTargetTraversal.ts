@@ -7329,14 +7329,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.restoreCompactHelperIds(winningPool!);
     // The first pass deliberately treats every OP_INVOKE as a hard boundary. Once it has settled, make one
-    // conservative follow-up pass that may move only invocations of compiler-authored structural helpers.
-    // Those helpers have a stable, stack-only ABI and are safe to nest; user/source entry points and outlining
-    // ids are intentionally absent from this allow-list. Message-bus bodies keep the window-12 floor so traced
-    // derivation does not match a shorter fragment. Ordinary direct contracts use window 8 here.
+    // conservative follow-up pass that may move only invocations of compiler-authored helpers. Those helpers
+    // have a stable, stack-only ABI and are safe to nest; user/source entry points are dispatch targets whose
+    // selector is not a label, so they stay out of this allow-list. Message-bus bodies keep the window-12 floor
+    // so traced derivation does not match a shorter fragment. Ordinary direct contracts use window 8 here.
+    //
+    // The ids the first pass allocated belong in the list as well. An OP_INVOKE body runs on the caller's stack,
+    // so sharing a span is transparent whenever its control flow is balanced, no span boundary splits an
+    // invoke from the operand push that feeds it, and no require/log anchor falls inside it - the same three
+    // conditions the first pass already demands. Excluding them left repeated sequences that merely *contain* an
+    // outline inline: on the framed MarketplaceV1 artifact the slot-keyed scan tail repeats 306 times as a
+    // byte-identical 25-byte span, and admitting it takes the program from 119,375 to 85,454 bytes.
     const nestedCompilerHelperIds = new Set(
       this.definedBodyRecords.flatMap((record) =>
         record.compilerHelperId === undefined ? [] : [record.compilerHelperId]),
     );
+    if (result !== undefined) {
+      for (const outlined of result.functions) nestedCompilerHelperIds.add(Number(decodeInt(outlined.id)));
+    }
     if (result !== undefined && nestedCompilerHelperIds.size > 0) {
       const nestedStarted = Date.now();
       const nestedPool = this.snapshotCompactHelperIds();
@@ -7352,7 +7362,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Ordinary direct contracts may nest compiler helpers at window 8. Message-bus bodies keep the
         // window-12 floor so traced derivation does not lose the fragments it matches.
         !this.currentContractHasMessageBus && this.directConvention ? 8 : MINIMUM_WINDOW_ELEMENTS,
-        1024,
+        // A round cap of 1024 predates this pass being able to nest the first pass's ids. Nesting turns the
+        // candidates into a cascade, and the cap - not the round count, which reaches its fixed point at 6 -
+        // was what stopped it: on the framed corpus the sampled programs all stop shrinking at 8192, and none
+        // of them regress at 12288, which is the cap the large-body search already uses.
+        12288,
         undefined,
         6,
         nestedCompilerHelperIds,
@@ -7362,7 +7376,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           width: this.peekCompactHelperIdPushBytes(),
           ranking: 'savings',
           minimumWindowElements: MINIMUM_WINDOW_ELEMENTS,
-          candidateGroupsPerRound: 1024,
+          candidateGroupsPerRound: 12288,
           bodyOrder: 'nested-compiler-helpers',
           bodies: result.bodies.length,
           functions: nested.functions.length,
@@ -7514,7 +7528,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // never rewrites those helpers: a newly outlined tail can call them, but they cannot acquire a call back into the
     // new tail. Only the proven nesting-safe compiler helpers may be nested, as for every other outlined span.
     // Typical beneficiaries are sibling getters with different field-read prefixes and identical verify suffixes.
-    if (result !== undefined && this.directConvention) {
+    // A framed program's entries carry the same repeated tails, so the pass is not limited to the direct
+    // convention any more. Its caps follow the follow-up pass there: the same cascade applies, and the round count
+    // reaches its fixed point at 6 while the sampled programs stop shrinking at 12288 groups.
+    if (result !== undefined) {
       const abiBodyIndices = this.definedBodyRecords.flatMap((record, index) =>
         record.selectorHex === undefined ? [] : [index]);
       // Spans this pass outlined above are self-contained by construction, so a new tail may call them too.
@@ -7535,9 +7552,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           () => this.peekCompactHelperIdPushBytes(),
           'savings',
           MINIMUM_WINDOW_ELEMENTS,
-          1024,
+          // The direct convention's ABI tails are short, and one round at the default cap suffices for them.
+          this.directConvention ? 1024 : 12288,
           undefined,
-          1,
+          this.directConvention ? 1 : 6,
           stableHelperIds,
         );
         if (abiOnly.savedBytes > 0 && abiOnly.functions.length > 0) {
@@ -7573,6 +7591,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }));
     }
     if (outcome.functions.length === 0) return;
+    this.reorderOutlinedFunctionIds(outcome);
 
     outcome.bodies.forEach((body, index) => {
       const record = this.definedBodyRecords[index];
@@ -7655,6 +7674,75 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(outlined.id, locationData);
       this.emit(Op.OP_DEFINE, locationData);
     }
+  }
+
+  /**
+   * Re-label the outlined helpers so the ones their bodies invoke most often carry the shortest identifiers.
+   *
+   * The outliner allocates an id per accepted candidate in savings order, and savings is span size times
+   * occurrence count, so a helper invoked thousands of times can hold a two-byte id while a rarely called one
+   * holds a small-int id. An id is a label: permuting them changes no semantics, no element count (each id is one
+   * push element, so the element-aligned location data is untouched) and no allocation-pool membership, which a
+   * permutation preserves. Only the total encoded width of the invoke sites and definitions moves.
+   */
+  private reorderOutlinedFunctionIds(outcome: {
+    bodies: { script: Script }[];
+    functions: { id: Uint8Array; script: Script }[];
+  }): void {
+    const functions = outcome.functions;
+    if (functions.length < 2) return;
+    const indexByHex = new Map<string, number>();
+    for (const [index, fn] of functions.entries()) indexByHex.set(binToHex(fn.id), index);
+    // Duplicate ids would make the re-label ambiguous, so leave an outcome that already collides untouched.
+    if (indexByHex.size !== functions.length) return;
+
+    const counts = functions.map(() => 0);
+    const scripts: Script[] = [...outcome.bodies.map((body) => body.script), ...functions.map((fn) => fn.script)];
+    for (const script of scripts) {
+      for (let i = 1; i < script.length; i += 1) {
+        if (script[i] !== Op.OP_INVOKE) continue;
+        const element = script[i - 1];
+        if (!(element instanceof Uint8Array) || element.length > 4) continue;
+        const index = indexByHex.get(binToHex(element));
+        if (index !== undefined) counts[index] += 1;
+      }
+    }
+
+    // Cheapest encodings to the most-invoked helpers; ties keep the order the outliner allocated.
+    const byCost = functions.map((_fn, index) => index)
+      .sort((left, right) => functions[left].id.length - functions[right].id.length || left - right);
+    const byCount = functions.map((_fn, index) => index)
+      .sort((left, right) => counts[right] - counts[left] || left - right);
+    const before = counts.reduce((sum, count, index) => sum + count * functions[index].id.length, 0)
+      + byCost.reduce((sum, index) => sum + functions[index].id.length, 0);
+    const after = byCount.reduce((sum, helperIndex, rank) =>
+      sum + counts[helperIndex] * functions[byCost[rank]].id.length, 0)
+      + byCost.reduce((sum, index) => sum + functions[index].id.length, 0);
+    if (after >= before) return;
+
+    const replacement = new Map<string, Uint8Array>();
+    const rankOf = new Map<number, number>();
+    const originalIds = functions.map((fn) => fn.id);
+    byCount.forEach((helperIndex, rank) => {
+      replacement.set(binToHex(originalIds[helperIndex]), originalIds[byCost[rank]]);
+      rankOf.set(helperIndex, rank);
+    });
+    const rewrite = (script: Script): Script => {
+      const out = [...script];
+      for (let i = 1; i < out.length; i += 1) {
+        if (out[i] !== Op.OP_INVOKE) continue;
+        const element = out[i - 1];
+        if (!(element instanceof Uint8Array) || element.length > 4) continue;
+        const next = replacement.get(binToHex(element));
+        if (next !== undefined) out[i - 1] = next;
+      }
+      return out;
+    };
+    for (const body of outcome.bodies) body.script = rewrite(body.script);
+    functions.forEach((fn, index) => {
+      fn.script = rewrite(fn.script);
+      fn.id = originalIds[byCost[rankOf.get(index)!]];
+    });
   }
 
   private releaseUnusedSingleByteIdsForOutlining(): void {

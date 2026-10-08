@@ -9223,7 +9223,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // The one-slot compiler layout can place its predecessor at the fixed entry coordinate. A kernel
         // union with inactive reserve lanes still has a multi-slot batch covenant: it requires the target
         // in the fixed slot and the rewritten predecessor in a separate trailing slot, even when one row ran.
-        const singleTargetRowBatch = batch.slotIndices.length === 1 && predOutputs.length > 0
+        // The runtime route reports only the lanes its own selected rows use, so a union whose compiled batch
+        // carries inactive reserve lanes projects to a single lane here. Read the compiled width from the
+        // published route: the covenant's topology, not the runtime projection, decides the predecessor slot.
+        const compiledBatchSlots = (entryArtifact.messageBus?.route?.sortedBatchInfo ?? [])
+          .find((candidate) => candidate.collection === batch.collection)?.slotIndices.length
+          ?? batch.slotIndices.length;
+        const singleTargetRowBatch = compiledBatchSlots === 1 && batch.slotIndices.length === 1
+          && predOutputs.length > 0
           && (batchSourceRows.length === 1
             || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
           && uniqueBatchTargets.size === 1;

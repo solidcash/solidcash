@@ -486,7 +486,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
       if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
-      if ((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStoragePtr(fn)) {
+      if (((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStoragePtr(fn))
+        && !(fn.name.startsWith('__message_bus_entry_') && this.ownsRuntimeMappingLoop(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -502,6 +503,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
+        && !(fn.name.startsWith('__message_bus_entry_') && this.ownsRuntimeMappingLoop(fn))
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
@@ -528,6 +530,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           && !this.transitivelyContainsLowLevelCall(fn));
       const returningEntryEffectClone = fn.name.startsWith('__message_bus_entry_')
         && fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler && this.eligibleShape(fn)
+        // A clone that owns a runtime mapping loop must stay an OP_INVOKE body. Its journal access vector is the
+        // selected row's own vector, whose cardinality is the handler's own stream count; splicing the loop into
+        // the compiler-owned route would charge it the route-wide union instead.
+        && !this.ownsRuntimeMappingLoop(fn)
         // An IERC20/SafeERC20 edge must keep its graph OP_INVOKE frame. Flattening it into the kernel
         // dispatch loop makes SymbolTableTraversal treat the row iterator as a callee-target index and
         // rewrite the call target to an unbound compiler-owned loop-target element.
@@ -713,6 +719,35 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         ...stmts.slice(0, -1), capture, replacement,
       ];
     }
+  }
+
+  /**
+   * Whether a function body executes a mapping write from inside a loop. Such a write is lowered to the
+   * compiler-owned sorted-upsert journal, whose access vector belongs to the *entry point's own* stream ordinal
+   * space. A clone that owns one cannot be flattened into an aggregate route without merging its vector into the
+   * route's union cardinality.
+   */
+  private ownsRuntimeMappingLoop(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    const findWrite = (n: Node): void => {
+      if (found) return;
+      if ((n instanceof MappingAssignNode || n instanceof MappingDeleteNode)
+        && this.sortedCollectionNames.has(n.name)) {
+        found = true;
+        return;
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type') continue;
+        const value = (n as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) findWrite(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) findWrite(item);
+      }
+    };
+    this.walk(fn.body, (candidate) => {
+      if (found || !(candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
+      findWrite(candidate);
+    });
+    return found;
   }
 
   // The structural half of `eligible`: single-tail-return, no storage params (visibility-agnostic).

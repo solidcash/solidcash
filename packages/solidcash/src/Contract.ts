@@ -81,6 +81,37 @@ export function kernelRouteDensityReserveBytes(accessStreams: FunctionArgument |
   );
 }
 
+// A kernel row-loop route reserves its complete effect band up front and walks the frame's whole dispatch loop
+// on every invocation, so its input-0 operation cost is a property of the reserved site count, not of the rows
+// actually dispatched. MEASURED on the kernel event route (sites 255): the complete input-0 cost is ~3.86M
+// against a 1.91M budget, so the density length must grow by ~2.4 KB for the program to finish at all; a
+// one-byte reserve (the size the reported overrun suggests) does not. The journal-access reserve above does not
+// apply here because an effect-only route publishes no access streams. Size an envelope per reserved site, like
+// the access reserve, so only a route that reserves an effect band is padded by this much.
+const KERNEL_ROUTE_EFFECT_OPERATION_COST_PER_SITE = 8_000;
+
+/**
+ * Size the discarded density reserve for a kernel row-loop effect route from its reserved effect band. Only a
+ * route that reserves events, BCH transfers, token transfers or child deployments needs it; every other route
+ * keeps the zero-length reserve, so unrelated pinned unlocking-bytecode lengths are unaffected.
+ */
+/** @internal Exported for exact boundary tests; not re-exported from the package API. */
+export function kernelRouteEffectDensityReserveBytes(
+  abiFunction: AbiFunction, convention: string | undefined,
+): number {
+  if (convention !== 'kernel-row-loop') return 0;
+  const frame = abiFunction.graphEffectFrame;
+  if (frame === undefined) return 0;
+  const reservesEffectBand = frame.eventWidth > 0 || frame.transferWidth > 0
+    || frame.tokenTransferWidth > 0 || (frame.deployWidth ?? 0) > 0;
+  if (!reservesEffectBand || !Number.isSafeInteger(frame.sites) || frame.sites < 1) return 0;
+  return Math.min(
+    KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES,
+    Math.ceil((frame.sites * KERNEL_ROUTE_EFFECT_OPERATION_COST_PER_SITE)
+      / ConsensusBch2026.operationCostBudgetPerByte),
+  );
+}
+
 /** Attach the V5 canonical manifest to the root compiler-route frame, without changing its ABI arguments. */
 export function withCompilerRouteMessageEnvelope(
   unlocker: ContractUnlocker, messageEnvelope: Uint8Array, maximumInputBytes: number,
@@ -823,7 +854,7 @@ export class Contract<
       const reservedPositionalPush = scriptToBytecode([
         new Uint8Array(kernelJournalRoute
           ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
-          : 0),
+          : kernelRouteEffectDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)),
       ]);
       let cachedOrdinary: Uint8Array | undefined;
       let cachedCompilerRoute: Uint8Array | undefined;

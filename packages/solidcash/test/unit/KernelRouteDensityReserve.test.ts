@@ -1,6 +1,7 @@
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
+import type { AbiFunction } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { kernelRouteDensityReserveBytes } from '../../src/Contract.js';
+import { kernelRouteDensityReserveBytes, kernelRouteEffectDensityReserveBytes } from '../../src/Contract.js';
 import { encodeKernelEntryJournalAccesses } from '../../src/stateful/KernelEntryJournal.js';
 
 const stream = (ordinals: readonly number[]): Uint8Array => encodeKernelEntryJournalAccesses(
@@ -44,5 +45,32 @@ describe('kernel route density reserve', () => {
     expect(kernelRouteDensityReserveBytes([[new Uint8Array(21)]])).toBe(520);
     expect(kernelRouteDensityReserveBytes([[new Uint8Array(24)]])).toBe(520);
     expect(kernelRouteDensityReserveBytes(undefined)).toBe(520);
+  });
+});
+
+describe('kernel route effect density reserve', () => {
+  const effectFrame = {
+    sites: 255,
+    eventBase: 0, eventWidth: 1, transferBase: 0, transferWidth: 0,
+    tokenTransferBase: 0, tokenTransferWidth: 0, tokenNftTransfers: false,
+  };
+  const route = (graphEffectFrame: unknown): AbiFunction => ({ graphEffectFrame } as unknown as AbiFunction);
+
+  it('reserves density length for a kernel effect band and nothing else', () => {
+    // A kernel row-loop route that reserves an effect band walks the whole frame per call; the reserve must
+    // cover the complete input-0 cost, not the one-instruction overrun the refusal message reports.
+    const reserved = kernelRouteEffectDensityReserveBytes(route(effectFrame), 'kernel-row-loop');
+    expect(reserved).toBe(
+      Math.ceil((255 * 8_000) / ConsensusBch2026.operationCostBudgetPerByte),
+    );
+    expect(reserved).toBeGreaterThan(0);
+
+    // A legacy route unrolls only the dispatched sites, so it needs no reserve.
+    expect(kernelRouteEffectDensityReserveBytes(route(effectFrame), 'legacy-unroll')).toBe(0);
+    // A kernel route with no effect band keeps the zero-length reserve.
+    expect(kernelRouteEffectDensityReserveBytes(
+      route({ ...effectFrame, eventWidth: 0 }), 'kernel-row-loop',
+    )).toBe(0);
+    expect(kernelRouteEffectDensityReserveBytes({} as AbiFunction, 'kernel-row-loop')).toBe(0);
   });
 });

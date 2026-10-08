@@ -77,34 +77,39 @@ interface CapacityReading {
   inputMaximumOperationCosts: number[];
 }
 
-// Exact stock-VM snapshot of the finalized two-party bytes. Refreshed after the intervening compiler commits
-// reduced the emitted verifier/route bytecode: the kernel worst operation cost moved 3_597_958 -> 3_068_177 and
-// transactionBytes 23_195 -> 23_121; legacy moved 6_168_252 -> 6_113_134 and 23_692 -> 23_485. The derived
-// maximum costs fell the same way on the per-participant inputs. The title still asserts the same property (the
-// same two-party composition, pinned byte-for-byte against the stock VM), only the measured values moved.
+// Exact stock-VM snapshot of the finalized two-party bytes. Refreshed again after the 2026-10-08 security audit
+// added its runtime range checks to the emitted verifier/route bytecode, which widened every participant's
+// unlocking script: kernel transactionBytes moved 23_121 -> 23_158 and legacy 23_485 -> 23_595, and the two
+// leader-per-participant inputs grew with it (kernel 437_852 -> 447_944 and 399_373 -> 402_175; legacy
+// 426_810 -> 430_505 and 420_385 -> 423_138), so their derived maximum costs rose the same way. The worst
+// input and the worstRatio are unchanged (kernel 3_068_177 / 0.4241, legacy 6_113_134 / 0.8450), so the added
+// bytes stay inside the pinned bounds with the same headroom. (The previous refresh recorded the reverse move:
+// the intervening compiler commits that shrank the verifier/route took kernel 3_597_958 -> 3_068_177 and
+// transactionBytes 23_195 -> 23_121; legacy 6_168_252 -> 6_113_134 and 23_692 -> 23_485.) The title still
+// asserts the same property (the same two-party composition, pinned byte-for-byte against the stock VM).
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_121, callManifestBytes: 294,
+    transactionBytes: 23_158, callManifestBytes: 294,
     worstOperationCost: 3_068_177, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.4241093940064138,
     inputOperationCosts: [
-      437_852, 399_373, 695, 3_068_177, 3_037_456, 27_321,
+      447_944, 402_175, 695, 3_068_177, 3_037_456, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_999_200, 1_490_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_018_400, 1_500_800, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_485, callManifestBytes: 294,
+    transactionBytes: 23_595, callManifestBytes: 294,
     worstOperationCost: 6_113_134, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.8450091230786243,
     inputOperationCosts: [
-      426_810, 420_385, 695, 6_113_134, 6_020_080, 27_321,
+      430_505, 423_138, 695, 6_113_134, 6_020_080, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_900_800, 1_880_000, 34_400, 7_234_400, 7_234_400, 112_800,
+      1_947_200, 1_921_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

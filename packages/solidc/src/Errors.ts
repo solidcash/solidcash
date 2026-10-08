@@ -629,6 +629,15 @@ export class IndexOutOfBoundsError extends SolidCashError {
   }
 }
 
+export class NullDataChunkTooLargeError extends SolidCashError {
+  constructor(
+    node: ExpressionNode,
+    byteLength: number,
+  ) {
+    super(node, `LockingBytecodeNullData chunks can be at most 255 bytes, but found ${byteLength} bytes`);
+  }
+}
+
 export class BitshiftBitcountNegativeError extends SolidCashError {
   constructor(
     node: BinaryOpNode,

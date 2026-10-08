@@ -5194,10 +5194,17 @@ export default class AstBuilder
       }
     }
     if (hexContent.length % 2 !== 0) {
+      // Solidity-compat sources stay permissive (a Solidity hex number may have an odd number of digits), with the
+      // trailing nibble zero-extended into a full byte (0xabc -> 0xab0c). Native SolidCash rejects the literal
+      // rather than silently changing its value.
+      if (!this.solidityImportCompat) {
+        throw new ParseError(
+          `Hex literal "0x${hexContent}" should have an even number of digits`,
+          Location.fromCtx(ctx),
+        );
+      }
       const loc = Location.fromCtx(ctx);
       const line = this.diagLine(loc.start?.line);
-      // Correct the message to match the actual behaviour: the trailing nibble is ZERO-EXTENDED into a full byte
-      // (0xabc -> 0xab0c), not dropped. Kept as a warning (not an error) since existing contracts rely on it.
       console.log(
         `Warning: hex literal '${hexString}'${line} has an odd number of digits; its last nibble will be `
         + `zero-extended into a full byte (0x${hexContent} -> 0x${binToHex(hexToBin(hexContent))}). `

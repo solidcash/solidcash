@@ -268,7 +268,7 @@ export function inactiveBranchDropIndices(stackBefore: readonly string[], stackA
   return indices;
 }
 
-import { isNumericType } from '../utils.js';
+import { getCompileTimeBytes, isNumericType } from '../utils.js';
 import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
@@ -15678,46 +15678,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, { location: node.location, positionHint: PositionHint.END });
       this.popFromStack(2);
     } else if (node.identifier.name === Class.LOCKING_BYTECODE_NULLDATA) {
-      // Total script = OP_RETURN (<VarInt> <chunk>)+
+      // Total script = OP_RETURN (<push opcode> <chunk>)+
       // OP_RETURN
       this.emit(hexToBin('6a'), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack('(value)');
       const chunksArg = node.parameters[0];
       const elements = chunksArg instanceof ArrayNode ? chunksArg.elements
         : chunksArg !== undefined ? [chunksArg] : [];
-      // <VarInt data chunk size (dynamic)>
-      elements.forEach((element) => {
-        this.visit(element);
-
-        // The element comes first, then all other opcodes have PositionHint.END because they come after the element
-        const elementLocationData = { location: element.location, positionHint: PositionHint.END };
-
-        // Push the element's size (and calculate VarInt)
-        this.emit(Op.OP_SIZE, elementLocationData);
-        if (element instanceof HexLiteralNode) {
-          // If the argument is a literal, we know its size
-          if (element.value.byteLength > 75) {
-            this.emit(hexToBin('4c'), elementLocationData);
-            this.emit(Op.OP_SWAP, elementLocationData);
-            this.emit(Op.OP_CAT, elementLocationData);
-          }
-        } else {
-          // If the argument is not a literal, the script needs to check size
-          this.emit(Op.OP_DUP, elementLocationData);
-          this.emit(encodeInt(75n), elementLocationData);
-          this.emit(Op.OP_GREATERTHAN, elementLocationData);
-          this.emit(Op.OP_IF, elementLocationData);
-          this.emit(hexToBin('4c'), elementLocationData);
-          this.emit(Op.OP_SWAP, elementLocationData);
-          this.emit(Op.OP_CAT, elementLocationData);
-          this.emit(Op.OP_ENDIF, elementLocationData);
-        }
-        // Concat size and arguments
-        this.emit(Op.OP_SWAP, elementLocationData);
-        this.emit(Op.OP_CAT, elementLocationData);
-        this.emit(Op.OP_CAT, elementLocationData);
-        this.popFromStack();
-      });
+      elements.forEach((element) => this.emitNullDataChunk(element));
       this.popFromStack();
     } else {
       throw new Error(); // Should not happen
@@ -15726,6 +15694,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
 
     return node;
+  }
+
+  // Appends <push opcode> <chunk> to the OP_RETURN script on top of the stack. The push opcode matches the SDK's
+  // addOpReturnOutput() (a minimal encodeDataPush): OP_0 for an empty chunk, a direct push for 1-75 bytes, and
+  // OP_PUSHDATA1 for 76-255 bytes. Sizes above 255 are rejected by the type checker when known at compile time.
+  private emitNullDataChunk(element: ExpressionNode): void {
+    const startLocationData = { location: element.location, positionHint: PositionHint.START };
+    const endLocationData = { location: element.location, positionHint: PositionHint.END };
+
+    // A chunk whose value is known at compile time is pushed together with its push opcode
+    const compileTimeValue = getCompileTimeBytes(element);
+    if (compileTimeValue !== undefined) {
+      this.emit(encodeDataPush(compileTimeValue), startLocationData);
+      this.emit(Op.OP_CAT, endLocationData);
+      return;
+    }
+
+    // A chunk whose length is known at compile time (e.g. bytes20) is preceded by a constant push opcode
+    if (element.type instanceof BytesType && element.type.bound !== undefined) {
+      this.emit(this.nullDataPushOpcode(element.type.bound), startLocationData);
+      this.pushToStack('(value)');
+      this.visit(element);
+      this.emit(Op.OP_CAT, endLocationData);
+      this.emit(Op.OP_CAT, endLocationData);
+      this.popFromStack(2);
+      return;
+    }
+
+    // Otherwise the push opcode is computed from the chunk's size at runtime. OP_SIZE is a signed VM number, so
+    // sizes 0 and 128-255 are not a single byte; normalize with OP_NUM2BIN, and prepend OP_PUSHDATA1 above 75 bytes.
+    this.visit(element);
+    this.emit(Op.OP_SIZE, endLocationData);
+    this.emit(Op.OP_DUP, endLocationData);
+    this.emit(encodeInt(76n), endLocationData);
+    this.emit(Op.OP_LESSTHAN, endLocationData);
+    this.emit(Op.OP_IF, endLocationData);
+    this.emit(encodeInt(1n), endLocationData);
+    this.emit(Op.OP_NUM2BIN, endLocationData);
+    this.emit(Op.OP_ELSE, endLocationData);
+    this.emit(encodeInt(2n), endLocationData);
+    this.emit(Op.OP_NUM2BIN, endLocationData);
+    this.emit(encodeInt(1n), endLocationData);
+    this.emit(Op.OP_SPLIT, endLocationData);
+    this.emit(Op.OP_DROP, endLocationData);
+    this.emit(hexToBin('4c'), endLocationData);
+    this.emit(Op.OP_SWAP, endLocationData);
+    this.emit(Op.OP_CAT, endLocationData);
+    this.emit(Op.OP_ENDIF, endLocationData);
+    this.emit(Op.OP_SWAP, endLocationData);
+    this.emit(Op.OP_CAT, endLocationData);
+    this.emit(Op.OP_CAT, endLocationData);
+    this.popFromStack();
+  }
+
+  // Push opcode for a null-data chunk of a known byte length, matching the SDK's encodeDataPush for a chunk of
+  // that length (a direct push, or OP_PUSHDATA1 above 75 bytes).
+  private nullDataPushOpcode(byteLength: number): Uint8Array {
+    if (byteLength === 0) return hexToBin('00');
+    if (byteLength <= 75) return Uint8Array.from([byteLength]);
+    return Uint8Array.from([0x4c, byteLength]);
   }
 
   visitTupleIndexOp(node: TupleIndexOpNode): Node {

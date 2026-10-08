@@ -127,6 +127,7 @@ import {
   ArrayElementError,
   IndexOutOfBoundsError,
   TupleAssignmentError,
+  NullDataChunkTooLargeError,
   BitshiftBitcountNegativeError,
   BitshiftBitcountTooLargeError,
   UnsupportedStateTypeError,
@@ -168,8 +169,8 @@ import {
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
-import { GlobalFunction, Modifier } from '../ast/Globals.js';
-import { isNumericType, literalTypeBesideBounded, resultingTypeForBinaryOp } from '../utils.js';
+import { Class, GlobalFunction, Modifier } from '../ast/Globals.js';
+import { getCompileTimeByteLength, isNumericType, literalTypeBesideBounded, resultingTypeForBinaryOp } from '../utils.js';
 import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
@@ -2177,6 +2178,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     const parameterTypes = node.parameters.map((p) => p.type!);
     expectParameters(node, parameterTypes, definition.parameters);
 
+    if (node.identifier.name === Class.LOCKING_BYTECODE_NULLDATA && node.parameters[0] instanceof ArrayNode) {
+      expectNullDataChunkSizes(node.parameters[0]);
+    }
+
     node.type = type;
     return node;
   }
@@ -3479,6 +3484,15 @@ function expectAssignable(node: AssigningNode, actual?: Type, expected?: Type): 
   if (!implicitlyCastable(actual, expected)) {
     throw new AssignTypeError(node);
   }
+}
+
+// A single null-data push cannot encode more than 255 bytes (OP_PUSHDATA_1 size), so reject chunks whose size
+// is known at compile time - from a literal value or a bounded type (e.g. bytes32).
+function expectNullDataChunkSizes(chunks: ArrayNode): void {
+  chunks.elements.forEach((chunk) => {
+    const byteLength = getCompileTimeByteLength(chunk);
+    if (byteLength !== undefined && byteLength > 255) throw new NullDataChunkTooLargeError(chunk, byteLength);
+  });
 }
 
 type NodeWithParameters = FunctionCallNode | RequireNode | InstantiationNode | IndirectCallNode;

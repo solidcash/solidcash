@@ -1032,19 +1032,30 @@ export function batchRaw(
       ecrecoverCompute: selectedRecoveryHandlers.length > 0,
       ecrecoverEvmFlags: selectedEcrecoverEvmFlags,
     }),
-    ...([...activeRouteSortedBatches].some(([collection]) => (
-      executionArtifact.stateLayout?.collections?.find((candidate) => candidate.name === collection)
-        ?.chunkableValue !== true
-    )) && {
-      sortedBatchInfo: [...activeRouteSortedBatches].filter(([collection]) => (
-        executionArtifact.stateLayout?.collections?.find((candidate) => candidate.name === collection)
-          ?.chunkableValue !== true
-      )).map(([collection, batch]) => ({
-        collection,
-        slotIndices: [...batch.slots].sort((left, right) => left - right),
-        ...(batch.linear && { linear: true }),
-      })),
-    }),
+    ...(() => {
+      // The runtime census must match the compiled route's own census. A chunkable collection whose tail lives
+      // in continuation chunks is still counted by the route when the route publishes it in its own
+      // `sortedBatchInfo`; dropping it leaves the entry input uncensused. A chunkable collection the route does
+      // not publish (a folded array, or a shape the route counts elsewhere) keeps the previous exclusion.
+      const routeCensused = new Set(
+        (capability.route.sortedBatchInfo ?? []).map((batch) => batch.collection),
+      );
+      const keep = ([collection]: [string, unknown]): boolean => {
+        const chunkable = executionArtifact.stateLayout?.collections
+          ?.find((candidate) => candidate.name === collection)?.chunkableValue === true;
+        return !chunkable || routeCensused.has(collection);
+      };
+      const selectedBatches = [...activeRouteSortedBatches].filter(keep);
+      return selectedBatches.length > 0
+        ? {
+          sortedBatchInfo: selectedBatches.map(([collection, batch]) => ({
+            collection,
+            slotIndices: [...batch.slots].sort((left, right) => left - right),
+            ...(batch.linear && { linear: true }),
+          })),
+        }
+        : {};
+    })(),
   };
   if (graphOwnedRoute) {
     (effectiveRoute as MessageBusRuntimeAbiFunction).messageBusGraphExecution = true;

@@ -1225,13 +1225,15 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
         || instructions[index - 1]?.opcode !== OpcodesBCH.OP_DUP
         || instructions[index - 2]?.opcode !== OpcodesBCH.OP_ADD
         || instructions[index - 3]?.opcode !== OpcodesBCH.OP_PICK) return false;
-      const baseWindow = instructions.slice(Math.max(0, index - 36), index - 3);
+      // The chunk-count term (`encodeInt(119) ADD encodeInt(120) DIV`) is now computed in the outlined body
+      // ahead of the epilogue and its base offset is applied separately, so search the whole prefix for the
+      // four-op term rather than requiring the old inline five-op `... DIV ADD` shape.
+      const baseWindow = instructions.slice(0, Math.max(0, index - 3));
       return baseWindow.some((candidate, offset) => (
         readVmNumber(candidate) === 119n
         && baseWindow[offset + 1]?.opcode === OpcodesBCH.OP_ADD
         && readVmNumber(baseWindow[offset + 2]) === 120n
         && baseWindow[offset + 3]?.opcode === OpcodesBCH.OP_DIV
-        && baseWindow[offset + 4]?.opcode === OpcodesBCH.OP_ADD
       ));
     });
     expect(sortedOutputAfterReadOnlyChunks).toBeGreaterThanOrEqual(0);

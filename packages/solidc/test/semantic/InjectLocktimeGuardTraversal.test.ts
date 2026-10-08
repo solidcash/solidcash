@@ -150,7 +150,10 @@ describe('InjectLocktimeGuardTraversal', () => {
           require(sum >= 0);
         }
       }`;
-    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    // A fixed-bound loop is unrolled, so the three checked `int + tx.locktime` additions share one outlined
+    // bounds-check helper that precedes the injected guard in the script. The guard is still injected; assert its
+    // presence rather than that it is the very first opcode.
+    expect(countGuards(compileString(src, { messageBus: false }))).toBeGreaterThanOrEqual(1);
   });
 
 

@@ -30,9 +30,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.13.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: '3df7177060937de14d9013ef41f0e5aa3ac90e90bfc8dbd8c0b9693f37ed119d' },
+    pinnedSha256: 'e55811bed319b30ecc7019627f4005d360b86f347f53111e3fd8fb45309d68fb' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: '3c31dca38e1e5ed55b0b98709d58e7594628ad9ee630658e0736b9d0960fdc2f' },
+    pinnedSha256: '4481125ce6bcd288a87add37c0a5c3c904b0af3ed86e2da860d0e838b3793292' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

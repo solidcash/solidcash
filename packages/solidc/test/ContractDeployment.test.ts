@@ -133,9 +133,10 @@ describe('SBE-20: selfdestruct(addr) implies the selfdestruct modifier and pins 
     expect(stmt).toContain('OP_OUTPUTVALUE OP_SUB');
   });
 
-  it('accepts a selfdestruct as a valid terminal statement (no trailing require needed)', () => {
-    // selfdestruct halts the contract, so - like Solidity revert/return - it ends a path validly without a
-    // forced require. The caller-controlled-destination risk is surfaced separately as a warning (below).
+  it('accepts a selfdestruct as a valid terminal statement under permissive final-require options', () => {
+    // selfdestruct halts the contract, so - like Solidity revert/return - it ends a path validly. Under the
+    // permissive direct-compile helper (allowUnsafeOperations) the missing require is a warning; production
+    // compiles (enforceFinalRequire) reject it, and the caller-controlled-destination risk is a separate warning.
     expect(compileString(
       'contract C() { address beneficiary; function kill() { selfdestruct(this.beneficiary); } }',
     ).contractName).toBe('C');

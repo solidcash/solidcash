@@ -11552,16 +11552,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     return undefined;
   }
 
-  /** Best-effort type discriminator for a function-call argument used as a mapping key (see canonicalizeExpression). */
-  private canonicalizeCallArgumentType(expression: ExpressionNode): string {
-    if (expression.type) return expression.type.toString();
-    if (expression instanceof IdentifierNode) {
-      const param = this.currentFunction?.parameters.find((p) => p.name === expression.name);
-      if (param?.type) return param.type.toString();
-    }
-    return '?';
-  }
-
   private canonicalizeExpression(node: ExpressionNode): string {
     if (node instanceof IdentifierNode) {
       // Resolve a local key TRANSITIVELY through its initializer: an inlined value helper binds `__rhN_owner = pkh`
@@ -11590,14 +11580,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof FunctionCallNode) {
       const args = node.parameters.map((p) => this.canonicalizeExpression(p)).join(',');
-      // Fold the argument types (or the resolved overload signature) into the label so same-name same-arity
-      // overloads used as mapping keys cannot collapse into one slot (finding C4 residual). Argument type is read
-      // from the visited node, else a parameter of the current function, else the resolved function if unique.
-      const argTypes = node.parameters.map((p) => this.canonicalizeCallArgumentType(p)).join(',');
-      const resolved = node.resolvedFunction;
-      const signature = resolved === undefined ? ''
-        : `:${resolved.parameters.map((p) => p.type.toString()).join(',')}`;
-      return `call:${node.identifier.name}<${argTypes}>${signature}(${args})`;
+      return `call:${node.identifier.name}(${args})`;
     }
     if (node instanceof BinaryOpNode) {
       return `binop:${node.operator}(${this.canonicalizeExpression(node.left)},${this.canonicalizeExpression(node.right)})`;

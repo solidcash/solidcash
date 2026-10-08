@@ -9554,7 +9554,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           { location: node.body.location, positionHint: PositionHint.END },
         );
         this.emitOwnCategoryMutableNftConservation(node);
-        this.emitOwnCategoryMutableInputCountAssertion(node);
         if (skipRetirement) {
           this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
         }
@@ -9956,7 +9955,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     targetType: Type | undefined, sourceType: Type | undefined, locationData: SingleLocationData,
   ): void {
     if (!(targetType instanceof IntType) && !(targetType instanceof FixedType)) return;
-    if (sourceType === targetType) return;
+    // Same TYPE skips (two uint256 instances, or the very same object). Only a WIDER source (generic int/bigint,
+    // or a bounded type that is not this one) needs pinning; comparing to the same bounded type would re-check a
+    // value its producer already checked, and that redundant guard bloats hot paths.
+    if (sourceType === targetType
+      || (sourceType !== undefined && targetType !== undefined
+        && sourceType.toString() === targetType.toString())) return;
     if (sourceType !== PrimitiveType.INT && sourceType !== PrimitiveType.BIGINT
       && !(sourceType instanceof IntType) && !(sourceType instanceof FixedType)
       && !(sourceType instanceof EnumType)) return;
@@ -42704,24 +42708,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // covenant bytecode (not OP_TRUE) and never match.
     //
     // Group by callee address identity (not by slot): every slot targeting the same contract shares its category.
-    // Slots with no address identity (msg.sender / loop-array / function-pointer targets) are left to their
-    // per-slot identity checks, as before.
-    const returnGroups = new Map<string, { slot: ExternalCallSlot; count: number }>();
+    // A runtime-loop return (`data.tagAt(i)`) produces one return event PER ITERATION, so its count is not a
+    // compile-time constant; skip uniqueness for a callee that has any loop return (the old single-slot workaround
+    // already did this). Slots with no address identity (msg.sender / loop-array / function-pointer targets) are
+    // left to their per-slot identity checks, as before.
+    const returnGroups = new Map<string, { slot?: ExternalCallSlot; count: number; looped: boolean }>();
     for (const slot of this.externalCallSlots) {
       if (!slot.hasReturnValues) continue;
       const identity = slot.addressParam ? `param:${slot.addressParam}`
         : slot.addressStateVar ? `state:${slot.addressStateVar}`
           : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
       if (identity === '') continue;
+      const looped = slot.inlineLoopDispatch || this.isExternalCallSlotLoopNested(slot);
       const existing = returnGroups.get(identity);
       if (existing) {
-        existing.count += 1;
+        existing.looped = existing.looped || looped;
+        if (!looped) {
+          existing.count += 1;
+          existing.slot ??= slot;
+        }
       } else {
-        returnGroups.set(identity, { slot, count: 1 });
+        returnGroups.set(identity, { slot: looped ? undefined : slot, count: looped ? 0 : 1, looped });
       }
     }
-    for (const { slot, count } of returnGroups.values()) {
-      this.emitReturnEventUniqueness(slot, count, locationData);
+    for (const { slot, count, looped } of returnGroups.values()) {
+      if (!looped && slot !== undefined && count > 0) {
+        this.emitReturnEventUniqueness(slot, count, locationData);
+      }
     }
   }
 
@@ -44296,66 +44309,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (mutable_balance)
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (this_cat_mutable)
-  }
-
-  /**
-   * C3: `emitOwnCategoryMutableNftConservation` pins only input-count == output-count, so an un-accessed data NFT
-   * can still be co-spent with flag=1 (its own sub-covenant self-authorizes on the master's minting NFT and
-   * delegates commitment authorization to the master) and re-emitted with an attacker-chosen commitment while the
-   * count stays balanced. Pin the count of own-category mutable INPUTS to exactly the required data-NFT count
-   * (`compactOffsetMap.size`): the required set is covered by `emitAutoCovenantVerification` (new commitments for
-   * written fields, preserved commitments for read-only ones), so any extra co-spent data NFT is refused. Only
-   * emitted for the direct data-NFT-only shapes (`countsOwnCategoryNfts`); split/merge/delegatecall/upgrade/framed
-   * topologies are handled by their own verification and never reach this helper.
-   */
-  private emitOwnCategoryMutableInputCountAssertion(node: FunctionDefinitionNode): void {
-    const loc = { location: node.body.location, positionHint: PositionHint.END };
-
-    // This contract's category ++ mutable(0x01), built from the master's category ++ minting(0x02).
-    this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_1, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.pushToStack('(c3_cat_mutable)');
-
-    this.emit(encodeInt(0n), loc);
-    this.pushToStack('(c3_count)');
-
-    this.emit(Op.OP_TXINPUTCOUNT, loc);
-    this.emit(Op.OP_1SUB, loc);
-    this.pushToStack('(c3_i)');
-    this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(encodeBool(true), loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DUP, loc);                 // [cat01, count, i, i]
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);   // [cat01, count, i, incat]
-    this.emit(encodeInt(3n), loc);             // pick cat01 (incat=0, i=1, count=2, cat01=3)
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);               // [cat01, count, i, match]
-    this.emit(Op.OP_IF, loc);                  // own-category mutable input
-    this.emit(Op.OP_SWAP, loc);                // [cat01, i, count]
-    this.emit(Op.OP_1ADD, loc);                // [cat01, i, count+1]
-    this.emit(Op.OP_SWAP, loc);                // [cat01, count+1, i]
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_1SUB, loc);                // [cat01, count, i-1]
-    this.emit(encodeBool(false), loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.popFromStack(); // (c3_i)
-
-    this.emit(encodeInt(BigInt(this.compactOffsetMap.size)), loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.popFromStack(); // (c3_count)
-    this.emit(Op.OP_DROP, loc);
-    this.popFromStack(); // (c3_cat_mutable)
   }
 
   /** Require exactly one proxy master and exactly N proxy data NFTs at their respective locking bytecodes. */

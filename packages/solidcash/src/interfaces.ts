@@ -1,4 +1,8 @@
-import { type AuthenticationProgramStateResourceLimits, type Transaction } from '@bitauth/libauth';
+import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
+import type { AuthenticationProgramStateResourceLimits } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import type { NetworkProvider } from './network/index.js';
 import type SignatureTemplate from './SignatureTemplate.js';
 import { Contract } from './Contract.js';

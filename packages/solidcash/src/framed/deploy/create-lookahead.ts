@@ -13,7 +13,10 @@
  * nonce when the first reservation was made.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { validatorAddress, type Artifact } from '@solidcash/utils';
 import { framedValidator } from 'solidc';
 import type { Utxo } from '../../interfaces.js';

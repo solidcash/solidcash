@@ -1,4 +1,5 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import { AddressType, computeFunctionSignature, computeFunctionSelector, type LibraryCallArg } from '@solidcash/utils';
 import {
   SourceFileNode, ContractNode, Node, FunctionCallStatementNode, LowLevelCallStatementNode,

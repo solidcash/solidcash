@@ -9,7 +9,10 @@
  * identity, the P2PKH lock of the hash otherwise, and address(0), the empty lock, for the zero identity.
  */
 
-import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+;
+;
+;
 import { bytesEqual } from '@solidcash/utils';
 import { lockingBytecodeToSolidityAddressPayload } from '../../utils.js';
 

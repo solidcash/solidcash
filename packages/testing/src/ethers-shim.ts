@@ -22,8 +22,11 @@ export * from 'ethers/utils';
 export * from 'ethers/wallet';
 export * from 'ethers/wordlists';
 
-import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
-import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress, framedDeploy } from 'solidcash';
+import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from 'solidcash/dist/stateful/logical-identity.js';
+import { createLookaheadForAddress, predictCreateAddress } from 'solidcash/dist/framed/deploy/create-lookahead-session.js';
 // CashAddress-aware ABI coder (wins over ethers/utils re-export for defaultAbiCoder / AbiCoder).
 // Cycle-free: cash-abi-coder only imports ethers/abi + libauth.
 import { AbiCoder as CashAbiCoder, defaultAbiCoder as cashDefaultAbiCoder } from './cash-abi-coder.js';
@@ -227,8 +230,8 @@ function prefixOf(from: string): Prefix {
  * logical CREATE address stands in.
  */
 export function getCreateAddress(tx: { from: string; nonce: number | bigint }): string {
-  if (framedDeploy.createLookaheadForAddress(tx.from) !== undefined) {
-    return binToHex(framedDeploy.predictCreateAddress(tx.from, tx.nonce));
+  if (createLookaheadForAddress(tx.from) !== undefined) {
+    return binToHex(predictCreateAddress(tx.from, tx.nonce));
   }
   return deriveLogicalCreateAddress(tx.from, tx.nonce);
 }

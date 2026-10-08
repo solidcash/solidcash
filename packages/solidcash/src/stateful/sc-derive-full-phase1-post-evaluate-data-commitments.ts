@@ -3,9 +3,13 @@
  * post-evaluate value-witness refresh + data-NFT apply.
  */
 
-import {
-  binToHex, type AuthenticationProgramStateCommon,
-} from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import type { AbiFunction } from '@solidcash/utils';
 import { sha256 as sha256Sync } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';

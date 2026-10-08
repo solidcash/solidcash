@@ -16,7 +16,10 @@
  * value is encoded, because that depends on the collection's declared value type.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   INDEX_NONE,
   VALUE_INLINE_LIMIT,

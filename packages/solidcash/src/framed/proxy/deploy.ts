@@ -30,10 +30,17 @@
  * same way.
  */
 
-import {
-  binToHex, createVirtualMachineBch2026, encodeDataPush,
-  encodeLockingBytecodeP2sh32, hash256, hexToBin, OpcodesBch2023,
-} from '@bitauth/libauth';
+import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { OpcodesBch2023 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-opcodes.js';
+import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
+;
+;
 import {
   FrameKind, INDEX_NONE, VALUE_INLINE_LIMIT, buildEntryNftCovenantScript, bytesEqual, bytesToHex,
   computeCollectionHash, decodeTranscript, dynamicChunkSignature, frameKindName, getDefaultStateValue, sha256,
@@ -4535,7 +4542,8 @@ async function traceAssembledHop(
       hopTrace(`operands ${index} ${operands.map((item) => `${item.length}:${binToHex(item)}`).join(' vs ')}`);
     }
     {
-      const { decodeAuthenticationInstructions } = await import('@bitauth/libauth');
+      const { decodeAuthenticationInstructions } = await import('@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js');
+
       const { decideReference } = await import('../validator/reference/index.js');
       type Holder = { readonly token?: { category: Uint8Array; amount: bigint;
         nft?: { capability: string; commitment: Uint8Array } } };
@@ -4613,7 +4621,8 @@ async function equalityOperands(
   transaction: unknown,
 ): Promise<readonly Uint8Array[] | undefined> {
   const { createFaithfulTraceVmForProvider } = await import('../../network/createVirtualMachine.js');
-  const { Opcodes } = await import('@bitauth/libauth');
+  const { OpcodesBchSpec: Opcodes } = await import('@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js');
+
   let operands: readonly Uint8Array[] | undefined;
   const observing = createFaithfulTraceVmForProvider(provider, (observed) => {
     const state = observed as { readonly ip: number; readonly instructions: readonly { readonly opcode: number }[];
@@ -4799,7 +4808,8 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   // the hop is materialized by the builder and handed to the provider directly. The provider stays the decider.
   const transaction = builder.buildLibauthTransaction();
   if (hopTraceOn()) await traceAssembledHop(builder, provider, program);
-  const { encodeTransaction } = await import('@bitauth/libauth');
+  const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
   const submitPrepared = provider.sendPreparedTransaction?.bind(provider);

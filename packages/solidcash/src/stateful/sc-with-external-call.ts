@@ -2,7 +2,10 @@
  * phase-boundary extract: SC FunctionCall extract — withExternalCall simplified auto-resolve branch.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Artifact, AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';

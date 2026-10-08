@@ -2,7 +2,10 @@
  * phase-boundary extract: STB public-surface extract — bindMaterializedValueChunkWitnesses continuation witnesses.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust } from '../utils.js';

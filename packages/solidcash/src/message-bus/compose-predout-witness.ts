@@ -1,6 +1,9 @@
 /** Authenticate a routed predecessor recreation before moving its local output witness into a composition. */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';
 

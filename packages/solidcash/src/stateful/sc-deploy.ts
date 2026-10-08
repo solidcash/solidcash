@@ -2,7 +2,11 @@
  * phase-boundary extract: SC lifecycle extract — static deploy API.
  */
 
-import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+;
 import {
   buildChunkCommitment,
   buildEventNftCovenantScript,
@@ -31,7 +35,8 @@ import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js'
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
-  const { encodeTransaction } = await import('@bitauth/libauth');
+  const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   const tx = builder.buildLibauthTransaction();
   return BigInt(encodeTransaction(tx).byteLength);
 }

@@ -1,4 +1,8 @@
-import { binToHex, encodeTransaction, hexToBin, isHex } from '@bitauth/libauth';
+import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+;
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';

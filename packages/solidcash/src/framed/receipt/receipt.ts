@@ -17,7 +17,11 @@
  * receipt uses; the coordinates all come from the composer's draft, so nothing here recomputes an index.
  */
 
-import { binToHex, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildAnonymousEventNftCovenantScript,
   buildEventNftCovenantScript,

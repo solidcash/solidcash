@@ -19,7 +19,10 @@
  * with the record the site's call carries, so bytes the body does not compute are refused there.
  */
 
-import { bigIntToVmNumber } from '@bitauth/libauth';
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import {
   VALUE_INLINE_LIMIT, bytesEqual, bytesToHex,
   type AbiFunction, type Artifact, type PublishedWriteSegment, type StateValue,

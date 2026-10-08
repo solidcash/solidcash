@@ -2,9 +2,11 @@
  * phase-boundary extract: SC lifecycle extract — static split / merge APIs.
  */
 
-import {
-  binToHex, decodeTransactionUnsafe,
-} from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import {
   assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder,
@@ -15,7 +17,8 @@ import type {
 
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
-  const { encodeTransaction } = await import('@bitauth/libauth');
+  const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   const tx = builder.buildLibauthTransaction();
   return BigInt(encodeTransaction(tx).byteLength);
 }
@@ -136,7 +139,9 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
   }
 
   // Build and send directly (bypass debug step which doesn't handle covenant unlockers)
-  const { hash256, hexToBin: localHexToBin } = await import('@bitauth/libauth');
+  const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
+const { hexToBin: localHexToBin } = await import('@bitauth/libauth/build/lib/format/hex.js');
+
   const rawTx = builder.build();
   const rawTxBin = localHexToBin(rawTx);
   const decoded = decodeTransactionUnsafe(rawTxBin);
@@ -299,7 +304,9 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
   }
 
   // Build and send directly (bypass debug step which doesn't handle covenant unlockers)
-  const { hash256, hexToBin: localHexToBin } = await import('@bitauth/libauth');
+  const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
+const { hexToBin: localHexToBin } = await import('@bitauth/libauth/build/lib/format/hex.js');
+
   const rawTx = builder.build();
   const rawTxBin = localHexToBin(rawTx);
   const decoded = decodeTransactionUnsafe(rawTxBin);

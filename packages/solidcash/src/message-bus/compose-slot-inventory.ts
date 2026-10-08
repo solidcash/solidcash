@@ -3,7 +3,10 @@
  * resource/value/token/sidecar slots.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { ExecutionContextEffectPlan } from './execution-context.js';
 import type { AtomicSidecarSlotEffect } from './graph.js';
 import { findMessageBusHandlerForInvocation } from './graph-handler-join.js';

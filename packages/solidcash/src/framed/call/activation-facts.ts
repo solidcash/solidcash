@@ -6,7 +6,10 @@
  * nodes hold, and the address the frame observes as `address(this)`, all as the frame starts.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Artifact } from '@solidcash/utils';
 import type { FramedDeploymentSet } from '../deploy/index.js';
 import { deploymentStateValues, liveMappingValueReader } from '../proxy/external-calls.js';

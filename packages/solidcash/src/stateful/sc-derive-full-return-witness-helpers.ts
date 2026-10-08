@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — return-witness reconcile + entry/chunk unlocker rebind.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction, Artifact } from '@solidcash/utils';
 import {
   createDynamicChunkUnlocker,

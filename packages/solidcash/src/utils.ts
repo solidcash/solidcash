@@ -1,26 +1,19 @@
-import {
-  cashAddressToLockingBytecode,
-  decodeCashAddress,
-  addressContentsToLockingBytecode,
-  lockingBytecodeToCashAddress,
-  binToHex,
-  type Transaction,
-  encodeSigningSerializationBch,
-  encodeTokenPrefix,
-  encodeTransactionInputSequenceNumbersForSigning,
-  encodeTransactionOutpoints,
-  encodeTransactionOutputsForSigning,
-  utf8ToBin,
-  hexToBin,
-  LockingBytecodeType,
-  encodeTransactionOutput,
-  isHex,
-  bigIntToCompactUint,
-  NonFungibleTokenCapability,
-  bigIntToVmNumber,
-  encodeLockingBytecodeP2pkh,
-  valueSatoshisToBin,
-} from '@bitauth/libauth';
+import { decodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
+import { cashAddressToLockingBytecode, addressContentsToLockingBytecode, lockingBytecodeToCashAddress, LockingBytecodeType, encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { bigIntToCompactUint, valueSatoshisToBin } from '@bitauth/libauth/build/lib/format/number.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+import { encodeTokenPrefix, encodeTransactionInputSequenceNumbersForSigning, encodeTransactionOutpoints, encodeTransactionOutputsForSigning, encodeTransactionOutput } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import { NonFungibleTokenCapability } from '@bitauth/libauth/build/lib/message/transaction-types.js';
+;
+;
+import { encodeSigningSerializationBch } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/signing-serialization.js';
+;
+import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import {
   hash160,
   hash256,

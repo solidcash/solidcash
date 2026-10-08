@@ -3,7 +3,10 @@
  * register master-unlocker refreshers through builder-created.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction, FunctionBlockLayout, StateLayout } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';

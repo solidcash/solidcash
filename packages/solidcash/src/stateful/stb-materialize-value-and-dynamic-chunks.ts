@@ -2,7 +2,10 @@
  * phase-boundary extract: STB build-phase extract — staged value-chunk and dynamic-chunk output append.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { parseChunkCommitment, type FunctionBlockLayout } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';

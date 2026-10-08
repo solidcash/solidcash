@@ -3,7 +3,14 @@
 // compressed key to its recreated NFT (which the contract reads). The split point (chunkA) is DETERMINISTIC - the SDK
 // VM-probes the two covenants' real op-cost and picks the split where both inputs fit their ~8M budget (a liveness
 // parameter, so a probe can only land on a valid split). Mirrors the keccak compute side-car; see docs/ecrecover.md.
-import { binToHex, hash256, hexToBin, createVirtualMachineBch2026 } from '@bitauth/libauth';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+;
+;
+;
 import {
   buildEcrecoverComputeRedeem, ecrecoverComputeLockingBytecode, ecrecoverComputeResultCommitment,
   SHARED_LIBRARY_SALT,

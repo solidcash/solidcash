@@ -27,7 +27,13 @@
  * the calls before the loop are composed and learned, and the read is planned again from what they returned.
  */
 
-import { hexToBin, isVmNumberError, vmNumberToBigInt } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { isVmNumberError, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {

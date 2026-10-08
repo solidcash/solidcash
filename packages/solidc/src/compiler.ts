@@ -10,7 +10,9 @@ import {
   BailErrorStrategy, CharStream, CommonTokenStream, DefaultErrorStrategy, LexerATNSimulator,
   ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
-import { binToHex, decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType,

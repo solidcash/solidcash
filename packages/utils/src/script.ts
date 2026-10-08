@@ -1,14 +1,9 @@
-import {
-  binToHex,
-  encodeDataPush,
-  hexToBin,
-  disassembleBytecodeBch,
-  flattenBinArray,
-  encodeAuthenticationInstructions,
-  decodeAuthenticationInstructions,
-  OpcodesBch,
-  type AuthenticationInstruction,
-} from '@bitauth/libauth';
+import { binToHex, hexToBin, flattenBinArray } from '@bitauth/libauth/build/lib/format/hex.js';
+import { OpcodesBchSpec as OpcodesBch } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
+import type { AuthenticationInstruction } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-types.js';
+import { disassembleBytecodeBch, encodeAuthenticationInstructions, decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
 import OptimisationsEquivFile from './cashproof-optimisations.js';
 import { optimisationReplacements } from './optimisations.js';
 

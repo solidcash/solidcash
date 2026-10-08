@@ -2,7 +2,10 @@
  * phase-boundary extract: STB public-surface extract — setFunderUtxos input reassembly.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { FunctionBlockLayout } from '@solidcash/utils';
 import {

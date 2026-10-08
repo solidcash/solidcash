@@ -2,9 +2,14 @@
  * phase-boundary extract: SC class-body extract — probe-derived message-bus return blobs.
  */
 
-import {
-  binToHex, hexToBin, vmNumberToBigInt, type AuthenticationProgramStateCommon,
-} from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import {
   Op, bytecodeToScript, scriptToBytecode, sha256 as sha256Sync,
   type AbiFunction, type Artifact, type ExternalResultEncoding,

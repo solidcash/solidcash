@@ -51,7 +51,10 @@
  * shape is refused by that missing fact.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   INDEX_NONE,
   VALUE_HEAD_SIZE,

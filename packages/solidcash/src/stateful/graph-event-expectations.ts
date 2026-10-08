@@ -1,6 +1,12 @@
-import {
-  binToHex, vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output,
-} from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import type { Output } from '@bitauth/libauth/build/lib/message/transaction-types.js';
+;
+;
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import { Op } from '@solidcash/utils';
 import { isP2sh32LockingBytecode } from './faithful-probe-trace.js';
 

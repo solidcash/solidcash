@@ -1,4 +1,6 @@
-import { binToHex, vmNumberToBigInt } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
 import {
   BytesType, IntType, Op, PrimitiveType, encodeBool, encodeInt, encodeIntAsFixedBytes, encodeString,
   type Script, type Type,

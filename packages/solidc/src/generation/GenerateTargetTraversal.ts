@@ -1,6 +1,9 @@
 /* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { hexToBin, binToHex, encodeDataPush, utf8ToBin } from '@bitauth/libauth';
+import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
 import {
   asmToScript,
   ArrayType,

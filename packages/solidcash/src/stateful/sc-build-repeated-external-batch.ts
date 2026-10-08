@@ -2,7 +2,10 @@
  * phase-boundary extract: SC extract — build a repeated external message-bus batch compiler route.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   type AbiFunction,
   type Artifact,

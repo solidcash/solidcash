@@ -1,4 +1,7 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';

@@ -9,7 +9,10 @@
  * whose refusal is its own derivation's stall is reported by the frame and reason the stalled draft names.
  */
 
-import type { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import type { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+;
+;
+;
 import type { Artifact } from '@solidcash/utils';
 import {
   describeFrameReason, describeInnermost, frameMadeCall, frameStopOf, readsUnfilledReference, reportCompositionRefusal,

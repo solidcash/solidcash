@@ -20,7 +20,10 @@
  * creates no token of the category but masters, so no record, validator or event is touched.
  */
 
-import { bigIntToVmNumber, encodeDataPush, Opcodes } from '@bitauth/libauth';
+import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
 import {
   bytecodeToScript, PositionHint, PrimitiveType, type FullLocationData, type LocationI, type LogEntry,
   type RequireStatement, type Script,

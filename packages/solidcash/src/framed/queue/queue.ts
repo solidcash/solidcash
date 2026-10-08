@@ -21,7 +21,10 @@
  * composition co-spends. A call through a proxy hop joins once the hop's module opts in (`queueProxyHopSends`).
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { CompositionDraftPlan } from '../composer/index.js';
 

@@ -13,7 +13,10 @@
  * where it stopped, and one that made the call stops reading the reference instead.
  */
 
-import type { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import type { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+;
+;
+;
 import { FrameKind } from '@solidcash/utils';
 import { UNFILLED_CALLEE_REF, type CompositionDraft } from './draft.js';
 

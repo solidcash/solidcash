@@ -2,7 +2,11 @@
  * phase-boundary extract: SC class-body extract — refresh projected external-call return commitments on a builder.
  */
 
-import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+;
 import { hash256 as hash256Sync } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Utxo } from '../interfaces.js';

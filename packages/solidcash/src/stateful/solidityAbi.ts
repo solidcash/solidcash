@@ -1,4 +1,7 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Artifact, ExternalResultEncoding } from '@solidcash/utils';
 import { lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 

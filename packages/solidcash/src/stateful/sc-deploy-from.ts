@@ -2,7 +2,13 @@
  * phase-boundary extract: SC lifecycle extract — static deployFrom (factory deploy + child genesis).
  */
 
-import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   buildChunkCommitment,

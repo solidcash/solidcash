@@ -6,7 +6,9 @@
  * starts with an explicit domain tag, then length-prefixed named fields, then SHA-256.
  */
 
-import { binToHex, utf8ToBin } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
 import { sha256 } from './hash.js';
 
 /** Journal-disposition manifest digest domain. */

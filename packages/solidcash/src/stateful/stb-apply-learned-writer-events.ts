@@ -2,7 +2,10 @@
  * phase-boundary extract: STB class-body extract — apply learned probe event commitments onto writer event slots.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildEventNftCovenantScript,
   computeEventNameHash,

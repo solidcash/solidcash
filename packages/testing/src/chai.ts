@@ -6,7 +6,10 @@
  * `await`, ethers-style. A `chai` module alias lets ported files' `import { expect } from 'chai'` resolve here.
  */
 import 'solidcash/vitest';
-import { cashAddressToLockingBytecode, binToHex, hash160 } from '@bitauth/libauth';
+import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import { decodedAddressEncoding, decodedSolidityAddressIdentity } from '@solidcash/utils';
 import { getActiveProvider } from './network-helpers.js';
 

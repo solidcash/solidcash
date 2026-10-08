@@ -4,7 +4,13 @@
  * absolute pins). Host keeps commits/event pinning that follows.
  */
 
-import { binToHex, binsAreEqual, bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import { binToHex, binsAreEqual, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import {
   encodeChunkableValueTail,
   type AbiFunction,

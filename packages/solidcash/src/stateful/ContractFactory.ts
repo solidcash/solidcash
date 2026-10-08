@@ -1,19 +1,19 @@
 import { type Artifact, asmToBytecode } from '@solidcash/utils';
-import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
-import { Contract } from '../Contract.js';
 import type { ConstructorArgument } from '../Argument.js';
 import type { Utxo, TransactionDetails, AddressType } from '../interfaces.js';
-import {
-  StatefulContract, type ConnectedStatefulContract, type ContractRunner, type DeployOptions,
-} from './StatefulContract.js';
-import { TransactionBuilder } from '../TransactionBuilder.js';
+import type { StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions } from './StatefulContract.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
-import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
-import { registerDeployment, registeredValueAddressLockingBytecode } from './deployment-registry.js';
-import { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';
-import { resolveMasterPoolSize, poolGenesisSatoshis } from '../framed/deploy/pool.js';
+
+// Heavy value imports are deferred to method/helper bodies so that loading this
+// module (the `solidcash/contract-factory` entry) does not evaluate the
+// StatefulContract, TransactionBuilder, or framed-deploy graphs at import time.
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -58,11 +58,12 @@ function looksLikeOverrides(x: unknown): boolean {
   return typeof x === 'object' && x !== null && !(x instanceof Uint8Array) && !Array.isArray(x);
 }
 
-function normalizeRegisteredAddressArguments<T>(
+async function normalizeRegisteredAddressArguments<T>(
   provider: NetworkProvider,
   inputs: readonly { type: string }[],
   args: readonly T[],
-): T[] {
+): Promise<T[]> {
+  const { registeredValueAddressLockingBytecode } = await import('./deployment-registry.js');
   return args.map((arg, index) => {
     const type = inputs[index]?.type;
     if ((type !== 'address' && type !== 'address payable') || typeof arg !== 'string') return arg;
@@ -103,6 +104,8 @@ export async function selectGenesisFundingUtxo(
 export async function selectGenesisFundingUtxoForCost(
   signer: Signer, cost: bigint, excludedOutpoints: ReadonlySet<string> = new Set(),
 ): Promise<Utxo> {
+  const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
+  const { TransactionBuilder } = await import('../TransactionBuilder.js');
   // A reserved outpoint is one a caller derived a create address from: spending it here would destroy a prediction.
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
     || isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout));
@@ -168,6 +171,8 @@ export function compareGenesisFundingFreshness(a: Utxo, b: Utxo): number {
 export async function fanOutPlainUtxos(
   signer: Signer, needed: number, excludedOutpoints: ReadonlySet<string> = new Set(),
 ): Promise<Utxo[] | undefined> {
+  const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
+  const { TransactionBuilder } = await import('../TransactionBuilder.js');
   const plain = (us: Utxo[]): Utxo[] => us
     .filter((u) => !u.token && !excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
       && !isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout)));
@@ -225,7 +230,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
    * category id (txid of the genesis funder). MistSwap does
    * `UniswapV2Pair.attach((await createPairTx.wait()).events[0].args.pair)`.
    */
-  attach(addressOrCategory: string | Uint8Array): Promise<ConnectedStatefulContract<T>> {
+  async attach(addressOrCategory: string | Uint8Array): Promise<ConnectedStatefulContract<T>> {
     let id: string;
     if (typeof addressOrCategory === 'string') {
       id = addressOrCategory;
@@ -243,7 +248,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
     } else {
       throw new Error('ContractFactory.attach: address must be a string or Uint8Array locking bytecode');
     }
-    return StatefulContract.at(id, this.artifact, this.runner);
+    const { StatefulContract: SC } = await import('./StatefulContract.js');
+    return SC.at(id, this.artifact, this.runner);
   }
 
   /**
@@ -256,6 +262,11 @@ export class ContractFactory<T extends Artifact = Artifact> {
     // `factory.pairCodeHash()` un-awaited. Without this the encoder sees a Promise and refuses the bytes32.
     // eslint-disable-next-line no-param-reassign
     args = await Promise.all(args);
+    const { StatefulContract: SC } = await import('./StatefulContract.js');
+    const { Contract } = await import('../Contract.js');
+    const { resolveMasterPoolSize, poolGenesisSatoshis } = await import('../framed/deploy/pool.js');
+    const { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } = await import('./logical-identity.js');
+    const { registerDeployment } = await import('./deployment-registry.js');
     const ctorCount = this.artifact.constructorInputs.length;
     // Positional args beyond the contract-level params feed the explicit `constructor(...) {}` block
     // (ethers passes all deploy args to the constructor; here they split across the two layers).
@@ -274,20 +285,20 @@ export class ContractFactory<T extends Artifact = Artifact> {
     overrides = { ...this.defaultDeployOptions, ...overrides };
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
-    const constructorArgs = normalizeRegisteredAddressArguments(
+    const constructorArgs = await normalizeRegisteredAddressArguments(
       provider,
       this.artifact.constructorInputs,
       args.slice(0, ctorCount) as ConstructorArgument[],
     );
     const publicInitInputs = this.artifact.abi.find((f) => f.name === '__construct')?.inputs
       .filter((input) => !input.name.startsWith('__internal__')) ?? [];
-    const positionalInitArgs = normalizeRegisteredAddressArguments(
+    const positionalInitArgs = await normalizeRegisteredAddressArguments(
       provider,
       publicInitInputs,
       args.slice(ctorCount) as NonNullable<DeployOptions['initArgs']>,
     );
     const overrideInitArgs = overrides.initArgs
-      ? normalizeRegisteredAddressArguments(provider, publicInitInputs, overrides.initArgs)
+      ? await normalizeRegisteredAddressArguments(provider, publicInitInputs, overrides.initArgs)
       : undefined;
 
     // Pure / library contracts (no CashToken state): inject a zero-width stateLayout so they can still
@@ -347,7 +358,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
       address: deriveLogicalCreateAddress(signer!.getAddress(), nonceReservation.nonce),
     } : overrides.logicalIdentity;
     const logicalAddress = logicalIdentity?.address;
-    let result: Awaited<ReturnType<typeof StatefulContract.deploy<T>>>;
+    let result: Awaited<ReturnType<typeof SC.deploy<T>>>;
     try {
       const identityAnchors = overrides.identityAnchors ?? (logicalAddress ? [{
         to: logicalAddress,
@@ -361,7 +372,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
           }).address,
         ),
       }] : undefined);
-      result = await StatefulContract.deploy<T>(deployArtifact, constructorArgs, {
+      result = await SC.deploy<T>(deployArtifact, constructorArgs, {
         provider,
         fundingUtxo,
         funder,

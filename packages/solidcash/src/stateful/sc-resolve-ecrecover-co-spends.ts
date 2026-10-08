@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — resolve ecrecover A/B compute side-car co-spends.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { ecrecoverComputeLockingBytecode, type AbiFunction } from '@solidcash/utils';
 import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';

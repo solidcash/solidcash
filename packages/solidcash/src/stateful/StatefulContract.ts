@@ -61,18 +61,16 @@ import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { type ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 // X186. The covenant-annotating gate moved to `message-bus/preflight.ts` when `TransactionBuilder.send` became its
 // second caller. The four lifecycle-admin sites below route through it; none calls the bare gate.
-import {
-  binToHex,
-  hexToBin,
-  binsAreEqual,
-  encodeAuthenticationInstructions,
-  encodeTransaction,
-  type AuthenticationProgramStateCommon,
-  bigIntToVmNumber,
-  vmNumberToBigInt,
-  utf8ToBin,
-  binToUtf8,
-} from '@bitauth/libauth';
+import { binToHex, hexToBin, binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin, binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+import { encodeAuthenticationInstructions, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import {
   createVirtualMachineBch2026ForProvider,
 } from '../network/createVirtualMachine.js';
@@ -1273,7 +1271,8 @@ export function rebaseRoutedBatchProofOffsets(
  * Uses the serialized transaction size as the fee floor.
  */
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
-  const { encodeTransaction } = await import('@bitauth/libauth');
+  const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   const tx = builder.buildLibauthTransaction();
   return BigInt(encodeTransaction(tx).byteLength);
 }

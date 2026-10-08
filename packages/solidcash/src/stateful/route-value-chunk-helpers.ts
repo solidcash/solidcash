@@ -12,10 +12,13 @@ import {
   VALUE_HEAD_SIZE,
   parseValueChunkCommitment,
 } from '@solidcash/utils';
-import {
-  type AuthenticationProgramStateCommon,
-  binToHex,
-} from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import {
   isP2sh32LockingBytecode,
   isValueChunkProbeFrame,

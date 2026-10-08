@@ -3,7 +3,10 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { binsAreEqual } from '@bitauth/libauth';
+import { binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { FunctionArgument } from '../Argument.js';
 
 export function functionArgumentValuesEqual(left: unknown, right: unknown): boolean {

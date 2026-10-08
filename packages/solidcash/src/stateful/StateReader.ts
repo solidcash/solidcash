@@ -10,7 +10,12 @@ function attachEventArgsAccessors(values: Record<string, StateValue>): Record<st
   for (const k of Object.keys(values)) attachDecodedAccessors(values[k]);
   return values;
 }
-import { hexToBin, binsAreEqual, binToUtf8, cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
+import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hexToBin, binsAreEqual, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+;
 import type { Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 

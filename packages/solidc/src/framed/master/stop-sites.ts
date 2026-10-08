@@ -18,7 +18,8 @@
  * because the frozen `CallStopSite` holds only the call's index.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import {
   STOP_SITE_METADATA_VERSION,
   validateStopSiteMetadata,

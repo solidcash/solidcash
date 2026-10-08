@@ -2,10 +2,15 @@
  * phase-boundary extract: SC lifecycle extract — constructor probe / derive deploy commitments.
  */
 
-import {
-  binToHex, binsAreEqual, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin,
-  type AuthenticationProgramStateCommon,
-} from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex, binsAreEqual, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import {
   buildAnonymousEventNftCovenantScript,
   buildChunkCommitment,

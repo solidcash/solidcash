@@ -1,6 +1,16 @@
 import { type AbiFunction, type AbiInput, type Artifact, Op, bytecodeToScript, decodeInt, formatBitAuthScript } from '@solidcash/utils';
 import { HashType, type LibauthTokenDetails, SignatureAlgorithm, type TokenDetails, VmTarget } from '../interfaces.js';
-import { hexToBin, binToHex, isHex, decodeCashAddress, type Input, assertSuccess, decodeAuthenticationInstructions, type AuthenticationInstructionPush } from '@bitauth/libauth';
+import { decodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
+import { assertSuccess } from '@bitauth/libauth/build/lib/format/error.js';
+import { hexToBin, binToHex, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import type { Input } from '@bitauth/libauth/build/lib/message/transaction-types.js';
+;
+;
+import type { AuthenticationInstructionPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-types.js';
+import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import { type EncodedFunctionArgument, isDeferredSignatureArgument } from '../Argument.js';
 import { zip } from '../utils.js';
 import SignatureTemplate from '../SignatureTemplate.js';

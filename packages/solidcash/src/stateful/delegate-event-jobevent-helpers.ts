@@ -3,7 +3,13 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex, encodeDataPush, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
+;
+;
 import type { Artifact, StateValue } from '@solidcash/utils';
 import {
   Op,

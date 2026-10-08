@@ -2,7 +2,10 @@
  * phase-boundary extract: SC FunctionCall extract — auto-wire ABI libraryDelegateCalls into callInfos.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction, Artifact, StateLayout } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { assertDelegateLayoutCompatible } from './sc-with-delegatecall.js';

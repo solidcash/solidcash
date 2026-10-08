@@ -1,5 +1,6 @@
 #! /usr/bin/env node
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import {
   asmToScript,
   calculateBytesize,

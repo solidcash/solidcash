@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — resolve returning calls nested in external-call argument expressions.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   getDefaultStateValue,
   parseArrayTypeString,

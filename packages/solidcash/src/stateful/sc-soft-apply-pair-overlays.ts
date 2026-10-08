@@ -3,7 +3,10 @@
  * updateExchangeRate when covenant preflight still fails.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildPushdataCommitment,
   sha256 as sha256Sync,

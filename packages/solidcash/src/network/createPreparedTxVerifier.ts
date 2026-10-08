@@ -1,7 +1,10 @@
-import {
-  binToHex, encodeTransaction, hash256, hashTransactionUiOrder,
-  type Output as LibauthOutput,
-} from '@bitauth/libauth';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeTransaction, hashTransactionUiOrder } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import type { Output as LibauthOutput } from '@bitauth/libauth/build/lib/message/transaction-types.js';
+;
+;
+;
 import {
   checkAbsurdFee, checkCoinbaseMaturity, checkDustOutputs, checkInputValueRanges,
   checkLocktimeFinality, checkMinRelayFee, checkNullPrevout, checkSequenceLocks,

@@ -4,11 +4,10 @@
  * Referenced automatically by `solidcashHardhatPreset`; or add it manually: setupFiles: ['@solidcash/testing/vitest-setup'].
  */
 import { beforeAll, afterAll, beforeEach, afterEach, it, test, describe } from 'vitest';
-import {
-  clearCollectionValueRecords, clearDeployments, clearSoftBentoTotals,
-  takeDeploymentRegistrySnapshot, takeSoftStateSnapshot,
-  type DeploymentRegistrySnapshot, type SnapshotRestorer, type SoftStateSnapshot,
-} from 'solidcash';
+import { clearCollectionValueRecords } from 'solidcash/dist/stateful/ValueChunkPersistence.js';
+import { clearDeployments, takeDeploymentRegistrySnapshot, type DeploymentRegistrySnapshot } from 'solidcash/dist/stateful/deployment-registry.js';
+import { clearSoftBentoTotals, takeSoftStateSnapshot, type SoftStateSnapshot } from 'solidcash/dist/stateful/soft-state-overlays.js';
+import type { SnapshotRestorer } from 'solidcash/dist/network/MockNetworkProvider.js';
 import './chai.js';
 import { initHre } from './index.js';
 

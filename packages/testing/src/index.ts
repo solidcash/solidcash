@@ -8,8 +8,19 @@ import {
   getActiveHre, getDefaultHre, createHardhatRuntimeEnvironment, initHre, hardhatCompatConfig,
   type HardhatRuntimeEnvironment, type SolidcashEthers, type HardhatNetwork,
 } from './hre.js';
-import { upgrades } from 'solidcash';
 import type { TaskArguments } from './tasks.js';
+
+// `upgrades` (deployProxy/upgradeProxy) transitively pulls the whole StatefulContract graph. Load it lazily so
+// importing `hardhat` does not evaluate the heavy proxy/stateful modules until a suite actually deploys a proxy.
+type UpgradesNamespace = typeof import('solidcash/dist/stateful/upgrades.js').upgrades;
+const upgradesModule = (): Promise<typeof import('solidcash/dist/stateful/upgrades.js')> =>
+  import('solidcash/dist/stateful/upgrades.js');
+const upgrades = {
+  deployProxy: (...args: Parameters<UpgradesNamespace['deployProxy']>) =>
+    upgradesModule().then((m) => m.deployProxy(...args)),
+  upgradeProxy: (...args: Parameters<UpgradesNamespace['upgradeProxy']>) =>
+    upgradesModule().then((m) => m.upgradeProxy(...args)),
+} as UpgradesNamespace;
 
 // LAZY proxies over the active HRE singleton. `import { ethers, config } from 'hardhat'` binds at module load,
 // but a Vitest setup file can `await initHre()` first to load solidcash.config.ts; these proxies then reflect it

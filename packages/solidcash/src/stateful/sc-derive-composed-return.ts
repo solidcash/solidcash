@@ -2,7 +2,10 @@
  * phase-boundary extract: SC staticCall read of a function whose calls reach one owner more than once.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import Signer from '../Signer.js';

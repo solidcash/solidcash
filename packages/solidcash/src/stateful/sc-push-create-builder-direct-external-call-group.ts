@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _createBuilder extract — push one direct nested external-call UTXO group.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type {
   AbiFunction,
   Artifact,

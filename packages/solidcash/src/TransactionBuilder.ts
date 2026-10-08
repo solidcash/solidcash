@@ -1,13 +1,15 @@
-import {
-  binToHex,
-  createVirtualMachineBch2026,
-  decodeTransaction,
-  decodeTransactionUnsafe,
-  encodeTransaction,
-  hexToBin,
-  type Transaction as LibauthTransaction,
-  type WalletTemplate,
-} from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { decodeTransaction, decodeTransactionUnsafe, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+import type { Transaction as LibauthTransaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
+import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+;
+;
+import type { WalletTemplate } from '@bitauth/libauth/build/lib/engine/types/template-types.js';
+;
+;
+;
 import {
   type Unlocker,
   type Output,
@@ -51,9 +53,6 @@ import {
   calculateDust,
 } from './utils.js';
 import { FailedTransactionError } from './Errors.js';
-import {
-  assertFinalizedBytesWithCovenant, finalizedByteGateReceiptOf, inputSubjectsOfBuilder,
-} from './message-bus/preflight.js';
 import type { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, type WcSourceOutput, type WcTransactionOptions } from './walletconnect-utils.js';
@@ -1246,6 +1245,7 @@ export class TransactionBuilder {
     // ordering decides nothing. It costs nothing on the admitted path: the bytes are assessed first and an
     // admitted verdict returns before the VM is touched, so all 1,159 accepted sends the X126 probe measured
     // through this site are byte-for-byte unaffected.
+    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder, finalizedByteGateReceiptOf } = await import('./message-bus/preflight.js');
     assertFinalizedBytesWithCovenant(
       this,
       transaction,

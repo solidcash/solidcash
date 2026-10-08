@@ -13,7 +13,11 @@ import {
   type Artifact,
   encodeChunkableValueTail,
 } from '@solidcash/utils';
-import { binToHex, binsAreEqual, hexToBin, isHex, encodeTransaction } from '@bitauth/libauth';
+import { binToHex, binsAreEqual, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+;
 import { buildSidecarRedeem, sidecarLockingBytecode, scriptToBytecode } from '@solidcash/utils';
 import { TransactionBuilder, type TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';

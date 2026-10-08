@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — KashiPair soft-fail reason codes for mock soft-apply.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { decodePushdataValue } from '@solidcash/utils';
 import {
   softBentoUserShares,

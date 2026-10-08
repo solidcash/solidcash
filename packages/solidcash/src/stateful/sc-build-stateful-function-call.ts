@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — StatefulFunctionCall.build finalization / materialization.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { Op, type AbiFunction } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';

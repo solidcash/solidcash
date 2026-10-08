@@ -2,9 +2,11 @@
  * phase-boundary extract: STB build-phase extract — external-call group output materialization.
  */
 
-import {
-  binToHex, hexToBin, utf8ToBin,
-} from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+;
 import {
   type AbiFunction,
   buildChunkCommitment,

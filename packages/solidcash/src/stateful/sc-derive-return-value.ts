@@ -2,7 +2,11 @@
  * phase-boundary extract: SC class-body extract — ethers-style staticCall return-value derivation.
  */
 
-import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   attachDecodedAccessors,
   childStateLayoutDigest,

@@ -1,10 +1,7 @@
-import {
-  binToHex,
-  decodeAuthenticationInstructions,
-  encodeDataPush,
-  flattenBinArray,
-  isPushOperation,
-} from '@bitauth/libauth';
+import { binToHex, flattenBinArray } from '@bitauth/libauth/build/lib/format/hex.js';
+import { decodeAuthenticationInstructions, isPushOperation } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
 import { encodeInt } from './data.js';
 import { sha256 } from './hash.js';
 import { generateContractBytecodeScript, Op, type Script, scriptToBytecode } from './script.js';

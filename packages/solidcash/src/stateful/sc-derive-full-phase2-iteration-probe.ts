@@ -2,7 +2,13 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 2 iteration probe build/fingerprint/evaluate.
  */
 
-import { binToHex, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import type { Output } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';

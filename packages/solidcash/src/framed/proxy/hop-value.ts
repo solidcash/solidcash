@@ -13,9 +13,15 @@
  * `receive()` the hop does not plan yet.
  */
 
-import {
-  bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, utf8ToBin, vmNumberToBigInt,
-} from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import { bytesEqual, sha256, type Artifact, type StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';

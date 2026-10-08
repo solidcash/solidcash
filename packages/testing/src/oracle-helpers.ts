@@ -40,5 +40,5 @@ export function mockBlockOracleRpc(provider: BlockTimeProvider): RpcLike {
   };
 }
 
-export { BlockOracleUpdater, fetchBlockOracleFields } from 'solidcash';
-export type { RpcLike, BlockOracleFields } from 'solidcash';
+export { BlockOracleUpdater, fetchBlockOracleFields } from 'solidcash/dist/oracle/blockOracleUpdater.js';
+export type { RpcLike, BlockOracleFields } from 'solidcash/dist/oracle/blockOracleUpdater.js';

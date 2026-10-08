@@ -3,7 +3,13 @@
  * entry geometry without shifting output tails.
  */
 
-import { binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { stripSurplusInvalidCollectionLockOutputs } from './collection-lock-strip.js';

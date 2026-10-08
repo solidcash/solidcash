@@ -12,7 +12,9 @@
  * a change to it moves every address. The program is therefore frozen once a real-chain deployment exists.
  */
 
-import { Opcodes, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
+;
 import { hash256, sha256 } from '../hash.js';
 import { CATEGORY_LENGTH } from './transcript.js';
 import { CONTRACT_LOCK_LENGTH, P2PKH_LOCK_LENGTH } from './canonical.js';

@@ -1,4 +1,7 @@
-import type { Transaction as LibauthTransaction } from '@bitauth/libauth';
+import type { Transaction as LibauthTransaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
+;
+;
+;
 import { TransactionBuilder } from '../TransactionBuilder.js';
 
 /**

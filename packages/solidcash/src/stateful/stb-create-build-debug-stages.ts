@@ -2,7 +2,10 @@
  * phase-boundary extract: STB build-phase extract — debugAtomicOutputStage + debugOwnMutableOutputs helpers.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { FunctionBlockLayout } from '@solidcash/utils';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';

@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — resolve external-call args from ArgSource metadata.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   type ArgSource,
   type Artifact,

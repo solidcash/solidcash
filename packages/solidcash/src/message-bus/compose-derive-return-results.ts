@@ -2,7 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — derive return-result hex vectors from a provisional aggregate.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { decodePushdataValue } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';

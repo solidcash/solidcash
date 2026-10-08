@@ -5,15 +5,10 @@
  * standalone. Snapshots are independent deep clones (via the mem-cash indexer), so restore is repeatable and,
  * unlike EVM, never invalidates other snapshots.
  */
-import {
-  MockNetworkProvider,
-  takeDeploymentRegistrySnapshot,
-  takeSoftStateSnapshot,
-  type DeploymentRegistrySnapshot,
-  type SnapshotRestorer,
-  type SoftStateSnapshot,
-} from 'solidcash';
-import { randomUtxo } from 'solidcash';
+import MockNetworkProvider, { type SnapshotRestorer } from 'solidcash/dist/network/MockNetworkProvider.js';
+import { takeDeploymentRegistrySnapshot, type DeploymentRegistrySnapshot } from 'solidcash/dist/stateful/deployment-registry.js';
+import { takeSoftStateSnapshot, type SoftStateSnapshot } from 'solidcash/dist/stateful/soft-state-overlays.js';
+import { randomUtxo } from 'solidcash/dist/utils.js';
 
 /** The subset of provider capabilities the helpers require (MockNetworkProvider implements all of them). */
 export interface TestNetworkProvider {

@@ -2,7 +2,10 @@
  * Build-phase finalizer: strip surplus value-chunk locks, materialize the chunk band, reassert views.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { reassertNoneCapFunderTwins } from './mutable-output-reassert.js';

@@ -4,7 +4,10 @@
  * __preparedAtomicCalls onto the builder before complete.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';

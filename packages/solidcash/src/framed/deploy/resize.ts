@@ -6,9 +6,16 @@
  * admin's signature (`solidc/src/framed/master/lifecycle.ts`), so this module only lays the transaction out.
  */
 
-import {
-  bigIntToVmNumber, binToHex, encodeDataPush, encodeTransaction, hash256, hexToBin,
-} from '@bitauth/libauth';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
+;
+;
 import { framedLifecycle, framedValidator } from 'solidc';
 import type { Artifact } from '@solidcash/utils';
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';

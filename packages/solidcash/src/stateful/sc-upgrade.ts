@@ -2,7 +2,10 @@
  * phase-boundary extract: SC lifecycle extract — static upgrade API.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   buildPushdataCommitment,
@@ -24,7 +27,8 @@ const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYT
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
-  const { encodeTransaction } = await import('@bitauth/libauth');
+  const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   const tx = builder.buildLibauthTransaction();
   return BigInt(encodeTransaction(tx).byteLength);
 }

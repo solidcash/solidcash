@@ -2,7 +2,10 @@
  * phase-boundary extract: STB build-phase extract — materialize owner event NFT outputs at layout offsets.
  */
 
-import { binToHex, hexToBin, isHex } from '@bitauth/libauth';
+import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   encodePushdataValue,
   type EventDefinitionAbi,

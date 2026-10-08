@@ -21,9 +21,12 @@
  * classifies a category's UTXOs to find the records again.
  */
 
-import {
-  binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin, lockingBytecodeToCashAddress,
-} from '@bitauth/libauth';
+import { encodeLockingBytecodeP2sh32, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { framedValidator } from 'solidc';
 import type { Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../../Argument.js';
@@ -47,7 +50,8 @@ export class FramedDeployError extends Error {
 
 /** The byte length of the transaction the builder would broadcast, which sizes the default fee. */
 async function measuredFee(builder: { buildLibauthTransaction: () => unknown }): Promise<bigint> {
-  const { encodeTransaction } = await import('@bitauth/libauth');
+  const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   return BigInt(encodeTransaction(builder.buildLibauthTransaction() as never).byteLength);
 }
 

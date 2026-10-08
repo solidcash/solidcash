@@ -3,7 +3,10 @@
  * (value-chunk producer epoch, prepared atomic nodes, arg refresh, finish log).
  */
 
-import { binToHex, binsAreEqual, hexToBin } from '@bitauth/libauth';
+import { binToHex, binsAreEqual, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction, Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';

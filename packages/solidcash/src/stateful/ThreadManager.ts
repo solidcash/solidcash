@@ -200,7 +200,9 @@ export class ThreadManager<T extends Artifact = Artifact> {
     const tx = await builder.send();
 
     // Verify txid matches locally computed hash to detect compromised providers
-    const { hexToBin: localHexToBin, hash256, binToHex } = await import('@bitauth/libauth');
+    const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
+const { hexToBin: localHexToBin, binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+
     const rawTxBin = localHexToBin(tx.hex);
     const expectedTxid = binToHex(hash256(rawTxBin).reverse());
     if (tx.txid !== expectedTxid) {
@@ -271,7 +273,9 @@ export class ThreadManager<T extends Artifact = Artifact> {
     const tx = await builder.send();
 
     // Verify txid matches locally computed hash to detect compromised providers
-    const { hexToBin: localHexToBin, hash256, binToHex } = await import('@bitauth/libauth');
+    const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
+const { hexToBin: localHexToBin, binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+
     const rawTxBin = localHexToBin(tx.hex);
     const expectedTxid = binToHex(hash256(rawTxBin).reverse());
     if (tx.txid !== expectedTxid) {

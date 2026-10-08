@@ -2,7 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — materialize compiler-published child deployments.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildEntryCommitment,
   buildInitialStateCommitments,

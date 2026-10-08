@@ -13,10 +13,12 @@ import {
   type ListUnspentItem,
   type ImportAddress,
 } from '@mr-zwets/bchn-api-wrapper';
-import {
-  hexToBin, binToHex, isHex, decodeTransactionUnsafe, encodeTransaction,
-  cashAddressToLockingBytecode, lockingBytecodeToCashAddress,
-} from '@bitauth/libauth';
+import { cashAddressToLockingBytecode, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hexToBin, binToHex, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { decodeTransactionUnsafe, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+;
 import { type Utxo, Network, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import { getNetworkPrefix } from '../utils.js';

@@ -1,9 +1,11 @@
-import {
-  deriveSeedFromBip39Mnemonic, deriveHdPrivateNodeFromSeed, deriveHdPath, deriveHdPathRelative,
-  deriveHdPublicNode, generateBip39Mnemonic, decodeBip39Mnemonic,
-  encodeHdPrivateKey, decodeHdPrivateKey, encodeHdPublicKey, decodeHdPublicKey, encodeCashAddress,
-  type HdPrivateNodeValid, type HdPublicNodeValid, type HdKeyNetwork,
-} from '@bitauth/libauth';
+import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
+;
+;
+import { deriveSeedFromBip39Mnemonic, generateBip39Mnemonic, decodeBip39Mnemonic } from '@bitauth/libauth/build/lib/key/bip39.js';
+import { deriveHdPrivateNodeFromSeed, deriveHdPath, deriveHdPathRelative, deriveHdPublicNode, encodeHdPrivateKey, decodeHdPrivateKey, encodeHdPublicKey, decodeHdPublicKey, type HdPrivateNodeValid, type HdPublicNodeValid, type HdKeyNetwork } from '@bitauth/libauth/build/lib/key/hd-key.js';
+;
+;
+;
 import { hash160 } from '@solidcash/utils';
 import Signer from './Signer.js';
 import type NetworkProvider from './network/NetworkProvider.js';

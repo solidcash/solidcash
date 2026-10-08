@@ -2,7 +2,10 @@
  * phase-boundary extract: STB class-body extract — copy learned NEW commitments onto empty duplicate pinned entry locks.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 
 export interface DerivedChunkOutputObservationLike {

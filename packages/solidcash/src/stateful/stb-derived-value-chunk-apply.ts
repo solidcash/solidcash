@@ -2,7 +2,10 @@
  * phase-boundary extract: STB class-body extract — apply / relocate / strip derived value-chunk outputs.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript, calculateDust } from '../utils.js';

@@ -7,7 +7,10 @@
  * P2SH32 of the filled program.
  */
 
-import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+;
+;
+;
 import {
   asmToScript,
   bytesEqual,

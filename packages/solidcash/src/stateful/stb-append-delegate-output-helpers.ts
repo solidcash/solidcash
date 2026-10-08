@@ -2,7 +2,10 @@
  * phase-boundary extract: STB build-phase extract — appendDelegateGroupOutputs + appendDelegateLoopEntries helpers.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   type AbiFunction,
   type FunctionBlockLayout,

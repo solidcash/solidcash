@@ -34,7 +34,10 @@
  * from the views it left.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, witnessKindOf, type Artifact, type PublishedWriteSegment,
   type RecordEntry,

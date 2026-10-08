@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _createBuilder extract — collect emit infos and event NFT locking bytecodes.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildAnonymousEventNftCovenantScript,
   buildEventNftCovenantScript,

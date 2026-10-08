@@ -2,7 +2,10 @@
  * phase-boundary extract: STB public-surface extract — resolveDeferredEcrecoverArgument VM-trace learning.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { Op } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import {

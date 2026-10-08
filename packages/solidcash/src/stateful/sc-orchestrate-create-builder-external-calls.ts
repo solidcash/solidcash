@@ -4,7 +4,10 @@
  * discovery, bases/unlockers, direct-call arg witnesses, and outState reads.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   encodePushdataValue,

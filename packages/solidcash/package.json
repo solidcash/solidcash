@@ -29,6 +29,7 @@
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./vitest": { "types": "./dist/test/TestExtensions.d.ts", "default": "./dist/test/TestExtensions.js" },
+    "./contract-factory": { "types": "./dist/stateful/ContractFactory.d.ts", "default": "./dist/stateful/ContractFactory.js" },
     "./package.json": "./package.json",
     "./*": "./*"
   },

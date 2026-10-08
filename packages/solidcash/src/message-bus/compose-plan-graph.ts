@@ -3,7 +3,10 @@
  * and compiled graph plan from prepared calls.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { sha256 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {

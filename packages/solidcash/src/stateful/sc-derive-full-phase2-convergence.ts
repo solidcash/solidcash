@@ -2,7 +2,13 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 2 speculative grow + convergence fingerprint.
  */
 
-import { binToHex, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import { shouldGrowSpeculativeChunkRegion } from './early-value-chunk-helpers.js';
 import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';

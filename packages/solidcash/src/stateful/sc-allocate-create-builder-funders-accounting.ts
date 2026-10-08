@@ -3,7 +3,10 @@
  * registrations (funder-accounting-start → funders-complete).
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   sha256 as sha256Sync,

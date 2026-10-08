@@ -7344,7 +7344,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.definedBodyRecords.flatMap((record) =>
         record.compilerHelperId === undefined ? [] : [record.compilerHelperId]),
     );
-    if (result !== undefined) {
+    if (result !== undefined && !this.directConvention) {
       for (const outlined of result.functions) nestedCompilerHelperIds.add(Number(decodeInt(outlined.id)));
     }
     if (result !== undefined && nestedCompilerHelperIds.size > 0) {
@@ -7366,7 +7366,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // candidates into a cascade, and the cap - not the round count, which reaches its fixed point at 6 -
         // was what stopped it: on the framed corpus the sampled programs all stop shrinking at 8192, and none
         // of them regress at 12288, which is the cap the large-body search already uses.
-        12288,
+        this.directConvention ? 1024 : 12288,
         undefined,
         6,
         nestedCompilerHelperIds,
@@ -7376,7 +7376,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           width: this.peekCompactHelperIdPushBytes(),
           ranking: 'savings',
           minimumWindowElements: MINIMUM_WINDOW_ELEMENTS,
-          candidateGroupsPerRound: 12288,
+          candidateGroupsPerRound: this.directConvention ? 1024 : 12288,
           bodyOrder: 'nested-compiler-helpers',
           bodies: result.bodies.length,
           functions: nested.functions.length,

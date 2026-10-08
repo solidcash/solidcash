@@ -25,6 +25,19 @@ export interface ComposeLifecycleSelfdestructRecipient {
   recipient: string | Uint8Array;
 }
 
+// The public compose snapshot freezes every caller-supplied plain object, so a consumed master is read-only
+// here. The builder adopts its inputs and (validateInput, resource repair) writes token fields, so hand it an
+// owned mutable copy: a frozen utxo adopted into the builder would throw on that write.
+const adoptLifecycleUtxo = (utxo: Utxo): Utxo => ({
+  ...utxo,
+  ...(utxo.token && {
+    token: {
+      ...utxo.token,
+      ...(utxo.token.nft && { nft: { ...utxo.token.nft } }),
+    },
+  }),
+});
+
 export interface ComposeLifecycleMaps {
   splitByParticipant: Map<number, ComposeLifecycleSplitFunding>;
   mergeByParticipant: Map<number, ComposeLifecycleMergeInputs>;
@@ -100,7 +113,7 @@ export function resolveComposeLifecycleMaps(
     }
     mergeByParticipant.set(invocation.callee, {
       invocationIndex: supplied.invocationIndex,
-      consumedMasters: Object.freeze([...supplied.consumedMasters]),
+      consumedMasters: Object.freeze(supplied.consumedMasters.map(adoptLifecycleUtxo)),
     });
   }
   for (const participant of plan.participants) {

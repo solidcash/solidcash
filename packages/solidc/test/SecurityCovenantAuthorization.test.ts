@@ -52,6 +52,25 @@ describe('upgrade and deploy entries require authorization', () => {
     expect(() => compileString(source, direct)).not.toThrow();
   });
 
+  it('accepts an either-key upgrade entry whose OR credit both trusted keys', () => {
+    // `A || B` may be satisfied by either signature, so it authorizes when BOTH disjuncts are trusted-key checks.
+    const source = `${P} contract C(pubkey first, pubkey second) { int v;`
+      + ' function migrate(sig s1, sig s2) upgrade { require(checkSig(s1, first) || checkSig(s2, second)); } }';
+    expect(() => compileString(source, direct)).not.toThrow();
+  });
+
+  it('still rejects an OR whose other disjunct is not a trusted-key check', () => {
+    const source = `${P} contract C(pubkey admin) { int v;`
+      + ' function migrate(pubkey pk, sig s1, sig s2) upgrade { require(checkSig(s1, admin) || checkSig(s2, pk)); } }';
+    expect(() => compileString(source, direct)).toThrow(/upgrade|trusted-key|authorization/i);
+  });
+
+  it('still rejects an OR whose other disjunct is not a signature check at all', () => {
+    const source = `${P} contract C(pubkey admin) { int v;`
+      + ' function migrate(sig s1, bool gate) upgrade { require(checkSig(s1, admin) || gate); } }';
+    expect(() => compileString(source, direct)).toThrow(/upgrade|trusted-key|authorization/i);
+  });
+
   it('accepts an authenticated upgrade entry when the guard follows an ordinary statement', () => {
     // The unconditional trusted-key require still runs on every path even when it is not the first statement.
     const source = `${P} contract C(pubkey admin) { int v;`
@@ -63,6 +82,21 @@ describe('upgrade and deploy entries require authorization', () => {
     const source = `${P} contract C(pubkey admin) { int v;`
       + ' function migrate(sig s, bool gate) upgrade { if (gate) { require(checkSig(s, admin)); } } }';
     expect(() => compileString(source, direct)).toThrow(/upgrade|trusted-key|authorization/i);
+  });
+});
+
+describe('an inferred deploy entry is guarded like an explicit one', () => {
+  // `new Child()` inside a plain function infers the deploy modifier; the lifecycle rule must still refuse it
+  // without authorization. This is the shape the deploy-mechanic e2e fixtures compile (they opt in explicitly).
+  const inferred = `${P} contract Child { int v; function init() { this.v = this.v + 1; require(true); } }`
+    + ' contract C { int n; function make() { new Child(); this.n = this.n + 1; } }';
+
+  it('rejects an unguarded inferred deploy entry by default', () => {
+    expect(() => compileString(inferred, direct)).toThrow(/deploy|trusted-key|authorization/i);
+  });
+
+  it('admits it only under the explicit allowUnsafeOperations opt-in', () => {
+    expect(() => compileString(inferred, { messageBus: false, allowUnsafeOperations: true })).not.toThrow();
   });
 });
 

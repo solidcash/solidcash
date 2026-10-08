@@ -18360,8 +18360,13 @@ export function hasUnconditionalAuthorizingSignatureGuard(fn: FunctionDefinition
       const key = keyArg === undefined ? undefined : expression.parameters[keyArg];
       return key !== undefined && !keyIsCallerChosen(key, fn);
     }
-    return expression instanceof BinaryOpNode && expression.operator === BinaryOperator.AND
-      && (isTrusted(expression.left) || isTrusted(expression.right));
+    if (!(expression instanceof BinaryOpNode)) return false;
+    // `A && B` runs only when both hold, so one trusted-key check already authorizes. `A || B` may be satisfied
+    // by either side, so it authorizes only when BOTH disjuncts are trusted-key checks - an OR with a
+    // caller-chosen key side is satisfied without a trusted signature and must not be credited (fail closed).
+    if (expression.operator === BinaryOperator.AND) return isTrusted(expression.left) || isTrusted(expression.right);
+    if (expression.operator === BinaryOperator.OR) return isTrusted(expression.left) && isTrusted(expression.right);
+    return false;
   };
   const walk = (statements: StatementNode[] | undefined): boolean => {
     if (!statements) return false;

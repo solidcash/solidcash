@@ -56,10 +56,16 @@ const anyoneCanSpend = {
   generateUnlockingBytecode: (): Uint8Array => new Uint8Array(),
 };
 
+// This suite exercises the lifecycle covenant's topology pins (which co-spent inputs/outputs a split, merge or
+// deploy must reproduce), not its authorization. The fixtures are deliberately permissionless - funding is
+// anyone-can-spend - so declare that intent; the compiler otherwise requires a trusted-key check on lifecycle
+// entries. The emitted covenant is unchanged, so every tampered transaction below must still fail script verify.
+const PERMISSIONLESS = { allowUnsafeOperations: true } as const;
+
 describe('lifecycle auxiliary-input adversarial soundness', () => {
   it('split rejects missing, duplicated, redirected, and reordered lifecycle outputs', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE);
+    const artifact = compileString(SOURCE, PERMISSIONLESS);
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
@@ -126,7 +132,7 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
 
   it('merge rejects missing, duplicated, reordered, and redirected lifecycle inputs/outputs', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE);
+    const artifact = compileString(SOURCE, PERMISSIONLESS);
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
@@ -209,7 +215,7 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
   // implement and a real chain cannot offer. Skipped on live regtest rather than failing there.
   it.skipIf(process.env.TESTS_USE_REGTEST)('deployFrom rejects missing, duplicated, reordered, and redirected child outputs', async () => {
     const provider = createTestProvider();
-    const factoryArtifact = compileString(FACTORY);
+    const factoryArtifact = compileString(FACTORY, PERMISSIONLESS);
     const childArtifact = compileString(CHILD);
     const baseFactory = new Contract(factoryArtifact, [], { provider });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

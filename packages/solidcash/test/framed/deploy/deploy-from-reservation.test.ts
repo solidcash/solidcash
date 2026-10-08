@@ -15,7 +15,10 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Child() { int counter; function bump() { this.counter = this.counter + 1; require(true); } }'
   + ' contract Factory() { int made; function make() { Child child = new Child(); this.made = this.made + 1; } }';
 
-const artifacts = compileStringMulti(SOURCE);
+// The Factory's `make()` is an intentionally permissionless deploy entry - this test is about the look-ahead
+// reserving a genesis-eligible coin, not about lifecycle authorization - so declare that intent. The emitted
+// child-deployment covenant is unchanged.
+const artifacts = compileStringMulti(SOURCE, { allowUnsafeOperations: true });
 
 interface FactoryCalls {
   readonly make: () => { deploy(options?: object): Promise<{ readonly childCategoryId: string }> };

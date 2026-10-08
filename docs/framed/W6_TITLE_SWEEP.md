@@ -94,14 +94,24 @@ of the emitted per-frame settlement, not a bounded fix.
 
 ## Verification on the merged tree
 
-`yarn workspace solidcash test` at `13964264c` (the tree before `a9248461a`): `17 failed | 5372 passed | 167
-skipped | 5 todo (5561)`. The 17 are exactly the non-e2e rows of the table above, in these files:
-`AffineVoidRecursiveEvents` (5), `AtomicMessageBusCompose` (3), `LogicalIdentityPreservation` (2),
-`MessageBusDelegateClassesE3` (2), `KernelLoopCompose` (2), `KernelPhysicalCallerWithScidCompose` (1),
-`framed/call/write-segments-settlement` (1), `framed/call/plain-caller-identity` (1). Thirteen of the fourteen
-titles fixed above are green in that run, and no file that was green before this sweep went red. `a9248461a`
-(#19) landed after it, with the whole `KernelLoopCompose` file at `1 failed | 143 passed` (the one red being the
-density title) and its four batch-predecessor sibling files green before and after.
+At the sweep tip `1f83ff8fb`, in the per-call worktree:
+
+| suite | result |
+|---|---|
+| `yarn workspace solidcash test` (everything but `test/e2e`) | `16 failed \| 5374 passed \| 167 skipped \| 5 todo (5562)` |
+| `yarn test:e2e` (the full e2e) | `1 failed \| 3212 passed \| 24 skipped \| 3 todo (3240)` |
+| `yarn workspace solidc test` | `6848 passed` |
+| `yarn workspace @solidcash/utils test` | `480 passed` |
+
+The 17 reds are exactly the rows below, in these files: `AffineVoidRecursiveEvents` (5),
+`AtomicMessageBusCompose` (3), `LogicalIdentityPreservation` (2), `MessageBusDelegateClassesE3` (2),
+`KernelLoopCompose` (1), `KernelPhysicalCallerWithScidCompose` (1), `framed/call/write-segments-settlement` (1),
+`framed/call/plain-caller-identity` (1), `test/e2e/KernelIndependentComputedChunks` (1). All 14 titles fixed
+above are green, no file that was green before the sweep went red, and `solidc` is fully green (round 3 still
+carried one load-induced timeout there).
+
+Intermediate confirmation: at `13964264c` (before `a9248461a`) the same suite was `17 failed | 5372 passed`, so
+`a9248461a` removed exactly the one expected row and added none.
 
 ## Not satisfied by this sweep
 

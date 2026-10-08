@@ -724,10 +724,9 @@ function splitPushFrames(unlockingBytecode: Uint8Array): Uint8Array[] {
  * Reads a master's witness block in section 16's layout:
  * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32` per call, and a trailing value list.
  *
- * The frozen codec's own decoder reads a call as `kind, calleeRef, target, value, ...`, which is neither section
- * 16's order nor the order the frozen encoder writes, so it cannot read back a version 1 block that has a call. The
- * model therefore reads the layout the spec states, and the fixture encodes with the frozen encoder, which also
- * follows the spec. This is noted in the hand-off.
+ * This is an independent restatement of the frozen codec's layout for differential checks: the codec's encoder and
+ * decoder agree on that exact field order, so the model reader and the codec are kept in lockstep rather than one
+ * being a workaround for the other.
  */
 function readBlock(payload: Uint8Array): WitnessBlock {
   const reader = new ByteReader(payload);

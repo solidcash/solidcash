@@ -43,10 +43,10 @@ import {
 } from '../ast/AST.js';
 import { YulFunctionCallNode, YulNode } from '../ast/YulAST.js';
 import AstTraversal from '../ast/AstTraversal.js';
-import { hasAuthorizingSignatureGuard, keyIsCallerChosen } from './SymbolTableTraversal.js';
+import { hasAuthorizingSignatureGuard, hasUnconditionalAuthorizingSignatureGuard, keyIsCallerChosen } from './SymbolTableTraversal.js';
 import {
   EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError,
-  UnauthenticatedSelfdestructError,
+  UnauthenticatedSelfdestructError, UnauthorizedLifecycleError,
 } from '../Errors.js';
 
 export default class EnsureFinalRequireTraversal extends AstTraversal {
@@ -56,6 +56,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   constructor(
     private enforceFinalRequire: boolean = true,
     private allowUnsafeOperations: boolean = false,
+    private lifecycleAuthorization: boolean = true,
   ) {
     super();
   }
@@ -127,6 +128,11 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     // caller-controlled destination unless the function is authenticated (see helper).
     checkUnauthenticatedSelfdestruct(node, this.allowUnsafeOperations);
 
+    // An upgrade swaps in caller-supplied bytecode and a deploy emits a child from caller-supplied arguments;
+    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover. The
+    // kernel lane manages lifecycle authority through its own signature policy, so this check is disabled there.
+    checkLifecycleAuthorization(node, this.allowUnsafeOperations, this.lifecycleAuthorization);
+
     const visibility = node.visibility;
     const hasReturnTypes = node.returnTypes.length > 0;
 
@@ -176,8 +182,12 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     if (!hasStateWrites) {
       // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
       // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
-      // path is only a warning by default).
-      ensureFinalStatementIsRequire(node.body.statements, this.enforceFinalRequire || isSelfdestruct);
+      // path is only a warning by default). The selfdestruct statement itself does not authorize the destruction.
+      ensureFinalStatementIsRequire(
+        node.body.statements,
+        this.enforceFinalRequire || isSelfdestruct,
+        !isSelfdestruct,
+      );
     }
 
     return node;
@@ -251,7 +261,36 @@ function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUns
   }
 }
 
-function ensureFinalStatementIsRequire(statements: StatementNode[] = [], strict = false): void {
+/**
+ * Lifecycle entries change what the contract IS rather than one state field: `upgrade` replaces its bytecode with
+ * a caller-supplied witness, `deploy` emits a child genesis from caller-supplied arguments, and `split`/`merge`
+ * fork/consolidate its NFT threads. Each skips the ordinary final-require rule because its covenant verifies the
+ * transition output/topology, not who triggered it, so a body without a trusted-key signature check is a
+ * permissionless takeover or topology manipulation. Require an unconditional trusted-key check by default; the
+ * explicit unsafe compiler option retains a warning-only escape (mirroring selfdestruct).
+ */
+function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: boolean, enabled: boolean): void {
+  if (!enabled) return;
+  const isUpgrade = node.modifiers.includes(FunctionModifier.UPGRADE);
+  const isDeploy = node.modifiers.includes(FunctionModifier.DEPLOY);
+  const isSplit = node.modifiers.includes(FunctionModifier.SPLIT);
+  const isMerge = node.modifiers.includes(FunctionModifier.MERGE);
+  if (!isUpgrade && !isDeploy && !isSplit && !isMerge) return;
+
+  if (hasUnconditionalAuthorizingSignatureGuard(node)) return;
+
+  const kind = isUpgrade ? 'upgrade' : isDeploy ? 'deploy' : isSplit ? 'split' : 'merge';
+  if (!allowUnsafe) throw new UnauthorizedLifecycleError(node, node.name, kind);
+
+  const line = node.location?.start?.line;
+  console.log(`Warning: ${kind} in '${node.name}'${line ? ` at line ${line}` : ''} has no trusted-key signature `
+    + 'check; any caller can change the contract\'s lifecycle without authorization. Add require(checkSig(s, '
+    + 'owner)) with a key the caller cannot choose.');
+}
+
+function ensureFinalStatementIsRequire(
+  statements: StatementNode[] = [], strict = false, selfdestructIsTerminal = true,
+): void {
   const statementsWithoutLogs = statements.filter((statement) => !(statement instanceof ConsoleStatementNode));
   const finalStatement = statementsWithoutLogs[statementsWithoutLogs.length - 1];
 
@@ -283,19 +322,19 @@ function ensureFinalStatementIsRequire(statements: StatementNode[] = [], strict 
     return;
   }
 
-  // A loop ending a function must contain at least one require() in its body,
-  // ensuring every iteration performs validation. The require() need not be the
-  // last statement since Bitcoin Script executes all statements in the loop body
-  // sequentially - the require() is always reached on each iteration.
+  // A loop ending a function must perform validation on EVERY iteration. A require inside a conditional branch of
+  // the loop body is only reached on some iterations, so it does not gate the whole path. Accept an unconditional
+  // require at the loop-body top level (or in a transparent unchecked block), or a final statement that gates every
+  // path (if/else, switch-with-default, try/catch whose arms all validate). An if-without-else stays rejected.
   if (finalStatement instanceof DoWhileNode || finalStatement instanceof WhileNode) {
-    if (!containsRequire(finalStatement.block.statements)) {
+    if (!loopBodyValidatesEveryIteration(finalStatement.block.statements)) {
       warnOrThrowUnverified(finalStatement, strict);
     }
     return;
   }
 
   if (finalStatement instanceof CollectionIterationNode) {
-    if (!containsRequire(finalStatement.body.statements)) {
+    if (!loopBodyValidatesEveryIteration(finalStatement.body.statements)) {
       warnOrThrowUnverified(finalStatement, strict);
     }
     return;
@@ -323,10 +362,12 @@ function ensureFinalStatementIsRequire(statements: StatementNode[] = [], strict 
 
   // The final statement needs to be a require(), assert(), revert, or selfdestruct. selfdestruct halts the
   // contract (a terminal like revert), so it ends a path validly; the caller-controlled-destination risk is
-  // surfaced separately by warnUnauthenticatedSelfdestruct.
+  // surfaced separately by warnUnauthenticatedSelfdestruct. For a selfdestruct ENTRY itself, the selfdestruct
+  // statement does not authorize the destruction (selfdestructIsTerminal is false), so an explicit require is
+  // required above.
   if (!(finalStatement instanceof RequireNode || finalStatement instanceof TimeOpNode
     || finalStatement instanceof RevertNode || finalStatement instanceof AssertNode
-    || finalStatement instanceof SelfdestructStatementNode)) {
+    || (selfdestructIsTerminal && finalStatement instanceof SelfdestructStatementNode))) {
     warnOrThrowUnverified(finalStatement, strict);
   }
 }
@@ -336,7 +377,7 @@ function ensureFinalStatementIsRequire(statements: StatementNode[] = [], strict 
  * "Unconditional" means it appears directly in the statement list (not nested inside
  * if/else/loop), guaranteeing it executes on every code path through this scope.
  */
-function hasPriorUnconditionalRequire(statements: StatementNode[]): boolean {
+function hasPriorUnconditionalRequire(statements: StatementNode[] = []): boolean {
   for (const s of statements) {
     if (s instanceof RequireNode || s instanceof TimeOpNode
       || s instanceof RevertNode || s instanceof AssertNode) return true;
@@ -348,35 +389,45 @@ function hasPriorUnconditionalRequire(statements: StatementNode[]): boolean {
   return false;
 }
 
-function containsRequire(statements: StatementNode[] = []): boolean {
+/**
+ * Whether a terminal loop body validates on every iteration. True when any top-level statement gates every path:
+ * a require/assert/revert/timeop/selfdestruct, an if/else, a switch-with-default, or a try/catch whose arms all
+ * do. An if-without-else - a require reached only on some iterations (finding F3) - stays false.
+ */
+function loopBodyValidatesEveryIteration(statements: StatementNode[] = []): boolean {
   for (const s of statements) {
-    if (s instanceof RequireNode || s instanceof TimeOpNode
-      || s instanceof RevertNode || s instanceof AssertNode) return true;
-    if (s instanceof BranchNode) {
-      if (containsRequire(s.ifBlock.statements)) return true;
-      if (s.elseBlock && containsRequire(s.elseBlock.statements)) return true;
-    }
-    if (s instanceof TryCatchNode) {
-      if (containsRequire(s.tryBlock.statements)) return true;
-      for (const clause of s.catchClauses) {
-        if (containsRequire(clause.block.statements)) return true;
-      }
-    }
-    if (s instanceof DoWhileNode || s instanceof WhileNode) {
-      if (containsRequire(s.block.statements)) return true;
-    }
-    if (s instanceof CollectionIterationNode) {
-      if (containsRequire(s.body.statements)) return true;
-    }
-    if (s instanceof UncheckedNode) {
-      if (containsRequire(s.block.statements)) return true;
-    }
-    if (s instanceof SwitchNode) {
-      for (const c of s.cases) {
-        if (containsRequire(c.body.statements)) return true;
-      }
-      if (s.defaultCase && containsRequire(s.defaultCase.statements)) return true;
-    }
+    if (s instanceof ConsoleStatementNode) continue;
+    if (everyPathValidates(s)) return true;
+  }
+  return false;
+}
+
+function everyPathValidates(statement: StatementNode): boolean {
+  if (statement instanceof RequireNode || statement instanceof TimeOpNode
+    || statement instanceof RevertNode || statement instanceof AssertNode
+    || statement instanceof SelfdestructStatementNode) return true;
+  if (statement instanceof UncheckedNode) {
+    return loopBodyValidatesEveryIteration(statement.block.statements ?? []);
+  }
+  if (statement instanceof BranchNode) {
+    return statement.elseBlock !== undefined
+      && loopBodyValidatesEveryIteration(statement.ifBlock.statements ?? [])
+      && loopBodyValidatesEveryIteration(statement.elseBlock.statements ?? []);
+  }
+  if (statement instanceof SwitchNode) {
+    if (!statement.defaultCase) return false;
+    return statement.cases.every((c) => loopBodyValidatesEveryIteration(c.body.statements ?? []))
+      && loopBodyValidatesEveryIteration(statement.defaultCase.statements ?? []);
+  }
+  if (statement instanceof TryCatchNode) {
+    return loopBodyValidatesEveryIteration(statement.tryBlock.statements ?? [])
+      && statement.catchClauses.every((clause) => loopBodyValidatesEveryIteration(clause.block.statements ?? []));
+  }
+  if (statement instanceof DoWhileNode || statement instanceof WhileNode) {
+    return loopBodyValidatesEveryIteration(statement.block.statements ?? []);
+  }
+  if (statement instanceof CollectionIterationNode) {
+    return loopBodyValidatesEveryIteration(statement.body.statements ?? []);
   }
   return false;
 }

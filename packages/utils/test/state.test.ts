@@ -31,7 +31,9 @@ import {
   sha256,
   packFixedWidthArray,
   unpackFixedWidthArray,
+  unpackFixedWidthElement,
   packFixedWidthElement,
+  encodeIntAsFixedBytes,
   StateLayout,
   StateRecord,
   Op,
@@ -1101,5 +1103,37 @@ describe('root-addressed vmap value chunk codec', () => {
     const value = bytesOf(VALUE_HEAD_SIZE + 40);
     const chunk = { chunkIndex: 0, chunkData: bytesOf(41) };
     expect(() => joinValueChunks(value.slice(0, VALUE_HEAD_SIZE), [chunk], value.length)).toThrow(/size/);
+  });
+});
+
+describe('bounded numeric array and struct element range validation', () => {
+  it('rejects a negative element when packing a uint[] value', () => {
+    expect(() => packFixedWidthElement(-100n, 'uint')).toThrow(/out of range/);
+    expect(() => packFixedWidthArray([-100n], 'uint')).toThrow(/out of range/);
+  });
+
+  it('rejects an over-range element when packing a bounded int[] value', () => {
+    expect(() => packFixedWidthElement(2n ** 63n, 'int64')).toThrow(/out of range/);
+    expect(() => packFixedWidthElement(-1n, 'uint16')).toThrow(/out of range/);
+  });
+
+  it('detects an out-of-range element when unpacking a packed value', () => {
+    const negative = packFixedWidthElement(-100n, 'int'); // int is signed, so packing is legal
+    expect(() => unpackFixedWidthElement(negative, 'uint')).toThrow(/out of range/);
+    expect(() => unpackFixedWidthElement(encodeIntAsFixedBytes(2n ** 63n, 9), 'int64')).toThrow(/out of range/);
+  });
+
+  it('recognizes the bare int/uint/fixed/ufixed aliases as bounded int-like types', () => {
+    expect(() => encodePushdataValue(100n, 'uint')).not.toThrow();
+    expect(() => encodePushdataValue(-1n, 'uint')).toThrow(/out of range/);
+    expect(() => encodePushdataValue(1n << 256n, 'uint')).toThrow(/out of range/);
+    expect(() => encodePushdataValue(-(1n << 255n) - 1n, 'int')).toThrow(/out of range/);
+  });
+
+  it('keeps accepting in-range elements for every bounded width', () => {
+    expect(() => packFixedWidthElement(200n, 'uint8')).not.toThrow();
+    expect(() => packFixedWidthElement(100n, 'uint')).not.toThrow();
+    expect(() => packFixedWidthElement(-(2n ** 63n), 'int64')).not.toThrow();
+    expect(() => packFixedWidthElement(2n ** 63n - 1n, 'int64')).not.toThrow();
   });
 });

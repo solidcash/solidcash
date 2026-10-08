@@ -7,8 +7,11 @@ import {
   attachDecodedAccessors,
   decodePackedEventArray,
   decodePushdataValue,
+  FixedType,
+  IntType,
   joinValueChunks,
   parseArrayTypeString,
+  parseTypeStrict,
   parseValueChunkCommitment,
   sha256 as sha256Sync,
   VALUE_HEAD_SIZE,
@@ -133,8 +136,17 @@ export async function getEntries(
             : attachDecodedAccessors(decodePushdataValue(raw, 0, type, structs).value) as StateValue;
         }
       } else if (type === 'bool') value = vmNumberToBigInt(raw) !== 0n;
-      else if (/^(u?int|bigint|[u]?fixed|enum)/.test(type)) value = vmNumberToBigInt(raw);
-      else {
+      else if (/^(u?int|bigint|[u]?fixed|enum)/.test(type)) {
+        value = vmNumberToBigInt(raw);
+        // Detect an out-of-range or negative value in a bounded int/fixed commitment, so a malicious commitment
+        // cannot surface a negative `uint` mapping value in the SDK's accounting reads.
+        const parsed = type.startsWith('enum') ? undefined : parseTypeStrict(type);
+        if (typeof value === 'bigint'
+          && (parsed instanceof IntType || parsed instanceof FixedType)
+          && (value < parsed.minValue || value > parsed.maxValue)) {
+          throw new Error(`getEntries: value ${value} out of range for type '${type}'`);
+        }
+      } else {
         try {
           value = attachDecodedAccessors(decodePushdataValue(raw, 0, type, structs).value) as StateValue;
         } catch { value = raw; }

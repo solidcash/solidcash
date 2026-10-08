@@ -1046,8 +1046,10 @@ export function encodeMessageBatch(
       );
     }
     // Compiler witness ordinals index only dispatchable handlers; refused diagnostic siblings are not branches
-    // in the generated route and therefore must not shift these names.
-    const handlerIndex = capability.handlers.filter((candidate) => candidate.eligible).indexOf(handler);
+    // in the generated route and therefore must not shift these names. Prefer the compiler-published stable
+    // ordinal (the same field Contract.ts reads); the filtered-position fallback supports pre-fix artifacts.
+    const handlerIndex = handler.witnessOrdinal
+      ?? capability.handlers.filter((candidate) => candidate.eligible).indexOf(handler);
     const signatureLeavesByInput = handler.inputs.map((input) =>
       transactionSignatureLeaves(input.type, structs));
     // Address params used as IFoo(addr) call targets must stay native locking bytecode so emission

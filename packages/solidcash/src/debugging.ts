@@ -320,7 +320,7 @@ const debugSingleScenario = (
     // public key does not match pkh in EQUALVERIFY
     // Note: due to P2PKHUnlocker implementation, the CHECKSIG cannot fail in practice, only the EQUALVERIFY can fail
     if (!artifact) {
-      throw new FailedTransactionError(error, getBitauthUri(template));
+      throw new FailedTransactionError(error, getBitauthUri(template, false));
     }
 
     // Resolve the instruction pointer against the bytecode currently active in the VM. OP_INVOKE replaces
@@ -339,7 +339,7 @@ const debugSingleScenario = (
       // while the OP_CHECKSIG itself maps to the correct require statement line.
       // In optimised code (CHECKSIGVERIFY), requireStatementIp == failingIp anyway.
       throw new FailedRequireError(
-        artifact, failingIp, requireStatement, inputIndex, getBitauthUri(template), error,
+        artifact, failingIp, requireStatement, inputIndex, getBitauthUri(template, false), error,
         functionSourceMap,
         isNullFail && failingInstruction?.opcode === Op.OP_CHECKSIGVERIFY,
         lastExecutedDebugStep.stack,
@@ -348,7 +348,7 @@ const debugSingleScenario = (
 
     const callerStep = invocationCallerStep(lastExecutedDebugStep);
     throw new FailedTransactionEvaluationError(
-      artifact, callerStep?.ip ?? failingIp, inputIndex, getBitauthUri(template), error, functionSourceMap,
+      artifact, callerStep?.ip ?? failingIp, inputIndex, getBitauthUri(template, false), error, functionSourceMap,
     );
   }
 
@@ -370,7 +370,7 @@ const debugSingleScenario = (
     // If there is no artifact, this is a P2PKH debug error, final verify can only occur when final CHECKSIG failed
     // Note: due to P2PKHUnlocker implementation, this cannot happen in practice
     if (!artifact) {
-      throw new FailedTransactionError(evaluationResult, getBitauthUri(template));
+      throw new FailedTransactionError(evaluationResult, getBitauthUri(template, false));
     }
 
     // Use entryPointFuncSelector to search the correct function's debug info
@@ -379,7 +379,7 @@ const debugSingleScenario = (
 
     if (requireStatement) {
       throw new FailedRequireError(
-        artifact, sourcemapInstructionPointer, requireStatement, inputIndex, getBitauthUri(template),
+        artifact, sourcemapInstructionPointer, requireStatement, inputIndex, getBitauthUri(template, false),
         undefined, functionSourceMap,
         false,
         lastExecutedDebugStep.stack,
@@ -387,7 +387,7 @@ const debugSingleScenario = (
     }
 
     throw new FailedTransactionEvaluationError(
-      artifact, sourcemapInstructionPointer, inputIndex, getBitauthUri(template), evaluationResult, functionSourceMap,
+      artifact, sourcemapInstructionPointer, inputIndex, getBitauthUri(template, false), evaluationResult, functionSourceMap,
     );
   }
 
@@ -427,11 +427,11 @@ const createProgram = (
   });
 
   if (typeof scenarioGeneration === 'string') {
-    throw new FailedTransactionError(scenarioGeneration, getBitauthUri(template));
+    throw new FailedTransactionError(scenarioGeneration, getBitauthUri(template, false));
   }
 
   if (typeof scenarioGeneration.scenario === 'string') {
-    throw new FailedTransactionError(scenarioGeneration.scenario, getBitauthUri(template));
+    throw new FailedTransactionError(scenarioGeneration.scenario, getBitauthUri(template, false));
   }
 
   return { vm, program: scenarioGeneration.scenario.program };
@@ -641,7 +641,7 @@ const verifyFullTransaction = (template: WalletTemplate, provider?: NetworkProvi
   });
 
   if (typeof verificationResult === 'string') {
-    throw new FailedTransactionError(verificationResult, getBitauthUri(template));
+    throw new FailedTransactionError(verificationResult, getBitauthUri(template, false));
   }
 };
 

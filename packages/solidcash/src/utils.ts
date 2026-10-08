@@ -83,10 +83,14 @@ export function validateInput(utxo: Utxo): void {
     if (typeof utxo.token.category !== 'string' || !isHex(utxo.token.category) || utxo.token.category.length !== 64) {
       throw new Error(`Invalid input token category: expected a 64-character hex string, got '${utxo.token.category}'`);
     }
-
-    if (utxo.token.amount < 0n) {
-      throw new Error(`Invalid input token amount: expected a non-negative bigint, got ${utxo.token.amount}`);
+    // CashTokens amounts are consensus 64-bit unsigned values. The encoder wraps out-of-range bigints modulo 2^64,
+    // which would silently burn tokens while the SDK's conservation check runs on the untruncated value.
+    if (utxo.token.amount < 0n || utxo.token.amount > 0xffffffffffffffffn) {
+      throw new Error(`Invalid input token amount: expected 0..2^64-1, got ${utxo.token.amount}`);
     }
+    // Normalize the category to lowercase so change accounting and per-category grouping agree regardless of the
+    // casing a caller or provider used.
+    utxo.token.category = utxo.token.category.toLowerCase();
 
     if (utxo.token.nft && (typeof utxo.token.nft.commitment !== 'string' || !isHex(utxo.token.nft.commitment))) {
       throw new Error(`Invalid input NFT commitment: expected a hex string, got '${utxo.token.nft.commitment}'`);
@@ -109,6 +113,19 @@ export function validateOutput(output: Output, enforceDust = true): void {
 
   if (output.token && output.token.amount < 0n) {
     throw new OutputTokenAmountTooSmallError(output.token.amount);
+  }
+
+  if (output.token && output.token.amount > 0xffffffffffffffffn) {
+    throw new Error(`Invalid output token amount: expected 0..2^64-1, got ${output.token.amount}`);
+  }
+
+  if (output.token) {
+    if (typeof output.token.category !== 'string' || !isHex(output.token.category)
+      || output.token.category.length !== 64) {
+      throw new Error(`Invalid output token category: expected a 64-character hex string, got '${output.token.category}'`);
+    }
+    // Same case normalization as validateInput so per-category grouping is consistent.
+    output.token.category = output.token.category.toLowerCase();
   }
 
   // Dust check for all non-OP_RETURN outputs (both string addresses and raw bytecode)

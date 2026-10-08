@@ -39,16 +39,6 @@ export class CheckFailure extends Error {
 }
 
 /**
- * Decodes a master's witness block.
- *
- * The layout is section 16's, field for field: a call record is
- * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32`. This decoder is written here because the
- * frozen codec's `decodeWitnessBlock` reads a call record as `kind, calleeRef, target, value, ...`, which is
- * neither the order its own encoder writes nor the order section 16 states, so it cannot read back a version 1
- * block that contains a call (`packages/utils/src/framed/witness-block.ts`, encoder lines 130-137 against decoder
- * lines 174-191). Every other part of the frozen interface is used as it stands.
- */
-/**
  * Decodes a master's witness block by delegating to the frozen codec.
  *
  * One decoder exists for this format. A second implementation inside a consumer is what lets a master's own reading

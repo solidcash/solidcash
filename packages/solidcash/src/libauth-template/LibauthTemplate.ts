@@ -156,7 +156,18 @@ export const debugLibauthTemplate = (template: WalletTemplate, transaction: Tran
   return debugTemplate(template, allArtifacts, verifyTransaction, transaction.provider);
 };
 
-export const getBitauthUri = (template: WalletTemplate): string => {
+export const getBitauthUri = (template: WalletTemplate, includePrivateKeys = true): string => {
+  // A failure-path debug URL is attached to thrown errors automatically; it must never carry signing keys. The
+  // explicit opt-in `TransactionBuilder.getBitauthUri()` keeps the keys (it warns), while automatic failure paths
+  // pass `includePrivateKeys = false` and get placeholder values instead.
+  if (!includePrivateKeys) {
+    for (const scenario of Object.values(template.scenarios ?? {})) {
+      const keys = (scenario.data as { keys?: { privateKeys?: Record<string, string> } } | undefined)?.keys;
+      if (keys?.privateKeys) {
+        for (const name of Object.keys(keys.privateKeys)) keys.privateKeys[name] = '[REDACTED]';
+      }
+    }
+  }
   const base64toBase64Url = (base64: string): string => base64.replace(/\+/g, '-').replace(/\//g, '_');
   const payload = base64toBase64Url(binToBase64(zlibSync(utf8ToBin(extendedStringify(template)))));
   return `https://ide.bitauth.com/import-template/${payload}`;

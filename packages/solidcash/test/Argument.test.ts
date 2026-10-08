@@ -32,6 +32,31 @@ describe('encodeFunctionArgument: numeric arrays', () => {
     expect(encodeFunctionArgument([[1, 2], [3, 4]] as unknown as bigint[][], 'uint256[2][2]'))
       .toEqual(encodeFunctionArgument([[1n, 2n], [3n, 4n]], 'uint256[2][2]'));
   });
+
+  it('rejects a negative or out-of-range element where a scalar would be rejected', () => {
+    expect(() => encodeFunctionArgument([-100n], 'uint[]')).toThrow(/out of range/);
+    expect(() => encodeFunctionArgument([-1n, 0n, 0n, 0n], 'uint16[4]')).toThrow(/out of range/);
+    expect(() => encodeFunctionArgument([2n ** 63n], 'int64[]')).toThrow(/out of range/);
+    expect(() => encodeFunctionArgument([[-1n, 0n], [0n, 0n]], 'uint256[2][2]')).toThrow(/out of range/);
+  });
+
+  it('still accepts an in-range element for every bounded width', () => {
+    expect(() => encodeFunctionArgument([100n], 'uint[]')).not.toThrow();
+    expect(() => encodeFunctionArgument([200n], 'uint8[]')).not.toThrow();
+    expect(() => encodeFunctionArgument([-(2n ** 63n)], 'int64[]')).not.toThrow();
+  });
+});
+
+describe('encodeFunctionArgument: bounded struct field range', () => {
+  const structs = [{ name: 'Amounts', fields: [{ name: 'spend', type: 'uint16' }] }];
+
+  it('rejects a negative struct field the same way the scalar path does', () => {
+    expect(() => encodeFunctionArgument({ spend: -1n }, 'Amounts', structs)).toThrow(/out of range/);
+  });
+
+  it('accepts an in-range struct field', () => {
+    expect(() => encodeFunctionArgument({ spend: 65535n }, 'Amounts', structs)).not.toThrow();
+  });
 });
 
 describe('encodeFunctionArgument: deferred signature arrays', () => {

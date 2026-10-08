@@ -1165,6 +1165,11 @@ export class TransactionBuilder {
     return getBitauthUri(this.getLibauthTemplate());
   }
 
+  /** Failure-path debug URI: same template, but signing keys are redacted so logging a thrown error cannot leak them. */
+  getSanitizedBitauthUri(): string {
+    return getBitauthUri(this.getLibauthTemplate(), false);
+  }
+
   getLibauthTemplate(): WalletTemplate {
     return getLibauthTemplate(this);
   }
@@ -1261,7 +1266,7 @@ export class TransactionBuilder {
     } catch (e: any) {
       const reason = e.error ?? e.message;
       let bitauthUri: string;
-      try { bitauthUri = this.getBitauthUri(); } catch { bitauthUri = ''; }
+      try { bitauthUri = this.getSanitizedBitauthUri(); } catch { bitauthUri = ''; }
       throw new FailedTransactionError(reason, bitauthUri);
     }
 
@@ -1280,7 +1285,7 @@ export class TransactionBuilder {
     } catch (e: any) {
       const reason = e.error ?? e.message;
       let bitauthUri: string;
-      try { bitauthUri = this.getBitauthUri(); } catch { bitauthUri = ''; }
+      try { bitauthUri = this.getSanitizedBitauthUri(); } catch { bitauthUri = ''; }
       throw new FailedTransactionError(reason, bitauthUri);
     }
   }

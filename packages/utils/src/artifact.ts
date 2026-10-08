@@ -2363,6 +2363,8 @@ export interface Artifact {
         coveredBytecodes?: readonly { parameterIndex: number; leafIndex: number; bytecode: string }[];
       };
       eligible: boolean;
+      /** Stable index of this eligible handler in the route's eligible dispatch set; witness names use it. */
+      witnessOrdinal?: number;
       rejectionReason?: string;
       rejectionCode?:
       | 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'

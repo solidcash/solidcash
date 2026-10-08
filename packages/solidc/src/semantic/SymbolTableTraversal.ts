@@ -11552,6 +11552,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     return undefined;
   }
 
+  /** Best-effort type discriminator for a function-call argument used as a mapping key (see canonicalizeExpression). */
+  private canonicalizeCallArgumentType(expression: ExpressionNode): string {
+    if (expression.type) return expression.type.toString();
+    if (expression instanceof IdentifierNode) {
+      const param = this.currentFunction?.parameters.find((p) => p.name === expression.name);
+      if (param?.type) return param.type.toString();
+    }
+    return '?';
+  }
+
   private canonicalizeExpression(node: ExpressionNode): string {
     if (node instanceof IdentifierNode) {
       // Resolve a local key TRANSITIVELY through its initializer: an inlined value helper binds `__rhN_owner = pkh`
@@ -11580,7 +11590,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof FunctionCallNode) {
       const args = node.parameters.map((p) => this.canonicalizeExpression(p)).join(',');
-      return `call:${node.identifier.name}(${args})`;
+      // Fold the argument types (or the resolved overload signature) into the label so same-name same-arity
+      // overloads used as mapping keys cannot collapse into one slot (finding C4 residual). Argument type is read
+      // from the visited node, else a parameter of the current function, else the resolved function if unique.
+      const argTypes = node.parameters.map((p) => this.canonicalizeCallArgumentType(p)).join(',');
+      const resolved = node.resolvedFunction;
+      const signature = resolved === undefined ? ''
+        : `:${resolved.parameters.map((p) => p.type.toString()).join(',')}`;
+      return `call:${node.identifier.name}<${argTypes}>${signature}(${args})`;
     }
     if (node instanceof BinaryOpNode) {
       return `binop:${node.operator}(${this.canonicalizeExpression(node.left)},${this.canonicalizeExpression(node.right)})`;
@@ -18331,6 +18348,37 @@ export function hasAuthorizingSignatureGuard(
 
   return operations.length > 0
     && operations.every((target) => guards.some((guard) => dominates(guard, target)));
+}
+
+/**
+ * True when `fn` carries a trusted-key signature check directly in its top-level statement list (or inside a
+ * transparent `unchecked` block), so the check runs unconditionally and authorizes every lifecycle effect in the
+ * body. A guard nested in a branch, loop or switch is conditional and does not count. Reuses SEC-16's trusted-key
+ * definition: the key operand of checkSig/checkMultiSig/checkDataSig must be one the caller cannot choose.
+ */
+export function hasUnconditionalAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
+  const isTrusted = (expression: ExpressionNode): boolean => {
+    if (expression instanceof FunctionCallNode) {
+      const keyArg = SIGNATURE_GUARD_KEY_ARG[expression.identifier.name];
+      const key = keyArg === undefined ? undefined : expression.parameters[keyArg];
+      return key !== undefined && !keyIsCallerChosen(key, fn);
+    }
+    return expression instanceof BinaryOpNode && expression.operator === BinaryOperator.AND
+      && (isTrusted(expression.left) || isTrusted(expression.right));
+  };
+  const walk = (statements: StatementNode[] | undefined): boolean => {
+    if (!statements) return false;
+    for (const statement of statements) {
+      if (statement instanceof ConsoleStatementNode) continue;
+      if (statement instanceof RequireNode && isTrusted(statement.expression)) return true;
+      if (statement instanceof UncheckedNode && walk(statement.block.statements)) return true;
+      // Any other top-level statement (declaration, state read/write, emit, branch, loop, ...) does not itself
+      // authorize, but a later top-level trusted require still runs unconditionally, so keep scanning. A require
+      // nested inside a branch/loop/switch is conditional and is simply skipped (never recursed into).
+    }
+    return false;
+  };
+  return walk(fn.body?.statements);
 }
 
 // True if `type` is, or transitively contains, a function-pointer type (mapping value, array element,

@@ -781,6 +781,9 @@ export interface ContractStatefulnessHint {
   emitsEvent: boolean;
 }
 
+/** The name of a local an inliner bound to a helper's value parameter (`__sp0_k`, `__inl1_to`, `__rh2_pk`). */
+const INLINED_COPY_KEY = /^__(?:sp|rh|inl)\d+_/;
+
 export default class SymbolTableTraversal extends AstTraversal {
   private activeBodySurvey?: ActiveFunctionBodySurvey;
   private readonly addressAliasIndexes = new WeakMap<Node, {
@@ -11732,6 +11735,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (key instanceof IdentifierNode) {
       if (this.currentFunction.parameters.some((p) => p.name === key.name)) {
         return { kind: 'param', paramName: key.name, canonical: `id:${key.name}` };
+      }
+      // An inliner copy of this function's own parameter (`address __inl0_to = to`) names that parameter's value.
+      // An external-call helper inlined into the caller binds its value parameters to fresh `__inl`/`__sp`/`__rh`
+      // locals, so the write reaches code generation with the copy rather than the parameter. The key is still the
+      // caller's parameter: publishing it as one keeps the SDK resolving it from call args and a framed master
+      // reading it from its own frame, instead of materializing the copy as an opaque expression at the derivation.
+      // Restrict to compiler-owned copies; a user local assigned from a parameter keeps its own expression source.
+      const paramCopy = INLINED_COPY_KEY.test(key.name) ? this.localKeyDefs.get(key.name) : undefined;
+      if (paramCopy instanceof IdentifierNode
+        && this.currentFunction.parameters.some((p) => p.name === paramCopy.name)) {
+        return { kind: 'param', paramName: paramCopy.name, canonical: `id:${paramCopy.name}` };
       }
       // An int-constant identifier key resolves the same way (params take precedence above).
       const cd = this.constantMap.get(key.name);

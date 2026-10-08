@@ -2306,6 +2306,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // SEC-15: the route allocated GRAPH_EVENT_SITE for this function.
   private graphEventSiteActive: boolean = false;
   private graphDeploySiteActive: boolean = false;
+  // True while emitting the RHS of a reference-data (storage) write. Under solidity-compat, a graph handler
+  // projects address leaves onto the Solidity ABI word lane so a nested returning address matches the
+  // SDK-authenticated emission row bytes. That lane must NOT reach a struct constructed as a state/mapping value:
+  // mapping values serialize address leaves verbatim as their locking bytecode, and projecting one rewrites the
+  // stored encoding, diverging the value digest (and its value-chunk address) from the SDK-derived chunks.
+  private encodingReferenceDataValue: boolean = false;
   // SEC-16: the route allocated GRAPH_TOKEN_SITE and per-container NFT occurrence counters.
   private graphTokenSiteActive: boolean = false;
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
@@ -9927,7 +9933,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         stack: env.SOLIDC_DEBUG_DYNAMIC_FRAME_STACK === '1' ? this.stack : undefined,
       }));
     }
-    node.expression = this.visit(node.expression);
+    const outerReferenceDataValue = this.encodingReferenceDataValue;
+    // A struct field write is lowered into a synthesized assignment of a whole reconstructed struct value into a
+    // local (the state/mapping value), emitted at statement level. That value is a reference-data value: its
+    // address leaves must keep the verbatim locking-bytecode encoding. A struct built as a local `Peer memory p =`
+    // declaration or as an inline call argument is not this shape and keeps the emission lane.
+    this.encodingReferenceDataValue = node.isReferenceDataWrite
+      || (node.expression as { type?: { constructor?: { name?: string } } })?.type?.constructor?.name === 'StructType';
+    try {
+      node.expression = this.visit(node.expression);
+    } finally {
+      this.encodingReferenceDataValue = outerReferenceDataValue;
+    }
     const runtimeAssignDebug = env?.SOLIDC_DEBUG_RUNTIME_ASSIGN === node.identifier.name;
     if (runtimeAssignDebug) {
       this.emit(hexToBin('636a2d61737369676e2d6265666f7265'), {
@@ -21141,10 +21158,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
     } else {
       // Solidity-compat graph handlers publish address leaves as ABI words (including struct fields)
-      // so nested returning addresses match SDK-authenticated emission rows.
+      // so nested returning addresses match SDK-authenticated emission rows. A reference-data value keeps the
+      // verbatim locking-bytecode leaf encoding instead (see `encodingReferenceDataValue`).
       if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
         && type instanceof AddressType
-        && this.currentFunction?.graphEmissionHandler === true) {
+        && this.currentFunction?.graphEmissionHandler === true
+        && !this.encodingReferenceDataValue) {
         this.emitGraphEmissionAddressLane(locationData);
       }
       // Generic pushdata encode for int, bytes, string, sig, datasig, bytes1, unbounded bytes, address

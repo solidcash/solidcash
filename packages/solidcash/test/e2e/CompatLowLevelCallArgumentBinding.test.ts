@@ -9,9 +9,10 @@ import { createTestProvider, getSigners } from '../test-util.js';
 // (CompatLowLevelCallTargetPin). The callee's arguments are its own unlocking pushes, so a spender co-spending the
 // genuine callee could still run its function with other arguments. The covenant now reads the callee's argument
 // pushes from the end of its unlocking (the last pushes before the redeem script, whatever hidden witnesses precede
-// them) and requires each to be the payload's: EVM words of encodeWithSelector decoded per type (an address word to
-// a lock of that 20-byte identity), SolidCash pushes of encodeCall byte for byte. An argument the compiler sees but
-// cannot bind that way is refused at compile time; a payload whose encoding it cannot see keeps the pin alone.
+// them) and requires each to be the payload's: under evmCompat both `encodeWithSelector` and `encodeCall` carry the
+// EVM head/tail encoding, so each argument is one decoded word (an address word to a lock of that 20-byte identity).
+// An argument the compiler sees but cannot bind that way - notably an ABI-dynamic value, which is not one word - is
+// refused at compile time; a payload whose encoding it cannot see keeps the pin alone.
 const OPTIONS = { evmCompat: true, forceStateful: true, messageBus: false } as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 
@@ -63,10 +64,6 @@ contract Vault {
   }
   function shift(int256 delta) external {
     (bool ok, ) = address(config.ledger).call{value: 0}(abi.encodeWithSelector(ILedger.adjust.selector, delta));
-    require(ok);
-  }
-  function memo(string calldata text, uint256 n) external {
-    (bool ok, ) = address(notebook).call{value: 0}(abi.encodeCall(INotebook.note, (text, n)));
     require(ok);
   }
 }`;
@@ -155,15 +152,19 @@ describe('Solidity-compat low-level call: the callee runs with the payload\'s ar
     expect((await ledger.getState()).balance).toBe(0n);
   });
 
-  it('binds an encodeCall payload\'s pushes, a string included', async () => {
-    const { vault, notebook, bob } = await setup();
-    await vault.connect(bob).memo('hello', 7n).send();
-    expect((await notebook.getState()).noted).toBe(12n);
-    await expect(vault.connect(bob).memo('hello', 7n).withCall(notebook, 'note', ['hellp', 7n]).send())
-      .rejects.toThrow(refusedAtInput0);
-    await expect(vault.connect(bob).memo('hello', 7n).withCall(notebook, 'note', ['hello', 8n]).send())
-      .rejects.toThrow(refusedAtInput0);
-    expect((await notebook.getState()).noted).toBe(12n);
+  it('refuses an encodeCall payload whose argument cannot be bound', () => {
+    // The merged evmCompat flag EVM-frames `abi.encodeCall` too, so a dynamic argument is no single word and the
+    // pin cannot bind it. The compile is refused by name, as the encodeWithSelector spelling is below.
+    expect(() => compileString(`
+pragma solidity ^0.8.0;
+${INTERFACE}
+contract Relay {
+  INotebook notebook;
+  function memo(string calldata text, uint256 n) external {
+    (bool ok, ) = address(notebook).call{value: 0}(abi.encodeCall(INotebook.note, (text, n)));
+    require(ok);
+  }
+}`, OPTIONS)).toThrow(/COMPAT_CALL_UNBOUND_ARGUMENTS.*argument 0 \('string'\) is ABI-dynamic/);
   });
 });
 

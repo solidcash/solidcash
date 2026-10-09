@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind } from '@solidcash/utils';
-import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../../../../solidcash/src/network/index.js';
+import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../../../../solidcash/src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../../solidcash/src/network/createVirtualMachine.js';
 import {
   createComposedDerivationHost,

@@ -8,7 +8,7 @@ import {
   rememberPreparedCovenantValidation,
   rememberPartialCovenantValidation,
   takePartialCovenantValidation,
-} from '../../src/network/createPreparedTxVerifier.js';
+} from '../../src/network/prepared-covenant-receipt.js';
 
 const transaction = (): Transaction => ({
   version: 2,

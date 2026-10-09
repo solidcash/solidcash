@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
-import { Contract, MockNetworkProvider } from '../src/index.js';
+import { Contract } from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { compileString } from './direct-compile.js';
 
 /**

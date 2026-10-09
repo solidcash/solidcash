@@ -34,9 +34,10 @@ export function decodedSolidityAddressIdentity(bytes: Uint8Array): Uint8Array | 
  * fields are projected; bytes/bytes32 remain exact. Copy aggregates and address leaves so cached state and
  * aliased byte fields never acquire result-only metadata. toObject/toArray retain the typed byte leaves.
  *
- * `addressForm` decides that projection: `'hash'` answers the 20-byte Solidity identity, `'bytecode'` answers the
- * exact locking bytecode the contract stored. It is the artifact's own form, so a caller reads back the same
- * address the contract wrote.
+ * A word-encoded leaf (`evm-abi-v1`) is the identity by construction: a fixed-width ABI word cannot carry a
+ * variable-length lock, so that encoding decides the projection on its own. Otherwise the artifact's
+ * `addressForm` decides it - `'hash'` answers the 20-byte Solidity identity, `'bytecode'` answers the exact
+ * locking bytecode the contract stored - so a caller reads back the same address the contract wrote.
  */
 export function decorateDecodedResult(
   value: StateValue,
@@ -55,7 +56,9 @@ export function decorateDecodedResult(
       }
     }
     if (!bytes) return value;
-    const projected = addressForm === 'hash' ? decodedSolidityAddressIdentity(bytes) : bytes.slice();
+    const wordEncoded = encoding === 'evm-abi-v1';
+    const projected = wordEncoded || addressForm === 'hash'
+      ? decodedSolidityAddressIdentity(bytes) : bytes.slice();
     if (!projected) throw new Error('Decoded EVM address has no canonical 20-byte identity.');
     Object.defineProperty(projected, decodedAddress, { value: encoding });
     return projected;

@@ -32,7 +32,7 @@ describe('upgrade and deploy entries require authorization', () => {
 
   it('rejects an unauthenticated deploy entry', () => {
     const source = `${P} contract Child() { int v; function init() { this.v = this.v + 1; } }`
-      + ` contract C() { int v; function make() deploy { this.v = this.v + 1; } }`;
+      + ' contract C() { int v; function make() deploy { this.v = this.v + 1; } }';
     expect(() => compileString(source, direct)).toThrow(/deploy|trusted-key|authorization/i);
   });
 

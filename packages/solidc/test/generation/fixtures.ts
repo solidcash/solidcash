@@ -74,70 +74,70 @@ export const fixtures: Fixture[] = [
   {
     fn: 'reassignment.scash',
     artifact: {
-        "contractName": "Reassignment",
-        "constructorInputs": [
+      'contractName': 'Reassignment',
+      'constructorInputs': [
+        {
+          'name': 'x',
+          'type': 'int256',
+        },
+        {
+          'name': 'y',
+          'type': 'string',
+        },
+      ],
+      'abi': [
+        {
+          'name': 'hello',
+          'selector': '4a6ec480',
+          'inputs': [
+            {
+              'name': 'pk',
+              'type': 'pubkey',
+            },
+            {
+              'name': 's',
+              'type': 'sig',
+            },
+          ],
+          'signatureGuard': {
+            'key': {
+              'kind': 'parameter',
+              'name': 'pk',
+            },
+          },
+        },
+      ],
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_10 OP_4 OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY 14 OP_SWAP OP_2 OP_MOD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_LESSTHAN OP_VERIFY 48656c6c6f20576f726c64 OP_DUP OP_ROT OP_CAT OP_2 OP_PICK OP_RIPEMD160 OP_SWAP OP_RIPEMD160 OP_EQUALVERIFY OP_ROT OP_ROT OP_CHECKSIG OP_NIP',
+      'source': 'contract Reassignment(int x, string y) {\n    function hello(pubkey pk, sig s) {\n        int myVariable = 10 - 4;\n        int myOtherVariable = 20 + myVariable % 2;\n        require(myOtherVariable > x);\n\n        string hw = "Hello World";\n        hw = hw + y;\n\n        require(ripemd160(pk) == ripemd160(hw));\n        require(checkSig(s, pk));\n    }\n}\n',
+      'debug': {
+        'bytecode': '0c765102ff008d93012180012051895a5494518a7f7701008801147c5297518a7f7701008893518a7f770100889f690b48656c6c6f20576f726c64767b7e5279a67ca6887b7bac77',
+        'sourceMap': '1::13:1;;;3:25:3:27;:30::31;:25:::1;:8::32;;;;;;4:30:4::0;:35::45;:48::49;:35:::1;;;;;;;:30;;;;;;;5:16:5:35;:8::37;7:20:7:33:0;8:13:8:15;:18::19;:13:::1;10:26:10:28:0;;:16::29:1;:43::45:0;:33::46:1;:8::48;11:25:11:26:0;:28::30;:8::33:1;2:4:12:5',
+        'logs': [],
+        'requires': [
           {
-            "name": "x",
-            "type": "int256"
+            'ip': 32,
+            'line': 5,
           },
           {
-            "name": "y",
-            "type": "string"
-          }
-        ],
-        "abi": [
+            'ip': 42,
+            'line': 10,
+          },
           {
-            "name": "hello",
-            "selector": "4a6ec480",
-            "inputs": [
-              {
-                "name": "pk",
-                "type": "pubkey"
-              },
-              {
-                "name": "s",
-                "type": "sig"
-              }
-            ],
-            "signatureGuard": {
-              "key": {
-                "kind": "parameter",
-                "name": "pk"
-              }
-            }
-          }
+            'ip': 46,
+            'line': 11,
+          },
         ],
-        "bytecode": "765102ff008d930121800120 OP_1 OP_DEFINE OP_10 OP_4 OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY 14 OP_SWAP OP_2 OP_MOD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_LESSTHAN OP_VERIFY 48656c6c6f20576f726c64 OP_DUP OP_ROT OP_CAT OP_2 OP_PICK OP_RIPEMD160 OP_SWAP OP_RIPEMD160 OP_EQUALVERIFY OP_ROT OP_ROT OP_CHECKSIG OP_NIP",
-        "source": "contract Reassignment(int x, string y) {\n    function hello(pubkey pk, sig s) {\n        int myVariable = 10 - 4;\n        int myOtherVariable = 20 + myVariable % 2;\n        require(myOtherVariable > x);\n\n        string hw = \"Hello World\";\n        hw = hw + y;\n\n        require(ripemd160(pk) == ripemd160(hw));\n        require(checkSig(s, pk));\n    }\n}\n",
-        "debug": {
-          "bytecode": "0c765102ff008d93012180012051895a5494518a7f7701008801147c5297518a7f7701008893518a7f770100889f690b48656c6c6f20576f726c64767b7e5279a67ca6887b7bac77",
-          "sourceMap": "1::13:1;;;3:25:3:27;:30::31;:25:::1;:8::32;;;;;;4:30:4::0;:35::45;:48::49;:35:::1;;;;;;;:30;;;;;;;5:16:5:35;:8::37;7:20:7:33:0;8:13:8:15;:18::19;:13:::1;10:26:10:28:0;;:16::29:1;:43::45:0;:33::46:1;:8::48;11:25:11:26:0;:28::30;:8::33:1;2:4:12:5",
-          "logs": [],
-          "requires": [
-            {
-              "ip": 32,
-              "line": 5
-            },
-            {
-              "ip": 42,
-              "line": 10
-            },
-            {
-              "ip": 46,
-              "line": 11
-            }
-          ]
-        },
-        "compiler": {
-          "name": "solidc",
-          "version": "0.13.1",
-          "options": {
-            "enforceFunctionParameterTypes": true,
-            "enforceLocktimeGuard": true,
-            "commitmentLimit": 128
-          }
-        }
       },
+      'compiler': {
+        'name': 'solidc',
+        'version': '0.13.1',
+        'options': {
+          'enforceFunctionParameterTypes': true,
+          'enforceLocktimeGuard': true,
+          'commitmentLimit': 128,
+        },
+      },
+    },
   },
   {
     fn: 'if_statement.scash',
@@ -650,38 +650,38 @@ export const fixtures: Fixture[] = [
   {
     fn: 'deep_replace.scash',
     artifact: {
-        "contractName": "DeepReplace",
-        "constructorInputs": [],
-        "abi": [
-          {
-            "name": "hello",
-            "selector": "993cadad",
-            "inputs": []
-          }
-        ],
-        "bytecode": "765102ff008d930121800120 OP_1 OP_DEFINE OP_1 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_5 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_6 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF OP_3 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_6 OP_ROLL OP_DROP OP_2ROT OP_2ROT OP_5 OP_ROLL OP_ENDIF OP_2ROT OP_5 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_GREATERTHAN",
-        "source": "contract DeepReplace() {\n    function hello() {\n        int a = 1;\n        int b = 2;\n        int c = 3;\n        int d = 4;\n        int e = 5;\n        int f = 6;\n\n        if (a < 3) {\n            a = 3;\n        }\n\n        require(a > b + c + d + e + f);\n    }\n}\n",
-        "debug": {
-          "bytecode": "0c765102ff008d930121800120518951518a7f7701008852518a7f7701008853518a7f7701008854518a7f7701008855518a7f7701008856518a7f770100885579539f6353518a7f77010088567a757171557a6871557a93518a7f77010088547a93518a7f77010088537a93518a7f770100887b93518a7f77010088a0",
-          "sourceMap": "1::16:1;;;3:16:3:17;:8::18:1;;;;;;4:16:4:17:0;:8::18:1;;;;;;5:16:5:17:0;:8::18:1;;;;;;6:16:6:17:0;:8::18:1;;;;;;7:16:7:17:0;:8::18:1;;;;;;8:16:8:17:0;:8::18:1;;;;;;10:12:10:13:0;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;:20:::1;;;;;;;:28::29:0;;:20:::1;;;;;;;:32::33:0;;:20:::1;;;;;;;:36::37:0;:20:::1;;;;;;;:8::39",
-          "logs": [],
-          "requires": [
-            {
-              "ip": 102,
-              "line": 14
-            }
-          ]
+      'contractName': 'DeepReplace',
+      'constructorInputs': [],
+      'abi': [
+        {
+          'name': 'hello',
+          'selector': '993cadad',
+          'inputs': [],
         },
-        "compiler": {
-          "name": "solidc",
-          "version": "0.13.1",
-          "options": {
-            "enforceFunctionParameterTypes": true,
-            "enforceLocktimeGuard": true,
-            "commitmentLimit": 128
-          }
-        }
+      ],
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_1 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_5 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_6 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF OP_3 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_6 OP_ROLL OP_DROP OP_2ROT OP_2ROT OP_5 OP_ROLL OP_ENDIF OP_2ROT OP_5 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_GREATERTHAN',
+      'source': 'contract DeepReplace() {\n    function hello() {\n        int a = 1;\n        int b = 2;\n        int c = 3;\n        int d = 4;\n        int e = 5;\n        int f = 6;\n\n        if (a < 3) {\n            a = 3;\n        }\n\n        require(a > b + c + d + e + f);\n    }\n}\n',
+      'debug': {
+        'bytecode': '0c765102ff008d930121800120518951518a7f7701008852518a7f7701008853518a7f7701008854518a7f7701008855518a7f7701008856518a7f770100885579539f6353518a7f77010088567a757171557a6871557a93518a7f77010088547a93518a7f77010088537a93518a7f770100887b93518a7f77010088a0',
+        'sourceMap': '1::16:1;;;3:16:3:17;:8::18:1;;;;;;4:16:4:17:0;:8::18:1;;;;;;5:16:5:17:0;:8::18:1;;;;;;6:16:6:17:0;:8::18:1;;;;;;7:16:7:17:0;:8::18:1;;;;;;8:16:8:17:0;:8::18:1;;;;;;10:12:10:13:0;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;:20:::1;;;;;;;:28::29:0;;:20:::1;;;;;;;:32::33:0;;:20:::1;;;;;;;:36::37:0;:20:::1;;;;;;;:8::39',
+        'logs': [],
+        'requires': [
+          {
+            'ip': 102,
+            'line': 14,
+          },
+        ],
       },
+      'compiler': {
+        'name': 'solidc',
+        'version': '0.13.1',
+        'options': {
+          'enforceFunctionParameterTypes': true,
+          'enforceLocktimeGuard': true,
+          'commitmentLimit': 128,
+        },
+      },
+    },
   },
   {
     fn: 'bounded_bytes.scash',
@@ -893,172 +893,172 @@ export const fixtures: Fixture[] = [
   {
     fn: 'mecenas.scash',
     artifact: {
-        "contractName": "Mecenas",
-        "constructorInputs": [
-          {
-            "name": "recipient",
-            "type": "bytes20"
-          },
-          {
-            "name": "funder",
-            "type": "bytes20"
-          },
-          {
-            "name": "pledge",
-            "type": "int256"
-          },
-          {
-            "name": "period",
-            "type": "int256"
-          }
-        ],
-        "abi": [
-          {
-            "name": "recvFunds",
-            "selector": "e8e62fca",
-            "inputs": []
-          },
-          {
-            "name": "reclaim",
-            "selector": "2f7ef34c",
-            "inputs": [
-              {
-                "name": "pk",
-                "type": "pubkey"
-              },
-              {
-                "name": "s",
-                "type": "sig"
-              }
-            ],
-            "signatureGuard": {
-              "key": {
-                "kind": "parameter",
-                "name": "pk"
-              },
-              "keyCommitment": {
-                "kind": "constructorArg",
-                "name": "funder"
-              }
-            }
-          }
-        ],
-        "bytecode": "537ab27500cd0376a9147b7e0288ac7e8802e803518ac0c6518a76547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5479a97b88547a547aac777777 2f7ef34c OP_DEFINE 765102ff008d9301218001207f77010088 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE",
-        "source": "contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {\n    function recvFunds() {\n        require(this.age >= period);\n\n        // Check that the first output sends to the recipient\n        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));\n\n        int minerFee = 1000;\n        int currentValue = tx.inputs[this.activeInputIndex].value;\n        int changeValue = currentValue - pledge - minerFee;\n\n        // If there is not enough left for *another* pledge after this one, we send the remainder to the recipient\n        // Otherwise we send the remainder to the recipient and the change back to the contract\n        if (changeValue <= pledge + minerFee) {\n            require(tx.outputs[0].value == currentValue - minerFee);\n        } else {\n            require(tx.outputs[0].value == pledge);\n            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n            require(tx.outputs[1].value == changeValue);\n        }\n    }\n\n    function reclaim(pubkey pk, sig s) {\n        require(hash160(pk) == funder);\n        require(checkSig(s, pk));\n    }\n}\n",
-        "debug": {
-          "bytecode": "4b537ab27500cd0376a9147b7e0288ac7e8802e803518ac0c6518a76547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c8911765102ff008d9301218001207f770100885189748c7a82549d8a",
-          "sourceMap": "2:4:21:5;;;23::26;;;1:0:27:1;;;;;;;;;",
-          "logs": [],
-          "requires": [],
-          "functionDebug": {
-            "e8e62fca": {
-              "requires": [
-                {
-                  "ip": 2,
-                  "line": 3
-                },
-                {
-                  "ip": 11,
-                  "line": 6
-                },
-                {
-                  "ip": 47,
-                  "line": 15
-                },
-                {
-                  "ip": 53,
-                  "line": 17
-                },
-                {
-                  "ip": 58,
-                  "line": 18
-                },
-                {
-                  "ip": 62,
-                  "line": 19
-                }
-              ],
-              "logs": [],
-              "sourceMap": "3:28:3:34;;:8::36:1;;6:27:6:28:0;:16::45:1;:49::84:0;:74::83;:49::84:1;;;:8::86;8:23:8:27:0;:8::28:1;;9:37:9:58:0;:27::65:1;:8::66;;10:26:10:38:0;:41::47;;:26:::1;;;:50::58:0;;:26:::1;;;14:12:14:23:0;:27::33;;:36::44;;:27:::1;;;:12;:46:16:9:0;15:31:15:32;:20::39:1;:43::66:0;;::::1;;;:12::68;16:15:20:9:0;17:31:17:32;:20::39:1;:43::49:0;;:12::51:1;18:31:18:32:0;:20::49:1;:63::84:0;:53::101:1;:12::103;19:31:19:32:0;:20::39:1;:43::54:0;:12::56:1;16:15:20:9;2:4:21:5;;;"
+      'contractName': 'Mecenas',
+      'constructorInputs': [
+        {
+          'name': 'recipient',
+          'type': 'bytes20',
+        },
+        {
+          'name': 'funder',
+          'type': 'bytes20',
+        },
+        {
+          'name': 'pledge',
+          'type': 'int256',
+        },
+        {
+          'name': 'period',
+          'type': 'int256',
+        },
+      ],
+      'abi': [
+        {
+          'name': 'recvFunds',
+          'selector': 'e8e62fca',
+          'inputs': [],
+        },
+        {
+          'name': 'reclaim',
+          'selector': '2f7ef34c',
+          'inputs': [
+            {
+              'name': 'pk',
+              'type': 'pubkey',
             },
-            "2f7ef34c": {
-              "requires": [
-                {
-                  "ip": 4,
-                  "line": 24
-                },
-                {
-                  "ip": 10,
-                  "line": 25
-                }
-              ],
-              "logs": [],
-              "sourceMap": "24:24:24:26;;:16::27:1;:31::37:0;:8::39:1;25:25:25:26:0;;:28::30;;:8::33:1;23:4:26:5;;"
-            }
-          }
+            {
+              'name': 's',
+              'type': 'sig',
+            },
+          ],
+          'signatureGuard': {
+            'key': {
+              'kind': 'parameter',
+              'name': 'pk',
+            },
+            'keyCommitment': {
+              'kind': 'constructorArg',
+              'name': 'funder',
+            },
+          },
         },
-        "functionBodies": {
-          "e8e62fca": "537ab27500cd0376a9147b7e0288ac7e8802e803518ac0c6518a76547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d7551",
-          "2f7ef34c": "5479a97b88547a547aac777777"
+      ],
+      'bytecode': '537ab27500cd0376a9147b7e0288ac7e8802e803518ac0c6518a76547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5479a97b88547a547aac777777 2f7ef34c OP_DEFINE 765102ff008d9301218001207f77010088 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'source': 'contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {\n    function recvFunds() {\n        require(this.age >= period);\n\n        // Check that the first output sends to the recipient\n        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));\n\n        int minerFee = 1000;\n        int currentValue = tx.inputs[this.activeInputIndex].value;\n        int changeValue = currentValue - pledge - minerFee;\n\n        // If there is not enough left for *another* pledge after this one, we send the remainder to the recipient\n        // Otherwise we send the remainder to the recipient and the change back to the contract\n        if (changeValue <= pledge + minerFee) {\n            require(tx.outputs[0].value == currentValue - minerFee);\n        } else {\n            require(tx.outputs[0].value == pledge);\n            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n            require(tx.outputs[1].value == changeValue);\n        }\n    }\n\n    function reclaim(pubkey pk, sig s) {\n        require(hash160(pk) == funder);\n        require(checkSig(s, pk));\n    }\n}\n',
+      'debug': {
+        'bytecode': '4b537ab27500cd0376a9147b7e0288ac7e8802e803518ac0c6518a76547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c8911765102ff008d9301218001207f770100885189748c7a82549d8a',
+        'sourceMap': '2:4:21:5;;;23::26;;;1:0:27:1;;;;;;;;;',
+        'logs': [],
+        'requires': [],
+        'functionDebug': {
+          'e8e62fca': {
+            'requires': [
+              {
+                'ip': 2,
+                'line': 3,
+              },
+              {
+                'ip': 11,
+                'line': 6,
+              },
+              {
+                'ip': 47,
+                'line': 15,
+              },
+              {
+                'ip': 53,
+                'line': 17,
+              },
+              {
+                'ip': 58,
+                'line': 18,
+              },
+              {
+                'ip': 62,
+                'line': 19,
+              },
+            ],
+            'logs': [],
+            'sourceMap': '3:28:3:34;;:8::36:1;;6:27:6:28:0;:16::45:1;:49::84:0;:74::83;:49::84:1;;;:8::86;8:23:8:27:0;:8::28:1;;9:37:9:58:0;:27::65:1;:8::66;;10:26:10:38:0;:41::47;;:26:::1;;;:50::58:0;;:26:::1;;;14:12:14:23:0;:27::33;;:36::44;;:27:::1;;;:12;:46:16:9:0;15:31:15:32;:20::39:1;:43::66:0;;::::1;;;:12::68;16:15:20:9:0;17:31:17:32;:20::39:1;:43::49:0;;:12::51:1;18:31:18:32:0;:20::49:1;:63::84:0;:53::101:1;:12::103;19:31:19:32:0;:20::39:1;:43::54:0;:12::56:1;16:15:20:9;2:4:21:5;;;',
+          },
+          '2f7ef34c': {
+            'requires': [
+              {
+                'ip': 4,
+                'line': 24,
+              },
+              {
+                'ip': 10,
+                'line': 25,
+              },
+            ],
+            'logs': [],
+            'sourceMap': '24:24:24:26;;:16::27:1;:31::37:0;:8::39:1;25:25:25:26:0;;:28::30;;:8::33:1;23:4:26:5;;',
+          },
         },
-        "compiler": {
-          "name": "solidc",
-          "version": "0.13.1",
-          "options": {
-            "enforceFunctionParameterTypes": true,
-            "enforceLocktimeGuard": true,
-            "commitmentLimit": 128
-          }
-        }
       },
+      'functionBodies': {
+        'e8e62fca': '537ab27500cd0376a9147b7e0288ac7e8802e803518ac0c6518a76547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d7551',
+        '2f7ef34c': '5479a97b88547a547aac777777',
+      },
+      'compiler': {
+        'name': 'solidc',
+        'version': '0.13.1',
+        'options': {
+          'enforceFunctionParameterTypes': true,
+          'enforceLocktimeGuard': true,
+          'commitmentLimit': 128,
+        },
+      },
+    },
   },
   {
     fn: 'announcement.scash',
     artifact: {
-        "contractName": "Announcement",
-        "constructorInputs": [],
-        "abi": [
-          {
-            "name": "announce",
-            "selector": "327ae4c2",
-            "inputs": []
-          }
-        ],
-        "bytecode": "765102ff008d930121800120 OP_1 OP_DEFINE 6a 026d02 OP_CAT 4c624120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e OP_CAT OP_0 OP_OUTPUTVALUE OP_0 OP_NUMEQUALVERIFY OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY e803 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOVALUE OP_OVER OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_ROT OP_GREATERTHANOREQUAL OP_IF OP_1 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_OVER OP_NUMEQUALVERIFY OP_ENDIF OP_DROP OP_1",
-        "source": "pragma solidcash >=0.8.0;\n\n/* This is a contract showcasing covenants outside of regular transactional use.\n * It enforces the contract to make an \"announcement\" on Memo.cash, and send the\n * remainder of contract funds back to the contract.\n */\ncontract Announcement() {\n    function announce() {\n        // Create the memo.cash announcement output\n        bytes announcement = new LockingBytecodeNullData([\n            0x6d02,\n            bytes('A contract may not injure a human being or, through inaction, allow a human being to come to harm.')\n        ]);\n\n        // Check that the first tx output matches the announcement\n        require(tx.outputs[0].value == 0);\n        require(tx.outputs[0].lockingBytecode == announcement);\n\n        // Calculate leftover money after fee (1000 sats)\n        // Check that the second tx output sends the change back if there's enough leftover for another announcement\n        int minerFee = 1000;\n        int changeAmount = tx.inputs[this.activeInputIndex].value - minerFee;\n        if (changeAmount >= minerFee) {\n            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n            require(tx.outputs[1].value == changeAmount);\n        }\n    }\n}\n",
-        "debug": {
-          "bytecode": "0c765102ff008d9301218001205189016a03026d027e4c644c624120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e7e00cc009d00cd8802e803518a7f77010088c0c67894518a7f77010088767ba26351cdc0c78851cc789d687551",
-          "sourceMap": "1::28:1;;;10:29:13:10;11:12:11:18;::::1;12::12:119:0;::::1;16:27:16:28:0;:16::35:1;:39::40:0;:8::42:1;17:27:17:28:0;:16::45:1;:8::63;21:23:21:27:0;:8::28:1;;;;;;22:37:22:58:0;:27::65:1;:68::76:0;:27:::1;;;;;;;23:12:23:24:0;:28::36;:12:::1;:38:26:9:0;24:31:24:32;:20::49:1;:63::84:0;:53::101:1;:12::103;25:31:25:32:0;:20::39:1;:43::55:0;:12::57:1;23:38:26:9;8:4:27:5;",
-          "logs": [],
-          "requires": [
-            {
-              "ip": 11,
-              "line": 16
-            },
-            {
-              "ip": 14,
-              "line": 17
-            },
-            {
-              "ip": 40,
-              "line": 24
-            },
-            {
-              "ip": 44,
-              "line": 25
-            }
-          ]
+      'contractName': 'Announcement',
+      'constructorInputs': [],
+      'abi': [
+        {
+          'name': 'announce',
+          'selector': '327ae4c2',
+          'inputs': [],
         },
-        "compiler": {
-          "name": "solidc",
-          "version": "0.13.1",
-          "options": {
-            "enforceFunctionParameterTypes": true,
-            "enforceLocktimeGuard": true,
-            "commitmentLimit": 128
-          }
-        }
+      ],
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE 6a 026d02 OP_CAT 4c624120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e OP_CAT OP_0 OP_OUTPUTVALUE OP_0 OP_NUMEQUALVERIFY OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY e803 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOVALUE OP_OVER OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_ROT OP_GREATERTHANOREQUAL OP_IF OP_1 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_OVER OP_NUMEQUALVERIFY OP_ENDIF OP_DROP OP_1',
+      'source': "pragma solidcash >=0.8.0;\n\n/* This is a contract showcasing covenants outside of regular transactional use.\n * It enforces the contract to make an \"announcement\" on Memo.cash, and send the\n * remainder of contract funds back to the contract.\n */\ncontract Announcement() {\n    function announce() {\n        // Create the memo.cash announcement output\n        bytes announcement = new LockingBytecodeNullData([\n            0x6d02,\n            bytes('A contract may not injure a human being or, through inaction, allow a human being to come to harm.')\n        ]);\n\n        // Check that the first tx output matches the announcement\n        require(tx.outputs[0].value == 0);\n        require(tx.outputs[0].lockingBytecode == announcement);\n\n        // Calculate leftover money after fee (1000 sats)\n        // Check that the second tx output sends the change back if there's enough leftover for another announcement\n        int minerFee = 1000;\n        int changeAmount = tx.inputs[this.activeInputIndex].value - minerFee;\n        if (changeAmount >= minerFee) {\n            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n            require(tx.outputs[1].value == changeAmount);\n        }\n    }\n}\n",
+      'debug': {
+        'bytecode': '0c765102ff008d9301218001205189016a03026d027e4c644c624120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e7e00cc009d00cd8802e803518a7f77010088c0c67894518a7f77010088767ba26351cdc0c78851cc789d687551',
+        'sourceMap': '1::28:1;;;10:29:13:10;11:12:11:18;::::1;12::12:119:0;::::1;16:27:16:28:0;:16::35:1;:39::40:0;:8::42:1;17:27:17:28:0;:16::45:1;:8::63;21:23:21:27:0;:8::28:1;;;;;;22:37:22:58:0;:27::65:1;:68::76:0;:27:::1;;;;;;;23:12:23:24:0;:28::36;:12:::1;:38:26:9:0;24:31:24:32;:20::49:1;:63::84:0;:53::101:1;:12::103;25:31:25:32:0;:20::39:1;:43::55:0;:12::57:1;23:38:26:9;8:4:27:5;',
+        'logs': [],
+        'requires': [
+          {
+            'ip': 11,
+            'line': 16,
+          },
+          {
+            'ip': 14,
+            'line': 17,
+          },
+          {
+            'ip': 40,
+            'line': 24,
+          },
+          {
+            'ip': 44,
+            'line': 25,
+          },
+        ],
       },
+      'compiler': {
+        'name': 'solidc',
+        'version': '0.13.1',
+        'options': {
+          'enforceFunctionParameterTypes': true,
+          'enforceLocktimeGuard': true,
+          'commitmentLimit': 128,
+        },
+      },
+    },
   },
   {
     fn: 'p2palindrome.scash',
@@ -1217,50 +1217,50 @@ export const fixtures: Fixture[] = [
   {
     fn: 'integer_formatting.scash',
     artifact: {
-        "contractName": "IntegerFormatting",
-        "constructorInputs": [],
-        "abi": [
-          {
-            "name": "test",
-            "selector": "58d7eb51",
-            "inputs": []
-          }
-        ],
-        "bytecode": "060010a5d4e800765102ff008d930121800120 OP_1 OP_DEFINE OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_3 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_ROT OP_OVER OP_NUMEQUALVERIFY OP_NUMEQUAL",
-        "source": "contract IntegerFormatting() {\n    function test() {\n        int scientific1 = 1e12;\n        int scientific2 = 1E12;\n        int underscores = 1_000_000_000_000;\n        int combined = 1_0e1_1;\n\n        int regular = 1000000000000;\n\n        require(scientific1 == regular);\n        require(scientific2 == regular);\n        require(underscores == regular);\n        require(combined == regular);\n    }\n}\n",
-        "debug": {
-          "bytecode": "13060010a5d4e800765102ff008d9301218001205189518a7f77010088518a7f77010088518a7f77010088518a7f77010088518a7f77010088547a789d537a789d7b789d9c",
-          "sourceMap": "1::15:1;;;3:26:3:30;;:8::31:1;;;;4:26:4:30:0;;:8::31:1;;;;5:26:5:43:0;;:8::44:1;;;;6:23:6:30:0;;:8::31:1;;;;8:22:8:35:0;;:8::36:1;;;;10:16:10:27:0;;:31::38;:8::40:1;11:16:11:27:0;;:31::38;:8::40:1;12:16:12:27:0;:31::38;:8::40:1;13::13:37",
-          "logs": [],
-          "requires": [
-            {
-              "ip": 36,
-              "line": 10
-            },
-            {
-              "ip": 40,
-              "line": 11
-            },
-            {
-              "ip": 43,
-              "line": 12
-            },
-            {
-              "ip": 45,
-              "line": 13
-            }
-          ]
+      'contractName': 'IntegerFormatting',
+      'constructorInputs': [],
+      'abi': [
+        {
+          'name': 'test',
+          'selector': '58d7eb51',
+          'inputs': [],
         },
-        "compiler": {
-          "name": "solidc",
-          "version": "0.13.1",
-          "options": {
-            "enforceFunctionParameterTypes": true,
-            "enforceLocktimeGuard": true,
-            "commitmentLimit": 128
-          }
-        }
+      ],
+      'bytecode': '060010a5d4e800765102ff008d930121800120 OP_1 OP_DEFINE OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_3 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_ROT OP_OVER OP_NUMEQUALVERIFY OP_NUMEQUAL',
+      'source': 'contract IntegerFormatting() {\n    function test() {\n        int scientific1 = 1e12;\n        int scientific2 = 1E12;\n        int underscores = 1_000_000_000_000;\n        int combined = 1_0e1_1;\n\n        int regular = 1000000000000;\n\n        require(scientific1 == regular);\n        require(scientific2 == regular);\n        require(underscores == regular);\n        require(combined == regular);\n    }\n}\n',
+      'debug': {
+        'bytecode': '13060010a5d4e800765102ff008d9301218001205189518a7f77010088518a7f77010088518a7f77010088518a7f77010088518a7f77010088547a789d537a789d7b789d9c',
+        'sourceMap': '1::15:1;;;3:26:3:30;;:8::31:1;;;;4:26:4:30:0;;:8::31:1;;;;5:26:5:43:0;;:8::44:1;;;;6:23:6:30:0;;:8::31:1;;;;8:22:8:35:0;;:8::36:1;;;;10:16:10:27:0;;:31::38;:8::40:1;11:16:11:27:0;;:31::38;:8::40:1;12:16:12:27:0;:31::38;:8::40:1;13::13:37',
+        'logs': [],
+        'requires': [
+          {
+            'ip': 36,
+            'line': 10,
+          },
+          {
+            'ip': 40,
+            'line': 11,
+          },
+          {
+            'ip': 43,
+            'line': 12,
+          },
+          {
+            'ip': 45,
+            'line': 13,
+          },
+        ],
       },
+      'compiler': {
+        'name': 'solidc',
+        'version': '0.13.1',
+        'options': {
+          'enforceFunctionParameterTypes': true,
+          'enforceLocktimeGuard': true,
+          'commitmentLimit': 128,
+        },
+      },
+    },
   },
   {
     fn: 'multiline_statements.scash',
@@ -1505,142 +1505,142 @@ export const fixtures: Fixture[] = [
   {
     fn: 'complex_loop.scash',
     artifact: {
-        "contractName": "Loopy",
-        "constructorInputs": [],
-        "abi": [
-          {
-            "name": "doLoop",
-            "selector": "16821cf9",
-            "inputs": []
-          }
-        ],
-        "bytecode": "765102ff008d930121800120 OP_1 OP_DEFINE OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_BEGIN OP_DUP OP_UTXOVALUE OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_DROP OP_2SWAP OP_3 OP_ROLL OP_DUP OP_1ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_NIP OP_TXOUTPUTCOUNT OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2DUP OP_LESSTHAN OP_DUP OP_IF OP_2 OP_PICK OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUAL OP_NOT OP_NIP OP_DUP OP_IF OP_4 OP_PICK OP_3 OP_PICK OP_OUTPUTVALUE OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_5 OP_ROLL OP_DROP OP_4 OP_ROLL OP_4 OP_ROLL OP_4 OP_ROLL OP_4 OP_ROLL OP_ELSE OP_3 OP_PICK OP_1ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_DROP OP_2SWAP OP_3 OP_ROLL OP_ENDIF OP_ENDIF OP_2DROP OP_DUP OP_TXINPUTCOUNT OP_GREATERTHANOREQUAL OP_UNTIL OP_2SWAP OP_GREATERTHAN OP_VERIFY OP_SWAP OP_0 OP_GREATERTHAN OP_NIP",
-        "source": "contract Loopy() {\n    function doLoop() {\n        int inputSum = 0;\n        int outputSum = 0;\n        int tokenCount = 0;\n        int i = 0;\n\n        do {\n            inputSum = tx.inputs[i].value;\n            i = i + 1;\n\n            int x = tx.outputs.length;\n            bool b = i < x;\n\n            if (b) {\n                b = tx.outputs[i].tokenCategory != 0x;\n\n                if (b) {\n                    outputSum = outputSum + tx.outputs[i].value;\n                } else {\n                    tokenCount = tokenCount + 1;\n                }\n\n                console.log(tokenCount);\n            }\n        } while (i < tx.inputs.length);\n\n        require(inputSum > outputSum);\n        require(tokenCount > 0);\n    }\n}\n",
-        "debug": {
-          "bytecode": "0c765102ff008d930121800120518900518a7f7701008800518a7f7701008800518a7f7701008800518a7f770100886576c6518a7f77010088547a7572537a768b518a7f7701008877c4518a7f770100886e9f76635279d100879177766354795379cc93518a7f77010088557a75547a547a547a547a6753798b518a7f77010088547a7572537a68686d76c3a26672a0697c00a077",
-          "sourceMap": "1::31:1;;;3:23:3:24;:8::25:1;;;;;;4:24:4::0;:8::26:1;;;;;;5:25:5::0;:8::27:1;;;;;;6:16:6:17:0;:8::18:1;;;;;;8::26:39:0;9:33:9:34;:23::41:1;:12::42;;;;;;;;;;;;10:16:10:17:0;:::21:1;;;;;;;:12::22;12:20:12:37:0;:12::38:1;;;;;;13:21:13:26:0;::::1;15:16:15:17:0;:19:25:13;16:31:16:32;;:20::47:1;:51::53:0;:20:::1;;:16::54;18:20:18:21:0;:23:20:17;19:32:19:41;;:55::56;;:44::63:1;:32;:20::64;;;;;;;;;;;;;;;;;20:23:22:17:0;21:33:21:43;;:::47:1;;;;;;;:20::48;;;;;;20:23:22:17;15:19:25:13;8:11:26:9;26:17::18:0;:21::37;8:8::39:1;;28:16:28:36:0;::::1;:8::38;29:16:29:26:0;:29::30;:8::32:1;2:4:30:5",
-          "logs": [
-            {
-              "ip": 115,
-              "line": 24,
-              "data": [
-                {
-                  "stackIndex": 3,
-                  "type": "int256",
-                  "ip": 115
-                }
-              ]
-            }
-          ],
-          "requires": [
-            {
-              "ip": 123,
-              "line": 28
-            },
-            {
-              "ip": 127,
-              "line": 29
-            }
-          ]
+      'contractName': 'Loopy',
+      'constructorInputs': [],
+      'abi': [
+        {
+          'name': 'doLoop',
+          'selector': '16821cf9',
+          'inputs': [],
         },
-        "compiler": {
-          "name": "solidc",
-          "version": "0.13.1",
-          "options": {
-            "enforceFunctionParameterTypes": true,
-            "enforceLocktimeGuard": true,
-            "commitmentLimit": 128
-          }
-        }
+      ],
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_BEGIN OP_DUP OP_UTXOVALUE OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_DROP OP_2SWAP OP_3 OP_ROLL OP_DUP OP_1ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_NIP OP_TXOUTPUTCOUNT OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2DUP OP_LESSTHAN OP_DUP OP_IF OP_2 OP_PICK OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUAL OP_NOT OP_NIP OP_DUP OP_IF OP_4 OP_PICK OP_3 OP_PICK OP_OUTPUTVALUE OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_5 OP_ROLL OP_DROP OP_4 OP_ROLL OP_4 OP_ROLL OP_4 OP_ROLL OP_4 OP_ROLL OP_ELSE OP_3 OP_PICK OP_1ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_DROP OP_2SWAP OP_3 OP_ROLL OP_ENDIF OP_ENDIF OP_2DROP OP_DUP OP_TXINPUTCOUNT OP_GREATERTHANOREQUAL OP_UNTIL OP_2SWAP OP_GREATERTHAN OP_VERIFY OP_SWAP OP_0 OP_GREATERTHAN OP_NIP',
+      'source': 'contract Loopy() {\n    function doLoop() {\n        int inputSum = 0;\n        int outputSum = 0;\n        int tokenCount = 0;\n        int i = 0;\n\n        do {\n            inputSum = tx.inputs[i].value;\n            i = i + 1;\n\n            int x = tx.outputs.length;\n            bool b = i < x;\n\n            if (b) {\n                b = tx.outputs[i].tokenCategory != 0x;\n\n                if (b) {\n                    outputSum = outputSum + tx.outputs[i].value;\n                } else {\n                    tokenCount = tokenCount + 1;\n                }\n\n                console.log(tokenCount);\n            }\n        } while (i < tx.inputs.length);\n\n        require(inputSum > outputSum);\n        require(tokenCount > 0);\n    }\n}\n',
+      'debug': {
+        'bytecode': '0c765102ff008d930121800120518900518a7f7701008800518a7f7701008800518a7f7701008800518a7f770100886576c6518a7f77010088547a7572537a768b518a7f7701008877c4518a7f770100886e9f76635279d100879177766354795379cc93518a7f77010088557a75547a547a547a547a6753798b518a7f77010088547a7572537a68686d76c3a26672a0697c00a077',
+        'sourceMap': '1::31:1;;;3:23:3:24;:8::25:1;;;;;;4:24:4::0;:8::26:1;;;;;;5:25:5::0;:8::27:1;;;;;;6:16:6:17:0;:8::18:1;;;;;;8::26:39:0;9:33:9:34;:23::41:1;:12::42;;;;;;;;;;;;10:16:10:17:0;:::21:1;;;;;;;:12::22;12:20:12:37:0;:12::38:1;;;;;;13:21:13:26:0;::::1;15:16:15:17:0;:19:25:13;16:31:16:32;;:20::47:1;:51::53:0;:20:::1;;:16::54;18:20:18:21:0;:23:20:17;19:32:19:41;;:55::56;;:44::63:1;:32;:20::64;;;;;;;;;;;;;;;;;20:23:22:17:0;21:33:21:43;;:::47:1;;;;;;;:20::48;;;;;;20:23:22:17;15:19:25:13;8:11:26:9;26:17::18:0;:21::37;8:8::39:1;;28:16:28:36:0;::::1;:8::38;29:16:29:26:0;:29::30;:8::32:1;2:4:30:5',
+        'logs': [
+          {
+            'ip': 115,
+            'line': 24,
+            'data': [
+              {
+                'stackIndex': 3,
+                'type': 'int256',
+                'ip': 115,
+              },
+            ],
+          },
+        ],
+        'requires': [
+          {
+            'ip': 123,
+            'line': 28,
+          },
+          {
+            'ip': 127,
+            'line': 29,
+          },
+        ],
       },
+      'compiler': {
+        'name': 'solidc',
+        'version': '0.13.1',
+        'options': {
+          'enforceFunctionParameterTypes': true,
+          'enforceLocktimeGuard': true,
+          'commitmentLimit': 128,
+        },
+      },
+    },
   },
   {
     fn: 'do_while_loop_no_introspection.scash',
     artifact: {
-        "contractName": "Loopy",
-        "constructorInputs": [],
-        "abi": [
-          {
-            "name": "doLoop",
-            "selector": "16821cf9",
-            "inputs": []
-          }
-        ],
-        "bytecode": "765102ff008d930121800120 OP_1 OP_DEFINE OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_BEGIN OP_OVER OP_1ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_10 OP_LESSTHAN OP_VERIFY OP_OVER OP_10 OP_GREATERTHANOREQUAL OP_UNTIL OP_2DROP OP_1",
-        "source": "contract Loopy() {\n    function doLoop() {\n        int i = 0;\n        int x = 2;\n\n        do {\n            i = i + 1;\n            console.log(i);\n            require(i + x < 10);\n        } while (i < 10);\n    }\n}\n",
-        "debug": {
-          "bytecode": "0c765102ff008d930121800120518900518a7f7701008852518a7f7701008865788b518a7f770100887b757c6e93518a7f770100885a9f69785aa2666d51",
-          "sourceMap": "1::12:1;;;3:16:3:17;:8::18:1;;;;;;4:16:4:17:0;:8::18:1;;;;;;6::10:25:0;7:16:7:17;:::21:1;;;;;;;:12::22;;;9:20:9:25:0;::::1;;;;;;;:28::30:0;:20:::1;:12::32;10:17:10:18:0;:21::23;6:8::25:1;;2:4:11:5;",
-          "logs": [
-            {
-              "ip": 29,
-              "line": 8,
-              "data": [
-                {
-                  "stackIndex": 1,
-                  "type": "int256",
-                  "ip": 29
-                }
-              ]
-            }
-          ],
-          "requires": [
-            {
-              "ip": 39,
-              "line": 9
-            }
-          ]
+      'contractName': 'Loopy',
+      'constructorInputs': [],
+      'abi': [
+        {
+          'name': 'doLoop',
+          'selector': '16821cf9',
+          'inputs': [],
         },
-        "compiler": {
-          "name": "solidc",
-          "version": "0.13.1",
-          "options": {
-            "enforceFunctionParameterTypes": true,
-            "enforceLocktimeGuard": true,
-            "commitmentLimit": 128
-          }
-        }
+      ],
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_0 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_BEGIN OP_OVER OP_1ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_10 OP_LESSTHAN OP_VERIFY OP_OVER OP_10 OP_GREATERTHANOREQUAL OP_UNTIL OP_2DROP OP_1',
+      'source': 'contract Loopy() {\n    function doLoop() {\n        int i = 0;\n        int x = 2;\n\n        do {\n            i = i + 1;\n            console.log(i);\n            require(i + x < 10);\n        } while (i < 10);\n    }\n}\n',
+      'debug': {
+        'bytecode': '0c765102ff008d930121800120518900518a7f7701008852518a7f7701008865788b518a7f770100887b757c6e93518a7f770100885a9f69785aa2666d51',
+        'sourceMap': '1::12:1;;;3:16:3:17;:8::18:1;;;;;;4:16:4:17:0;:8::18:1;;;;;;6::10:25:0;7:16:7:17;:::21:1;;;;;;;:12::22;;;9:20:9:25:0;::::1;;;;;;;:28::30:0;:20:::1;:12::32;10:17:10:18:0;:21::23;6:8::25:1;;2:4:11:5;',
+        'logs': [
+          {
+            'ip': 29,
+            'line': 8,
+            'data': [
+              {
+                'stackIndex': 1,
+                'type': 'int256',
+                'ip': 29,
+              },
+            ],
+          },
+        ],
+        'requires': [
+          {
+            'ip': 39,
+            'line': 9,
+          },
+        ],
       },
+      'compiler': {
+        'name': 'solidc',
+        'version': '0.13.1',
+        'options': {
+          'enforceFunctionParameterTypes': true,
+          'enforceLocktimeGuard': true,
+          'commitmentLimit': 128,
+        },
+      },
+    },
   },
   {
     fn: 'bitshift.scash',
     artifact: {
-        "contractName": "Bitshift",
-        "constructorInputs": [],
-        "abi": [
-          {
-            "name": "spend",
-            "selector": "f598582f",
-            "inputs": []
-          }
-        ],
-        "bytecode": "765102ff008d930121800120 OP_1 OP_DEFINE 1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_RSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_LSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_16 OP_NUMEQUAL",
-        "source": "contract Bitshift() {\n    function spend() {\n        bytes8 x = 0x1122334455667788;\n        bytes8 y = x << 4 >> 4;\n\n        require(y == 0x0000000055667788);\n\n        int a = 8;\n        int b = a >> 2 << 1;\n\n        require (b == 16);\n    }\n}\n",
-        "debug": {
-          "bytecode": "0c765102ff008d9301218001205189081122334455667788549854990800000000556677888858518a7f77010088528e518a7f77010088518d518a7f77010088609c",
-          "sourceMap": "1::13:1;;;3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;:8::18:1;;;;;;9:21:9:22:0;:16:::1;;;;;;;:26::27:0;:16:::1;;;;;;;11:22:11:24:0;:8::26:1",
-          "logs": [],
-          "requires": [
-            {
-              "ip": 9,
-              "line": 6
-            },
-            {
-              "ip": 35,
-              "line": 11
-            }
-          ]
+      'contractName': 'Bitshift',
+      'constructorInputs': [],
+      'abi': [
+        {
+          'name': 'spend',
+          'selector': 'f598582f',
+          'inputs': [],
         },
-        "compiler": {
-          "name": "solidc",
-          "version": "0.13.1",
-          "options": {
-            "enforceFunctionParameterTypes": true,
-            "enforceLocktimeGuard": true,
-            "commitmentLimit": 128
-          }
-        }
+      ],
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE 1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_RSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_LSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_16 OP_NUMEQUAL',
+      'source': 'contract Bitshift() {\n    function spend() {\n        bytes8 x = 0x1122334455667788;\n        bytes8 y = x << 4 >> 4;\n\n        require(y == 0x0000000055667788);\n\n        int a = 8;\n        int b = a >> 2 << 1;\n\n        require (b == 16);\n    }\n}\n',
+      'debug': {
+        'bytecode': '0c765102ff008d9301218001205189081122334455667788549854990800000000556677888858518a7f77010088528e518a7f77010088518d518a7f77010088609c',
+        'sourceMap': '1::13:1;;;3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;:8::18:1;;;;;;9:21:9:22:0;:16:::1;;;;;;;:26::27:0;:16:::1;;;;;;;11:22:11:24:0;:8::26:1',
+        'logs': [],
+        'requires': [
+          {
+            'ip': 9,
+            'line': 6,
+          },
+          {
+            'ip': 35,
+            'line': 11,
+          },
+        ],
       },
+      'compiler': {
+        'name': 'solidc',
+        'version': '0.13.1',
+        'options': {
+          'enforceFunctionParameterTypes': true,
+          'enforceLocktimeGuard': true,
+          'commitmentLimit': 128,
+        },
+      },
+    },
   },
   {
     fn: 'type_enforcement.scash',

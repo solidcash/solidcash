@@ -13646,7 +13646,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.referencedContract = contract;
 
       if (contract.isAbstract) {
-        throw new AbstractContractNotCompilableError(contract.name);
+        throw new AbstractContractNotCompilableError(node, contract.name);
       }
 
       const isStatefulTarget = contract.stateVariables.length > 0 || contract.collections.length > 0;

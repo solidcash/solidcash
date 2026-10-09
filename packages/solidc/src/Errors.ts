@@ -1493,18 +1493,13 @@ export class DiamondInheritanceError extends SolidCashError {
   }
 }
 
-export class AbstractContractNotCompilableError extends Error {
-  constructor(contractName: string) {
-    super(`Cannot compile abstract contract '${contractName}' - abstract contracts do not produce artifacts. Extend it with a concrete contract instead.`);
-    this.name = this.constructor.name;
+export class AbstractContractNotCompilableError extends SolidCashError {
+  constructor(node: InstantiationNode, contractName: string) {
+    super(node, `Cannot instantiate abstract contract '${contractName}' - abstract contracts do not produce artifacts. Extend it with a concrete contract instead.`);
   }
 }
 
-export class AbstractContractInstantiationError extends SolidCashError {
-  constructor(node: InstantiationNode, contractName: string) {
-    super(node, `Cannot instantiate abstract contract '${contractName}'`);
-  }
-}
+export class AbstractContractInstantiationError extends AbstractContractNotCompilableError {}
 
 export class AbstractFunctionInConcreteContractError extends SolidCashError {
   constructor(public node: Node, funcName: string) {

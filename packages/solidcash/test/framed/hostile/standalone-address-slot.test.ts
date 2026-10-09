@@ -5,7 +5,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
-import { MockNetworkProvider } from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory,

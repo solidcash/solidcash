@@ -7,11 +7,11 @@ import {
 } from '@solidcash/utils';
 import {
   Contract,
-  MockNetworkProvider,
   SignatureTemplate,
   Signer,
   TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   StatefulContract,
   StatefulTransactionBuilder,

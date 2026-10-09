@@ -3,7 +3,11 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileString } from './direct-compile.js';
 import { keccakComputeLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
-import { Contract, TransactionBuilder, MockNetworkProvider } from '../src/index.js';
+import {
+  Contract,
+  TransactionBuilder,
+} from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { randomUtxo } from '../src/utils.js';
 import { extractKeccakPreimageFromTrace } from '../src/keccak/keccakComputeSidecar.js';
 

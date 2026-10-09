@@ -2,11 +2,11 @@ import { compileString, PrivateStateVariableAccessError } from 'solidc';
 import { ResolvedImport, buildInitialStateCommitments } from '@solidcash/utils';
 import {
   Contract,
-  MockNetworkProvider,
   TransactionBuilder,
   FailedRequireError,
   SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   StateReader,
   StatefulTransactionBuilder,

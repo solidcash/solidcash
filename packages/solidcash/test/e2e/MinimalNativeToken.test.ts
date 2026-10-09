@@ -6,10 +6,10 @@ import {
 } from '@solidcash/utils';
 import {
   Contract,
-  MockNetworkProvider,
   SignatureTemplate,
   Signer,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';

@@ -4,10 +4,8 @@ import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
   _csRawSolidc(s, o);
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import {
-  Contract,
-  MockNetworkProvider,
-} from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   StatefulContract,
   decodeEntryCommitment,

@@ -3,8 +3,11 @@ import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
+  Contract,
+  TransactionBuilder,
+  FailedRequireError,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, gatherUtxos } from '../test-util.js';
 import { hexToBin } from '@bitauth/libauth';

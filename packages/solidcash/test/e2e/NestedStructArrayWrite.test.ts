@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
+import { Contract } from '../../src/index.js';
 import {
-  Contract,
   MockNetworkProvider,
   MOCK_CONSENSUS_LIMITS,
   MOCK_RELAXED_OPERATION_COST,
-} from '../../src/index.js';
+} from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import {
   createTestProvider, setupStatefulUtxos,

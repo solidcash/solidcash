@@ -3,10 +3,8 @@ import { hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { sha256 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import {
-  MockNetworkProvider,
-  Signer,
-} from '../../../src/index.js';
+import { Signer } from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import {
   deployProxy,
   getContractFactory,

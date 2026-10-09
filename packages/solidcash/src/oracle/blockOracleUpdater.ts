@@ -3,7 +3,6 @@ import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 ;
 ;
 ;
-import { ElectrumClient } from '@electrum-cash/network';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
   type Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
@@ -282,6 +281,8 @@ export class BlockOracleUpdater {
    */
   async start(): Promise<() => Promise<void>> {
     if (!this.cfg.electrumHost) throw new Error('electrumHost is required to subscribe to headers');
+    // Load the Electrum client lazily: it is only needed for header subscriptions, not for one-shot syncs.
+    const { ElectrumClient } = await import('@electrum-cash/network');
     const electrum = new ElectrumClient('SolidCash BlockOracleUpdater', '1.4.1', this.cfg.electrumHost);
     await electrum.connect();
     await electrum.subscribe('blockchain.headers.subscribe');

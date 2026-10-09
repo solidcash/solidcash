@@ -22,7 +22,7 @@ import { buildSidecarRedeem, sidecarLockingBytecode, scriptToBytecode } from '@s
 import { TransactionBuilder, type TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
-import { onMockNetworkProviderReset } from '../network/MockNetworkProvider.js';
+import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
 import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';

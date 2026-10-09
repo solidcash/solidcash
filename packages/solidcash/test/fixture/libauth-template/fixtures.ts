@@ -1,4 +1,14 @@
-import { Contract, HashType, MockNetworkProvider, SignatureAlgorithm, SignatureTemplate, TransactionBuilder, randomNFT, randomToken, randomUtxo } from '../../../src/index.js';
+import {
+  Contract,
+  HashType,
+  SignatureAlgorithm,
+  SignatureTemplate,
+  TransactionBuilder,
+  randomNFT,
+  randomToken,
+  randomUtxo,
+} from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import TransferWithTimeout from '../transfer_with_timeout.artifact.js';
 import Mecenas from '../mecenas.artifact.js';
 import P2PKH from '../p2pkh.artifact.js';

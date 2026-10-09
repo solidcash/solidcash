@@ -5,7 +5,12 @@ import { compileString } from './direct-compile.js';
 import {
   keccakComputeLockingBytecode, KECCAK256_SHARED_SALT, KECCAK256_COMPUTE_STATEFUL_COVENANT,
 } from '@solidcash/utils';
-import { Contract, TransactionBuilder, MockNetworkProvider, SignatureTemplate } from '../src/index.js';
+import {
+  Contract,
+  TransactionBuilder,
+  SignatureTemplate,
+} from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { buildKeccakComputeSidecar } from '../src/keccak/keccakComputeSidecar.js';
 import { randomUtxo } from '../src/utils.js';
 import { alicePriv, aliceAddress } from './fixture/vars.js';

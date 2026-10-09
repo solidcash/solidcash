@@ -6,9 +6,9 @@ import { describe, expect, it, beforeAll } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
 import {
   Contract,
-  MockNetworkProvider,
   SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { alicePub, alicePriv, alicePkh, bobPriv } from '../fixture/vars.js';

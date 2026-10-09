@@ -3,7 +3,10 @@ import { expect } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth';
 import { concatBytes, splitFirstPush } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
+import {
+  MOCK_RELAXED_OPERATION_COST,
+  MockNetworkProvider,
+} from '../../../src/network/mock/index.js';
 import {
   buildValidatorFacets,
   buildValidatorProgram,

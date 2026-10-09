@@ -14,7 +14,7 @@ import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/c
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
 } from '../../../../solidc/test/framed/master/validator-input.js';
-import { MockNetworkProvider } from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { providerUnixLocktime } from '../../../src/stateful/index.js';
 
 /**

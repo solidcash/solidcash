@@ -4,10 +4,10 @@ import { compileString } from '../direct-compile.js';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,
-  MockNetworkProvider,
   SignatureTemplate,
   TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST } from '../../src/network/MockNetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';

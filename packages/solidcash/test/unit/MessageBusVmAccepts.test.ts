@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
-import { MockNetworkProvider } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 

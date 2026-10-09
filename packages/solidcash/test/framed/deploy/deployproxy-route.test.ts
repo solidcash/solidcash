@@ -2,10 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import {
-  MockNetworkProvider,
-  Signer,
-} from '../../../src/index.js';
+import { Signer } from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import {
   getContractFactory,
   deployProxy,

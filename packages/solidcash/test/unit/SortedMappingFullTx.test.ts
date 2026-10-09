@@ -10,7 +10,7 @@ import {
   encodeEntryCommitment,
   bytesToSlotValue,
 } from '../../src/stateful/index.js';
-import { MockNetworkProvider } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 
 // Full-transaction composition: an insert into a sorted-linked-list mapping, verified with EVERY input running its

@@ -6,8 +6,8 @@ import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode, keccakComputeLock
 import {
   Contract,
   TransactionBuilder,
-  MockNetworkProvider,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { computeEcrecoverWitness } from '../../src/ecrecover/ecrecoverRecovery.js';

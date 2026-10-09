@@ -1,10 +1,8 @@
 import { binToHex } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import {
-  Contract,
-  MockNetworkProvider,
-} from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { participantOf } from '../../src/message-bus/compose-participant-helpers.js';
 import { deriveComposeInvocationPlan } from '../../src/message-bus/compose-plan-graph.js';

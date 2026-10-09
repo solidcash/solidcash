@@ -20,8 +20,11 @@ import {
   signersFromMnemonic,
 } from '../src/HDSigner.js';
 import {
-  MockNetworkProvider, RegtestNetworkProvider, Contract, SignatureTemplate,
+  RegtestNetworkProvider,
+  Contract,
+  SignatureTemplate,
 } from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import {
   getDataNftAddress, getEntryNftAddress, getMessageBusVerifierAddress, getTokenContainerAddress,
 } from '../src/stateful/covenant-helpers.js';

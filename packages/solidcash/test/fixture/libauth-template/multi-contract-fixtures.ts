@@ -1,4 +1,12 @@
-import { TransactionBuilder, Contract, MockNetworkProvider, SignatureTemplate, randomNFT, randomToken, randomUtxo } from '../../../src/index.js';
+import {
+  TransactionBuilder,
+  Contract,
+  SignatureTemplate,
+  randomNFT,
+  randomToken,
+  randomUtxo,
+} from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import BarArtifact from '../Bar.artifact.js';
 import FooArtifact from '../Foo.artifact.js';
 import twtArtifact from '../transfer_with_timeout.artifact.js';

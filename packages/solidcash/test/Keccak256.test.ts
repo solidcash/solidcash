@@ -7,8 +7,8 @@ import {
   Contract,
   SignatureTemplate,
   TransactionBuilder,
-  MockNetworkProvider,
 } from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { StatefulContract } from '../src/stateful/index.js';
 import { randomUtxo } from '../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';

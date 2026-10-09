@@ -4,10 +4,10 @@ import { compileString } from '../direct-compile.js';
 import { asmToBytecode } from '@solidcash/utils';
 import {
   Contract,
-  MockNetworkProvider,
   SignatureTemplate,
   TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import * as messageBus from '../../src/message-bus/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import type { Unlocker } from '../../src/interfaces.js';

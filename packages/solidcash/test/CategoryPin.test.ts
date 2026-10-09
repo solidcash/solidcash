@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../../solidc/src/index.js';
 import { Contract } from '../src/index.js';
-import { MockNetworkProvider } from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 
 // Category self-pin: reworking the dead `<salt> OP_DROP` into a live category check (the contract prologue).
 // See docs/external-contract-calls.md. The user CREATE2 salt remains a separate dead-drop segment.

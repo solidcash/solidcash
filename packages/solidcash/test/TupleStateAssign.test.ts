@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { MockNetworkProvider } from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { getContractFactory } from '../src/stateful/index.js';
 import { fundedSigner } from './test-util.js';
 

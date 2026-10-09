@@ -3,11 +3,11 @@ const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<t
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract,
-  MockNetworkProvider,
   TransactionBuilder,
   SignatureTemplate,
   FailedRequireError,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { randomUtxo } from '../../src/utils.js';

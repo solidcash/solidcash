@@ -25,16 +25,9 @@ export * from './Errors.js';
 export {
   type NetworkProvider,
   BitcoinRpcNetworkProvider,
-  ElectrumNetworkProvider,
   FullStackNetworkProvider,
-  MockNetworkProvider,
-  FailingMockNetworkProvider,
   RegtestNetworkProvider,
-  type SnapshotRestorer,
   type ConsensusLimits,
-  MOCK_DEFAULT_BLOCK_TIME,
-  MOCK_CONSENSUS_LIMITS,
-  MOCK_RELAXED_OPERATION_COST,
 } from './network/index.js';
 export { randomUtxo, randomToken, randomNFT } from './utils.js';
 export { gatherBchUtxos, gatherFungibleTokenUtxos, type GatherUtxosResult } from './transaction-utils.js';

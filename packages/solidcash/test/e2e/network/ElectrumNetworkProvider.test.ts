@@ -1,4 +1,5 @@
-import { ElectrumNetworkProvider, Network } from '../../../src/index.js';
+import { Network } from '../../../src/index.js';
+import { ElectrumNetworkProvider } from '../../../src/network/electrum/index.js';
 import { ElectrumClient } from '@electrum-cash/network';
 
 describe.runIf(Boolean(process.env.TESTS_USE_CHIPNET))('ElectrumNetworkProvider', () => {

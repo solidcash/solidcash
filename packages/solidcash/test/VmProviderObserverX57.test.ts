@@ -4,9 +4,13 @@ import {
 } from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import {
-  BitcoinRpcNetworkProvider, ElectrumNetworkProvider, FullStackNetworkProvider, MockNetworkProvider,
-  Network, RegtestNetworkProvider,
+  BitcoinRpcNetworkProvider,
+  FullStackNetworkProvider,
+  Network,
+  RegtestNetworkProvider,
 } from '../src/index.js';
+import { ElectrumNetworkProvider } from '../src/network/electrum/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import type NetworkProvider from '../src/network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../src/network/createVirtualMachine.js';
 

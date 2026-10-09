@@ -1,9 +1,12 @@
 import { compileString, UnimplementedAbstractFunctionError } from 'solidc';
 import { ResolvedImport } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
+  Contract,
+  TransactionBuilder,
+  FailedRequireError,
   SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, gatherUtxos } from '../test-util.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';

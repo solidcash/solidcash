@@ -1,9 +1,9 @@
 import { compileString } from '../direct-compile.js';
 import {
   Contract,
-  MockNetworkProvider,
   SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   StatefulContract,
   StateReader,

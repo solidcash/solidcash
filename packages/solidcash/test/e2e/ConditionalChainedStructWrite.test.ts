@@ -3,10 +3,10 @@ const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<t
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Contract,
-  MockNetworkProvider,
   RegtestNetworkProvider,
   SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   StatefulContract,
   getDataNftAddress,

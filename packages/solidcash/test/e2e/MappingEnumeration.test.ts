@@ -17,7 +17,8 @@ import {
   alicePkh, bobPkh,
 } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
-import { MockNetworkProvider, RegtestNetworkProvider } from '../../src/index.js';
+import { RegtestNetworkProvider } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 
 type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
 const ZERO = new Uint8Array(32);

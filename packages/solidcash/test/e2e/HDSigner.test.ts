@@ -6,8 +6,8 @@ import {
 import {
   Signer,
   Network,
-  MockNetworkProvider,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   HDSigner,
   HDPublicSigner,

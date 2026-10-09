@@ -4,10 +4,10 @@ import { binToHex, decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,
-  MockNetworkProvider,
   SignatureTemplate,
   TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import * as messageBus from '../../src/message-bus/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';

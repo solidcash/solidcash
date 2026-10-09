@@ -1,7 +1,10 @@
 import { encodeTransactionOutput } from '@bitauth/libauth';
 import {
-  MockNetworkProvider, RegtestNetworkProvider, type ConsensusLimits, VmTarget,
+  RegtestNetworkProvider,
+  type ConsensusLimits,
+  VmTarget,
 } from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 
 /**
  * BCH-2026 semantic-only message bus test profile.

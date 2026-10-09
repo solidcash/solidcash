@@ -1478,7 +1478,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     const directlyStateful = node.stateVariables.length > 0
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
-      || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))
+      // A body-level `selfdestruct(x)` statement infers the lifecycle modifier and a stateful contract. An
+      // explicitly declared `selfdestruct` modifier does not imply statefulness: it is rejected below when the
+      // contract has none, so the covenant that enforces the destruction actually exists.
+      || node.functions.some((func) => func.impliedSelfdestruct)
       || (this.compilerOptions.forceStateful ?? false)
       || node.usesBlockhash;
     if (directlyStateful) {
@@ -5704,7 +5707,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isStatefulContract = contract.stateVariables.length > 0
       || contract.collections.length > 0
       || contract.eventDefinitions.length > 0
-      || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))
+      || contract.functions.some((func) => func.impliedSelfdestruct)
       || contract.deploysWithValue
       || contract.usesBlockhash
       || (this.compilerOptions.forceStateful ?? false);

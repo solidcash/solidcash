@@ -36,8 +36,11 @@ describe('native validator enforcement (Tier 2)', () => {
     expect(() => compile(src)).toThrow(/Library cannot call its own function 'L1\.g' externally/);
   });
 
-  it('T2-5 treats an explicit selfdestruct modifier as implying stateful', () => {
+  it('T2-5 rejects an explicit selfdestruct modifier on a non-stateful contract without the compat flag', () => {
+    // The explicit modifier does not silently promote the contract to stateful: with no covenant to enforce the
+    // destruction, the lifecycle modifier is rejected. A body-level `selfdestruct(x)` statement still infers
+    // statefulness through `impliedSelfdestruct`.
     const src = 'contract C() { function f() selfdestruct { require(true); } }';
-    expect(compile(src).contractName).toBe('C');
+    expect(() => compile(src)).toThrow(/'selfdestruct' is only valid in stateful contracts/);
   });
 });

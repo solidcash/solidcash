@@ -197,14 +197,14 @@ const DATA_ROWS: readonly Row[] = [
     label: 'msg.data inside this.g() against that call\'s encoding', entry: 'dataIsCall', evm: true,
     members: 'function dataExt() external pure returns (bytes memory) { return msg.data; }'
       + ' function dataIsCall() external returns (bool) { marker += 1;'
-      + ' return sha256(this.dataExt()) == sha256(abi.encodeCall(this.dataExt, ())); }',
+      + ' return sha256(this.dataExt()) == sha256(abi.encodeWithSelector(this.dataExt.selector)); }',
   },
   {
     label: 'msg.data read by the helper of this.g()', entry: 'dataViaThisHelper', evm: true,
     members: 'function _msgData() internal view virtual returns (bytes calldata) { return msg.data; }'
       + ' function dataExt() external view returns (bytes memory) { return _msgData(); }'
       + ' function dataViaThisHelper() external returns (bool) { marker += 1;'
-      + ' return sha256(this.dataExt()) == sha256(abi.encodeCall(this.dataExt, ())); }',
+      + ' return sha256(this.dataExt()) == sha256(abi.encodeWithSelector(this.dataExt.selector)); }',
   },
 ];
 

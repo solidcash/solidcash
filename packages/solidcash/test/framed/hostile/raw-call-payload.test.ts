@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import {
   argsHash,
+  computeEvmFunctionSelector,
   computeFunctionSelector,
   concatBytes,
   decodeWitnessBlock,
@@ -36,8 +37,9 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   function poke() external {'
   + '     (bool ok, ) = address(b).call(abi.encodeWithSignature("nonexistent()")); require(ok); } }';
 
-/** The selector the payload names, and the one B publishes for its fallback, which no call names. */
-const PAYLOAD_SELECTOR = computeFunctionSelector('nonexistent()');
+/** The selector the payload names (the source is evmCompat, so `abi.encodeWithSignature` folds keccak), and the one
+ * B publishes for its fallback dispatcher, which stays the native sha256 and no call names. */
+const PAYLOAD_SELECTOR = computeEvmFunctionSelector('nonexistent()');
 const FALLBACK_SELECTOR = computeFunctionSelector('__fallback()');
 
 let run: Promise<FramedCallResult> | undefined;

@@ -53,9 +53,8 @@ import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
 import { encodeEvmInvocationResult } from './evm-abi-result.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
-import { encodeMessageBatch, evaluateFixedEffectPredicate } from '../message-bus/message-bus.js';
-import { evaluateChildDeploymentRecipe } from '../message-bus/compose-recipes.js';
-import { loadFixedEffectEntries, type FixedEffectEntryResolver } from '../message-bus/fixed-effect-entries.js';
+import { encodeMessageBatch } from '../message-bus/message-bus.js';
+import type { FixedEffectEntryResolver } from '../message-bus/fixed-effect-entries.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { type ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
@@ -554,7 +553,6 @@ export {
   evaluateProbeTrace,
   MAX_BOUNDED_PROBE_STATES,
 } from './faithful-probe-trace.js';
-import { FramedFunctionCall } from '../framed/call/handle.js';
 import { isCanonicalEvmScalarReturnVector, probeRequireMessage } from './external-return-encoding.js';
 export {
   isCanonicalEvmScalarReturnVector,
@@ -565,6 +563,12 @@ export {
   decodeAuthenticatedProducerResultVector,
 } from './external-return-encoding.js';
 import { type RouteProbeObservation } from './route-probe-progress.js';
+
+import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-loader.js';
+
+function isFramedArtifact(artifact: Artifact): boolean {
+  return artifact.composition?.convention === 'framed';
+}
 
 function functionArgumentValuesEqual(left: unknown, right: unknown): boolean {
   if (left === right) return true;
@@ -4490,6 +4494,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     this._buildNamespaces(this._inner);
+    if (isFramedArtifact(this._inner.artifact)) void loadFramedCallHandle();
 
     // eslint-disable-next-line no-constructor-return
     return this._withDispatchProxy();
@@ -4587,18 +4592,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       createStatefulFunctionCall: (
         functionName: string, args: FunctionArgument[], abiFunction: AbiFunction,
       ) => (self.inner.artifact.composition?.convention === 'framed'
-        ? new FramedFunctionCall(
-          {
-            artifact: self.inner.artifact,
-            abiEntry: abiFunction,
-            categoryId: self.categoryId,
-            provider: self.inner.provider,
-            signer: self._signer,
-            ...(self._framedProxyImplementationCategory === undefined
-              ? {} : { proxyImplementationCategoryId: self._framedProxyImplementationCategory }),
-          },
-          functionName, args,
-        )
+        ? (() => {
+          const framedHandle = getFramedCallHandleModule();
+          if (framedHandle === undefined) {
+            throw new Error(
+              `Framed call '${functionName}' is unavailable: the framed composition engine is still loading. `
+              + 'Obtain the contract through an async entry point (deploy/at/upgrade/deployFrom/split/merge) '
+              + 'or await its first async use before calling it.',
+            );
+          }
+          return new framedHandle.FramedFunctionCall(
+            {
+              artifact: self.inner.artifact,
+              abiEntry: abiFunction,
+              categoryId: self.categoryId,
+              provider: self.inner.provider,
+              signer: self._signer,
+              ...(self._framedProxyImplementationCategory === undefined
+                ? {} : { proxyImplementationCategoryId: self._framedProxyImplementationCategory }),
+            },
+            functionName, args,
+          );
+        })()
         : new StatefulFunctionCall(
           () => self._createBuilder(functionName, args, { abiFunction }),
           self as StatefulContract, functionName, args, undefined, abiFunction.selector,
@@ -4796,6 +4811,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   static async at<T extends Artifact>(
     addressOrCategory: string, artifact: T, runner: ContractRunner, options?: LeanContractOptions,
   ): Promise<ConnectedStatefulContract<T>> {
+    if (isFramedArtifact(artifact)) await loadFramedCallHandle();
     const sc = new StatefulContract(addressOrCategory, artifact, runner, options) as ConnectedStatefulContract<T>;
     await (sc as StatefulContract)._ensureResolved(); // eager: at() returns a fully-resolved instance
     return sc;
@@ -4934,6 +4950,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     constructorArgs: ConstructorArgument[],
     options: DeployOptions,
   ): Promise<DeployResult<T>> {
+    if (isFramedArtifact(artifact)) await loadFramedCallHandle();
     return deployStatefulContractImpl(artifact, constructorArgs, options);
   }
 
@@ -4955,6 +4972,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   static async upgrade<T extends Artifact>(
     options: UpgradeOptions<T>,
   ): Promise<UpgradeResult<T>> {
+    if (isFramedArtifact(options.newArtifact)) await loadFramedCallHandle();
     return upgradeStatefulContractImpl(options);
   }
 
@@ -4974,6 +4992,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   static async deployFrom<T extends Artifact>(
     options: DeployFromOptions<T>,
   ): Promise<DeployFromResult<T>> {
+    if (options.childArtifact !== undefined && isFramedArtifact(options.childArtifact)) {
+      await loadFramedCallHandle();
+    }
     return deployFromStatefulContractImpl(options);
   }
 
@@ -5323,6 +5344,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     logicalCaller?: FunctionArgument,
   ): Promise<boolean> {
     const state = authenticatedState ?? await this.getState() as Readonly<Record<string, FunctionArgument>>;
+    const { evaluateFixedEffectPredicate } = await import('../message-bus/message-bus.js');
+    const { evaluateChildDeploymentRecipe } = await import('../message-bus/compose-recipes.js');
+    const { loadFixedEffectEntries } = await import('../message-bus/fixed-effect-entries.js');
     const result = expression.kind === 'fixedEffectRecipe' && expression.fixedEffectRecipe
       ? evaluateChildDeploymentRecipe(
         expression.fixedEffectRecipe, args, handler.inputs.map((input) => input.type),
@@ -7479,6 +7503,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryAccessAt(entryAbiFunction, slotIndex);
     const inactiveDirectEntryWrites = new Set<number>();
     if (activeMessageBusEntryOperations === undefined && selectedRouteRows.length === 0) {
+      const { evaluateFixedEffectPredicate } = await import('../message-bus/message-bus.js');
       for (const [index, access] of (entryAccesses ?? []).entries()) {
         if (access.activation === undefined) continue;
         const active = evaluateFixedEffectPredicate(
@@ -13779,6 +13804,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * Transaction: [master, funding...] -> [master_preserved, new_minting_1..N, change]
    */
   static async split(options: SplitOptions): Promise<SplitResult> {
+    if (isFramedArtifact(options.contract.inner.artifact)) await loadFramedCallHandle();
     return splitStatefulContractImpl(options);
   }
 
@@ -13787,6 +13813,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * Transaction: [master_surviving, consumed_1..N, funding...] -> [master_preserved, change]
    */
   static async merge(options: MergeOptions): Promise<MergeResult> {
+    if (isFramedArtifact(options.contract.inner.artifact)) await loadFramedCallHandle();
     return mergeStatefulContractImpl(options);
   }
 

@@ -13,7 +13,6 @@ import {
 import type {
   FramedProxyCallerFunding, FramedProxyDeployHalf, FramedProxyDeployment,
 } from '../framed/proxy/deploy.js';
-import { poolGenesisSatoshis, resolveMasterPoolSize } from '../framed/deploy/pool.js';
 import {
   StatefulContract, StatefulFunctionCall, type ContractRunner, type ConnectedStatefulContract,
   type ContractEventName, type EventListener,
@@ -727,6 +726,9 @@ async function framedGenesisHalf(
 ): Promise<FramedProxyDeployHalf> {
   const { fundingUtxo, funder, changeAddress, ...rest } = overrides ?? {};
   delete rest.initialState;
+  // The framed deploy pool pulls the `solidc` compiler; it is only needed here, for a framed proxy's genesis
+  // funding, so load it lazily rather than from the eager stateful barrel.
+  const { poolGenesisSatoshis, resolveMasterPoolSize } = await import('../framed/deploy/pool.js');
   // The genesis mints the whole pool, so the selection has to hold the pool's outputs too: a caller that states no
   // size gets the composing default, and one that names a size gets exactly that. The validator facets the genesis
   // also funds are counted beside it, so a leaner signer is still offered a coin the whole genesis can spend.

@@ -1686,7 +1686,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     // Solidity-compat `bytes20(address)` / `uint160(address)`: narrows the variable-length address to its
-    // embedded 20-byte hash (see compileCast). Lossy, so warn once at the cast site.
+    // embedded 20-byte hash (see compileCast). Lossy, so warn once at the cast site. `addressForm` does not
+    // change this: the cast is the narrowing in either form.
     if (node.expression.type instanceof AddressType
       && ((node.type instanceof BytesType && node.type.bound === 20) || node.type instanceof IntType)) {
       const loc = this.diagLine(node.location);

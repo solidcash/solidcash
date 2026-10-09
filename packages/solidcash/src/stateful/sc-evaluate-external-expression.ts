@@ -127,6 +127,9 @@ export function evaluateExternalExpression(
     return '';
   };
   const evmCompat = artifactUsesSolidityAbi(artifact);
+  // An address *argument* is transported as a fixed-width ABI word, so its form is decided by that wire and
+  // not by `addressForm`: a 32-byte word can only carry the 20-byte identity. The flag governs the value
+  // surfaces instead - the narrowing casts, `abi.encodePacked`, and decoded-result presentation.
   // The type the artifact's own declarations give a read: a struct field through its struct, a state variable
   // through the state layout, an element through its array's type, an array literal through its first element.
   const declaredType = (candidate: ExternalCallExpression): string => {

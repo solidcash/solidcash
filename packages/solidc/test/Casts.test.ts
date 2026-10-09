@@ -170,6 +170,36 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     warn.mockRestore();
   });
 
+  it("addressForm: 'bytecode' changes no cast: uint160(a) and bytes20(a) still truncate", () => {
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const source = 'contract C() { function f(address a, bytes20 e) returns (bytes) '
+      + '{ return abi.encodePacked(bytes20(a), uint160(a)); } }';
+    for (const form of ['hash', 'bytecode'] as const) {
+      const asm = bytecodeToAsm(hexToBin(compileString(source, {
+        evmCompat: true, messageBus: false, addressForm: form,
+      }).debug.bytecode));
+      // The narrowing script belongs to the cast, and the cast emits it in either form.
+      expect(asm).toContain('OP_3 OP_SPLIT OP_NIP');
+      expect(asm).toContain('OP_HASH160');
+    }
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("addressForm: 'bytecode' packs the whole lock where 'hash' packs the 20-byte identity", () => {
+    const source = 'contract C() { function f(address a) returns (bytes) '
+      + '{ return abi.encodePacked(a); } }';
+    const hash = bytecodeToAsm(hexToBin(compileString(source, {
+      evmCompat: true, messageBus: false, addressForm: 'hash',
+    }).debug.bytecode));
+    const bytecode = bytecodeToAsm(hexToBin(compileString(source, {
+      evmCompat: true, messageBus: false, addressForm: 'bytecode',
+    }).debug.bytecode));
+    expect(hash).toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(bytecode).not.toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(bytecode.length).toBeLessThan(hash.length);
+  });
+
   it('bytes(address) keeps the full locking bytecode (only bytes20/int narrow)', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(

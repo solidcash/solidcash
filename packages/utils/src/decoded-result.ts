@@ -1,7 +1,7 @@
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { ExternalResultEncoding, StructDefinitionInfo } from './artifact.js';
+import type { AddressForm, ExternalResultEncoding, StructDefinitionInfo } from './artifact.js';
 import { attachDecodedAccessors, parseArrayTypeString, type StateValue } from './state.js';
 
 const decodedAddress = Symbol.for('solidcash.decoded-address-encoding');
@@ -33,12 +33,17 @@ export function decodedSolidityAddressIdentity(bytes: Uint8Array): Uint8Array | 
  * Format a public typed result, including direct state reads that bypass the wire decoder. Only address
  * fields are projected; bytes/bytes32 remain exact. Copy aggregates and address leaves so cached state and
  * aliased byte fields never acquire result-only metadata. toObject/toArray retain the typed byte leaves.
+ *
+ * `addressForm` decides that projection: `'hash'` answers the 20-byte Solidity identity, `'bytecode'` answers the
+ * exact locking bytecode the contract stored. It is the artifact's own form, so a caller reads back the same
+ * address the contract wrote.
  */
 export function decorateDecodedResult(
   value: StateValue,
   type: string,
   structs: readonly StructDefinitionInfo[] | undefined,
   encoding: ExternalResultEncoding,
+  addressForm: AddressForm = 'hash',
 ): StateValue {
   if (type === 'address' || type === 'address payable') {
     let bytes = value instanceof Uint8Array ? value : undefined;
@@ -50,7 +55,7 @@ export function decorateDecodedResult(
       }
     }
     if (!bytes) return value;
-    const projected = encoding === 'evm-abi-v1' ? decodedSolidityAddressIdentity(bytes) : bytes.slice();
+    const projected = addressForm === 'hash' ? decodedSolidityAddressIdentity(bytes) : bytes.slice();
     if (!projected) throw new Error('Decoded EVM address has no canonical 20-byte identity.');
     Object.defineProperty(projected, decodedAddress, { value: encoding });
     return projected;
@@ -58,7 +63,7 @@ export function decorateDecodedResult(
   const array = parseArrayTypeString(type);
   if (array && Array.isArray(value)) {
     return attachDecodedAccessors(value.map((entry) => (
-      decorateDecodedResult(entry, array.elementType, structs, encoding)
+      decorateDecodedResult(entry, array.elementType, structs, encoding, addressForm)
     )));
   }
   const struct = structs?.find((entry) => entry.name === type);
@@ -67,7 +72,7 @@ export function decorateDecodedResult(
     const result = { ...value };
     for (const field of struct.fields) {
       if (Object.prototype.hasOwnProperty.call(result, field.name)) {
-        result[field.name] = decorateDecodedResult(result[field.name], field.type, structs, encoding);
+        result[field.name] = decorateDecodedResult(result[field.name], field.type, structs, encoding, addressForm);
       }
     }
     return attachDecodedAccessors(result);

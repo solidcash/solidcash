@@ -1,5 +1,5 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { Artifact, ExternalResultEncoding } from '@solidcash/utils';
+import { resolveAddressForm, type AddressForm, type Artifact, type ExternalResultEncoding } from '@solidcash/utils';
 import { lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 
 /** True when this artifact's bytecode decodes external returns as EVM ABI words. */
@@ -9,6 +9,15 @@ export function artifactUsesSolidityAbi(artifact: Pick<Artifact, 'compiler'>): b
   // decode a bool return as pushdata `0x51` (emitPushdataDecodeLastField). Inferring EVM framing
   // from the pragma then precomputes 32-byte `00…01`, which fails `EQUAL 0x51` at the caller.
   return artifact.compiler?.options?.evmCompat === true;
+}
+
+/**
+ * The form an address value takes in this artifact, as the compile that produced it decided. `'hash'` narrows an
+ * address to its 20-byte Solidity identity; `'bytecode'` keeps the exact locking bytecode and truncates nothing.
+ * An artifact that predates the option follows its mode, which is what `resolveAddressForm` encodes.
+ */
+export function artifactAddressForm(artifact: Pick<Artifact, 'compiler'>): AddressForm {
+  return resolveAddressForm(artifact.compiler?.options ?? {});
 }
 
 /**

@@ -24,7 +24,6 @@ import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
-import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
@@ -59,7 +58,8 @@ export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBa
   return outputBase < 0 ? outputBase : outputBase + blockBase;
 }
 import { decodeEntryCommitment, encodeEntryCommitment } from './SortedList.js';
-import { planKernelEntryJournalOutputLayout, type KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
+import type { KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
+import { getKernelEntryJournalModule, getMessageBusPreflightModule, loadKernelEntryJournal, loadMessageBusPreflight } from './stb-plugin-loaders.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
@@ -1093,6 +1093,13 @@ export class StatefulTransactionBuilder {
     this.loopEntriesBeforeDynamicChunks = options.loopEntriesBeforeDynamicChunks === true
       || (options.runtimeLoopEventOutputs?.length ?? 0) > 0
       || (options.runtimeLoopTransferOutputs?.length ?? 0) > 0;
+    // Kernel and message-bus planners are deferred plugins: preload them here and await them in the async build
+    // entry points so the sync call sites find the module loaded. The covenant preflight runs on every send, so
+    // its preload is unconditional; the kernel journal layout only runs when kernel plans are present.
+    void loadMessageBusPreflight();
+    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
+      void loadKernelEntryJournal();
+    }
   }
 
   private _applyConstructorParticipantOptions(options: StatefulTransactionOptions): void {
@@ -5901,7 +5908,11 @@ export class StatefulTransactionBuilder {
 
   /** Compose the explicit eager prefix and deferred dense band without deriving either from commitment order. */
   private kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan {
-    return planKernelEntryJournalOutputLayout(
+    const kernelEntryJournal = getKernelEntryJournalModule();
+    if (kernelEntryJournal === undefined) {
+      throw new Error('Kernel entry-journal output layout is unavailable: the kernel engine is still loading.');
+    }
+    return kernelEntryJournal.planKernelEntryJournalOutputLayout(
       this.kernelJournalEagerOutputPlan,
       this.kernelJournalSettlementOutputPlan,
     );
@@ -6878,6 +6889,11 @@ export class StatefulTransactionBuilder {
     inputCount: number;
     covenantSize: number;
   }> {
+    // Deterministically await the optional planner plugins before the synchronous build below reaches them.
+    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
+      await loadKernelEntryJournal();
+    }
+    await loadMessageBusPreflight();
     const covenantBuilder = this.build();
     const covenantTx = covenantBuilder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(covenantBuilder.inputs);
@@ -6943,7 +6959,11 @@ export class StatefulTransactionBuilder {
     // Scope: this path is opt-in and default-off, and no hostile was constructed against it. The repair is
     // inferred from field semantics that WERE measured, on the sibling decider in `message-bus/preflight.ts`.
     try {
-      assertFinalizedTransactionCovenants(builder, transaction);
+      const messageBusPreflight = getMessageBusPreflightModule();
+      if (messageBusPreflight === undefined) {
+        throw new Error('Message-bus covenant preflight is unavailable: the preflight engine is still loading.');
+      }
+      messageBusPreflight.assertFinalizedTransactionCovenants(builder, transaction);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(reason.replace(/^messageBus: BCH-2026 preflight failed at /, ''));
@@ -6964,6 +6984,11 @@ export class StatefulTransactionBuilder {
   }
 
   async send(): Promise<TransactionDetails> {
+    // Deterministically await the preflight plugin before the synchronous send pipeline reaches it.
+    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
+      await loadKernelEntryJournal();
+    }
+    await loadMessageBusPreflight();
     const provider = this.builderOptions.provider;
     if (!provider) {
       throw new Error('No network provider available');

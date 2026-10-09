@@ -9,9 +9,7 @@ import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/tran
 ;
 import type { FunctionArgument } from '../Argument.js';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
-import {
-  assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder, type FinalizedByteSubject,
-} from '../message-bus/preflight.js';
+import type { FinalizedByteSubject } from '../message-bus/preflight.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import {
   createAnonymousEventNftUnlocker,
@@ -89,6 +87,8 @@ export async function buildDestroyTransactionHex(
   maxFee?: bigint,
 ): Promise<DestroyBatch> {
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
+  // Load the message-bus preflight gate lazily so the stateful graph does not pull it for non-broadcast flows.
+  const { inputSubjectsOfBuilder } = await import('../message-bus/preflight.js');
   const builder = new TransactionBuilder({
     provider: contract.inner.provider,
     allowImplicitNftBurn: true,
@@ -213,6 +213,8 @@ export async function buildDestroyTransactionHex(
 }
 
 export async function destroyStatefulContract(options: DestroyOptions): Promise<DestroyResult> {
+  // Load the message-bus preflight gate lazily so the stateful graph does not pull it for non-broadcast flows.
+  const { assertFinalizedBytesWithCovenant } = await import('../message-bus/preflight.js');
   const {
     provider, contract, destroyFunctionName, destroyFunctionArgs,
     recipient,

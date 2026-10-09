@@ -10,10 +10,6 @@ import type { TransactionDetails } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { attachWait } from '../wait.js';
-import {
-  assertFinalizedBytesWithCovenant,
-  inputSubjectsOfBuilder,
-} from '../message-bus/preflight.js';
 
 export interface SendRawBuilderHost {
   readonly parentProvider: NetworkProvider;
@@ -29,6 +25,8 @@ export async function sendRawBuilder(
 ): Promise<TransactionDetails> {
   const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
 const { encodeTransaction, decodeTransactionUnsafe } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+  // Load the message-bus preflight gate lazily so the stateful graph does not pull it for non-broadcast flows.
+  const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('../message-bus/preflight.js');
 
   const rawTx = builder.build();
   const rawTxBin = hexToBin(rawTx);

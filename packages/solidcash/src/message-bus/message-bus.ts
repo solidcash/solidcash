@@ -746,28 +746,10 @@ const inactiveSignatureRouteWitness = (type: string): FunctionArgument => {
   return value;
 };
 
-/** ABI-valid default for an inactive position in a bounded message-bus route. */
-export function inactiveMessageBusRouteWitness(type: string): FunctionArgument {
-  const array = parseArrayTypeString(type);
-  if (array) {
-    if (array.bound === undefined) return [];
-    return Array.from(
-      { length: array.bound },
-      () => inactiveMessageBusRouteWitness(array.elementType) as ConstructorArgument,
-    );
-  }
-  if (type === 'bool') return false;
-  if (type === 'string') return '';
-  if (type === 'address' || type === 'address payable') {
-    return encodeLockingBytecodeP2pkh(new Uint8Array(20));
-  }
-  if (type === 'byte') return new Uint8Array(1);
-  const fixedBytes = type.match(/^bytes(\d+)$/);
-  if (fixedBytes) return new Uint8Array(Number(fixedBytes[1]));
-  if (type === 'bytes' || type === 'sig' || type === 'datasig') return new Uint8Array();
-  if (type === 'pubkey') return new Uint8Array(33);
-  return 0n;
-}
+/** ABI-valid default for an inactive position in a bounded message-bus route. Lives in route-witness.ts so the
+ * stateful class can re-export it without loading the whole message-bus graph. */
+import { inactiveMessageBusRouteWitness } from './route-witness.js';
+export { inactiveMessageBusRouteWitness } from './route-witness.js';
 
 /**
  * Canonically encode real compiler-generated message-bus batch handlers without constructing a transaction.

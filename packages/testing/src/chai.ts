@@ -9,7 +9,6 @@ import 'solidcash/vitest';
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import { decodedAddressEncoding, decodedSolidityAddressIdentity } from '@solidcash/utils';
 import { getActiveProvider } from './network-helpers.js';
 

@@ -4,9 +4,6 @@
 
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { Contract } from '../Contract.js';

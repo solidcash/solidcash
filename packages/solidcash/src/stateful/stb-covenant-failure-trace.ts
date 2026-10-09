@@ -3,12 +3,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
-;
-;
-;
 import { Op } from '@solidcash/utils';
 import type { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';

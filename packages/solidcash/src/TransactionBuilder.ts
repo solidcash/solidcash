@@ -1,15 +1,8 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransaction, decodeTransactionUnsafe, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
 import type { Transaction as LibauthTransaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
-;
-;
 import type { WalletTemplate } from '@bitauth/libauth/build/lib/engine/types/template-types.js';
-;
-;
-;
 import {
   type Unlocker,
   type Output,

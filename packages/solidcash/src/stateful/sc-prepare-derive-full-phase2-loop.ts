@@ -3,12 +3,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import { hash256 as hash256Sync, type Artifact } from '@solidcash/utils';
 import type { Output } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';

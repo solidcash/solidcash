@@ -10,9 +10,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode, keccakComputeLockingBytecode } from '@solidcash/utils';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';

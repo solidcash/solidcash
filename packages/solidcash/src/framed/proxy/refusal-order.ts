@@ -10,9 +10,6 @@
  */
 
 import type { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
-;
-;
-;
 import type { Artifact } from '@solidcash/utils';
 import {
   describeFrameReason, describeInnermost, frameMadeCall, frameStopOf, readsUnfilledReference, reportCompositionRefusal,

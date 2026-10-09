@@ -1,8 +1,5 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
-;
 import { type Artifact, type StateValue, type EventDefinitionAbi, type StateLayout } from '@solidcash/utils';
 import type { DebugResults } from '../debugging.js';
 import { tryParseEventCommitment, valuesEqual } from '../stateful/StateReader.js';

@@ -1,8 +1,5 @@
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 
 const EFFECT_DOMAIN_TAG = new TextEncoder().encode('SolidCash/value-chunk-effect-domain/v1\0');
 

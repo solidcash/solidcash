@@ -5,9 +5,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import {
   stripInvalidCollectionLockOutputs,

@@ -1,9 +1,6 @@
 import { type Artifact, asmToBytecode } from '@solidcash/utils';
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
 import type { ConstructorArgument } from '../Argument.js';

@@ -4,12 +4,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-;
-;
-;
 import {
   encodePushdataValue,
   type AbiFunction,

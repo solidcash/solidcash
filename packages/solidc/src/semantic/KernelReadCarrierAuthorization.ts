@@ -1,6 +1,5 @@
 import { createHash } from 'crypto';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import {
   ArrayAccessNode, AssignNode, BinaryOpNode, BlockNode, CastNode, CollectionNode, ExpressionNode,
   FunctionDefinitionNode, IdentifierNode, IntLiteralNode, KernelReadCarrierAuthorization,

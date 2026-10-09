@@ -5,9 +5,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   encodePushdataValue,

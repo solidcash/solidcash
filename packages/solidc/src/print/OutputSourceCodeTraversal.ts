@@ -1,5 +1,4 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import { SymbolTable } from '../ast/SymbolTable.js';
 import {
   Node,

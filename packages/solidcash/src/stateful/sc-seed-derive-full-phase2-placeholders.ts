@@ -4,9 +4,6 @@
 
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { EmitAbi } from '@solidcash/utils';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 

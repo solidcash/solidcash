@@ -3,12 +3,7 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { generateLibauthSourceOutputs } from '../utils.js';

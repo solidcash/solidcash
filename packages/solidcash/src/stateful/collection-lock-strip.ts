@@ -4,9 +4,6 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { isEmptyValueEntryCommitment } from './SortedList.js';
 import {
   SLOT_HEX,

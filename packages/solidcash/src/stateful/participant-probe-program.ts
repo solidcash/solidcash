@@ -1,7 +1,4 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { isContractUnlocker } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 

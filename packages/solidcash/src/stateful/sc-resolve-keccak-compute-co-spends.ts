@@ -3,9 +3,6 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY,
   keccakComputeLockingBytecode,

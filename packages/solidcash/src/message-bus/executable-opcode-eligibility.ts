@@ -1,11 +1,6 @@
 import { isPayToScriptHash20, isPayToScriptHash32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hash160, hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
-;
-;
 import { authenticationInstructionsAreMalformed, decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-;
-;
-;
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 
 type Instruction = ReturnType<typeof decodeAuthenticationInstructions>[number];

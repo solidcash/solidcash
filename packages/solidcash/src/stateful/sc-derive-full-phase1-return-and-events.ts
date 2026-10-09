@@ -4,9 +4,6 @@
 
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { AbiFunction } from '@solidcash/utils';
 import {
   Op,

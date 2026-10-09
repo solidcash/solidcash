@@ -4,13 +4,8 @@ import { decodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-addre
 import { assertSuccess } from '@bitauth/libauth/build/lib/format/error.js';
 import { hexToBin, binToHex, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Input } from '@bitauth/libauth/build/lib/message/transaction-types.js';
-;
-;
 import type { AuthenticationInstructionPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-types.js';
 import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-;
-;
-;
 import { type EncodedFunctionArgument, isDeferredSignatureArgument } from '../Argument.js';
 import { zip } from '../utils.js';
 import SignatureTemplate from '../SignatureTemplate.js';

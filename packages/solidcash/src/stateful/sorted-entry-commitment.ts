@@ -4,9 +4,6 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { encodeEntryCommitment } from './SortedList.js';
 
 export const SLOT_HEX = 64;

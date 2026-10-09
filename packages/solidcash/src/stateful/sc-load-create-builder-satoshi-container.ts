@@ -3,9 +3,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { buildSatoshiContainerCovenantScript, type AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';

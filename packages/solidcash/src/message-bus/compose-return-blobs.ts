@@ -3,9 +3,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { scriptToBytecode, sha256 } from '@solidcash/utils';
 import { deriveCompiledGraphPlan } from './worklist.js';
 

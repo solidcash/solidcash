@@ -1,7 +1,4 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { parseChunkCommitment, type AbiFunction, type StateLayout } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
 import type { Output } from '../interfaces.js';

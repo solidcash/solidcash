@@ -1,8 +1,5 @@
 /** Deterministic pre-state operands for exact compiler-published collection-length returns. */
 import { binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';

@@ -11,9 +11,6 @@ import {
   sha256 as sha256Sync,
 } from '@solidcash/utils';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { Utxo } from '../interfaces.js';
 import { getValueChunkLockingBytecode } from './covenant-helpers.js';
 import { keyToSlot } from './SortedList.js';

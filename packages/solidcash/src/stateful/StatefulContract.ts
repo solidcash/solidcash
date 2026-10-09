@@ -2,14 +2,14 @@
 import {
   type Artifact,
   type ArtifactMap,
-  type AbiInput,
+  
   type AbiFunction,
   type ArgSource,
   type ExternalCallExpression,
   type ExternalCallAbi,
   type ExternalResultConsumerAbi,
   type ExternalResultEncoding,
-  type TokenContainerTransferSiteAbi,
+  
   type SortedUpsertLoopAbi,
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
@@ -45,7 +45,7 @@ import {
   hash256 as hash256Sync,
   parseArrayTypeString,
   type FixedBchTransferAbi,
-  type KernelJournalDispositionsAbi,
+  
   peekPushdataEncodedLength,
 } from '@solidcash/utils';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
@@ -63,13 +63,8 @@ import { type ValueChunkProducerPathDisposition } from './ValueChunkProducerIden
 import { binToHex, hexToBin, binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin, binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
 import { encodeAuthenticationInstructions, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import {
   createVirtualMachineBch2026ForProvider,
 } from '../network/createVirtualMachine.js';
@@ -89,13 +84,13 @@ import {
   decodeKernelEntryJournalAccesses,
   encodeKernelEntryJournalAccesses,
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
-  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
+  
   kernelEntryJournalSettlementOutputSegments,
-  kernelEntryJournalRecordSegmentIndex,
-  kernelEntryJournalRecordSegmentName,
-  encodeKernelEntryJournalRecordSegment,
+  
+  
+  
   kernelEntryJournalReadCarrierCapabilityFromArtifact,
-  kernelEntryJournalReadCarrierCapabilityCovers,
+  
   kernelJournalDispositionsFromArtifact,
   planKernelEntryJournalAccessTopology,
   scheduleKernelEntryJournalOccurrences,
@@ -104,16 +99,15 @@ import {
   planKernelEntryJournalSettlementAuthority,
   planKernelEntryJournalSettlementOutputs,
   validateKernelEntryJournalSettlementGroups,
-  segmentKernelEntryJournalRecords,
-  validateKernelEntryJournalRecordSegmentSlots,
+  
+  
   type KernelEntryJournalAccess,
-  type KernelEntryJournalReadCarrierCapability,
+  
   type KernelEntryJournalSettlementOccurrence,
   type KernelEntryJournalSettlementReference,
   type KernelEntryJournalDirtyFinalBodyCandidate,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
-import { resolveKernelDelegateForwardingTarget, resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
 import {
   KERNEL_JOURNAL_ACCESS_STREAMS,
   KERNEL_JOURNAL_RECORDS,

@@ -10,9 +10,6 @@
  */
 
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-;
-;
-;
 import { bytesEqual } from '@solidcash/utils';
 import { lockingBytecodeToSolidityAddressPayload } from '../../utils.js';
 

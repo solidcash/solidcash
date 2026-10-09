@@ -4,9 +4,6 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { FunctionArgument } from '../Argument.js';
 import type { Utxo } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';

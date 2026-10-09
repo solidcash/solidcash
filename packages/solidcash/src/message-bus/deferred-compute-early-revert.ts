@@ -1,11 +1,6 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import { encodeAuthenticationInstruction, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import { Op } from '@solidcash/utils';
 import { FailedRequireError } from '../Errors.js';
 import { isContractUnlocker } from '../interfaces.js';

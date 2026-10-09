@@ -1,8 +1,5 @@
 import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
   type Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,

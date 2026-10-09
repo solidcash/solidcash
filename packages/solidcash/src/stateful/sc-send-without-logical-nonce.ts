@@ -3,9 +3,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { StateValue } from '@solidcash/utils';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';

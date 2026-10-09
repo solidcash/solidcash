@@ -1,7 +1,4 @@
 import type { Transaction as LibauthTransaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
-;
-;
-;
 import { type Utxo, Network } from '../interfaces.js';
 
 /** Exact transaction forms already materialized by an SDK builder. */

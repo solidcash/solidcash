@@ -3,9 +3,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { Utxo } from '../interfaces.js';
 import type { OnChainState } from './StateReader.js';
 

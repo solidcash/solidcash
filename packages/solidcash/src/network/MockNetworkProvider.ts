@@ -1,8 +1,5 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
-;
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
@@ -14,7 +11,7 @@ import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
-import { onMockNetworkProviderReset, runMockNetworkProviderResetHooks } from './mock-reset.js';
+import { runMockNetworkProviderResetHooks } from './mock-reset.js';
 
 export { onMockNetworkProviderReset } from './mock-reset.js';
 

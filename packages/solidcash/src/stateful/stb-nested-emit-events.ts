@@ -10,9 +10,6 @@ import {
   computeEventNameHash,
 } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { permitsLegacyValueChunkEventReconstruction } from './chunkable-value-write-selection.js';
 import {
   encodeJobEventEmitCommitment,

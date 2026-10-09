@@ -4,9 +4,6 @@
 
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   attachDecodedAccessors,
   childStateLayoutDigest,

@@ -4,9 +4,6 @@
  */
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
-;
-;
-;
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { decodeIntFixedWidth, encodeInt, encodeIntAsFixedBytes, parseArrayTypeString,
   type Artifact, type ExternalCallExpression, type StateValue } from '@solidcash/utils';

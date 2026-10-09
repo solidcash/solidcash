@@ -4,9 +4,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { isAuthenticatedEventRepairCommitment } from './StatefulTransactionBuilder.js';
 
 export function isCompilerDescribedRouteEventCommitment(

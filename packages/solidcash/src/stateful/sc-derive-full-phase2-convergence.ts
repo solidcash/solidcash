@@ -3,12 +3,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import { shouldGrowSpeculativeChunkRegion } from './early-value-chunk-helpers.js';
 import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';

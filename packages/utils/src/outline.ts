@@ -1,5 +1,4 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import { decodeInt } from './data.js';
 import { Op, type Script } from './script.js';
 import type { FullLocationData } from './types.js';

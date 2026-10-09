@@ -19,7 +19,6 @@
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-;
 import { FrameKind, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt, hash256 } from '@solidcash/utils';
 import {
   dropFirstPushScript,

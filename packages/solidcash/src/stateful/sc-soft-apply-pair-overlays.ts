@@ -4,9 +4,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   buildPushdataCommitment,
   sha256 as sha256Sync,

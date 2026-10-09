@@ -4,12 +4,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
-;
-;
 import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-;
-;
-;
 import {
   attachDecodedAccessors,
   decodePackedEventArray,
@@ -147,10 +142,10 @@ export async function getEntries(
         value = vmNumberToBigInt(raw);
         // Detect an out-of-range or negative value in a bounded int/fixed commitment, so a malicious commitment
         // cannot surface a negative `uint` mapping value in the SDK's accounting reads.
-        const parsed = type.startsWith('enum') ? undefined : parseTypeStrict(type);
+        const parsedType = type.startsWith('enum') ? undefined : parseTypeStrict(type);
         if (typeof value === 'bigint'
-          && (parsed instanceof IntType || parsed instanceof FixedType)
-          && (value < parsed.minValue || value > parsed.maxValue)) {
+          && (parsedType instanceof IntType || parsedType instanceof FixedType)
+          && (value < parsedType.minValue || value > parsedType.maxValue)) {
           throw new Error(`getEntries: value ${value} out of range for type '${type}'`);
         }
       } else {

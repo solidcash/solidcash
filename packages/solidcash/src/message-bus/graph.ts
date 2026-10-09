@@ -3020,6 +3020,3 @@ export function assertExplicitSourceCallsiteProvenance(
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
-;
-;
-;

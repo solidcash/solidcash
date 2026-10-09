@@ -14,7 +14,6 @@
 // regenerate. The compiler's loader offsets MUST match the SDK's side-car redeem byte-for-byte.
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import { Op, type Script, scriptToBytecode } from './script.js';
 import { hash256 } from './hash.js';
 

@@ -4,9 +4,6 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
-;
 import type { FunctionArgument } from '../Argument.js';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import {
@@ -409,7 +406,7 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
         builtTxs.push(result);
         // Compute txid locally to track master UTXO across batches without broadcasting
         const { hash256: localHash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
-const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+        const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
 
         const localTxid = localBinToHex(localHash256(hexToBin(result.hex)).reverse());
         primaryMaster.txid = localTxid;
@@ -433,7 +430,7 @@ const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/for
   const txs: TransactionDetails[] = [];
   let totalReclaimed = 0n;
   const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
-const { decodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+  const { decodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
 
 
   // X163, the finalized-bytes gate at the `destroy` sweep. Destroy sweeps EVERY remaining UTXO into one reclaim

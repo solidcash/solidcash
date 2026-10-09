@@ -1,7 +1,4 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   ATOMIC_MESSAGE_BUS_DOMAIN_HEX, ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
 } from '@solidcash/utils';

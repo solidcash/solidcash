@@ -4,9 +4,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { AbiFunction, FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';

@@ -3,9 +3,6 @@
  */
 
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   encodePushdataValue,
   type EventDefinitionAbi,

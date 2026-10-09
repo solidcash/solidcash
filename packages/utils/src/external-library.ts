@@ -4,7 +4,6 @@
 // It is either inlined into the contract redeem or loaded at runtime from a co-spent side-car UTXO.
 // See packages/solidc/docs/external-libraries.md.
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import { Op, type Script, scriptToBytecode } from './script.js';
 import { hash256 } from './hash.js';
 import type { AbiInput, AbiOutput, ExternalLibraryAbi } from './artifact.js';

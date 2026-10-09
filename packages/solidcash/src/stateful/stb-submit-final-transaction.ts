@@ -4,9 +4,6 @@
 
 import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type {
   LibauthOutput, ReceiptEvent, TransactionDetails, UnlockableUtxo, Utxo,
 } from '../interfaces.js';

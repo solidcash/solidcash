@@ -1,7 +1,4 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { computeCollectionHash, type FunctionBlockLayout } from '@solidcash/utils';
 import type { Output } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';

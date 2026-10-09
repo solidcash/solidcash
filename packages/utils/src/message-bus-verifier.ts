@@ -1,5 +1,4 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import { encodeInt } from './data.js';
 import { hash256 } from './hash.js';
 import { Op, type Script, scriptToBytecode } from './script.js';

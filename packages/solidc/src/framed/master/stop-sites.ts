@@ -19,7 +19,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import {
   STOP_SITE_METADATA_VERSION,
   validateStopSiteMetadata,

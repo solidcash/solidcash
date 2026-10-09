@@ -3,9 +3,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { scriptToBytecode, type AbiFunction, type Artifact, type ExternalCallAbi, type StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {

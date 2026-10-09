@@ -2,9 +2,6 @@ import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-addre
 import { cashAddressToLockingBytecode, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
-;
-;
-;
 import { Op, type Script, scriptToBytecode } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { Unlocker, Utxo } from '../interfaces.js';

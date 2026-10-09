@@ -1,7 +1,4 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   type Artifact, type RequireStatement, type Type, decodeBool, decodeInt, decodeString, sourceMapToLocationData,
 } from '@solidcash/utils';

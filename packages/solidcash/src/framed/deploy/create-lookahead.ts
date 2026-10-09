@@ -14,9 +14,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { validatorAddress, type Artifact } from '@solidcash/utils';
 import { framedValidator } from 'solidc';
 import type { Utxo } from '../../interfaces.js';

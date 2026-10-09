@@ -22,9 +22,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { CompositionDraftPlan } from '../composer/index.js';
 

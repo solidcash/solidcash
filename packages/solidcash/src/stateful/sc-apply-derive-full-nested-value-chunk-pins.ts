@@ -5,9 +5,6 @@
  */
 
 import { binToHex, binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   VALUE_HEAD_SIZE,
   encodePushdataValue,

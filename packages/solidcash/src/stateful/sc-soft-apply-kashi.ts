@@ -4,9 +4,6 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { decodePushdataValue, type Artifact, type StateValue } from '@solidcash/utils';
 import type { TransactionDetails } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';

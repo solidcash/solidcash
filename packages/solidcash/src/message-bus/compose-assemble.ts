@@ -5,9 +5,6 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
-;
-;
-;
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN,
   sha256, buildChunkCommitment, splitValueIntoChunks,

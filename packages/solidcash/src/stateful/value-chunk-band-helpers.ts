@@ -4,9 +4,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { buildValueChunkCommitment } from '@solidcash/utils';
 import { isEmptyValueChunkCommitment } from './value-chunk-persist.js';
 import { relocateChangeAfterOccupancy } from './persist-predecessor-layout.js';

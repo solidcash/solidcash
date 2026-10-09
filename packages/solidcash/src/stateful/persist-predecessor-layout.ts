@@ -4,9 +4,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { valueChunkIndexFromCommitment } from './value-chunk-persist.js';
 import {
   groupOwnsInBlockReturnEvent,

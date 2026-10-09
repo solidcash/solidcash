@@ -4,9 +4,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { isContractUnlocker, type Output, type UnlockableUtxo } from '../interfaces.js';
 import {
   cloneToken,

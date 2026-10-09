@@ -3,9 +3,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { sha256 } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { ConstraintFixpointSession } from './constraint-fixpoint-session.js';

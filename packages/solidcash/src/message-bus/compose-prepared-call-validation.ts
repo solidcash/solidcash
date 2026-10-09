@@ -3,9 +3,6 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 import {

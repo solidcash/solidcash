@@ -4,9 +4,6 @@
 
 import { binToHex, binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { calculateDust } from '../utils.js';

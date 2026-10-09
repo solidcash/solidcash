@@ -10,9 +10,6 @@ import {
   computeEventNameHash,
 } from '@solidcash/utils';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import {

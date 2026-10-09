@@ -8,7 +8,6 @@ import fs from 'fs';
 import path from 'path';
 import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
 import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
-;
 import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';

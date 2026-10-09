@@ -15,7 +15,6 @@
 
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-;
 import { categoryPin, chainCategory, TokenCapability } from '@solidcash/utils';
 
 /** The capability a master's own token carries. */

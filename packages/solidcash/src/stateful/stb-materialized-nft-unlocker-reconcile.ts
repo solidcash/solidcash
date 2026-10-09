@@ -4,9 +4,6 @@
  */
 
 import { binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';

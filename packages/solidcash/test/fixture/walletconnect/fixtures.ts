@@ -109,4 +109,4 @@ export const generateWcTransactionObjectFixture = {
       'unlockingBytecode': '<Uint8Array: 0x>',
     },
   ],
-}
+};

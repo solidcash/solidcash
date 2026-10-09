@@ -5,9 +5,6 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   type ExternalLibraryAbi,
   SHARED_LIBRARY_SALT,

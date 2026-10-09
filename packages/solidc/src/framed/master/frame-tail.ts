@@ -40,7 +40,6 @@
 
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-;
 import { TokenCapability, VALIDATOR_PIN_PUSH_LENGTH } from '@solidcash/utils';
 import { ADDRESS_SLOT_LENGTH } from './placeholders.js';
 import {

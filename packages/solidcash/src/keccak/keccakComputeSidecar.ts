@@ -1,8 +1,5 @@
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_PAD_LENGTH,
   buildKeccakComputeRedeemLegacy, keccakComputeLockingBytecodeLegacy,

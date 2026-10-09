@@ -4,13 +4,7 @@
  */
 
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { AbiFunction } from '@solidcash/utils';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,

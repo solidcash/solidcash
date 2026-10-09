@@ -1,5 +1,4 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import {
   abiTypeString, ArrayType, type ChildDeploymentGenesisEntryAbi, type ChildDeploymentGenesisStateAbi,
   type ChildDeploymentValueRecipe, type CollectionInfo,

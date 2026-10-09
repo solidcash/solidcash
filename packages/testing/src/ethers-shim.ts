@@ -24,7 +24,6 @@ export * from 'ethers/wordlists';
 
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from 'solidcash/dist/stateful/logical-identity.js';
 import { createLookaheadForAddress, predictCreateAddress } from 'solidcash/dist/framed/deploy/create-lookahead-session.js';
 // CashAddress-aware ABI coder (wins over ethers/utils re-export for defaultAbiCoder / AbiCoder).

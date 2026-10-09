@@ -6,10 +6,9 @@
  * whole covenant-preflight graph, and it breaks the preflight/graph import cycle.
  */
 
-import { decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import { encodeTransaction, encodeTransactionOutput } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import type { Output } from '@bitauth/libauth/build/lib/message/transaction-types.js';
 import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
-import { scriptToBytecode } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';

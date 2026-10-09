@@ -1,11 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE, VALUE_INLINE_LIMIT } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';

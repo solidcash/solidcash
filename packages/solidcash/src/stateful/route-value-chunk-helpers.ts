@@ -13,12 +13,7 @@ import {
   parseValueChunkCommitment,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import {
   isP2sh32LockingBytecode,
   isValueChunkProbeFrame,

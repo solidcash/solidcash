@@ -3,9 +3,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { ConstructorArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import type NetworkProvider from '../network/NetworkProvider.js';

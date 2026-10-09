@@ -4,9 +4,6 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { addressToLockScript } from '../utils.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';

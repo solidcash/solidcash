@@ -7,9 +7,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { Artifact } from '@solidcash/utils';
 import type { FramedDeploymentSet } from '../deploy/index.js';
 import { deploymentStateValues, liveMappingValueReader } from '../proxy/external-calls.js';

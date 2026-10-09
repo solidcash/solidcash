@@ -13,12 +13,7 @@ import {
   parsePushdataCommitment,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import type { StateValueType } from '../types/state-inference.js';
 import {
   decodeScriptNumber,

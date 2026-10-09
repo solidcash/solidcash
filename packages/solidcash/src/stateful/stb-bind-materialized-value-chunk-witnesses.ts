@@ -3,9 +3,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { AbiFunction } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust } from '../utils.js';

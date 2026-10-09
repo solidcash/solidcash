@@ -1,8 +1,5 @@
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   decodePushdataValue, scriptToBytecode,
   type AbiFunction, type Artifact, type DelegateForwardingAbi,

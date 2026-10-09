@@ -4,9 +4,6 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import {
   assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder,
@@ -140,7 +137,7 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
 
   // Build and send directly (bypass debug step which doesn't handle covenant unlockers)
   const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
-const { hexToBin: localHexToBin } = await import('@bitauth/libauth/build/lib/format/hex.js');
+  const { hexToBin: localHexToBin } = await import('@bitauth/libauth/build/lib/format/hex.js');
 
   const rawTx = builder.build();
   const rawTxBin = localHexToBin(rawTx);
@@ -305,7 +302,7 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
 
   // Build and send directly (bypass debug step which doesn't handle covenant unlockers)
   const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
-const { hexToBin: localHexToBin } = await import('@bitauth/libauth/build/lib/format/hex.js');
+  const { hexToBin: localHexToBin } = await import('@bitauth/libauth/build/lib/format/hex.js');
 
   const rawTx = builder.build();
   const rawTxBin = localHexToBin(rawTx);

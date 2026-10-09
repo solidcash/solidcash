@@ -17,7 +17,6 @@
  */
 
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-;
 import { sha256 } from '../hash.js';
 import { FramedEncodingError, bytesEqual, concatBytes, encodeMinimalDataPush } from './primitives.js';
 

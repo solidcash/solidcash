@@ -5,9 +5,6 @@
  */
 
 import { binsAreEqual, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   Op,
   type StateLayout,

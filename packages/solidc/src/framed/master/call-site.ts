@@ -30,7 +30,6 @@
 
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-;
 import { argsHash, encodeCallDataArguments, scriptToBytecode } from '@solidcash/utils';
 import type { ExternalCallArgSource, ExternalCallExpression, ExternalCallStatement } from '../../ast/AST.js';
 import { compileAddressToEvmIdentity } from '../../generation/utils.js';

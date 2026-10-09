@@ -1,7 +1,4 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   ATOMIC_MESSAGE_BUS_MAX_ROWS, decodePushdataValue, getDefaultStateValue, scriptToBytecode,
   type ArgSource, type Artifact, type ExternalCallAbi, type ExternalCallExpression, type StateValue,

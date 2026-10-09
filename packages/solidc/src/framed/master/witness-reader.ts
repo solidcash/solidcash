@@ -14,9 +14,7 @@
  */
 
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-;
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
-;
 import { WITNESS_BLOCK_MAGIC, WITNESS_BLOCK_VERSION } from '@solidcash/utils';
 
 const op = (...opcodes: number[]): Uint8Array => new Uint8Array(opcodes);

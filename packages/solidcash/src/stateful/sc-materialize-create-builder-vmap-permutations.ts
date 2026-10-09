@@ -3,9 +3,6 @@
  */
 
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-;
-;
-;
 import {
   type AbiFunction,
   type Artifact,

@@ -6,9 +6,6 @@ import { foldRouteStoredValues, type StoredValueMutationRow } from './fold-route
 import type { StoredValueIncomingEntry } from './sc-encode-stored-element-source.js';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   computeCollectionHash,

@@ -1,7 +1,4 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   type AbiFunction,
   AddressType,

@@ -10,12 +10,7 @@ import {
   encodeEventCommitment,
 } from '@solidcash/utils';
 import { binToHex, binsAreEqual, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
 import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';

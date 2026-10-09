@@ -4,9 +4,6 @@
 
 import type { EntryAccessAbi, StateLayout } from '@solidcash/utils';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StateValueType } from '../types/state-inference.js';
 import { entryAccessAt } from './route-expression-key.js';

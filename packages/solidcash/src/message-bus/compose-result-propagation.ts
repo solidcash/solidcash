@@ -3,9 +3,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { FunctionArgument } from '../Argument.js';
 import { decodeAuthenticatedProducerResultVector } from '../stateful/StatefulContract.js';
 import {

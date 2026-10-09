@@ -1,8 +1,5 @@
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { addressToGraphEmissionBytes, type CollectionInfo } from '@solidcash/utils';
 import type { Utxo } from '../interfaces.js';
 

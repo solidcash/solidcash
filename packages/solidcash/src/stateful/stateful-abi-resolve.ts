@@ -7,12 +7,7 @@ import type { AbiFunction, Artifact } from '@solidcash/utils';
 import { sha256 as sha256Sync } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
-;
-;
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-;
-;
-;
 import type { FunctionArgument } from '../Argument.js';
 import type { Utxo } from '../interfaces.js';
 import {

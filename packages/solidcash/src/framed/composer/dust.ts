@@ -11,9 +11,6 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransactionOutput } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
-;
 import {
   DYNAMIC_LEN_TYPE, encodeNftIndexTag, encodePushdataValue, getDefaultStateValue, isFixedWidthType,
   isMultiDataNftLayout, parseArrayTypeString, type StateLayout, type StructDefinitionInfo,

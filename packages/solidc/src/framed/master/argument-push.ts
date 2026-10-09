@@ -17,7 +17,6 @@
 
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-;
 
 /** The longest payload a direct push carries in its opcode. */
 const LONGEST_DIRECT_PUSH = 0x4b;

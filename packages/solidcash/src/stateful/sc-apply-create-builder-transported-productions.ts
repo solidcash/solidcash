@@ -4,9 +4,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   VALUE_CHUNK_SIZE,
   VALUE_HEAD_SIZE,

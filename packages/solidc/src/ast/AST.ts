@@ -8,7 +8,6 @@ import { Location } from './Location.js';
 import { YulBlockNode } from './YulAST.js';
 import { SymbolTable, Symbol } from './SymbolTable.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
 
 export type Ast = SourceFileNode;
 

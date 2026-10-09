@@ -11,9 +11,6 @@
 
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import {
   KERNEL_PLAN_VERSION,
   type KernelExecutionPlan,

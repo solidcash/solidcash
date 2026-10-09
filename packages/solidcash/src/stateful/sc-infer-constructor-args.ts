@@ -3,9 +3,6 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';

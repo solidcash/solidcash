@@ -8,9 +8,6 @@
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-;
-;
-;
 import {
   asmToScript,
   bytesEqual,

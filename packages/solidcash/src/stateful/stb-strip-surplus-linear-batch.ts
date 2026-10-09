@@ -5,9 +5,6 @@
 
 import type { AbiFunction } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';

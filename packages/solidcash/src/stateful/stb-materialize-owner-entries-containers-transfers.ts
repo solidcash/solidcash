@@ -3,9 +3,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import { getDustThreshold } from '../network/dust-threshold.js';
 import {
   buildEntryCommitment,

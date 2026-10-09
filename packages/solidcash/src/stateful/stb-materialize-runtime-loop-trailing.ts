@@ -3,9 +3,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { Output } from '../interfaces.js';
 import { calculateDust } from '../utils.js';
 import type { KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';

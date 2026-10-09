@@ -3,9 +3,6 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 import type { AbiFunction, Artifact } from '@solidcash/utils';
 import {
   createDynamicChunkUnlocker,

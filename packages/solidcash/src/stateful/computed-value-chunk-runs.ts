@@ -1,7 +1,4 @@
 import { binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
-;
-;
-;
 
 export type ComputedValueChunkRun = { id: string; collection: string; slot?: Uint8Array };
 

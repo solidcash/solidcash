@@ -16,9 +16,6 @@ import {
 import { cashAddressToLockingBytecode, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hexToBin, binToHex, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransactionUnsafe, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
-;
-;
-;
 import { type Utxo, Network, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import { getNetworkPrefix } from '../utils.js';

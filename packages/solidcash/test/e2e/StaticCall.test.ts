@@ -223,7 +223,7 @@ contract M() {
 
 describe('StatefulFunctionCall.staticCall() - mapping-entry view (EA getJob shape)', () => {
   it('reads a struct entry from a real-deployed vmap mapping', async () => {
-    const { MockNetworkProvider } = await import('../../src/index.js');
+    const { MockNetworkProvider } = await import('../../src/network/mock/index.js');
     const art = compileString(MAP_SRC, { forceStateful: true });
     const provider = new MockNetworkProvider();
     const [alice] = await provider.getSigners(1);
@@ -244,7 +244,7 @@ describe('StatefulFunctionCall.staticCall() - mapping-entry view (EA getJob shap
 
 describe('callStatic namespace (ethers v5 sc.callStatic.fn)', () => {
   it('reads a value via the callStatic namespace', async () => {
-    const { MockNetworkProvider } = await import('../../src/index.js');
+    const { MockNetworkProvider } = await import('../../src/network/mock/index.js');
     const art = compileString(MAP_SRC, { forceStateful: true });
     const provider = new MockNetworkProvider();
     const [alice] = await provider.getSigners(1);
@@ -265,7 +265,7 @@ describe('callStatic namespace (ethers v5 sc.callStatic.fn)', () => {
 
 describe('StatefulFunctionCall.staticCall() - missing mapping key (Solidity parity)', () => {
   it('returns the zero-struct for an absent key (vmap exclusion-proof read)', async () => {
-    const { MockNetworkProvider } = await import('../../src/index.js');
+    const { MockNetworkProvider } = await import('../../src/network/mock/index.js');
     const art = compileString(MAP_SRC, { forceStateful: true });
     const provider = new MockNetworkProvider();
     const [alice] = await provider.getSigners(1);
@@ -286,7 +286,7 @@ describe('StatefulFunctionCall.staticCall() - missing mapping key (Solidity pari
 
 describe('StatefulFunctionCall.staticCall() - scalar return types (bool/bytes)', () => {
   it('decodes bool and bytes returns', async () => {
-    const { MockNetworkProvider } = await import('../../src/index.js');
+    const { MockNetworkProvider } = await import('../../src/network/mock/index.js');
     const art = compileString(
       'pragma solidcash >=0.8.0;\n'
       + 'contract T() { bigint n; function set(bigint x) { this.n = x; }\n'

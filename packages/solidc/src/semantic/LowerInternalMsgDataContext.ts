@@ -1,4 +1,4 @@
-import { BytesType, computeFunctionSelector, computeFunctionSignature } from '@solidcash/utils';
+import { BytesType, computeFunctionSelector, computeFunctionSignature, canonicalSelectorSignature } from '@solidcash/utils';
 import {
   AbiEncodeWithSelectorNode,
   ContractNode,
@@ -117,9 +117,14 @@ export default class LowerInternalMsgDataContext extends AstTraversal {
 
   private entryData(fn: FunctionDefinitionNode, src: Node): AbiEncodeWithSelectorNode {
     const sourceParameters = fn.parameters.filter((p) => !p.name.startsWith('__internal__'));
-    const types = sourceParameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
     const selector = new HexLiteralNode(
-      computeFunctionSelector(computeFunctionSignature(fn.name, types), this.evmCompat),
+      computeFunctionSelector(
+        this.evmCompat
+          ? canonicalSelectorSignature(fn.name, sourceParameters.map((p) => p.type))
+          : computeFunctionSignature(fn.name,
+            sourceParameters.map((p) => p.type.toString().replace(/address payable/g, 'address'))),
+        this.evmCompat,
+      ),
     );
     selector.type = new BytesType(4);
     selector.location = src.location;

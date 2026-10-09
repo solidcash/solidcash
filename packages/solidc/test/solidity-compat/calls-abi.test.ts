@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import {
+  AddressType, canonicalSelectorSignature, computeFunctionSelectorHex, EnumType,
+} from '@solidcash/utils';
 import { compileString, compileStringMulti } from './helpers.js';
 
 // Focused regression guards derived from the Solidity compiler corpus.
@@ -751,6 +754,29 @@ describe('event selector follows the compile mode', () => {
       .toBe(withConstant('sha256("E(uint256)")', {}));
     expect(withConstant('E.selector', { evmCompat: true }))
       .not.toBe(withConstant('E.selector', {}));
+  });
+});
+
+describe('selector signatures follow Solidity canonicalization under evmCompat', () => {
+  const withSelector = (selExpr: string, opts: object): string => compileString(
+    'contract C { enum Color { Red, Green }'
+    + ' function f(Color c, address payable p) external pure { require(c == Color.Red || p != address(0)); }'
+    + ' function g() external pure returns (bytes4) { return ' + selExpr + '; } }',
+    opts,
+  ).bytecode;
+
+  it('spells an enum as uint8 and erases address payability', () => {
+    const canonical = computeFunctionSelectorHex(
+      canonicalSelectorSignature('f', [new EnumType('Color', []), new AddressType(true)]), true,
+    );
+    expect(withSelector('f.selector', { evmCompat: true }))
+      .toBe(withSelector(`0x${canonical}`, { evmCompat: true }));
+    expect(withSelector('f.selector', { evmCompat: true })).not.toBe(withSelector('f.selector', {}));
+  });
+
+  it('keeps the platform spelling natively', () => {
+    expect(withSelector('f.selector', {}))
+      .toBe(withSelector(`0x${computeFunctionSelectorHex('f(Color,address)', false)}`, {}));
   });
 });
 

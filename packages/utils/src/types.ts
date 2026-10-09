@@ -172,6 +172,26 @@ export function abiTypeString(type: Type | undefined): string {
   return type.toString().replace(/address payable/g, 'address');
 }
 
+/**
+ * Solidity's canonical ABI type name for a selector signature: the spelling solc hashes into
+ * `keccak256(sig)[:4]` (and into an event's topic hash). It erases address payability and contract/interface
+ * identity to `address`, maps an enum to `uint8`, a struct to its parenthesized field tuple (recursively), a
+ * user-defined value type to its underlying type, and an external function type to `function`; arrays recurse.
+ * A type with no EVM ABI analogue (`bigint`, `pubkey`/`sig`/`datasig`, `mapping`, a token container) keeps its
+ * platform spelling here - the ABI encoder rejects those shapes separately.
+ */
+export function canonicalSelectorType(type: Type | undefined): string {
+  if (type === undefined) return 'address';
+  if (type instanceof ValueType) return canonicalSelectorType(type.underlyingType);
+  if (type instanceof EnumType) return 'uint8';
+  if (type instanceof StructType) return `(${type.fields.map((field) => canonicalSelectorType(field.type)).join(',')})`;
+  if (type instanceof TupleType) return `(${type.elements.map((element) => canonicalSelectorType(element)).join(',')})`;
+  if (type instanceof ArrayType) return `${canonicalSelectorType(type.elementType)}[${type.bound ?? ''}]`;
+  if (type instanceof AddressType) return 'address';
+  if (type instanceof FunctionType) return 'function';
+  return type.toString();
+}
+
 export class TupleType {
   constructor(
     public elements: Type[],

@@ -94,7 +94,7 @@ grows to the stack-element limit.
 | Constant `keccak256("literal")` | folded to real keccak256 | **Yes** |
 | Yul `keccak256(ptr, len)` | real keccak (folded / side-car) | **Yes** |
 | `erc7201(id)` namespaced slot (EIP-7201) | real keccak256, full spec formula | **Yes** |
-| Selector scheme (function/error selectors, `type(I).interfaceId`, `msg.sig`) | real keccak256 under `evmCompat`; sha256 (BCH-native) otherwise | **Yes under `evmCompat`** |
+| Selector scheme (function/error selectors, `type(I).interfaceId`, `msg.sig`) | real keccak256 over Solidity's canonical signature under `evmCompat`; sha256 (BCH-native) otherwise | **Yes under `evmCompat`** |
 | `E.selector` (bytes32 event topic-hash value) | real keccak256 under `evmCompat`; sha256 (BCH-native) otherwise | **Yes under `evmCompat`** |
 | Mapping/array physical STORAGE-SLOT space | sha256 (BCH-native) | **No** |
 | Event covenant name hash (the 20-byte event address salt) | sha256 (BCH-native) | **No** |

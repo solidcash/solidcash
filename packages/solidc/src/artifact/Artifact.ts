@@ -6,6 +6,7 @@ import {
   type ValueProvenance, type ValueProvenanceKind, type DynamicWriteGrowthAbi, ValueType,
   AddressType,
   abiTypeString, type ChildDeploymentValueRecipe, type FixedBchTransferAbi, type ExternalResultConsumerAbi,
+  canonicalSelectorType,
   type ComputeSideCarRecipesAbi,
   ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature,
 } from '@solidcash/utils';
@@ -2783,7 +2784,8 @@ function buildFunctionAbiMetadata(
       && candidate.parameters.every((parameter, index) => parameter.type.toString() === types[index]))
       .map((candidate) => {
         const signature = `${candidate.name}(${candidate.parameters
-          .map((parameter) => abiTypeString(parameter.type)).join(',')})`;
+          .map((parameter) => (compilerOptions.evmCompat
+            ? canonicalSelectorType(parameter.type) : abiTypeString(parameter.type))).join(',')})`;
         return {
           functionName: candidate.name,
           selector: computeFunctionSelectorHex(signature, compilerOptions.evmCompat === true),
@@ -4687,7 +4689,8 @@ function buildExternalInterfaceInfo(
 
   // Build interface function ABIs
   const ifaceFunctions = iface.functions.map((func) => {
-    const paramTypes = func.parameters.map((p) => abiTypeString(p.type));
+    const paramTypes = func.parameters.map((p) => (compilerOptions.evmCompat
+      ? canonicalSelectorType(p.type) : abiTypeString(p.type)));
     const sig = `${func.name}(${paramTypes.join(',')})`;
     return {
       name: func.name,

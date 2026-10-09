@@ -18,6 +18,7 @@ import {
   type CompilerOptions,
   FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
+  canonicalSelectorSignature,
   computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
@@ -326,13 +327,16 @@ function sourceFunctionSelectorHex(fn: FunctionDefinitionNode, evmCompat = false
   // arguments. SymbolTableTraversal assigns both special entries their reserved zero-argument selector, so exact
   // handler selection must derive the same identity even when `fallback(bytes input)` exposes calldata in its
   // body. Ordinary functions continue to exclude only compiler-owned physical operands.
-  const parameterTypes = fn.isFallback || fn.isReceive
+  const visibleParams = fn.isFallback || fn.isReceive
     ? []
-    : fn.parameters
-      .filter((parameter) => !parameter.name.startsWith('__internal__'))
-      .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'));
-  // D27: the dispatch scheme follows the compile's mode; the kernel's selector identities must match it.
-  return computeFunctionSelectorHex(computeFunctionSignature(fn.name, parameterTypes), evmCompat);
+    : fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  // The dispatch scheme follows the compile's mode; the kernel's selector identities must match it, including
+  // Solidity's canonical parameter spelling under evmCompat.
+  const signature = evmCompat
+    ? canonicalSelectorSignature(fn.name, visibleParams.map((parameter) => parameter.type))
+    : computeFunctionSignature(fn.name,
+      visibleParams.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')));
+  return computeFunctionSelectorHex(signature, evmCompat);
 }
 
 function messageBusHandlerSelected(
@@ -19272,8 +19276,10 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
     fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.VIEW
       && modifier !== FunctionModifier.PURE);
     for (const param of fn.parameters) param.syntheticallyUsed = true;
-    const signature = computeFunctionSignature(fn.name, fn.parameters
-      .filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type.toString()));
+    const visibleParams = fn.parameters.filter((p) => !p.name.startsWith('__internal__'));
+    const signature = evmCompat
+      ? canonicalSelectorSignature(fn.name, visibleParams.map((p) => p.type))
+      : computeFunctionSignature(fn.name, visibleParams.map((p) => p.type.toString()));
     const target = new IdentifierNode(route.link); target.location = fn.location;
     const data = new HexLiteralNode(computeFunctionSelector(signature, evmCompat)); data.location = fn.location;
     if (fn.returnTypes.length === 0 || !wasReadOnly) {

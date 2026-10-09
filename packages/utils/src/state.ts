@@ -5,6 +5,7 @@ import { bytecodeToAsm, Op, type Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
   ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
+  canonicalSelectorType, type Type,
 } from './types.js';
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -1889,6 +1890,17 @@ export function computeErrorSignature(errorName: string, paramTypes: string[]): 
  */
 export function computeFunctionSignature(funcName: string, paramTypes: string[]): string {
   return `${funcName}(${paramTypes.join(',')})`;
+}
+
+/**
+ * Build the `name(type1,type2,...)` string solc hashes into a selector (or an event topic hash) under evmCompat:
+ * every parameter is spelled with `canonicalSelectorType` (struct -> parenthesized tuple, enum -> `uint8`,
+ * payability and contract identity erased to `address`, UDVT -> underlying). Use it wherever a selector is
+ * derived from declared types so dispatch, the artifact ABI, `abi.encodeCall`, `.selector` and the call-site
+ * selectors all agree.
+ */
+export function canonicalSelectorSignature(funcName: string, paramTypes: readonly (Type | undefined)[]): string {
+  return computeFunctionSignature(funcName, paramTypes.map((type) => canonicalSelectorType(type)));
 }
 
 /**

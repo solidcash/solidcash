@@ -2,7 +2,7 @@ import { Contract, Output, randomUtxo, TransactionBuilder } from 'solidcash';
 import { compileFile } from 'solidc';
 import { stringify } from '@bitauth/libauth';
 import { URL } from 'url';
-import { MockNetworkProvider } from 'solidcash/dist';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 
 // Compile the Announcement contract to an artifact object
 const artifact = compileFile(new URL('announcement.scash', import.meta.url));

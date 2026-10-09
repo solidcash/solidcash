@@ -1,4 +1,5 @@
-import { Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, randomUtxo } from './dist/index.js';
+import { Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from './dist/index.js';
+import { MockNetworkProvider } from './dist/network/mock/index.js';
 import TransferWithTimeout from './test/fixture/transfer_with_timeout.artifact.js';
 import { alicePub, bobPub, bobPriv } from './test/fixture/vars.js';
 

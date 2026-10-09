@@ -1,5 +1,6 @@
 import { stringify } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, TransactionBuilder, Output, MockNetworkProvider, randomUtxo } from 'solidcash';
+import { Contract, SignatureTemplate, TransactionBuilder, Output, randomUtxo } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import { compileFile } from 'solidc';
 import { URL } from 'url';
 

@@ -1,5 +1,6 @@
 import artifact from '../artifacts/solidcash/transfer_with_timeout.artifact.js';
-import { Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
+import { Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import { alicePriv, alicePub, bobPub } from '../utils/keys.js';
 import 'solidcash/vitest';
 

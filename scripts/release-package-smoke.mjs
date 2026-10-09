@@ -103,7 +103,8 @@ try {
 
   writeFileSync(join(consumer, 'smoke.mjs'), `
 import { compileString, version as compilerVersion } from 'solidc';
-import { Contract, MockNetworkProvider } from 'solidcash';
+import { Contract } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import * as utils from '@solidcash/utils';
 import * as testing from '@solidcash/testing';
 import * as solidhat from '@solidcash/solidhat';
@@ -207,7 +208,8 @@ describe('packed release golden path', () => {
 
   writeFileSync(join(consumer, 'smoke.ts'), `
 import { compileString, type CompileOptions } from 'solidc';
-import { Contract, MockNetworkProvider, type Artifact } from 'solidcash';
+import { Contract, type Artifact } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import 'solidcash/vitest';
 import { defineConfig } from '@solidcash/solidhat/config';
 import { loadFixture } from '@solidcash/testing/network-helpers';

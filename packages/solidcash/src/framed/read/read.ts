@@ -56,6 +56,7 @@ import {
   type BlockLayoutSlot,
   type EntryAccessAbi,
   type ExternalCallAbi,
+  resolveAddressForm,
   type ExternalResultEncoding,
   type FrameKindValue,
   type StateLayout,
@@ -1607,6 +1608,7 @@ function decodeEntryValues(entry: ReadEntry, artifact: Artifact, retval: Uint8Ar
       ? attachDecodedAccessors(value)
       : decorateDecodedResult(
         value, entry.outputs[0].type, structs, entry.resultEncoding ?? 'compact-pushdata-v1',
+        resolveAddressForm(artifact.compiler?.options ?? {}),
       ));
   const struct = mappingValueStruct(entry, artifact);
   if (struct !== undefined && decoded.length === struct.fields.length) {

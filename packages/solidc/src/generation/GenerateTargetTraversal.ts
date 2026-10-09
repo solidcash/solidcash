@@ -88,7 +88,9 @@ import {
   FrameKind,
   computeFunctionSelector,
   computeFunctionSignature,
+  resolveAddressForm,
   type AbiFunction,
+  type AddressForm,
 } from '@solidcash/utils';
 import {
   validateDefineEmission,
@@ -2382,6 +2384,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** The direct convention: not a framed composition, whose application bytes the size work leaves alone. */
   private get directConvention(): boolean {
     return this.compilerOptions.composition !== 'framed';
+  }
+
+  /** Whether an address value is its exact locking bytecode or its 20-byte Solidity identity. */
+  private get addressForm(): AddressForm {
+    return resolveAddressForm(this.compilerOptions);
   }
 
   constructor(private compilerOptions: CompilerOptions) {
@@ -20920,7 +20927,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
       // bytesN: its natural N bytes, already correct - no padding, no reverse.
     } else if (type instanceof AddressType) {
-      this.emit(compileCast(type, new BytesType(20), false, true), loc);
+      // 'hash' packs the 20-byte Solidity identity; 'bytecode' packs the whole lock, unchanged. An explicit
+      // narrowing cast is unaffected either way: the cast is the narrowing, not the packing.
+      if (this.addressForm === 'hash') this.emit(compileCast(type, new BytesType(20), false, true), loc);
     } else if ((type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING) {
       // dynamic bytes/string: packed is the raw content (no length prefix) - the value already IS that.
       return;

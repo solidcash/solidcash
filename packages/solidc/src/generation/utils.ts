@@ -215,6 +215,10 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   // offset 3 from P2PKH (76a914 <20> 88ac). This is lossy and warned in TypeCheckTraversal. Only bytes20
   // and int targets narrow; `bytes(address)` keeps the full locking bytecode. Other lengths take the
   // P2PKH path and fail closed at OP_SPLIT if they cannot contain a 20-byte payload.
+  //
+  // `addressForm` does not reach here: the cast *is* the narrowing, so `uint160(a)` and `bytes20(a)`
+  // truncate in either form. What the form decides is the value an un-cast address carries (see
+  // `emitEvmPackedValue` and the decoded-result projection).
   if (from instanceof AddressType && to instanceof BytesType && to.bound === 20) {
     return compileAddressToEvmIdentity();
   }

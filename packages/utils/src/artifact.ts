@@ -14,6 +14,23 @@ export interface AbiFunctionReference {
   selector: string;
 }
 
+/**
+ * How an `address` value is materialized when it becomes bytes.
+ *
+ * `'hash'` is the Solidity/EVM form: an address is its 20-byte identity - the embedded payload of a standard
+ * P2PKH (`76a914 <20> 88ac`) or P2SH20 (`a914 <20> 87`) lock, or `HASH160` of any other lock - so the
+ * narrowing casts (`uint160(a)`, `bytes20(a)`) truncate exactly as Solidity's do.
+ *
+ * `'bytecode'` is the BCH form: an address is its exact locking bytecode, a variable-length script, and nothing
+ * truncates. `uint160(a)` / `bytes20(a)` pass the lock through unchanged, `abi.encodePacked(<address>)` carries
+ * the whole lock, and an address that crosses an interface arrives and leaves as that lock.
+ *
+ * A fixed-width EVM ABI *word* (`abi.encode(<address>)`) is the one surface that cannot follow `'bytecode'`: a
+ * 32-byte word cannot carry a variable-length lock, so it keeps projecting the 20-byte identity and the compiler
+ * warns. Omitted follows the compile mode: `'hash'` under `evmCompat`, `'bytecode'` otherwise.
+ */
+export type AddressForm = 'bytecode' | 'hash';
+
 export interface CompilerOptions {
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
@@ -77,6 +94,12 @@ export interface CompilerOptions {
   // accept `pragma solidity`, apply Solidity literal/type semantics, and emit EVM-faithful ABI words (32-byte
   // big-endian two's-complement) for the abi.* family.
   evmCompat?: boolean;
+  /**
+   * The form an `address` value takes when it becomes bytes: the exact locking bytecode (`'bytecode'`) or the
+   * 20-byte Solidity identity (`'hash'`). See {@link AddressForm}. Omitted follows the mode: `'hash'` under
+   * `evmCompat`, `'bytecode'` otherwise. Published on the artifact and read by the SDK, so both sides agree.
+   */
+  addressForm?: AddressForm;
   importResolver?: ImportResolverFn;
   rootFileId?: string;
   // Per-library inline override (keyed by library name, e.g. 'keccak256'): true = always inline the blob
@@ -170,6 +193,14 @@ export interface CompilerOptions {
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];
+}
+
+/**
+ * The address form a compile actually uses. One resolver for the compiler's code generation and the SDK's
+ * decoding, so a value written by one side is read the same way by the other; an unset option follows the mode.
+ */
+export function resolveAddressForm(options: Pick<CompilerOptions, 'evmCompat' | 'addressForm'>): AddressForm {
+  return options.addressForm ?? (options.evmCompat ? 'hash' : 'bytecode');
 }
 
 export interface AbiInput {

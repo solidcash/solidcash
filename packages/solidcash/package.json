@@ -32,6 +32,7 @@
     "./contract-factory": { "types": "./dist/stateful/ContractFactory.d.ts", "default": "./dist/stateful/ContractFactory.js" },
     "./stateful": { "types": "./dist/stateful/index.d.ts", "default": "./dist/stateful/index.js" },
     "./message-bus": { "types": "./dist/message-bus/index.d.ts", "default": "./dist/message-bus/index.js" },
+    "./kernel": { "types": "./dist/stateful/kernel/index.d.ts", "default": "./dist/stateful/kernel/index.js" },
     "./framed": { "types": "./dist/framed/index.d.ts", "default": "./dist/framed/index.js" },
     "./oracle": { "types": "./dist/oracle/index.d.ts", "default": "./dist/oracle/index.js" },
     "./network/mock": { "types": "./dist/network/mock/index.d.ts", "default": "./dist/network/mock/index.js" },

@@ -43,6 +43,7 @@ export {
   readKernelExecutionPlans,
   requireKernelExecutionPlanDigest,
 } from './KernelExecutionPlanReader.js';
+export { artifactAddressForm } from './solidityAbi.js';
 export {
   legacyLiveValueChunkBandWidth,
   legacyComputePublishValueChunkBand,

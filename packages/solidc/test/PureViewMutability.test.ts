@@ -68,10 +68,24 @@ describe('native pure/view mutability enforcement (Tier 1)', () => {
     expect(() => compile('contract C() { int x; constructor() { require(msg.value >= 0); } }')).toThrow(MSG_VALUE);
   });
 
+  it('T1-5 admits msg.value in a payable constructor', () => {
+    expect(compile('contract C() { int x; constructor() payable { require(msg.value >= 0); } }').contractName)
+      .toBe('C');
+  });
+
   it('T1-6 rejects value-bearing deploy to a non-payable constructor', () => {
     const src = 'contract Child(bytes20 d) { bytes20 s; constructor() { this.s = d; } }'
       + ' contract F() { int n; function c(bytes20 d) deploy { Child child = new Child{value: 1000}(d); } }';
     expect(() => compile(src)).toThrow(DEPLOY_VALUE);
+  });
+
+  it('T1-6 admits value-bearing deploy to an implicit-constructor child', () => {
+    // `contract Child(args)` has no `constructor` body to carry a `payable` modifier, and native SolidCash has no
+    // value gate on receiving value, so the deployment value is permitted (the child still receives it).
+    const src = 'contract Child(bytes20 d) { bytes20 s; }'
+      + ' contract F(pubkey admin) { int n; function c(sig s, bytes20 d) deploy {'
+      + ' require(checkSig(s, admin)); Child child = new Child{value: 1000}(d); } }';
+    expect(compile(src).contractName).toBe('F');
   });
 
   it('T1-7 rejects a view function creating a contract', () => {

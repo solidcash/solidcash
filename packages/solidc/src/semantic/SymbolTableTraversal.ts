@@ -13668,7 +13668,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!this.isStatefulContract) {
           throw new DeployValueInNonStatefulError(node, contract.name);
         }
-        if (!contract.constructorDef?.modifiers.includes(FunctionModifier.PAYABLE)) {
+        // The payability gate mirrors the SDK's value-on-a-non-payable-entry check, and applies to a constructor
+        // the source declares. An implicit constructor (`contract C(args)` with no `constructor` body) has no
+        // modifier slot to mark payable and no value gate in native SolidCash, so it is not checked here.
+        if (contract.constructorDef !== undefined
+          && !contract.constructorDef.modifiers.includes(FunctionModifier.PAYABLE)) {
           throw new InvalidDeploymentValueError(
             node, `cannot set deployment value because constructor of '${contract.name}' is not payable`,
           );

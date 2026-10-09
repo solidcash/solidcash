@@ -667,7 +667,7 @@ describe('conditional value-bearing child deployment transcript security', () =>
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Unit(bytes32 digest) {
         bytes32 stored;
-        constructor() { this.stored = digest; }
+        constructor() payable { this.stored = digest; }
         function keep() public { require(true); }
       }
       interface IFactory { function materialize(bytes seed, bytes expected, uint amount); }

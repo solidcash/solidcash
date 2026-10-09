@@ -3898,7 +3898,7 @@ describe('required kernel admission', () => {
     'constructor() { this.owner = msg.sender; }',
     'constructor(int seed) { require(this.marker == seed); this.marker = seed; }',
     'constructor(int seed) { require(tx.locktime > seed); this.marker = seed; }',
-    'constructor(int seed) { require(msg.value == seed); this.marker = seed; }',
+    'constructor(int seed) payable { require(msg.value == seed); this.marker = seed; }',
     'constructor(int seed) { require(helper(seed) > 0); this.marker = seed; } '
       + 'function helper(int x) internal returns (int) { this.marker = x; return x; }',
     'constructor(int seed) { if (seed > 0) { require(seed < 65); } this.marker = seed; }',

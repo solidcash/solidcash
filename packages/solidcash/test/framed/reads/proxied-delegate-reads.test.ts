@@ -226,7 +226,7 @@ describe('a read whose proxied callee reads a dynamic array element', () => {
  */
 const RETURN_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' struct Job { int id; int price; }'
-  + ' interface IStore { function priceOf(int id) view returns (int); }'
+  + ' interface IStore { function priceOf(int id) external view returns (int); }'
   + ' contract Store {'
   + '   address public implementation;'
   + '   mapping(int => Job) byId;'

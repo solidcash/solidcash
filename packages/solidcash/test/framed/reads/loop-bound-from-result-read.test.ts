@@ -236,7 +236,7 @@ const SHELF_ADDRESS = validatorAddress(SHELF_CATEGORY, VALIDATOR_PROGRAM);
 const SHELF_IMPL_ADDRESS = validatorAddress(SHELF_IMPL_CATEGORY, VALIDATOR_PROGRAM);
 
 const PROXIED_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' interface IShelf { function count() view returns (uint); function at(uint i) view returns (uint); }'
+  + ' interface IShelf { function count() external view returns (uint); function at(uint i) external view returns (uint); }'
   + ' contract Shelf {'
   + '   address public implementation;'
   + '   uint[] items;'

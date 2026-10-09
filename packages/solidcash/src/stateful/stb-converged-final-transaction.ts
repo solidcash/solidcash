@@ -21,7 +21,7 @@ import {
   allowsFinalizationVmRepairs,
   refuseFinalizationVmRepairsIfRecipe,
 } from '../message-bus/materialization-mode.js';
-import { getMessageBusPreflightModule } from './stb-plugin-loaders.js';
+import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
 import { stripRelocatedMutableDuplicates } from './mutable-output-reassert.js';
 
 export type ComputedChunkRepairResult = {
@@ -272,11 +272,7 @@ export function assertConvergedFinalTransaction(
       // attempt refused, and leaving those out of the accounting attributes their cost to nothing at all.
       let validationFailure: { error: unknown } | undefined;
       try {
-        const preflight = getMessageBusPreflightModule();
-        if (preflight === undefined) {
-          throw new Error('Covenant convergence preflight is unavailable: the message-bus engine is still loading.');
-        }
-        preflight.assertFinalizedTransactionCovenants(builder, transaction);
+        assertFinalizedTransactionCovenants(builder, transaction);
       } catch (error) {
         validationFailure = { error };
       }

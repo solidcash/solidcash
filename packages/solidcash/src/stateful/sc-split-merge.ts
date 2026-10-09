@@ -8,6 +8,9 @@ import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/tran
 ;
 ;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import {
+  assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder,
+} from '../message-bus/preflight.js';
 import type {
   MergeOptions, MergeResult, SplitOptions, SplitResult,
 } from './stateful-lifecycle-types.js';
@@ -157,7 +160,6 @@ const { hexToBin: localHexToBin } = await import('@bitauth/libauth/build/lib/for
   // a split that broke its covenant AND paid dust reported only the dust. The ordering no longer decides
   // anything: `assertFinalizedBytesWithCovenant` asks the covenant whenever the bytes are refused and reports
   // BOTH, so neither objection can absorb a test written against the other.
-  const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('../message-bus/preflight.js');
   assertFinalizedBytesWithCovenant(builder, decoded, inputSubjectsOfBuilder(builder));
 
   const txid = await provider.sendRawTransaction(rawTx);
@@ -321,7 +323,6 @@ const { hexToBin: localHexToBin } = await import('@bitauth/libauth/build/lib/for
   //
   // X175. Nothing debugs ahead of this site either, so the gate reports the covenant alongside the byte rule
   // rather than in place of it.
-  const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('../message-bus/preflight.js');
   assertFinalizedBytesWithCovenant(builder, decoded, inputSubjectsOfBuilder(builder));
 
   const txid = await provider.sendRawTransaction(rawTx);

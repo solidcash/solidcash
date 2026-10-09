@@ -53,6 +53,7 @@ import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
 import { encodeEvmInvocationResult } from './evm-abi-result.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
+import { encodeMessageBatch } from '../message-bus/message-bus.js';
 import type { FixedEffectEntryResolver } from '../message-bus/fixed-effect-entries.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/route-witness.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
@@ -577,14 +578,9 @@ export {
 import { type RouteProbeObservation } from './route-probe-progress.js';
 
 import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-loader.js';
-import { getMessageBusModule, loadMessageBus } from './message-bus-loader.js';
 
 function isFramedArtifact(artifact: Artifact): boolean {
   return artifact.composition?.convention === 'framed';
-}
-
-function usesMessageBus(artifact: Artifact): boolean {
-  return artifact.messageBus !== undefined;
 }
 
 function functionArgumentValuesEqual(left: unknown, right: unknown): boolean {
@@ -3931,7 +3927,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     this._buildNamespaces(this._inner);
     if (isFramedArtifact(this._inner.artifact)) void loadFramedCallHandle();
-    if (usesMessageBus(this._inner.artifact)) void loadMessageBus();
 
     // eslint-disable-next-line no-constructor-return
     return this._withDispatchProxy();
@@ -4148,14 +4143,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         computedRouteWitnesses[name] = value;
       }
     });
-    const messageBus = getMessageBusModule();
-    if (messageBus === undefined) {
-      throw new Error(
-        'Message-bus batch is unavailable: the message-bus engine is still loading. Obtain the contract '
-        + 'through an async entry point (deploy/at/upgrade/deployFrom/split/merge) or await its first async use.',
-      );
-    }
-    const { blob, routeWitnesses } = messageBus.encodeMessageBatch(
+    const { blob, routeWitnesses } = encodeMessageBatch(
       this.inner.artifact,
       resolvedInvocations,
       computedRouteWitnesses,
@@ -4256,7 +4244,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     addressOrCategory: string, artifact: T, runner: ContractRunner, options?: LeanContractOptions,
   ): Promise<ConnectedStatefulContract<T>> {
     if (isFramedArtifact(artifact)) await loadFramedCallHandle();
-    if (usesMessageBus(artifact)) await loadMessageBus();
     const sc = new StatefulContract(addressOrCategory, artifact, runner, options) as ConnectedStatefulContract<T>;
     await (sc as StatefulContract)._ensureResolved(); // eager: at() returns a fully-resolved instance
     return sc;
@@ -4396,7 +4383,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     options: DeployOptions,
   ): Promise<DeployResult<T>> {
     if (isFramedArtifact(artifact)) await loadFramedCallHandle();
-    if (usesMessageBus(artifact)) await loadMessageBus();
     return deployStatefulContractImpl(artifact, constructorArgs, options);
   }
 
@@ -4419,7 +4405,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     options: UpgradeOptions<T>,
   ): Promise<UpgradeResult<T>> {
     if (isFramedArtifact(options.newArtifact)) await loadFramedCallHandle();
-    if (usesMessageBus(options.newArtifact)) await loadMessageBus();
     return upgradeStatefulContractImpl(options);
   }
 
@@ -4441,9 +4426,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): Promise<DeployFromResult<T>> {
     if (options.childArtifact !== undefined && isFramedArtifact(options.childArtifact)) {
       await loadFramedCallHandle();
-    }
-    if (options.childArtifact !== undefined && usesMessageBus(options.childArtifact)) {
-      await loadMessageBus();
     }
     return deployFromStatefulContractImpl(options);
   }
@@ -13255,7 +13237,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   static async split(options: SplitOptions): Promise<SplitResult> {
     if (isFramedArtifact(options.contract.inner.artifact)) await loadFramedCallHandle();
-    if (usesMessageBus(options.contract.inner.artifact)) await loadMessageBus();
     return splitStatefulContractImpl(options);
   }
 
@@ -13265,7 +13246,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   static async merge(options: MergeOptions): Promise<MergeResult> {
     if (isFramedArtifact(options.contract.inner.artifact)) await loadFramedCallHandle();
-    if (usesMessageBus(options.contract.inner.artifact)) await loadMessageBus();
     return mergeStatefulContractImpl(options);
   }
 

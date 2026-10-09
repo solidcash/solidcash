@@ -9,7 +9,11 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Output } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { getMessageBusPreflightModule } from './stb-plugin-loaders.js';
+import {
+  assertFinalizedTransactionBytes,
+  finalizedByteGateOptionsForProvider,
+  inputSubjectsOfBuilder,
+} from '../message-bus/preflight.js';
 
 export interface ValidateSendFeeCapsAndBytesHost {
   readonly funderUtxos: readonly unknown[];
@@ -91,13 +95,9 @@ export function validateSendFeeCapsAndBytes(
   // change output still reports as a fee problem rather than as whichever relay observation is also true.
   // X158: the same input subjects as site 2, read off the builder that produced these exact bytes, so an
   // over-limit refusal names the contract rather than only an index.
-  const preflight = getMessageBusPreflightModule();
-  if (preflight === undefined) {
-    throw new Error('Finalized byte gate is unavailable: the message-bus preflight engine is still loading.');
-  }
-  preflight.assertFinalizedTransactionBytes(decodedTx as Parameters<typeof preflight.assertFinalizedTransactionBytes>[0], {
-    ...preflight.finalizedByteGateOptionsForProvider(provider),
-    inputSubjects: preflight.inputSubjectsOfBuilder(finalBuilder),
+  assertFinalizedTransactionBytes(decodedTx as Parameters<typeof assertFinalizedTransactionBytes>[0], {
+    ...finalizedByteGateOptionsForProvider(provider),
+    inputSubjects: inputSubjectsOfBuilder(finalBuilder),
   });
   sendTiming('bytes-validated');
   return { fee, txSize };

@@ -174,14 +174,24 @@ export function abiTypeString(type: Type | undefined): string {
 
 /**
  * Whether a value of this type is written in the standard EVM notation (`evmCompat` event arguments): a scalar
- * whose bytes are big-endian two's-complement at the type's natural width (bool one byte, uintN N/8, enum uint8),
- * or the plain byte string for a bytesN/bytes/string/pubkey/sig/datasig. An array, struct, user-defined value
- * type or function pointer keeps the platform frame - solc has no packed form for a struct, its array rule pads
- * every element to 32 bytes, and a UDVT's notation is its underlying type's.
+ * of statically known width, written as exactly the bytes `abi.encodePacked` produces at that width - bool one
+ * byte (0/1), uintN N/8, intN N/8 two's-complement, fixed M/8, bigint 32 bytes, an enum its one `uint8` ordinal,
+ * bytesN its N bytes.
+ *
+ * The notation replaces the platform's own NUMERIC encoding, and only that: every other argument keeps the
+ * platform pushdata frame. A variable-width byte value (`bytes`/`string`/`pubkey`/`sig`/`datasig`) is already
+ * raw in that frame, which delimits it, so it carries no byte-order question and no length byte is needed; an
+ * `address` on BCH IS a locking bytecode, not a 20-byte EVM account, so `addressForm` stays the one axis that
+ * decides how an address VALUE is presented; solc has no packed form for a struct, its array rule pads every
+ * element to a 32-byte word, and a UDVT's notation is its underlying type's.
  */
 export function isEvmNotationScalarType(type: Type): boolean {
-  return !(type instanceof ArrayType || type instanceof StructType || type instanceof ValueType
-    || type instanceof FunctionType || type instanceof MappingType || type instanceof TokenContainerType);
+  if (type instanceof AddressType || type instanceof ArrayType || type instanceof StructType
+    || type instanceof ValueType || type instanceof FunctionType || type instanceof MappingType
+    || type instanceof TokenContainerType) return false;
+  if (type instanceof BytesType && type.bound === undefined) return false;
+  return type !== PrimitiveType.STRING && type !== PrimitiveType.PUBKEY && type !== PrimitiveType.SIG
+    && type !== PrimitiveType.DATASIG;
 }
 
 /**

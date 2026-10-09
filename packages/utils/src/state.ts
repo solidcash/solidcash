@@ -642,20 +642,104 @@ export function concatPushdataParts(parts: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
+/** An event parameter as the artifact's ABI spells it: its type, and the frame `notation` marks. */
+export interface EventParameterNotation {
+  readonly type: string;
+  readonly notation?: 'evm';
+}
+
+/**
+ * Encode one event argument the way the compiler's `emitEventArgument` does: in the standard EVM notation when
+ * the artifact marks the parameter `notation: 'evm'` (`isEvmNotationScalarType`), and in the platform pushdata
+ * frame otherwise.
+ */
+export function encodeEventParameter(
+  value: StateValue,
+  parameter: EventParameterNotation,
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  return parameter.notation === 'evm'
+    ? encodeEvmNotationEventValue(value, parameter.type)
+    : encodePushdataValue(value, parameter.type, structs);
+}
+
+/**
+ * Encode one event argument in the `evmCompat` standard notation: exactly the bytes `abi.encodePacked` produces
+ * for the type - big-endian two's-complement at the type's natural width for a number, one byte for a bool, the
+ * N raw bytes for a bytesN. No length or padding is added, and the reader takes the width from the type, so the
+ * inverse is `decodeEvmNotationEventValue` and the output is byte-identical to the compiler's
+ * `emitEvmNotationEventValue`.
+ */
+export function encodeEvmNotationEventValue(value: StateValue, type: string): Uint8Array {
+  if (type === 'bool') return new Uint8Array([value ? 1 : 0]);
+  const width = evmNotationByteWidth(type);
+  if (/^bytes\d+$/.test(type)) {
+    if (!(value instanceof Uint8Array) || value.length !== width) {
+      throw new Error(`encodeEvmNotationEventValue: bytes${width} must be exactly ${width} bytes`);
+    }
+    return value;
+  }
+  // int/uint/fixed/bigint and an enum's ordinal: the type's natural width, big-endian two's-complement.
+  const valueNumber = typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : value;
+  if (typeof valueNumber !== 'bigint') {
+    throw new Error(`encodeEvmNotationEventValue: expected bigint for type '${type}', got ${typeof value}`);
+  }
+  const bounds = parseBoundedIntRange(type);
+  if (bounds && (valueNumber < bounds.min || valueNumber > bounds.max)) {
+    throw new Error(
+      `encodeEvmNotationEventValue: value ${valueNumber} out of range for type '${type}' `
+      + `(${bounds.min} to ${bounds.max})`,
+    );
+  }
+  const modulus = 1n << BigInt(8 * width);
+  let remainder = valueNumber % modulus;
+  if (remainder < 0n) remainder += modulus;
+  const payload = new Uint8Array(width);
+  for (let i = width - 1; i >= 0; i -= 1) {
+    payload[i] = Number(remainder & 0xffn);
+    remainder >>= 8n;
+  }
+  return payload;
+}
+
+/**
+ * The natural byte width of a marked scalar: the width `abi.encodePacked` writes for the type. An enum name is
+ * the one marked type whose width is not in its spelling, and its ABI width is `uint8`.
+ */
+function evmNotationByteWidth(type: string): number {
+  // Solidity-parity aliases: `int`/`uint` are int256/uint256, `fixed`/`ufixed` are fixed128x18.
+  if (type === 'int' || type === 'uint' || type === 'bigint') return 32;
+  if (type === 'fixed' || type === 'ufixed') return 16;
+  if (type === 'bool') return 1;
+  const intMatch = /^u?int(\d+)$/.exec(type);
+  if (intMatch) return Number(intMatch[1]) / 8;
+  const fixedMatch = /^u?fixed(\d+)x\d+$/.exec(type);
+  if (fixedMatch) return Number(fixedMatch[1]) / 8;
+  const bytesMatch = /^bytes(\d+)$/.exec(type);
+  if (bytesMatch) return Number(bytesMatch[1]);
+  return 1;
+}
+
+/** Whether a marked scalar's natural width is a two's-complement value (`int`/`fixed`/`bigint`), not a magnitude. */
+function evmNotationSigned(type: string): boolean {
+  return type === 'int' || type === 'bigint' || type === 'fixed'
+    || /^int\d+$/.test(type) || /^fixed\d+x\d+$/.test(type);
+}
+
 /**
  * Encode an event NFT commitment the way `visitEmitStatement` does: each parameter is
- * pushdata-encoded, then the parts are concatenated. `emit Update(0, record)` is therefore
+ * encoded in its artifact-marked frame, then the parts are concatenated. `emit Update(0, record)` is therefore
  * `encode(0) || encode(record)` (`00` + struct), not the struct alone.
  */
 export function encodeEventCommitment(
-  parameters: readonly { type: string }[],
+  parameters: readonly EventParameterNotation[],
   args: readonly StateValue[],
   structs?: readonly StructDefinitionInfo[],
 ): Uint8Array {
   return concatPushdataParts(
-    parameters.map((parameter, i) => encodePushdataValue(
+    parameters.map((parameter, i) => encodeEventParameter(
       args[i] ?? getDefaultStateValue(parameter.type, structs),
-      parameter.type,
+      parameter,
       structs,
     )),
   );
@@ -668,14 +752,14 @@ export function encodeEventCommitment(
  */
 export function completeEventCommitment(
   derived: Uint8Array,
-  parameters: readonly { type: string }[],
+  parameters: readonly EventParameterNotation[],
   args: readonly StateValue[],
   structs?: readonly StructDefinitionInfo[],
 ): Uint8Array {
   if (parameters.length < 2 || derived.length === 0) return derived;
   const last = parameters[parameters.length - 1];
   const lastArg = args[parameters.length - 1] ?? getDefaultStateValue(last.type, structs);
-  const lastEncoded = encodePushdataValue(lastArg, last.type, structs);
+  const lastEncoded = encodeEventParameter(lastArg, last, structs);
   if (lastEncoded.length !== derived.length) return derived;
   for (let i = 0; i < derived.length; i += 1) {
     if (lastEncoded[i] !== derived[i]) return derived;
@@ -1050,51 +1134,31 @@ export function decodePushdataValue(
 }
 
 /**
- * Decode one event argument written in the `evmCompat` standard-notation frame: a one-byte payload length
- * followed by the value in standard EVM notation - big-endian two's-complement at the type's natural width for
- * numbers, the plain byte string for a bytesN/bytes/string/pubkey/sig/datasig, the 20-byte identity for an
- * `address` (the form the encoder writes under `addressForm: 'hash'`). The event ABI's `notation: 'evm'` marks
- * which arguments use this frame; the platform `decodePushdataValue` reads the rest.
+ * Decode one event argument written in the `evmCompat` standard notation: exactly the bytes `abi.encodePacked`
+ * produces for the type - big-endian two's-complement at the type's natural width for a number (an unsigned
+ * width keeps its magnitude), one byte for a bool, the N raw bytes for a bytesN. No length byte is read: the
+ * width comes from the type, so the reader needs the event ABI's `notation: 'evm'`, which marks exactly the
+ * `isEvmNotationScalarType` parameters; the platform `decodePushdataValue` reads every other argument.
  */
 export function decodeEvmNotationEventValue(
   data: Uint8Array,
   offset: number,
   type: string,
 ): { value: StateValue; bytesConsumed: number } {
-  if (offset < 0 || offset >= data.length) {
-    throw new Error(`decodeEvmNotationEventValue: offset ${offset} out of bounds (buffer length ${data.length})`);
-  }
-  const length = data[offset];
-  const start = offset + 1;
-  if (start + length > data.length) {
+  const width = evmNotationByteWidth(type);
+  if (offset < 0 || offset + width > data.length) {
     throw new Error(
-      `decodeEvmNotationEventValue: declared length ${length} at offset ${offset} runs past the buffer`,
+      `decodeEvmNotationEventValue: a ${width}-byte '${type}' at offset ${offset} runs past the buffer `
+      + `(length ${data.length})`,
     );
   }
-  const payload = data.slice(start, start + length);
-  const bytesConsumed = 1 + length;
-  if (type === 'bool') {
-    if (length !== 1) throw new Error(`decodeEvmNotationEventValue: bool payload must be 1 byte, got ${length}`);
-    return { value: payload[0] !== 0, bytesConsumed };
-  }
-  if (type === 'string') return { value: binToUtf8(payload), bytesConsumed };
-  const fixedBytes = /^bytes(\d+)$/.exec(type);
-  if (fixedBytes) {
-    const n = Number(fixedBytes[1]);
-    if (length !== n) {
-      throw new Error(`decodeEvmNotationEventValue: bytes${n} payload must be ${n} bytes, got ${length}`);
-    }
-    return { value: payload, bytesConsumed };
-  }
-  if (type === 'bytes' || type === 'address' || type === 'pubkey' || type === 'sig' || type === 'datasig') {
-    return { value: payload, bytesConsumed };
-  }
-  // int/uint/fixed/bigint and an enum's ordinal: big-endian two's-complement, sign-extended from the first byte.
-  if (length === 0) return { value: 0n, bytesConsumed };
+  const payload = data.slice(offset, offset + width);
+  if (type === 'bool') return { value: payload[0] !== 0, bytesConsumed: width };
+  if (/^bytes\d+$/.test(type)) return { value: payload, bytesConsumed: width };
   let value = 0n;
   for (const byte of payload) value = (value << 8n) | BigInt(byte);
-  if ((payload[0] & 0x80) !== 0) value -= 1n << BigInt(length * 8);
-  return { value, bytesConsumed };
+  if (evmNotationSigned(type) && (payload[0] & 0x80) !== 0) value -= 1n << BigInt(width * 8);
+  return { value, bytesConsumed: width };
 }
 
 /**

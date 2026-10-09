@@ -21353,13 +21353,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Encode one event argument. Natively this is the platform pushdata frame (a minimal script push of the VM
-   * number, or the raw bytes). Under `evmCompat` a SCALAR argument is written as a one-byte payload length
-   * followed by the value in standard EVM notation - big-endian two's-complement at the type's natural width,
-   * exactly the bytes `abi.encodePacked` produces - so a standard decoder reads it without knowing the platform's
-   * little-endian sign-magnitude number encoding. An array, struct or user-defined value type keeps the platform
-   * frame (solc has no packed form for a struct, its array rule pads every element to 32 bytes, and a UDVT's
-   * notation is its underlying type's); `StringLiteralNode`-style raw byte values (bytes/string/pubkey/sig/
-   * datasig) are already in that notation and only take the length byte.
+   * number, or the raw bytes). Under `evmCompat` a scalar of statically known width is written in standard EVM
+   * notation instead - big-endian two's-complement at the type's natural width, exactly the bytes
+   * `abi.encodePacked` produces - so a standard decoder reads it without knowing the platform's little-endian
+   * sign-magnitude number encoding. Every other argument keeps the platform frame: a variable-width byte value
+   * (bytes/string/pubkey/sig/datasig) is already raw in that frame, an array, struct or user-defined value type
+   * has no `abi.encodePacked` form (its array rule pads each element to 32 bytes, and a UDVT's notation is its
+   * underlying type's), and an address IS a lock on BCH (`addressForm` decides how its VALUE is presented).
    */
   private emitEventArgument(type: Type, locationData: SingleLocationData): void {
     if (!this.compilerOptions.evmCompat || !isEvmNotationScalarType(type)) {
@@ -21367,17 +21367,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     this.emitEvmNotationEventValue(type, locationData);
-    // One raw length byte, then the payload. A single event commitment is at most the 128-byte NFT commitment
-    // limit, so a payload length always fits one byte; a longer value fails in OP_NUM2BIN rather than silently
-    // wrapping.
-    this.emit(Op.OP_SIZE, locationData); this.pushToStack('(value)');
-    this.emit(encodeInt(1n), locationData); this.pushToStack('(value)');
-    this.emit(Op.OP_NUM2BIN, locationData); this.popFromStack(2); this.pushToStack('(value)');
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData); this.popFromStack(2); this.pushToStack('(value)');
   }
 
-  /** The payload of `emitEventArgument` in standard EVM notation (see `isEvmNotationEventValueType`). */
+  /** The payload of `emitEventArgument` in standard EVM notation (see `isEvmNotationScalarType`). */
   private emitEvmNotationEventValue(type: Type, locationData: SingleLocationData): void {
     if (type instanceof EnumType) { this.emitEvmPackedValue(new IntType(false, 8), locationData); return; }
     if (type instanceof FixedType) {
@@ -21385,10 +21377,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     if (type === PrimitiveType.BIGINT) { this.emitEvmPackedValue(new IntType(true, 256), locationData); return; }
-    // bytesN(1..32) / bytes / string / pubkey / sig / datasig are plain byte strings already.
-    if (type instanceof BytesType || type === PrimitiveType.STRING || type === PrimitiveType.PUBKEY
-      || type === PrimitiveType.SIG || type === PrimitiveType.DATASIG) return;
-    this.emitEvmPackedValue(type, locationData); // bool, intN/uintN, address
+    this.emitEvmPackedValue(type, locationData); // bool, intN/uintN, bytesN(1..32)
   }
 
   /**

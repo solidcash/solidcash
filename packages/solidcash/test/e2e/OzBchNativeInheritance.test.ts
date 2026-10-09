@@ -37,8 +37,12 @@ beforeAll(() => {
 });
 
 describe('BchNative with npm OpenZeppelin ERC20', () => {
-  it('composes with the unmodified OZ 5.0.2 implementation below 9 KB', () => {
-    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_000);
+  it('composes with the unmodified OZ 5.0.2 implementation below 9.1 KB', () => {
+    // The evmCompat event notation writes each Transfer/Approval `uint256` as its packed 32 big-endian bytes
+    // instead of the platform's shared little-endian push, which costs the emitted sites 34 bytes (8_990 ->
+    // 9_024). 9_100 keeps the budget meaningful and well inside the 10_000-byte P2SH script limit; the 9_000
+    // shard budget in the facet test below is what decides whether the contract needs a split.
+    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_100);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [
@@ -139,8 +143,9 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
   it('wraps on the root, withdraws and inserts a transfer balance through split facets within 9 KB shards', async () => {
     const split = compileFileSplit(source, {
       evmCompat: true, messageBus: false, maxShardBytes: 9_000,
-      // The unsplit redeem script fits under 9 KB, so ask for a shard plan anyway. This title checks that
-      // wrap can stay on the root while withdraw and transfer run on facets whose scripts also fit.
+      // The unsplit redeem script is over the 9 KB shard budget, so a shard plan is needed rather than merely
+      // asked for. This title checks that wrap can stay on the root while withdraw and transfer run on facets
+      // whose scripts also fit.
       forceSplit: true,
       suppressWarnings: true,
       rootFunctions: ['wrap'],

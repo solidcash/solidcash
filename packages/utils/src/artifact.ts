@@ -208,9 +208,9 @@ export interface AbiInput {
   type: string;
   indexed?: boolean;
   /**
-   * The event-argument notation this parameter is written in. `'evm'` is the evmCompat standard notation - a
-   * one-byte length followed by the value in standard EVM byte order (see `decodeEvmNotationEventValue`); absent
-   * is the platform pushdata frame.
+   * The event-argument notation this parameter is written in. `'evm'` is the evmCompat standard notation - the
+   * bytes `abi.encodePacked` produces at the type's natural width (see `decodeEvmNotationEventValue`); absent is
+   * the platform pushdata frame.
    */
   notation?: 'evm';
 }

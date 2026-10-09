@@ -4,7 +4,7 @@
 
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  encodePushdataValue,
+  encodeEventParameter,
   type EventDefinitionAbi,
   type FunctionBlockLayout,
   type StateLayout,
@@ -77,7 +77,7 @@ export function materializeOwnerEventNftOutputs(
           value = hexToBin(value);
         }
       }
-      encodedParts.push(encodePushdataValue(value, type, host.stateLayout.structs));
+      encodedParts.push(encodeEventParameter(value, eventDef.parameters[i], host.stateLayout.structs));
     }
 
     const totalLength = encodedParts.reduce((sum, p) => sum + p.length, 0);

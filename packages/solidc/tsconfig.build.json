@@ -7,6 +7,9 @@
       "node",
       "vitest/globals"
     ],
+    // The rest of the monorepo builds with nodenext. This package keeps classic resolution because the
+    // ANTLR-generated parser under src/grammar imports `antlr4` in a way that only type-checks under
+    // `node`; switching it to nodenext loses the inherited members of the generated context classes.
     "module": "esnext",
     "moduleResolution": "node"
   },

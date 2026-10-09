@@ -5,7 +5,13 @@ import {
 } from '@solidcash/utils';
 import { compileFile } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Signer, getContractFactory, getEntryNftAddress, getValueChunkAddress, upgrades } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  getContractFactory,
+  getEntryNftAddress,
+  getValueChunkAddress,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { bytesToSlotValue, encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import { deriveLogicalCreateAddress } from '../../src/stateful/logical-identity.js';
 import type { ProxyContract } from '../../src/stateful/upgrades.js';

@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — StatefulFunctionCall override application / rebuild.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   type AbiFunction,
   type Artifact,

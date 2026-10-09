@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   decodeTransactionUnsafe, encodeTransaction, binToHex, hexToBin,
 } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider } from '../test-util.js';

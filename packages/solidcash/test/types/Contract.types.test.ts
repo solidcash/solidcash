@@ -1,7 +1,6 @@
 /* eslint-disable */
-import {
-  Artifact, Contract, MockNetworkProvider, SignatureTemplate, StatefulContract,
-} from 'solidcash';
+import { Artifact, Contract, MockNetworkProvider, SignatureTemplate } from 'solidcash';
+import { StatefulContract } from 'solidcash/stateful';
 import p2pkhArtifact from '../fixture/p2pkh.artifact';
 import p2pkhArtifactJsonNotConst from '../fixture/p2pkh.json' with { type: 'json' };
 import announcementArtifact from '../fixture/announcement.artifact';

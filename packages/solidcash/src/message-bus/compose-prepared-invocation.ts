@@ -3,7 +3,10 @@
  * (phase-boundary extract from compose.ts).
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Artifact, StateValue } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';

@@ -1,7 +1,8 @@
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import * as measureModule from '../../src/stateful/stb-measure-and-fund-covenant-fee.js';

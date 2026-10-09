@@ -3,7 +3,10 @@ import { Contract } from '../Contract.js';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   buildLogicalIdentityCommitment, deriveLogicalCreateAddress, encodeLogicalFacetCommitment,

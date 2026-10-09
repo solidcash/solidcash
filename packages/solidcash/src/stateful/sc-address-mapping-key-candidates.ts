@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — address → mapping-key alias candidates.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
 import {

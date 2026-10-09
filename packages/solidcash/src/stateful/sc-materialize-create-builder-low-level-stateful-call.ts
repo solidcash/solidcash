@@ -4,7 +4,10 @@
  * delegatecall prepare promotion + filtered nestedExternalCalls for compose.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { addressToLockScript } from '../utils.js';
 import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';

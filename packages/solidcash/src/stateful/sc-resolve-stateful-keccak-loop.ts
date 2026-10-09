@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — stateful dynamic keccak256 side-car loop via VM probe.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { keccakComputeLockingBytecode, type AbiFunction } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';

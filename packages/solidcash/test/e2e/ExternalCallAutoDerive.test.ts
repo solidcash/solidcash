@@ -1,10 +1,14 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, MockNetworkProvider,
-  StatefulContract, SignatureTemplate,
-  getDataNftLockingBytecode,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import {
+  StatefulContract,
+  getDataNftLockingBytecode,
+} from '../../src/stateful/index.js';
 import type { ConnectedStatefulContract } from '../../src/stateful/StatefulContract.js';
 import {
   alicePub, alicePriv,

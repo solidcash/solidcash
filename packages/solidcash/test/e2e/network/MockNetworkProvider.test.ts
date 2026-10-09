@@ -1,5 +1,9 @@
 import { binToHex } from '@bitauth/libauth';
-import { Contract, MockNetworkProvider, SignatureTemplate } from '../../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { addressToLockScript, randomUtxo } from '../../../src/utils.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';

@@ -2,7 +2,13 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 2 dynamic-rescan + event commitment apply.
  */
 
-import { binToHex, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import type { EmitAbi, FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';

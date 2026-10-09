@@ -7,14 +7,20 @@ const providerInputZeroVerifyFailure = new RegExp('mandatory-script-verify-flag-
   + 'Program failed an OP_VERIFY operation\\.\\)'
   + '|\\(Script failed an OP_[A-Z]*VERIFY operation\\))');
 import {
-  Contract, StatefulContract,
-  StatefulTransactionBuilder,
+  Contract,
   TransactionBuilder,
   SignatureTemplate,
   randomUtxo,
-  getDataNftAddress, getTokenContainerAddress, getSatoshiContainerAddress,
-  createDataNftUnlocker, createTokenContainerUnlocker,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  StatefulTransactionBuilder,
+  getDataNftAddress,
+  getTokenContainerAddress,
+  getSatoshiContainerAddress,
+  createDataNftUnlocker,
+  createTokenContainerUnlocker,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments,
   buildTokenContainerCovenantBytecode,

@@ -2,8 +2,15 @@ import { vmNumberToBigInt } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { hash160 } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, SortedList, StatefulContract, getEntryNftAddress, keyToSlot,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  SortedList,
+  StatefulContract,
+  getEntryNftAddress,
+  keyToSlot,
+} from '../../src/stateful/index.js';
 import { alicePriv, alicePub, bobPub } from '../fixture/vars.js';
 import { compileString } from '../direct-compile.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';

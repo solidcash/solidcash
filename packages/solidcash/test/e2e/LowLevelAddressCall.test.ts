@@ -1,8 +1,7 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
-import {
-  Contract, StatefulContract,
-} from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 const missingCallFailure = 'messageBus: BCH-2026 preflight failed at input 0:';

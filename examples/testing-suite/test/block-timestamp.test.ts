@@ -7,7 +7,7 @@
  * `block.timestamp` for a ported Solidity timelock.
  */
 import { compileString } from 'solidc';
-import { getContractFactory, StatefulContract } from 'solidcash';
+import { getContractFactory, StatefulContract } from 'solidcash/stateful';
 import { ethers, network, loadFixture, time, mockBlockOracleRpc, BlockOracleUpdater } from '@solidcash/testing';
 import { expect } from '@solidcash/testing/chai';
 

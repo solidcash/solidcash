@@ -4,7 +4,10 @@
  * arguments the call's. Mapping-backed expressions read the caller's entries (hydrateExternalPredicateState).
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction, ArgSource, Artifact, ExternalCallExpression } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { findDeploymentByAddressValue } from './deployment-registry.js';

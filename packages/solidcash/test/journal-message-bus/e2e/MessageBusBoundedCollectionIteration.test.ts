@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  Contract, SignatureTemplate, StatefulContract, type TransactionBuilder,
+  Contract,
+  SignatureTemplate,
+  type TransactionBuilder,
 } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';

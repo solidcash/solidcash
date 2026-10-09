@@ -1,4 +1,7 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction } from '@solidcash/utils';
 
 /** The shared predecessor links to the first active target in its original gap, not to each inserted key. */

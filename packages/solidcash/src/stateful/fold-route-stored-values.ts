@@ -1,4 +1,10 @@
-import { binsAreEqual, bigIntToVmNumber } from '@bitauth/libauth';
+import { binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import type { Artifact, EntryAccessAbi, StateValue } from '@solidcash/utils';
 import { encodeFunctionArgument } from '../Argument.js';
 import { mappingKeySlotCandidates } from './mapping-key-lookup.js';

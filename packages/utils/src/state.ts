@@ -6,10 +6,11 @@ import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js
 import {
   ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
 } from './types.js';
-import {
-  bigIntToVmNumber, binToHex, binToUtf8, cashAddressToLockingBytecode, hexToBin, utf8ToBin,
-  vmNumberToBigInt, isVmNumberError,
-} from '@bitauth/libauth';
+import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+import { bigIntToVmNumber, vmNumberToBigInt, isVmNumberError } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
 import { hash256, sha256 } from './hash.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 

@@ -16,7 +16,11 @@
  *     view-listed records and at validator recreations, and the value rule weighs containers by their lock.
  */
 
-import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+;
+;
+;
 
 import {
   ARGS_HASH_LENGTH,

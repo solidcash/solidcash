@@ -2,7 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — result-dependent argument propagation.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { FunctionArgument } from '../Argument.js';
 import { decodeAuthenticatedProducerResultVector } from '../stateful/StatefulContract.js';
 import {

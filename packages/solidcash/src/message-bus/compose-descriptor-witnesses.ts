@@ -2,7 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — derive expression-backed route witnesses per prepared call.
  */
 
-import { vmNumberToBigInt } from '@bitauth/libauth';
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import type { FunctionArgument } from '../Argument.js';
 import { evalComputedKey } from '../stateful/StatefulContract.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';

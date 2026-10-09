@@ -2,10 +2,15 @@ import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import { ResolvedImport } from '@solidcash/utils';
 import {
-  Contract, StatefulTransactionBuilder,
-  StateReader, SignatureTemplate,
-  getDataNftAddress, createDataNftUnlocker,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  StatefulTransactionBuilder,
+  StateReader,
+  getDataNftAddress,
+  createDataNftUnlocker,
+} from '../../src/stateful/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import {

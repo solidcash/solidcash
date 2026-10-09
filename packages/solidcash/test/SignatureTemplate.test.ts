@@ -1,5 +1,11 @@
 import { generateLibauthSourceOutputs } from 'solidcash/dist/utils.js';
-import { HashType, MockNetworkProvider, SignatureAlgorithm, SignatureTemplate, TransactionBuilder } from '../src/index.js';
+import {
+  HashType,
+  SignatureAlgorithm,
+  SignatureTemplate,
+  TransactionBuilder,
+} from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { aliceAddress, alicePriv, alicePub, aliceWif } from './fixture/vars.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 

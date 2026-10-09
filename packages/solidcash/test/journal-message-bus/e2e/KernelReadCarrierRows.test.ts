@@ -3,8 +3,13 @@ import { decodePushdataValue, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX } from 
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, StatefulContract, encodeFunctionArgument, getEntryNftAddress,
+  Contract,
+  encodeFunctionArgument,
 } from '../../../src/index.js';
+import {
+  StatefulContract,
+  getEntryNftAddress,
+} from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';

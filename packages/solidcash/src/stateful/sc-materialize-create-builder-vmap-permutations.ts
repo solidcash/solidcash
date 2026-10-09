@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _createBuilder extract — materialize hidden vmap-counter permutation witnesses.
  */
 
-import { bigIntToVmNumber } from '@bitauth/libauth';
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import {
   type AbiFunction,
   type Artifact,

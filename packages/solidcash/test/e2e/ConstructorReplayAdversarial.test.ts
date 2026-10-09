@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, getContractFactory, SignatureTemplate, TransactionBuilder, type HDSigner,
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
+import { type HDSigner } from '../../src/HDSigner.js';
 import type { Unlocker, Utxo } from '../../src/interfaces.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePkh, alicePriv, alicePub, bobAddress } from '../fixture/vars.js';

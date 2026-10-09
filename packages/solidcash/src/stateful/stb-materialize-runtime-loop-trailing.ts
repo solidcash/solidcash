@@ -2,7 +2,10 @@
  * phase-boundary extract: STB build-phase extract — runtime-loop trailing entry/event/transfer materialization.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Output } from '../interfaces.js';
 import { calculateDust } from '../utils.js';
 import type { KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';

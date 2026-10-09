@@ -5,7 +5,11 @@ import { compileFile, compileFileSplit } from 'solidc';
 import { URL } from 'url';
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
-import { Signer, type SplitContract, SplitContractBundle } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  type SplitContract,
+  SplitContractBundle,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, aliceAddress } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';

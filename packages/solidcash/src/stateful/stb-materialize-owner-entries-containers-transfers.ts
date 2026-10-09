@@ -2,8 +2,11 @@
  * phase-boundary extract: STB build-phase extract — owner entry NFTs, satoshi/token containers, and transfers.
  */
 
-import { binToHex } from '@bitauth/libauth';
-import { getDustThreshold } from '@mem-cash/validation';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
+import { getDustThreshold } from '../network/dust-threshold.js';
 import {
   buildEntryCommitment,
   buildEntryCommitmentMultiKey,

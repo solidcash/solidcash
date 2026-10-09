@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
+import { Contract } from '../../src/index.js';
 import {
-  Contract, StatefulContract, getEventNftAddress, readEventsFromChain,
-} from '../../src/index.js';
+  StatefulContract,
+  getEventNftAddress,
+  readEventsFromChain,
+} from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // An array event parameter is encoded into the event NFT commitment as `<count push> ++ <fixed-width elements>`.

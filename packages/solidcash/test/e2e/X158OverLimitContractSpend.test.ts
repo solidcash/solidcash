@@ -3,8 +3,12 @@ import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { asmToBytecode } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, messageBus,
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import type { Unlocker } from '../../src/interfaces.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';

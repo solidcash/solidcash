@@ -2,7 +2,10 @@
  * phase-boundary extract: STB build-phase extract — locktime, duplicate-input roles, unlocker checks, input registration.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type {

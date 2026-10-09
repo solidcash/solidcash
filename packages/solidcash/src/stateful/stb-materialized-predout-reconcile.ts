@@ -8,7 +8,10 @@ import type { UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { reassertBatchPredecessorOutputsAtDeclaredSlots } from './mutable-output-reassert.js';
 import { materializedPredOutBase } from './writer-event-delegate-layout.js';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 
 type MaterializedPredOutFrame = {
   inputs: readonly {

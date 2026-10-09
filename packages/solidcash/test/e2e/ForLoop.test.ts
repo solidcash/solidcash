@@ -1,8 +1,10 @@
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, StatefulContract,
-  TransactionBuilder, FailedRequireError,
+  Contract,
+  TransactionBuilder,
+  FailedRequireError,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import {
   parsePushdataCommitment,
 } from '@solidcash/utils';

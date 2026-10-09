@@ -3,9 +3,17 @@ import { describe, it, expect } from 'vitest';
 import { createVirtualMachineBch2026, hash256, hexToBin, binToHex } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 import {
-  SortedList, getCachedSortedList, keyToSlot, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
-  encodeEntryCommitment, decodeEntryCommitment, isEmptyValueEntryCommitment, headSentinelCommitment,
-} from '../../src/index.js';
+  SortedList,
+  getCachedSortedList,
+  keyToSlot,
+  keyToSlotValue,
+  slotValueToBytes,
+  bytesToSlotValue,
+  encodeEntryCommitment,
+  decodeEntryCommitment,
+  isEmptyValueEntryCommitment,
+  headSentinelCommitment,
+} from '../../src/stateful/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 
 // SDK part of the vmap sorted-linked-list mapping: the off-chain list manager (rebuild from chain, predecessor

@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { buildPushdataCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, TransactionBuilder, getContractFactory } from '../../src/index.js';
+import {
+  Contract,
+  TransactionBuilder,
+} from '../../src/index.js';
+import {
+  StatefulContract,
+  getContractFactory,
+} from '../../src/stateful/index.js';
 import {
   createFeeFunder, createTestProvider, expectScriptRejection, fundedSigner, setupStatefulUtxos,
 } from '../test-util.js';

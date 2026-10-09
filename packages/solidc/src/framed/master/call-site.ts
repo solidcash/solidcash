@@ -28,7 +28,9 @@
  * code and any verifier of the same input can never disagree about which bytes were checked.
  */
 
-import { encodeDataPush, Opcodes } from '@bitauth/libauth';
+import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
 import { argsHash, encodeCallDataArguments, scriptToBytecode } from '@solidcash/utils';
 import type { ExternalCallArgSource, ExternalCallExpression, ExternalCallStatement } from '../../ast/AST.js';
 import { compileAddressToEvmIdentity } from '../../generation/utils.js';

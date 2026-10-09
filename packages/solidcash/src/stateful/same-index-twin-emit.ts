@@ -3,7 +3,13 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { bigIntToVmNumber, binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import { encodeEntryCommitment, isEmptyValueEntryCommitment } from './SortedList.js';
 import {
   SLOT_HEX,

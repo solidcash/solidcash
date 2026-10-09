@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { ContractFactory } from '../../src/index.js';
+import { ContractFactory } from '../../src/stateful/index.js';
 import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../../src/utils.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 

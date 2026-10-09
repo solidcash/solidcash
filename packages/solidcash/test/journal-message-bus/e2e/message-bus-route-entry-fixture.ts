@@ -1,5 +1,8 @@
 import { binToHex } from '@bitauth/libauth';
-import { encodeEntryCommitment, slotValueToBytes } from '../../../src/index.js';
+import {
+  encodeEntryCommitment,
+  slotValueToBytes,
+} from '../../../src/stateful/index.js';
 import { randomUtxo } from '../../../src/utils.js';
 import {
   createEntryNftUnlocker, getEntryNftAddress,

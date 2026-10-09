@@ -1,7 +1,8 @@
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 
 const SOURCE = `contract ProducedFiniteKeys() {

@@ -1,7 +1,12 @@
 import { bigIntToVmNumber, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, SortedList, getEntryNftAddress } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import {
+  StatefulContract,
+  SortedList,
+  getEntryNftAddress,
+} from '../../../src/stateful/index.js';
 import { keyToSlot } from '../../../src/stateful/SortedList.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';

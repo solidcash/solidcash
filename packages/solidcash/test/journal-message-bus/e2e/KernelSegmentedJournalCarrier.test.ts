@@ -6,7 +6,11 @@ import {
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, encodeFunctionArgument, StatefulContract } from '../../../src/index.js';
+import {
+  Contract,
+  encodeFunctionArgument,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';

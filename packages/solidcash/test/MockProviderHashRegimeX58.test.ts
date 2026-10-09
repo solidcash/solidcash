@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransactionBch, hexToBin } from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { MockNetworkProvider, MOCK_RELAXED_OPERATION_COST } from '../src/index.js';
+import {
+  MockNetworkProvider,
+  MOCK_RELAXED_OPERATION_COST,
+} from '../src/network/mock/index.js';
 import type { ConsensusLimits, NetworkPolicy } from '../src/network/NetworkProvider.js';
 
 /**

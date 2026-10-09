@@ -3,8 +3,15 @@ import { compileString } from '../../direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { Artifact, buildInitialStateCommitments, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulTransactionBuilder, messageBus, getDataNftAddress, createDataNftUnlocker,
+  Contract,
+  SignatureTemplate,
 } from '../../../src/index.js';
+import {
+  StatefulTransactionBuilder,
+  getDataNftAddress,
+  createDataNftUnlocker,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { ExternalCallUtxoGroup } from '../../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript } from '../../../src/utils.js';
 import { Utxo } from '../../../src/interfaces.js';

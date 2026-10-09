@@ -1,4 +1,7 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { sha256, VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE } from '@solidcash/utils';
 
 export interface AuthenticatedValueChunk {

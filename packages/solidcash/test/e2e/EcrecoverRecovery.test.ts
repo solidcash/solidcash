@@ -3,7 +3,12 @@ import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin, hash160 } from '@bitauth/libauth';
 import { ethers } from 'ethers';
 import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode, keccakComputeLockingBytecode } from '@solidcash/utils';
-import { Contract, StatefulContract, TransactionBuilder, MockNetworkProvider } from '../../src/index.js';
+import {
+  Contract,
+  TransactionBuilder,
+} from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { computeEcrecoverWitness } from '../../src/ecrecover/ecrecoverRecovery.js';
 import { probeEcrecoverSplit } from '../../src/ecrecover/ecrecoverComputeSidecar.js';

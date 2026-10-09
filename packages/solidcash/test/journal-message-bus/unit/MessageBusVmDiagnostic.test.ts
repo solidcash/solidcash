@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { describe, expect, it } from 'vitest';
 import { decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
-import { messageBus } from '../../../src/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { artifactTestRequires } from '../../fixture/debugging/debugging_contracts.js';
 
 const push = (payload: number[]): number[] => [payload.length, ...payload];

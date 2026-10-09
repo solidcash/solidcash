@@ -11,7 +11,10 @@ import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/c
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
 } from '../../../../solidc/test/framed/master/validator-input.js';
-import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../../../src/index.js';
+import {
+  MOCK_CONSENSUS_LIMITS,
+  MockNetworkProvider,
+} from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import {
   createComposedDerivationHost,

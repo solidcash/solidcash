@@ -1,9 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, SignatureTemplate, StatefulContract, TransactionBuilder, createDestroyDataNftUnlocker,
-  createSatoshiContainerUnlocker, getSatoshiContainerAddress,
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  createDestroyDataNftUnlocker,
+  createSatoshiContainerUnlocker,
+  getSatoshiContainerAddress,
+} from '../../src/stateful/index.js';
 import { createTestProvider, getTxOutputs, verifyTransaction } from '../test-util.js';
 import { alicePub, alicePriv, alicePkh, bobPkh, bobAddress } from '../fixture/vars.js';
 import { Utxo } from '../../src/interfaces.js';

@@ -3,7 +3,10 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   decodePushdataValue,
   encodePushdataValue,

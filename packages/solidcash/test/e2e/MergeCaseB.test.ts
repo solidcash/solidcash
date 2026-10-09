@@ -2,8 +2,17 @@
 import { describe, it, expect } from 'vitest';
 import { vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, Signer, SignatureTemplate } from '../../src/index.js';
-import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
+import {
+  Contract,
+  Signer,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import {
+  keyToSlot,
+  getEntryNftAddress,
+  SortedList,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub, alicePkh, aliceAddress, bobPriv, bobPub, bobAddress, carolAddress } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';

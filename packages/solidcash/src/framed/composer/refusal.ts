@@ -19,10 +19,16 @@
  * assumed: without it an objection's instruction pointer lands on an unrelated instruction.
  */
 
-import {
-  binToHex, binToUtf8, createVirtualMachineBch2026, decodeAuthenticationInstructions, encodeDataPush, hexToBin,
-  vmNumberToBigInt,
-} from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+import { decodeAuthenticationInstructions, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
+;
+;
 import {
   FrameKind, sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi, type RequireStatement,
   type RevertArgumentSource,

@@ -3,8 +3,15 @@ import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { compileStringMulti } from '../../../solidc/src/compiler.js';
 import {
-  Contract, StatefulContract, SignatureTemplate, keyToSlot, getEntryNftAddress, SortedList,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  keyToSlot,
+  getEntryNftAddress,
+  SortedList,
+} from '../../src/stateful/index.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';

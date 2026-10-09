@@ -1,10 +1,18 @@
 import { compileString, PrivateStateVariableAccessError } from 'solidc';
 import { ResolvedImport, buildInitialStateCommitments } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
-  SignatureTemplate, StateReader, StatefulTransactionBuilder,
-  getDataNftAddress, createDataNftUnlocker,
+  Contract,
+  TransactionBuilder,
+  FailedRequireError,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import {
+  StateReader,
+  StatefulTransactionBuilder,
+  getDataNftAddress,
+  createDataNftUnlocker,
+} from '../../src/stateful/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, gatherUtxos, getTxOutputs } from '../test-util.js';

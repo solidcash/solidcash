@@ -1,7 +1,12 @@
-import {
-  secp256k1, encodeCashAddress, hexToBin, isHex,
-  utf8ToBin, binToBase64, flattenBinArray, bigIntToCompactUint,
-} from '@bitauth/libauth';
+import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
+import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { binToBase64 } from '@bitauth/libauth/build/lib/format/base64.js';
+import { hexToBin, isHex, flattenBinArray } from '@bitauth/libauth/build/lib/format/hex.js';
+import { bigIntToCompactUint } from '@bitauth/libauth/build/lib/format/number.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+;
 import { hash160, hash256 } from '@solidcash/utils';
 import type NetworkProvider from './network/NetworkProvider.js';
 import type { Utxo, UnlockableUtxo } from './interfaces.js';

@@ -1,7 +1,14 @@
-import {
-  binToHex, encodeTransaction, hash256, vmNumberToBigInt,
-  type AuthenticationProgramStateCommon, type Transaction,
-} from '@bitauth/libauth';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { parseChunkCommitment } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';

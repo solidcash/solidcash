@@ -1,7 +1,7 @@
 /* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // Named returns desugar to default-initialized locals + `return <names>;`. compute() assigns named

@@ -2,13 +2,13 @@ import { hexToBin } from '@bitauth/libauth';
 import { placeholder } from '@solidcash/utils';
 import {
   Contract,
-  ElectrumNetworkProvider,
-  MockNetworkProvider,
   Network,
   randomUtxo,
   SignatureTemplate,
   TransactionBuilder,
 } from '../src/index.js';
+import { ElectrumNetworkProvider } from '../src/network/electrum/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import {
   aliceAddress,
   alicePkh, alicePriv, alicePub, bobPriv,

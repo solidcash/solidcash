@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
+import { Signer } from '../../src/index.js';
 import {
-  Signer, getContractFactory, registerDeployment, takeDeploymentRegistrySnapshot, upgrades,
-} from '../../src/index.js';
+  getContractFactory,
+  registerDeployment,
+  takeDeploymentRegistrySnapshot,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 
 // OpenZeppelin's `upgrades.upgradeProxy(address, Factory)` takes the proxy's address. A deployment script that reads

@@ -1,4 +1,7 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { computeCollectionHash, VALUE_INLINE_LIMIT, type AbiFunction, type EntryAccessAbi } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { encodeStoredValueSource } from '../stateful/sc-encode-stored-element-source.js';

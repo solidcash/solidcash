@@ -1,5 +1,6 @@
 import { compileString } from '../direct-compile.js';
-import { SignatureTemplate, getContractFactory } from '../../src/index.js';
+import { SignatureTemplate } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 import { alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
 import { assertApplicationScriptSize } from '../application-size-budgets.js';

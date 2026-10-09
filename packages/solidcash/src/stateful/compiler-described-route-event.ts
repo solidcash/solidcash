@@ -3,7 +3,10 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { isAuthenticatedEventRepairCommitment } from './StatefulTransactionBuilder.js';
 
 export function isCompilerDescribedRouteEventCommitment(

@@ -1,7 +1,16 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, getContractFactory, messageBus, Signer, StatefulContract, upgrades } from '../../src/index.js';
+import {
+  Contract,
+  Signer,
+} from '../../src/index.js';
+import {
+  getContractFactory,
+  StatefulContract,
+  upgrades,
+} from '../../src/stateful/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { isContractUnlocker } from '../../src/interfaces.js';
 import type { ExternalCallUtxoGroup } from '../../src/stateful/external-call-utxo-group.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';

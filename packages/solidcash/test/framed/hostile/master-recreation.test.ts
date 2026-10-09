@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import { encodeWitnessBlock, validatorAddress, type WitnessBlock } from '@solidcash/utils';
 import { compileString } from 'solidc';
-import { MockNetworkProvider } from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from '../frames/caller-input.js';

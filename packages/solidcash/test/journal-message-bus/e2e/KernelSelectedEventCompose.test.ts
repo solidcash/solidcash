@@ -1,7 +1,12 @@
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus, readEventsFromChain } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import {
+  StatefulContract,
+  readEventsFromChain,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';

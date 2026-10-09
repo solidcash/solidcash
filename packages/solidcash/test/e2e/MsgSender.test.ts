@@ -1,10 +1,16 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
-  Contract, StatefulContract, StatefulTransactionBuilder,
-  StatefulFunctionCall, TransactionBuilder,
-  getDataNftAddress, createDataNftUnlocker,
+  Contract,
+  TransactionBuilder,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  StatefulTransactionBuilder,
+  StatefulFunctionCall,
+  getDataNftAddress,
+  createDataNftUnlocker,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments,
 } from '@solidcash/utils';

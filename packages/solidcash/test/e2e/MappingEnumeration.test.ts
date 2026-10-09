@@ -1,9 +1,14 @@
 import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin, bigIntToVmNumber } from '@bitauth/libauth';
+import { Contract } from '../../src/index.js';
 import {
-  Contract, StatefulContract,
-  getDataNftAddress, getEntryNftAddress, encodeEntryCommitment, keyToSlot, keyToSlotMulti,
-} from '../../src/index.js';
+  StatefulContract,
+  getDataNftAddress,
+  getEntryNftAddress,
+  encodeEntryCommitment,
+  keyToSlot,
+  keyToSlotMulti,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments,
   type StateLayout,
@@ -12,7 +17,8 @@ import {
   alicePkh, bobPkh,
 } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
-import { MockNetworkProvider, RegtestNetworkProvider } from '../../src/index.js';
+import { RegtestNetworkProvider } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 
 type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
 const ZERO = new Uint8Array(32);

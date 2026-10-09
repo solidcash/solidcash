@@ -3,8 +3,11 @@ import {
   binToHex, decodeTransactionUnsafe, encodeTransaction, hash256, hexToBin,
 } from '@bitauth/libauth';
 import {
-  Contract, HashType, SignatureTemplate, StatefulContract,
+  Contract,
+  HashType,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { compileString } from '../direct-compile.js';

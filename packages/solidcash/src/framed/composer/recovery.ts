@@ -17,7 +17,10 @@
  * placeholder's A pad opens with the proof the body checks instead.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { secp256k1 } from '@noble/curves/secp256k1';
 import {
   FramedEncodingError,

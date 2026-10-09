@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _createBuilder extract — discover satoshi-container UTXO when transfers need it.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { buildSatoshiContainerCovenantScript, type AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';

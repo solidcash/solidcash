@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { StatefulContract, MockNetworkProvider } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 
 // ethers view semantics: awaiting a pure single-output view function (writesState:false, no send-intent config)
 // READS the decoded return value; awaiting a state-writer still SENDS. .send()/.staticCall() are explicit escapes.

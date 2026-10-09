@@ -1,6 +1,6 @@
 import { describe, it } from 'vitest';
 import { readFileSync } from 'fs';
-import { ContractFactory } from '../../src/index.js';
+import { ContractFactory } from '../../src/stateful/index.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 
 const limits = {

@@ -1,10 +1,15 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate,
-  StatefulTransactionBuilder,
-  getDataNftAddress, createDataNftUnlocker,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import {
+  StatefulTransactionBuilder,
+  getDataNftAddress,
+  createDataNftUnlocker,
+} from '../../src/stateful/index.js';
 import { Artifact, buildInitialStateCommitments } from '@solidcash/utils';
 import {
   alicePkh, alicePub, alicePriv,

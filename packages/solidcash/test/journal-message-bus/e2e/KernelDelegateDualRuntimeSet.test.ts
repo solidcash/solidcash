@@ -3,8 +3,15 @@ import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, Signer, StatefulContract, getContractFactory, messageBus, upgrades,
+  Contract,
+  Signer,
 } from '../../../src/index.js';
+import {
+  StatefulContract,
+  getContractFactory,
+  upgrades,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import {
   createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos,
 } from '../../test-util.js';

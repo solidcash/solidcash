@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { compileString as _csRawSolidc } from '../direct-compile.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
   _csRawSolidc(s, o);
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 describe('read-after-write same key', () => {

@@ -4,9 +4,15 @@
  * computed value-chunk claim predicates.
  */
 
-import {
-  bigIntToVmNumber, binToHex, binToUtf8, hexToBin, sha1, utf8ToBin, vmNumberToBigInt,
-} from '@bitauth/libauth';
+import { sha1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   decodePushdataValue, encodePushdataValue,

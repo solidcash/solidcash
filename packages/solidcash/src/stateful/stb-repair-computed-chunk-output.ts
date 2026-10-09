@@ -3,7 +3,13 @@
  * failing covenant evaluation.
  */
 
-import { binsAreEqual, binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { binsAreEqual, binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import {
   Op,
   VALUE_CHUNK_SIZE,

@@ -2,12 +2,20 @@ import { compileString } from '../direct-compile.js';
 import { compileString as compileMessageBusString } from 'solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  Contract, TransactionBuilder,
-  StateReader, SignatureTemplate, StatefulContract,
-  StatefulTransactionBuilder,
-  getDataNftAddress, createDataNftUnlocker, createDestroyDataNftUnlocker, getContractState,
-  getMessageBusVerifierLockingBytecode,
+  Contract,
+  TransactionBuilder,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  StateReader,
+  StatefulContract,
+  StatefulTransactionBuilder,
+  getDataNftAddress,
+  createDataNftUnlocker,
+  createDestroyDataNftUnlocker,
+  getContractState,
+  getMessageBusVerifierLockingBytecode,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments, buildPushdataCommitment, parsePushdataCommitment,
   buildDataNftCovenantBytecode, messageBusVerifierCommitment,

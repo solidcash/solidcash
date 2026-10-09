@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _createBuilder extract — view-return / return-emit / msg.sender / blockhash early args.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   encodePushdataValue,
   type AbiFunction,

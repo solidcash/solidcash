@@ -4,7 +4,10 @@
  * Kept free of cycles with ethers-shim / ethers-utils.
  */
 import { AbiCoder as EthersAbiCoder } from 'ethers/abi';
-import { cashAddressToLockingBytecode, binToHex, hash160 as libauthHash160 } from '@bitauth/libauth';
+import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hash160 as libauthHash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 
 const isCashAddr = (x: unknown): x is string =>
   typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/i.test(x);

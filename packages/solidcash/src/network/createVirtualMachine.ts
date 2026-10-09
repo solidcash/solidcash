@@ -1,11 +1,17 @@
-import {
-  applyError, authenticationInstructionsAreMalformed, AuthenticationErrorCommon, binToHex,
-  conditionallyEvaluate, createVirtualMachine, createVirtualMachineBch2026, decodeAuthenticationInstructions,
-  disassembleAuthenticationInstructionMalformed, encodeAuthenticationInstructions, incrementOperationCount,
-  isPayToScriptHash20, isPayToScriptHash32, isWitnessProgram, pushToStack, pushToStackChecked, pushToStackVmNumber,
-  ripemd160, secp256k1, sha1, sha256, stackItemIsTruthy, useFourStackItems, useOneStackItem, useOneVmNumber,
-  useThreeStackItems, useTransactionInput, useTransactionOutput, useTransactionUtxo, useTwoStackItems,
-} from '@bitauth/libauth';
+import { isPayToScriptHash20, isPayToScriptHash32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { ripemd160, secp256k1, sha1, sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+import { conditionallyEvaluate, incrementOperationCount, pushToStack, pushToStackChecked, pushToStackVmNumber, useFourStackItems, useOneStackItem, useOneVmNumber, useThreeStackItems, useTwoStackItems } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/combinators.js';
+import { applyError, AuthenticationErrorCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/errors.js';
+import { useTransactionInput, useTransactionOutput, useTransactionUtxo } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/inspection.js';
+import { authenticationInstructionsAreMalformed, decodeAuthenticationInstructions, disassembleAuthenticationInstructionMalformed, encodeAuthenticationInstructions, isWitnessProgram, stackItemIsTruthy } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { createVirtualMachine } from '@bitauth/libauth/build/lib/vm/virtual-machine.js';
+;
+;
+;
 import { AuthenticationErrorBch2025 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2025/bch-2025-errors.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { AuthenticationErrorBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-errors.js';

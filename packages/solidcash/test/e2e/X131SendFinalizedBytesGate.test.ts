@@ -1,8 +1,11 @@
 import { binToHex } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder,
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { alicePkh, alicePriv, alicePub, bobPub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';

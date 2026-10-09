@@ -2,7 +2,11 @@
  * phase-boundary extract: SC class-body extract — evaluate compiler-described external-call expressions.
  */
 
-import { hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+;
 import {
   decodePushdataValue,
   hash160 as hash160Sync,

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { getContractFactory } from '../src/index.js';
+import { getContractFactory } from '../src/stateful/index.js';
 import { fundedSigner } from './test-util.js';
 
 // A `return` inside a loop of a LIBRARY function (a namespaced free function invoked as an OP_INVOKE

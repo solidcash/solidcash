@@ -2,8 +2,11 @@ import { readFileSync } from 'fs';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder,
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';

@@ -1,13 +1,16 @@
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, StatefulTransactionBuilder,
+  Contract,
   TransactionBuilder,
-  createDataNftUnlocker,
 } from '../../src/index.js';
+import {
+  StatefulTransactionBuilder,
+  createDataNftUnlocker,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments,
 } from '@solidcash/utils';
-import { getDataNftAddress } from '../../src/index.js';
+import { getDataNftAddress } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 import { aliceAddress } from '../fixture/vars.js';
 

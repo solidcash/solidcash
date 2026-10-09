@@ -1,4 +1,7 @@
-import { binToHex, hexToBin, isHex } from '@bitauth/libauth';
+import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { sha256 } from '@solidcash/utils';
 import {
   ElectrumClient,

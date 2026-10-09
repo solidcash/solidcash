@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _createBuilder extract — resolve master + filtered data NFT UTXOs after state load.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Utxo } from '../interfaces.js';
 import type { OnChainState } from './StateReader.js';
 

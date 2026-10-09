@@ -2,9 +2,12 @@ import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { ResolvedImport, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulContract, Signer,
+  Contract,
+  SignatureTemplate,
+  Signer,
 } from '../../src/index.js';
-import type { ConnectedStatefulContract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import type { ConnectedStatefulContract } from '../../src/stateful/index.js';
 import {
   alicePriv, alicePub, alicePkh, bobPkh,
 } from '../fixture/vars.js';

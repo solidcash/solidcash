@@ -3,7 +3,10 @@
  * (dynamic chunks, entries, loops, value-chunk mints) through registrations-complete.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   buildChunkCommitment,

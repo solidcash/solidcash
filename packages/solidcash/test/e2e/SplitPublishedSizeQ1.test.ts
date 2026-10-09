@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringSplit } from 'solidc';
-import { Contract, MockNetworkProvider, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 
 /**

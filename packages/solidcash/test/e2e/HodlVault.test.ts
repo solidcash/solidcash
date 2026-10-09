@@ -1,11 +1,11 @@
 import {
   Contract,
   SignatureTemplate,
-  MockNetworkProvider,
   TransactionBuilder,
   SignatureAlgorithm,
   HashType,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   alicePriv,
   alicePub,

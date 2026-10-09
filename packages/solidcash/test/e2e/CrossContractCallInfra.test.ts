@@ -2,7 +2,9 @@
 // per-slot master index for under-declared interfaces.
 import { describe, it, expect } from 'vitest';
 import { compileStringMulti } from 'solidc';
-import { Contract, StatefulContract, messageBus } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 

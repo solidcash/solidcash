@@ -1,4 +1,8 @@
-import { binToHex, encodeTransaction, hexToBin, isHex } from '@bitauth/libauth';
+import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+;
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
@@ -10,6 +14,9 @@ import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
+import { onMockNetworkProviderReset, runMockNetworkProviderResetHooks } from './mock-reset.js';
+
+export { onMockNetworkProviderReset } from './mock-reset.js';
 
 export interface TokenGenesisOutput {
   address: string;
@@ -28,13 +35,6 @@ export interface MockNetworkProviderOptions {
   /** Relaxed by default for test harnesses; override individual limits to test production boundaries. */
   consensusLimits: ConsensusLimits;
   policy: NetworkPolicy;
-}
-
-const mockNetworkResetHooks: Array<() => void> = [];
-
-/** Process-global, chain-derived caches must drop when the mock chain is wiped or rewound. */
-export function onMockNetworkProviderReset(hook: () => void): void {
-  mockNetworkResetHooks.push(hook);
 }
 
 export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits' | 'policy'>> & {
@@ -503,7 +503,7 @@ export default class MockNetworkProvider implements NetworkProvider {
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
       // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
       // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
-      for (const hook of mockNetworkResetHooks) hook();
+      runMockNetworkProviderResetHooks();
     };
     return { snapshotId, restore };
   }
@@ -699,7 +699,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
-    for (const hook of mockNetworkResetHooks) hook();
+    runMockNetworkProviderResetHooks();
   }
 
   private nextFundingTxid(): string {

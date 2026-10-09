@@ -2,7 +2,14 @@
  * phase-boundary extract: SC _createBuilder extract — assemble nested callee B-block inputs (slot switch).
  */
 
-import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import {
   parseEntryCommitment,
   joinValueChunks,

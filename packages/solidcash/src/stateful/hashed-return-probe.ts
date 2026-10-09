@@ -1,4 +1,10 @@
-import { binsAreEqual, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import { Op, sha256 } from '@solidcash/utils';
 import { decodeScriptNumber } from './trace-commitment-helpers.js';
 import { matchesProbeOpcodeSequence } from './probe-instruction-sequence.js';

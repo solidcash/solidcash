@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // The OZ/BoringCrypto `_getRevertMsg` idiom advances a bytes-memory pointer past the 4-byte Error(string)

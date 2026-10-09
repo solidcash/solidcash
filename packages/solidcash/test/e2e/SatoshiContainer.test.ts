@@ -7,8 +7,10 @@ const providerInputZeroVerifyFailure = new RegExp('mandatory-script-verify-flag-
   + 'Program failed an OP_VERIFY operation\\.\\)'
   + '|\\(Script failed an OP_[A-Z]*VERIFY operation\\))');
 import {
-  Contract, SignatureTemplate, StatefulContract,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,

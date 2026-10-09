@@ -1,6 +1,10 @@
 import { compileString } from '../direct-compile.js';
 import { ResolvedImport } from '@solidcash/utils';
-import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';

@@ -3,7 +3,12 @@ import { compileString as compile } from 'solidc';
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, StatefulContract, TransactionBuilder } from '../../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../../test-util.js';
 import { randomUtxo } from '../../../src/utils.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';

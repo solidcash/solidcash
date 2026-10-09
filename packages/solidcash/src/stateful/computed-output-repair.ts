@@ -1,4 +1,8 @@
-import { binToHex, hash256, hexToBin } from '@bitauth/libauth';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { Op } from '@solidcash/utils';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';

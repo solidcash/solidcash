@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import {
   Contract,
-  MOCK_CONSENSUS_LIMITS,
-  MOCK_RELAXED_OPERATION_COST,
-  MockNetworkProvider,
   TransactionBuilder,
   randomUtxo,
 } from '../../src/index.js';
+import {
+  MOCK_CONSENSUS_LIMITS,
+  MOCK_RELAXED_OPERATION_COST,
+  MockNetworkProvider,
+} from '../../src/network/mock/index.js';
 
 describe('deep dynamic-bytes accumulator', () => {
   it('preserves an accumulator below loop-local stack values', async () => {

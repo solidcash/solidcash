@@ -1,4 +1,8 @@
-import { vmNumberToBigInt, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { VALUE_CHUNK_INDEX_SIZE, VALUE_CHUNK_SIZE } from '@solidcash/utils';
 

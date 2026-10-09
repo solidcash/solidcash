@@ -7,7 +7,10 @@
  * body's own pin.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { ChildDeploymentValueRecipe, StateValue, StructDefinitionInfo } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
 

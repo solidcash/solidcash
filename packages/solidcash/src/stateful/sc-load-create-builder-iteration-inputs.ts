@@ -3,7 +3,10 @@
  * persisted dynamic-storage read chunk co-spends.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildEntryNftCovenantScript,
   computeCollectionHash,

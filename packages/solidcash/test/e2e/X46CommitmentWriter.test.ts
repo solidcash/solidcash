@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import {
   alicePub, alicePriv, alicePkh, bobPriv, bobPub, bobPkh, bobAddress,

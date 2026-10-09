@@ -15,7 +15,9 @@
  * carry the push is bounded by the consensus limit of 10,000 bytes, so a value that long cannot be co-spent.
  */
 
-import { encodeDataPush, Opcodes } from '@bitauth/libauth';
+import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
 
 /** The longest payload a direct push carries in its opcode. */
 const LONGEST_DIRECT_PUSH = 0x4b;

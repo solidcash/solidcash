@@ -43,7 +43,14 @@
  * the running execution holds, a loop width the caller's facts do not fix — is refused by name.
  */
 
-import { binToHex, binToUtf8, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import { hopTrace, hopTraceOn } from './hop-trace.js';
 import {
   bytesEqual,

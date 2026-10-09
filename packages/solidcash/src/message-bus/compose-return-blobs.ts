@@ -2,7 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — participant return-blob / commitment helpers.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { scriptToBytecode, sha256 } from '@solidcash/utils';
 import { deriveCompiledGraphPlan } from './worklist.js';
 

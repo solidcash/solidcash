@@ -2,9 +2,14 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 2 dynamic-storage chunk commitment apply.
  */
 
-import {
-  binToHex, binToUtf8, utf8ToBin, type AuthenticationProgramStateCommon,
-} from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import type { StateLayout } from '@solidcash/utils';
 import {
   DYNAMIC_CHUNK_SIZE,

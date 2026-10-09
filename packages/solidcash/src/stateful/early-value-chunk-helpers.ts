@@ -4,7 +4,10 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binsAreEqual, binToHex } from '@bitauth/libauth';
+import { binsAreEqual, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   Op,
   type StateLayout,

@@ -1,4 +1,12 @@
-import { Contract, FailedTransactionError, MockNetworkProvider, SignatureAlgorithm, SignatureTemplate, TransactionBuilder, VmTarget } from '../src/index.js';
+import {
+  Contract,
+  FailedTransactionError,
+  SignatureAlgorithm,
+  SignatureTemplate,
+  TransactionBuilder,
+  VmTarget,
+} from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { DEFAULT_VM_TARGET } from '../src/libauth-template/utils.js';
 import { aliceAddress, alicePriv, alicePub, bobPriv, bobPub } from './fixture/vars.js';
 import { randomUtxo } from '../src/utils.js';

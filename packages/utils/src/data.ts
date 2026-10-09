@@ -1,12 +1,7 @@
-import {
-  bigIntToVmNumber,
-  utf8ToBin,
-  binToUtf8,
-  vmNumberToBigInt,
-  isVmNumberError,
-  stackItemIsTruthy,
-  padMinimallyEncodedVmNumber,
-} from '@bitauth/libauth';
+import { utf8ToBin, binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
+import { padMinimallyEncodedVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/format.js';
+import { bigIntToVmNumber, vmNumberToBigInt, isVmNumberError, stackItemIsTruthy } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
 
 export function encodeBool(bool: boolean): Uint8Array {
   return bool ? encodeInt(1n) : encodeInt(0n);

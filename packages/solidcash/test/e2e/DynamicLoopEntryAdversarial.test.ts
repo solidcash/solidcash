@@ -4,7 +4,8 @@ const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<t
 import {
   hexToBin, binToHex, decodeTransactionUnsafe, encodeTransaction, hash256,
 } from '@bitauth/libauth';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // Adversarial soundness: a loop mapping write mints one new entry NFT per iteration at a runtime-counter-indexed

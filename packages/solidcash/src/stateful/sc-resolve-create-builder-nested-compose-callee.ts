@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose callee target + argument resolution.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type {
   AbiFunction,
   ArgSource,

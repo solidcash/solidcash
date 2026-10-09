@@ -2,7 +2,10 @@
  * phase-boundary extract: STB public-surface extract — setDerivedChunkOutput observation reconcile/pin.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { preferChunkCommitment } from './value-chunk-band-helpers.js';

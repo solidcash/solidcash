@@ -2,7 +2,10 @@
  * phase-boundary extract: SC class-body extract — _sendRawBuilder fee/byte-gate/submit path for split/merge/unsafe.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { TransactionDetails } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -24,7 +27,9 @@ export async function sendRawBuilder(
   host: SendRawBuilderHost,
   builder: TransactionBuilder,
 ): Promise<TransactionDetails> {
-  const { encodeTransaction, hash256, decodeTransactionUnsafe } = await import('@bitauth/libauth');
+  const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
+const { encodeTransaction, decodeTransactionUnsafe } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   const rawTx = builder.build();
   const rawTxBin = hexToBin(rawTx);
 

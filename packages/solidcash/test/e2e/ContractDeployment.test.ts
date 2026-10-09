@@ -2,9 +2,13 @@ import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import { ResolvedImport, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, TransactionBuilder, SignatureTemplate,
-  FailedRequireError, StatefulContract,
+  Contract,
+  TransactionBuilder,
+  SignatureTemplate,
+  FailedRequireError,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, gatherUtxos, getTxOutputs } from '../test-util.js';
 import {

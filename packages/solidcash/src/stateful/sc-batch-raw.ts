@@ -3,7 +3,10 @@
  * Host factories construct StatefulFunctionCall instances to avoid a circular import.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   decodePushdataValue,
   type AbiFunction,

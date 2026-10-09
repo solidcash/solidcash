@@ -30,7 +30,8 @@ import {
   isOutputOnlyBlockSlot,
 } from '@solidcash/utils';
 import type { CompilerOptions, PublishedLoopEffects, Type } from '@solidcash/utils';
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import {
   ArrayAccessNode,
   ArrayAssignNode,

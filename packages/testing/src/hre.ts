@@ -6,22 +6,28 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { encodeCashAddress, hash160 } from '@bitauth/libauth';
+import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
+import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+;
 import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
-import {
-  type Network, Network as Networks, type NetworkProvider,
-  MockNetworkProvider, MOCK_CONSENSUS_LIMITS, RegtestNetworkProvider, ElectrumNetworkProvider,
-  BitcoinRpcNetworkProvider,
-  Signer, HDSigner, signersFromMnemonic,
-  StatefulContract, type ContractRunner, type ConnectedStatefulContract,
-  ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract,
-  SplitContractBundle, type SplitContract, type SplitDeployOptions,
-  type DeployedContract, type DeployContractOptions,
-  type ConstructorArgument, type Utxo, randomUtxo,
-} from 'solidcash';
+import type { Network, NetworkProvider, ConstructorArgument, Utxo } from 'solidcash';
+import type {
+  ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
+  DeployedContract, DeployContractOptions,
+} from 'solidcash/stateful';
+import { Network as Networks } from 'solidcash/dist/interfaces.js';
+import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from 'solidcash/dist/network/MockNetworkProvider.js';
+import RegtestNetworkProvider from 'solidcash/dist/network/RegtestNetworkProvider.js';
+import ElectrumNetworkProvider from 'solidcash/dist/network/ElectrumNetworkProvider.js';
+import BitcoinRpcNetworkProvider from 'solidcash/dist/network/BitcoinRpcNetworkProvider.js';
+import Signer from 'solidcash/dist/Signer.js';
+import { HDSigner, signersFromMnemonic } from 'solidcash/hdsigner';
+import { ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract } from 'solidcash/dist/stateful/ContractFactory.js';
+import type { SplitContractBundle } from 'solidcash/dist/stateful/SplitContractBundle.js';
+import { randomUtxo } from 'solidcash/dist/utils.js';
 import * as ethersUtils from './ethers-utils.js';
 import * as nh from './network-helpers.js';
 import { setActiveProvider } from './network-helpers.js';
@@ -35,6 +41,18 @@ import { solidcashArtifactsPath } from './artifact-paths.js';
 
 const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
 const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
+
+// StatefulContract is the single heaviest SDK module (~759 KB and its transitive graph). The HRE only needs it
+// when a contract is attached/deployed (`Contract`/`getContractAt`), so it is loaded lazily and cached. `initHre`
+// awaits this before publishing the HRE, keeping the module out of the entry package's import graph.
+type StatefulContractCtor = typeof import('solidcash/dist/stateful/StatefulContract.js').StatefulContract;
+let statefulContractCtor: StatefulContractCtor | undefined;
+async function loadStatefulContract(): Promise<StatefulContractCtor> {
+  if (!statefulContractCtor) {
+    statefulContractCtor = (await import('solidcash/dist/stateful/StatefulContract.js')).StatefulContract;
+  }
+  return statefulContractCtor;
+}
 
 /** Build a network provider from a resolved network config. */
 export function createProvider(name: string, netCfg: NetworkConfig | undefined): NetworkProvider {
@@ -111,7 +129,7 @@ export interface SolidcashEthers {
   Value extends SplitArtifactBundle ? SplitContract : DeployedContract<
   Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>>;
   // classes (BCH-native)
-  Contract: typeof StatefulContract;
+  Contract: StatefulContractCtor;
   ContractFactory: typeof ContractFactory;
   Signer: typeof Signer;
   // ethers `Wallet` (`new Wallet(wif, provider)`) plus a BCH `createRandom` that returns a funded ad-hoc HDSigner.
@@ -130,24 +148,35 @@ function isSplitBundle(value: unknown): value is SplitArtifactBundle {
 
 /** Positional ethers deploy facade over the SDK's explicit split-bundle deployment API. */
 class HardhatSplitContractFactory {
-  constructor(readonly split: SplitContractBundle) {}
-  get runner(): ContractRunner { return this.split.runner; }
-  get artifact(): Artifact { return this.split.bundle.root; }
-  connect(runner: ContractRunner): HardhatSplitContractFactory {
-    return new HardhatSplitContractFactory(SplitContractBundle.from(this.split.bundle, runner));
+  private splitInstance?: SplitContractBundle;
+  constructor(readonly bundle: SplitArtifactBundle, readonly runner: ContractRunner) {}
+
+  private async loadSplit(): Promise<SplitContractBundle> {
+    if (!this.splitInstance) {
+      const { SplitContractBundle: SplitContractBundleValue } = await import('solidcash/dist/stateful/SplitContractBundle.js');
+      this.splitInstance = SplitContractBundleValue.from(this.bundle, this.runner);
+    }
+    return this.splitInstance;
+  }
+
+  get artifact(): Artifact { return this.bundle.root; }
+  connect(runner: ContractRunner): Promise<HardhatSplitContractFactory> {
+    return Promise.resolve(new HardhatSplitContractFactory(this.bundle, runner));
   }
 
   async deploy(...values: unknown[]): Promise<SplitContract> {
+    const split = await this.loadSplit();
     let options: SplitDeployOptions = {};
     const last = values.at(-1);
     if (typeof last === 'object' && last !== null && !(last instanceof Uint8Array) && !Array.isArray(last)) {
       options = values.pop() as SplitDeployOptions;
     }
-    return this.split.deploy(values as ConstructorArgument[], options);
+    return split.deploy(values as ConstructorArgument[], options);
   }
 
-  at(address: string, constructorArgs: ConstructorArgument[] = []): Promise<SplitContract> {
-    return this.split.at(address, constructorArgs);
+  async at(address: string, constructorArgs: ConstructorArgument[] = []): Promise<SplitContract> {
+    const split = await this.loadSplit();
+    return split.at(address, constructorArgs);
   }
 }
 
@@ -396,7 +425,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     const loaded = resolveArtifact(artifactOrName);
     const boundRunner = runner ?? defaultRunner();
     if (isSplitBundle(loaded)) {
-      return new HardhatSplitContractFactory(SplitContractBundle.from(loaded, boundRunner));
+      return new HardhatSplitContractFactory(loaded, boundRunner);
     }
     return wrapFactoryDeploy(sdkGetContractFactory(loaded as T, boundRunner, deployDefaults));
   }) as SolidcashEthers['getContractFactory'];
@@ -404,18 +433,21 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     addressOrCategory: string, runner?: ContractRunner) => {
     const loaded = resolveArtifact(artifactOrName);
     if (isSplitBundle(loaded)) {
-      return new HardhatSplitContractFactory(SplitContractBundle.from(loaded, runner ?? defaultRunner()))
+      return new HardhatSplitContractFactory(loaded, runner ?? defaultRunner())
         .at(addressOrCategory);
     }
-    const connected = StatefulContract.at(addressOrCategory, loaded as T, runner ?? defaultRunner());
-    registerDeployTargetChildren(connected as Registerable);
-    return connected;
+    return (async () => {
+      const SC = await loadStatefulContract();
+      const connected = SC.at(addressOrCategory, loaded as T, runner ?? defaultRunner());
+      registerDeployTargetChildren(connected as Registerable);
+      return connected;
+    })();
   }) as SolidcashEthers['getContractAt'];
   const contractDeploy = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
     args: ConstructorArgument[] = [], runner?: ContractRunner, overrides?: DeployContractOptions) => {
     const loaded = resolveArtifact(artifactOrName);
     if (isSplitBundle(loaded)) {
-      return new HardhatSplitContractFactory(SplitContractBundle.from(loaded, runner ?? defaultRunner()))
+      return new HardhatSplitContractFactory(loaded, runner ?? defaultRunner())
         .deploy(...args, ...(overrides ? [overrides] : []));
     }
     return (async () => {
@@ -480,7 +512,12 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     getContractFactory: contractFactory,
     getContractAt: contractAt,
     deployContract: contractDeploy,
-    Contract: StatefulContract,
+    get Contract(): StatefulContractCtor {
+      if (!statefulContractCtor) {
+        throw new Error('SolidCash HRE: StatefulContract is not loaded yet; await initHre() before using ethers.Contract.');
+      }
+      return statefulContractCtor;
+    },
     ContractFactory,
     Signer,
     Wallet,
@@ -597,6 +634,8 @@ export const getActiveHre = getDefaultHre;
 /** Build (and cache) the HRE from an on-disk config in `dir`. Used by the CLI. */
 export async function initHre(dir?: string, networkName?: string): Promise<HardhatRuntimeEnvironment> {
   const config = await loadConfig(dir);
+  // Load the heavy StatefulContract module here (async) rather than at hre.ts import time.
+  await loadStatefulContract();
   hreGlobal.__solidcashActiveHre = createHardhatRuntimeEnvironment(config, networkName);
   if (process.env.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
     console.error('init-hre-config', { dir, defaultNetwork: config.defaultNetwork,

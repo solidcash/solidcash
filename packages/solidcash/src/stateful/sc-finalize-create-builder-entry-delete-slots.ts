@@ -3,7 +3,10 @@
  * slot sets, and per-collection entry NFT locking bytecodes.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildEntryNftCovenantScript,
   computeCollectionHash,

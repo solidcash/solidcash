@@ -1,9 +1,12 @@
 import { compileString } from '../direct-compile.js';
+import { Contract } from '../../src/index.js';
 import {
-  Contract, StatefulTransactionBuilder, StatefulContract,
+  StatefulTransactionBuilder,
+  StatefulContract,
   StateReader,
-  getDataNftAddress, createDataNftUnlocker,
-} from '../../src/index.js';
+  getDataNftAddress,
+  createDataNftUnlocker,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments, parsePushdataCommitment,
 } from '@solidcash/utils';

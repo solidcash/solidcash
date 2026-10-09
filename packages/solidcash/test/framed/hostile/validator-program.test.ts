@@ -2,7 +2,10 @@ import { describe, expect, test } from 'vitest';
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { FrameKind } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
+import {
+  MOCK_RELAXED_OPERATION_COST,
+  MockNetworkProvider,
+} from '../../../src/network/mock/index.js';
 import {
   buildValidatorFacets, buildValidatorProgram, decideValidator,
   type FramedTransaction as ModelledTransaction, type TokenShape,

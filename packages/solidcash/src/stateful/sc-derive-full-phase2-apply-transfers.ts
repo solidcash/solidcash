@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 2 satoshi/FT/NFT transfer apply.
  */
 
-import { type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import { Op, type AbiFunction, type BlockSlotKind } from '@solidcash/utils';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import type { DeriveFullTokenContainerTransferOp } from './sc-seed-derive-full-phase2-placeholders.js';

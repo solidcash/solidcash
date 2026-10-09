@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
-import { Contract, StatefulContract, Signer } from '../../src/index.js';
+import {
+  Contract,
+  Signer,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos, plainNumerics } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';

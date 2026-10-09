@@ -1,18 +1,16 @@
-import { hexToBin, binToHex, secp256k1 } from '@bitauth/libauth';
-import { ElectrumClient } from '@electrum-cash/network';
+import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
   type Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
   buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, type StateVariableInfo,
 } from '@solidcash/utils';
-import { Contract } from '../Contract.js';
-import { TransactionBuilder } from '../TransactionBuilder.js';
+import type { Contract } from '../Contract.js';
 import type { Utxo, Unlocker } from '../interfaces.js';
 import { readFramedState, type FramedState } from '../framed/deploy/records.js';
-import { StatefulContract } from '../stateful/StatefulContract.js';
-import { getContractState, getDataNftAddress } from '../stateful/covenant-helpers.js';
-import { StateReader } from '../stateful/StateReader.js';
-import { listDeployments } from '../stateful/deployment-registry.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 
@@ -156,6 +154,7 @@ export class BlockOracleUpdater {
 
   /** Current block-info oracle height from the on-chain __block_number register (0 if absent). */
   async oracleHeight(): Promise<bigint> {
+    const { StatefulContract } = await import('../stateful/StatefulContract.js');
     const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
     const state = await sc.getState();
     return BigInt((state.__block_number as bigint | undefined) ?? 0n);
@@ -163,6 +162,7 @@ export class BlockOracleUpdater {
 
   /** Push a signed + freshness-bound block-info update for the given block fields. Returns the txid. */
   async pushUpdate(fields: BlockOracleFields): Promise<string> {
+    const { StatefulContract } = await import('../stateful/StatefulContract.js');
     const { args, state } = buildUpdate(this.cfg.contract, fields);
     const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
     const call = (sc as any).__updateBlockOracle(new SignatureTemplate(this.cfg.keeperKey), ...args)
@@ -186,6 +186,7 @@ export class BlockOracleUpdater {
     const commitment = binToHex(buildBlockhashCommitment(n, hash));
     const mintSats = 1000n;
     const fee = 1000n;
+    const { TransactionBuilder } = await import('../TransactionBuilder.js');
     const tx = await new TransactionBuilder({ provider: this.cfg.contract.provider })
       .addInput(master.utxo, master.unlocker)
       .addOutput({
@@ -223,6 +224,7 @@ export class BlockOracleUpdater {
       generateUnlockingBytecode: (): Uint8Array => wipeUnlock,
     };
 
+    const { TransactionBuilder } = await import('../TransactionBuilder.js');
     const builder = new TransactionBuilder({ provider: this.cfg.contract.provider, allowImplicitNftBurn: true });
     let reclaimed = 0n;
     for (const utxo of utxos) {
@@ -279,6 +281,8 @@ export class BlockOracleUpdater {
    */
   async start(): Promise<() => Promise<void>> {
     if (!this.cfg.electrumHost) throw new Error('electrumHost is required to subscribe to headers');
+    // Load the Electrum client lazily: it is only needed for header subscriptions, not for one-shot syncs.
+    const { ElectrumClient } = await import('@electrum-cash/network');
     const electrum = new ElectrumClient('SolidCash BlockOracleUpdater', '1.4.1', this.cfg.electrumHost);
     await electrum.connect();
     await electrum.subscribe('blockchain.headers.subscribe');
@@ -475,6 +479,8 @@ async function syncMockBlockOracleDeployments(
 ): Promise<number> {
   const storage = (provider as { indexer?: { storage?: MockUtxoStorage } }).indexer?.storage;
   if (!storage?._test) return 0;
+  const { getContractState, getDataNftAddress } = await import('../stateful/covenant-helpers.js');
+  const { StateReader } = await import('../stateful/StateReader.js');
   const fields = await mockProviderBlockFields({
     getBlockHeight: () => provider.getBlockHeight(),
     getBlockTime: () => (provider as unknown as { getBlockTime: () => number }).getBlockTime(),
@@ -551,5 +557,6 @@ export async function syncMockBlockOracleDeployment(
 }
 
 export async function syncMockBlockOracles(provider: NetworkProvider): Promise<number> {
+  const { listDeployments } = await import('../stateful/deployment-registry.js');
   return syncMockBlockOracleDeployments(provider, listDeployments(provider));
 }

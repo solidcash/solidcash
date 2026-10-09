@@ -3,10 +3,15 @@ import { compileString } from '../direct-compile.js';
 import {
   hexToBin, binToHex, bigIntToVmNumber, vmNumberToBigInt, encodeTransaction,
 } from '@bitauth/libauth';
+import { Contract } from '../../src/index.js';
 import {
-  Contract, StatefulContract, getEntryNftAddress, encodeEntryCommitment, slotValueToBytes,
-  keyToSlot, SortedList,
-} from '../../src/index.js';
+  StatefulContract,
+  getEntryNftAddress,
+  encodeEntryCommitment,
+  slotValueToBytes,
+  keyToSlot,
+  SortedList,
+} from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 /**

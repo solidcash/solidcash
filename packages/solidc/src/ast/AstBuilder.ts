@@ -1,5 +1,6 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
-import { hexToBin, binToHex } from '@bitauth/libauth';
+import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';

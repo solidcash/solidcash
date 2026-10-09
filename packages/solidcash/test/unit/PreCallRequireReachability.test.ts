@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Artifact, ExternalCallExpression } from '@solidcash/utils';
-import { StatefulContract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { materializeCreateBuilderLowLevelStatefulCall } from '../../src/stateful/sc-materialize-create-builder-low-level-stateful-call.js';
 import { createTestProvider } from '../test-util.js';
 

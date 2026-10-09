@@ -1,5 +1,13 @@
 import { binToHex, decodeTransactionUnsafe, hexToBin, stringify } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, placeholderP2PKHUnlocker, placeholderPublicKey, placeholderSignature } from '../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../src/index.js';
+import {
+  placeholderP2PKHUnlocker,
+  placeholderPublicKey,
+  placeholderSignature,
+} from '../src/walletconnect-utils.js';
 import {
   bobAddress,
   bobPub,

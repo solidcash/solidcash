@@ -3,8 +3,15 @@ import { compileString } from 'solidc';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, StatefulContract, getContractFactory, upgrades, messageBus, Signer,
+  Contract,
+  Signer,
 } from '../../../src/index.js';
+import {
+  StatefulContract,
+  getContractFactory,
+  upgrades,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { isContractUnlocker } from '../../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';

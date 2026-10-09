@@ -1,10 +1,14 @@
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
+import { Signer } from '../../../src/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import {
-  messageBus, getContractFactory, upgrades, Signer,
-  SortedList, getEntryNftAddress,
-} from '../../../src/index.js';
+  getContractFactory,
+  upgrades,
+  SortedList,
+  getEntryNftAddress,
+} from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { keyToSlot } from '../../../src/stateful/SortedList.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';

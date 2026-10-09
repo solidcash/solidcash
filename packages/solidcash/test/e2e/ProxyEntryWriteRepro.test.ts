@@ -5,7 +5,12 @@ import {
   encodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { Signer, getContractFactory, keyToSlotMulti, upgrades } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  getContractFactory,
+  keyToSlotMulti,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { alicePriv } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 

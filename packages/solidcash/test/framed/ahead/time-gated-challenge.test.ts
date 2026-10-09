@@ -3,7 +3,11 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bita
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, SignatureTemplate, providerUnixLocktime } from '../../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../../src/index.js';
+import { providerUnixLocktime } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';

@@ -1,13 +1,20 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, TransactionBuilder,
-  SignatureTemplate, StatefulContract,
-  StatefulTransactionBuilder,
-  getDataNftAddress, getEntryNftAddress,
-  createDataNftUnlocker, createReadOnlyDataNftUnlocker,
-  createEntryNftUnlocker, createReadOnlyEntryNftUnlocker,
+  Contract,
+  TransactionBuilder,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  StatefulTransactionBuilder,
+  getDataNftAddress,
+  getEntryNftAddress,
+  createDataNftUnlocker,
+  createReadOnlyDataNftUnlocker,
+  createEntryNftUnlocker,
+  createReadOnlyEntryNftUnlocker,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments, parsePushdataCommitment,
   buildDataNftCovenantBytecode,

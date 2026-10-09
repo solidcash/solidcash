@@ -1,6 +1,10 @@
 import { compileStringMulti } from 'solidc';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getContractFactory, Signer, upgrades } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import {
   getMaterializationMode, setMaterializationMode,
 } from '../../src/message-bus/materialization-mode.js';

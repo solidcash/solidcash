@@ -4,7 +4,10 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type {
   AbiFunction,
   EntryAccessAbi,

@@ -1,9 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
+import { Signer } from '../../src/index.js';
 import {
-  Signer, ContractFactory, StatefulContract, getContractFactory, deployContract,
-  deriveLogicalCreateAddress, resolveLogicalIdentity, buildLogicalIdentityCommitment,
-} from '../../src/index.js';
+  ContractFactory,
+  StatefulContract,
+  getContractFactory,
+  deployContract,
+  deriveLogicalCreateAddress,
+  resolveLogicalIdentity,
+  buildLogicalIdentityCommitment,
+} from '../../src/stateful/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider } from '../test-util.js';
 

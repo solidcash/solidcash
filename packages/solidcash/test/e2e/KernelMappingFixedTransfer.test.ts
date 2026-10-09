@@ -2,7 +2,12 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
 import { compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, messageBus, Signer, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  Signer,
+} from '../../src/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { isContractUnlocker } from '../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';

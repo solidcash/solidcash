@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';

@@ -4,7 +4,11 @@ import { hexToBin, binToHex } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileStringMulti } from '../direct-compile.js';
 import type { ResolvedImport } from 'solidc';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';

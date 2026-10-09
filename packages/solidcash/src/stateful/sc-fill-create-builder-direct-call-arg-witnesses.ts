@@ -3,7 +3,10 @@
  * after nested-bases unlockers finalize.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction, Artifact, ExternalCallAbi, StateValue } from '@solidcash/utils';
 import { encodePushdataValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';

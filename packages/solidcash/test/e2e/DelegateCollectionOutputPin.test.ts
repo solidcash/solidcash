@@ -3,9 +3,18 @@ import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import type { Artifact } from '@solidcash/utils';
 import {
-  Contract, ContractFactory, Signer, StatefulContract, SortedList, encodeEntryCommitment, getContractFactory,
-  getEntryNftAddress, slotValueToBytes,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  ContractFactory,
+  StatefulContract,
+  SortedList,
+  encodeEntryCommitment,
+  getContractFactory,
+  getEntryNftAddress,
+  slotValueToBytes,
+} from '../../src/stateful/index.js';
 import { ProxyContract } from '../../src/stateful/upgrades.js';
 import { defaultProxyArtifact } from '../../src/stateful/defaultProxyArtifact.js';
 import { addressToLockScript } from '../../src/utils.js';

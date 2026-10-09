@@ -1,6 +1,8 @@
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Signer, getContractFactory, messageBus } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 import { createBareP2pkhFeeFunder } from '../test-util.js';

@@ -7,8 +7,11 @@ import { hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
 import {
-  Contract, StatefulContract, Signer, SignatureTemplate,
+  Contract,
+  Signer,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import {
   createTestProvider, setupStatefulUtxos, genesisFtContainer, plainNumerics,

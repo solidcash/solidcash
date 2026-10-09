@@ -1,4 +1,7 @@
-import { cashAddressToLockingBytecode, hash160, hexToBin } from '@bitauth/libauth';
+import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import type { ExternalResultEncoding, StructDefinitionInfo } from './artifact.js';
 import { attachDecodedAccessors, parseArrayTypeString, type StateValue } from './state.js';
 

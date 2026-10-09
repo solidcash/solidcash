@@ -61,10 +61,16 @@
  * `callFramedProxyEntry`).
  */
 
-import {
-  bigIntToVmNumber, binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin,
-  vmNumberToBigInt,
-} from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
+;
+;
 import {
   FrameKind,
   INDEX_NONE,
@@ -2394,7 +2400,9 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   });
 
   const transaction = builder.buildLibauthTransaction();
-  const { encodeTransaction, hash256 } = await import('@bitauth/libauth');
+  const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
+const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
   traceBroadcast(builder.inputs, builder.outputs, transaction.inputs, rawBytes.length);

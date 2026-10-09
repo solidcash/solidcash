@@ -60,7 +60,7 @@
 
 "@bitauth/libauth@^3.1.0-next.8", "@bitauth/libauth@git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist":
   version "3.1.0-next.8"
-  resolved "git+https://github.com/mainnet-pat/libauth.git#d5bde1818e773f47eac0625929eb72d2fd72110f"
+  resolved "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
 
 "@chris.troutner/bip32-utils@1.0.5":
   version "1.0.5"

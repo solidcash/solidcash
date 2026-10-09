@@ -2,7 +2,10 @@
  * phase-boundary extract: STB constructor extract — flatten participant bands and assemble allInputs.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { FunctionBlockLayout, StateLayout } from '@solidcash/utils';
 import {

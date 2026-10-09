@@ -2,7 +2,11 @@
 // one-tx folds, interprocedural, literal/verbatim/returning forms, return-event x deploy.
 import { describe, it, expect } from 'vitest';
 import { compileStringMulti } from '../direct-compile.js';
-import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';

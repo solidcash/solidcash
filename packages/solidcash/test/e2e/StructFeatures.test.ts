@@ -3,9 +3,14 @@ import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
-  StateRecord, StatefulContract, SignatureTemplate,
+  Contract,
+  TransactionBuilder,
+  FailedRequireError,
+  StateRecord,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import {
   buildPushdataCommitment,
   parsePushdataCommitment,

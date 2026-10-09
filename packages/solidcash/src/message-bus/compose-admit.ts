@@ -2,7 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — final admit / preflight gate for a converged builder.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { sha256 } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { ConstraintFixpointSession } from './constraint-fixpoint-session.js';

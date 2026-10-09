@@ -1,4 +1,7 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { encodeChunkableValueTail, VALUE_HEAD_SIZE } from '@solidcash/utils';
 import { decodeEntryCommitment, encodeEntryCommitment } from '../stateful/SortedList.js';
 

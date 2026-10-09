@@ -2,7 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — event locking helpers + fee-tail rebalance.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildAnonymousEventNftCovenantScript,
   buildEventNftCovenantScript,

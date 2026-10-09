@@ -6,10 +6,22 @@ import {
   parsePushdataCommitment,
 } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, Signer, StatefulContract, StatefulTransactionBuilder,
-  TransactionBuilder, createDataNftUnlocker, getContractFactory, getDataNftAddress, getEventNftAddress,
-  readEventsFromChain, upgrades,
+  Contract,
+  SignatureTemplate,
+  Signer,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import {
+  StatefulContract,
+  StatefulTransactionBuilder,
+  createDataNftUnlocker,
+  getContractFactory,
+  getDataNftAddress,
+  getEventNftAddress,
+  readEventsFromChain,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { ContractUnlocker, Utxo } from '../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';

@@ -4,7 +4,8 @@ import { validatorAddress } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { buildValidatorProgram } from '../../../../solidc/src/framed/validator/index.js';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
-import { Signer, StatefulContract } from '../../../src/index.js';
+import { Signer } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { selectGenesisFundingUtxo } from '../../../src/stateful/ContractFactory.js';
 import {

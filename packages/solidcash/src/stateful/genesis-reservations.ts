@@ -8,7 +8,7 @@
  * funding selection until it is released, so a later send cannot spend a coin an address was already derived from.
  */
 
-import { onMockNetworkProviderReset } from '../network/MockNetworkProvider.js';
+import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 
 const reserved = new Set<string>();
 

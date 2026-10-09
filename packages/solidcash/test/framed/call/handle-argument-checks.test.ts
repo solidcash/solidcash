@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { HDSigner } from '../../../src/index.js';
+import { HDSigner } from '../../../src/HDSigner.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readFramedDeployment } from '../../../src/framed/deploy/index.js';

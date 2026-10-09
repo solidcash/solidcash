@@ -1,7 +1,11 @@
-import {
-  authenticationInstructionsAreMalformed, binToHex, decodeAuthenticationInstructions,
-  type AuthenticationProgramStackFrame, type AuthenticationProgramStateCommon,
-} from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { authenticationInstructionsAreMalformed, decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import type { AuthenticationProgramStackFrame, AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import { Op } from '@solidcash/utils';
 
 type ProbeState = AuthenticationProgramStateCommon & {

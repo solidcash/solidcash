@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { Contract, TransactionBuilder, getContractFactory } from '../src/index.js';
+import {
+  Contract,
+  TransactionBuilder,
+} from '../src/index.js';
+import { getContractFactory } from '../src/stateful/index.js';
 import { randomUtxo } from '../src/utils.js';
 import { createTestProvider, verifyTransaction, fundedSigner } from './test-util.js';
 

@@ -2,7 +2,13 @@
  * phase-boundary extract: SC extract — instance _deriveCommitments (VM probe for factory/call state).
  */
 
-import { hexToBin, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import {
   type AbiFunction,
   buildPushdataCommitment,

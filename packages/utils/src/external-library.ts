@@ -3,7 +3,8 @@
 // is a self-contained, OP_DEFINE-able script blob (a function inputs -> outputs) with an ABI signature.
 // It is either inlined into the contract redeem or loaded at runtime from a co-spent side-car UTXO.
 // See packages/solidc/docs/external-libraries.md.
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import { Op, type Script, scriptToBytecode } from './script.js';
 import { hash256 } from './hash.js';
 import type { AbiInput, AbiOutput, ExternalLibraryAbi } from './artifact.js';

@@ -6,8 +6,15 @@ import {
 import { compileFile } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, Signer, StatefulContract, getEntryNftAddress, getValueChunkAddress, messageBus,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  getEntryNftAddress,
+  getValueChunkAddress,
+} from '../../src/stateful/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import { alicePub } from '../fixture/vars.js';
 import { setupStatefulUtxos } from '../test-util.js';

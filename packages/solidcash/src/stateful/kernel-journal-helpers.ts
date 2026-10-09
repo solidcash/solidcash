@@ -2,7 +2,10 @@
  * phase-boundary extract: kernel journal protocol helpers (phase-boundary extract from StatefulContract.ts).
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { AbiFunction, AbiInput, KernelJournalDispositionsAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {

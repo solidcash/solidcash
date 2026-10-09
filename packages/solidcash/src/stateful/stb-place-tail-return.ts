@@ -2,7 +2,10 @@
  * phase-boundary extract: STB class-body extract — place tail returns after swapped token block.
  */
 
-import { binToHex, binsAreEqual } from '@bitauth/libauth';
+import { binToHex, binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { Output } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';

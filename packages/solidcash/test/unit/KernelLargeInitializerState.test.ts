@@ -1,6 +1,6 @@
 import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { MockNetworkProvider } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { deriveLargeMockInitializerState } from '../../src/stateful/upgrades.js';
 
 describe('large mock initializer legacy fence', () => {

@@ -6,8 +6,14 @@ import {
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, StatefulContract, Signer, getContractFactory, upgrades,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import type { PreparedAtomicMessageBusCall } from '../../src/message-bus/compose-prepared-invocation.js';
 import type { StatefulTransactionBuilder } from '../../src/stateful/StatefulTransactionBuilder.js';
 import {

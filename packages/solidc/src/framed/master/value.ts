@@ -7,7 +7,10 @@
  * over the transaction, outputs at the lock less inputs at it, must cover the value its frame receives.
  */
 
-import { encodeDataPush, hexToBin, Opcodes } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+;
 import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropPrefix,

@@ -2,9 +2,14 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 1 progressive entry / value-chunk probe loop.
  */
 
-import {
-  binToHex, encodeTransaction, hexToBin, type AuthenticationProgramStateCommon,
-} from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import type { AbiFunction } from '@solidcash/utils';
 import {
   VALUE_CHUNK_INDEX_SIZE, VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE,

@@ -1,7 +1,7 @@
 /* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // A multi-value (tuple) returning helper that reads a state entry must be INLINED at its call site (entry-access

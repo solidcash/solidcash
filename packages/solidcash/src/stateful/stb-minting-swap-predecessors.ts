@@ -6,7 +6,10 @@
 
 import type { AbiFunction, Artifact, EntryAccessAbi, FunctionBlockLayout } from '@solidcash/utils';
 import { buildEntryNftCovenantScript, computeCollectionHash } from '@solidcash/utils';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';

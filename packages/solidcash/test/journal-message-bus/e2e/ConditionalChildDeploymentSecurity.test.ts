@@ -6,7 +6,9 @@ import { compileStringMulti } from 'solidc';
 import { buildEntryCommitment, sha256 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import {
   decodeAtomicMessageEnvelope, encodeAtomicMessageEnvelope,
 } from '../../../src/message-bus/atomic.js';

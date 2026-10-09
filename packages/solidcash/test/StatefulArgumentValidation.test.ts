@@ -1,6 +1,7 @@
 import type { AbiFunction } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract } from '../src/index.js';
+import { Contract } from '../src/index.js';
+import { StatefulContract } from '../src/stateful/index.js';
 import { compileString } from './direct-compile.js';
 import { createTestProvider } from './test-util.js';
 

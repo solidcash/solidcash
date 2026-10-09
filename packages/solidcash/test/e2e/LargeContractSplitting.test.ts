@@ -3,9 +3,16 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString, compileStringSplit } from 'solidc';
 import { messageBusVerifierCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, Signer, SplitContract, SplitContractBundle, StatefulContract,
-  deriveLogicalCreateAddress, upgrades,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  SplitContract,
+  SplitContractBundle,
+  StatefulContract,
+  deriveLogicalCreateAddress,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { alicePub } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 

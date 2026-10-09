@@ -1,4 +1,5 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
 import { ArrayType, IntType, PrimitiveType, StructType } from '@solidcash/utils';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import {

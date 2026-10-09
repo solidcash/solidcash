@@ -14,7 +14,8 @@ import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/c
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
 } from '../../../../solidc/test/framed/master/validator-input.js';
-import { MockNetworkProvider, providerUnixLocktime } from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
+import { providerUnixLocktime } from '../../../src/stateful/index.js';
 
 /**
  * Time on this convention comes from the transaction: `block.timestamp` is the transaction's nLocktime, so every

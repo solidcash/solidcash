@@ -23,7 +23,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from '../../src/network/MockNetworkProvider.js';
 import type { Signer } from '../../src/index.js';
 

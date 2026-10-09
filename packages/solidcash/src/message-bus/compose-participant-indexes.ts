@@ -3,7 +3,10 @@
  * categories, identities, and provisional results.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';

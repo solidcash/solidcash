@@ -4,7 +4,10 @@
  * co-spend (through sidecar set; before nothing-to-derive gate).
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   type ExternalLibraryAbi,
   SHARED_LIBRARY_SALT,

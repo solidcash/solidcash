@@ -3,7 +3,11 @@
  * loop-entry vars, and runtime-loop event/transfer trailing segments.
  */
 
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   encodeEventCommitment,
   parseChunkCommitment,

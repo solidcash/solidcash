@@ -2,9 +2,10 @@
  * phase-boundary extract: STB build-phase extract — nested-callee identity, events/entries, and state restoration.
  */
 
-import {
-  binToHex, hexToBin,
-} from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   type AbiFunction,
   buildEventNftCovenantScript,

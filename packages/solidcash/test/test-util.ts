@@ -12,11 +12,19 @@ import {
 } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
-  Contract, TransactionBuilder, HDSigner, signersFromMnemonic,
+  Contract,
+  TransactionBuilder,
 } from '../src/index.js';
 import {
-  MockNetworkProvider, RegtestNetworkProvider, Contract, SignatureTemplate,
+  HDSigner,
+  signersFromMnemonic,
+} from '../src/HDSigner.js';
+import {
+  RegtestNetworkProvider,
+  Contract,
+  SignatureTemplate,
 } from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
 import {
   getDataNftAddress, getEntryNftAddress, getMessageBusVerifierAddress, getTokenContainerAddress,
 } from '../src/stateful/covenant-helpers.js';

@@ -2,7 +2,14 @@
 // bounds/defaults, panics/short-circuit, internal fn-ptr memory arrays and state vars.
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory, Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import {
+  getContractFactory,
+  StatefulContract,
+} from '../../src/stateful/index.js';
 import { fundedSigner, createTestProvider, expectOverOperationCostBudget, densityReserve } from '../test-util.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';

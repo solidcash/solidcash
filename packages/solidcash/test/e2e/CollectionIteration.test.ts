@@ -1,10 +1,16 @@
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
+import { Contract } from '../../src/index.js';
 import {
-  Contract, StatefulContract,
-  bytesToSlotValue, encodeEntryCommitment, getDataNftAddress, getEntryNftAddress, keyToSlot, slotValueToBytes,
-} from '../../src/index.js';
+  StatefulContract,
+  bytesToSlotValue,
+  encodeEntryCommitment,
+  getDataNftAddress,
+  getEntryNftAddress,
+  keyToSlot,
+  slotValueToBytes,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments,
 } from '@solidcash/utils';

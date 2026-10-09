@@ -3,7 +3,14 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { binsAreEqual, binToHex, hexToBin, bigIntToVmNumber, utf8ToBin } from '@bitauth/libauth';
+import { binsAreEqual, binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+;
 import {
   hash160 as hash160Sync,
   hash256 as hash256Sync,

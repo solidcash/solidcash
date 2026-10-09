@@ -1,8 +1,10 @@
 import { compileString } from '../direct-compile.js';
 import { ResolvedImport } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, TransactionBuilder,
+  Contract,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, gatherUtxos } from '../test-util.js';
 

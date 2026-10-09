@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { getContractFactory, MockNetworkProvider } from '../src/index.js';
+import { MockNetworkProvider } from '../src/network/mock/index.js';
+import { getContractFactory } from '../src/stateful/index.js';
 import { fundedSigner } from './test-util.js';
 
 // Tuple assignment where a target is a STATE variable (mixed with transient-lowered locals). The tuple

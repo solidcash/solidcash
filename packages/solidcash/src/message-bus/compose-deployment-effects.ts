@@ -3,7 +3,10 @@
  * and map deployments to slot effects.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { addressToLockScript } from '../utils.js';
 import type { AtomicDeploymentSlotEffect } from './graph.js';
 import type { MaterializedComposeDeployment } from './compose-materialize-deployments.js';

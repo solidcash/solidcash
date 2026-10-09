@@ -7,7 +7,11 @@ import { framedValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Signer, StatefulContract, TransactionBuilder } from '../../../src/index.js';
+import {
+  Signer,
+  TransactionBuilder,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { Contract, StatefulContract } from '../src/index.js';
+import { Contract } from '../src/index.js';
+import { StatefulContract } from '../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 
 // Runtime `new bytes(n)` (dynamic length): n zero bytes via `0 n OP_NUM2BIN`. The require()s are VM gates -

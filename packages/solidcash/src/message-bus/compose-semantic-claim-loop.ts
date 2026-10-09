@@ -3,7 +3,12 @@
  * constraint fixpoint: claim-pass progression uses the same MonotoneCell lattice as resource/chunk converges.
  */
 
-import { binToHex, sha256, utf8ToBin } from '@bitauth/libauth';
+import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
+;
+;
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';

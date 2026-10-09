@@ -21,9 +21,12 @@
  * classifies a category's UTXOs to find the records again.
  */
 
-import {
-  binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin, lockingBytecodeToCashAddress,
-} from '@bitauth/libauth';
+import { encodeLockingBytecodeP2sh32, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import { framedValidator } from 'solidc';
 import type { Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../../Argument.js';
@@ -35,6 +38,7 @@ import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/du
 import { deriveFramedGenesis } from './genesis.js';
 import { resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
+import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
 
 /** Raised when a framed deployment cannot be built from the artifact or the options. */
 export class FramedDeployError extends Error {
@@ -47,7 +51,8 @@ export class FramedDeployError extends Error {
 
 /** The byte length of the transaction the builder would broadcast, which sizes the default fee. */
 async function measuredFee(builder: { buildLibauthTransaction: () => unknown }): Promise<bigint> {
-  const { encodeTransaction } = await import('@bitauth/libauth');
+  const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+
   return BigInt(encodeTransaction(builder.buildLibauthTransaction() as never).byteLength);
 }
 
@@ -73,6 +78,9 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   const categoryId = options.fundingUtxo.txid;
   const category = new Uint8Array(hexToBin(categoryId));
   const validatorProgram = framedValidator.buildValidatorProgram();
+  // A framed handle's sync call surface needs the framed call engine loaded before the deployment returns; start
+  // the load now so it overlaps the genesis derivation and funding below, and await it before building the handle.
+  const framedCallEngine = loadFramedCallHandle();
   // A framed artifact publishes no `constructorInputs`, so the factory path that splits a call's arguments
   // between the constructor and the initial state cannot see that this contract takes any: the values arrive as
   // `initArgs`. A caller that reaches `StatefulContract.deploy` directly passes them as the constructor args.
@@ -260,6 +268,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     ...(options.salt === undefined ? {} : { salt: options.salt }),
   });
   const { StatefulContract: SC } = await import('../../stateful/StatefulContract.js');
+  await framedCallEngine;
   const statefulContract = SC.withCategory(contract, categoryId);
   // The handle presents the contract's own address, `addrV(category)` - the address the validator pins a callee to
   // - carried rather than recomputed from the artifact. A caller resolving an address therefore lands on this

@@ -8,7 +8,10 @@
  * are dropped when the mock chain is reset.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../interfaces.js';
 import type Signer from '../../Signer.js';

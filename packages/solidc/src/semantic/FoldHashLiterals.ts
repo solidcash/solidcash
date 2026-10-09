@@ -1,4 +1,6 @@
-import { sha256, utf8ToBin } from '@bitauth/libauth';
+import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+;
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';

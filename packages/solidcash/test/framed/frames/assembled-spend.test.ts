@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { MockNetworkProvider } from '../../../src/index.js';
+import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { assembleComposition, type CompositionPlan } from '../../../src/framed/composer/assemble.js';

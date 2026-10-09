@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { FunctionBlockLayout } from '@solidcash/utils';
 import {
-  deriveBalancedAssemblyFromInputs, preflightBalancedBlockAssembly,
-} from '../../src/index.js';
+  deriveBalancedAssemblyFromInputs,
+  preflightBalancedBlockAssembly,
+} from '../../src/stateful/index.js';
 
 const layout = (blockSize: number): FunctionBlockLayout => ({
   blockSize,

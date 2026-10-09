@@ -2,7 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — seed prior-pass computed resource/value-chunk claims + converge.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';

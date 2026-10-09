@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import {
-  Contract, SignatureTemplate, StatefulContract,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 import { alicePriv, alicePub, alicePkh, bobPkh } from '../fixture/vars.js';
 import { Utxo } from '../../src/interfaces.js';

@@ -2,11 +2,19 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, utf8ToBin, bigIntToVmNumber, sha256 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import {
-  keyToSlot, encodeEntryCommitment, slotValueToBytes, bytesToSlotValue,
-  getEntryNftAddress, getValueChunkAddress,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import {
+  keyToSlot,
+  encodeEntryCommitment,
+  slotValueToBytes,
+  bytesToSlotValue,
+  getEntryNftAddress,
+  getValueChunkAddress,
+} from '../../src/stateful/index.js';
 import { buildValueChunkCommitment, splitValueIntoValueChunks } from '@solidcash/utils';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';

@@ -3,11 +3,14 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import {
-  binToHex,
-  encodeTransaction,
-  type AuthenticationProgramStateCommon,
-} from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+;
+;
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+;
+;
+;
 import {
   Op,
   hash256 as hash256Sync,

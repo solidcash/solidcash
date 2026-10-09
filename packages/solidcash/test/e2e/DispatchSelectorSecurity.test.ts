@@ -11,9 +11,9 @@ import { compileString } from '../direct-compile.js';
 import {
   Contract,
   TransactionBuilder,
-  MockNetworkProvider,
   randomUtxo,
 } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 
 // Security regression test for the OP_INVOKE dispatcher selector size check.

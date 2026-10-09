@@ -1,20 +1,19 @@
-import {
-  assertSuccess,
-  type AuthenticationInstructionPush,
-  binToBase64,
-  binToHex,
-  decodeAuthenticationInstructions,
-  type Input,
-  type TransactionBch,
-  utf8ToBin,
-  type WalletTemplate,
-  type WalletTemplateScenario,
-  type WalletTemplateScenarioBytecode,
-  type WalletTemplateScenarioOutput,
-  type WalletTemplateScriptLocking,
-  type WalletTemplateScriptUnlocking,
-  type WalletTemplateVariable,
-} from '@bitauth/libauth';
+import { binToBase64 } from '@bitauth/libauth/build/lib/format/base64.js';
+import { assertSuccess } from '@bitauth/libauth/build/lib/format/error.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+import type { Input } from '@bitauth/libauth/build/lib/message/transaction-types.js';
+;
+;
+import type { TransactionBch } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
+import type { AuthenticationInstructionPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-types.js';
+import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+;
+;
+import type { WalletTemplate, WalletTemplateScenario, WalletTemplateScenarioBytecode, WalletTemplateScenarioOutput, WalletTemplateScriptLocking, WalletTemplateScriptUnlocking, WalletTemplateVariable } from '@bitauth/libauth/build/lib/engine/types/template-types.js';
+;
+;
+;
 import type {
   AbiFunction,
   AbiInput,

@@ -3,7 +3,11 @@ import { binToHex, decodeTransaction, encodeLockingBytecodeP2pkh, hexToBin } fro
 import { buildPushdataCommitment, bytesToHex, type StateLayout } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, SignatureTemplate, providerUnixLocktime } from '../../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../../src/index.js';
+import { providerUnixLocktime } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';

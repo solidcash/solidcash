@@ -1,7 +1,10 @@
 import { createVirtualMachineBch2026, hexToBin, sha256 } from '@bitauth/libauth';
 import { compileString, compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, messageBus, MockNetworkProvider, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { encodeMessageBatch } from '../../src/message-bus/message-bus.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';

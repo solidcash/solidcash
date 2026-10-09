@@ -19,8 +19,16 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, SignatureTemplate, Signer, StatefulContract, getContractFactory, messageBus, upgrades,
+  Contract,
+  SignatureTemplate,
+  Signer,
 } from '../../../src/index.js';
+import {
+  StatefulContract,
+  getContractFactory,
+  upgrades,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { decodeAtomicMessageEnvelope, encodeAtomicMessageEnvelope } from '../../../src/message-bus/atomic.js';
 import {
   getDynamicChunkAddress, getEntryNftAddress, getMessageBusVerifierLockingBytecode,

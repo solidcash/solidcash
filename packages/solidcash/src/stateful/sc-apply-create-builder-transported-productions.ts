@@ -3,7 +3,10 @@
  * onto the active delegate carrier before STB construction.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   VALUE_CHUNK_SIZE,
   VALUE_HEAD_SIZE,

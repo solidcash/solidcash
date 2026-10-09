@@ -27,7 +27,13 @@
  * witness the body computes, such as a keccak256 preimage, is learned the same way from the body's own bind.
  */
 
-import { createVirtualMachineBch2026, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+;
+;
+import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+;
+;
+;
 import {
   INDEX_NONE,
   argsHash,

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransactionBch, hexToBin } from '@bitauth/libauth';
-import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../src/index.js';
+import {
+  MOCK_CONSENSUS_LIMITS,
+  MOCK_RELAXED_OPERATION_COST,
+  MockNetworkProvider,
+} from '../src/network/mock/index.js';
 
 describe('MockNetworkProvider consensus limits', () => {
   // Relaxed in every SIZE limit, REAL in the operation-cost budget. That asymmetry is deliberate: relaxing a

@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, sha256, utf8ToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, Signer, SignatureTemplate } from '../../src/index.js';
+import {
+  Contract,
+  Signer,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub, alicePkh, bobPriv, bobPub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';

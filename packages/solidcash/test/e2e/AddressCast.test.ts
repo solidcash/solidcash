@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 import { alicePkh } from '../fixture/vars.js';
 

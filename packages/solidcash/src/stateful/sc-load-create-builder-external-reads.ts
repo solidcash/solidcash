@@ -2,7 +2,10 @@
  * phase-boundary extract: SC _createBuilder extract — load external-read UTXOs + caller-identity band.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import {
   buildEntryNftCovenantScript,
   computeCollectionHash,

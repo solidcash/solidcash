@@ -2,9 +2,11 @@
  * phase-boundary extract: STB send-phase extract — Phase-5 submit, failure diagnostics, receipt event decode.
  */
 
-import {
-  binToHex, hash256, hexToBin,
-} from '@bitauth/libauth';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type {
   LibauthOutput, ReceiptEvent, TransactionDetails, UnlockableUtxo, Utxo,
 } from '../interfaces.js';

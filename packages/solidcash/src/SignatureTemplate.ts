@@ -1,4 +1,14 @@
-import { decodePrivateKeyWif, hexToBin, isHex, secp256k1, SigningSerializationFlag } from '@bitauth/libauth';
+import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+import { SigningSerializationFlag } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/signing-serialization.js';
+;
+;
+import { decodePrivateKeyWif } from '@bitauth/libauth/build/lib/key/wallet-import-format.js';
+;
+;
+;
 import { hash256, scriptToBytecode } from '@solidcash/utils';
 import {
   type GenerateUnlockingBytecodeOptions,

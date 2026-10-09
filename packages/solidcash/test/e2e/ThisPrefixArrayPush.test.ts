@@ -4,7 +4,11 @@ import { compileString as _csRawSolidc } from 'solidc';
 // Default (entry-model) array push/pop byte format; vmap push/pop is covered by SortedMappingArrayElementWrite.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
   _csRawSolidc(s, o);
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos, getTxOutputs } from '../test-util.js';
 import { alicePub, alicePriv, aliceAddress } from '../fixture/vars.js';
 

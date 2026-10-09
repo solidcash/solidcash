@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePkh } from '../fixture/vars.js';
 import {
   createTestProvider, expectScriptRejection, setupStatefulUtxos,

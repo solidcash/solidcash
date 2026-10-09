@@ -1,7 +1,11 @@
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createFeeFunder, createTestProvider, expectScriptRejection } from '../test-util.js';

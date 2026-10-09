@@ -1,6 +1,11 @@
 import { type LibauthOutput, isContractUnlocker, type PlaceholderP2PKHUnlocker, type UnlockableUtxo } from './interfaces.js';
 import { type AbiFunction, type Artifact } from '@solidcash/utils';
-import { cashAddressToLockingBytecode, hexToBin, type Input, type TransactionCommon } from '@bitauth/libauth';
+import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import type { Input, TransactionCommon } from '@bitauth/libauth/build/lib/message/transaction-types.js';
+;
+;
+;
 
 // Wallet Connect interfaces according to the spec
 // see https://github.com/mainnet-pat/wc2-bch-bcr

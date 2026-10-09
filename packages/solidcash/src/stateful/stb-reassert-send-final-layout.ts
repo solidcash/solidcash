@@ -2,7 +2,10 @@
  * phase-boundary extract: STB send-phase extract — fixed-point final layout reassert before fee validation.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+;
+;
+;
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 
 export interface ReassertSendFinalLayoutHost {

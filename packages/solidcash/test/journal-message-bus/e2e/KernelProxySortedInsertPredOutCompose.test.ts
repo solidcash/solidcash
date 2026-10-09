@@ -3,7 +3,11 @@ import {
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { getContractFactory, upgrades, Signer } from '../../../src/index.js';
+import { Signer } from '../../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, keyToSlot,

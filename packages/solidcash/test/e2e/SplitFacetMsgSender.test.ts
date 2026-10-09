@@ -1,8 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { compileString, compileStringSplit } from '../direct-compile.js';
 import {
-  Contract, Signer, SplitContractBundle, StatefulContract,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  SplitContractBundle,
+  StatefulContract,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos, plainNumerics } from '../test-util.js';
 import { alicePriv, aliceAddress } from '../fixture/vars.js';

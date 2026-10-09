@@ -1,6 +1,10 @@
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, SignatureTemplate, StatefulContract } from '../../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../../test-util.js';

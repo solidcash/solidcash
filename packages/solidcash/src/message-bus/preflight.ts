@@ -16,7 +16,7 @@ import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-
 import { scriptToBytecode } from '@solidcash/utils';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
-import { rememberPreparedCovenantValidation } from '../network/createPreparedTxVerifier.js';
+import { rememberPreparedCovenantValidation } from '../network/prepared-covenant-receipt.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   deriveBalancedAssemblyFromInputs, preflightBalancedBlockAssembly,

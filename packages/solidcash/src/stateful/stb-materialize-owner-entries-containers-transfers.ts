@@ -6,7 +6,7 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 ;
 ;
 ;
-import { getDustThreshold } from '@mem-cash/validation';
+import { getDustThreshold } from '../network/dust-threshold.js';
 import {
   buildEntryCommitment,
   buildEntryCommitmentMultiKey,

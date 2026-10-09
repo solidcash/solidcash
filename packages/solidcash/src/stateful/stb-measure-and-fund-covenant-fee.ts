@@ -7,7 +7,7 @@ import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transactio
 ;
 ;
 ;
-import { getDustThreshold } from '@mem-cash/validation';
+import { getDustThreshold } from '../network/dust-threshold.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { isP2PKHUnlocker } from '../interfaces.js';

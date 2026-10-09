@@ -16,7 +16,8 @@ import {
   type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType,
   type CompilerOptions,
   FixedType, IntType,
-  computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
+  computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
+  computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
   buildDeployabilityCertificate,
@@ -319,7 +320,7 @@ function normalizeAbiSelector(selector: string): string | undefined {
 }
 
 /** Selector identity of a source ABI entry point; compiler-internal physical operands never affect it. */
-function sourceFunctionSelectorHex(fn: FunctionDefinitionNode): string {
+function sourceFunctionSelectorHex(fn: FunctionDefinitionNode, evmCompat = false): string {
   // Fallback/receive parameters describe their compatibility execution context, not selector-dispatched ABI
   // arguments. SymbolTableTraversal assigns both special entries their reserved zero-argument selector, so exact
   // handler selection must derive the same identity even when `fallback(bytes input)` exposes calldata in its
@@ -329,18 +330,17 @@ function sourceFunctionSelectorHex(fn: FunctionDefinitionNode): string {
     : fn.parameters
       .filter((parameter) => !parameter.name.startsWith('__internal__'))
       .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'));
-  return binToHex(computeFunctionSelector(computeFunctionSignature(
-    fn.name,
-    parameterTypes,
-  )));
+  // D27: the dispatch scheme follows the compile's mode; the kernel's selector identities must match it.
+  return computeFunctionSelectorHex(computeFunctionSignature(fn.name, parameterTypes), evmCompat);
 }
 
 function messageBusHandlerSelected(
   fn: FunctionDefinitionNode,
   requested: CompilerOptions['messageBusHandlers'],
+  evmCompat = false,
 ): boolean {
   if (requested === undefined) return true;
-  const selector = sourceFunctionSelectorHex(fn).toLowerCase();
+  const selector = sourceFunctionSelectorHex(fn, evmCompat).toLowerCase();
   return requested.some((reference) => {
     if (typeof reference === 'string') return reference === fn.name;
     const requestedSelector = normalizeAbiSelector(reference.selector);
@@ -403,8 +403,10 @@ function assertPublishedVerifierBinding(artifact: Artifact, maximumInputBytes?: 
   }
 }
 
-function sourceMessageBusHandlerReference(fn: FunctionDefinitionNode): AbiFunctionReference {
-  return { name: fn.name, selector: sourceFunctionSelectorHex(fn) };
+function sourceMessageBusHandlerReference(
+  fn: FunctionDefinitionNode, evmCompat = false,
+): AbiFunctionReference {
+  return { name: fn.name, selector: sourceFunctionSelectorHex(fn, evmCompat) };
 }
 
 function scanSourceImports(code: string): string[] {
@@ -5516,7 +5518,7 @@ function synthesizeMessageBusRoute(
     ]
     : contract.functions;
   const functions = entryFunctions.filter((fn) => fn.isEntryPoint && !fn.isAbstract
-    && messageBusHandlerSelected(fn, compilerOptions.messageBusHandlers));
+    && messageBusHandlerSelected(fn, compilerOptions.messageBusHandlers, compilerOptions.evmCompat === true));
   // Record every entry point's span BEFORE any refusal is decided and before anything downstream
   // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.
   for (const fn of functions) {
@@ -9591,7 +9593,8 @@ function synthesizeMessageBusRoute(
   // pristine pass must consume exactly one disposition scope regardless of this code-layout choice.
   if (compilerOptions.messageBusKernel === true) {
     for (const fn of eligible) {
-      fn.messageBusKernelJournalDispositionSelectorHex = sourceFunctionSelectorHex(fn).toLowerCase();
+      fn.messageBusKernelJournalDispositionSelectorHex =
+        sourceFunctionSelectorHex(fn, compilerOptions.evmCompat === true).toLowerCase();
     }
   }
   const {
@@ -9737,7 +9740,8 @@ function synthesizeMessageBusRoute(
     }
   }
 
-  const selector = sourceFunctionSelectorHex;
+  const selector = (fn: FunctionDefinitionNode): string =>
+    sourceFunctionSelectorHex(fn, compilerOptions.evmCompat === true);
   const routeMaximumBlobBytes = compilerOptions.messageBusKernel === true
     ? MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES : MAX_MESSAGE_BUS_BLOB_BYTES;
   const defaultRouteMaximumRows = compilerOptions.messageBusKernel === true
@@ -12037,7 +12041,7 @@ function synthesizeMessageBusRoute(
         : locals.length === 1
           ? `${locals[0]} = abi.decode(activeLifecycleArgs, (${schema}));`
           : `(${locals.join(', ')}) = abi.decode(activeLifecycleArgs, (${schema}));`;
-      return `${index === 0 ? 'if' : 'else if'} (activeLifecycleSelector == hex"${sourceFunctionSelectorHex(fn)}") {
+      return `${index === 0 ? 'if' : 'else if'} (activeLifecycleSelector == hex"${sourceFunctionSelectorHex(fn, compilerOptions.evmCompat === true)}") {
       ${decode}
       activeLifecycleMode = 3;
       activeLifecycleCount = 1;
@@ -12052,7 +12056,7 @@ function synthesizeMessageBusRoute(
     const decode = locals.length === 1
       ? `${locals[0]} = abi.decode(activeLifecycleArgs, (${schema}));`
       : `(${locals.join(', ')}) = abi.decode(activeLifecycleArgs, (${schema}));`;
-    return `${index === 0 ? 'if' : 'else if'} (activeLifecycleSelector == hex"${sourceFunctionSelectorHex(fn)}") {
+    return `${index === 0 ? 'if' : 'else if'} (activeLifecycleSelector == hex"${sourceFunctionSelectorHex(fn, compilerOptions.evmCompat === true)}") {
       ${decode}
       activeLifecycleMode = ${kind === 'split' ? 1 : 2};
       activeLifecycleCount = __message_bus_lifecycle_${index}_${countParameter};
@@ -12085,7 +12089,7 @@ function synthesizeMessageBusRoute(
         // even if the branch decode above missed (V2 callMode framing). Selector identity is authoritative.
         ${[...kernelLifecycleHandlers].filter(([, kind]) => kind === 'selfdestruct').map(([fn]) => `
         if (activeLifecycleMode == 0 && localBatch.length >= 11 && localBatch.slice(0, 4) == hex"53434231"
-          && localBatch.slice(7, 11) == hex"${sourceFunctionSelectorHex(fn)}") {
+          && localBatch.slice(7, 11) == hex"${sourceFunctionSelectorHex(fn, compilerOptions.evmCompat === true)}") {
           activeLifecycleMode = 3;
           activeLifecycleCount = 1;
         }`).join('\n')}
@@ -13290,7 +13294,7 @@ function synthesizeMessageBusRoute(
   // still changes participant geometry and must consume V3 authorization. Select that exceptional path from the
   // compiler-known one-row selector; ordinary local batches retain their caller-master authentication.
   const localLifecycleSelector = [...kernelLifecycleHandlers.keys()]
-    .map((fn) => `batchBlob.slice(7, 11) == hex"${sourceFunctionSelectorHex(fn)}"`).join(' || ');
+    .map((fn) => `batchBlob.slice(7, 11) == hex"${sourceFunctionSelectorHex(fn, compilerOptions.evmCompat === true)}"`).join(' || ');
   const atomicPrologue = `${lifecycleRouteLocals}
     ${localAuthenticatedRoute
     ? localLifecycleSelector.length === 0 ? ''
@@ -14502,7 +14506,7 @@ function compileResolvedAst(
       validateLowLevelCallShapes(ast.contract);
     } else {
       for (const fn of ast.contract.functions) {
-        if (fn.isEntryPoint && messageBusHandlerSelected(fn, requestedHandlers)) {
+        if (fn.isEntryPoint && messageBusHandlerSelected(fn, requestedHandlers, mergedCompilerOptions.evmCompat === true)) {
           validateFunctionLowLevelCallShapes(fn);
         }
       }
@@ -14619,7 +14623,7 @@ function compileResolvedAst(
       validateLowLevelCallShapes(ast.contract);
     } else {
       for (const fn of ast.contract.functions) {
-        if (fn.isEntryPoint && messageBusHandlerSelected(fn, requestedHandlers)) {
+        if (fn.isEntryPoint && messageBusHandlerSelected(fn, requestedHandlers, mergedCompilerOptions.evmCompat === true)) {
           validateFunctionLowLevelCallShapes(fn);
         }
       }
@@ -15275,14 +15279,20 @@ function compileResolvedAst(
   }
   // A high-level `this.f(args)` also creates fresh calldata. Reconstruct msg.data from f's selector + live
   // parameters so the direct OP_INVOKE lowering does not depend on OP_ACTIVEBYTECODE inside the subroutine.
-  if (needsMsgDataContext) ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
+  if (needsMsgDataContext) {
+    ast = ast.accept(new LowerSelfCallMsgData(mergedCompilerOptions.evmCompat === true)) as Ast;
+  }
   // Internal/private msg.data readers receive the originating entry calldata through a compiler-only parameter.
   if (needsMsgDataContext) {
-    ast = ast.accept(new LowerInternalMsgDataContext(mergedCompilerOptions.composition === 'framed')) as Ast;
+    ast = ast.accept(new LowerInternalMsgDataContext(
+      mergedCompilerOptions.composition === 'framed', mergedCompilerOptions.evmCompat === true,
+    )) as Ast;
   }
   // msg.sig retains the originating public/external selector across internal/private OP_INVOKE calls.
   if (needsMsgSigContext) {
-    ast = ast.accept(new LowerInternalMsgSigContext(mergedCompilerOptions.composition === 'framed')) as Ast;
+    ast = ast.accept(new LowerInternalMsgSigContext(
+      mergedCompilerOptions.composition === 'framed', mergedCompilerOptions.evmCompat === true,
+    )) as Ast;
   }
 
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
@@ -15472,7 +15482,7 @@ function compileResolvedAst(
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   if (ast.freeFunctions.length > 0 || ast.declaredLibraryNames.length > 0) {
-    ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
+    ast = ast.accept(new SynthesizeLibraryDelegateCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
   }
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
   const blockOracle = new SynthesizeBlockOracle(
@@ -16635,7 +16645,7 @@ function compileResolvedAst(
       const journalDispositionSources = runtimeJournalAccesses
         .map((access) => access.settlementIdentity?.recordDispositionSource);
       const carrierAuthorization = refreshKernelReadCarrierAuthorization(
-        fn, abi, ast.contract.collections,
+        fn, abi, ast.contract.collections, undefined, mergedCompilerOptions.evmCompat === true,
       );
       if (carrierAuthorization) {
         completedReadCarrierScopes.push({
@@ -17205,7 +17215,8 @@ function compileResolvedAst(
     if (dispatchedDemoted) {
       kernelRouteRebindRemaining.set(
         artifact,
-        sourceHandlers.filter((fn) => fn.messageBusEligible === true).map(sourceMessageBusHandlerReference),
+        sourceHandlers.filter((fn) => fn.messageBusEligible === true)
+          .map((fn) => sourceMessageBusHandlerReference(fn, mergedCompilerOptions.evmCompat === true)),
       );
     }
   }
@@ -18642,7 +18653,7 @@ function compileStringSplitUnchecked(
           });
         }
       });
-      prepareSplitRoot(trial.contract, trialRoutes);
+      prepareSplitRoot(trial.contract, trialRoutes, compilerOptions.evmCompat === true);
       trial.contract.implements = [];
       trial.contract.parentInvocations = [];
       for (const fn of trial.contract.functions) {
@@ -18727,7 +18738,7 @@ function compileStringSplitUnchecked(
       ...(censusedCollectionSignatures.length > 0 && { censusedCollectionSignatures }),
     });
   }
-  prepareSplitRoot(rootAst.contract, routeByName);
+  prepareSplitRoot(rootAst.contract, routeByName, compilerOptions.evmCompat === true);
   // `rootAst` is also the already-flattened logical contract. Its second compiler pass must not interpret
   // source-only override base lists against the now-empty concrete-base list.
   rootAst.contract.implements = [];
@@ -19229,7 +19240,7 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
 
 function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
   facet: string; link: string; delegateEventOffsets?: number[]; censusedCollectionSignatures?: string[];
-}>): void {
+}>, evmCompat = false): void {
   // Once moved entry bodies become forwarders, helpers reachable only from those entries belong exclusively to
   // facets. Leaving their OP_INVOKE bodies in the root defeats splitting and can keep an otherwise valid root over
   // the VM limit. Preserve helpers reachable from root-local entries and the constructor.
@@ -19263,7 +19274,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
     const signature = computeFunctionSignature(fn.name, fn.parameters
       .filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type.toString()));
     const target = new IdentifierNode(route.link); target.location = fn.location;
-    const data = new HexLiteralNode(computeFunctionSelector(signature)); data.location = fn.location;
+    const data = new HexLiteralNode(computeFunctionSelector(signature, evmCompat)); data.location = fn.location;
     if (fn.returnTypes.length === 0 || !wasReadOnly) {
       const call = new LowLevelCallStatementNode(target, data, 'delegatecall'); call.location = fn.location;
       call.synthesizedFromLibraryCall = true;

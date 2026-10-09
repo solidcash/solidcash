@@ -2784,7 +2784,10 @@ function buildFunctionAbiMetadata(
       .map((candidate) => {
         const signature = `${candidate.name}(${candidate.parameters
           .map((parameter) => abiTypeString(parameter.type)).join(',')})`;
-        return { functionName: candidate.name, selector: computeFunctionSelectorHex(signature) };
+        return {
+          functionName: candidate.name,
+          selector: computeFunctionSelectorHex(signature, compilerOptions.evmCompat === true),
+        };
       })
       .sort((left, right) => left.selector.localeCompare(right.selector));
   };
@@ -4689,7 +4692,7 @@ function buildExternalInterfaceInfo(
     return {
       name: func.name,
       inputs: func.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
-      selector: computeFunctionSelectorHex(sig),
+      selector: computeFunctionSelectorHex(sig, compilerOptions.evmCompat === true),
     };
   });
 

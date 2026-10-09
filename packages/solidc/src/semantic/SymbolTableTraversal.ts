@@ -1925,9 +1925,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         .filter((p) => !p.name.startsWith('__internal__'))
         .map((p) => p.type.toString().replace(/address payable/g, 'address'));
       const sig = computeFunctionSignature(func.name, paramTypes);
+      // D27: the dispatch scheme follows the compile's mode, so an evmCompat compile derives the keccak selector
+      // its abi.* family emits, and a native compile keeps BCH's sha256 one.
       const selector = func.messageBusRoute
         ? Uint8Array.from([0x53, 0x43, 0x42, 0x31])
-        : computeFunctionSelector(sig);
+        : this.computeAbiSelector(sig);
       const selectorHex = binToHex(selector);
 
       const collision = selectorMap.get(selectorHex);
@@ -1942,7 +1944,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.constructorDef) {
       const paramTypes = node.constructorDef.parameters.map((p) => p.type.toString());
       const sig = computeFunctionSignature('constructor', paramTypes);
-      const selector = computeFunctionSelector(sig);
+      const selector = this.computeAbiSelector(sig);
       const selectorHex = binToHex(selector);
       const collision = selectorMap.get(selectorHex);
       if (collision) throw new FunctionSelectorCollisionError(node.constructorDef, collision, selectorHex);
@@ -1953,7 +1955,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Compute selectors for fallback/receive
     if (node.fallbackDef) {
       const sig = computeFunctionSignature('__fallback', []);
-      const selector = computeFunctionSelector(sig);
+      const selector = this.computeAbiSelector(sig);
       const selectorHex = binToHex(selector);
       const collision = selectorMap.get(selectorHex);
       if (collision) throw new FunctionSelectorCollisionError(node.fallbackDef, collision, selectorHex);
@@ -1963,7 +1965,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     if (node.receiveDef) {
       const sig = computeFunctionSignature('__receive', []);
-      const selector = computeFunctionSelector(sig);
+      const selector = this.computeAbiSelector(sig);
       const selectorHex = binToHex(selector);
       const collision = selectorMap.get(selectorHex);
       if (collision) throw new FunctionSelectorCollisionError(node.receiveDef, collision, selectorHex);
@@ -2341,7 +2343,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
           .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
       );
-      return literal(computeFunctionSelector(signature), 4);
+      return literal(this.computeAbiSelector(signature), 4);
     };
 
     // `this.f.selector` and bare `f.selector`.
@@ -2369,7 +2371,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ?? [...this.errorMap.values()].find((definition) => definition.name === name);
       if (error) {
         const signature = computeErrorSignature(error.name, error.parameters.map((p) => p.type.toString()));
-        return literal(computeFunctionSelector(signature), 4);
+        return literal(this.computeAbiSelector(signature), 4);
       }
     }
 
@@ -2386,7 +2388,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       const libraryErrorTypes = this.libraryErrorSignatures.get(`${qualifier}.${name}`);
       if (libraryErrorTypes) {
-        return literal(computeFunctionSelector(computeErrorSignature(name, libraryErrorTypes)), 4);
+        return literal(this.computeAbiSelector(computeErrorSignature(name, libraryErrorTypes)), 4);
       }
       const event = holder?.eventDefinitions.find((definition) => definition.name === name);
       if (event) {
@@ -2397,7 +2399,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const error = holder?.errorDefinitions.find((definition) => definition.name === name);
       if (error) {
         const signature = computeErrorSignature(error.name, error.parameters.map((p) => p.type.toString()));
-        return literal(computeFunctionSelector(signature), 4);
+        return literal(this.computeAbiSelector(signature), 4);
       }
     }
 
@@ -3982,7 +3984,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 const signature = computeFunctionSignature(
                   slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
                 );
-                inferredSelectors.set(slot, computeFunctionSelector(signature));
+                inferredSelectors.set(slot, this.computeAbiSelector(signature));
               }
             }
             const identity = slot.addressParam ? `param:${slot.addressParam}`
@@ -4241,7 +4243,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 node, `Graph handler '${node.name}' has an unresolved target method`,
               );
             }
-            slot.compileTimeSelector = computeFunctionSelector(computeFunctionSignature(
+            slot.compileTimeSelector = this.computeAbiSelector(computeFunctionSignature(
               slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
             ));
           }
@@ -4296,7 +4298,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
               if (ifaceFunc) {
                 const sig = computeFunctionSignature(slot.functionName, ifaceFunc.parameters.map((p) => p.type.toString()));
-                slot.compileTimeSelector = computeFunctionSelector(sig);
+                slot.compileTimeSelector = this.computeAbiSelector(sig);
               }
             }
             // Backward compat: single slot uses '__internal__externalCallSelector', multiple use indexed names
@@ -12721,7 +12723,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
             .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
         );
-        const literal = new HexLiteralNode(computeFunctionSelector(signature));
+        const literal = new HexLiteralNode(this.computeAbiSelector(signature));
         literal.location = node.expression.location;
         literal.type = new BytesType(4);
         node.expression = literal;
@@ -14041,7 +14043,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               method.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
                 .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
             );
-            selector = new HexLiteralNode(computeFunctionSelector(signature));
+            selector = new HexLiteralNode(this.computeAbiSelector(signature));
             address = cast.parameters[0];
           }
         }
@@ -15087,7 +15089,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           target.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
             .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
         );
-        const selector = new HexLiteralNode(computeFunctionSelector(signature));
+        const selector = new HexLiteralNode(this.computeAbiSelector(signature));
         selector.location = node.location;
         selector.type = new BytesType(4);
         const sequence = new SequenceExpressionNode(helperCall, selector);
@@ -15120,7 +15122,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           method.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
             .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
         );
-        const selector = new HexLiteralNode(computeFunctionSelector(signature));
+        const selector = new HexLiteralNode(this.computeAbiSelector(signature));
         selector.location = branch.location;
         selector.type = new BytesType(4);
         const sequence = new SequenceExpressionNode(receiver, selector);
@@ -15184,7 +15186,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const methodParams = params(baseName) ?? (varContract ? params(varContract) : undefined);
       if (methodParams) {
         const sig = computeFunctionSignature(fa.name, methodParams.map((p) => p.type.toString()));
-        const lit = new HexLiteralNode(computeFunctionSelector(sig));
+        const lit = new HexLiteralNode(this.computeAbiSelector(sig));
         lit.location = node.location;
         return lit;
       }
@@ -15194,7 +15196,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const libSig = this.libraryFunctionSignatures.get(`${baseName}.${fa.name}`);
       if (libSig) {
         const sig = computeFunctionSignature(fa.name, libSig);
-        const lit = new HexLiteralNode(computeFunctionSelector(sig));
+        const lit = new HexLiteralNode(this.computeAbiSelector(sig));
         lit.location = node.location;
         return lit;
       }
@@ -15248,7 +15250,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.name === 'selector') {
       const errorSelectorLit = (errorName: string, paramTypes?: string[]): HexLiteralNode | undefined => {
         if (!paramTypes) return undefined;
-        const lit = new HexLiteralNode(computeFunctionSelector(computeErrorSignature(errorName, paramTypes)));
+        const lit = new HexLiteralNode(this.computeAbiSelector(computeErrorSignature(errorName, paramTypes)));
         lit.location = node.location;
         lit.type = new BytesType(4);
         return lit;
@@ -15412,7 +15414,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           method.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
             .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
         );
-        const selector = new HexLiteralNode(computeFunctionSelector(signature));
+        const selector = new HexLiteralNode(this.computeAbiSelector(signature));
         selector.location = node.location;
         selector.type = new BytesType(4);
         const address = this.visit(node.expression.parameters[0]) as ExpressionNode;
@@ -15606,7 +15608,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const func of allFunctions) {
         const paramTypes = func.parameters.map((p) => p.type.toString());
         const sig = computeFunctionSignature(func.name, paramTypes);
-        const selector = computeFunctionSelector(sig);
+        const selector = this.computeAbiSelector(sig);
         for (let i = 0; i < 4; i++) {
           interfaceId[i] ^= selector[i];
         }

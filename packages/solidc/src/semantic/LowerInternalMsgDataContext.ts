@@ -31,7 +31,7 @@ export default class LowerInternalMsgDataContext extends AstTraversal {
    * @param forwardsCallerData an entry passes its own msg.data, the framed frame's call data, rather than the
    * encoding of its parameters, unless a self-call reaches it: only that encoding states the call data then.
    */
-  constructor(private readonly forwardsCallerData = false) {
+  constructor(private readonly forwardsCallerData = false, private readonly evmCompat = false) {
     super();
   }
 
@@ -118,7 +118,9 @@ export default class LowerInternalMsgDataContext extends AstTraversal {
   private entryData(fn: FunctionDefinitionNode, src: Node): AbiEncodeWithSelectorNode {
     const sourceParameters = fn.parameters.filter((p) => !p.name.startsWith('__internal__'));
     const types = sourceParameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
-    const selector = new HexLiteralNode(computeFunctionSelector(computeFunctionSignature(fn.name, types)));
+    const selector = new HexLiteralNode(
+      computeFunctionSelector(computeFunctionSignature(fn.name, types), this.evmCompat),
+    );
     selector.type = new BytesType(4);
     selector.location = src.location;
     const args = sourceParameters.map((p) => {

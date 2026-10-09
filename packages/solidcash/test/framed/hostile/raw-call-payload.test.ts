@@ -38,9 +38,9 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '     (bool ok, ) = address(b).call(abi.encodeWithSignature("nonexistent()")); require(ok); } }';
 
 /** The selector the payload names (the source is evmCompat, so `abi.encodeWithSignature` folds keccak), and the one
- * B publishes for its fallback dispatcher, which stays the native sha256 and no call names. */
+ * B publishes for its fallback dispatcher, which follows the same evmCompat keccak scheme (D27) and no call names. */
 const PAYLOAD_SELECTOR = computeEvmFunctionSelector('nonexistent()');
-const FALLBACK_SELECTOR = computeFunctionSelector('__fallback()');
+const FALLBACK_SELECTOR = computeFunctionSelector('__fallback()', true);
 
 let run: Promise<FramedCallResult> | undefined;
 

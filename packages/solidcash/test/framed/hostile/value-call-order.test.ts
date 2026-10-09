@@ -33,7 +33,8 @@ const SOURCE = 'pragma solidity ^0.8.0;'
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
 const AMOUNT = 5_000n;
-const RECEIVE_SELECTOR = computeFunctionSelector(computeFunctionSignature('__receive', []));
+// The fixture compiles evmCompat, so a value send's call data carries the keccak256 selector of receive() (D27).
+const RECEIVE_SELECTOR = computeFunctionSelector(computeFunctionSignature('__receive', []), true);
 
 type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;

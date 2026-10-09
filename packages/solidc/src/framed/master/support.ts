@@ -2754,7 +2754,9 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
   }
   const served = entryPoints.filter((entry) => !refusals.has(entry.name));
 
-  const calls = deriveFramedMasterCallSites(input.interfaces, served, stateVariableNames);
+  const calls = deriveFramedMasterCallSites(
+    input.interfaces, served, stateVariableNames, input.compilerOptions?.evmCompat === true,
+  );
   for (const [entryName, reason] of calls.refusals) refuseBody(
     entryPoints.find((entry) => entry.name === entryName)!, reason,
   );
@@ -3088,11 +3090,12 @@ function deriveFramedMasterCallSites(
   interfaces: readonly InterfaceNode[],
   entryPoints: readonly FunctionDefinitionNode[],
   stateVariables: ReadonlySet<string>,
+  evmCompat = false,
 ): CallSitesDerivation {
   const entryCalls: FramedEntryCallSites[] = [];
   const refusals = new Map<string, string>();
   for (const entry of entryPoints) {
-    const derived = deriveEntryCallSites(interfaces, entry, stateVariables);
+    const derived = deriveEntryCallSites(interfaces, entry, stateVariables, evmCompat);
     if (derived.reason !== undefined) {
       refusals.set(entry.name, derived.reason);
       continue;
@@ -3527,6 +3530,7 @@ function deriveEntryCallSites(
   interfaces: readonly InterfaceNode[],
   entry: FunctionDefinitionNode,
   stateVariables: ReadonlySet<string>,
+  evmCompat = false,
 ): { calls: MasterCallSite[]; reason?: string; pathCount?: number } {
   const forwards = forwardDelegateCalls(entry, stateVariables);
   if ('reason' in forwards) return { calls: [], reason: forwards.reason };
@@ -3627,7 +3631,7 @@ function deriveEntryCallSites(
     if ('reason' in target) return { calls: [], reason: target.reason };
     // A call routed to the target's fallback carries its payload's own selector, which no method of it names.
     const selector = slot.compileTimeSelector ?? slot.sourceCallNode?.lowLevelRoute?.fallback?.selector
-      ?? resolveInterfaceSelector(interfaces, slot.interfaceName, slot.functionName);
+      ?? resolveInterfaceSelector(interfaces, slot.interfaceName, slot.functionName, evmCompat);
     if (selector === undefined) {
       return { calls: [], reason: `the call to '${slot.interfaceName}.${slot.functionName}' has no four-byte `
         + 'selector the master head can check' };
@@ -3809,12 +3813,14 @@ function resolveInterfaceSelector(
   interfaces: readonly InterfaceNode[],
   interfaceName: string,
   functionName: string,
+  evmCompat = false,
 ): Uint8Array | undefined {
   const iface = interfaces.find((candidate) => candidate.name === interfaceName);
   const fn = iface?.functions.find((candidate) => candidate.name === functionName);
   if (!fn) return undefined;
   return computeFunctionSelector(
     computeFunctionSignature(functionName, fn.parameters.map((parameter) => parameter.type.toString())),
+    evmCompat,
   );
 }
 

@@ -547,7 +547,10 @@ describe('fixed conditional BCH transfer transcript security', () => {
     ['address.send', 'sendStyle'],
   ] as const)('executes %s from its typed fixed-effect descriptor', async (_style, vaultFunction) => {
     const provider = createMessageBusCapstoneTestProvider();
-    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+    // D27: the dispatch scheme follows the compile's mode, and a native caller cannot typed-call an evmCompat
+    // callee. This fixture's subject is the vault's typed fixed-effect transfer descriptor, which a native vault
+    // publishes identically; compiling the vault native keeps the caller and callee on one scheme.
+    const artifacts = compileStringMulti(`pragma solidcash ^0.13.0;
       contract Vault {
         function transferStyle(address payable recipient, uint amount) public {
           recipient.transfer(amount);
@@ -557,8 +560,7 @@ describe('fixed conditional BCH transfer transcript security', () => {
           require(recipient.send(amount));
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true,
-      evmCompat: true, maximumInputBytes: 1_000_000,
+      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
     });
     const driverArtifacts = compileStringMulti(`pragma solidcash ^0.13.0;
       interface IVault {

@@ -24,7 +24,7 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
    * @param forwardsCallerSelector an entry passes its own msg.sig rather than its selector, so its framed
    * subroutine, reached by an internal call, passes on the selector its caller gave it.
    */
-  constructor(private readonly forwardsCallerSelector = false) {
+  constructor(private readonly forwardsCallerSelector = false, private readonly evmCompat = false) {
     super();
   }
 
@@ -78,7 +78,9 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
     const types = fn.parameters
       .filter((p) => !p.name.startsWith('__internal__') && p.name !== CONTEXT)
       .map((p) => p.type.toString().replace(/address payable/g, 'address'));
-    const value = new HexLiteralNode(computeFunctionSelector(computeFunctionSignature(fn.name, types)));
+    const value = new HexLiteralNode(
+      computeFunctionSelector(computeFunctionSignature(fn.name, types), this.evmCompat),
+    );
     value.type = new BytesType(4);
     value.location = src.location;
     return value;

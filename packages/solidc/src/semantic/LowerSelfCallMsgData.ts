@@ -25,6 +25,10 @@ import AstTraversal from '../ast/AstTraversal.js';
  * unique-name case is unambiguous from the pre-semantic AST and covers the corpus shape without guessing.
  */
 export default class LowerSelfCallMsgData extends AstTraversal {
+  constructor(private readonly evmCompat = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
@@ -61,7 +65,9 @@ export default class LowerSelfCallMsgData extends AstTraversal {
   private replaceMsgData(fn: FunctionDefinitionNode): void {
     const sourceParameters = fn.parameters.filter((p) => !p.name.startsWith('__internal__'));
     const signatureTypes = sourceParameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
-    const selector = computeFunctionSelector(computeFunctionSignature(fn.name, signatureTypes));
+    const selector = computeFunctionSelector(
+      computeFunctionSignature(fn.name, signatureTypes), this.evmCompat,
+    );
 
     const replacement = (src: NullaryOpNode): AbiEncodeWithSelectorNode => {
       const selectorNode = new HexLiteralNode(selector);

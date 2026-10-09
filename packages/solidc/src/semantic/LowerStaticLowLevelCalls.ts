@@ -523,7 +523,7 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       && (contract.fallbackDef === undefined || contract.fallbackDef.returnTypes.length > 0)) return undefined;
     const selector = this.evmCompat ? computeEvmFunctionSelector(signature) : computeFunctionSelector(signature);
     const answered = functions.some((fn) =>
-      computeFunctionSelector(canonical(fn)).every((byte, index) => byte === selector[index]));
+      computeFunctionSelector(canonical(fn), this.evmCompat).every((byte, index) => byte === selector[index]));
     if (answered) return undefined;
     return { interfaceName, functionName: FALLBACK_ENTRY, args, fallback: { selector } };
   }

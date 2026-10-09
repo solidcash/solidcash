@@ -32,6 +32,10 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
   private knownLibs = new Set<string>();
   private currentFn?: FunctionDefinitionNode;
 
+  constructor(private readonly evmCompat = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     this.delegateLibFns = new Map();
     for (const fn of node.freeFunctions) {
@@ -42,7 +46,9 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
       const fnName = fn.name.slice(dot + 1);
       const paramTypes = fn.parameters.map((p) => p.type.toString());
       const sig = computeFunctionSignature(fnName, paramTypes);
-      this.delegateLibFns.set(fn.name, { libName, fnName, selector: computeFunctionSelector(sig), paramTypes });
+      this.delegateLibFns.set(fn.name, {
+        libName, fnName, selector: computeFunctionSelector(sig, this.evmCompat), paramTypes,
+      });
     }
     // Known library names (inline + imported) so `address(L)` resolves to the library's link-time address.
     this.knownLibs = new Set(node.declaredLibraryNames);

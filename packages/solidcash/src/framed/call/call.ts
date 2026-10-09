@@ -336,8 +336,12 @@ interface CallEntry {
 export const RECEIVE_ENTRY = '__receive';
 /** The ABI name of `fallback()`, which a value send runs when the contract has no `receive()`. */
 export const FALLBACK_ENTRY = '__fallback';
-/** A value send's call data: the selector of `receive()` alone, the EVM's empty call data. */
-const VALUE_SEND_CALL_DATA = computeFunctionSelector(computeFunctionSignature(RECEIVE_ENTRY, []));
+/** A value send's call data: the selector of `receive()` alone, the EVM's empty call data. The selector scheme
+ * follows the compile's mode (D27), so it is derived per artifact rather than from a native-only constant. */
+const valueSendCallData = (artifact: Artifact): Uint8Array =>
+  computeFunctionSelector(
+    computeFunctionSignature(RECEIVE_ENTRY, []), artifact.compiler?.options?.evmCompat === true,
+  );
 
 /**
  * The body a value send runs, as the EVM picks it: `receive()`, else a payable `fallback()`. `what` names the value
@@ -858,7 +862,7 @@ async function callInShape(
 
   // The fallback is reached by the call data of a value send, which no entry's selector names.
   const argumentPushes = entry.name === FALLBACK_ENTRY
-    ? [VALUE_SEND_CALL_DATA]
+    ? [valueSendCallData(artifact)]
     : entryArgumentPushes(entry, args, structs, functionName);
   // The events, sends and hashes a loop of the entry repeats, as many as the loop turns over the call's own facts.
   let loopTurns: EntryLoopTurns;
@@ -966,7 +970,7 @@ async function callInShape(
         shared,
         entryName: body.name,
         onBranch: onBranch[transferPosition]!,
-        selector: VALUE_SEND_CALL_DATA,
+        selector: valueSendCallData(external.artifact),
         emits: [...(body.emits ?? [])].sort((left, right) => left.emitIndex - right.emitIndex),
         // Its mapping writes, keyed by the paying contract, which is its `msg.sender`.
         mapping: entryMapping({

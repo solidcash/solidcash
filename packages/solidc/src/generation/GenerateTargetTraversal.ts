@@ -606,15 +606,15 @@ const FRAMED_FRAME_SLOT_NAMES = [
  * the selector every contract's `receive()` has, carrying no argument. Its target and value are the recipient and
  * the amount the body computed.
  */
-const FRAMED_RECEIVE_SITE: MasterCallSite = {
+const framedReceiveSite = (evmCompat: boolean): MasterCallSite => ({
   kind: FrameKind.CALL,
-  selector: computeFunctionSelector(computeFunctionSignature('__receive', [])),
+  selector: computeFunctionSelector(computeFunctionSignature('__receive', []), evmCompat),
   target: new Uint8Array(0),
   targetFromStack: true,
   valueFromStack: true,
   arguments: [],
   functionName: '__receive',
-};
+});
 
 /**
  * Hidden invocation operand carrying the caller's contract address into a framed subroutine.
@@ -6480,7 +6480,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(bytecodeToScript(dropLastPushScript()), loc);
     this.emit(bytecodeToScript(dropFirstPushScript()), loc);
     this.emit(Op.OP_DUP, loc);
-    this.emit(encodeDataPush(FRAMED_RECEIVE_SITE.selector), loc);
+    this.emit(encodeDataPush(framedReceiveSite(this.compilerOptions.evmCompat === true).selector), loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc);
@@ -6534,7 +6534,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         sortedInsertLoopInfo: func.sortedInsertLoopInfo,
         sortedBatchInfo: func.sortedBatchInfo,
         collectionIterations: func.collectionIterations,
-      } as AbiFunction, this.collectionDefinitions, func.messageBusKernelReadCarrierSourceSelectorHex);
+      } as AbiFunction, this.collectionDefinitions, func.messageBusKernelReadCarrierSourceSelectorHex,
+      this.compilerOptions.evmCompat === true);
     }
     if ((func.name === '__message_bus_verify_atomic'
       || func.name === '__message_bus_verify_atomic_program')
@@ -39161,7 +39162,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     pick(callsMade);
     pick(lock);
     pick(amount);
-    this.emit(bytecodeToScript(callSiteCheckScript(FRAMED_RECEIVE_SITE, 0, false, {
+    const receiveSite = framedReceiveSite(this.compilerOptions.evmCompat === true);
+    this.emit(bytecodeToScript(callSiteCheckScript(receiveSite, 0, false, {
       targetFromStack: true, valueFromStack: true, indexFromStack: true, requiresValidator: true,
     })), loc);
     this.popFromStack(3);

@@ -55,7 +55,9 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
 
   it('classifies empty-commitment immutables from output j, not the zeroAmount boolean', () => {
     const art = compileFileMulti(marketplaceV1, eaOpts).MarketplaceV1;
-    const hex = (art?.delegateArtifact ?? art)?.functionBodies?.['9f3e4a91'];
+    // `publishJobPost(string,bytes32,bool,string[],address,uint256,uint32,string,address,address[])`; the
+    // source compiles evmCompat, so the body is keyed by the keccak256 selector (D27).
+    const hex = (art?.delegateArtifact ?? art)?.functionBodies?.['3a080839'];
     expect(typeof hex).toBe('string');
     const ops: number[] = [];
     const raw = Buffer.from((hex as string).replace(/\s+/g, ''), 'hex');
@@ -84,7 +86,8 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
   it('adds ceil(jobsLen/120) before the whitelist upsert predecessor check', () => {
     const art = compileFile(marketplaceV1, eaOpts);
     const target = art.delegateArtifact ?? art;
-    const hex = target.functionBodies?.['4b7f34e3'];
+    // `updateJobWhitelist(uint256,address[],address[])`, keyed by its evmCompat keccak256 selector (D27).
+    const hex = target.functionBodies?.bdb10816;
     expect(typeof hex).toBe('string');
     const body = hex as string;
     const whitelistHash = '09e7d00ab6cd5795b2a4fa3db718efbdb374cbaf';

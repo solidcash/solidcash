@@ -24,8 +24,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * coin. Each answer is compared by role: the user who entered, or the contract itself (what its `self()` answers).
  * Every row's entry writes, so the framed answer comes from a frame the user's coin enters. A row the framed
  * path does not serve yet is pinned with the refusal it meets, beside the answer the EVM gives. A selector is
- * compared by the function it selects: the EVM hashes a signature with keccak256, and the framed dispatcher with
- * SHA-256.
+ * compared by the function it selects: the EVM hashes a signature with keccak256, and the framed dispatcher
+ * follows its compile's mode (D27), which for this evmCompat fixture is the same keccak256 scheme.
  */
 
 type Role = 'EOA' | 'A' | boolean | bigint | `${string}()`;
@@ -307,7 +307,9 @@ async function framedAnswer(row: Row): Promise<{ readonly role?: Role; readonly 
   const [answer] = answered.values;
   if (typeof answer === 'boolean' || typeof answer === 'bigint') return { role: answer };
   const bare = hexOf(answer).replace(/^0x/, '');
-  if (bare.length === 8) return { role: selected(row, bare, computeFunctionSelectorHex) };
+  if (bare.length === 8) {
+    return { role: selected(row, bare, (sig) => computeFunctionSelectorHex(sig, true)) };
+  }
   const address = hexOf(answer);
   return { role: address === binToHex(alicePkh) ? 'EOA' : address === self ? 'A' : address as never };
 }

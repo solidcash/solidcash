@@ -1894,11 +1894,14 @@ export function computeFunctionSignature(funcName: string, paramTypes: string[])
 /**
  * Compute 4-byte function selector: SHA-256 of the UTF-8 function signature, truncated to 4 bytes.
  * The signature format is "funcName(type1,type2,...)", e.g. "transfer(pubkey,sig,int)".
- * Used as OP_DEFINE/OP_INVOKE identifier for entry-point functions.
+ * Used as OP_DEFINE/OP_INVOKE identifier for entry-point functions. Under evmCompat the selector follows the
+ * Solidity scheme, so the real keccak256 selector replaces the BCH-native sha256 one; a native compile keeps
+ * sha256 (D27).
  */
-export function computeFunctionSelector(signature: string): Uint8Array {
-  const nameBytes = utf8ToBin(signature);
-  return sha256(nameBytes).slice(0, 4);
+export function computeFunctionSelector(signature: string, evmCompat = false): Uint8Array {
+  return evmCompat
+    ? computeEvmFunctionSelector(signature)
+    : sha256(utf8ToBin(signature)).slice(0, 4);
 }
 
 /**
@@ -1937,8 +1940,8 @@ export function computeErc7201SlotNumber(namespaceId: string): bigint {
 /**
  * Compute 4-byte function selector as hex string.
  */
-export function computeFunctionSelectorHex(signature: string): string {
-  return binToHex(computeFunctionSelector(signature));
+export function computeFunctionSelectorHex(signature: string, evmCompat = false): string {
+  return binToHex(computeFunctionSelector(signature, evmCompat));
 }
 
 /**

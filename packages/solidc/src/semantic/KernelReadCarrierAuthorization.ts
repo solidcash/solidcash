@@ -10,7 +10,8 @@ import {
 import { BinaryOperator } from '../ast/Operator.js';
 import {
   type AbiFunction, abiTypeString, ArrayType, computeCollectionHash, computeCollectionSignature,
-  computeFunctionSelector, computeFunctionSignature, EnumType, type ExternalCallExpression, FixedType, FunctionType,
+  computeFunctionSelectorHex, computeFunctionSignature, EnumType,
+  type ExternalCallExpression, FixedType, FunctionType,
   IntType, isFixedWidthType, PrimitiveType, type SortedUpsertLoopAbi, StructType, TupleType, ValueType,
 } from '@solidcash/utils';
 
@@ -734,13 +735,13 @@ const exactFixedKeyMetadata = (access: SortedUpsertLoopAbi): boolean => {
 };
 
 const canonicalSourceAbi = (
-  fn: FunctionDefinitionNode, selectorOverride?: string,
+  fn: FunctionDefinitionNode, selectorOverride?: string, evmCompat = false,
 ): { selector: string; inputTypes: readonly string[] } | undefined => {
   const count = fn.messageBusKernelReadCarrierSourceParameterCount;
   if (!Number.isSafeInteger(count) || count! < 0 || count! > fn.parameters.length) return undefined;
   const inputTypes = fn.parameters.slice(0, count).map((parameter) => abiTypeString(parameter.type));
   const selector = selectorOverride
-    ?? binToHex(computeFunctionSelector(computeFunctionSignature(fn.name, inputTypes)));
+    ?? computeFunctionSelectorHex(computeFunctionSignature(fn.name, inputTypes), evmCompat);
   if (!/^[0-9a-f]{8}$/.test(selector)) return undefined;
   return { selector, inputTypes };
 };
@@ -754,10 +755,11 @@ export function authorizeKernelReadCarrier(
   completedFunction: AbiFunction | undefined,
   collections: readonly CollectionNode[],
   sourceSelectorOverride?: string,
+  evmCompat = false,
 ): KernelReadCarrierAuthorization | undefined {
   const plan = fn.messageBusKernelReadCarrierDiscovery;
   if (!plan || !completedFunction) return undefined;
-  const sourceAbi = canonicalSourceAbi(fn, sourceSelectorOverride);
+  const sourceAbi = canonicalSourceAbi(fn, sourceSelectorOverride, evmCompat);
   if (!sourceAbi || completedFunction.selector !== sourceAbi.selector
     || completedFunction.inputs.length < sourceAbi.inputTypes.length
     || !sameJson(completedFunction.inputs.slice(0, sourceAbi.inputTypes.length).map((input) => input.type),
@@ -912,10 +914,11 @@ export function refreshKernelReadCarrierAuthorization(
   completedFunction: AbiFunction | undefined,
   collections: readonly CollectionNode[],
   sourceSelectorOverride?: string,
+  evmCompat = false,
 ): KernelReadCarrierAuthorization | undefined {
   fn.messageBusKernelReadCarrierAuthorization = undefined;
   const authorization = authorizeKernelReadCarrier(
-    fn, completedFunction, collections, sourceSelectorOverride,
+    fn, completedFunction, collections, sourceSelectorOverride, evmCompat,
   );
   if (authorization) fn.messageBusKernelReadCarrierAuthorization = authorization;
   return authorization;

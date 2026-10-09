@@ -63,6 +63,19 @@ rename commit, which already rewrites the framed files' text).
 `packages/create-solidhat/src/cli.ts:6` (256 characters, a template literal). eslint's `max-len` does not flag
 them because they are not lint targets, so the "lines <= 125" convention holds for hand-written source.
 
+## 4a. `yarn lint` (measured 2026-10-09, fixed)
+
+`yarn lint` is one of the release gate commands, and it was failing with 948 errors: 918 in two `solidc` test
+files (`test/generation/fixtures.ts` 917, the pasted artifact dumps disagreeing with `indent`/`quotes`/
+`comma-dangle`; `test/SecurityCovenantAuthorization.test.ts` 1) and 30 in `solidcash`, of which 29 were dead
+code the leaf-libauth import rewrite left behind (each dropped symbol in a multi-symbol
+`@bitauth/libauth` import became a bare `;`, and the superseded import statements stayed) and one a pre-existing
+`no-shadow`. The `solidcash` errors had been invisible because lerna stops the run at the first package with
+errors, and `solidc` failed first.
+
+All fixed on `feat/per-call` (see `docs/framed/DECISIONS.md` D28); `yarn lint` now reports 0. The
+`solidc` failures are older than the SDK work: `039cefe85` reports the same 918 in the same two files.
+
 ## 5. Root-level working notes (repository cleanliness, not packaging)
 
 40 tracked `*.md` files sit at the repository root, 34,496 lines in total. 26 of them are agent working notes,

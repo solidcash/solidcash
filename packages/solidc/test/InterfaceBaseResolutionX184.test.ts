@@ -27,7 +27,7 @@ import {
  * undefined-interface refusal, so the diagnostic cannot pass without reading the declaration kind.
  */
 
-const compat = { solidityImportCompat: true } as const;
+const compat = { evmCompat: true } as const;
 
 type Outcome = { accepted: string } | { refused: string };
 
@@ -71,7 +71,7 @@ describe('X184 interface base resolution also runs on the declaration-artifact p
     });
 
     it('refuses the undefined base independently of the compat flag and root shape', () => {
-      // Holding solidityImportCompat off changes neither side.
+      // Holding evmCompat off changes neither side.
       expect(() => compileString('interface I is Zzz {}', {})).toThrow(UndefinedInterfaceError);
       expect(() => compileString('contract C {} interface I is Zzz {}', {})).toThrow(UndefinedInterfaceError);
     });

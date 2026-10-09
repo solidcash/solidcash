@@ -37,7 +37,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   function heldAt(address who) public view returns (uint256) { return held[who]; }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Balances!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true }).Balances!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'held')!;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
 

@@ -83,7 +83,7 @@ const KEPT_BALANCE_SOURCE = SERVED_SOURCE.replace(/}\n$/, ''
   + '}\n');
 
 const COMPILE_OPTIONS = { composition: 'framed' } as const;
-const SOLIDITY_OPTIONS = { composition: 'framed', solidityImportCompat: true } as const;
+const SOLIDITY_OPTIONS = { composition: 'framed', evmCompat: true } as const;
 
 /** Funds the two genesis UTXOs and returns the deployer's own lock and funder. */
 async function funded(network: MockNetworkProvider): Promise<{

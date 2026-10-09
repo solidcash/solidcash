@@ -24,7 +24,7 @@ describe('authenticated hashed return probes', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      solidityImportCompat: true, optimizeForCompilationSpeed: fast,
+      evmCompat: true, optimizeForCompilationSpeed: fast,
       maximumInputBytes: 1_000_000, suppressWarnings: true,
     });
     const base = new Contract(artifact, [], { provider });

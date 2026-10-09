@@ -59,7 +59,7 @@ describe('computed entry keys from conditional state reads', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const handler = artifact.abi.find((candidate) => candidate.name === 'store')!;
     const label = handler.entryAccesses?.[0]?.keySources?.[0]?.expressionLabel;

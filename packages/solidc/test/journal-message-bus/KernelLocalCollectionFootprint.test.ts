@@ -30,7 +30,7 @@ describe('kernel local collection footprint', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,

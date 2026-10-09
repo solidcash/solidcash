@@ -57,13 +57,13 @@ function source(contract: string, items: string): string {
 const CHUNKED_LABEL = 'array paging read chunked';
 const CHUNKED_CATEGORY = seededCategory(CHUNKED_LABEL);
 const CHUNKED_ARTIFACT = compileStringMulti(source('Chunked', ''), {
-  composition: 'framed', solidityImportCompat: true,
+  composition: 'framed', evmCompat: true,
 }).Chunked!;
 
 const INLINE_LABEL = 'array paging read inline';
 const INLINE_CATEGORY = seededCategory(INLINE_LABEL);
 const INLINE_ARTIFACT = compileStringMulti(source('Inline', ' packed'), {
-  composition: 'framed', solidityImportCompat: true,
+  composition: 'framed', evmCompat: true,
 }).Inline!;
 
 /** The addresses the array holds; element `k` is the key of the mapping value `1000 + k`. */

@@ -11,7 +11,7 @@ describe('kernel address mapping identity across graph calls', () => {
   it.each([false, true])('reads a sender-keyed entry (Solidity compatibility: %s)', async (compat) => {
     const options = {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: compat, maximumInputBytes: 1_000_000, suppressWarnings: true,
+      evmCompat: compat, maximumInputBytes: 1_000_000, suppressWarnings: true,
     } as const;
     const artifact = compileString(`contract Store() {
       mapping(address => int) records;

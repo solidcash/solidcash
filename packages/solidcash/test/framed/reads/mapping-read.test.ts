@@ -45,7 +45,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Registry!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true }).Registry!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'tags')!;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
 

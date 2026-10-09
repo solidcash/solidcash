@@ -11,7 +11,7 @@ import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 // test reads the result back and requires the exact value, so any addressing error rejects the transaction.
 async function call(method: string, args: FunctionArgument[]): Promise<void> {
   const provider = createTestProvider();
-  const artifact = compileString(SRC, { solidityImportCompat: true });
+  const artifact = compileString(SRC, { evmCompat: true });
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },

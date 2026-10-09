@@ -50,7 +50,7 @@ describe('ContractFactory.deploy binds the signer as the msg.sender funder', () 
       }
     `, {
       forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      solidityImportCompat: true,
+      evmCompat: true,
     });
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs)
       .toEqual(expect.arrayContaining([

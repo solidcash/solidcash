@@ -19,7 +19,7 @@ const SRC = `contract C() {
 describe('this.f() external self-call resolves to the own function', () => {
   const provider = createTestProvider();
   it('this.dbl(v) + this.addOne(v) computes via the own functions', async () => {
-    const art = compileString(SRC, { solidityImportCompat: true, forceStateful: true });
+    const art = compileString(SRC, { evmCompat: true, forceStateful: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);
@@ -30,7 +30,7 @@ describe('this.f() external self-call resolves to the own function', () => {
   });
 
   it('this.ext(v) invokes an external function as a subroutine', async () => {
-    const art = compileString(SRC, { solidityImportCompat: true, forceStateful: true });
+    const art = compileString(SRC, { evmCompat: true, forceStateful: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);

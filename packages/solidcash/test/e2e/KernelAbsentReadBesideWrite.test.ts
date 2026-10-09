@@ -46,7 +46,7 @@ describe('kernel absent sorted reads beside writes', () => {
           ILedger(ledger).append(key, value);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed, sortedMappingsAll: false });
     // The route is the union of the fixed sorted writes: profile writers occupy 0-7 and the

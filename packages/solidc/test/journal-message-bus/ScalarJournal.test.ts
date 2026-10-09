@@ -233,7 +233,7 @@ describe('Release 1 scalar journal lowering', () => {
           meceTags["DA"] = "DIGITAL_AUDIO";
         }
       }
-    `, { forceStateful: true, solidityImportCompat: true });
+    `, { forceStateful: true, evmCompat: true });
 
     const helpers = artifact.invocationAnalysis?.functions ?? [];
     const checkInit = helpers.find((fn) => fn.name === '_checkInitializing' || fn.name === '_isInitializing');
@@ -278,7 +278,7 @@ describe('Release 1 scalar journal lowering', () => {
         }
       }
     `, {
-      forceStateful: true, solidityImportCompat: true, messageBus: true, maximumInputBytes: 10_000_000,
+      forceStateful: true, evmCompat: true, messageBus: true, maximumInputBytes: 10_000_000,
     });
     const init = artifact.abi.find((entry) => entry.name === 'initialize');
     expect(init?.modifiers).toEqual(expect.arrayContaining(['delegate']));
@@ -341,7 +341,7 @@ describe('Release 1 scalar journal lowering', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       maximumInputBytes: 10_000_000,
       optimizeForCompilationSpeed: true,

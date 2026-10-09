@@ -30,7 +30,7 @@ contract B {
 describe('external result encoding metadata', () => {
   it('publishes one compiler-owned tuple encoding on producers and callsites', () => {
     const artifacts = compileStringMulti(SOURCE, {
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,
@@ -65,7 +65,7 @@ describe('external result encoding metadata', () => {
           return ISource(source).read();
         }
       }`, {
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,

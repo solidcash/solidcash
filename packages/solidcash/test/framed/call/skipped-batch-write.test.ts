@@ -57,7 +57,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const OPTIONS = { solidityImportCompat: true, composition: 'framed' } as never;
+const OPTIONS = { evmCompat: true, composition: 'framed' } as never;
 const TOKEN = compileStringMulti(SOURCE, OPTIONS).Token!;
 const PROXY = buildProxyArtifact(TOKEN);
 

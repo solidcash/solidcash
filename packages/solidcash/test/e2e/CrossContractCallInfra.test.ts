@@ -23,7 +23,7 @@ describe('unbounded bytes return', () => {
     const provider = createTestProvider();
 
     it('CONTROL: B stores a bytes param directly', async () => {
-      const arts = compileStringMulti(DIRECT_SRC, { solidityImportCompat: true });
+      const arts = compileStringMulti(DIRECT_SRC, { evmCompat: true });
       const b = new Contract(arts.B, [], { provider });
       const { categoryId: bc } = await setupStatefulUtxos(
         provider, b, arts.B.stateLayout!, { last: new Uint8Array() }, { saltContract: true },
@@ -38,7 +38,7 @@ describe('unbounded bytes return', () => {
         interface IA { function echo(bytes6 b) external returns (bytes6); }
         contract A { bigint d; function echo(bytes6 b) public returns (bytes6) { return b; } }
         contract B { bytes6 last; function use(address a, bytes6 b) public { this.last = IA(a).echo(b); } }`;
-      const arts = compileStringMulti(src, { solidityImportCompat: true });
+      const arts = compileStringMulti(src, { evmCompat: true });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
         provider, a, arts.A.stateLayout!, { d: 0n }, { saltContract: true },
@@ -54,7 +54,7 @@ describe('unbounded bytes return', () => {
     });
 
     it('CROSS-CONTRACT: B receives and hashes A.echo(b) unbounded bytes return', async () => {
-      const arts = compileStringMulti(XC_SRC, { solidityImportCompat: true });
+      const arts = compileStringMulti(XC_SRC, { evmCompat: true });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
         provider, a, arts.A.stateLayout!, { d: 0n }, { saltContract: true },
@@ -74,7 +74,7 @@ describe('unbounded bytes return', () => {
     // Regression: the interface under-declares A's data-NFT footprint. The dynamic chunk must follow the
     // authenticated runtime return event, not an offset inferred from the narrower interface layout.
     it('CROSS-CONTRACT: B stores A.echo(b) bytes return in dynamic state', async () => {
-      const arts = compileStringMulti(XC_DYNAMIC_SRC, { solidityImportCompat: true });
+      const arts = compileStringMulti(XC_DYNAMIC_SRC, { evmCompat: true });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
         provider, a, arts.A.stateLayout!, { d: 0n }, { saltContract: true },
@@ -102,7 +102,7 @@ describe('unbounded bytes return', () => {
             this.digest = sha256(returned); this.seen = value;
           }
         }`;
-      const arts = compileStringMulti(src, { solidityImportCompat: true });
+      const arts = compileStringMulti(src, { evmCompat: true });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
         provider, a, arts.A.stateLayout!, { d: 0n }, { saltContract: true },
@@ -143,7 +143,7 @@ describe('unbounded bytes return', () => {
           }
         }`;
       const arts = compileStringMulti(src, {
-        solidityImportCompat: true, messageBus: true, messageBusGraphContext: true,
+        evmCompat: true, messageBus: true, messageBusGraphContext: true,
       });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
@@ -188,7 +188,7 @@ describe('unbounded bytes return', () => {
         contract B { uint seen;
           function use(address a, uint n) public { IA(a).note(n); IA(a).note(n + 1); this.seen = n; }
         }`;
-      const arts = compileStringMulti(src, { solidityImportCompat: true, messageBus: true });
+      const arts = compileStringMulti(src, { evmCompat: true, messageBus: true });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
         provider, a, arts.A.stateLayout!, { marker: 0n }, { saltContract: true },
@@ -239,7 +239,7 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('return-event order', ()
   }`;
 
   describe('cross-contract return event survives a co-spent second call in any order', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, { evmCompat: true });
     const provider = createTestProvider();
     const S = hexToBin('11223344');
     // p2sh32-shaped return value: exercises the encode/decode with real aa20..87 bytes.
@@ -316,7 +316,7 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('under-declared interfac
   }`;
 
   describe('under-declared interface + multi-call: runtime master index keeps offsets correct', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, { evmCompat: true });
     const provider = createTestProvider();
     const S = hexToBin('11223344');
     const ADDR = hexToBin('aa20' + '55'.repeat(32) + '87');

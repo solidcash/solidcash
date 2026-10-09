@@ -65,7 +65,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const deed = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never).Deed!;
+const deed = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never).Deed!;
 
 interface Caller { readonly lock: Uint8Array; readonly funder: Unlocker }
 

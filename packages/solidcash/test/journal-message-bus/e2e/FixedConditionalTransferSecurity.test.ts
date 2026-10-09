@@ -558,7 +558,7 @@ describe('fixed conditional BCH transfer transcript security', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, maximumInputBytes: 1_000_000,
+      evmCompat: true, maximumInputBytes: 1_000_000,
     });
     const driverArtifacts = compileStringMulti(`pragma solidcash ^0.13.0;
       interface IVault {

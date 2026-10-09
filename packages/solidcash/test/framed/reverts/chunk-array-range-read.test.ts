@@ -54,11 +54,11 @@ function source(guard: boolean): string {
 
 /** The getter that refuses a start past the array, and the one that computes an empty page for it. */
 const GUARDED = {
-  artifact: compileStringMulti(source(true), { composition: 'framed', solidityImportCompat: true }).Registry!,
+  artifact: compileStringMulti(source(true), { composition: 'framed', evmCompat: true }).Registry!,
   category: seededCategory('chunk array guard read'),
 };
 const PLAIN = {
-  artifact: compileStringMulti(source(false), { composition: 'framed', solidityImportCompat: true }).Registry!,
+  artifact: compileStringMulti(source(false), { composition: 'framed', evmCompat: true }).Registry!,
   category: seededCategory('chunk array plain read'),
 };
 

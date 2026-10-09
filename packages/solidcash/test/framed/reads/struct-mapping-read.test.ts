@@ -42,7 +42,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   mapping(string => Entry) public entries;'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Registry!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true }).Registry!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'entries')!;
 const STRUCTS = artifact.stateLayout!.structs;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
@@ -170,7 +170,7 @@ const PAGED_SOURCE = 'pragma solidity ^0.8.0;'
   + ' }';
 
 const pagedArtifact = compileStringMulti(PAGED_SOURCE, {
-  composition: 'framed', solidityImportCompat: true,
+  composition: 'framed', evmCompat: true,
 }).Directory!;
 const PAGED_COLLECTION = pagedArtifact.stateLayout!.collections!.find((candidate) => candidate.name === 'members')!;
 const PAGED_STRUCTS = pagedArtifact.stateLayout!.structs;

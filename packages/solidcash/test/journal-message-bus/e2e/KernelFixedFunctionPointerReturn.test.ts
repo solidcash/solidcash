@@ -45,7 +45,7 @@ describe('kernel function-pointer BCH VM', () => {
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
-      solidityImportCompat: true,
+      evmCompat: true,
     });
     const artifact = artifacts.C;
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pointer'))
@@ -140,7 +140,7 @@ describe('kernel function-pointer BCH VM', () => {
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
-      solidityImportCompat: true,
+      evmCompat: true,
       suppressWarnings: true,
     });
     expect(artifacts.Store.messageBus?.available).toBe(true);
@@ -213,7 +213,7 @@ describe('kernel function-pointer BCH VM', () => {
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
-      solidityImportCompat: true,
+      evmCompat: true,
       suppressWarnings: true,
     });
     expect(artifacts.SinkAlt.bytecode).not.toBe(artifacts.Sink.bytecode);
@@ -270,7 +270,7 @@ describe('kernel function-pointer BCH VM', () => {
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
-      solidityImportCompat: true,
+      evmCompat: true,
       suppressWarnings: true,
     });
     const sinkBase = new Contract(artifacts.Sink, [], { provider });
@@ -333,7 +333,7 @@ describe('kernel function-pointer BCH VM', () => {
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
-      solidityImportCompat: true,
+      evmCompat: true,
       suppressWarnings: true,
     });
     const connect = async (
@@ -406,7 +406,7 @@ describe('kernel function-pointer BCH VM', () => {
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
-      solidityImportCompat: true,
+      evmCompat: true,
       suppressWarnings: true,
     });
     expect(artifacts.Caller.messageBus?.route?.inputs.some(

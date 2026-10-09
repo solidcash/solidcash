@@ -10,7 +10,7 @@ import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
 
-const OPTIONS = { forceStateful: true, solidityImportCompat: true, messageBus: true,
+const OPTIONS = { forceStateful: true, evmCompat: true, messageBus: true,
   messageBusKernel: true, messageBusGraphContext: true, suppressWarnings: true,
   maximumInputBytes: 1_000_000 } as const;
 

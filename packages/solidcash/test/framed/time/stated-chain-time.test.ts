@@ -27,7 +27,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 const IMPL_CATEGORY = '11'.repeat(32);
 const PROXY_CATEGORY = '22'.repeat(32);
 
-// `solidityImportCompat` is the mode the ported contracts (and the marketplace project) compile under.
+// `evmCompat` is the mode the ported contracts (and the marketplace project) compile under.
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Clock {'
   + '   address public implementation;'
@@ -36,7 +36,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function stamp() { this.stamped = uint32(tx.locktime); require(true); }'
   + ' }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true });
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true });
 const impl = artifacts.Clock!;
 
 /** The commitment the shipped encoder materializes from one state of a layout. */

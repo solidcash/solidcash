@@ -7,7 +7,7 @@ describe('SBE-27: block.chainid is uint256 (Solidity parity)', () => {
   it('assigns block.chainid to a uint256 state variable (with the flag)', () => {
     expect(compileString(
       'contract C { uint256 id; function f() external { this.id = block.chainid; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 

@@ -33,7 +33,7 @@ describe('kernel scalar entry output frame', () => {
           this.flags[record.key] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
       messageBusGraphContext: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
       optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     expect(artifacts.Writer.delegateArtifact?.abi.find((entry) => entry.name === 'update')?.sortedBatchInfo)

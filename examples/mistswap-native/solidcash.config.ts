@@ -11,7 +11,7 @@ export default defineConfig({
     tests: '/Code/mistswap/mistswap/test',
   },
   compiler: {
-    solidityImportCompat: true,
+    evmCompat: true,
     ecrecover: 'p2pkh',
     // Pure / zero-state Solidity ports (ChainlinkOracleV2, library-like mocks) still need a master NFT +
     // blockLayout so view/pure returns emit returnEvent outputs and can be staticCall-derived. Without this

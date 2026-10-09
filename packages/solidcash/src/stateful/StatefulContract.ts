@@ -4616,7 +4616,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const stateNames = new Set((this.inner.stateLayout?.variables ?? []).map((v) => v.name));
     // Mapping collections also dispatch as bare-name getters (`sc.<mapping>(key)`); both resolve via `this.state`.
     for (const c of this.inner.stateLayout?.collections ?? []) if (c.kind === 'mapping') stateNames.add(c.name);
-    const solidityStateGetters = this.inner.artifact.compiler?.options?.solidityImportCompat === true;
+    const solidityStateGetters = this.inner.artifact.compiler?.options?.evmCompat === true;
     return new Proxy(this, {
       get(target, prop, receiver) {
         if (typeof prop === 'string' && !(prop in target)) {
@@ -14641,7 +14641,7 @@ export class StatefulFunctionCall {
     // The Solidity import pass checks external callee mutability in view/pure functions. A native
     // artifact has no equivalent proof, so retain the send path for its external calls.
     if ((abiFn.externalCalls?.length ?? 0) > 0
-      && this.parentContract.inner.artifact.compiler?.options?.solidityImportCompat !== true) return false;
+      && this.parentContract.inner.artifact.compiler?.options?.evmCompat !== true) return false;
     return this.transfers.length === 0 && !this.emitReturnFlag
       && this.stateOverrides.length === 0 && this.entryOverrides.length === 0
       && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0

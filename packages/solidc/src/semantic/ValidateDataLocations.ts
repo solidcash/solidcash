@@ -36,7 +36,7 @@ export default class ValidateDataLocations extends AstTraversal {
   private functionDefinitions = new Map<string, FunctionDefinitionNode[]>();
   private solidityLegacyNow = false;
 
-  constructor(private solidityImportCompat = false) {
+  constructor(private evmCompat = false) {
     super();
   }
 
@@ -117,7 +117,7 @@ export default class ValidateDataLocations extends AstTraversal {
     const previousImmutableStateNames = this.immutableStateNames;
     const previousStateTypes = this.stateTypes;
     this.currentContractIsAbstract = node.isAbstract;
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       for (const state of node.stateVariables) {
         const nonValueType = state.type instanceof ArrayType
           || state.type instanceof MappingType
@@ -174,7 +174,7 @@ export default class ValidateDataLocations extends AstTraversal {
   }
 
   private validateConstructorVisibility(node: FunctionDefinitionNode): void {
-    if (!this.solidityImportCompat) return;
+    if (!this.evmCompat) return;
     if (node.modifiers.includes(FunctionModifier.EXTERNAL)) {
       throw new InvalidModifierCombinationError(node, 'constructor cannot have external visibility');
     }
@@ -202,7 +202,7 @@ export default class ValidateDataLocations extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.validateFunctionModifiers(node);
     const isConstructor = node.name === '__construct';
-    if (this.solidityImportCompat && isConstructor && !this.currentContractIsAbstract) {
+    if (this.evmCompat && isConstructor && !this.currentContractIsAbstract) {
       const internalPointer = node.parameters.find((parameter) =>
         parameter.type instanceof FunctionType && !parameter.type.isExternal);
       if (internalPointer) {
@@ -264,7 +264,7 @@ export default class ValidateDataLocations extends AstTraversal {
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
-    if (this.solidityImportCompat && this.currentFunction?.isReceive
+    if (this.evmCompat && this.currentFunction?.isReceive
       && node.operator === NullaryOperator.MSG_DATA) {
       throw new InvalidDataLocationError(node, "'msg.data' cannot be used inside a receive function");
     }
@@ -297,7 +297,7 @@ export default class ValidateDataLocations extends AstTraversal {
   }
 
   visitTryCatch(node: TryCatchNode): Node {
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       for (const parameter of node.returnParameters ?? []) {
         // Try-return bindings mirror an external return ABI and cannot introduce storage pointers.
         this.validateLocation(parameter.type, parameter.modifier, parameter, 'parameter', 'external');
@@ -307,7 +307,7 @@ export default class ValidateDataLocations extends AstTraversal {
   }
 
   visitAbiDecode(node: AbiDecodeNode): Node {
-    if (this.solidityImportCompat && node.schema.some((type) => this.isTooLargeForMemory(type))) {
+    if (this.evmCompat && node.schema.some((type) => this.isTooLargeForMemory(type))) {
       throw new InvalidDataLocationError(node, 'Type too large for memory');
     }
     return super.visitAbiDecode(node);
@@ -317,7 +317,7 @@ export default class ValidateDataLocations extends AstTraversal {
     // An explicit `this.f(memoryValue)` is an external ABI boundary in Solidity: the value is encoded into fresh
     // calldata. SolidCash lowers that call to a direct subroutine and marks it with fromThisCall, but source-level
     // location validation must retain the external-call conversion.
-    if (this.solidityImportCompat && !node.fromThisCall) {
+    if (this.evmCompat && !node.fromThisCall) {
       const candidates = this.functionDefinitions.get(node.identifier.name)
         ?.filter((candidate) => candidate.parameters.length === node.parameters.length) ?? [];
       if (candidates.length === 1) {
@@ -537,7 +537,7 @@ export default class ValidateDataLocations extends AstTraversal {
       throw new InvalidDataLocationError(node, `multiple data locations specified (${locations.join(', ')})`);
     }
     const location = locations[0];
-    if (this.solidityImportCompat && location === Modifier.MEMORY && this.isTooLargeForMemory(type)) {
+    if (this.evmCompat && location === Modifier.MEMORY && this.isTooLargeForMemory(type)) {
       throw new InvalidDataLocationError(node, 'Type too large for memory');
     }
     if (!this.isReferenceType(type)) {

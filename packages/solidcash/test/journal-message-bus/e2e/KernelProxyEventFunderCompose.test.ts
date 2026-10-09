@@ -82,7 +82,7 @@ describe('kernel proxy event funder under composition', () => {
 
     const probeArtifact = compileString(`pragma solidity ^0.8.0;
       contract Probe { function touch() public { require(true); } }`, {
-      ...KERNEL, solidityImportCompat: true, messageBusGraphContext: true,
+      ...KERNEL, evmCompat: true, messageBusGraphContext: true,
     });
     const probeBase = new Contract(probeArtifact, [], { provider });
     const probeSetup = await setupStatefulUtxos(
@@ -101,7 +101,7 @@ describe('kernel proxy event funder under composition', () => {
           IProbe(probe).touch();
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(implArtifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'ping'))
       .toMatchObject({ eligible: true });
 

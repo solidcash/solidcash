@@ -29,7 +29,7 @@ describe('message-bus composite argument decoding', () => {
     const artifact = compileString(SOURCE, {
       forceStateful: true,
       messageBus: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       maximumInputBytes: 10_000_000,
     });
     const inner = new Contract(artifact, [], { provider });

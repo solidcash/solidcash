@@ -65,7 +65,7 @@ const resolver = (path: string): { source: string; id: string } | undefined => {
 const compiling = (source: string): ReturnType<typeof compileString> =>
   compileString(source, {
     composition: 'framed',
-    solidityImportCompat: true,
+    evmCompat: true,
     importResolver: resolver,
     rootFileId: '/main.sol',
   } as never);

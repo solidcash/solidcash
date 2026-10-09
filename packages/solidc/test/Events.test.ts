@@ -108,7 +108,7 @@ describe('unnamed event parameters', () => {
   it('compiles `event E(address)` and emits it; signature has no names', () => {
     const a = compileString(
       'contract C { event Deploy(address); function f() public { emit Deploy(msg.sender); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.events?.find((e) => e.name === 'Deploy')?.signature).toBe('Deploy(address)');
   });
@@ -121,7 +121,7 @@ describe('qualified event emit from a library or sibling contract', () => {
   it('emits a library-declared event `emit L.e1(x)` and lists it in the ABI', () => {
     const a = compileString(
       'library L { event e1(uint b); } contract test { function f() { emit L.e1(1); require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('test');
     expect(a.events?.find((e) => e.name === 'e1')?.signature).toBe('e1(uint256)');
@@ -130,7 +130,7 @@ describe('qualified event emit from a library or sibling contract', () => {
   it('emits a sibling-contract event `emit C.E()` and lists it in the ABI', () => {
     const a = compileString(
       'contract C { event E(); } contract D { function test() { emit C.E(); require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('D');
     expect(a.events?.find((e) => e.name === 'E')?.signature).toBe('E()');
@@ -140,7 +140,7 @@ describe('qualified event emit from a library or sibling contract', () => {
     const a = compileString(
       'library L1 { event e(); } library L2 { event e(); } '
       + 'contract C { function f() { emit L1.e(); emit L2.e(); require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
     expect(a.events?.find((e) => e.name === 'e')?.signature).toBe('e()');
@@ -150,7 +150,7 @@ describe('qualified event emit from a library or sibling contract', () => {
     const a = compileString(
       'library L { event Ev(Item i); } struct Item { int a; } '
       + 'contract C { function o() { emit L.Ev(Item(1)); require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
     expect(a.events?.some((e) => e.name === 'Ev')).toBe(true);
@@ -162,16 +162,16 @@ describe('qualified event emit from a library or sibling contract', () => {
 describe('file-level event declarations', () => {
   it('resolves `emit E()` for a file-level event, byte-identical to the contract-level form', () => {
     const fileLevel = compileString('event E(uint x); contract C { function f() external { emit E(7); require(true); } }',
-      { solidityImportCompat: true, messageBus: false });
+      { evmCompat: true, messageBus: false });
     const contractLevel = compileString('contract C { event E(uint x); function f() external { emit E(7); require(true); } }',
-      { solidityImportCompat: true, messageBus: false });
+      { evmCompat: true, messageBus: false });
     expect(fileLevel.bytecode).toBe(contractLevel.bytecode);
     expect(fileLevel.events?.find((e) => e.name === 'E')?.signature).toBe(contractLevel.events?.find((e) => e.name === 'E')?.signature);
   });
   it('accepts a file-level event with indexed params', () => {
     const a = compileString('event Transfer(address indexed from, uint value);'
       + ' contract C { function f(address a) external { emit Transfer(a, 5); require(true); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.events?.some((e) => e.name === 'Transfer')).toBe(true);
   });
 });

@@ -34,7 +34,7 @@ contract CompatAddrCast {
   function checkPackedUint160(address a, bytes20 expected) public {
     require(abi.encodePacked(uint160(a)) == abi.encodePacked(expected));
   }
-}`, { forceStateful: true, solidityImportCompat: true });
+}`, { forceStateful: true, evmCompat: true });
 
 describe('bytes20(address) / uint160(address) narrowing casts (runtime)', () => {
   const addr = p2pkh(alicePkh); // a P2PKH address whose embedded 20-byte hash is alicePkh

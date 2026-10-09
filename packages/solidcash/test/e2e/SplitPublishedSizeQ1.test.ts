@@ -37,9 +37,9 @@ describe('Q1: the published split size against the constructed redeem script', (
     const category = new Uint8Array(32).fill(0xab);
     const brand = StatefulContract.libraryBrand('ab'.repeat(32));
     // A limit low enough to force more than one facet, so the root also carries more than one link push.
-    const single = compileStringSplit(SOURCE, { solidityImportCompat: true, forceSplit: true });
+    const single = compileStringSplit(SOURCE, { evmCompat: true, forceSplit: true });
     const bundle = compileStringSplit(SOURCE, {
-      solidityImportCompat: true, forceSplit: true,
+      evmCompat: true, forceSplit: true,
       maxShardBytes: Math.max(700, single.manifest.facets[0].estimatedRedeemBytes - 1),
     });
     expect(bundle.manifest.facets.length).toBeGreaterThan(0);

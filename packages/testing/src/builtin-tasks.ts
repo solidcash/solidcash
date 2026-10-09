@@ -303,7 +303,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
 
     // Cross-compile `.sol` sources (Solidity porting, e.g. `../effectiveacceleration.ai/contract`). compileFileMulti
     // resolves imports (OZ, interfaces) from the source's own node_modules, so `paths.contracts` may point at the real
-    // Hardhat project. solidityImportCompat is forced on for `.sol`; other solc opts (ecrecover: 'p2pkh', ...) flow
+    // Hardhat project. evmCompat is forced on for `.sol`; other solc opts (ecrecover: 'p2pkh', ...) flow
     // through. Each file's import graph yields many contracts; a name is written once (first compile wins).
     const solFiles = selectedSources.filter((file) => file.endsWith('.sol'));
     // Opt-in worker fan-out. Keep the default single-process path: the fan-out trades CPU and memory per worker
@@ -319,7 +319,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     try {
       const result = await compileSolidityProject(
         solFiles,
-        { solidityImportCompat: true, ...compilerOptions },
+        { evmCompat: true, ...compilerOptions },
         compileFileMulti,
         artifactCache ? {
           directory: path.join(hre.config.paths.cache, 'solidcash'),
@@ -354,7 +354,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         let split;
         try {
           split = compileFileSplit(full, {
-            solidityImportCompat: true, ...compilerOptions, maxShardBytes,
+            evmCompat: true, ...compilerOptions, maxShardBytes,
           });
         } catch (error: any) {
           // Keep sharding the remaining sources. Aborting here reports one wall per run, which on a large

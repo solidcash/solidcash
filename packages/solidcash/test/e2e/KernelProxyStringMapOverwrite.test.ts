@@ -24,7 +24,7 @@ const artifacts = (): ReturnType<typeof compileStringMulti> => compiled ??= comp
       require(bytes(key).length > 0 && bytes(value).length > 0, "bad label");
       labels[key] = value;
     }
-  }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+  }`, { forceStateful: true, evmCompat: true, messageBus: true,
   messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
   suppressWarnings: true, optimizeForCompilationSpeed: true });
 

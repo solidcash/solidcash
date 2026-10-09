@@ -13,7 +13,7 @@ import { compileString } from './direct-compile.js';
 describe('conditional deploy (new C() inside a branch/loop)', () => {
   const CHILD = 'contract Child { int x; constructor() { x = 1; } }';
   const cc = (body: string): string => `${CHILD} contract C { ${body} }`;
-  const compat = { solidityImportCompat: true };
+  const compat = { evmCompat: true };
 
   it('a SINGLE deploy inside an if-branch now COMPILES (verified inline at the deploy site)', () => {
     expect(compileString(cc('function f(uint c) external { if (c==1) { Child ch = new Child(); } require(true); }'),
@@ -88,22 +88,22 @@ describe('SBE-18: parent-constructor args (inheritance-list + constructor-level)
   const BASES = 'contract X { int nm; constructor(int _n) { nm = _n; } }'
     + ' contract Y { int tt; constructor(int _t) { tt = _t; } }';
   it('inheritance-list args: contract B is X(1), Y(2)', () => {
-    expect(compileString(`${BASES} contract B is X(1), Y(2) {}`, { solidityImportCompat: true }).contractName)
+    expect(compileString(`${BASES} contract B is X(1), Y(2) {}`, { evmCompat: true }).contractName)
       .toBe('B');
   });
   it('constructor-level args: constructor() X(1) Y(2)', () => {
     expect(compileString(`${BASES} contract E is X, Y { constructor() X(1) Y(2) {} }`,
-      { solidityImportCompat: true }).contractName).toBe('E');
+      { evmCompat: true }).contractName).toBe('E');
   });
   it('inlines + substitutes the parent ctor body (a wrong-typed arg is a type error)', () => {
     expect(() => compileString(
       'contract Base { int b; constructor(int _x) { b = _x; } } contract C is Base { constructor() Base("oops") {} }',
-      { solidityImportCompat: true })).toThrow();
+      { evmCompat: true })).toThrow();
   });
   it('checks the parent ctor arg count against the parent constructor params', () => {
     expect(() => compileString(
       'contract Base { int b; constructor(int _x) { b = _x; } } contract C is Base { constructor() Base(1, 2) {} }',
-      { solidityImportCompat: true })).toThrow(/expects 1/);
+      { evmCompat: true })).toThrow(/expects 1/);
   });
 });
 
@@ -388,7 +388,7 @@ describe('SBE-26: a constructor declaring its own params can pass them to a pare
   // Solidity pattern `constructor(uint256 _x) Base(_x) {}`: the ctor declares its OWN params (no contract-level
   // equivalent). They must be registered so the parent-invocation args (and body) resolve; previously they were
   // dropped (assuming the native pattern where ctor params mirror contract-level params).
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('resolves the ctor param in the parent invocation', () => {
     expect(cc('abstract contract B { uint256 n; constructor(uint256 _n) { n = _n; } }'
@@ -404,12 +404,12 @@ describe('new C(args) with a Solidity constructor', () => {
     const a = compileString(
       'contract Foo { address public owner; constructor(address _owner) { owner = _owner; } }'
       + ' contract Bar { Foo foo; constructor() { foo = new Foo(msg.sender); } function f() public {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('Bar');
     expect(() => compileString(
       'contract Foo { constructor(address a) {} } contract Bar { Foo foo; constructor() { foo = new Foo(); } function f() public {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/constructor argument/i);
   });
 });
@@ -421,7 +421,7 @@ describe('parenthesized instantiation with options ((new C){value/salt}(args))',
   const base = 'contract Car { address o; constructor(address _o) payable { o = _o; } }';
   const cc = (body: string): string => compileString(
     `${base} contract F { Car[] cars; function c(address o, bytes32 s) public payable { ${body} cars.push(car); } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
   it('accepts {value:} (create with value)', () => {
     expect(cc('Car car = (new Car){value: msg.value}(o);')).toBe('F');
@@ -434,9 +434,9 @@ describe('parenthesized instantiation with options ((new C){value/salt}(args))',
   });
   it('matches the non-parenthesized `new C{opts}(args)` form byte-for-byte', () => {
     const paren = compileString(`${base} contract F { Car[] cars; function c(address o) public payable {`
-      + ' Car car = (new Car){value: msg.value}(o); cars.push(car); } }', { solidityImportCompat: true });
+      + ' Car car = (new Car){value: msg.value}(o); cars.push(car); } }', { evmCompat: true });
     const bare = compileString(`${base} contract F { Car[] cars; function c(address o) public payable {`
-      + ' Car car = new Car{value: msg.value}(o); cars.push(car); } }', { solidityImportCompat: true });
+      + ' Car car = new Car{value: msg.value}(o); cars.push(car); } }', { evmCompat: true });
     expect(paren.bytecode).toBe(bare.bytecode);
   });
 });
@@ -446,7 +446,7 @@ describe('parenthesized instantiation with options ((new C){value/salt}(args))',
 // read-derived immutable be used as an external-call target (UniswapV3Flash). See docs/deploy-external-reads.md.
 describe('constructor external read hoisted to a deploy input', () => {
   const compile = (src: string): ReturnType<typeof compileString> =>
-    compileString(src, { solidityImportCompat: true });
+    compileString(src, { evmCompat: true });
   const pre = 'interface IPool { function token0() external view returns (address); }'
     + ' interface IERC20 { function tf(address a, uint v) external; } ';
   const src = `${pre} contract C { IPool immutable pool; IERC20 immutable token0;`
@@ -471,14 +471,14 @@ describe('type(C).creationCode inside an extracted function body', () => {
   it('resolves type(Child).creationCode from a returning function (the getBytecode idiom)', () => {
     const a = compileString(`${child} contract P {`
       + ' function getBytecode() external pure returns (bytes memory) { return type(Child).creationCode; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.contractName).toBe('P');
   });
   it('resolves type(Child).creationCode appended with abi.encode args (getBytecode2 idiom)', () => {
     const a = compileString(`${child} contract P {`
       + ' function getBytecode(uint256 v) external pure returns (bytes memory) {'
       + ' return abi.encodePacked(type(Child).creationCode, abi.encode(v)); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.contractName).toBe('P');
   });
 });
@@ -493,7 +493,7 @@ describe('type(X).creationCode constructor-args warning', () => {
   it('warns when the child has constructor parameters', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     compileString(child('constructor(uint _x) { x = _x; }') + use, {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     const w = spy.mock.calls.filter((c) => String(c[0]).includes('does not include constructor'));
     spy.mockRestore();
@@ -503,7 +503,7 @@ describe('type(X).creationCode constructor-args warning', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     compileString('contract Child { int x; function f() public { this.x = 1; } }'
       + ' contract P { function g() external pure returns (bytes memory) { return type(Child).creationCode; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     const w = spy.mock.calls.filter((c) => String(c[0]).includes('does not include constructor'));
     spy.mockRestore();
     expect(w.length).toBe(0);
@@ -532,6 +532,6 @@ describe('chained sibling deployment (C deploys B, B deploys A)', () => {
           constructor() { b = new B(); }
           function f() public view { assert(b.getX() == 0); }
       }`;
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 });

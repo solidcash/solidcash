@@ -99,7 +99,7 @@ describe('authenticated fixed-effect entry recipes', () => {
       recipient: { kind: 'forward', paramIndex: 0 },
       amount: { kind: 'forward', paramIndex: 1 },
     };
-    const solidityArtifact = { ...artifact, compiler: { options: { solidityImportCompat: true } } } as Artifact;
+    const solidityArtifact = { ...artifact, compiler: { options: { evmCompat: true } } } as Artifact;
     const provider = createTestProvider();
     const identity = recipient.slice(3, 23);
     const abiWord = new Uint8Array(32);

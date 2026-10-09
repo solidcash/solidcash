@@ -111,7 +111,7 @@ export default defineConfig({
   },
 
   compiler: {
-    solidityImportCompat: true,
+    evmCompat: true,
     ecrecover: 'p2pkh',
   },
 
@@ -163,7 +163,7 @@ should use `compiler`.
 
 Important options include:
 
-- `solidityImportCompat: true` for projects porting Solidity sources and imports.
+- `evmCompat: true` for projects porting Solidity sources and imports.
 - `ecrecover: 'p2pkh'` when recovered identities should be native BCH P2PKH addresses.
 - `ecrecover: 'evm'` when an unmodified Solidity suite expects conventional 20-byte EVM addresses.
 - State-layout, script-size, optimization, and other compiler settings supported by `solidc`.

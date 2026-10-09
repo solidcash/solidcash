@@ -183,7 +183,7 @@ function mangleCollidingPrivateVars(
   }
 }
 
-export default function expandInheritance(ast: SourceFileNode, solidityImportCompat = false): SourceFileNode {
+export default function expandInheritance(ast: SourceFileNode, evmCompat = false): SourceFileNode {
   // Build a map of available contracts from importedContracts
   const contractMap = new Map<string, ContractNode>();
   for (const c of ast.importedContracts) {
@@ -205,7 +205,7 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
 
   const expanded = new Set<string>();
   const interfaceMap = new Map(ast.interfaceDefinitions.map((iface) => [iface.name, iface]));
-  if (solidityImportCompat) {
+  if (evmCompat) {
     // Public-getter override validation below normally runs while concrete parents are flattened. A contract
     // whose bases are all interfaces takes the no-parent fast path, however, so an incomplete
     // `override(IA)` could previously omit a parallel `IB` provider. Resolve the effective interface providers
@@ -265,7 +265,7 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
       }
     }
   }
-  if (solidityImportCompat) {
+  if (evmCompat) {
     const fileErrorNames = new Set(ast.errorDefinitions.map((definition) => definition.name));
     const fileEventNames = new Set(ast.eventDefinitions.map((definition) => definition.name));
     const declarationReference = (argument: ExpressionNode, contract: ContractNode): string | undefined => {
@@ -342,7 +342,7 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
     if (imported.implements.length > 0 && !expanded.has(imported.name) && !primaryAncestors.has(imported.name)) {
       const importedLinearization = computeLinearization(imported, contractMap, originalImplements);
       mangleCollidingPrivateVars(importedLinearization, contractMap, ast.contract);
-      expandContract(imported, contractMap, expanded, new Set(), originalImplements, solidityImportCompat);
+      expandContract(imported, contractMap, expanded, new Set(), originalImplements, evmCompat);
       resolveSuperAndBaseCalls(imported, importedLinearization, interfaceBases(imported.implements));
     }
   }
@@ -350,7 +350,7 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
   // A root contract still needs override validation. A bare `override` cannot override anything, while an
   // explicit list (notably `override(LibraryName)`) is handled by the normal base-list resolver below.
   if (ast.contract.implements.length === 0) {
-    if (solidityImportCompat && ast.contract.parentInvocations.length > 0) {
+    if (evmCompat && ast.contract.parentInvocations.length > 0) {
       const modifierNames = new Set(ast.contract.modifierDefinitions.map((modifier) => modifier.name));
       for (const invocation of ast.contract.parentInvocations) {
         if (!modifierNames.has(invocation.parentName)) {
@@ -378,7 +378,7 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
           fn !== undefined && fn.modifiers.includes(FunctionModifier.OVERRIDE) && fn.overrideBases.length === 0)
         .map((fn) => ({ node: fn as Node, name: fn.isFallback ? 'fallback' : 'receive' })),
     ];
-    if (solidityImportCompat && bareOverrides.length > 0) {
+    if (evmCompat && bareOverrides.length > 0) {
       throw new OverrideNothingError(bareOverrides[0].node, bareOverrides[0].name);
     }
     resolveSuperAndBaseCalls(ast.contract, [], new Set());
@@ -389,7 +389,7 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
   // private vars across ancestors; the flatten would otherwise collide). See mangleCollidingPrivateVars.
   mangleCollidingPrivateVars(primaryLinearization, contractMap, ast.contract);
 
-  expandContract(ast.contract, contractMap, expanded, new Set(), originalImplements, solidityImportCompat);
+  expandContract(ast.contract, contractMap, expanded, new Set(), originalImplements, evmCompat);
 
   resolveSuperAndBaseCalls(ast.contract, primaryLinearization, interfaceBases(ast.contract.implements));
 
@@ -549,7 +549,7 @@ function expandContract(
   expanded: Set<string>,
   expanding: Set<string>,
   originalImplements?: Map<string, string[]>,
-  solidityImportCompat = false,
+  evmCompat = false,
 ): void {
   if (expanding.has(contract.name)) {
     throw new CircularContractInheritanceError(contract);
@@ -612,7 +612,7 @@ function expandContract(
   const bareBaseInvocation = contract.constructorDef?.customModifiers.find(
     (invocation) => ancestorSet.has(invocation.name),
   );
-  if (solidityImportCompat && bareBaseInvocation) {
+  if (evmCompat && bareBaseInvocation) {
     throw new ModifierStyleBaseConstructorError(contract.constructorDef!, bareBaseInvocation.name);
   }
 
@@ -777,7 +777,7 @@ function expandContract(
     const providers = [...new Set(matches.map(({ origin }) => origin))]
       .filter((origin, _index, all) => !all.some((other) =>
         other !== origin && isAncestor(origin, other)));
-    if (solidityImportCompat && providers.length > 1
+    if (evmCompat && providers.length > 1
       && providers.some((provider) => !declaration.overrideBases.includes(provider))) {
       throw new MissingOverrideBasesError(declaration, declaration.name, providers);
     }
@@ -803,7 +803,7 @@ function expandContract(
         throw new OverrideBaseListError(fn, fn.name, base);
       }
     }
-    if (solidityImportCompat && providers.length > 1
+    if (evmCompat && providers.length > 1
       && providers.some((provider) => !fn.overrideBases.includes(provider))) {
       throw new MissingOverrideBasesError(fn, fn.name, providers);
     }
@@ -883,7 +883,7 @@ function expandContract(
 
     // Recursively expand parent first (if it has its own parents)
     if (!expanded.has(parentName) && parent.implements.length > 0) {
-      expandContract(parent, contractMap, expanded, new Set(expanding), originalImplements, solidityImportCompat);
+      expandContract(parent, contractMap, expanded, new Set(expanding), originalImplements, evmCompat);
     }
 
     // Carry the parent's interface bases up: after expansion `parent.implements` holds only interfaces, and this
@@ -893,10 +893,10 @@ function expandContract(
       if (!remainingImplements.includes(iface)) remainingImplements.push(iface);
     }
 
-    mergeParent(contract, parent, isAncestor, solidityImportCompat);
+    mergeParent(contract, parent, isAncestor, evmCompat);
   }
 
-  if (solidityImportCompat) validateEffectiveDeclarationNamespace(contract);
+  if (evmCompat) validateEffectiveDeclarationNamespace(contract);
 
   inlineParentConstructors(contract, parentNames, contractMap, linearization);
 
@@ -1092,7 +1092,7 @@ function mergeParent(
   child: ContractNode,
   parent: ContractNode,
   isAncestor?: (ancestor: string, descendant: string) => boolean,
-  solidityImportCompat = false,
+  evmCompat = false,
 ): void {
   const invocation = child.parentInvocations.find((pi) => pi.parentName === parent.name);
 
@@ -1107,7 +1107,7 @@ function mergeParent(
       );
     }
     subs = new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]]));
-  } else if (solidityImportCompat && !child.isAbstract
+  } else if (evmCompat && !child.isAbstract
     && parent.parameters.length === 0 && ctorParams.length > 0
     && !child.implements.some((other) =>
       other !== parent.name && isAncestor?.(parent.name, other))) {

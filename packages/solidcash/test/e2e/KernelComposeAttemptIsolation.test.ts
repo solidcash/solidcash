@@ -24,7 +24,7 @@ describe('kernel composition attempt isolation', () => {
           ISequence(sequence).save(next);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();

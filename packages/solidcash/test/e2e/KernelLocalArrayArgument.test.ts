@@ -35,7 +35,7 @@ describe('kernel local memory array arguments', () => {
         function relay(address[] memory recipients) internal {
           IReceiver(this.receiver).store(abi.encodePacked(recipients[0]));
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: false });
     const provider = createMessageBusCapstoneTestProvider();

@@ -45,7 +45,7 @@ describe('typed Yul CREATE kernel composition', () => {
         forceStateful: true,
         messageBus: true,
         messageBusKernel: true,
-        solidityImportCompat: true,
+        evmCompat: true,
         suppressWarnings: true,
         maximumInputBytes: 1_000_000,
       });

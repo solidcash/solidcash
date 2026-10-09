@@ -2470,7 +2470,7 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
 
 ### Continued bench/fix loop: 4421 -> 4434 (+13, NEG-ACCEPTED flat 902)
 
-- **Solidity-compatible `ecrecover` default (+13)**: `solidityImportCompat` now maps Solidity's standard
+- **Solidity-compatible `ecrecover` default (+13)**: `evmCompat` now maps Solidity's standard
   `ecrecover(hash, v, r, s)` builtin to the existing VM-backed `ecrecoverEvm` projection by default, producing
   the canonical 20-byte EVM address. An explicit `ecrecover: 'p2pkh'` still selects the native BCH projection,
   while native non-compat mode keeps the ambiguous bare name undefined. This compiles the complete 13-fixture

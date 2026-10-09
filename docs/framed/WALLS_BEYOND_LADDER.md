@@ -22,7 +22,7 @@ than or different from the one predicted: `stored-value-keyed-write` took three 
   wrappers, 4 operational (pool sizes). Full table in the appendix.
 - **Replicas**: `packages/solidcash/test/framed/ahead/*.test.ts` (run only under `FRAMED_AHEAD=1`), driven
   through a shared harness `ahead/composition-world.ts`: sources are compiled the way a project compiles them
-  (`solidityImportCompat` + `composition: 'framed'`; one case uses the fixture's project options),
+  (`evmCompat` + `composition: 'framed'`; one case uses the fixture's project options),
   deployed through `deployStatefulContract` (plain, what `deployContract` does) or `deployFramedProxy`
   (behind the generated proxy, what `upgrades.deployProxy` does), and entered through `callFramedEntry` (the
   plain call path a handle uses) or `callFramedProxyEntry` (the hop). 12 files, 41 cases, all green as pinned

@@ -1,4 +1,4 @@
-// Bench harness: compile every solidity-by-example src contract with solidc + solidityImportCompat.
+// Bench harness: compile every solidity-by-example src contract with solidc + evmCompat.
 // Records pass/fail + first blocker per contract. BCH specifics are NOT considered; this measures how
 // far solidc gets parsing/checking real Solidity. Usage: node _bench/run.mjs
 import { compileFile } from '../../../packages/solidc/dist/compileFile.js';
@@ -28,7 +28,7 @@ const results = [];
 for (const f of files) {
   const rel = relative(SRC, f);
   try {
-    compileFile(f, { solidityImportCompat: true });
+    compileFile(f, { evmCompat: true });
     results.push({ file: rel, ok: true });
   } catch (e) {
     const name = e?.constructor?.name ?? 'Error';

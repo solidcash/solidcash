@@ -74,13 +74,13 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const artifacts = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 const escrow = artifacts.Escrow!;
 const ledger = artifacts.Ledger!;
 
 /** The options a framed project build compiles with, a message-bus route among them, which it then discards. */
 const PROJECT_OPTIONS = {
-  solidityImportCompat: true, commitmentLimit: 128, maximumInputBytes: 10_000_000, messageBus: true,
+  evmCompat: true, commitmentLimit: 128, maximumInputBytes: 10_000_000, messageBus: true,
   optimizeForCompilationSpeed: true, suppressWarnings: true, ecrecover: 'p2pkh', sortedMappingsAll: false,
   composition: 'framed',
 } as const;

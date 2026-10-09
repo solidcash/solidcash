@@ -100,10 +100,9 @@ inlined where that is cheaper.
 | `view` | Declares read-only state access |
 | `payable` | Function can receive BCH; enables `msg.value` |
 
-Native SolidCash enforces `pure` contract-state reads but does not yet reject every direct state write in a
-`view` function. The `solidityImportCompat` pipeline applies the stricter Solidity effect checks, including
-state/transient-state writes, contract creation, low-level calls, and calls to less-restrictive functions.
-Accordingly, review native `view` functions as annotations rather than assuming full solc-equivalent enforcement.
+Native SolidCash and compatibility mode enforce the same effect checks: `pure` rejects contract-state and
+environment reads, and both `pure` and `view` reject state/transient-state writes, contract creation,
+low-level calls, and calls to less-restrictive functions.
 
 ```solidity
 contract Example() {

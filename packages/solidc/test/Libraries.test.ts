@@ -13,7 +13,7 @@ describe('error declarations inside libraries', () => {
 });
 
 describe('using for (library method-call desugar)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const lib = 'pragma solidity ^0.8.0; library L { struct Data { uint256 x; }'
     + ' function getX(L.Data storage d) internal view returns (uint256) { return d.x; }'
     + ' function setX(L.Data storage d, uint256 v) internal { d.x = v; } }';
@@ -52,7 +52,7 @@ describe('SBE-23: using-for on an array type (`using Lib for T[]`)', () => {
       + ' require(arr.length > 0); arr[i] = arr[arr.length - 1]; arr.pop(); } }'
       + ' contract C { using Array for uint256[]; uint256[] public arr;'
       + ' function f() public { arr.push(1); arr.remove(0); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -61,7 +61,7 @@ describe('SBE-23: using-for on an array type (`using Lib for T[]`)', () => {
     const a = compileString(
       'library Math { function dbl(uint256 x) internal pure returns (uint256) { return x * 2; } }'
       + ' contract C { int n; function f(uint256 x) public { this.n = int(Math.dbl(x)); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -77,14 +77,14 @@ describe('using-for on a mapping type (`using L for mapping(K=>V)`)', () => {
   const UF = `${LIB} contract C { using L for mapping(uint256=>uint256); mapping(uint256=>uint256) mp;`;
   it('desugars m.at(k) on a state mapping and inlines the value-returning helper', () => {
     const a = compileString(`${UF} function f(uint256 k) public returns (uint256) { mp[42]=36; return mp.at(k); } }`,
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
   it('is byte-identical to the explicit L.at(mp, k) call (desugar + inline are sound)', () => {
     const sugar = compileString(`${UF} function f(uint256 k) public returns (uint256) { mp[42]=36; return mp.at(k); } }`,
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const explicit = compileString(`${LIB} contract C { mapping(uint256=>uint256) mp;`
-      + ' function f(uint256 k) public returns (uint256) { mp[42]=36; return L.at(mp, k); } }', { solidityImportCompat: true });
+      + ' function f(uint256 k) public returns (uint256) { mp[42]=36; return L.at(mp, k); } }', { evmCompat: true });
     expect(sugar.bytecode).toBe(explicit.bytecode);
   });
 });
@@ -96,15 +96,15 @@ describe('value-returning storage-pointer function inlining', () => {
     const pre = 'contract C { mapping(uint256=>uint256) mp;';
     const inlined = compileString(`${pre} function at(mapping(uint256=>uint256) storage a, uint256 i) internal`
       + ' returns (uint256) { return a[i]; }'
-      + ' function f(uint256 k) external returns (uint256) { mp[5]=9; return at(mp, k); } }', { solidityImportCompat: true });
+      + ' function f(uint256 k) external returns (uint256) { mp[5]=9; return at(mp, k); } }', { evmCompat: true });
     const direct = compileString(`${pre} function f(uint256 k) external returns (uint256) { mp[5]=9; return mp[k]; } }`,
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(inlined.bytecode).toBe(direct.bytecode);
   });
 });
 
 describe('Library sibling calls and UDVT wrap/unwrap', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('a library function resolves an unqualified call to a sibling library function', () => {
     expect(cc('library L { function a(int x) internal returns (int) { return b(x) + 1; }'
@@ -135,7 +135,7 @@ describe('Library sibling calls and UDVT wrap/unwrap', () => {
 // Solidity library bodies allow declarations in any order; the grammar previously fixed the order
 // (enums, then structs, then ...), rejecting a struct declared after a constant.
 describe('library body: any declaration order', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts a struct declared after a constant', () => {
     expect(cc('library L { uint constant A = 1; struct S { uint x; }'
       + ' function f(uint y) internal pure returns (uint) { return y + 1; } }'
@@ -146,7 +146,7 @@ describe('library body: any declaration order', () => {
 // A library-level constant is in scope inside the library's own functions (unqualified), like a sibling
 // function call. A local/param of the same name still shadows it (Solidity scoping).
 describe('library constant scope inside library functions', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves an unqualified sibling library constant', () => {
     expect(cc('library L { uint constant A = 5;'
       + ' function f(uint y) internal pure returns (uint) { return y + A; } }'

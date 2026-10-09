@@ -142,7 +142,7 @@ const TO = new Uint8Array(25).fill(0x33);
 
 describe('spec section 23 row 6: custom errors raised in a callee and re-raised', () => {
   it('serves the custom error: its name and the values it was raised with come back through the decoder', async () => {
-    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'framed', solidityImportCompat: true }).Ledger!;
+    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'framed', evmCompat: true }).Ledger!;
     expect(ledger.composition?.refusedEntries).toBeUndefined();
     const deployed = await selfDeployed(ledger);
     const result = await enter(deployed, ledger, 'pull', [FROM, TO, 50n]);
@@ -160,7 +160,7 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
   }, 120_000);
 
   it('serves the call the callee admits: the bool it returned is decoded and the entry runs through', async () => {
-    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'framed', solidityImportCompat: true }).Ledger!;
+    const ledger = compileStringMulti(SELF_SOURCE, { composition: 'framed', evmCompat: true }).Ledger!;
     const deployed = await selfDeployed(ledger);
     const result = await enter(deployed, ledger, 'pull', [FROM, TO, 5n]);
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -168,7 +168,7 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
   }, 120_000);
 
   it('refuses the cross-contract spelling by name: its target is no deployment\'s', async () => {
-    const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'framed', solidityImportCompat: true });
+    const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'framed', evmCompat: true });
     // The body compiles and publishes the callee it lowered the low-level call to.
     const callSite = artifacts.Caller!.composition?.stopSites?.entries
       .find((entry) => entry.functionName === 'Caller.pull()')?.calls[0];

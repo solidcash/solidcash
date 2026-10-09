@@ -9,7 +9,7 @@ import { compileString } from './direct-compile.js';
 beforeEach(() => vi.clearAllMocks());
 
 describe('EVM CREATE2 address compatibility warning', () => {
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
 
   it('warns for the canonical pair-address computation through contract and integer casts', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -138,7 +138,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const source = 'contract C() { function f(address a, uint160 e) { require(uint160(a) == e); } }';
     const native = bytecodeToAsm(hexToBin(compileString(source, { messageBus: false }).debug.bytecode));
     const compatible = bytecodeToAsm(hexToBin(compileString(source, {
-      messageBus: false, solidityImportCompat: true,
+      messageBus: false, evmCompat: true,
     }).debug.bytecode));
     const evmCompatible = bytecodeToAsm(hexToBin(compileString(source, {
       messageBus: false, evmCompat: true,
@@ -163,7 +163,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(uint160(a)); } }',
-      { solidityImportCompat: true, messageBus: false }).debug.bytecode));
+      { evmCompat: true, messageBus: false }).debug.bytecode));
     expect(asm).toContain('OP_3 OP_SPLIT OP_NIP');
     expect(asm).toContain('OP_BIN2NUM');
     expect(asm).toContain('OP_REVERSEBYTES');

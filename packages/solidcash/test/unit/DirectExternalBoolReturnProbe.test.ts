@@ -19,7 +19,7 @@ describe('direct external bool return probe', () => {
     const artifact = {
       contractName: 'BoolCallee',
       abi: [calleeAbi],
-      compiler: { options: { solidityImportCompat: true } },
+      compiler: { options: { evmCompat: true } },
     } as unknown as Artifact;
     const groups: PushCreateBuilderDirectExternalCallGroupInput['externalCallUtxoGroups'] = [];
     const host = {

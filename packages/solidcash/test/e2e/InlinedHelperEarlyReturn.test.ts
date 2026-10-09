@@ -99,7 +99,7 @@ describe('an inlined helper returning early', () => {
   it('keeps depositing when updatePool returns early on a chunked pool', async () => {
     const signer = await fundedSigner();
     const chef: any = await getContractFactory(
-      compileString(CHEF, { solidityImportCompat: true, forceStateful: true }), signer,
+      compileString(CHEF, { evmCompat: true, forceStateful: true }), signer,
     ).deploy();
     const me = addressToLockScript(signer.getAddress());
     await chef.add(100n, 10n);

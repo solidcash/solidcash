@@ -33,13 +33,13 @@ describe('SBE-9: imported enum/struct types + hex-literal-as-int + implicit name
     const resolver = (p: string): { source: string; id: string } | undefined => (p.includes('Decl')
       ? { source: 'enum Status { Pending, Shipped }', id: 'Decl' } : undefined);
     const a = compileString('pragma solidity ^0.8.26;\nimport "./Decl.sol";\ncontract Enum { Status public status; }',
-      { solidityImportCompat: true, importResolver: resolver });
+      { evmCompat: true, importResolver: resolver });
     expect(a.contractName).toBe('Enum');
   });
 
   it('treats a hex number literal as a big-endian int when compared with an int (compat)', () => {
     const a = compileString('pragma solidity ^0.8.26;\ncontract C { function f(uint256 x) external pure returns (bool) { return x >= 0x100000000000000000000000000000000; } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
 
@@ -48,7 +48,7 @@ describe('SBE-9: imported enum/struct types + hex-literal-as-int + implicit name
   });
 
   // Solidity hex `0x..` is a context-driven number literal, so it coerces to int in every integer context (not
-  // just comparisons). This is a plain SolidCash default now (was gated behind solidityImportCompat).
+  // just comparisons). This is a plain SolidCash default now (was gated behind evmCompat).
   describe('hex literals are Solidity-compatible numbers in integer contexts (default)', () => {
     const intContexts: [string, string][] = [
       ['local var init', 'contract C() { function f() { int x = 0xff; require(x == 255); } }'],
@@ -96,11 +96,11 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
 
   it('routes block.timestamp via the oracle register, not tx.locktime', () => {
     // block.timestamp lowers to the injected __block_timestamp oracle register (owner-gated) in every mode - the
-    // native model. (The compat-only tx.locktime mapping was removed.) `solidityImportCompat` is set only so the
+    // native model. (The compat-only tx.locktime mapping was removed.) `evmCompat` is set only so the
     // `pragma solidity` header parses.
     const a = compileString(`pragma solidity ^0.8.26;
       contract C { uint256 private t; function f(uint256 startAt) external { require(startAt >= block.timestamp); t = startAt; } }`,
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.bytecode).not.toContain('OP_TXLOCKTIME');
     expect(JSON.stringify(a)).toContain('__block_timestamp'); // the oracle register the source-map references
   });
@@ -108,7 +108,7 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
   it('routes a statement-form interface call on a constructor-param var (2-arg .transfer is not satoshi send)', () => {
     const a = compileString(`interface IERC20 { function transfer(address t, uint256 a) external returns (bool); }
       contract C(IERC20 token) { uint256 n; function f(address to, uint256 amt) external { token.transfer(to, amt); n = 1; } }`,
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
 });
@@ -118,13 +118,13 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
 describe('raw mapping storage pointer local (mapping(K=>V) storage p = m)', () => {
   const P = 'contract C(){mapping(uint=>uint) m;function f()external{';
   it('is byte-identical to direct mapping access (sound by reduction)', () => {
-    const ptr = compileString(`${P}mapping(uint=>uint) storage p=m;p[0]=1;require(p[0]==1);}}`, { solidityImportCompat: true });
-    const direct = compileString(`${P}m[0]=1;require(m[0]==1);}}`, { solidityImportCompat: true });
+    const ptr = compileString(`${P}mapping(uint=>uint) storage p=m;p[0]=1;require(p[0]==1);}}`, { evmCompat: true });
+    const direct = compileString(`${P}m[0]=1;require(m[0]==1);}}`, { evmCompat: true });
     expect(ptr.bytecode).toBe(direct.bytecode);
   });
   it('passes the pointer to a mapping-storage-param helper', () => {
     const a = compileString('contract C(){mapping(uint=>uint) m;function h(mapping(uint=>uint) storage a)internal{a[0]=1;}'
-      + `${'function f()external{'}mapping(uint=>uint) storage p=m;h(p);require(m[0]==1);}}`, { solidityImportCompat: true });
+      + `${'function f()external{'}mapping(uint=>uint) storage p=m;h(p);require(m[0]==1);}}`, { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
 });
@@ -139,21 +139,21 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
     const sugar = compileString('contract C { mapping(uint256=>uint256) mp;'
       + ' function get() internal view returns (mapping(uint256=>uint256) storage) { return mp; }'
       + ' function f() external { mapping(uint256=>uint256) storage p = get(); p[0] = 1; require(mp[0]==1); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     const direct = compileString('contract C { mapping(uint256=>uint256) mp;'
-      + ' function f() external { mp[0] = 1; require(mp[0]==1); } }', { solidityImportCompat: true });
+      + ' function f() external { mp[0] = 1; require(mp[0]==1); } }', { evmCompat: true });
     expect(sugar.bytecode).toBe(direct.bytecode);
   });
   it('conditional local pointer m = c?a:b: publishes the same authenticated entry route as branch/ternary', () => {
     const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b; bigint r;`
       + ' function f(bool c, uint256 k, uint256 v) external { mapping(uint256=>uint256) storage m = L.ch(a,b,c);'
       + ' this.r = m[k]; m[k] = v; require(true); } }', {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b; bigint r;'
       + ' function f(bool c, uint256 k, uint256 v) external { bool __c = c; this.r = __c ? a[k] : b[k];'
       + ' if (__c) { a[k] = v; } else { b[k] = v; } require(true); } }', {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     const route = (artifact: typeof sugar): typeof artifact.abi[number] | undefined =>
       artifact.abi.find((fn) => fn.name === 'f');
@@ -191,10 +191,10 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
   it('direct-indexed call result L.ch(a,b,c)[k] is byte-identical to c ? a[k] : b[k]', () => {
     const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;`
       + ' function g(bool c, uint256 k) external view returns (uint256) { return L.ch(a,b,c)[k]; } }',
-    { solidityImportCompat: true, messageBus: false });
+    { evmCompat: true, messageBus: false });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
       + ' function g(bool c, uint256 k) external view returns (uint256) { return c ? a[k] : b[k]; } }',
-    { solidityImportCompat: true, messageBus: false });
+    { evmCompat: true, messageBus: false });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
@@ -209,16 +209,16 @@ describe('returns (reassigned mapping storage) - dataflow-resolved + inlined', (
     + ' function f() internal returns (mapping(uint256=>uint256) storage r) { r=a; r[1]=42; r=b; r[1]=84; }';
   it('`mapping storage m = f(); m[k]=v` is byte-identical to the hand-resolved side effects', () => {
     const sugar = compileString(`contract C { ${F} function h() external { mapping(uint256=>uint256) storage m = f();`
-      + ' m[2]=17; require(true); } }', { solidityImportCompat: true });
+      + ' m[2]=17; require(true); } }', { evmCompat: true });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
-      + ' function h() external { a[1]=42; b[1]=84; b[2]=17; require(true); } }', { solidityImportCompat: true });
+      + ' function h() external { a[1]=42; b[1]=84; b[2]=17; require(true); } }', { evmCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
   it('`f()[k]=v` (call-indexed write) is byte-identical to the hand-resolved side effects', () => {
     const sugar = compileString(`contract C { ${F} function g() external { f()[2]=21; require(true); } }`,
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
-      + ' function g() external { a[1]=42; b[1]=84; b[2]=21; require(true); } }', { solidityImportCompat: true });
+      + ' function g() external { a[1]=42; b[1]=84; b[2]=21; require(true); } }', { evmCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
   it('resolves a pointer reassigned to a conditional (both g() and h() call sites)', () => {
@@ -226,7 +226,7 @@ describe('returns (reassigned mapping storage) - dataflow-resolved + inlined', (
       + ' function f() internal returns (mapping(uint8 => uint8) storage r) { r = a; r[1] = 42; r = b; r[1] = 84; }'
       + ' function g() public returns (uint8, uint8) { f()[2] = 21; return (a[1], b[2]); }'
       + ' function h() public returns (uint8, uint8) { mapping(uint8 => uint8) storage m = f(); m[2] = 17;'
-      + ' return (a[1], b[2]); } }', { solidityImportCompat: true });
+      + ' return (a[1], b[2]); } }', { evmCompat: true });
     expect(a.contractName).toBe('test');
   });
   // A LIBRARY reassignable-return `Lib.f(a, b)` binds the callee's mapping params to the caller's mappings (passed
@@ -235,9 +235,9 @@ describe('returns (reassigned mapping storage) - dataflow-resolved + inlined', (
     const LIB = 'library Lib { function f(mapping(uint256=>uint256) storage a, mapping(uint256=>uint256) storage b)'
       + ' internal returns (mapping(uint256=>uint256) storage r) { r=a; r[1]=42; r=b; r[1]=21; } }';
     const sugar = compileString(`${LIB} contract T { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;`
-      + ' function h() external { Lib.f(a,b)[2]=84; require(true); } }', { solidityImportCompat: true });
+      + ' function h() external { Lib.f(a,b)[2]=84; require(true); } }', { evmCompat: true });
     const hand = compileString('contract T { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
-      + ' function h() external { a[1]=42; b[1]=21; b[2]=84; require(true); } }', { solidityImportCompat: true });
+      + ' function h() external { a[1]=42; b[1]=21; b[2]=84; require(true); } }', { evmCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
@@ -272,7 +272,7 @@ describe('mapping reads in the constructor (genesis = empty mapping)', () => {
 });
 
 describe('storage-pointer parameters and constant-index state access', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('inlines a void mapping-storage-pointer mutator (m[k] = v)', () => {
     expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal;'
@@ -307,7 +307,7 @@ describe('storage-pointer parameters and constant-index state access', () => {
 });
 
 describe('mapping-bearing struct state variables (flattened)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('compiles a struct with a mapping field used as state', () => {
     expect(cc('pragma solidity ^0.8.0; contract C { struct Holder { mapping(address => uint256) bal; } Holder h;'
@@ -332,7 +332,7 @@ describe('mapping-bearing struct state variables (flattened)', () => {
 
   it('exposes flattened mapping fields as named collections in the artifact', () => {
     const art = compileString('pragma solidity ^0.8.0; contract C { struct M { mapping(address => uint256) bal; } M m;'
-      + ' function s(address k, uint256 v) public { m.bal[k] = v; } }', { solidityImportCompat: true });
+      + ' function s(address k, uint256 v) public { m.bal[k] = v; } }', { evmCompat: true });
     const names = (art.stateLayout?.collections ?? []).map((c) => c.name);
     expect(names).toContain('m__bal');
   });
@@ -342,7 +342,7 @@ describe('mapping-bearing struct state variables (flattened)', () => {
   // audited external call. VM-verified in ForeignFunctionPointerBlobStruct.test.ts.
   it('accepts a foreign fn-ptr struct field (lowered to a bytes blob)', () => {
     const art = compileString('pragma solidity ^0.8.0; contract C { struct Box { function() external f; } Box b;'
-      + ' function f() public { require(true); } }', { solidityImportCompat: true });
+      + ' function f() public { require(true); } }', { evmCompat: true });
     expect(art.structs!.find((s) => s.name === 'Box')!.fields.find((fld) => fld.name === 'f')!.type).toBe('bytes');
   });
 
@@ -359,7 +359,7 @@ describe('mapping-bearing struct state variables (flattened)', () => {
 });
 
 describe('mapping-bearing struct array fields', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const base = 'pragma solidity ^0.8.0; contract C { struct Map { address[] keys; mapping(address => uint256) vals; } Map m;';
 
   it('pushes to a struct array field (m.keys.push)', () => {
@@ -381,7 +381,7 @@ describe('mapping-bearing struct array fields', () => {
 });
 
 describe('abi.decode with array and struct types in the type list', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('accepts an array type (uint256[]) in the abi.decode type list', () => {
     expect(cc('contract C { function f(bytes data) returns (uint256 x, uint256[] arr) {'
@@ -403,7 +403,7 @@ describe('`.value` as a writable struct field name', () => {
     const a = compileString(
       'contract C { struct S { uint256 value; } function f(uint256 x) public pure returns (uint256) {'
       + ' S memory s; s.value = x; s.value += 1; return s.value; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -412,7 +412,7 @@ describe('`.value` as a writable struct field name', () => {
 // `delete X.field` (reset a struct field to its default) resets it via the same struct-rebuild path as
 // `X.field = <default>`. Only `delete X`, `delete X[k]` were supported before.
 describe('delete on a struct field (delete X.field)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('deletes a scalar struct field', () => {
     expect(cc('contract C { struct S { uint x; bytes32 h; }'
       + ' function f() public pure returns (uint) { S memory s; s.x = 5; delete s.h; return s.x; } }')).toBe('C');
@@ -426,7 +426,7 @@ describe('delete on a struct field (delete X.field)', () => {
 // A struct field has no in-place element write, so `s.arr[i] = v` (local struct, array field) desugars to a
 // read-modify-rebuild: `T tmp = s.arr; tmp[i] = v; s.arr = tmp;`. Reduces to tested array-write + rebuild.
 describe('nested lvalue write: local struct array-field element (s.arr[i] = v)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('writes an element of a fixed-size array field', () => {
     expect(cc('contract C { struct S { uint[3] arr; }'
       + ' function f(uint i) public pure returns (uint) { S memory s; s.arr[i] = 5; return s.arr[i]; } }')).toBe('C');
@@ -448,7 +448,7 @@ describe('nested lvalue write: state mapping struct array-field element (m[i].ar
     + ' function f(uint i, uint j, uint v, sig s, pubkey pk) public { require(checkSig(s,pk)); ';
   const post = ' } }';
   const cc = (body: string): string =>
-    compileString(pre + body + post, { solidityImportCompat: true }).contractName;
+    compileString(pre + body + post, { evmCompat: true }).contractName;
   it('compiles the write', () => {
     expect(cc('m[i].arr[j] = v;')).toBe('C');
   });
@@ -456,14 +456,14 @@ describe('nested lvalue write: state mapping struct array-field element (m[i].ar
     expect(cc('m[i].arr[j] += v;')).toBe('C');
   });
   it('desugars byte-for-byte to the explicit `S t = m[i]; t.arr[j] = v; m[i] = t;` form', () => {
-    const item1 = compileString(pre + 'm[i].arr[j] = v;' + post, { solidityImportCompat: true });
-    const explicit = compileString(pre + 'S t = m[i]; t.arr[j] = v; m[i] = t;' + post, { solidityImportCompat: true });
+    const item1 = compileString(pre + 'm[i].arr[j] = v;' + post, { evmCompat: true });
+    const explicit = compileString(pre + 'S t = m[i]; t.arr[j] = v; m[i] = t;' + post, { evmCompat: true });
     expect(item1.bytecode).toBe(explicit.bytecode);
   });
   it('does not regress a mapping struct scalar field write (m[i].a = v)', () => {
     expect(compileString('contract C { struct S { uint a; } mapping(uint=>S) m;'
       + ' function f(uint i, uint v, sig s, pubkey pk) public { require(checkSig(s,pk)); m[i].a = v; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -473,7 +473,7 @@ describe('nested lvalue write: state mapping struct array-field element (m[i].ar
 describe('local struct-array element field write (S[] memory m; m[i].f = v)', () => {
   const P = 'contract C(){struct S{int a;int b;}function f()external{S[] memory m=new S[](3);';
   it('compiles a local memory struct-array field write', () => {
-    expect(compileString(`${P}m[0].a=1;m[1].b=2;require(m[0].a==1);}}`, { solidityImportCompat: true }).contractName)
+    expect(compileString(`${P}m[0].a=1;m[1].b=2;require(m[0].a==1);}}`, { evmCompat: true }).contractName)
       .toBe('C');
   });
   // The memory model lowers `m[i].f=v` to a single in-place store (more faithful to Solidity than the value-copy
@@ -488,23 +488,23 @@ describe('struct-array element array-field write (X[i].c[j] = v)', () => {
   const S = 'struct S{int a;int[] c;}';
   it('compiles a state struct-array nested array-field write', () => {
     expect(compileString(`contract C(){${S}S[] s;function f()external{s.push(S(1,new int[](3)));`
-      + 's[0].c[1]=9;require(s[0].c[1]==9);}}', { solidityImportCompat: true }).contractName).toBe('C');
+      + 's[0].c[1]=9;require(s[0].c[1]==9);}}', { evmCompat: true }).contractName).toBe('C');
   });
   it('compiles a local memory struct-array nested array-field write', () => {
     expect(compileString(`contract C(){${S}function f()external{S[] memory m=new S[](2);m[0].c=new int[](2);`
-      + 'm[0].c[1]=7;require(m[0].c[1]==7);}}', { solidityImportCompat: true }).contractName).toBe('C');
+      + 'm[0].c[1]=7;require(m[0].c[1]==7);}}', { evmCompat: true }).contractName).toBe('C');
   });
   it('supports compound assignment (X[i].c[j] += v)', () => {
     expect(compileString(`contract C(){${S}S[] s;function f(uint i,uint j,int v)external{s.push(S(1,new int[](3)));`
-      + 's[i].c[j]+=v;require(true);}}', { solidityImportCompat: true }).contractName).toBe('C');
+      + 's[i].c[j]+=v;require(true);}}', { evmCompat: true }).contractName).toBe('C');
   });
   it('is byte-identical to the explicit whole-element RMW (sound by reduction)', () => {
     const P = `contract C(){${S}S[] s;function f()external{s.push(S(1,new int[](3)));`;
     const sugar = compileString(`${P}s[0].c[1]=9;require(s[0].c[1]==9);}}`, {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     const hand = compileString(`${P}S t=s[0];t.c[1]=9;s[0]=t;require(s[0].c[1]==9);}}`, {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
@@ -516,7 +516,7 @@ describe('nested lvalue write: struct-with-mapping field (o.data[k2].valid = v)'
   const decl = 'contract C { struct Inner { bool valid; } struct Outer { mapping(uint=>Inner) data; } Outer o;';
   const cc = (body: string): string => compileString(
     `${decl} function f(uint k2, bool b, sig s, pubkey pk) public { require(checkSig(s,pk)); ${body} } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
   it('writes a scalar field of the value struct behind the flattened mapping', () => {
     expect(cc('o.data[k2].valid = b;')).toBe('C');
@@ -533,7 +533,7 @@ describe('nested lvalue write: mapping of struct-with-mapping (providers[k].data
     + ' mapping(address=>Outer) providers;';
   const cc = (body: string): string => compileString(
     `${decl} function f(address k, uint k2, bool b, uint v, sig s, pubkey pk) public { require(checkSig(s,pk)); ${body} } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
   it('writes a scalar field of the innermost value struct', () => {
     expect(cc('providers[k].data[k2].valid = b;')).toBe('C');
@@ -554,10 +554,10 @@ describe('nested lvalue write: mapping of struct-with-mapping (providers[k].data
     const flattened = compileString('contract C { struct Inner { bool valid; } struct Outer { mapping(uint=>Inner) data; }'
       + ' mapping(address=>Outer) providers;'
       + ' function f(address k, uint k2, bool b, sig s, pubkey pk) public { require(checkSig(s,pk));'
-      + ' providers[k].data[k2].valid = b; } }', { solidityImportCompat: true });
+      + ' providers[k].data[k2].valid = b; } }', { evmCompat: true });
     const manual = compileString('contract C { struct Inner { bool valid; } mapping(address=>mapping(uint=>Inner)) providers__data;'
       + ' function f(address k, uint k2, bool b, sig s, pubkey pk) public { require(checkSig(s,pk));'
-      + ' providers__data[k][k2].valid = b; } }', { solidityImportCompat: true });
+      + ' providers__data[k][k2].valid = b; } }', { evmCompat: true });
     expect(flattened.bytecode).toBe(manual.bytecode);
   });
 });
@@ -566,10 +566,10 @@ describe('storage-pointer alias to a mapping-value struct: array-field element w
   it('desugars `p.arr[j] = v` (p = m[k]) byte-for-byte to the direct `m[k].arr[j] = v`', () => {
     const alias = compileString('contract C { struct Escrow { uint16[4] split; } mapping(uint256=>Escrow) escrows;'
       + ' int n; function f(uint256 id, sig s, pubkey pk) public { require(checkSig(s,pk));'
-      + ' Escrow storage escrow = escrows[id]; escrow.split[0] = 10000; this.n = 1; } }', { solidityImportCompat: true });
+      + ' Escrow storage escrow = escrows[id]; escrow.split[0] = 10000; this.n = 1; } }', { evmCompat: true });
     const direct = compileString('contract C { struct Escrow { uint16[4] split; } mapping(uint256=>Escrow) escrows;'
       + ' int n; function f(uint256 id, sig s, pubkey pk) public { require(checkSig(s,pk));'
-      + ' escrows[id].split[0] = 10000; this.n = 1; } }', { solidityImportCompat: true });
+      + ' escrows[id].split[0] = 10000; this.n = 1; } }', { evmCompat: true });
     expect(alias.bytecode).toBe(direct.bytecode);
   });
 });

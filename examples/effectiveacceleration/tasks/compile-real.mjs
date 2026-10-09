@@ -30,7 +30,7 @@ const contractsDir = process.env.EACC_CONTRACTS_DIR
   ? path.resolve(process.env.EACC_CONTRACTS_DIR)
   : findSiblingProject(here);
 const artifactsDir = path.resolve(here, '../artifacts-real/solidcash');
-const solc = { solidityImportCompat: true, ecrecover: 'p2pkh' };
+const solc = { evmCompat: true, ecrecover: 'p2pkh' };
 
 function findSolSources(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -55,7 +55,7 @@ const failures = [];
 for (const full of findSolSources(contractsDir)) {
   const rel = path.relative(contractsDir, full);
   try {
-    const map = compileFileMulti(full, { solidityImportCompat: true, ...solc });
+    const map = compileFileMulti(full, { evmCompat: true, ...solc });
     const fresh = [];
     for (const [name, artifact] of Object.entries(map)) {
       if (written.has(name)) continue;

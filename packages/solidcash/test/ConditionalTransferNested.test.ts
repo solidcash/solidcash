@@ -15,7 +15,7 @@ describe('value-transfer in a nested/else-if branch compiles (was an internal st
   const cc = (body: string): string =>
     `contract C { function f(uint c, address payable dst) { ${body} require(true); } }`;
   const ok = (body: string): void =>
-    expect(compileString(cc(body), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(cc(body), { evmCompat: true }).contractName).toBe('C');
 
   it('single transfer nested in an else-if chain', () => {
     ok('if (c == 0) {} else if (c == 1) { dst.transfer(1000); } else if (c == 2) {}');
@@ -35,14 +35,14 @@ describe('value-transfer in a nested/else-if branch compiles (was an internal st
       + ' contract C { I i = I(address(0xcafecafe)); constructor() payable {}'
       + ' function f(uint c) external returns (uint) { if (c==0) i.a(); else if (c==1) i.b(); else if (c==2) i.c();'
       + ' else if (c==3) i.c{value: 1}(); else if (c==4) i.x(); return 1 + c; } }';
-    expect(compileMessageBus(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileMessageBus(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   it('fails with a stable source diagnostic when a modifier guard cannot preserve a send frame', () => {
     const src = 'contract C { modifier owner(bool allowed) { if (allowed) _; }'
       + ' function f(bool allowed, address payable refund) public owner(allowed) {'
       + ' if (!refund.send(1)) revert(); require(true); } }';
-    expect(() => compileString(src, { solidityImportCompat: true, enforceFinalRequire: false }))
+    expect(() => compileString(src, { evmCompat: true, enforceFinalRequire: false }))
       .toThrow(/TransferFrameUnavailableError|cannot preserve its covenant frame/);
   });
 });

@@ -11,10 +11,10 @@ const KERNEL = {
 type Artifact = ReturnType<typeof compileString>;
 type Handler = NonNullable<Artifact['messageBus']>['handlers'][number];
 
-const select = (source: string, name = 'apply', solidityImportCompat = false): {
+const select = (source: string, name = 'apply', evmCompat = false): {
   artifact: Artifact; handler: Handler;
 } => {
-  const artifact = compileString(source, { ...KERNEL, solidityImportCompat });
+  const artifact = compileString(source, { ...KERNEL, evmCompat });
   const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
   expect(handler, `missing handler ${name}`).toBeDefined();
   return { artifact, handler: handler! };

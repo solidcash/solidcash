@@ -470,7 +470,7 @@ describe('the EVM invalid-input rule on the framed path', () => {
       + '   function check() public pure {'
       + `     require(ecrecover(${word}, 0, ${word}, ${word}) == address(0));`
       + '   }'
-      + ' }', { solidityImportCompat: true, ecrecover: 'p2pkh' });
+      + ' }', { evmCompat: true, ecrecover: 'p2pkh' });
     expect(publishedRefusals(artifacts)).toStrictEqual([]);
     const { a, b } = signerPairOnce();
     expect(verdicts(buildSpend(masterProgram(artifacts, 'Auth'), [a, b]), [MASTER_INDEX]))

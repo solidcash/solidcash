@@ -11,7 +11,7 @@ import {
 } from '../../src/message-bus/compute-recipe-evaluator.js';
 
 const artifact = {
-  compiler: { options: { solidityImportCompat: true } },
+  compiler: { options: { evmCompat: true } },
 } as Artifact;
 
 describe('compute side-car recipe replay', () => {

@@ -495,7 +495,7 @@ export default class AstBuilder
 
   constructor(
     private tree: ParseTree,
-    private solidityImportCompat = false,
+    private evmCompat = false,
     private chunkedArrays = true,
     private sourceCode = '',
     private importedFileId?: string,
@@ -623,8 +623,8 @@ export default class AstBuilder
   }
 
   visitSourceFile(ctx: SourceFileContext): SourceFileNode {
-    if (this.solidityImportCompat) this.validateFunctionTypeModifiers(ctx);
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) this.validateFunctionTypeModifiers(ctx);
+    if (this.evmCompat) {
       for (const match of this.sourceCode.matchAll(/^\s*\/\/\s*SPDX-License-Identifier:\s*(.*)$/gmi)) {
         if (/[^\x20-\x7e]/.test(match[1])) {
           throw new ParseError('Invalid SPDX license identifier', Location.fromCtx(ctx));
@@ -694,7 +694,7 @@ export default class AstBuilder
     const experimentalFeatures = new Set<string>();
     for (const pragma of ctx.pragmaDirective_list()) {
       const text = pragma.getText();
-      if (this.solidityImportCompat && text.startsWith('pragmaexperimental')) {
+      if (this.evmCompat && text.startsWith('pragmaexperimental')) {
         const feature = text.slice('pragmaexperimental'.length, -1);
         const supported = new Set(['ABIEncoderV2', 'SMTChecker', 'solidity', '__test']);
         if (!supported.has(feature)) {
@@ -821,7 +821,7 @@ export default class AstBuilder
     const freeFunctions = ctx.freeFunctionDefinition_list().map(
       (f) => this.visitFreeFunctionDefinition(f),
     );
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const fileErrorNames = new Set<string>();
       for (const error of errorDefinitions) {
         if (fileErrorNames.has(error.name)) {
@@ -982,7 +982,7 @@ export default class AstBuilder
     // while every free and qualified library function declaration is still present. Solidity does not overload-
     // resolve a `using {f}` reference from its target type: the referenced name itself must denote exactly one
     // user-defined function.
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const functionCounts = new Map<string, number>();
       const functionSignatures = new Set<string>();
       const namespaceAliases = new Set(
@@ -1218,7 +1218,7 @@ export default class AstBuilder
     for (const evCtx of ctx.eventDefinition_list()) {
       const event = this.visitEventDefinition(evCtx);
       const signature = `${event.name}(${event.parameters.map((parameter) => parameter.type.toString()).join(',')})`;
-      if (this.solidityImportCompat && fileEventSignatures.has(signature)) {
+      if (this.evmCompat && fileEventSignatures.has(signature)) {
         throw new ParseError(`Event '${event.name}' with the same parameter types is already declared`, event.location!);
       }
       fileEventSignatures.add(signature);
@@ -1405,9 +1405,9 @@ export default class AstBuilder
       }
     }
 
-    // solidityImportCompat: accept `pragma solidity <any>` and known EVM compiler switches, but retain
+    // evmCompat: accept `pragma solidity <any>` and known EVM compiler switches, but retain
     // Solidity's rejection of misspelled/unknown pragma names.
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       if (!ctx.pragmaName()) {
         const name = ctx.Identifier(0)?.getText();
         if (name !== 'abicoder' && name !== 'experimental') {
@@ -1424,7 +1424,7 @@ export default class AstBuilder
       if (name === 'abicoder' || name === 'experimental') return;
       throw new ParseError(
         `Unsupported pragma '${name}'. Only 'solidcash' is supported; `
-        + 'enable solidityImportCompat to accept \'solidity\'.',
+        + 'enable evmCompat to accept \'solidity\'.',
         Location.fromCtx(ctx),
       );
     }
@@ -1433,7 +1433,7 @@ export default class AstBuilder
     if (pragmaName !== PragmaName.SOLIDCASH) {
       throw new ParseError(
         `Unsupported pragma '${ctx.pragmaName().getText()}'. Only 'solidcash' is supported; `
-        + 'enable solidityImportCompat to accept \'solidity\'.',
+        + 'enable evmCompat to accept \'solidity\'.',
         Location.fromCtx(ctx),
       );
     }
@@ -1476,7 +1476,7 @@ export default class AstBuilder
   visitContractDefinition(ctx: ContractDefinitionContext): ContractNode {
     this.pendingStorageReturnPushes.clear();
     const name = ctx.anyIdentifier().getText();
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const declared = new Map<string, string>();
       const register = (declName: string, kind: string, locationCtx: ParserRuleContext): void => {
         const previous = declared.get(declName);
@@ -1811,7 +1811,7 @@ export default class AstBuilder
     // Merge and sort by source position so function order matches source code
     const functions = [...concreteFunctions, ...abstractFunctions]
       .sort((a, b) => (a.location?.start.line ?? 0) - (b.location?.start.line ?? 0));
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const oldStyleConstructor = functions.find((fn) => fn.name === name);
       if (oldStyleConstructor) {
         throw new ParseError(
@@ -2263,7 +2263,7 @@ export default class AstBuilder
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
     }
-    if (this.solidityImportCompat
+    if (this.evmCompat
       && !functionDefinition.modifiers.includes(FunctionModifier.VIRTUAL)) {
       throw new ParseError(
         'Functions without implementation must be marked virtual',
@@ -2274,7 +2274,7 @@ export default class AstBuilder
     // Parse custom modifier invocations (split/merge are handled specially)
     const customModCtxs = ctx.customModifierInvocation_list();
     if (customModCtxs && customModCtxs.length > 0) {
-      if (this.solidityImportCompat) {
+      if (this.evmCompat) {
         throw new ParseError(
           'Functions without implementation cannot have modifiers',
           Location.fromCtx(customModCtxs[0]),
@@ -2564,7 +2564,7 @@ export default class AstBuilder
       type = this.resolveType(tn) ?? new AddressType(false, tn);
     }
     const modifiers = ctx.modifier_list().map((m) => m.getText());
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const invalid = modifiers.find((modifier) => modifier === Modifier.CONSTANT
         || modifier === Modifier.IMMUTABLE);
       if (invalid) {
@@ -2650,13 +2650,13 @@ export default class AstBuilder
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
     const name = ctx.anyIdentifier().getText();
-    if (this.solidityImportCompat && modifiers.includes('constant')) {
+    if (this.evmCompat && modifiers.includes('constant')) {
       throw new ParseError(
         'The "constant" keyword is not allowed on local variables',
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && modifiers.includes('transient')) {
+    if (this.evmCompat && modifiers.includes('transient')) {
       throw new ParseError(
         'Transient data location is only valid on state variables',
         Location.fromCtx(ctx),
@@ -2749,7 +2749,7 @@ export default class AstBuilder
       const defName = `__pushPtr_def_${uid}`;
       // uint __idx = arr.length;  (pre-push length = the appended element's index)
       const idxDef = stamp(new VariableDefinitionNode(
-        this.solidityImportCompat ? new IntType(false, 256) : PrimitiveType.BIGINT,
+        this.evmCompat ? new IntType(false, 256) : PrimitiveType.BIGINT,
         [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
       idxDef.allowUnused = true;
       // alias x -> arr[__idx]  (same shape as `T storage x = arr[k]`; not a real local, so not tracked as one)
@@ -3543,7 +3543,7 @@ export default class AstBuilder
     expressionCtx: ExpressionContext | null,
     location: Location,
   ): AssignNode {
-    if (this.solidityImportCompat && this.expiredLoopVariableNames.has(identifierText)) {
+    if (this.evmCompat && this.expiredLoopVariableNames.has(identifierText)) {
       throw new ParseError(`Undeclared identifier '${identifierText}'`, identifierLocation);
     }
     const identifier = new IdentifierNode(identifierText);
@@ -3833,7 +3833,7 @@ export default class AstBuilder
       if (updateCtx._op) {
         const updateName = updateCtx.Identifier().getText();
         const knownUpdateName = declaredLoopNames.has(updateName) || hasKnownBinding(updateName);
-        if (this.solidityImportCompat && !knownUpdateName) {
+        if (this.evmCompat && !knownUpdateName) {
           throw new ParseError(`Undeclared identifier '${updateName}'`, Location.fromCtx(updateCtx));
         }
         updateNode = this.buildCompoundAssign(
@@ -3955,13 +3955,13 @@ export default class AstBuilder
   }
 
   visitAssemblyStatement(ctx: AssemblyStatementContext): AssemblyStatementNode {
-    if (this.solidityImportCompat && /^assembly["']/.test(ctx.getText())) {
+    if (this.evmCompat && /^assembly["']/.test(ctx.getText())) {
       const dialect = ctx.StringLiteral_list()[0].getText().slice(1, -1);
       if (dialect !== 'evmasm') {
         throw new ParseError(`Only "evmasm" assembly is supported, not "${dialect}"`, Location.fromCtx(ctx));
       }
     }
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const optionList = ctx.getText().match(/\((.*)\)\{/s)?.[1] ?? '';
       const memorySafeCount = [...optionList.matchAll(/["']memory-safe["']/g)].length;
       if (memorySafeCount > 1) {
@@ -3969,7 +3969,7 @@ export default class AstBuilder
       }
     }
     const block = buildYulBlock(ctx.yulBlock());
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const reserved = findReservedYulIdentifier(block);
       if (reserved) {
         throw new ParseError(
@@ -3993,7 +3993,7 @@ export default class AstBuilder
   }
 
   visitUncheckedStatement(ctx: UncheckedStatementContext): UncheckedNode {
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       let parent = ctx.parentCtx;
       let containingBlock: ParserRuleContext | undefined;
       while (parent) {
@@ -4081,12 +4081,12 @@ export default class AstBuilder
     const returnsCtx = ctx.tryReturns();
     if (returnsCtx) {
       returnParameters = returnsCtx.parameter_list().map((p) => this.visit(p) as ParameterNode);
-      if (this.solidityImportCompat && returnParameters.length === 0) {
+      if (this.evmCompat && returnParameters.length === 0) {
         throw new ParseError('Try returns clause requires at least one parameter', Location.fromCtx(returnsCtx));
       }
     }
 
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const seen = new Set<string>();
       for (const clause of catchClauses) {
         const kind = clause.errorName ?? 'low-level';
@@ -4130,7 +4130,7 @@ export default class AstBuilder
     const parameters = ctx.parameter_list().length > 0
       ? ctx.parameter_list().map((p) => this.visit(p) as ParameterNode)
       : undefined;
-    if (this.solidityImportCompat && !errorName && !parameters && ctx.getText().startsWith('catch(')) {
+    if (this.evmCompat && !errorName && !parameters && ctx.getText().startsWith('catch(')) {
       throw new ParseError('Catch parameter list cannot be empty', Location.fromCtx(ctx));
     }
     const node = new CatchClauseNode(block, errorName, parameters);
@@ -4144,7 +4144,7 @@ export default class AstBuilder
     const braced = ctx.statement().blockStatement() as BlockStatementContext | null;
     const statementCtxs = braced ? braced.statement_list() : [ctx.statement()];
     const statements = this.flattenStatements(statementCtxs.map((s) => this.visit(s) as StatementNode));
-    if (this.solidityImportCompat && !ctx.getText().startsWith('{')
+    if (this.evmCompat && !ctx.getText().startsWith('{')
       && statements.length === 1 && statements[0] instanceof VariableDefinitionNode) {
       throw new ParseError('Variable declarations can only be used inside blocks', statements[0].location);
     }
@@ -4292,27 +4292,27 @@ export default class AstBuilder
       const name = identifiers.length > 1
         ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
         : identifiers[0].getText();
-      if (this.solidityImportCompat && /,\}\)$/.test(ctx.getText())) {
+      if (this.evmCompat && /,\}\)$/.test(ctx.getText())) {
         throw new ParseError('Unexpected trailing comma in named arguments', Location.fromCtx(ctx));
       }
       const directUdvt = identifiers.length === 1 ? this.typeDefMap.get(name) : undefined;
       const qualifiedUdvt = identifiers.length === 2
         ? this.typeDefMap.get(identifiers[0].getText()) : undefined;
       const udvtMethod = identifiers.length === 2 ? identifiers[1].getText() : undefined;
-      if (this.solidityImportCompat && directUdvt) {
+      if (this.evmCompat && directUdvt) {
         throw new ParseError(
           `Explicit type conversion to '${directUdvt.name}' is not allowed; use '${directUdvt.name}.wrap(...)'`,
           Location.fromCtx(ctx),
         );
       }
-      if (this.solidityImportCompat && qualifiedUdvt
+      if (this.evmCompat && qualifiedUdvt
         && (udvtMethod === 'wrap' || udvtMethod === 'unwrap')) {
         throw new ParseError(
           `Named arguments are not valid for '${qualifiedUdvt.name}.${udvtMethod}'`,
           Location.fromCtx(ctx),
         );
       }
-      if (this.solidityImportCompat && this.fileErrorNames.has(name)) {
+      if (this.evmCompat && this.fileErrorNames.has(name)) {
         throw new ParseError(
           `Error '${name}' can only be used with a revert statement or as a require error`,
           Location.fromCtx(ctx),
@@ -4332,7 +4332,7 @@ export default class AstBuilder
     const name = identifiers.length > 1
       ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
       : identifiers[0]?.getText() ?? ctx.start.text;
-    if (this.solidityImportCompat && this.fileErrorNames.has(name)) {
+    if (this.evmCompat && this.fileErrorNames.has(name)) {
       throw new ParseError(
         `Error '${name}' can only be used with a revert statement or as a require error`,
         Location.fromCtx(ctx),
@@ -4342,7 +4342,7 @@ export default class AstBuilder
     identifier.location = Location.fromToken(identifiers[0]?.symbol ?? ctx.start);
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const directUdvt = identifiers.length === 1 ? this.typeDefMap.get(name) : undefined;
-    if (this.solidityImportCompat && directUdvt) {
+    if (this.evmCompat && directUdvt) {
       if (parameters.length !== 1) {
         throw new ParseError(
           `Exactly one argument expected for explicit conversion to '${directUdvt.name}'`,
@@ -4391,7 +4391,7 @@ export default class AstBuilder
     // Ethereum. Literal ids fold at parse time; runtime string/bytes expressions lower to the specification's
     // hash/arithmetic expression (Solidity accepts calldata, memory, storage, concat, ternary, and pure-call ids).
     if (identifiers.length === 1 && name === 'erc7201' && parameters.length === 1) {
-      if (this.solidityImportCompat && ctx.callOptions()) {
+      if (this.evmCompat && ctx.callOptions()) {
         throw new ParseError(
           'Function call options can only be set on external function calls or contract creations',
           Location.fromCtx(ctx),
@@ -4501,16 +4501,16 @@ export default class AstBuilder
         const arg = parameters[0] as ExpressionNode;
         if (method === 'unwrap') {
           const cast = new CastNode(udvt.underlyingType, arg, false);
-          cast.sourceCast = this.solidityImportCompat;
-          if (this.solidityImportCompat) cast.sourceUdvtUnwrap = udvt;
+          cast.sourceCast = this.evmCompat;
+          if (this.evmCompat) cast.sourceUdvtUnwrap = udvt;
           cast.location = Location.fromCtx(ctx);
           return cast;
         }
         const toUnderlying = new CastNode(udvt.underlyingType, arg, false);
-        toUnderlying.sourceCast = this.solidityImportCompat;
+        toUnderlying.sourceCast = this.evmCompat;
         toUnderlying.location = Location.fromCtx(ctx);
         const cast = new CastNode(udvt, toUnderlying, false);
-        cast.sourceCast = this.solidityImportCompat;
+        cast.sourceCast = this.evmCompat;
         cast.location = Location.fromCtx(ctx);
         return cast;
       }
@@ -4554,7 +4554,7 @@ export default class AstBuilder
     // contract handle is an address on BCH - mirroring the scalar/array type paths, so `C[]` types as address[]
     // rather than undefined[].
     const elemName = ctx.typeName().getText();
-    if (this.solidityImportCompat && this.libraryNames.has(elemName)) {
+    if (this.evmCompat && this.libraryNames.has(elemName)) {
       throw new ParseError(`Invalid use of library name '${elemName}' as an array element type`, Location.fromCtx(ctx));
     }
     let elementType = this.resolveType(elemName) ?? new AddressType(false, elemName);
@@ -4621,14 +4621,14 @@ export default class AstBuilder
 
   visitTupleIndexOp(ctx: ArrayAccessContext): TupleIndexOpNode {
     const tuple = this.visit(arrayAccessBase(ctx));
-    if (this.solidityImportCompat && tuple instanceof IdentifierNode && this.libraryNames.has(tuple.name)) {
+    if (this.evmCompat && tuple instanceof IdentifierNode && this.libraryNames.has(tuple.name)) {
       throw new ParseError(
         `Index access is not available for library type '${tuple.name}'`,
         Location.fromCtx(ctx),
       );
     }
     const exactIndex = BigInt(ctx._index.text.replaceAll('_', ''));
-    if (this.solidityImportCompat && exactIndex >= (1n << 256n)) {
+    if (this.evmCompat && exactIndex >= (1n << 256n)) {
       throw new ParseError('Index expression cannot be represented as an unsigned integer', Location.fromCtx(ctx));
     }
     const index = parseInt(ctx._index.text, 10);
@@ -4661,7 +4661,7 @@ export default class AstBuilder
       ? this.visit(ctx._end) as ExpressionNode
       : Object.assign(new UnaryOpNode(UnaryOperator.SIZE, this.visit(ctx._element) as ExpressionNode), { location: loc });
     const slice = new SliceNode(element, start, end);
-    slice.isSolidityIndexRange = this.solidityImportCompat;
+    slice.isSolidityIndexRange = this.evmCompat;
     slice.location = loc;
     return slice;
   }
@@ -4669,7 +4669,7 @@ export default class AstBuilder
   visitNullaryOp(ctx: NullaryOpContext): NullaryOpNode {
     const operator = ctx.getText() as NullaryOperator;
     const nullaryOp = new NullaryOpNode(operator);
-    if (this.solidityImportCompat && this.usesLegacySolidityNow()
+    if (this.evmCompat && this.usesLegacySolidityNow()
       && (operator === NullaryOperator.MSG_SENDER || operator === NullaryOperator.TX_ORIGIN)) {
       nullaryOp.legacyPayableAddress = true;
     }
@@ -4706,7 +4706,7 @@ export default class AstBuilder
       return negated;
     }
     const unaryOp = new UnaryOpNode(operator, expression);
-    unaryOp.legacyWrappingNegation = this.solidityImportCompat
+    unaryOp.legacyWrappingNegation = this.evmCompat
       && this.usesLegacySolidityNow() && operator === UnaryOperator.NEGATE;
     unaryOp.location = Location.fromCtx(ctx);
     return unaryOp;
@@ -4803,7 +4803,7 @@ export default class AstBuilder
     const ifFalse = this.visit(ctx._ifFalse);
     const ternary = new TernaryOpNode(condition, ifTrue, ifFalse);
     ternary.location = Location.fromCtx(ctx);
-    if (!this.solidityImportCompat
+    if (!this.evmCompat
       && ((ifTrue instanceof IntLiteralNode && ifFalse instanceof HexLiteralNode)
         || (ifFalse instanceof IntLiteralNode && ifTrue instanceof HexLiteralNode))) {
       throw new TernaryTypeMismatchError(ternary);
@@ -4821,7 +4821,7 @@ export default class AstBuilder
   visitIdentifier(ctx: IdentifierContext): IdentifierNode {
     const identifier = new IdentifierNode(ctx.anyIdentifier().getText());
     identifier.location = Location.fromCtx(ctx);
-    if (this.solidityImportCompat && this.expiredLoopVariableNames.has(identifier.name)) {
+    if (this.evmCompat && this.expiredLoopVariableNames.has(identifier.name)) {
       throw new ParseError(`Undeclared identifier '${identifier.name}'`, identifier.location);
     }
     // Whole-container storage alias (`mapping(...) storage p = m;`): a read of `p` resolves to the aliased
@@ -4892,7 +4892,7 @@ export default class AstBuilder
     // Units split into time (NumberUnit) and BCH value (BchUnit) tokens; both resolve via the NumberUnit map.
     const unitToken = numberCtx.NumberUnit() ?? numberCtx.BchUnit();
     const numberUnit = unitToken?.getText();
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const digits = numberString.replaceAll('_', '').split(/[eE]/, 1)[0];
       if (/^0[0-9]/.test(digits)) {
         throw new ParseError('Octal numbers not allowed', Location.fromCtx(ctx));
@@ -4914,7 +4914,7 @@ export default class AstBuilder
       if (match) {
         const digits = match[1];
         const shift = Number(match[2]);
-        if (shift < 0 && this.solidityImportCompat) {
+        if (shift < 0 && this.evmCompat) {
           const padded = digits.padStart(-shift + 1, '0');
           const cut = padded.length + shift;
           const node = new DecimalLiteralNode(`${padded.slice(0, cut)}.${padded.slice(cut)}`);
@@ -4935,7 +4935,7 @@ export default class AstBuilder
     const decimalToken = decCtx.DecimalLiteral();
     let text = decimalToken.getText();
     const decimalUnitToken = decCtx.NumberUnit?.() ?? decCtx.BchUnit?.();
-    if (this.solidityImportCompat && decimalUnitToken) {
+    if (this.evmCompat && decimalUnitToken) {
       if (decimalUnitToken.symbol.start === decimalToken.symbol.stop + 1) {
         throw new ParseError('Identifier-start is not allowed at end of a number', Location.fromCtx(ctx));
       }
@@ -4994,14 +4994,14 @@ export default class AstBuilder
       const rawString = token.getText();
       quote = rawString.substring(0, 1);
       const inner = rawString.substring(1, rawString.length - 1);
-      if (this.solidityImportCompat) {
+      if (this.evmCompat) {
         solidityByteParts.push(this.solidityStringLiteralBytes(inner, location));
       }
       parts.push(this.processEscapes(inner, location));
     }
     const stringValue = parts.join('');
     const stringLiteral = new StringLiteralNode(stringValue, quote);
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       stringLiteral.solidityBytes = Uint8Array.from(solidityByteParts.flatMap((bytes) => [...bytes]));
       try {
         new TextDecoder('utf-8', { fatal: true }).decode(stringLiteral.solidityBytes);
@@ -5022,7 +5022,7 @@ export default class AstBuilder
       // rawText is like: unicode"..." or unicode'...'
       quoteChar = rawText.charAt(7); // char after "unicode"
       const inner = rawText.substring(8, rawText.length - 1);
-      if (this.solidityImportCompat && inner.includes('\ufffd')) {
+      if (this.evmCompat && inner.includes('\ufffd')) {
         throw new ParseError('String literal contains an invalid UTF-8 sequence', location);
       }
       return this.processEscapes(inner, location);
@@ -5037,7 +5037,7 @@ export default class AstBuilder
       const raw = token.getText();
       // raw is like: hex"deadbeef" or hex'deadbeef'
       const content = raw.substring(4, raw.length - 1);
-      if (this.solidityImportCompat) {
+      if (this.evmCompat) {
         let nibbleCount = 0;
         for (let i = 0; i < content.length; i++) {
           if (/[0-9a-fA-F]/.test(content[i])) {
@@ -5171,7 +5171,7 @@ export default class AstBuilder
   createHexLiteral(ctx: LiteralContext): HexLiteralNode {
     const hexString = ctx.HexLiteral().getText();
     const hexContent = hexString.substring(2).replaceAll('_', '');
-    if (this.solidityImportCompat && !hexString.includes('_')) {
+    if (this.evmCompat && !hexString.includes('_')) {
       const hasHexLetter = /[a-fA-F]/.test(hexContent);
       const hasMixedCase = /[a-f]/.test(hexContent) && /[A-F]/.test(hexContent);
       if ((hexContent.length === 39 || hexContent.length === 41) && hasMixedCase) {
@@ -5197,7 +5197,7 @@ export default class AstBuilder
       // Solidity-compat sources stay permissive (a Solidity hex number may have an odd number of digits), with the
       // trailing nibble zero-extended into a full byte (0xabc -> 0xab0c). Native SolidCash rejects the literal
       // rather than silently changing its value.
-      if (!this.solidityImportCompat) {
+      if (!this.evmCompat) {
         throw new ParseError(
           `Hex literal "0x${hexContent}" should have an even number of digits`,
           Location.fromCtx(ctx),
@@ -5234,14 +5234,14 @@ export default class AstBuilder
     }
     // A state var may shadow a solidcash introspection built-in (age/tokens/category/categoryId/activeInputIndex/
     // activeBytecode) - the state var wins in scope (Solidity-like); naming one after a built-in just makes that
-    // built-in inaccessible in the contract. (Default; was gated behind solidityImportCompat.)
+    // built-in inaccessible in the contract. (Default; was gated behind evmCompat.)
 
     // Parse visibility modifier (leading position or from collectionModifier)
     let visibility = StateVariableVisibility.PUBLIC;
     let visibilityExplicit = false;
     const visCtx = ctx.stateVariableVisibility();
     if (visCtx) {
-      if (this.solidityImportCompat && visCtx.getText() === 'external') {
+      if (this.evmCompat && visCtx.getText() === 'external') {
         throw new ParseError('State variables cannot have external visibility', Location.fromCtx(visCtx));
       }
       visibility = visCtx.getText() as StateVariableVisibility;
@@ -5257,14 +5257,14 @@ export default class AstBuilder
       if (modChild) { allModTexts.push(modChild.getText()); continue; }
       const visChild = cm.stateVariableVisibility?.();
       if (visChild) {
-        if (this.solidityImportCompat && visChild.getText() === 'external') {
+        if (this.evmCompat && visChild.getText() === 'external') {
           throw new ParseError('State variables cannot have external visibility', Location.fromCtx(visChild));
         }
         visibility = visChild.getText() as StateVariableVisibility;
         visibilityExplicit = true;
       }
     }
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const mutability = allModTexts.filter((modifier) => modifier === 'constant' || modifier === 'immutable');
       if (mutability.length > 1) {
         throw new ParseError(
@@ -5292,7 +5292,7 @@ export default class AstBuilder
     const isTransient = allModTexts.includes('transient');
     const explicitStateLocation = allModTexts.find((modifier) =>
       modifier === 'storage' || modifier === 'memory' || modifier === 'calldata');
-    if (this.solidityImportCompat && explicitStateLocation) {
+    if (this.evmCompat && explicitStateLocation) {
       throw new ParseError(
         explicitStateLocation === 'storage'
           ? 'State variables are implicitly storage and cannot specify the storage data location'
@@ -5300,41 +5300,41 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && isTransient
+    if (this.evmCompat && isTransient
       && (allModTexts.includes('constant') || allModTexts.includes('immutable'))) {
       throw new ParseError(
         'Transient cannot be used with constant or immutable state variables',
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && isTransient && ctx.expression?.()) {
+    if (this.evmCompat && isTransient && ctx.expression?.()) {
       throw new ParseError(
         'Initialization of transient state variables is not supported',
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && isTransient && (ctx.mappingType() || ctx.arrayType())) {
+    if (this.evmCompat && isTransient && (ctx.mappingType() || ctx.arrayType())) {
       throw new ParseError(
         'Transient data location is only supported for value types',
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && isImmutable && (ctx.mappingType() || ctx.arrayType())) {
+    if (this.evmCompat && isImmutable && (ctx.mappingType() || ctx.arrayType())) {
       throw new ParseError(
         'Immutable variables cannot have a non-value type',
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && isConstant && !ctx.expression?.()) {
+    if (this.evmCompat && isConstant && !ctx.expression?.()) {
       throw new ParseError('Uninitialized constant variable', Location.fromCtx(ctx));
     }
-    if (this.solidityImportCompat && isConstant && (ctx.mappingType() || ctx.arrayType())) {
+    if (this.evmCompat && isConstant && (ctx.mappingType() || ctx.arrayType())) {
       throw new ParseError(
         'Only constants of value type and byte array type are implemented',
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && isConstant && ctx.typeName()) {
+    if (this.evmCompat && isConstant && ctx.typeName()) {
       const constantTypeText = ctx.typeName().getText();
       const resolvedConstantType = this.resolveType(constantTypeText);
       if (resolvedConstantType instanceof StructType || this.structMap.has(constantTypeText)) {
@@ -5356,7 +5356,7 @@ export default class AstBuilder
       // declaration site does), so `IERC20 constant U = IERC20(0)` type-checks against an address value.
       const cType = this.resolveType(scalarTypeCtx.getText()) ?? new AddressType(false, scalarTypeCtx.getText());
       const constantExpression = this.visit(constExpr) as ExpressionNode;
-      if (this.solidityImportCompat) this.validateConstantZeroDivisors(constantExpression, ctx);
+      if (this.evmCompat) this.validateConstantZeroDivisors(constantExpression, ctx);
       const cnode = new ConstantDefinitionNode(cType, name, constantExpression);
       cnode.visibility = visibility;
       cnode.location = Location.fromCtx(ctx);
@@ -5416,7 +5416,7 @@ export default class AstBuilder
       // field - this backs `arr.length`, whole-array copy/reads, and array-element external calls IFoo(arr[i]).m()
       // over a fixed token set (StableSwap). Native (non-compat) keeps the collection model, which has no bare
       // array reference / `.length`; kept gated because switching to it REMOVES those features. See docs/arrays.md.
-      if (this.solidityImportCompat && arrayT.bound !== undefined && isChunkPackableElementType(arrayT.elementType)) {
+      if (this.evmCompat && arrayT.bound !== undefined && isChunkPackableElementType(arrayT.elementType)) {
         const node = new StateVariableNode(arrayT, name);
         node.isPacked = true;
         node.visibility = visibility;
@@ -5444,7 +5444,7 @@ export default class AstBuilder
       type = new AddressType(false, typeText);
       contractTypeName = typeText;
     }
-    if (this.solidityImportCompat && isImmutable
+    if (this.evmCompat && isImmutable
       && (type instanceof StructType || (type instanceof FunctionType && type.isExternal) || type instanceof MappingType
         || type instanceof ArrayType || type === PrimitiveType.STRING
         || (type instanceof BytesType && type.bound === undefined))) {
@@ -5455,7 +5455,7 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && isTransient
+    if (this.evmCompat && isTransient
       && (type instanceof StructType || type instanceof MappingType || type instanceof ArrayType
         || (type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING)) {
       throw new ParseError(
@@ -5463,7 +5463,7 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
-    if (this.solidityImportCompat && type instanceof FunctionType) {
+    if (this.evmCompat && type instanceof FunctionType) {
       const functionModifierText = (): string => {
         const open = typeText.indexOf('(');
         let depth = 0;
@@ -5539,7 +5539,7 @@ export default class AstBuilder
     if (isThisOutState(ctx)) return this.visitOutStateMappingFieldAccess(ctx);
     if (isThisMapping(ctx)) return this.visitMappingAccess(ctx);
     if (isThisState(ctx)) return this.visitStateAccess(ctx);
-    if (this.solidityImportCompat && this.parsingFreeFunctionBody) {
+    if (this.evmCompat && this.parsingFreeFunctionBody) {
       throw new ParseError(
         "'this' is not available in a file-level free function",
         Location.fromCtx(ctx),
@@ -6647,7 +6647,7 @@ export default class AstBuilder
   }
 
   private buildMappingType(ctx: MappingTypeContext): MappingType {
-    if (this.solidityImportCompat && /^mapping\(addresspayable=>/.test(ctx.getText())) {
+    if (this.evmCompat && /^mapping\(addresspayable=>/.test(ctx.getText())) {
       throw new ParseError(
         'Mapping key type must be "address", not "address payable"',
         Location.fromCtx(ctx),
@@ -6716,7 +6716,7 @@ export default class AstBuilder
       // not yet merged, or an interface) becomes a named AddressType placeholder rather than `undefined`, so
       // routing sees a chunk-packable element and a post-import pass (reresolveImportedTypes) can resolve it.
       const elemName = ((ctx as any).functionType?.() ?? ctx.typeName()).getText();
-      if (this.solidityImportCompat && this.libraryNames.has(elemName)) {
+      if (this.evmCompat && this.libraryNames.has(elemName)) {
         throw new ParseError(
           `Invalid use of library name '${elemName}' as an array element type`,
           Location.fromCtx(ctx),
@@ -6922,7 +6922,7 @@ export default class AstBuilder
 
   visitStructDefinition(ctx: StructDefinitionContext): StructDefinitionNode {
     const structName = ctx.anyIdentifier().getText();
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const fieldNames = new Set<string>();
       for (const field of ctx.structField_list()) {
         const name = field.anyIdentifier().getText();
@@ -6954,10 +6954,10 @@ export default class AstBuilder
 
   visitEnumDefinition(ctx: EnumDefinitionContext): EnumDefinitionNode {
     const name = ctx.anyIdentifier().getText();
-    if (this.solidityImportCompat && /,\}$/.test(ctx.getText())) {
+    if (this.evmCompat && /,\}$/.test(ctx.getText())) {
       throw new ParseError('Expected enum member after trailing comma', Location.fromCtx(ctx));
     }
-    if (this.solidityImportCompat && ctx.enumMember_list().length > 256) {
+    if (this.evmCompat && ctx.enumMember_list().length > 256) {
       throw new ParseError('Enum with more than 256 members is not allowed', Location.fromCtx(ctx));
     }
     const members: { name: string; value: bigint }[] = [];
@@ -6965,7 +6965,7 @@ export default class AstBuilder
     let nextValue = 0n;
     for (const memberCtx of ctx.enumMember_list()) {
       const memberName = memberCtx.anyIdentifier().getText();
-      if (this.solidityImportCompat && memberNames.has(memberName)) {
+      if (this.evmCompat && memberNames.has(memberName)) {
         throw new ParseError(`Identifier '${memberName}' is already declared`, Location.fromCtx(memberCtx));
       }
       memberNames.add(memberName);
@@ -6985,7 +6985,7 @@ export default class AstBuilder
   visitTypeDefinition(ctx: TypeDefinitionContext): TypeDefinitionNode {
     const name = ctx.anyIdentifier().getText();
     const underlyingType = this.resolveType(ctx.typeName().getText());
-    if (this.solidityImportCompat
+    if (this.evmCompat
       && ((underlyingType instanceof BytesType && underlyingType.bound === undefined)
         || underlyingType === PrimitiveType.STRING)) {
       throw new ParseError(
@@ -7027,14 +7027,14 @@ export default class AstBuilder
       : arrayTypeCtx ? this.buildArrayType(arrayTypeCtx).toString()
         : mappingTypeCtx ? this.buildMappingType(mappingTypeCtx).toString()
           : typeNameCtx!.getText();
-    if (this.solidityImportCompat && !this.libraryNames.has(libraryName) && !this.sourceHasImports) {
+    if (this.evmCompat && !this.libraryNames.has(libraryName) && !this.sourceHasImports) {
       throw new ParseError(`Identifier '${libraryName}' is not a library name`, Location.fromCtx(ctx));
     }
-    if (this.solidityImportCompat && targetTypeName && this.libraryNames.has(targetTypeName)) {
+    if (this.evmCompat && targetTypeName && this.libraryNames.has(targetTypeName)) {
       throw new ParseError('Invalid use of a library name as a using-for target type', Location.fromCtx(ctx));
     }
     const isGlobal = ctx.getText().includes('global');
-    if (this.solidityImportCompat && isGlobal
+    if (this.evmCompat && isGlobal
       && (!targetTypeName || !this.typeDefMap.has(targetTypeName))) {
       throw new ParseError('Can only use "global" with user-defined value types', Location.fromCtx(ctx));
     }
@@ -7058,11 +7058,11 @@ export default class AstBuilder
       : arrayTypeCtx ? this.buildArrayType(arrayTypeCtx).toString()
         : typeNameCtx!.getText();
     const isGlobal = ctx.getText().includes('global');
-    if (this.solidityImportCompat && isGlobal
+    if (this.evmCompat && isGlobal
       && (!targetTypeName || !this.typeDefMap.has(targetTypeName))) {
       throw new ParseError('Can only use "global" with user-defined value types', Location.fromCtx(ctx));
     }
-    if (this.solidityImportCompat && isWildcard) {
+    if (this.evmCompat && isWildcard) {
       throw new ParseError(
         'The type has to be specified explicitly when attaching specific functions',
         Location.fromCtx(ctx),
@@ -7083,7 +7083,7 @@ export default class AstBuilder
     const identifiers = ctx.Identifier_list();
     const name = identifiers[0].getText();
     const parentNames = identifiers.slice(1).map((id) => id.getText());
-    const invalidOperatorDirective = this.solidityImportCompat
+    const invalidOperatorDirective = this.evmCompat
       ? ctx.usingForDirective_list().find((directiveContext) => {
         const directive = this.visit(directiveContext) as UsingForDirectiveNode;
         return directive.functionBindings?.some((binding) => binding.operator) ?? false;
@@ -7172,7 +7172,7 @@ export default class AstBuilder
     }
 
     const modifierTexts = ctx.functionModifier_list().map((modifier) => modifier.getText());
-    if (this.solidityImportCompat && !modifierTexts.includes('external')) {
+    if (this.evmCompat && !modifierTexts.includes('external')) {
       throw new ParseError(
         'Functions in interfaces must be declared external',
         Location.fromCtx(ctx),
@@ -7464,7 +7464,7 @@ export default class AstBuilder
 
   // Named-arg method call: obj.f({a: x, b: y}). Args are reordered against the callee's params in semantic analysis.
   visitMethodCallNamed(ctx: MethodCallNamedContext): ExpressionNode {
-    if (this.solidityImportCompat && /,\}\)$/.test(ctx.getText())) {
+    if (this.evmCompat && /,\}\)$/.test(ctx.getText())) {
       throw new ParseError('Unexpected trailing comma in named arguments', Location.fromCtx(ctx));
     }
     const object = this.visit(ctx.expression());
@@ -7542,7 +7542,7 @@ export default class AstBuilder
     if (enumType) return enumType;
     const valueType = this.typeDefMap.get(typeText);
     if (valueType) return valueType;
-    if (this.solidityImportCompat && this.nonTypeNames.has(typeText)) {
+    if (this.evmCompat && this.nonTypeNames.has(typeText)) {
       throw new ParseError('Name has to refer to a user-defined type');
     }
     this.validateBoundedIntType(typeText);
@@ -7579,7 +7579,7 @@ export default class AstBuilder
   // Populate returnTypes and (optionally) returnNames from a `returns (...)` clause.
   private applyReturnType(fn: FunctionDefinitionNode, ctx: ReturnTypeContext): void {
     const params = ctx.returnParam_list();
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       for (const param of params) {
         const modifiers = param.modifier_list().map((modifier) => modifier.getText());
         const invalid = modifiers.find((modifier) => modifier === Modifier.CONSTANT
@@ -7830,7 +7830,7 @@ export default class AstBuilder
     const isAnonymous = ctx.children?.some((c) => c.getText() === 'anonymous') === true;
     const indexedCount = parameters.filter((parameter) => parameter.indexed).length;
     const maxIndexed = isAnonymous ? 4 : 3;
-    if (this.solidityImportCompat && indexedCount > maxIndexed) {
+    if (this.evmCompat && indexedCount > maxIndexed) {
       throw new ParseError(
         `More than ${maxIndexed} indexed arguments for ${isAnonymous ? 'anonymous ' : ''}event`,
         Location.fromCtx(ctx),
@@ -7844,7 +7844,7 @@ export default class AstBuilder
 
   visitErrorDefinition(ctx: ErrorDefinitionContext): ErrorDefinitionNode {
     const errorName = ctx.anyIdentifier().getText();
-    if (this.solidityImportCompat && (errorName === 'Error' || errorName === 'Panic')) {
+    if (this.evmCompat && (errorName === 'Error' || errorName === 'Panic')) {
       throw new ParseError(
         'The built-in errors "Error" and "Panic" cannot be re-defined',
         Location.fromCtx(ctx),
@@ -7863,7 +7863,7 @@ export default class AstBuilder
           : this.buildArrayType(paramCtx.arrayType()!),
       };
     });
-    if (this.solidityImportCompat && parameters.some((parameter) =>
+    if (this.evmCompat && parameters.some((parameter) =>
       !this.isValidSolidityErrorParameter(parameter.type))) {
       throw new ParseError(
         'Internal or recursive type is not allowed as error parameter type',
@@ -7955,7 +7955,7 @@ export default class AstBuilder
     // site does), so `IERC20 constant U = IERC20(0)` type-checks against an address value.
     const typeText = ctx.typeName().getText();
     const resolvedType = this.resolveType(typeText);
-    if (this.solidityImportCompat && (resolvedType instanceof StructType || this.structMap.has(typeText))) {
+    if (this.evmCompat && (resolvedType instanceof StructType || this.structMap.has(typeText))) {
       throw new ParseError(
         'Only constants of value type and byte array type are implemented',
         Location.fromCtx(ctx),
@@ -7965,7 +7965,7 @@ export default class AstBuilder
     const name = ctx.anyIdentifier().getText();
     this.constantTypes.set(name, type);
     const expression = this.visit(ctx.expression()) as ExpressionNode;
-    if (this.solidityImportCompat) this.validateConstantZeroDivisors(expression, ctx);
+    if (this.evmCompat) this.validateConstantZeroDivisors(expression, ctx);
     const node = new ConstantDefinitionNode(type, name, expression);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -8304,7 +8304,7 @@ export default class AstBuilder
   }
 
   private validateArrayLengthMutation(rawName: string, isThis: boolean, ctx: ParserRuleContext): void {
-    if (!this.solidityImportCompat) return;
+    if (!this.evmCompat) return;
     const alias = !isThis ? this.storageAliases.get(rawName) : undefined;
     const storageName = alias?.container ?? rawName;
     const storageType = this.stateArrayVarTypes.get(storageName)

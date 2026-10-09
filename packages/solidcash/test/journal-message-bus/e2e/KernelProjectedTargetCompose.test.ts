@@ -9,7 +9,7 @@ import { messageBusVmAccepts } from './vm-accepts.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
-  solidityImportCompat: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
+  evmCompat: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
 } as const;
 
 describe('kernel projected Solidity call targets', () => {

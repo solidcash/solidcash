@@ -20,7 +20,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A chain for the walls-ahead replicas of ordinary Solidity shapes: sources compiled the way a project's framed
- * build compiles them (`solidityImportCompat`, the shipped framed convention), deployed through the shipped
+ * build compiles them (`evmCompat`, the shipped framed convention), deployed through the shipped
  * deployment paths, and entered the way a project's handle enters them: a plain deployment through the plain call
  * path (`callFramedEntry`) and a contract behind its generated proxy through the hop (`callFramedProxyEntry`).
  *
@@ -29,7 +29,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /** The compile options a framed project build uses (the fixture's `solidcash.config.ts`, as its tests set them). */
 export const PROJECT_OPTIONS = {
-  solidityImportCompat: true,
+  evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
   messageBus: true,
@@ -52,7 +52,7 @@ export function compileProject(source: string): ArtifactMap {
  * do: no message-bus route is generated beside the framed bodies.
  */
 export function compileFramed(source: string): ArtifactMap {
-  return compileStringMulti(source, { solidityImportCompat: true, composition: 'framed' } as never);
+  return compileStringMulti(source, { evmCompat: true, composition: 'framed' } as never);
 }
 
 /** The deployer's lock, which also enters every call: the root frame's `msg.sender`. */

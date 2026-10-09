@@ -44,7 +44,7 @@ contract UdvtOps {
 
 const run = async (source: string, unlock: (c: Contract) => any): Promise<void> => {
   const provider = createTestProvider();
-  const contract = new Contract(compileString(source, { solidityImportCompat: true }), [], { provider });
+  const contract = new Contract(compileString(source, { evmCompat: true }), [], { provider });
   const utxo = randomUtxo();
   await provider.addUtxo(contract.address, utxo);
   const tx = new TransactionBuilder({ provider })

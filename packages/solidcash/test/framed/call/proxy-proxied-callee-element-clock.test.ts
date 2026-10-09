@@ -210,7 +210,7 @@ describeShipped('the shipped artifact whose append carries the transaction clock
   it('settles the append the callee stamps and reads the element back', async () => {
     const data = loadArtifact('MarketplaceDataV1.json');
     const callerArtifacts = compileStringMulti(CALLER_SOURCE, {
-      solidityImportCompat: true, composition: 'framed',
+      evmCompat: true, composition: 'framed',
     });
     const caller = callerArtifacts.Caller!;
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });

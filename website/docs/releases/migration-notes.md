@@ -48,10 +48,11 @@ tested native upgrade path preserves the published append-only layout.
 
 ### ABI and Solidity imports
 
-- Native selectors remain SHA-256-derived and native `abi.*` data uses compact Script framing. Enable `evmCompat`
-  only where EVM-compatible head/tail bytes and Keccak selectors are required, and use `uint160` for an
-  Ethereum-shaped address. A SolidCash `address` is full BCH locking bytecode.
-- Compile imported Solidity with `solidityImportCompat: true`. Canonical EVM storage assembly, `StorageSlot`, and
+- Native selectors remain SHA-256-derived and native `abi.*` data uses compact Script framing. `evmCompat` (the
+  Solidity-source compatibility mode) also switches the `abi.*` family to EVM-compatible head/tail bytes and
+  Keccak selectors; use `uint160` for an Ethereum-shaped address, since a SolidCash `address` is full BCH locking
+  bytecode.
+- Compile imported Solidity with `evmCompat: true`. Canonical EVM storage assembly, `StorageSlot`, and
   ERC-7201 patterns use the [documented storage bridge](/docs/language/evm-storage-compat); shapes outside that
   bridge, or outside the supported memory/call/delegate/Yul subset, fail with diagnostics and may require a
   BCH-specific rewrite.

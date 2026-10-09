@@ -276,7 +276,7 @@ async function leadingChain(row: Row, artifacts: ArtifactMap, validatorProgram: 
 async function framedAnswer(row: Row): Promise<{ readonly role?: Answer; readonly refusal?: string }> {
   let artifacts;
   try {
-    artifacts = compileStringMulti(row.source, { composition: 'framed', solidityImportCompat: true } as never);
+    artifacts = compileStringMulti(row.source, { composition: 'framed', evmCompat: true } as never);
   } catch (error) {
     return { refusal: `compile: ${(error as Error).message}` };
   }

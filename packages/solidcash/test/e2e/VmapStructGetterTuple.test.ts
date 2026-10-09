@@ -7,7 +7,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
 // Solidity's `mapping(K => Struct) public m` getter returns the struct's scalar fields as one named tuple, which the
-// compiler (under solidityImportCompat) publishes as one output per field. Awaiting that ABI entry point must READ
+// compiler (under evmCompat) publishes as one output per field. Awaiting that ABI entry point must READ
 // the tuple: `_isPureRead` treated anything but a single output as a state write and the multi-output branch of
 // the return derivation failed closed, so the await SENT a transaction. The bare getter name resolves to the
 // authenticated state accessor instead, which keeps the declared struct shape.
@@ -31,7 +31,7 @@ describe('struct-valued mapping getter reads back as a named tuple', () => {
   };
 
   it('returns the struct fields by name, in field order', async () => {
-    const art = compileString(SRC, { forceStateful: true, solidityImportCompat: true });
+    const art = compileString(SRC, { forceStateful: true, evmCompat: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
     const { contract } = await StatefulContract.deploy(art, [], {

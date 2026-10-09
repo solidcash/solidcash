@@ -3423,7 +3423,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Solidity <0.8 compatibility libraries emulate checked arithmetic with a wrapping operation followed by a
     // require. SolidCash bounded arithmetic is already checked. On split facets, lower the well-known BoringMath
     // helpers directly and omit their now-redundant OP_DEFINE bodies.
-    this.nativeLegacyMathFunctions = new Set(node.contract.isSplitFacet && this.compilerOptions.solidityImportCompat
+    this.nativeLegacyMathFunctions = new Set(node.contract.isSplitFacet && this.compilerOptions.evmCompat
       ? node.freeFunctions.filter((fn) => fn.nativeCheckedMath !== undefined)
       : []);
 
@@ -4026,7 +4026,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // pushes of the returned values, so it decodes exactly as the direct path decodes a return event's commitment.
     // A Solidity-compatible boundary's is an ABI tuple, and reading that as pushdata takes its first offset or
     // zero-padding byte as OP_0, which turns a dynamic value into empty bytes and a returned `true` into false.
-    if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+    if ((this.compilerOptions.evmCompat)
       && isEvmExternalResultSchemaDecodable(returnTypes)) {
       this.pushToStack('(callResult)');
       this.emitEvmExternalResultDecode(returnTypes, locationData);
@@ -4505,7 +4505,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private framedIdentityArguments(
     node: ExternalFunctionCallNode, site: MasterCallSite, slotIndex: number,
   ): readonly number[] {
-    if (!(this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)) return [];
+    if (!(this.compilerOptions.evmCompat)) return [];
     const slots = this.currentFunction?.externalCalls ?? [];
     const slot = slots.find((candidate) => candidate.sourceCallNode === node) ?? slots[slotIndex];
     return (site.arguments ?? []).flatMap((argument, position) => (argument.kind === 'runtime'
@@ -10356,7 +10356,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (source === undefined) return {};
     if (arg instanceof CastNode && arg.expression.type !== undefined) {
       const conversion = compileCast(
-        arg.expression.type as Type, arg.type, arg.isUnsafe, this.compilerOptions.solidityImportCompat ?? false,
+        arg.expression.type as Type, arg.type, arg.isUnsafe, this.compilerOptions.evmCompat ?? false,
       );
       if (conversion.length > 0) source = { ...source, then: binToHex(scriptToBytecode(conversion)) };
     }
@@ -13433,7 +13433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         node.expression.type as Type,
         node.type,
         node.isUnsafe,
-        this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat || false,
+        this.compilerOptions.evmCompat || false,
       ),
       { location: node.location, positionHint: PositionHint.END },
     );
@@ -13871,7 +13871,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Script's little-endian integer representation, while Solidity bytes32 values retain their EVM big-endian
     // byte order. Normalize the three scalar words at the builtin boundary; native SolidCash callers continue to
     // pass the documented little-endian values unchanged.
-    const reverseEvmScalars = this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat;
+    const reverseEvmScalars = this.compilerOptions.evmCompat;
     for (let p = 0; p < 4; p++) {
       node.parameters[p] = this.visit(node.parameters[p]);
       if (reverseEvmScalars && p !== 1) this.emit(Op.OP_REVERSEBYTES, loc);
@@ -15627,7 +15627,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // decoding, so mixing EVM words for some fields with compact pushdata for others is never sound.
     const evmEntrypointReturn = publishesEntrypointReturn
       && !this.currentFunctionIsMessageBusRoute
-      && (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+      && (this.compilerOptions.evmCompat)
       && isEvmExternalResultSchemaDecodable(returnTypes);
 
     // Evaluate return expressions - they will be left on the stack
@@ -16259,7 +16259,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // identity. Comparing the bytes made a stored sender, read back through another contract's result, unequal to
     // the `msg.sender` it was recorded from, so both operands are normalized to the identity first, as the kernel
     // lane does (231810f30). The native language keeps its exact-byte address equality.
-    if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+    if ((this.compilerOptions.evmCompat)
       && (node.operator === BinaryOperator.EQ || node.operator === BinaryOperator.NE)
       && node.left.type instanceof AddressType && node.right.type instanceof AddressType) {
       const identityLocation = { location: node.location, positionHint: PositionHint.END };
@@ -19032,7 +19032,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Turn a Solidity address identity into its BCH P2PKH payment script; retain complete native bytecode. */
   private emitSolidityValueRecipientLockingBytecode(locationData: SingleLocationData): void {
-    if (!this.compilerOptions.evmCompat && !this.compilerOptions.solidityImportCompat) return;
+    if (!this.compilerOptions.evmCompat) return;
     // An ABI address word is right-aligned. Reject nonzero framing instead of silently paying a truncated hash.
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
@@ -20864,7 +20864,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // explicit unsupported-schema error. A compiler-generated message-bus route is different: it aggregates
     // each child row using that row's published external-result encoding, so a non-EVM schema must use the
     // canonical compact tuple encoder without changing the source-language builtin.
-    const compatibilityAbi = this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat;
+    const compatibilityAbi = this.compilerOptions.evmCompat;
     const routeResultEncoding = this.currentFunction.messageBusRoute
       ? externalResultEncoding(node.parameters.map((parameter) => parameter.type!), this.compilerOptions)
       : undefined;
@@ -20936,7 +20936,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
     node.parameters.forEach((param, i) => {
-      const evmPacked = this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat;
+      const evmPacked = this.compilerOptions.evmCompat;
       // Keep casts in the normal expression path. In particular uint160(address) must first narrow the
       // BCH locking bytecode to its 20-byte Solidity identity before integer packed encoding reverses it.
       param = this.visit(param);
@@ -21013,7 +21013,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     this.visit(node.selector);
     this.preserveCanonicalRawPayloadArguments(() => {
-      if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
+      if (this.compilerOptions.evmCompat) {
         // EVM: the raw 4-byte selector followed by the standard encoding of the args.
         this.emitEvmAbiEncode(node.parameters, locationData);
         this.emit(Op.OP_CAT, locationData);
@@ -21129,7 +21129,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Visit data expression - puts encoded blob on stack
     node.data = this.visit(node.data);
 
-    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
+    if (this.compilerOptions.evmCompat) {
       const single = node.schema[0];
       if (node.schema.length === 1 && single instanceof StructType) {
         // a single struct: fixed-width -> inline field words; dynamic -> tuple head/tail re-framed to the struct blob
@@ -21377,7 +21377,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Solidity-compat graph handlers publish address leaves as ABI words (including struct fields)
       // so nested returning addresses match SDK-authenticated emission rows. A reference-data value keeps the
       // verbatim locking-bytecode leaf encoding instead (see `encodingReferenceDataValue`).
-      if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+      if ((this.compilerOptions.evmCompat)
         && type instanceof AddressType
         && this.currentFunction?.graphEmissionHandler === true
         && !this.encodingReferenceDataValue) {
@@ -23110,7 +23110,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack('(returnData)');
       } else {
         // Decode return values from blob
-        if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+        if ((this.compilerOptions.evmCompat)
           && isEvmExternalResultSchemaDecodable(returnTypes)) {
           this.pushToStack('(__external_result_blob)');
           this.emitEvmExternalResultDecode(returnTypes, locationData);
@@ -23551,7 +23551,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (evaluatedTargetExpression) this.stack[0] = '(__graph_target)';
     else this.pushToStack('(__graph_target)');
-    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
+    if (this.compilerOptions.evmCompat) {
       // Struct/state reads may retain a canonical ABI address word. Narrow it before proving the
       // source target against the rooted row's full locking bytecode, just like a 20-byte result.
       // Reject non-zero high bytes rather than silently accepting a malformed ABI address.
@@ -23781,7 +23781,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_PICK, locationData);
           this.pushToStack('(__graph_arg_value)');
         }
-        if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+        if ((this.compilerOptions.evmCompat)
           && parameter.type instanceof AddressType) {
           // Solidity evaluates every address as a 20-byte identity, but a low-level payload may preserve either
           // that identity or the full BCH locking bytecode from which it was derived. The authenticated row owns
@@ -23836,7 +23836,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         } else {
           // Solidity-compat graph returns publish address values as ABI words. Emission args must use the
           // same lane encoding so a nested returning address matches the SDK-authenticated row bytes.
-          if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+          if ((this.compilerOptions.evmCompat)
             && parameter.type instanceof AddressType) {
             this.emitGraphEmissionAddressLane(locationData);
           }
@@ -23972,7 +23972,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // source-level `(success, data)` tuple at the callsite.
       return 1;
     }
-    const evmGraphReturn = (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+    const evmGraphReturn = (this.compilerOptions.evmCompat)
       && isEvmExternalResultSchemaDecodable(returnTypes);
     if (evmGraphReturn) {
       // The call manifest carries the producer's exact return-event bytes. Solidity-compatible producers publish
@@ -24518,7 +24518,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const callInputParam = this.lowLevelCallCount === 1
       ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
-    if (this.compilerOptions.solidityImportCompat && target !== undefined && !this.framedMaster
+    if (this.compilerOptions.evmCompat && target !== undefined && !this.framedMaster
       && !this.isEmptyLiteralPayload(data) && this.getStackIndex(callInputParam, true) >= 0) {
       this.emitCompatLowLevelCallPin(data, target, callInputParam, locationData);
       return;
@@ -24552,7 +24552,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_INPUTBYTECODE, locationData);
     // Real stack: [..., data, ubcode]
 
-    if (this.compilerOptions.solidityImportCompat) {
+    if (this.compilerOptions.evmCompat) {
       // BCH unlockers push each ABI argument separately. An EVM `abi.encodeCall`
       // blob therefore cannot prefix-match the first push. Pin that the named
       // input exists; the co-spent callee covenant enforces the operation.
@@ -24699,8 +24699,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!(payload instanceof AbiEncodeWithSelectorNode || payload instanceof AbiEncodeCallNode
       || payload instanceof AbiEncodeWithSignatureNode)) return undefined;
     if (payload.parameters.length === 0) return undefined;
-    // The encoders' formats (visitAbiEncodeWithSelector and its siblings): EVM words for encodeWithSelector under
-    // solidityImportCompat and for every form under evmCompat, else one SolidCash push per argument.
+    // The encoders' formats (visitAbiEncodeWithSelector and its siblings): EVM words for every form under
+    // evmCompat, else one SolidCash push per argument.
     if (!(payload instanceof AbiEncodeWithSelectorNode) && !this.compilerOptions.evmCompat) {
       payload.parameters.forEach((parameter, index) => {
         const type = parameter.type;
@@ -24958,7 +24958,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // success (optional-return tokens); decoding leftover pushes as a bool OP_VERIFYs.
       this.emit(Op.OP_DROP, locationData);
       this.emit(Op.OP_1, locationData);           // [true]
-      if (this.compilerOptions.solidityImportCompat) {
+      if (this.compilerOptions.evmCompat) {
         // SafeERC20: `returndata.length != 0 && !abi.decode(returndata, (bool))`.
         // Publish a 32-byte EVM `true` so the optional-return check passes.
         const evmTrue = new Uint8Array(32);
@@ -25319,7 +25319,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitMappingKeyIdentity(type: Type | undefined, loc: SingleLocationData): void {
     while (type instanceof ValueType) type = type.underlyingType;
     if (!(type instanceof AddressType)
-      || !(this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat)) return;
+      || !(this.compilerOptions.evmCompat)) return;
     // A framed composition hashes an address key by its own bytes: its SDK declares every node by them.
     if (this.compilerOptions.composition === 'framed') return;
     // A stored/native address and a decoded Solidity ABI word are the same mapping key. Keep the
@@ -41430,7 +41430,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * which may be discarded. The empty legacy sentinel continues to select the already-authenticated candidate.
    */
   private emitPreferLockingBytecode(locationData: SingleLocationData): void {
-    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
+    if (this.compilerOptions.evmCompat) {
       // Struct fields and authenticated return values retain the canonical Solidity ABI address word.
       // Prove its zero padding before using the same identity check as a raw 20-byte address below.
       this.emit(Op.OP_SIZE, locationData);

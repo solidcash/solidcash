@@ -22,7 +22,7 @@ contract C() {
 describe('runtime new bytes(n)', () => {
   it('allocates a dynamic-length zero buffer and composes with bytes.concat', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE, { solidityImportCompat: true });
+    const artifact = compileString(SOURCE, { evmCompat: true });
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },

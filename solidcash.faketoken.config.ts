@@ -6,7 +6,7 @@ export default defineConfig({
     artifacts: '.marketplace/faketoken-artifacts',
     cache: '.marketplace/faketoken-cache',
   },
-  compiler: { solidityImportCompat: true },
+  compiler: { evmCompat: true },
   networks: {
     mock: {
       type: 'mock',

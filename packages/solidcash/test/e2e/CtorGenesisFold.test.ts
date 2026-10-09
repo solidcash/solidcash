@@ -45,8 +45,8 @@ contract Factory {
 describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const factoryArtifact = compileString(FACTORY, { solidityImportCompat: true, allowUnsafeOperations: true });
-  const childArtifact = compileString(CHILD, { solidityImportCompat: true });
+  const factoryArtifact = compileString(FACTORY, { evmCompat: true, allowUnsafeOperations: true });
+  const childArtifact = compileString(CHILD, { evmCompat: true });
 
   let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
 

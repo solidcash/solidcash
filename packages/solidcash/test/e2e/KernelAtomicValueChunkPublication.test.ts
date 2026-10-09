@@ -19,7 +19,7 @@ import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
-  maximumInputBytes: 1_000_000, solidityImportCompat: true, suppressWarnings: true,
+  maximumInputBytes: 1_000_000, evmCompat: true, suppressWarnings: true,
 } as const;
 
 describe('atomic value-chunk publication across nested builder phases', () => {

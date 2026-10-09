@@ -10,7 +10,7 @@ const OUTPUT_DIR = process.env.CORPUS_OUTPUT_DIR || BENCH_DIR;
 const compilerUrl = new URL('../../packages/solidc/dist/index.js', import.meta.url).href;
 
 // Parallel bench to solidity-by-example: attempt to compile every .sol in the ethereum/solidity compiler test
-// corpus (../solidity). Reuses the SBE tooling shape (compileFile + solidityImportCompat + OK/FAIL scorecard),
+// corpus (../solidity). Reuses the SBE tooling shape (compileFile + evmCompat + OK/FAIL scorecard),
 // adding solc-test-format bucketing so the denominator is meaningful:
 //   NEGATIVE  - the `// ----` trailer declares a compile Error; solc rejects it too, so SolidCash rejecting is
 //               parity (excluded). If SolidCash ACCEPTS one, that is over-permissive -> NEG_ACCEPTED (a signal).

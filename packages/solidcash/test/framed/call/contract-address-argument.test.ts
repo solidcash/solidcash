@@ -56,7 +56,7 @@ const SOURCE = [
 ].join('\n');
 
 const artifacts = compileStringMulti(SOURCE, {
-  solidityImportCompat: true, composition: 'framed', commitmentLimit: 10_000_000,
+  evmCompat: true, composition: 'framed', commitmentLimit: 10_000_000,
 } as never);
 
 /** The owner: the user who deploys both contracts and calls the setter. */

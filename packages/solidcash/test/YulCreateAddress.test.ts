@@ -23,7 +23,7 @@ describe('Yul create(0, add(c,0x20), mload(c)) -> p2sh32(c) address (VM)', () =>
         require(d == expected);
         require(true);
       } }`;
-    const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(src, { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })

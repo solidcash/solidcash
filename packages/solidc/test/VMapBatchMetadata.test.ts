@@ -27,7 +27,7 @@ describe('vmap fixed-write batch metadata', () => {
           require(true);
         }
       }
-    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    `, { forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true });
     const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
     expect(access?.storedElementSource).toMatchObject({
       version: 1,
@@ -61,7 +61,7 @@ describe('vmap fixed-write batch metadata', () => {
           require(true);
         }
       }
-    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    `, { forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true });
     const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
     expect(access?.storedElementSource).toBeUndefined();
     expect(access?.arrayMutation).toBe('push');
@@ -80,7 +80,7 @@ describe('vmap fixed-write batch metadata', () => {
           require(true);
         }
       }
-    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    `, { forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true });
     const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
     expect(access).toMatchObject({ arrayMutation: 'push' });
     expect(access?.storedElementSource).toBeUndefined();
@@ -304,7 +304,7 @@ describe('vmap fixed-write batch metadata', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
     });
     const accesses = artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses;
     expect(accesses?.map((access) => [access.collection, access.operations])).toEqual([
@@ -324,7 +324,7 @@ describe('vmap fixed-write batch metadata', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
       messageBusGraphContext: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
       optimizeForCompilationSpeed: true,
     });
@@ -379,7 +379,7 @@ describe('vmap fixed-write batch metadata', () => {
             ${body}
             require(true);
           }
-        }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+        }`, { forceStateful: true, evmCompat: true, messageBus: true,
         messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
         suppressWarnings: true, optimizeForCompilationSpeed: true });
       return artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
@@ -401,7 +401,7 @@ describe('vmap fixed-write batch metadata', () => {
           mapping(uint256 => bool) flags;
           mapping(uint256 => uint256) data;
           function store(uint256 value) public { ${body} require(true); }
-        }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+        }`, { forceStateful: true, evmCompat: true, messageBus: true,
         messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
         suppressWarnings: true, optimizeForCompilationSpeed: true });
       return artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
@@ -422,7 +422,7 @@ describe('vmap fixed-write batch metadata', () => {
           mapping(uint256 => bool) flags;
           mapping(uint256 => uint256) data;
           function store(uint256 value) public { ${body} require(true); }
-        }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+        }`, { forceStateful: true, evmCompat: true, messageBus: true,
         messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
         suppressWarnings: true, optimizeForCompilationSpeed: true });
       return artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
@@ -446,7 +446,7 @@ describe('vmap fixed-write batch metadata', () => {
             ${body}
             require(true);
           }
-        }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+        }`, { forceStateful: true, evmCompat: true, messageBus: true,
         messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
         suppressWarnings: true, optimizeForCompilationSpeed: true });
       return artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
@@ -473,7 +473,7 @@ describe('vmap fixed-write batch metadata', () => {
             ${body}
             require(true);
           }
-        }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+        }`, { forceStateful: true, evmCompat: true, messageBus: true,
         messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
         suppressWarnings: true, optimizeForCompilationSpeed: true });
       return artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
@@ -496,7 +496,7 @@ describe('vmap fixed-write batch metadata', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const source = artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
@@ -518,7 +518,7 @@ describe('vmap fixed-write batch metadata', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const source = artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
@@ -541,7 +541,7 @@ describe('vmap fixed-write batch metadata', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifact.abi.find((fn) => fn.name === 'store')).toBeDefined();

@@ -41,7 +41,7 @@ describe('kernel proxy event-only under composition', () => {
           emit Ping(value);
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(implArtifact.stateLayout?.dataNftCount).toBe(1);
     expect(implArtifact.stateLayout?.variables?.some((variable) => variable.name === '__messageBusHold'))
       .toBe(true);
@@ -91,7 +91,7 @@ describe('kernel proxy event-only under composition', () => {
 
     const probeArtifact = compileString(`pragma solidity ^0.8.0;
       contract Probe { function touch() public { require(true); } }`, {
-      ...KERNEL, solidityImportCompat: true, messageBusGraphContext: true,
+      ...KERNEL, evmCompat: true, messageBusGraphContext: true,
     });
     const probeBase = new Contract(probeArtifact, [], { provider });
     const probeSetup = await setupStatefulUtxos(
@@ -110,7 +110,7 @@ describe('kernel proxy event-only under composition', () => {
           IProbe(probe).touch();
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(implArtifact.stateLayout?.dataNftCount).toBe(1);
 
     const deployed = await upgrades.deployProxy(

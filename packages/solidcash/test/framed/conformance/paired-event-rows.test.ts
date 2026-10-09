@@ -45,7 +45,7 @@ function outpointHash(seed: number): string {
 
 describe('spec section 23 row 14: two events in one transaction', () => {
   it('emits two events from one entry and reads both decoded logs back', async () => {
-    const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never)
+    const artifact = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never)
       .Ledger!;
 
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });

@@ -8,14 +8,14 @@ describe('Yul low-level-call success assigned to a typed bool', () => {
     const src = 'contract C { function f(address a) public returns (bool success) {'
       + ' assembly { success := staticcall(gas(), a, 0, 0, 0, 0)'
       + ' switch success case 0 { invalid() } } require(success || !success); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
   it('inlines a low-level-call helper with `if (c) return a; return b;` into its entry point', () => {
     const src = 'contract C { function g(address a) internal returns (uint) { bool success;'
       + ' assembly { success := staticcall(gas(), a, 0, 0, 0, 0) switch success case 0 { invalid() } }'
       + ' if (!success) return 1; return 0; }'
       + ' function f(address a) public returns (bool) { return g(a) == 0; } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -24,7 +24,7 @@ describe('Solidity keywords as Yul identifiers', () => {
     expect(compileString('contract C { function f() public pure { assembly {'
       + ' let abstract := 1 let contract := 2 let memory := 3 let uint := 4'
       + ' pop(add(abstract, contract)) } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('rejects EVM instructions and object-format builtins as Yul declaration names', () => {
@@ -39,7 +39,7 @@ describe('Solidity keywords as Yul identifiers', () => {
     for (const body of invalid) {
       expect(() => compileString(
         `contract C { function f() public pure { ${body} } }`,
-        { solidityImportCompat: true },
+        { evmCompat: true },
       )).toThrow(/identifier '.*' is reserved/);
     }
   });
@@ -48,7 +48,7 @@ describe('Solidity keywords as Yul identifiers', () => {
     expect(compileString(
       'contract C { function f() public pure { assembly {'
       + ' function twice(value) -> result { result := add(value, value) } let output := twice(2) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -64,7 +64,7 @@ describe('Solidity keywords as Yul identifiers', () => {
       expect(compileString(
         `contract C { function f() public pure { assembly { let ${name} := 1 } } }`
         + `\n// ====\n// EVMVersion: ${evmVersion}\n// ----`,
-        { solidityImportCompat: true },
+        { evmCompat: true },
       ).contractName).toBe('C');
     }
   });
@@ -73,7 +73,7 @@ describe('Solidity keywords as Yul identifiers', () => {
     expect(compileString(
       'contract C { function f() public view returns (uint) { return block.prevrandao; } }'
       + '\n// ====\n// EVMVersion: <paris\n// ----',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -87,7 +87,7 @@ describe('pure function inline-assembly effects', () => {
     for (const effect of effects) {
       expect(() => compileString(
         `contract C { function f() public pure { assembly { pop(${effect}) } } }`,
-        { solidityImportCompat: true },
+        { evmCompat: true },
       )).toThrow(/declared pure.*reads state or the environment/);
     }
   });
@@ -95,7 +95,7 @@ describe('pure function inline-assembly effects', () => {
   it('accepts chainid in pure assembly because it lowers to the selected network constant', () => {
     expect(compileString(
       'contract C { function f() public pure returns (uint id) { assembly { id := chainid() } } }',
-      { solidityImportCompat: true, chainId: 1 },
+      { evmCompat: true, chainId: 1 },
     ).contractName).toBe('C');
   });
 
@@ -104,7 +104,7 @@ describe('pure function inline-assembly effects', () => {
       'contract C { function f(uint x) public pure returns (uint y) {'
       + ' assembly { mstore(0, add(x, 1)) y := mload(0)'
       + ' let n := returndatasize() returndatacopy(0, 0, n) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -113,7 +113,7 @@ describe('Yul byte builtin word type', () => {
   it('can compare byte(0, mload(ptr)) with an integer word', () => {
     expect(compileString('contract C { function f(bytes memory data) public pure returns (bool ret) {'
       + ' assembly { ret := iszero(lt(byte(0, mload(add(data, 0x20))), 0xC0)) } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -121,11 +121,11 @@ describe('dead Yul library-address bindings', () => {
   it('drops an unused binding to a declared library but not an unknown identifier', () => {
     expect(compileString(
       'library L {} contract C { function f() public pure { assembly { let x := L } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
     expect(() => compileString(
       'contract C { function f() public pure { assembly { let x := Unknown } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Undefined reference|Unsupported inline assembly/);
   });
 });
@@ -134,7 +134,7 @@ describe('Yul byte() result assigned to a uint256 word', () => {
   it('reinterprets the bytes1 AST result as the uint256 Yul target word', () => {
     const src = 'contract C { function f(uint256 x) public returns (uint256 a) {'
       + ' assembly { a := byte(31, x) } } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -142,7 +142,7 @@ describe('Yul bytes32 memory offsets are uint256 words', () => {
   it('accepts a keccak256 result as the offset of runtime mstore', () => {
     const src = 'contract C { function f() public pure {'
       + ' assembly { mstore(keccak256(0, 20), 7) } } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -151,7 +151,7 @@ describe('inline assembly preserves payable address assignments', () => {
     expect(compileString(
       'contract C { function f(address payable z) public pure returns(address payable r) {'
       + ' assembly { r := z } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -164,22 +164,22 @@ describe('Yul assignment across types (assembly { r := x })', () => {
     `contract C() { function f(${arg} x) external pure returns (${ret} r) { assembly { r := x } } }`;
 
   it('lowers a value-typed operand to a uint256 target', () => {
-    expect(compileString(mk('uint256', 'address'), { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(mk('uint256', 'bool'), { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(mk('uint256', 'bytes32'), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('uint256', 'address'), { evmCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('uint256', 'bool'), { evmCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('uint256', 'bytes32'), { evmCompat: true }).contractName).toBe('C');
   });
 
   it('casts a uint256 word to a differently-typed target', () => {
-    expect(compileString(mk('address', 'uint256'), { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(mk('bool', 'uint256'), { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(mk('bytes32', 'uint256'), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('address', 'uint256'), { evmCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('bool', 'uint256'), { evmCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('bytes32', 'uint256'), { evmCompat: true }).contractName).toBe('C');
   });
 
   it('leaves a same-type (uint256) assignment and arithmetic unchanged', () => {
-    expect(compileString(mk('uint256', 'uint256'), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('uint256', 'uint256'), { evmCompat: true }).contractName).toBe('C');
     expect(compileString(`contract C() {
       function f(uint256 a, uint256 b) external pure returns (uint256 r) { assembly { r := add(a, b) } }
-    }`, { solidityImportCompat: true }).contractName).toBe('C');
+    }`, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -190,16 +190,16 @@ describe('this.f{value/gas}(args) self-call drops the inert EVM call options', (
     expect(compileString(`contract C() {
       function g(uint256 n) returns (uint256) { return n * 2; }
       function f(uint256 e) { require(this.g{value: 10}(2) == e); }
-    }`, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    }`, { evmCompat: true, forceStateful: true }).contractName).toBe('C');
     expect(compileString(`contract C() {
       function g(uint256 x) returns (uint256) { return x + 1; }
       function f(uint256 x, uint256 e) { require(this.g{gas: 8000}(x) == e); }
-    }`, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    }`, { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
 describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.slot)', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   // A `storage` pointer local that directly aliases a state var resolves `.slot`/`.offset` in assembly to the
   // underlying var's (constant) slot/offset - the same value a direct `a.slot` yields. Corpus: storage_reference_fine.
   it('resolves an ARRAY storage-pointer alias .slot and .offset', () => {
@@ -208,7 +208,7 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
   });
   it('a non-aliasing storage pointer (from an element) fails closed - no wrong slot, no crash', () => {
     expect(() => compileString('contract C { uint[][] a; function f() public returns (uint s) {'
-      + ' uint[] storage x = a[0]; assembly { s := x.slot } require(true); } }', { solidityImportCompat: true }))
+      + ' uint[] storage x = a[0]; assembly { s := x.slot } require(true); } }', { evmCompat: true }))
       .toThrow(/inline assembly/i);
   });
   // `sload(a.slot)` on a dynamic array reads its length (EVM: array base slot holds the length). Lowers to the same
@@ -223,7 +223,7 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
     expect(ok('contract C { uint128[] a; function f(uint n) public {'
       + ' assembly { sstore(a.slot, n) } require(true); } }')).toBe('C');
     expect(() => compileString('contract C { bytes[] a; function f() public {'
-      + ' assembly { sstore(a.slot, 4) } require(true); } }', { solidityImportCompat: true }))
+      + ' assembly { sstore(a.slot, 4) } require(true); } }', { evmCompat: true }))
       .toThrow(/inline assembly/i);
   });
   it('calldata .offset of a first dynamic param resolves to the compile-time ABI data position', () => {
@@ -282,7 +282,7 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
 });
 
 describe('composite sub-slot field access (sload/sstore on a value-field struct slot)', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   // A fixed struct's own slots decode to its packed value fields: read = combine, write = struct-ctor rebuild
   // (VM round-trip incl. high-bit values + field<->slot cross-checks in EvmStorageLayout.test.ts). Corpus:
   // struct_delete_storage_small.
@@ -303,7 +303,7 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
   it('a struct with a variable-width (address) field fails closed - no unsound word layout', () => {
     expect(() => compileString('contract C { struct T { address a; uint96 b; } T t;'
       + ' function f() public returns (uint r) { assembly { r := sload(t.slot) } require(true); } }',
-    { solidityImportCompat: true })).toThrow(/inline assembly/i);
+    { evmCompat: true })).toThrow(/inline assembly/i);
   });
   it('reads and writes a NESTED struct head slot (recursive rebuild)', () => {
     expect(ok('contract C { struct Inner { uint64 a; uint64 b; } struct S { Inner inner; uint256 x; } S s;'
@@ -318,7 +318,7 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
   it('a top-level fixed array OF structs fails closed (SDK cannot derive that state layout)', () => {
     expect(() => compileString('contract C { struct P { uint64 a; uint64 b; } P[2] ps;'
       + ' function f() public returns (uint r) { assembly { r := sload(ps.slot) } require(true); } }',
-    { solidityImportCompat: true })).toThrow(/inline assembly/i);
+    { evmCompat: true })).toThrow(/inline assembly/i);
   });
   it('reads and writes a packed slot with bool + enum fields', () => {
     expect(ok('contract C { enum E { A, B, C } bool b; E ev; uint240 x;'
@@ -329,24 +329,24 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
 
 describe('EVM storage-layout specifier tolerated (contract C layout at expr)', () => {
   // `contract C [is ..] layout at <slot>` sets an EVM storage base slot - meaningless on the UTXO model, so the
-  // clause is dropped under solidityImportCompat and the contract compiles as if it were absent.
+  // clause is dropped under evmCompat and the contract compiles as if it were absent.
   it('drops the layout clause (with and without inheritance)', () => {
     expect(compileString('contract C layout at 42 { function f(uint256 e) { require(e == e); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
     expect(compileString(
       'contract A {} contract C is A layout at 1234 + 4567 { uint256 x; function f(uint256 e) { x = e; } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
     expect(compileString(
       'contract A { mapping(uint => bool) locked; } contract C layout at 42 is A {'
       + ' function f(uint x) public { locked[x] = true; require(locked[x]); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
 
   it('compiles identically to the contract without the clause', () => {
     const withLayout = compileString('contract C layout at 99 { uint256 x; function f(uint256 e) { x = e; } }',
-      { solidityImportCompat: true }).bytecode;
+      { evmCompat: true }).bytecode;
     const without = compileString('contract C { uint256 x; function f(uint256 e) { x = e; } }',
-      { solidityImportCompat: true }).bytecode;
+      { evmCompat: true }).bytecode;
     expect(withLayout).toBe(without);
   });
 
@@ -357,22 +357,22 @@ describe('EVM storage-layout specifier tolerated (contract C layout at expr)', (
 });
 
 describe('erc7201(id) -> spec-conformant ERC-7201 namespaced storage slot (real keccak256, EIP-7201)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('folds a literal namespace id to the EIP-7201 slot (byte-identical to Ethereum)', () => {
     // keccak256(abi.encode(uint256(keccak256("example.main")) - 1)) & ~bytes32(uint256(0xff)) = the EIP-7201 reference.
     expect(`0x${computeErc7201SlotNumber('example.main').toString(16)}`)
       .toBe('0x183a6125c38840424c4a85fa12bab2ab606c4b6d0e7cc73c0c06ba5300eab500');
     const viaBuiltin = compileString('contract C { function f() external pure returns (uint256) {'
-      + ' return erc7201("example.main"); } }', { solidityImportCompat: true });
+      + ' return erc7201("example.main"); } }', { evmCompat: true });
     const viaLiteral = compileString('contract C { function f() external pure returns (uint256) {'
-      + ` return uint256(${computeErc7201SlotNumber('example.main')}); } }`, { solidityImportCompat: true });
+      + ` return uint256(${computeErc7201SlotNumber('example.main')}); } }`, { evmCompat: true });
     expect(viaBuiltin.bytecode).toBe(viaLiteral.bytecode);
   });
   it('is NO LONGER the BCH-native sha256 alias', () => {
     const a = compileString('contract C { function f() external pure returns (uint256) { return erc7201("ns"); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const b = compileString('contract C { function f() external pure returns (uint256) { return uint256(sha256("ns")); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(a.bytecode).not.toBe(b.bytecode);
   });
   it('is usable as a uint256 storage-slot constant', () => {
@@ -399,7 +399,7 @@ describe('erc7201(id) -> spec-conformant ERC-7201 namespaced storage slot (real 
 });
 
 describe('erc7201 as a Yul builtin -> spec-conformant slot (reuses the erc7201 fold)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('lowers a Yul erc7201(id) call to the conformant ERC-7201 slot', () => {
     expect(cc('contract C { function f() external pure returns (bytes32) {'
       + ' bytes32 s; assembly { s := erc7201("example.main") } return s; } }')).toBe('C');
@@ -407,7 +407,7 @@ describe('erc7201 as a Yul builtin -> spec-conformant slot (reuses the erc7201 f
 });
 
 describe('complex-lvalue tuple targets (index/member chains in tuple slots)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('assigns to index and member targets, holes, and nested field arrays', () => {
     expect(cc('contract C { function f(int a, int b) external { int[3] x; (x[0], x[2]) = (a, b);'
       + ' require(x[0] == a && x[2] == b); } }')).toBe('C');
@@ -420,7 +420,7 @@ describe('complex-lvalue tuple targets (index/member chains in tuple slots)', ()
     // (x[0], x[1]) = (x[1], x[0]) reads target base x in the RHS -> the alias-safe desugar declines it, and the
     // general tuple path rejects the complex slot rather than emitting a wrong sequential write.
     expect(() => compileString('contract C { function f() external { int[2] x; (x[0], x[1]) = (x[1], x[0]);'
-      + ' require(true); } }', { solidityImportCompat: true })).toThrow();
+      + ' require(true); } }', { evmCompat: true })).toThrow();
   });
 });
 
@@ -431,13 +431,13 @@ describe('Yul dirty bits on external function components', () => {
       + ' p.address := or(p.address, shl(160, sub(0, 1)))'
       + ' p.selector := or(p.selector, shl(32, sub(0, 1))) }'
       + ' function() external q = this.g; return p == q; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
   it('preserves arbitrary address-component mutation for a later read', () => {
     expect(compileString('contract C { function g() external {} function f() public returns (address) {'
       + ' function() external p = this.g; assembly { p.address := 1 } return p.address; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -448,7 +448,7 @@ describe('address(L) library-as-address (EVM library-linking parity, corpus libr
   it('synthesizes a __libAddr_L constructor arg for address(L) on an inline library', () => {
     const art = compileString(
       'library L {} contract C { function f() public pure returns (address) { return address(L); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(art.constructorInputs.find((i) => i.name === '__libAddr_L')?.type).toBe('address');
   });
   it('reuses one __libAddr_L param for address(L) alongside a library call', () => {
@@ -456,13 +456,13 @@ describe('address(L) library-as-address (EVM library-linking parity, corpus libr
       'library L { function sq(uint v) internal pure returns (uint) { return v*v; } }'
       + ' contract C { function f() public pure returns (address) { return address(L); }'
       + ' function g(uint x) public pure returns (uint) { return L.sq(x); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(art.constructorInputs.filter((i) => i.name === '__libAddr_L').length).toBe(1);
   });
   it('does not rewrite address(x) where x is a non-library local', () => {
     const art = compileString(
       'contract C { function f(address x) public pure returns (address) { return address(x); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(art.constructorInputs.find((i) => i.name?.startsWith('__libAddr_'))).toBeUndefined();
   });
 });
@@ -475,7 +475,7 @@ describe('nested named memory return allocation shared with Yul', () => {
       + ' bytes memory table = TABLE; assembly ("memory-safe") {'
       + ' let p := add(result, 32) let t := add(table, 1) mstore(p, mload(t)) } return result; } }'
       + ' contract C { function f(uint256 n) public pure returns (string memory) { return B.enc(n); } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 });
 
@@ -486,17 +486,17 @@ describe('low-level call with mapping-entry operands (block-layout slot allocati
   const src = 'contract C { struct T { address dest; uint val; bytes data; bool done; } mapping(uint=>T) txs;'
     + ' function exec(uint id) public { T storage t = txs[id]; (t.done,) = t.dest.call{value: t.val}(t.data); } }';
   it('allocates entry slots for a .call{value:} with entry operands (default entry model)', () => {
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
   it('same under vmap-default (the -1 slot no longer trips the sorted read)', () => {
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
   it('resolves the collection behind a same-named synthesized public getter', () => {
     const inherited = 'contract Base { struct T { address dest; uint val; bytes data; bool done; }'
       + ' mapping(uint=>T) public txs; function exec(uint id) public {'
       + ' T storage t = txs[id]; (t.done,) = t.dest.call{value: t.val}(t.data); } }'
       + ' contract C is Base {}';
-    expect(() => compileString(inherited, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(inherited, { evmCompat: true })).not.toThrow();
   });
 });
 
@@ -512,7 +512,7 @@ describe('prune unreachable inline-assembly free functions (EACC EACCToken: dead
     + ' function plain(uint256 a) internal pure returns (uint256) { return a + 1; } }';
   const resolver = (p: string): { source: string; id: string } | undefined => (
     p === './MHU.sol' ? { source: `pragma solidity ^0.8.20;${lib}`, id: '/MHU.sol' } : undefined);
-  const opt = { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true };
+  const opt = { importResolver: resolver, rootFileId: '/main.sol', evmCompat: true };
 
   it('drops an UNREACHABLE assembly helper so its EVM-memory assembly never blocks the compile', () => {
     const code = 'import { MHU } from "./MHU.sol"; contract C { uint256 public x; function f() public { x = MHU.plain(1); } }';
@@ -537,12 +537,12 @@ describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a dire
   it('compiles the LOCAL slot-alias form (S storage d = getStringSlot(_fb); d.value = v)', () => {
     const src = 'pragma solidity ^0.8.20;' + lib + ' contract C { string _fb;'
       + ' function set(string memory v) public { StringSlot storage d = StorageSlot.getStringSlot(_fb); d.value = v; } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
   it('compiles the INLINE slot-alias form (getStringSlot(_fb).value = v)', () => {
     const src = 'pragma solidity ^0.8.20;' + lib + ' contract C { string _fb;'
       + ' function set(string memory v) public { StorageSlot.getStringSlot(_fb).value = v; } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 
   it('compiles a qualified imported inline slot-alias call', () => {
@@ -552,7 +552,7 @@ describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a dire
     const source = 'import "./StorageSlot.sol"; contract C { string private _fb;'
       + ' function set(string memory v) public { StorageSlot.getStringSlot(_fb).value = v; } }';
     expect(() => compileString(source, {
-      solidityImportCompat: true,
+      evmCompat: true,
       rootFileId: '/C.sol',
       importResolver: (importPath) => importPath === './StorageSlot.sol'
         ? { source: storageSlot, id: '/StorageSlot.sol' } : undefined,
@@ -563,7 +563,7 @@ describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a dire
       + ' library StorageSlot { function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r)'
       + ' { assembly { r.slot := slot } } }'
       + ' contract C { function setU(bytes32 slot, uint256 v) public { StorageSlot.getUint256Slot(slot).value = v; } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 });
 
@@ -576,14 +576,14 @@ describe('dead assembly library helper is pruned even after its assembly fully l
       + ' unchecked { uint256 prod0 = a * b; assembly { let mm := mulmod(a, b, not(0)) result := sub(mm, prod0) }'
       + ' if (result == 0) { return prod0; } return result; } } }'
       + ' contract C { function f(uint256 x) public pure returns (uint256) { return x; } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
   it('KEEPS a reachable assembly helper (still compiles when actually used)', () => {
     const src = 'library Math { function dbl(uint256 a) internal pure returns (uint256 r) {'
       + ' assembly { r := add(a, a) } } }'
       + ' contract C { using Math for uint256; function f(uint256 x) public pure returns (uint256) {'
       + ' return Math.dbl(x); } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 });
 
@@ -592,7 +592,7 @@ describe('Yul create2 deploy lowering (UniswapV2Factory createPair)', () => {
   // to a native `new C{salt: salt}()` deploy (LowerInlineAssembly, pre-semantic), reusing the fully-plumbed deploy
   // covenant + SDK deployFrom. Only a create2 over a resolvable type(C).creationCode local qualifies; an unknown
   // runtime buffer stays unlowerable and fails closed with the clear "no BCH equivalent" diagnostic.
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
   it('lowers create2 over type(C).creationCode to new C{salt}()', () => {
     expect(() => compileString('pragma experimental ABIEncoderV2;'
       + ' contract Child { uint256 v; function setv(uint256 x) external { v = x; } }'
@@ -623,7 +623,7 @@ describe('bytes-pointer advance in assembly (OZ/BoringCrypto _getRevertMsg)', ()
   // Error(string) selector. On BCH bytes are values, so it lowers to the slice `_returnData[4:]` (VM-proven
   // byte-exact in solidcash RevertMsgSlice.test.ts). This unblocks BoringBatchable-derived contracts
   // (BentoBoxV1, MasterChefV2) at the _getRevertMsg wall.
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
   it('lowers add(bytesMemory, N) to a slice so _getRevertMsg compiles', () => {
     expect(() => compileString('pragma solidity ^0.8.0; contract C {'
       + ' function f(bytes memory _returnData) public pure returns (string memory) {'
@@ -652,32 +652,32 @@ describe('narrow integer arrays in the Yul memory model', () => {
   it('uses full EVM words and narrows dirty uint8 words on high-level reads', () => {
     expect(compileString('contract C { function f() public pure returns (uint8) {'
       + ' uint8[] memory a = new uint8[](1); assembly { mstore(add(a, 32), 258) } return a[0]; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('unwraps and rewraps integer-backed UDVT array words', () => {
     expect(compileString('type Tiny is uint8; contract C { function f(Tiny v) public pure returns (Tiny) {'
       + ' Tiny[] memory a = new Tiny[](1); a[0] = v; assembly { mstore(add(a, 32), 258) } return a[0]; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('resets a deleted memory-array pointer to the Yul null pointer', () => {
     expect(compileString('contract C { function f() public pure returns (uint r) {'
       + ' uint[] memory a = new uint[](1); delete a; assembly { r := mload(a) } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('materializes an inline array allocation from a memory-struct rebuild', () => {
     expect(compileString('contract C { struct S { uint8[] a; } function f() public pure returns (uint8) {'
       + ' S memory s; s.a = new uint8[](1); assembly { mstore(add(s, 64), 257) } return s.a[0]; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('materializes independently decoded dynamic arrays as Yul pointers', () => {
     expect(compileString('contract C { function f(bytes memory b) public view returns (bool same, bool atOffset) {'
       + ' (uint256[] memory a, uint256[] memory c) = abi.decode(b, (uint256[], uint256[]));'
       + ' assembly { same := eq(a, c) atOffset := eq(a, add(b, 0x60)) } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -686,7 +686,7 @@ describe('literal-backed memory bytes in inline assembly', () => {
     expect(compileString('contract C { bytes x; function f() public returns (uint r) {'
       + ' bytes memory m = "tmp"; assembly { mstore(m, 8) mstore(add(m, 32), "deadbeef15dead") }'
       + ' x = m; assembly { r := sload(x.slot) } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -694,7 +694,7 @@ describe('memory string parameters referenced by Yul', () => {
   it('materializes the ABI value into shared linear memory and exposes its pointer', () => {
     expect(compileString('contract C { function f(string memory s) public returns (bool ret) {'
       + ' assembly { let a := keccak256(s, 32) let b := keccak256(s, 8) ret := eq(a, b) } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -702,7 +702,7 @@ describe('runtime Yul clz', () => {
   it('lowers a word operand with fixed binary-search branches', () => {
     expect(compileString('contract C { function f(uint256 x) public pure returns (bytes32 ret) {'
       + ' assembly { ret := clz(x) } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -713,7 +713,7 @@ describe('function pointers as Yul words', () => {
       + ' assembly { word := local } }'
       + ' function copy() public { function() internal a = target; function() internal b;'
       + ' assembly { b := a } b(); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -721,14 +721,14 @@ describe('calldata aggregate pointers in Yul', () => {
   it('exposes the ABI offset of a fixed-array element derived from a dynamic calldata array', () => {
     expect(compileString('contract C { function f(uint[2][] calldata x) public returns (uint offset) {'
       + ' uint[2] calldata t = x[1]; assembly { offset := t } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('rebinds calldata struct views to known parameter offsets', () => {
     expect(compileString('contract C { struct S { uint x; } struct T { uint x; uint y; }'
       + ' function f(S calldata s, T calldata t) public pure returns (uint a, uint b) {'
       + ' assembly { s := t t := 4 } return (s.x, t.x); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -737,7 +737,7 @@ describe('Yul memory words for UDVT struct fields', () => {
     expect(compileString('type MyInt is int64; struct Pair { MyInt a; MyInt b; }'
       + ' contract C { function f(Pair memory p) public pure returns (bytes32 first) {'
       + ' assembly { first := mload(p) mstore(add(p, 0x20), 3) } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -747,14 +747,14 @@ describe('fixed memory arrays shared with Yul', () => {
       + ' uint256[1] memory m; assembly { mstore(m, 0xdeadbeef) } return m[0]; }'
       + ' function narrow() public pure returns (uint8 value) {'
       + ' uint8[1] memory m; assembly { mstore(m, 257) } return m[0]; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('serializes an initialized fixed array when passing it to a call after Yul mutation', () => {
     expect(compileString('contract C { function g(uint8[2] calldata s) external pure returns (uint8) {'
       + ' return s[0]; } function f(uint a) public returns (uint8) { uint8[2] memory m = [0, 0];'
       + ' assembly { mstore(m, a) } return this.g(m); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -762,7 +762,7 @@ describe('uninitialized dynamic memory arrays shared with Yul', () => {
   it('materializes a nonzero pointer to a zero length word', () => {
     expect(compileString('contract C { function f() public pure { uint[] memory x; uint y;'
       + ' assembly { y := x } assert(y != 0); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -771,7 +771,7 @@ describe('local Yul functions in for-loop conditions', () => {
     expect(compileString('contract C { uint st; function f(uint a) public returns (uint b) { assembly {'
       + ' function sideeffect(r) -> x { sstore(0, add(sload(0), r)) x := 1 }'
       + ' for { let i := a } eq(i, sideeffect(2)) { i := 0 } { b := i } } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -780,7 +780,7 @@ describe('Solidity constants in Yul word locals', () => {
     expect(compileString('contract C { uint constant x = 2**20; bool constant b = true;'
       + ' bytes4 constant s = "ab"; function f() public pure {'
       + ' assembly { let c1 := x let c2 := b let c3 := s } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -788,7 +788,7 @@ describe('Yul raw return halts', () => {
   it('does not type-check return(ptr,size) as a Solidity return expression', () => {
     expect(compileString('contract C { function f() public { assembly { mstore(0, 7) return(0, 32) } }'
       + ' function g() public pure returns (uint x) { assembly { return(0, 0) x := 1 } } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -797,7 +797,7 @@ describe('Yul external function-pointer component reads', () => {
     expect(compileString(
       'contract C { function target() external {} function f() public returns (uint selector) {'
       + ' function() external fp = this.target; assembly { selector := fp.selector } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -806,7 +806,7 @@ describe('Yul external function-pointer component reads', () => {
       'contract C { function target() external {} function f() public returns (address value) {'
       + ' function() external fp = C(address(0x1234)).target;'
       + ' assembly { value := fp.address } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -815,7 +815,7 @@ describe('Yul external function-pointer component reads', () => {
       'contract C { function target() external {} function f(uint32 replacement) public returns (uint32) {'
       + ' function() external fp = this.target; assembly { fp.selector := replacement }'
       + ' return uint32(fp.selector); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -823,7 +823,7 @@ describe('Yul external function-pointer component reads', () => {
     expect(compileString(
       'contract C { function f() public returns (address result) { function() external fp;'
       + ' assembly { fp.address := 0x42 fp.selector := 0x23 } result = fp.address; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -836,7 +836,7 @@ describe('Yul slots through erased storage-pointer aliases', () => {
       + ' mapping(uint => uint) storage p = m1; S storage q = s;'
       + ' assembly { switch i case 0 { slot := p.slot } default { sstore(q.slot, 7) slot := q.offset } }'
       + ' } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -847,7 +847,7 @@ describe('Yul assignment to a named storage return slot', () => {
       'contract C { struct S { bool flag; } S s;'
       + ' function pointer() internal view returns (S storage result) {'
       + ' assembly { result.slot := s.slot } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -856,7 +856,7 @@ describe('Yul assignment to a named storage return slot', () => {
       'contract C { struct S { bool flag; } S s;'
       + ' function pointer() internal view returns (S storage result) {'
       + ' assembly { for {} eq(0, 0) { result.slot := s.slot } {} } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Unsupported inline assembly/);
   });
 
@@ -865,7 +865,7 @@ describe('Yul assignment to a named storage return slot', () => {
       'contract C { struct S { bool flag; } S s;'
       + ' function pointer() internal view returns (S storage result) { assembly {'
       + ' for { result.slot := s.slot } iszero(1) {} {} } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -874,7 +874,7 @@ describe('Yul assignment to a named storage return slot', () => {
       'contract C { struct S { bool flag; } S s;'
       + ' function pointer(uint choice) internal view returns (S storage result) { assembly {'
       + ' switch choice case 0 { revert(0, 0) } default { result.slot := s.slot } } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -883,7 +883,7 @@ describe('Yul assignment to a named storage return slot', () => {
       'contract C { struct S { bool flag; } S s;'
       + ' function pointer(uint choice) internal view returns (S storage result) { assembly {'
       + ' switch choice case 0 { result.slot := s.slot } } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Unsupported inline assembly|Expected variable|Unsupported return/);
   });
 });
@@ -893,7 +893,7 @@ describe('Yul initialization of local storage-pointer aliases', () => {
     expect(compileString(
       'contract C { struct S { bool flag; } S s; function f() public { S storage p;'
       + ' assembly { p.slot := s.slot } p.flag = true; require(s.flag); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -903,7 +903,7 @@ describe('Yul initialization of local storage-pointer aliases', () => {
       + ' assembly { for { p.slot := s.slot } iszero(1) {} {} } p.flag = choose; require(s.flag == choose); }'
       + ' function g(bool choose) internal pure { S storage p; assembly {'
       + ' switch choose case 0 { p.slot := s.slot } default { p.slot := s.slot } } p; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -911,7 +911,7 @@ describe('Yul initialization of local storage-pointer aliases', () => {
     expect(() => compileString(
       'contract C { struct S { bool flag; } S s; function f(bool choose) internal pure { S storage p;'
       + ' assembly { if choose { p.slot := s.slot } } p; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Unsupported inline assembly/);
   });
 });
@@ -922,7 +922,7 @@ describe('Yul transient-state slot layout', () => {
       'contract C { uint256 persistent; uint8 transient x; uint16 transient y;'
       + ' function f() public returns (uint slot, uint offset, uint value) { assembly {'
       + ' slot := y.slot offset := y.offset tstore(x.slot, 0xffff) value := tload(x.slot) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -932,7 +932,7 @@ describe('dynamic Yul byte index', () => {
     expect(compileString(
       'contract C { function f(uint index, uint word) public returns (uint value) {'
       + ' assembly { value := byte(index, word) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -942,7 +942,7 @@ describe('assembly-defined named calldata return views', () => {
     expect(compileString(
       'contract C { function f() public pure returns (bytes calldata value) {'
       + ' assembly { value.offset := 0 value.length := 4 } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -950,7 +950,7 @@ describe('assembly-defined named calldata return views', () => {
     expect(compileString(
       'contract C { function f() public pure returns (bytes calldata value) {'
       + ' assembly { value.offset := 0 value.length := 4 } return value; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -958,7 +958,7 @@ describe('assembly-defined named calldata return views', () => {
     expect(() => compileString(
       'contract C { function f() public pure returns (bytes calldata value) {'
       + ' assembly { value.offset := 0 value.length := 4 } uint n = value.length; return value; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Unsupported inline assembly/);
   });
 });
@@ -969,7 +969,7 @@ describe('nested local Yul function inlining', () => {
       'contract C { function f() public returns (uint out) { assembly {'
       + ' function outer(a) -> r { function square(x) -> y { y := mul(x, x) } r := square(a) }'
       + ' out := outer(7) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -977,7 +977,7 @@ describe('nested local Yul function inlining', () => {
     expect(() => compileString(
       'contract C { function f(uint n) public returns (uint out) { assembly {'
       + ' function recurse(x) -> y { y := recurse(sub(x, 1)) } out := recurse(n) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Unsupported inline assembly/);
   });
 });
@@ -988,7 +988,7 @@ describe('Yul base slots for flattened state structs', () => {
       'contract C { struct S { uint8[] values; } S s; function f() public { s.values.push();'
       + ' assembly { mstore(0, s.slot) sstore(keccak256(0, 0x20), 257) }'
       + ' require(s.values[0] == 1); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });

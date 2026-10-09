@@ -29,7 +29,7 @@ describe('Solidity-compatible address identity equality', () => {
     name: 'same' | 'different', left: Uint8Array, right: Uint8Array,
   ): Promise<TransactionBuilder> => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(SOURCE, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(SOURCE, { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     await provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })

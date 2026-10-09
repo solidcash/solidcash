@@ -50,7 +50,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   }'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Pages!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true }).Pages!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'cells')!;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
 
@@ -75,7 +75,7 @@ const ANCHORED_SOURCE = 'pragma solidity ^0.8.0;'
   + '   }'
   + ' }';
 
-const anchored = compileStringMulti(ANCHORED_SOURCE, { composition: 'framed', solidityImportCompat: true })
+const anchored = compileStringMulti(ANCHORED_SOURCE, { composition: 'framed', evmCompat: true })
   .Anchored!;
 
 const empty = new Uint8Array(0);

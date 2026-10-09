@@ -229,7 +229,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
 
   constructor(
-    private solidityImportCompat = false, private readonly keepSelfMessageCalls = false,
+    private evmCompat = false, private readonly keepSelfMessageCalls = false,
     // Keep transaction-signature checks in the entry point (see inlinesSignatureChecks).
     private readonly inlineSignatureChecks = false,
   ) {
@@ -265,7 +265,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     findExistingSerials(node);
     this.counter = Math.max(this.counter, highestExistingSerial + 1);
     this.freeFns = node.freeFunctions ?? [];
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       const functionCounts = new Map<string, number>();
       for (const fn of this.freeFns) {
         functionCounts.set(fn.name, (functionCounts.get(fn.name) ?? 0) + 1);
@@ -354,9 +354,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           );
         }
         if (!fn.isFreeFunction
-          || (this.solidityImportCompat && !fn.modifiers.includes(FunctionModifier.PURE))) {
+          || (this.evmCompat && !fn.modifiers.includes(FunctionModifier.PURE))) {
           throw new OperatorOverloadSignatureError(
-            directive, binding.funcName, this.solidityImportCompat
+            directive, binding.funcName, this.evmCompat
               ? 'operator implementations must be pure free functions'
               : 'operator implementations must be free functions',
           );

@@ -165,7 +165,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
 
   it('keeps an inlined nested payout after the repeated producer calls', () => {
     const artifact = compileFile('../../examples/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol', {
-      solidityImportCompat: true, suppressWarnings: true, messageBus: true,
+      evmCompat: true, suppressWarnings: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'claimMultiple')?.externalCalls;
@@ -328,7 +328,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
           require(values.length >= 0);
         }
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
     const run = artifact.abi.find((candidate) => candidate.name === 'run');
     const program = run?.externalCalls?.[0].batchInvocations?.[0]
       .argSources?.[0].expression;
@@ -366,7 +366,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
           require(amount >= 0);
         }
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
     const expression = artifact.abi.find((candidate) => candidate.name === 'run')
       ?.externalCalls?.[0].batchInvocations?.[0].argSources?.[0].expression;
     const program = expression?.kind === 'arrayAccess' ? expression.left : undefined;
@@ -486,7 +486,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
         forceStateful: true,
         messageBus: true,
         messageBusKernel,
-        solidityImportCompat: true,
+        evmCompat: true,
         suppressWarnings: true,
         __artifactCache: false,
         __attemptFailureBox: attemptFailureBox,
@@ -528,7 +528,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
         function set(int next) public { value = next; require(next >= 0); }
       }`;
     const direct = compileString(source, {
-      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+      evmCompat: true, suppressWarnings: true, messageBus: false,
     });
     expect(direct.compiler.options?.messageBus).toBe(false);
     expect(direct.messageBus).toBeUndefined();
@@ -536,7 +536,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
     const reached = source.replace('function set(int next) public { value = next;',
       'function set(int next, ICounter target) public { Dormant.twice(target, next); value = next;');
     expect(() => compileString(reached, {
-      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+      evmCompat: true, suppressWarnings: true, messageBus: false,
     })).toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
   });
 
@@ -599,7 +599,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
       forceStateful: true,
       messageBus: true,
       messageBusKernel: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       suppressWarnings: true,
       rootFileId: '/BatchCaller.scash',
       importResolver: createMapResolver({ '/Data.scash': callee }),

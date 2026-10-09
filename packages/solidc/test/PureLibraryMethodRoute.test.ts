@@ -23,7 +23,7 @@ describe('pure library calls in kernel route planning', () => {
       }`;
     const artifact = compileString(source, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 100_000,
@@ -50,7 +50,7 @@ describe('pure library calls in kernel route planning', () => {
         }
       }`, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 100_000,

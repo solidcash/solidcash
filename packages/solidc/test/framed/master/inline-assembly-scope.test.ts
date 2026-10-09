@@ -51,7 +51,7 @@ const OWN_NATIVE_ASSEMBLY_CONTRACT = 'contract AsmScope(address owner) {'
   + ' }';
 
 const compiling = (source: string): ReturnType<typeof compileString> =>
-  compileString(source, { composition: 'framed', solidityImportCompat: true } as never);
+  compileString(source, { composition: 'framed', evmCompat: true } as never);
 
 const scriptBytes = (source: string): Uint8Array =>
   scriptToBytecode(asmToScript(compiling(source).bytecode));
@@ -101,7 +101,7 @@ describe('inline assembly the master would run', () => {
   it('refuses by name when the entry holds it itself, and compiles the contract', () => {
     // A body's own assembly is a fact about that body: it is refused by name beside the artifact, and the contract
     // is still compiled so its other bodies keep their programs.
-    const refusal = refusalOf(HEAD + OWN_NATIVE_ASSEMBLY_CONTRACT, undefined, { solidityImportCompat: true });
+    const refusal = refusalOf(HEAD + OWN_NATIVE_ASSEMBLY_CONTRACT, undefined, { evmCompat: true });
     expect(refusal.code).toBe('FRAMED_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('inline assembly is not composed framed');
   });

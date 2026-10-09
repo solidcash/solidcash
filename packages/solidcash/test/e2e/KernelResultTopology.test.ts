@@ -50,7 +50,7 @@ describe('kernel result-dependent call topology', () => {
           IRouter(router).route();
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -115,7 +115,7 @@ describe('kernel result-dependent call topology', () => {
           IRouter(router).route(values);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -164,7 +164,7 @@ describe('kernel result-dependent call topology', () => {
           }
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -202,7 +202,7 @@ describe('kernel result-dependent call topology', () => {
           for (uint i = 0; i < values.length; i++) { ILeft(left).record(values[i]); }
           for (uint i = 0; i < values.length; i++) { IRight(right).record(values[i] + 10); }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const sourceCalls = artifacts.Router.abi.find((entry) => entry.name === 'route')?.externalCalls;
@@ -254,7 +254,7 @@ describe('kernel result-dependent call topology', () => {
             ISink(sink).record(observed + 1);
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const sourceCalls = artifacts.Router.abi.find((entry) => entry.name === 'route')?.externalCalls;
@@ -309,7 +309,7 @@ describe('kernel result-dependent call topology', () => {
             }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const sourceCalls = artifacts.Router.abi.find((entry) => entry.name === 'route')?.externalCalls;
@@ -361,7 +361,7 @@ describe('kernel result-dependent call topology', () => {
           }
           IAfter(after).record(2);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -406,7 +406,7 @@ describe('kernel result-dependent call topology', () => {
             IRight(right).record(values[i] + 10);
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -449,7 +449,7 @@ describe('kernel result-dependent call topology', () => {
             IRight(right).record(observed + 10);
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -496,7 +496,7 @@ describe('kernel result-dependent call topology', () => {
             }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -546,7 +546,7 @@ describe('kernel result-dependent call topology', () => {
             }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const sourceCalls = artifacts.Router.abi.find((entry) => entry.name === 'route')?.externalCalls;
@@ -590,7 +590,7 @@ describe('kernel result-dependent call topology', () => {
           uint bound = IReader(reader).read(value);
           for (uint j = 0; j < bound; j++) { ISink(sink).record(j + 1); }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const sourceCalls = artifacts.Router.abi.find((entry) => entry.name === 'route')?.externalCalls;
@@ -632,7 +632,7 @@ describe('kernel result-dependent call topology', () => {
             for (uint j = 0; j < bound; j++) { ISink(sink).record(j + 1); }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -668,7 +668,7 @@ describe('kernel result-dependent call topology', () => {
             for (uint j = 0; j < this.bound; j++) { ISink(sink).record(j + 1); }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -705,7 +705,7 @@ describe('kernel result-dependent call topology', () => {
             for (uint j = 0; j < this.bound; j++) { ISink(sink).record(j + 1); }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -742,7 +742,7 @@ describe('kernel result-dependent call topology', () => {
             for (uint j = 0; j < this.bound; j++) { ISink(sink).record(j + 1); }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -780,7 +780,7 @@ describe('kernel result-dependent call topology', () => {
             for (uint j = 0; j < this.bound; j++) { ISink(sink).record(j + 1); }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -823,7 +823,7 @@ describe('kernel result-dependent call topology', () => {
             for (uint j = 0; j < this.bound; j++) { ISink(sink).record(j + 1); }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -869,7 +869,7 @@ describe('kernel result-dependent call topology', () => {
             for (uint j = 0; j < this.bound; j++) { ISink(sink).record(j + 1); }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -910,7 +910,7 @@ describe('kernel result-dependent call topology', () => {
             }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -951,7 +951,7 @@ describe('kernel result-dependent call topology', () => {
             }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -992,7 +992,7 @@ describe('kernel result-dependent call topology', () => {
             }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -1031,7 +1031,7 @@ describe('kernel result-dependent call topology', () => {
             }
           }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();
@@ -1067,7 +1067,7 @@ describe('kernel result-dependent call topology', () => {
           }
           for (uint j = 0; j < bound; j++) { ISink(sink).record(values[j] + 10); }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();

@@ -25,7 +25,7 @@ describe('kernel conditional state-derived entry keys', () => {
           this.records[id].owner = address(0);
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -65,7 +65,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[enabled && flags[flagKey] ? dataKey : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -93,7 +93,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[flags[flagKey] ? dataKey : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -118,7 +118,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[flagKey] = true;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -143,7 +143,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[flags[flagKey] ? dataKey : 0] = value;
           require(intermediate > value);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -167,7 +167,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[selected ? dataKey : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -194,7 +194,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -220,7 +220,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[flags[flagKey] ? dataKey : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -249,7 +249,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[selected ? dataKey : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -278,7 +278,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -307,7 +307,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -335,7 +335,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[selected ? dataKey : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -362,7 +362,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[flags[7] ? 11 : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -389,7 +389,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[7] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -415,7 +415,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[flags[7] ? 11 : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -443,7 +443,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -472,7 +472,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[flagKey] = false;
           require(marker);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -501,7 +501,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();
@@ -529,7 +529,7 @@ describe('kernel conditional state-derived entry keys', () => {
           flags[flagKey] = false;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'authorizedStoreThenClear'))
@@ -562,7 +562,7 @@ describe('kernel conditional state-derived entry keys', () => {
           data[flags[flagKey] ? dataKey : 0] = value;
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'store'))

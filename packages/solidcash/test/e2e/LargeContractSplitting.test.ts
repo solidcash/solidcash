@@ -162,7 +162,7 @@ describe('split contract SDK', () => {
         constructor(uint initial) { value = initial; }
         function set(uint next) external { value = next + block.timestamp; require(next > 0); }
       }
-    `, { forceSplit: true, solidityImportCompat: true, messageBus: false });
+    `, { forceSplit: true, evmCompat: true, messageBus: false });
     const deployed = await SplitContractBundle.from(compiled, signer).deploy([7n], {
       initialState: { __block_timestamp: 0n, __blockOracleOwner: alicePub },
     });
@@ -190,7 +190,7 @@ describe('split contract SDK', () => {
           require(next >= 0);
         }
       }`, {
-      solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      evmCompat: true, messageBus: true, messageBusKernel: true,
       messageBusGraphContext: true, optimizeForCompilationSpeed: true,
       suppressWarnings: true, forceSplit: true,
     });
@@ -230,7 +230,7 @@ describe('split contract SDK', () => {
           this.total=amount; require(amount>0);
           return [payments[B],payments[S],payments[M],payments[P],payments[A]];
         }
-      }`, { solidityImportCompat: true, messageBus: false, forceSplit: true });
+      }`, { evmCompat: true, messageBus: false, forceSplit: true });
     const deployed = await SplitContractBundle.from(bundle, signer).deploy([], {
       initialState: { total: 0n },
     });

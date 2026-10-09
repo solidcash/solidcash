@@ -14,7 +14,7 @@ describe('address(L) library-as-address (VM)', () => {
 
   const build = (libAddr: string, expected: string): TransactionBuilder => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(SRC, { solidityImportCompat: true }), [libAddr], { provider });
+    const contract = new Contract(compileString(SRC, { evmCompat: true }), [libAddr], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })

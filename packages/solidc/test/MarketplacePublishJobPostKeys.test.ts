@@ -26,7 +26,7 @@ function expectPublishJobPostKeys(art: { abi: readonly { name: string; sortedUps
 }
 
 const eaOpts = {
-  solidityImportCompat: true,
+  evmCompat: true,
   messageBus: true,
   messageBusGraphContext: true,
   optimizeForCompilationSpeed: true,
@@ -39,7 +39,7 @@ const eaOpts = {
 describe('MarketplaceV1 publishJobPost upsert keys', () => {
   it('publishes jobs.length-1 as fixedKeySources on publishJobPost', () => {
     expectPublishJobPostKeys(compileFile(marketplaceV1, {
-      solidityImportCompat: true,
+      evmCompat: true,
       optimizeForCompilationSpeed: true,
     }));
   });

@@ -26,7 +26,7 @@ contract DynamicStructEvent {
 describe('dynamic struct-array read-after-write in an event', () => {
   it('emits the field value retained by later sibling-field writes', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE, { solidityImportCompat: true });
+    const artifact = compileString(SOURCE, { evmCompat: true });
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { rows: [] }, { saltContract: true },
@@ -47,7 +47,7 @@ describe('dynamic struct-array read-after-write in an event', () => {
       forceStateful: true,
       messageBus: true,
       messageBusGraphContext: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,

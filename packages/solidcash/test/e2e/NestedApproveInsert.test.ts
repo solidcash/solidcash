@@ -42,7 +42,7 @@ describe('nested approve insert', () => {
     const [signer] = await getSigners(1, { provider, fundingUtxos: 8 });
     const options = {
       forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      solidityImportCompat: true,
+      evmCompat: true,
     } as const;
     const tokenArtifact = compileString(TOKEN, options);
     const callerArtifact = compileString(CALLER, options);

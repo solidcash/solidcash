@@ -3,23 +3,23 @@ import { compileString } from './direct-compile.js';
 
 // File structure and imports: pragma, declaration order, multiple top-level defs, interface/declaration-only files.
 
-describe('solidityImportCompat', () => {
+describe('evmCompat', () => {
   const SRC = 'pragma solidity =0.5.17;\ncontract C() { int n; function f() { this.n = 1; } }';
 
   it('accepts `pragma solidity` and skips the version check under the option', () => {
-    expect(compileString(SRC, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(SRC, { evmCompat: true }).contractName).toBe('C');
   });
 
   it('rejects `pragma solidity` without the option (clean error)', () => {
-    expect(() => compileString(SRC)).toThrow(/solidityImportCompat/);
+    expect(() => compileString(SRC)).toThrow(/evmCompat/);
   });
 
   it('tolerates no-op EVM pragmas (`abicoder`, `experimental`) as no-ops', () => {
     const abicoder = 'pragma solidity ^0.8.0;\npragma abicoder v2;\ncontract C() { function f() { require(true); } }';
-    expect(compileString(abicoder, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(abicoder, { evmCompat: true }).contractName).toBe('C');
     const experimental = 'pragma experimental ABIEncoderV2;\npragma solidity ^0.8.0;\n'
       + 'contract C() { function f() { require(true); } }';
-    expect(compileString(experimental, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(experimental, { evmCompat: true }).contractName).toBe('C');
   });
 
   it('parses an imported source whose own `pragma solidity` would otherwise fail', () => {
@@ -28,7 +28,7 @@ describe('solidityImportCompat', () => {
       : undefined);
     const a = compileString(
       'pragma solidity ^0.5.0;\nimport "./Dep.sol";\ncontract C() { int n; function f() { this.n = 1; } }',
-      { solidityImportCompat: true, importResolver: resolver },
+      { evmCompat: true, importResolver: resolver },
     );
     expect(a.contractName).toBe('C');
   });
@@ -132,13 +132,13 @@ describe('Interface-only / type-only files', () => {
     expect(compileString('type UD is int;\nfunction unwrap(UD x) returns (int) { return UD.unwrap(x); }').bytecode).toBe('');
   });
 
-  it('imports an interface-only file under solidityImportCompat', () => {
+  it('imports an interface-only file under evmCompat', () => {
     const resolver = (p: string): { source: string; id: string } | undefined => (p.includes('IBank')
       ? { source: 'interface IBank { function bal(address who) external view returns (int); }', id: 'IBank' }
       : undefined);
     const a = compileString(
       'import { IBank } from "./IBank.sol";\ncontract C() { int n; function f(bytes32 c, address w) { this.n = IBank(c).bal(w); } }',
-      { solidityImportCompat: true, importResolver: resolver },
+      { evmCompat: true, importResolver: resolver },
     );
     expect(a.contractName).toBe('C');
   });
@@ -172,14 +172,14 @@ describe('SBE-4: function-less contracts compile (state-publishing, unspendable)
     expect(a.bytecode).toBe('OP_0 OP_VERIFY');
   });
 
-  it('a storage-only Solidity contract compiles under solidityImportCompat', () => {
+  it('a storage-only Solidity contract compiles under evmCompat', () => {
     const a = compileString(`pragma solidity ^0.8.26;
-      contract HelloWorld { string public greet = "Hello World!"; }`, { solidityImportCompat: true });
+      contract HelloWorld { string public greet = "Hello World!"; }`, { evmCompat: true });
     expect(a.contractName).toBe('HelloWorld');
   });
 });
 
-describe('SBE-22: declaration-only files compile under solidityImportCompat (solc parity)', () => {
+describe('SBE-22: declaration-only files compile under evmCompat (solc parity)', () => {
   // solc emits an ABI + empty bytecode for a file with no executable contract (a standalone interface, a
   // file-level enum/struct, or an inline-only library). Mirror that under the flag; native solidcash keeps the
   // LibraryNotCompilableError guard.
@@ -187,7 +187,7 @@ describe('SBE-22: declaration-only files compile under solidityImportCompat (sol
     const a = compileString(
       'interface IERC20 { function transfer(address to, uint256 amt) external returns (bool);'
       + ' function balanceOf(address who) external view returns (uint256); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('IERC20');
     expect(a.bytecode).toBe('');
@@ -199,7 +199,7 @@ describe('SBE-22: declaration-only files compile under solidityImportCompat (sol
     const a = compileString(
       'interface IERC20Errors { event Observed(address indexed account);'
       + ' error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
 
     expect(a.events).toEqual([expect.objectContaining({
@@ -212,14 +212,14 @@ describe('SBE-22: declaration-only files compile under solidityImportCompat (sol
   });
 
   it('compiles a file-level enum declaration (carries the enum)', () => {
-    const a = compileString('enum Status { Pending, Shipped, Accepted }', { solidityImportCompat: true });
+    const a = compileString('enum Status { Pending, Shipped, Accepted }', { evmCompat: true });
     expect(a.bytecode).toBe('');
     expect(a.enums?.[0]?.name).toBe('Status');
     expect(a.enums?.[0]?.members.map((m) => m.name)).toEqual(['Pending', 'Shipped', 'Accepted']);
   });
 
   it('compiles a file-level struct declaration', () => {
-    const a = compileString('struct Todo { string text; bool done; }', { solidityImportCompat: true });
+    const a = compileString('struct Todo { string text; bool done; }', { evmCompat: true });
     expect(a.bytecode).toBe('');
     expect(a.abi).toHaveLength(0);
   });

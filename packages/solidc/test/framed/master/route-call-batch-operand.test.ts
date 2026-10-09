@@ -10,7 +10,7 @@ import { compileString } from '../../../src/compiler.js';
  */
 
 const OPTIONS = {
-  solidityImportCompat: true, messageBus: true, optimizeForCompilationSpeed: true, suppressWarnings: true,
+  evmCompat: true, messageBus: true, optimizeForCompilationSpeed: true, suppressWarnings: true,
   composition: 'framed',
 };
 

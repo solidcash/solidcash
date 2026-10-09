@@ -11,7 +11,7 @@ import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-pro
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
-  maximumInputBytes: 1_000_000, solidityImportCompat: true, suppressWarnings: true,
+  maximumInputBytes: 1_000_000, evmCompat: true, suppressWarnings: true,
 } as const;
 
 const vmAccepts = (builder: TransactionBuilder): boolean => {

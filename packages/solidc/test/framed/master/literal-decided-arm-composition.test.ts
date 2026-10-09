@@ -35,9 +35,9 @@ const TOKEN_SOURCE = 'pragma solidity ^0.8.20;'
 // The zero-address endpoint is a literal, so `_update` holds one arm per call that a direct compile drops. The
 // raised input budget isolates the composition difference from the contract-size diagnostic this token would emit.
 const FRAMED = {
-  solidityImportCompat: true, composition: 'framed', suppressWarnings: true, maximumInputBytes: 200_000,
+  evmCompat: true, composition: 'framed', suppressWarnings: true, maximumInputBytes: 200_000,
 } as never;
-const DIRECT = { solidityImportCompat: true, suppressWarnings: true, maximumInputBytes: 200_000 } as never;
+const DIRECT = { evmCompat: true, suppressWarnings: true, maximumInputBytes: 200_000 } as never;
 
 /** The published write accesses naming `balances` on an entry. */
 function balancesWrites(artifact: Artifact, entry: string): readonly EntryAccessAbi[] {

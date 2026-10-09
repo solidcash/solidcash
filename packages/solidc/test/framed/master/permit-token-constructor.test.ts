@@ -58,7 +58,7 @@ const PLAIN_SOURCE = [
 function compileFramed(source: string, name: string): ArtifactMap {
   return compileStringMulti(source, {
     composition: 'framed',
-    solidityImportCompat: true,
+    evmCompat: true,
     importResolver: resolveImport,
     rootFileId: `/${name}.sol`,
   });

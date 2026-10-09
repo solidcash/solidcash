@@ -67,7 +67,7 @@ async function coin(provider: MockNetworkProvider): Promise<{ txid: string; vout
 /** The token, the payer holding it, and 1000 minted to the payer; each case rewinds the chain to them first. */
 async function deployed(): Promise<Deployed> {
   run ??= (async (): Promise<Deployed> => {
-    const compiled = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+    const compiled = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
     const artifacts = { Token: compiled.Token!, Payer: compiled.Payer! };
     const { framedValidator } = await import('solidc');
     const validatorProgram = framedValidator.buildValidatorProgram();

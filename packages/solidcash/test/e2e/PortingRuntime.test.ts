@@ -43,7 +43,7 @@ describe('empty void functions (runtime; Solidity porting)', () => {
   it('spends a synthesized empty payable function', async () => {
     const artifact = compileString(
       'pragma solidity ^0.8.0; contract C { function ping() public payable {} }',
-      { solidityImportCompat: true, forceStateful: true },
+      { evmCompat: true, forceStateful: true },
     );
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
@@ -56,7 +56,7 @@ describe('empty void functions (runtime; Solidity porting)', () => {
     // test/libsolidity/semanticTests/receive/empty_calldata_calls_receive.sol
     const artifact = compileString(
       'pragma solidity ^0.8.0; contract C { receive() external payable {} }',
-      { solidityImportCompat: true, forceStateful: true },
+      { evmCompat: true, forceStateful: true },
     );
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
@@ -70,7 +70,7 @@ describe('hex literals as Solidity numbers (runtime)', () => {
   it('uses a hex literal as its big-endian integer value (0x0102 == 258)', async () => {
     const artifact = compileString(
       'pragma solidity ^0.8.0; contract C { function f() external { uint x = 0x0102; require(x == 258); } }',
-      { solidityImportCompat: true, forceStateful: true },
+      { evmCompat: true, forceStateful: true },
     );
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
@@ -90,7 +90,7 @@ describe('transient state variables (runtime; EIP-1153 porting)', () => {
           locked = 1;
           require(locked == 1);
         }
-      }`, { solidityImportCompat: true, forceStateful: true });
+      }`, { evmCompat: true, forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
     expect(await sc.enter()).toMatchObject({
@@ -103,7 +103,7 @@ describe('transient state variables (runtime; EIP-1153 porting)', () => {
       contract C {
         uint256 transient flag;
         function checkPersisted() public { require(flag == 1); }
-      }`, { solidityImportCompat: true, forceStateful: true });
+      }`, { evmCompat: true, forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
     await expect(sc.checkPersisted()).rejects.toThrow(verifyFailure);
@@ -118,7 +118,7 @@ describe('transient state variables (runtime; EIP-1153 porting)', () => {
           acc = acc + b;
           require(acc == a + b);
         }
-      }`, { solidityImportCompat: true, forceStateful: true });
+      }`, { evmCompat: true, forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
     expect(await sc.add(3n, 4n)).toMatchObject({

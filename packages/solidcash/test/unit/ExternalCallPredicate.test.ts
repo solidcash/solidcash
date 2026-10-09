@@ -65,7 +65,7 @@ const artifact = compileString(`
       require(checkSig(s, pk));
     }
   }
-`, { solidityImportCompat: true, forceStateful: true });
+`, { evmCompat: true, forceStateful: true });
 
 const evaluator = new StatefulContract(
   '00'.repeat(32), artifact, createTestProvider(),
@@ -402,7 +402,7 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(evaluator._evaluateExternalExpression(index, [], schema, state, [])).toEqual(addressHash);
     // A native body packs an address whole, so the stored locking bytecode is kept.
     const native = {
-      ...schema, compiler: { ...schema.compiler, options: { ...schema.compiler.options, solidityImportCompat: false } },
+      ...schema, compiler: { ...schema.compiler, options: { ...schema.compiler.options, evmCompat: false } },
     } as unknown as Artifact;
     expect(evaluator._evaluateExternalExpression(index, [], native, state, [])).toEqual(lockingBytecode);
   });
@@ -472,7 +472,7 @@ describe('compiler-published external-call predicate evaluation', () => {
     ))).toBe('00015181');
     // A native body packs by `IntType.byteWidth`, little-endian: an untyped read there keeps its old packing.
     const native = {
-      ...schema, compiler: { ...schema.compiler, options: { ...schema.compiler.options, solidityImportCompat: false } },
+      ...schema, compiler: { ...schema.compiler, options: { ...schema.compiler.options, evmCompat: false } },
     } as unknown as Artifact;
     expect(evaluate({ kind: 'field', name: 'amount', expression: terms }, native)).toBe(`b80b${'00'.repeat(30)}`);
   });
@@ -531,7 +531,7 @@ describe('compiler-published external-call predicate evaluation', () => {
           require(values.length >= 0);
         }
       }
-    `, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+    `, { evmCompat: true, forceStateful: true, messageBus: true });
     const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
       ?.externalCalls?.[0].batchInvocations?.[0].argSources?.[0].expression;
     expect(expression).toBeDefined();
@@ -565,7 +565,7 @@ describe('compiler-published external-call predicate evaluation', () => {
           ISink(sink).publish(a.sub(b).mul(2));
           require(true);
         }
-      }`, { solidityImportCompat: true, forceStateful: true });
+      }`, { evmCompat: true, forceStateful: true });
     const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
       ?.externalCalls?.[0].argSources?.[0].expression;
     expect(expression).toBeDefined();
@@ -603,7 +603,7 @@ describe('compiler-published external-call predicate evaluation', () => {
           require(amount >= 0);
         }
       }
-    `, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+    `, { evmCompat: true, forceStateful: true, messageBus: true });
     const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
       ?.externalCalls?.[0].batchInvocations?.[0].argSources?.[0].expression;
     expect(expression).toBeDefined();
@@ -643,7 +643,7 @@ describe('compiler-published external-call predicate evaluation', () => {
           }
         }
       `, {
-        solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+        evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
         maximumInputBytes: 1_000_000,
       });
       const publish = snapshotArtifact.abi.find((candidate) => candidate.name === 'publish')!;
@@ -677,7 +677,7 @@ describe('compiler-published external-call predicate evaluation', () => {
         }
       }
     `, {
-      solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
       maximumInputBytes: 1_000_000,
     });
     const publish = typedArtifact.abi.find((candidate) => candidate.name === 'publish')!;
@@ -709,7 +709,7 @@ describe('compiler-published external-call predicate evaluation', () => {
         }
       }
     `, {
-      solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
       maximumInputBytes: 1_000_000,
     });
     const sources = conditionalArtifact.abi.find((candidate) => candidate.name === 'publish')

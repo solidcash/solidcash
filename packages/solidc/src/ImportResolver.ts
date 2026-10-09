@@ -9,7 +9,7 @@ export class ImportResolver {
 
   constructor(
     private resolver: ImportResolverFn,
-    private solidityImportCompat = false,
+    private evmCompat = false,
   ) {}
 
   resolve(ast: SourceFileNode, currentFileId: string): SourceFileNode {
@@ -60,7 +60,7 @@ export class ImportResolver {
       if (!importedAst) {
         // Clone-on-hit across compilations in this process: a project compile resolves the same shared imports
         // once per root, and the lowered tree of one compilation must never be handed to the next.
-        importedAst = parseImportedFileCached(resolved.source, this.solidityImportCompat, resolvedId);
+        importedAst = parseImportedFileCached(resolved.source, this.evmCompat, resolvedId);
         this.resolvedFiles.set(resolvedId, importedAst);
         this.resolve(importedAst, resolvedId);
       }

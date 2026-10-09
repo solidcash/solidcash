@@ -9,7 +9,7 @@ import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
-  solidityImportCompat: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
+  evmCompat: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
 } as const;
 
 describe('kernel forwarded Solidity target identity', () => {

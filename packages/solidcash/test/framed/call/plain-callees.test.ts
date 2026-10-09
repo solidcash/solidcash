@@ -65,7 +65,7 @@ let run: Promise<Deployed> | undefined;
 /** C, a second C, B and A, A holding B and the first C; each case rewinds the chain to them first. */
 async function deployed(): Promise<Deployed> {
   run ??= (async (): Promise<Deployed> => {
-    const compiled = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+    const compiled = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
     const artifacts = { A: compiled.A!, B: compiled.B!, C: compiled.C!, C2: compiled.C! };
     const { framedValidator } = await import('solidc');
     const validatorProgram = framedValidator.buildValidatorProgram();

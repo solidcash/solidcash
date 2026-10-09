@@ -12,7 +12,7 @@ const SRC = `contract C() {
 
 describe('unnamed return defaults on fall-through', () => {
   const provider = createTestProvider();
-  const art = compileString(SRC, { solidityImportCompat: true, forceStateful: true });
+  const art = compileString(SRC, { evmCompat: true, forceStateful: true });
   const contract = new Contract(art, [], { provider });
 
   it('g() returns 0 (the int default), not the local value', async () => {

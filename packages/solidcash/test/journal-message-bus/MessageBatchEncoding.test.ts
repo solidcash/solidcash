@@ -329,7 +329,7 @@ describe('messageBus.encodeMessageBatch', () => {
 
   it('decodes mixed EVM ABI and compact result rows using each authenticated row encoding', () => {
     const returning = compileString(RETURN_SOURCE, {
-      forceStateful: true, messageBus: true, solidityImportCompat: true,
+      forceStateful: true, messageBus: true, evmCompat: true,
     });
     const encoded = messageBus.encodeMessageBatch(returning, [
       { function: 'twice', args: [3n] },
@@ -390,7 +390,7 @@ describe('messageBus.encodeMessageBatch', () => {
     const composite = compileString(COMPOSITE_SOURCE, {
       forceStateful: true,
       messageBus: true,
-      solidityImportCompat: true,
+      evmCompat: true,
     });
     const payload = {
       kind: 4n,
@@ -413,7 +413,7 @@ describe('messageBus.encodeMessageBatch', () => {
       forceStateful: true,
       messageBus: true,
       messageBusKernel: false,
-      solidityImportCompat: true,
+      evmCompat: true,
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,
     });
@@ -438,7 +438,7 @@ describe('messageBus.encodeMessageBatch', () => {
   it('binds two distinct repeated read keys to compiler-published fixed tuple lanes', () => {
     const routed = compileString(REPEATED_READ_COLLECTION_SOURCE, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const handler = routed.messageBus!.handlers.find((candidate) => candidate.name === 'labels')!;
     expect(handler.batchKeyWitnesses?.[0]).toMatchObject({
@@ -470,7 +470,7 @@ describe('messageBus.encodeMessageBatch', () => {
     // that route input instead of failing with 'no shared physical entry orientation'.
     const routed = compileString(SWAPPABLE_BALANCE_SOURCE, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, optimizeForCompilationSpeed: true,
+      evmCompat: true, optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000, suppressWarnings: true,
     });
     const visible = routed.messageBus!.route.inputs
@@ -506,7 +506,7 @@ describe('messageBus.encodeMessageBatch', () => {
   it('assigns nested collection keys to two complete fixed tuple lanes', () => {
     const routed = compileString(FIXED_TUPLE_COLLECTION_SOURCE, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, optimizeForCompilationSpeed: true,
+      evmCompat: true, optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000, suppressWarnings: true,
     });
     const caller = new Uint8Array(25).fill(0x11);
@@ -546,7 +546,7 @@ describe('messageBus.encodeMessageBatch', () => {
   it('binds three complete nested tuples and refuses a fourth distinct identity', () => {
     const routed = compileString(FIXED_TUPLE_COLLECTION_SOURCE, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      messageBusEntryPoolCapacity: 3, solidityImportCompat: true,
+      messageBusEntryPoolCapacity: 3, evmCompat: true,
       optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
     });
     const caller = new Uint8Array(25).fill(0x11);

@@ -37,7 +37,7 @@ describe('kernel result-dependent descendant arguments', () => {
           IRelay(relay).forward(value);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();

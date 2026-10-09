@@ -11,7 +11,7 @@ import { createTestProvider, verifyTransaction } from './test-util.js';
 describe('Yul assembly reading/writing high-level struct memory (VM)', () => {
   const spend = (src: string, method: string, args: FunctionArgument[]): TransactionBuilder => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(src, { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })

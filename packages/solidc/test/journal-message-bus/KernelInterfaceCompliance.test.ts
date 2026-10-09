@@ -15,7 +15,7 @@ describe('kernel interface compliance after frame lowering', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,

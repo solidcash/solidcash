@@ -51,7 +51,7 @@ Fixed-width values use a flat stream and variable-width values use framing.
 Two compiler options intentionally alter selection:
 
 - `chunkedArrays: false` sends otherwise eligible unbounded arrays to the legacy entry-collection backend.
-- `solidityImportCompat: true` represents a supported bounded `T[N]` as one packed field, matching Solidity's
+- `evmCompat: true` represents a supported bounded `T[N]` as one packed field, matching Solidity's
   contiguous fixed-array behavior. Native `.scash` compilation keeps a non-packed bounded array as a collection.
 
 Because these choices change state layout and available operations, keep them stable for an already deployed

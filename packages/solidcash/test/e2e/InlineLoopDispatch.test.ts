@@ -75,7 +75,7 @@ async function buildTx(
   makeUnlock: (contract: Contract, targets: Uint8Array, data: Uint8Array) => unknown,
   targetsArg: Uint8Array[],
 ): Promise<TransactionBuilder> {
-  const art = compileString(src, { solidityImportCompat: true });
+  const art = compileString(src, { evmCompat: true });
   const provider = createTestProvider();
   const contract = new Contract(art, [], { provider });
 
@@ -141,7 +141,7 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
   });
 
   it('contract.multiCall(targets, data, ctx) - Solidity-faithful, auto-derives callerUtxo', async () => {
-    const art = compileString(MULTICALL_SRC, { solidityImportCompat: true });
+    const art = compileString(MULTICALL_SRC, { evmCompat: true });
     const provider = createTestProvider();
     const contract = new Contract(art, [], { provider });
     // register the caller's own UTXO so callerUtxo is auto-derived (omitted from ctx below)
@@ -183,7 +183,7 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
   it('contract.multiCall(targets, data) - fully internal via registerLoopTargets / registerLoopFunder', async () => {
     const provider = createTestProvider();
     const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
-    const callerArt = compileString(MULTICALL_SRC, { solidityImportCompat: true });
+    const callerArt = compileString(MULTICALL_SRC, { evmCompat: true });
     const targetArt = compileString(TARGET_SRC);
 
     const caller = new Contract(callerArt, [], { provider });

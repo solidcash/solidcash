@@ -136,7 +136,7 @@ describe('Compiler', () => {
 
       expect(() => compileString(
         'contract Store { function set(uint256 v) public { a =  } }',
-        { errorListener, solidityImportCompat: true },
+        { errorListener, evmCompat: true },
       )).toThrow(Errors.ParseError);
       expect(errors).toHaveLength(1);
     });

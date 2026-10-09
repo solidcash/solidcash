@@ -25,7 +25,7 @@ contract EarlyReturnBeforeCache {
 
 describe('an early return ahead of a cached mapping entry', () => {
   it('returns without a write, and writes both updates once past the return', async () => {
-    const artifact = compileString(SOURCE, { solidityImportCompat: true, forceStateful: true });
+    const artifact = compileString(SOURCE, { evmCompat: true, forceStateful: true });
     const sc: any = await getContractFactory(artifact, await fundedSigner()).deploy();
     const bob = addressToLockScript(bobAddress);
 

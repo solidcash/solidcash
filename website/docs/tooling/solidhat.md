@@ -87,7 +87,7 @@ export default defineConfig({
     cache: 'cache',
   },
   compiler: {
-    solidityImportCompat: true,
+    evmCompat: true,
   },
   typegen: {
     targets: [

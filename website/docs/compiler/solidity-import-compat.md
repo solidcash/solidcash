@@ -2,7 +2,7 @@
 title: Solidity Import Compatibility
 ---
 
-`solidityImportCompat` lets `solidc` parse and lower real `.sol` source graphs. It is a **source compatibility
+`evmCompat` lets `solidc` parse and lower real `.sol` source graphs. It is a **source compatibility
 pipeline**, not an EVM emulator: accepted syntax is mapped onto Bitcoin Cash covenants, CashToken state and
 co-spent calls. Code whose correctness depends on an EVM account, storage-slot or call-frame property still needs a
 BCH-specific design review.
@@ -13,7 +13,7 @@ BCH-specific design review.
 import { compileFileMulti } from 'solidc';
 
 const artifacts = compileFileMulti('contracts/Router.sol', {
-  solidityImportCompat: true,
+  evmCompat: true,
 });
 ```
 
@@ -24,7 +24,7 @@ import { defineConfig } from 'solidhat/config';
 
 export default defineConfig({
   compiler: {
-    solidityImportCompat: true,
+    evmCompat: true,
   },
 });
 ```
@@ -122,16 +122,15 @@ contract's storage protocol. They do not require the flag, including:
 The compiler still rejects a spend path which has neither a verification nor a state change unless
 `enforceFinalRequire: false` is explicitly selected. Compatibility mode does not relax covenant safety defaults.
 
-## Options which are separate
+## EVM wire encoding
 
-`solidityImportCompat` does not select EVM wire encoding. Enable `evmCompat` separately when the byte string must
-match Ethereum ABI head/tail encoding and Keccak selectors:
+`evmCompat` also selects EVM wire encoding for the `abi.*` family: Ethereum ABI head/tail encoding and Keccak
+selectors.
 
 ```ts
 import { compileFile } from 'solidc';
 
 const artifact = compileFile('Bridge.sol', {
-  solidityImportCompat: true,
   evmCompat: true,
 });
 ```

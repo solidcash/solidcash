@@ -3,7 +3,7 @@ import { compileString as compileStringRaw } from '../src/index.js';
 import { compileString } from './direct-compile.js';
 import * as Errors from '../src/Errors.js';
 
-// Behaviours that used to be gated behind solidityImportCompat but are now plain SolidCash defaults.
+// Behaviours that used to be gated behind evmCompat but are now plain SolidCash defaults.
 // See packages/solidc/docs/solidity-import-compat.md ("SolidCash defaults" section).
 
 // Spending paths that perform no require()/verification and change no state compile to an
@@ -173,7 +173,7 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
 });
 
 // Empty functions (receive()/fallback() and any regular void function) synthesize a state-preserving no-op spend
-// path (require(true)) with a warning - a plain default now (was gated behind solidityImportCompat).
+// path (require(true)) with a warning - a plain default now (was gated behind evmCompat).
 describe('Empty receive/fallback synthesized by default', () => {
   it('compiles an empty receive() natively and warns', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -195,8 +195,8 @@ describe('Empty receive/fallback synthesized by default', () => {
     warn.mockRestore();
   });
 
-  it('synthesizes a regular empty function under solidityImportCompat', () => {
-    expect(compileString('contract C() { function f() {} }', { solidityImportCompat: true }).contractName).toBe('C');
+  it('synthesizes a regular empty function under evmCompat', () => {
+    expect(compileString('contract C() { function f() {} }', { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -206,8 +206,8 @@ describe('Empty receive/fallback synthesized by default', () => {
 // corrupt state.
 describe('Synthesized empty bodies are self-preserving no-ops', () => {
   it('empty regular function (compat) compiles identically to explicit require(true)', () => {
-    const empty = compileString('contract C() { int n; function f() {} }', { solidityImportCompat: true });
-    const explicit = compileString('contract C() { int n; function f() { require(true); } }', { solidityImportCompat: true });
+    const empty = compileString('contract C() { int n; function f() {} }', { evmCompat: true });
+    const explicit = compileString('contract C() { int n; function f() { require(true); } }', { evmCompat: true });
     expect(empty.bytecode).toBe(explicit.bytecode);
   });
 
@@ -223,7 +223,7 @@ describe('Synthesized empty bodies are self-preserving no-ops', () => {
     // private state var: a public one synthesizes a getter that pushes the contract over the subroutine-extraction
     // threshold, hex-encoding these opcodes (still present, just not as names). Visibility is irrelevant here.
     const empty = compileString('contract C() { int private n; function f() {} }', {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     expect(empty.bytecode).toContain('OP_UTXOBYTECODE');
     expect(empty.bytecode).toContain('OP_OUTPUTBYTECODE');

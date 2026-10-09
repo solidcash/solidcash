@@ -67,7 +67,7 @@ contract Pools {
     }
 }`;
 
-const options = { solidityImportCompat: true, forceStateful: true } as const;
+const options = { evmCompat: true, forceStateful: true } as const;
 
 describe('a call on one indexed element of a storage array', () => {
   it('is one call on that element\'s callee, refused with another element\'s, and needs none when skipped', async () => {

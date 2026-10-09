@@ -48,7 +48,7 @@ const bodyOpcodes = (source: string): number[] => {
   const artifact = compileString(source, {
     messageBus: true,
     forceStateful: true,
-    solidityImportCompat: true,
+    evmCompat: true,
     suppressWarnings: true,
   });
   const entry = artifact.abi.find((candidate) => candidate.name === 'record');

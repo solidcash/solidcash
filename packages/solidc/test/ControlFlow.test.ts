@@ -76,12 +76,12 @@ describe('SBE-5: for-loop flexibility + prefix increment statements', () => {
   it('accepts arbitrary expressions in the update clause', () => {
     expect(compileString(
       'contract C { function f() public { for (uint i = 0; i < 3; true) { i++; } require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
     expect(compileString(
       'contract C { function tick() internal {} function f() public {'
       + ' for (uint i = 0; i < 3; tick()) { i++; } require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -96,7 +96,7 @@ describe('SBE-16: assignment-as-expression `(x op= rhs)` yields the new value', 
     const a = compileString(
       'contract C() { int n; function f(uint256 x, sig s, pubkey pk) { require(checkSig(s, pk));'
       + ' uint256 i = 0; while ((x >>= 1) > 0) { i = i + 1; } this.n = int(i); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -104,7 +104,7 @@ describe('SBE-16: assignment-as-expression `(x op= rhs)` yields the new value', 
     const a = compileString(
       'contract C() { int n; function f(uint256 x, sig s, pubkey pk) { require(checkSig(s, pk));'
       + ' uint256 y = 0; if ((y = x + 1) > 5) { this.n = int(y); } else { this.n = 0; } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -193,7 +193,7 @@ describe('SBE-28: postfix ++/-- as an expression (yields the pre-mutation value)
   // `base -/+ 1` (uses the lvalue's own type, no temp). Sound only when the postfix is the FIRST reference to the
   // lvalue and the lvalue is not self-written; non-leftmost re-reads (`a + a++`), self-writes (`a = a++`), and
   // conditional positions (ternary/&&/||/loop) fail closed. VM values in solidcash PostfixReconstruct.test.ts.
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles a local postfix increment in an expression', () => {
     expect(cc('contract C() { function f() { int i = 0; int x = i++ * 2; require(x == 0); } }')).toBe('C');
   });
@@ -232,23 +232,23 @@ describe('SBE-28: postfix ++/-- as an expression (yields the pre-mutation value)
 describe('prefix ++/-- as an expression (yields the post-mutation value)', () => {
   it('is byte-identical to `x = x + 1; <read x>` (sound by reduction)', () => {
     const sugar = compileString('contract C { function f(uint a) external pure returns (uint) {'
-      + ' uint x = a; uint y = ++x; return x + y; } }', { solidityImportCompat: true });
+      + ' uint x = a; uint y = ++x; return x + y; } }', { evmCompat: true });
     const hand = compileString('contract C { function f(uint a) external pure returns (uint) {'
-      + ' uint x = a; x = x + 1; uint y = x; return x + y; } }', { solidityImportCompat: true });
+      + ' uint x = a; x = x + 1; uint y = x; return x + y; } }', { evmCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
   it('compiles a prefix increment as an array-assignment rvalue', () => {
     expect(compileString('contract A { function f(uint16 input) external pure returns (uint16[3] memory arr) {'
-      + ' arr[0] = input; arr[1] = ++input; arr[2] = ++input; } }', { solidityImportCompat: true })
+      + ' arr[0] = input; arr[1] = ++input; arr[2] = ++input; } }', { evmCompat: true })
       .contractName).toBe('A');
   });
   it('allows a prefix increment in a return (hoists before)', () => {
     expect(compileString('contract C { int n; function f() external returns (int) {'
-      + ' this.n = this.n + 1; return ++this.n; } }', { solidityImportCompat: true }).contractName).toBe('C');
+      + ' this.n = this.n + 1; return ++this.n; } }', { evmCompat: true }).contractName).toBe('C');
   });
   it('rejects a prefix increment in a ternary branch with a clear error', () => {
     expect(() => compileString('contract C { function f(bool c) external pure returns (uint) {'
-      + ' uint i = 0; return c ? ++i : i; } }', { solidityImportCompat: true }))
+      + ' uint i = 0; return c ? ++i : i; } }', { evmCompat: true }))
       .toThrow('inside a ternary');
   });
 });
@@ -256,7 +256,7 @@ describe('prefix ++/-- as an expression (yields the post-mutation value)', () =>
 // A Solidity for-loop init may be a declaration (`uint i = 0`), a bare assignment reusing an outer
 // variable (`i = 0`), or empty (`for (; ...)`). The grammar previously only accepted a declaration.
 describe('for-loop init: bare-assignment and empty forms', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts a bare-assignment init reusing an outer variable', () => {
     expect(cc('pragma solidity ^0.8.0; contract C { function f() public pure returns (uint) {'
       + ' uint i; uint s = 0; for (i = 0; i < 5; i++) { s = s + i; } return s; } }')).toBe('C');

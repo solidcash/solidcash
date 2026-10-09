@@ -263,7 +263,7 @@ describe('sorted mapping array push leading-value param', () => {
           notices[key].push(notice);
         }
       }
-    `, { forceStateful: true, solidityImportCompat: true });
+    `, { forceStateful: true, evmCompat: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'record')?.argumentFieldUpdates)
       .toEqual([{
         parameter: 'notice',
@@ -287,7 +287,7 @@ describe('sorted mapping array push leading-value param', () => {
           notices[key].push(notice);
         }
       }
-    `, { forceStateful: true, solidityImportCompat: true });
+    `, { forceStateful: true, evmCompat: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'conditional')?.argumentFieldUpdates)
       .toBeUndefined();
     expect(artifact.abi.find((candidate) => candidate.name === 'overwritten')?.argumentFieldUpdates)

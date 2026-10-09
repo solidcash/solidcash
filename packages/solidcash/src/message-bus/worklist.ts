@@ -442,7 +442,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     ]
       .filter((candidate): candidate is string => candidate !== undefined)
       .map((candidate) => candidate.toLowerCase());
-    const sourceUsesSolidityAddresses = source.artifact.compiler?.options?.solidityImportCompat === true;
+    const sourceUsesSolidityAddresses = source.artifact.compiler?.options?.evmCompat === true;
     // Address encoding rewrites a 20-byte word into a P2PKH lock. Prove the word, so a p2sh32 owner whose
     // payload is that word still matches, and a real locking script still matches by its exact bytes below.
     const rawWord = rawAddressWord(supplied as FunctionArgument);
@@ -516,7 +516,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     let boundTarget = targetLockingBytecode
       ?? participant.logicalLockingBytecode ?? participant.lockingBytecode;
     if (parent !== null
-      && participants[invocations[parent].callee].artifact.compiler?.options?.solidityImportCompat === true
+      && participants[invocations[parent].callee].artifact.compiler?.options?.evmCompat === true
       && /^(?:0{24})?[0-9a-f]{40}$/i.test(boundTarget)) {
       // Imported Solidity may evaluate a state/producer-derived target as a 20-byte identity or ABI word.
       // The native graph must name the exact co-spent lock, which the compiler re-projects and
@@ -669,8 +669,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               participant, executionArgs, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
               invocation, reached, options.expressionArgument, options.sourceIteration,
             );
-            const sourceUsesSolidityAddresses = participant.artifact.compiler?.options?.solidityImportCompat === true
-              || participant.artifact.compiler?.options?.evmCompat === true;
+            const sourceUsesSolidityAddresses = participant.artifact.compiler?.options?.evmCompat === true;
             const expectedEncoded = expectedArgs.map((argument, index) =>
               encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
             if (expectedEncoded.length !== encoded.length

@@ -264,7 +264,7 @@ export async function migrateHardhatConfig(dir: string = process.cwd()): Promise
     'export default defineConfig({',
     `  paths: ${JSON.stringify(migrated.paths ?? {}, null, 2).replace(/\n/g, '\n  ')},`,
     '  // Hardhat solidity.settings are intentionally not translated. Set SolidCash compiler options here.',
-    '  compiler: { solidityImportCompat: true },',
+    '  compiler: { evmCompat: true },',
   ];
   if (migrated.mnemonic) lines.push(`  mnemonic: ${JSON.stringify(migrated.mnemonic)},`);
   if (migrated.accounts) lines.push(

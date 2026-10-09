@@ -40,7 +40,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifact = compileString(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const artifact = compileString(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 
 /** The activation each emit of the entry publishes, in emit order. */
 function activationsOf(entry: string): readonly (ExternalCallExpression | undefined)[] {

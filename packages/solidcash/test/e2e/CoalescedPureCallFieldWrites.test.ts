@@ -58,7 +58,7 @@ contract Chef {
   }
 }`;
 
-const options = { solidityImportCompat: true, forceStateful: true };
+const options = { evmCompat: true, forceStateful: true };
 
 describe('field writes to one entry with pure library or free function calls in their values', () => {
   it('settle the MasterChefV2 amount and rewardDebt updates with the EVM values', async () => {

@@ -527,7 +527,7 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     accountSatoshis: config.accounts?.satoshis,
     recoveryProjection: config.compiler?.ecrecover === 'evm' ? 'evm'
       : config.compiler?.ecrecover === 'p2pkh' ? 'p2pkh'
-        : config.compiler?.solidityImportCompat === true ? 'evm'
+        : config.compiler?.evmCompat === true ? 'evm'
           : 'p2pkh',
     logicalIdentity: config.logicalIdentity,
   };

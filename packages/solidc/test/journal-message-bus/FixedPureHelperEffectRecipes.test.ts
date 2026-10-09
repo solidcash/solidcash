@@ -51,7 +51,7 @@ describe('pure helper fixed BCH effect recipes', () => {
           recipient.transfer(adjusted(amount));
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
 
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
       eligible: true,

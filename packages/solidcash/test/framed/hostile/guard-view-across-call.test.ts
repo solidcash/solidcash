@@ -50,7 +50,7 @@ const HOP_SOURCE = [
   '}',
 ].join('\n');
 
-const hopArtifacts = compileStringMulti(HOP_SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const hopArtifacts = compileStringMulti(HOP_SOURCE, { evmCompat: true, composition: 'framed' } as never);
 const guardedProxy = buildProxyArtifact(hopArtifacts.Guarded!);
 const CALLER = encodeLockingBytecodeP2pkh(alicePkh);
 const IMPLEMENTATION = 'implementation-master';

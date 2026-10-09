@@ -21,7 +21,7 @@ describe('typed address mapping identity in direct calls', () => {
         for (address key in this.records) { count = count + 1; }
         require(count == 1);
       }`}
-    }`, { forceStateful: true, solidityImportCompat: compat, suppressWarnings: true });
+    }`, { forceStateful: true, evmCompat: compat, suppressWarnings: true });
     const provider = createTestProvider();
     const base = new Contract(artifact, [], { provider });
     const seeded = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });

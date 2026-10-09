@@ -8,9 +8,9 @@ describe('artifactUsesSolidityAbi', () => {
     })).toBe(false);
   });
 
-  it('follows the explicit solidityImportCompat switch', () => {
+  it('follows the explicit evmCompat switch', () => {
     expect(artifactUsesSolidityAbi({
-      compiler: { name: 'solidc', version: '0.13.1', options: { solidityImportCompat: true } },
+      compiler: { name: 'solidc', version: '0.13.1', options: { evmCompat: true } },
     })).toBe(true);
   });
 
@@ -24,7 +24,7 @@ describe('artifactUsesSolidityAbi', () => {
 describe('resolveExternalResultEncoding', () => {
   const solidityArtifact = {
     contractName: 'MixedResults',
-    compiler: { name: 'solidc', version: '0.13.1', options: { solidityImportCompat: true } },
+    compiler: { name: 'solidc', version: '0.13.1', options: { evmCompat: true } },
   } as const;
 
   it('uses exact function metadata instead of the artifact-wide compatibility mode', () => {

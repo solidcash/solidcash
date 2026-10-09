@@ -20,7 +20,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + ' contract Box { bytes32 public hash; uint32 public time;'
   + '   function put(bytes32 hash_, uint32 time_) external { hash = hash_; time = time_; } }';
 
-const box = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never).Box!;
+const box = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never).Box!;
 
 interface BoxCalls {
   readonly put: (hash: Uint8Array, time: bigint) => FramedFunctionCall;

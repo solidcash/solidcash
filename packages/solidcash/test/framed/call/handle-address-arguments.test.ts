@@ -25,7 +25,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   function hold(address who) external { holder = who; }'
   + '   function holds(address who) external view returns (bool) { return who == holder; } }';
 
-const pin = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never).Pin!;
+const pin = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never).Pin!;
 
 interface PinCalls {
   readonly hold: (who: unknown) => FramedFunctionCall;

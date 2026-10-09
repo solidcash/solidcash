@@ -47,7 +47,7 @@ contract C {
 describe('library function as a function-pointer value (VM-verified)', () => {
   it('ptr = L.f; ptr() returns the library value', async () => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(LOCAL_PTR_SOURCE, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(LOCAL_PTR_SOURCE, { evmCompat: true }), [], { provider });
     await provider.addUtxo(contract.address, randomUtxo());
     const [utxo] = await provider.getUtxos(contract.address);
     const tx = new TransactionBuilder({ provider })
@@ -58,7 +58,7 @@ describe('library function as a function-pointer value (VM-verified)', () => {
 
   it('rejects a wrong expected value (guard against vacuous pass)', async () => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(LOCAL_PTR_SOURCE, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(LOCAL_PTR_SOURCE, { evmCompat: true }), [], { provider });
     await provider.addUtxo(contract.address, randomUtxo());
     const [utxo] = await provider.getUtxos(contract.address);
     const tx = new TransactionBuilder({ provider })
@@ -69,7 +69,7 @@ describe('library function as a function-pointer value (VM-verified)', () => {
 
   it('constructor-stored state fn-pointer to a library function invokes correctly', async () => {
     const sc = await getContractFactory(
-      compileString(STATE_PTR_SOURCE, { solidityImportCompat: true }), await fundedSigner(),
+      compileString(STATE_PTR_SOURCE, { evmCompat: true }), await fundedSigner(),
     ).deploy();
     await expect(sc.t()).resolves.toBeDefined();
   });

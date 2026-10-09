@@ -7,7 +7,7 @@ import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e
 // Guards the present-key overwrite NEW-lane pin (418b605cd). Neutral replicas with the same block layout did not
 // reach the probe order that duplicated the row, so this compiles the real data contract that did.
 const artifact = compileFile('../../examples/effectiveacceleration/contracts/MarketplaceDataV1.sol', {
-  solidityImportCompat: true, suppressWarnings: true, messageBus: true, messageBusKernel: true,
+  evmCompat: true, suppressWarnings: true, messageBus: true, messageBusKernel: true,
   messageBusGraphContext: true, maximumInputBytes: 1_000_000, commitmentLimit: 128,
 });
 

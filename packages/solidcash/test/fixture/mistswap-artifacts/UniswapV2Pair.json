@@ -6668,7 +6668,7 @@
       "allowUnsafeOperations": false,
       "commitmentLimit": 128,
       "messageBus": false,
-      "solidityImportCompat": true
+      "evmCompat": true
     }
   },
   "invocationAnalysis": {
@@ -18011,7 +18011,7 @@
         "allowUnsafeOperations": false,
         "commitmentLimit": 128,
         "messageBus": false,
-        "solidityImportCompat": true
+        "evmCompat": true
       }
     },
     "updatedAt": "2026-10-02T20:03:49.034Z",

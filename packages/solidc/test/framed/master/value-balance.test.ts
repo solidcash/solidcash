@@ -236,7 +236,7 @@ describe('a constructor that reads a balance, compiled framed', () => {
       {
         name: 'Sol',
         compiled: compileString(SOLIDITY_OWN_BALANCE_SOURCE, {
-          composition: 'framed', solidityImportCompat: true,
+          composition: 'framed', evmCompat: true,
         } as never),
       },
     ];

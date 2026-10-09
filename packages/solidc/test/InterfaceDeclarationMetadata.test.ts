@@ -13,7 +13,7 @@ describe('interface declaration metadata', () => {
   `;
 
   it('keeps interface-owned errors and indexed events in declaration-only multi output', () => {
-    const artifacts = compileStringMulti(source, { solidityImportCompat: true, compileDeclarations: [] });
+    const artifacts = compileStringMulti(source, { evmCompat: true, compileDeclarations: [] });
     expect(artifacts.IAlerts).toMatchObject({
       isLibrary: true, bytecode: '',
       errors: [{ name: 'TooSmall', signature: 'TooSmall(uint256,uint256)', parameters: [
@@ -29,7 +29,7 @@ describe('interface declaration metadata', () => {
 
   it('does not duplicate interface metadata after semantic registration in single output', () => {
     const artifact = compileString(source.slice(0, source.indexOf('interface IUnrelated')),
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(artifact.errors?.map((entry) => entry.signature)).toEqual(['TooSmall(uint256,uint256)']);
     expect(artifact.events?.map((entry) => entry.signature)).toEqual(['Changed(address,uint256)']);
   });
@@ -39,7 +39,7 @@ describe('interface declaration metadata', () => {
       interface ILeft is IAlerts {}
       interface IRight is IAlerts {}
       interface ILeaf is ILeft, IRight { error LeafOnly(); }
-    `, { solidityImportCompat: true, compileDeclarations: [] });
+    `, { evmCompat: true, compileDeclarations: [] });
     expect(artifacts.ILeaf.errors?.map((entry) => entry.signature)).toEqual([
       'LeafOnly()', 'TooSmall(uint256,uint256)',
     ]);

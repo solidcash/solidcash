@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Contract } from '../../src/Contract.js';
 import { buildNamespaces, type BuildNamespacesHost } from '../../src/stateful/sc-build-namespaces.js';
 
-function fixture(solidityImportCompat: boolean): {
+function fixture(evmCompat: boolean): {
   getters: Record<string, (...args: any[]) => Promise<any>>;
   stored: {
     records: { party: { recipient: Uint8Array; digest: Uint8Array }; reviewers: Uint8Array[] }[][];
@@ -17,7 +17,7 @@ function fixture(solidityImportCompat: boolean): {
   const record = { party: { recipient: word, digest: word }, reviewers: [word] };
   const stored = { records: [[record]], owner: word, digest: word };
   const artifact = {
-    abi: [], compiler: { options: { solidityImportCompat } },
+    abi: [], compiler: { options: { evmCompat } },
     structs: [
       { name: 'Party', fields: [{ name: 'recipient', type: 'address payable' }, { name: 'digest', type: 'bytes32' }] },
       { name: 'Record', fields: [{ name: 'party', type: 'Party' }, { name: 'reviewers', type: 'address[]' }] },

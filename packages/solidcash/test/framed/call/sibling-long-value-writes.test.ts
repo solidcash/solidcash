@@ -73,7 +73,7 @@ const SOURCE = [
 
 /** Solidity-import compile options, under which a call result crosses the boundary as a Solidity ABI tuple. */
 const FIXTURE_OPTIONS = {
-  solidityImportCompat: true,
+  evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
   messageBus: true,

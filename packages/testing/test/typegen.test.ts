@@ -59,7 +59,7 @@ describe('TypeChain-compatible generation', () => {
       interface IReasons { error Rejected(uint256 supplied, uint256 limit); }
     `);
     const result = await compileSolidityProject([source],
-      { solidityImportCompat: true, messageBus: false, suppressWarnings: true }, compileFileMulti);
+      { evmCompat: true, messageBus: false, suppressWarnings: true }, compileFileMulti);
     expect(result.artifacts.IReasons.errors).toEqual([{
       name: 'Rejected', signature: 'Rejected(uint256,uint256)',
       parameters: [{ name: 'supplied', type: 'uint256' }, { name: 'limit', type: 'uint256' }],

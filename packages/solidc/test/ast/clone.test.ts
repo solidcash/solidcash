@@ -22,7 +22,7 @@ describe('AST clone alias semantics', () => {
       '../../../../examples/effectiveacceleration/contracts/MockSablierLockup.sol', import.meta.url,
     ));
     const artifacts = compileFileMulti(fixture, {
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,

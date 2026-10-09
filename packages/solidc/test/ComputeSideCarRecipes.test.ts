@@ -13,7 +13,7 @@ contract ComputeRecipeFixture(IReader reader, ISink sink) {
     sink.submit(digest);
   }
 }`, {
-  solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+  evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
   maximumInputBytes: 1_000_000, suppressWarnings: true, optimizeForCompilationSpeed: true,
 });
 
@@ -47,7 +47,7 @@ describe('authenticated compute side-car recipes', () => {
           sink.ping();
         }
       }`, {
-      solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
       maximumInputBytes: 1_000_000, suppressWarnings: true, optimizeForCompilationSpeed: true,
     });
     const recipe = source.PackedRecipeFixture.abi.find((fn) => fn.name === 'run')?.computeSideCarRecipes;
@@ -69,7 +69,7 @@ describe('authenticated compute side-car recipes', () => {
         function computed(uint256 id) public view returns (uint256) {
           return eventsById[id].length + 1;
         }
-      }`, { solidityImportCompat: true, forceStateful: true, suppressWarnings: true });
+      }`, { evmCompat: true, forceStateful: true, suppressWarnings: true });
     expect(source.Lengths.abi.find((fn) => fn.name === 'exact')?.directCollectionLengthReturn)
       .toEqual({ collection: 'eventsById', keyParams: ['id'] });
     expect(source.Lengths.abi.find((fn) => fn.name === 'computed')?.directCollectionLengthReturn)
@@ -98,7 +98,7 @@ describe('authenticated compute side-car recipes', () => {
           sink.ping();
         }
       }`;
-    const options = { solidityImportCompat: true, ecrecover: 'p2pkh' as const, forceStateful: true,
+    const options = { evmCompat: true, ecrecover: 'p2pkh' as const, forceStateful: true,
       messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true };
     const source = compileStringMulti(sourceCode, options);

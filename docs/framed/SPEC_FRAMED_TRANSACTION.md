@@ -1665,7 +1665,7 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - A user's address is its 25-byte P2PKH locking bytecode. A contract's is its 35-byte `addrV` lock.
   - In native mode, state fields, arguments, results and event fields all use this form
     (`packages/utils/src/framed/canonical.ts`).
-  - In Solidity-compat mode (`solidityImportCompat`, which the marketplace compiles with), stored values keep the
+  - In Solidity-compat mode (`evmCompat`, which the marketplace compiles with), stored values keep the
     full lock, while results and the arguments of the calls a contract makes carry the 20-byte identity (DECISIONS
     D13, the kernel's shared base). The identity is the hash a P2PKH lock names, or `HASH160` of a contract's
     35-byte lock (`lockingBytecodeToSolidityAddressPayload`), and the all-zero address is the empty lock. For
@@ -1857,7 +1857,7 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
   - The marketplace's `whitelistWorkers`, `mapping(uint256 => mapping(address => bool))`, uses it.
 - **Fixed-size state arrays** `T[N]` reuse existing kinds (`packages/solidc/docs/arrays.md`): by default one mapping
   node per set index, as for `mapping(uint => T)`; with `packed`, a blob in the data NFT.
-  - `__gap` arrays (OpenZeppelin's reserved storage) are dropped at compile time under `solidityImportCompat`
+  - `__gap` arrays (OpenZeppelin's reserved storage) are dropped at compile time under `evmCompat`
     (`compiler.ts:12452-12458`), which the project compile configs set (`solidcash.config.ts:13`,
     `solidcash.faketoken.config.ts:9`). They have no record.
   - **Upgrade layout rule** (`readUpgradeLayoutVerdict`, plan 4.7). An upgrade keeps every record the old

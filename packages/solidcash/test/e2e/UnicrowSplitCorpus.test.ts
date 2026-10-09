@@ -14,7 +14,7 @@ describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', 
     });
     const artifact = compileFile(
       '../../examples/effectiveacceleration/contracts/unicrow/Unicrow.sol',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     const address = signer.getAddress();
     await expect(new ContractFactory(artifact, signer).deploy(
@@ -40,7 +40,7 @@ describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', 
 
     const compiled = compileFileSplit(
       '../../examples/effectiveacceleration/contracts/unicrow/Unicrow.sol',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     const address = signer.getAddress();
     const constructorArgs = [address, address, address, address, 100n];

@@ -44,7 +44,7 @@ describe('kernel returned struct mutation', () => {
           IStore(store).save(key, record.weights, record.votes, record.revision);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();

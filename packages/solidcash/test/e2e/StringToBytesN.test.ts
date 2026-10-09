@@ -15,7 +15,7 @@ const ABC3 = hexToBin('616263');
 
 describe('string literal -> bytesN (right-padded)', () => {
   const provider = createTestProvider();
-  const art = compileString(SRC, { solidityImportCompat: true, forceStateful: true });
+  const art = compileString(SRC, { evmCompat: true, forceStateful: true });
   const contract = new Contract(art, [], { provider });
 
   it('bytes32 x = "abc" equals the right-padded value; wrong value fails', async () => {

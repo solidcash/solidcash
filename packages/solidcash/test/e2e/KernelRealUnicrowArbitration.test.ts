@@ -14,7 +14,7 @@ import { setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
 const OPTIONS = {
-  solidityImportCompat: true,
+  evmCompat: true,
   suppressWarnings: true,
   messageBus: true,
   messageBusKernel: true,

@@ -45,7 +45,7 @@ let run: Promise<FramedCallResult> | undefined;
 /** B and A deployed, and A's `poke` composed and broadcast once. */
 async function poked(): Promise<FramedCallResult> {
   run ??= (async (): Promise<FramedCallResult> => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+    const artifacts = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
     const { framedValidator } = await import('solidc');
     const validatorProgram = framedValidator.buildValidatorProgram();
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });

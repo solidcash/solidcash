@@ -90,7 +90,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const artifacts = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 const tokenArtifact = artifacts.Token!;
 const callbackArtifact = artifacts.CallbackToken!;
 const vaultArtifact = artifacts.Vault!;

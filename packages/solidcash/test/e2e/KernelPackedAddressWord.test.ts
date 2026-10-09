@@ -34,7 +34,7 @@ describe('kernel packed ABI-word addresses', () => {
         function relay(address[] memory selected) internal {
           IReceiver(this.receiver).store(abi.encodePacked(${type === 'uint160' ? 'uint160(selected[0])' : 'selected[0]'}, true));
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();

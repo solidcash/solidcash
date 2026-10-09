@@ -6,7 +6,7 @@ import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
 
 // Array-element external call over a BOUNDED, PACKED address[N] (a single blob field, not the dynamic
-// chunk-backed array or an entry-NFT collection). This is the representation the solidityImportCompat
+// chunk-backed array or an entry-NFT collection). This is the representation the evmCompat
 // bounded-value-array routing produces (AstBuilder), so it is what backs StableSwap's fixed `address[N]
 // tokens` + IERC20(tokens[i]).transferFrom(...). VM-verifies the packed field reads back as the same
 // pushdata(count)++elems blob the array-external-call loop consumes, and every element is co-spent + verified.

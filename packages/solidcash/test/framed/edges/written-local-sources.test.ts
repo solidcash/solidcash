@@ -100,7 +100,7 @@ contract Root {
 }
 `;
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
 
 const USER = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x21));
 const OTHER = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x43));

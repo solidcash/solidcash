@@ -210,7 +210,7 @@ const computeSideCarRecipesOf = (
   func: FunctionDefinitionNode, compilerOptions: CompilerOptions,
 ): ComputeSideCarRecipesAbi | undefined => {
   type ComputeExpression = ComputeSideCarRecipesAbi['keccak'][number];
-  const packedEvm = compilerOptions.evmCompat || compilerOptions.solidityImportCompat;
+  const packedEvm = compilerOptions.evmCompat;
   // eslint-disable-next-line max-len
   const packedInteger = /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?$/;
   const packedBytes = /^bytes(?:[1-9]|[12][0-9]|3[0-2])?$/;
@@ -286,7 +286,7 @@ const computeSideCarRecipesOf = (
           keccak.push(typed(node.args[0]));
           keccakSites.push(node.computeSourceSite ?? '');
         }
-        if ((compilerOptions.evmCompat || compilerOptions.solidityImportCompat)
+        if ((compilerOptions.evmCompat)
           && node.kind === 'call' && node.name === 'ECDSA.recover' && node.args?.length === 2
           && node.computeSourceSite && reachedSignature65Recovery(func, node.computeSourceSite)) {
           ecrecover.push({ kind: 'signature65', hash: typed(node.args[0]), signature: typed(node.args[1]) });
@@ -4173,7 +4173,7 @@ export function generateDeclarationArtifact(
     }
   };
   if (primary) collectInterfaceScope(primary);
-  // A standalone abstract contract (compiled under solidityImportCompat) has no interface, but its own
+  // A standalone abstract contract (compiled under evmCompat) has no interface, but its own
   // public/external functions form the ABI - solc emits an ABI + empty bytecode for abstract contracts.
   const abstractContract = ast.contract?.isAbstract ? ast.contract : undefined;
   const declFunctions = primary?.functions
@@ -4249,7 +4249,6 @@ export function generateDeclarationArtifact(
       name: 'solidc', version,
       options: {
         evmCompat: compilerOptions.evmCompat,
-        solidityImportCompat: compilerOptions.solidityImportCompat,
       },
     },
     updatedAt: new Date().toISOString(),
@@ -4414,7 +4413,7 @@ export function generateArtifact(
           kind: (coll.type instanceof ArrayType ? 'array' : 'mapping') as 'mapping' | 'array',
           keyType: keyEncodingTypeString(coll.keyType),
           valueType: coll.innermostValueType.toString(),
-          ...(coll.sorted && (compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
+          ...(coll.sorted && (compilerOptions.evmCompat)
             && compilerOptions.composition !== 'framed'
             && coll.allKeyTypes.some((type) => /^address(?: payable)?$/.test(keyEncodingTypeString(type)))
             && { addressKeyEncoding: 'identity20' as const }),
@@ -4441,7 +4440,7 @@ export function generateArtifact(
             kind: 'mapping' as const,
             keyType: keyEncodingTypeString(coll.keyType),
             valueType: coll.innermostValueType.toString(),
-            ...(coll.sorted && (compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
+            ...(coll.sorted && (compilerOptions.evmCompat)
               && compilerOptions.composition !== 'framed'
               && coll.allKeyTypes.some((type) => /^address(?: payable)?$/.test(keyEncodingTypeString(type)))
               && { addressKeyEncoding: 'identity20' as const }),
@@ -4615,9 +4614,6 @@ export function generateArtifact(
         ...(compilerOptions.messageBusEntryPoolCapacity !== undefined
           && { messageBusEntryPoolCapacity: compilerOptions.messageBusEntryPoolCapacity }),
         ...(compilerOptions.messageBusDirectParticipant === true && { messageBusDirectParticipant: true }),
-        // Runtime external-call argument reconstruction must mirror Solidity-only encoding rules such as
-        // abi.encodePacked(address) narrowing to the 20-byte account payload.
-        solidityImportCompat: compilerOptions.solidityImportCompat,
         ...(compilerOptions.sourceMap === false && { sourceMap: false }),
       },
     },

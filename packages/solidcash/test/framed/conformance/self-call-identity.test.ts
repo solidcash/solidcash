@@ -265,7 +265,7 @@ async function evmAnswer(row: Row): Promise<Role> {
 async function framedAnswer(row: Row): Promise<{ readonly role?: Role; readonly refusal?: string }> {
   let artifact;
   try {
-    artifact = compileStringMulti(sourceOf(row), { composition: 'framed', solidityImportCompat: true } as never).A!;
+    artifact = compileStringMulti(sourceOf(row), { composition: 'framed', evmCompat: true } as never).A!;
   } catch (error) {
     return { refusal: String((error as Error).message) };
   }

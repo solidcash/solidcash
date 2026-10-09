@@ -33,7 +33,7 @@ describe('X93: a diagnostic position inside an imported file names that file', (
     if (p === './C.sol') return { source: C, id: '/C.sol' };
     return undefined;
   };
-  const opt = { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true };
+  const opt = { importResolver: resolver, rootFileId: '/main.sol', evmCompat: true };
   const root = 'pragma solidity ^0.8.20;\nimport "./B.sol";\ncontract Root { uint256 public x;\n'
     + ' function f(uint256 a) public { x = L.pick(a, 1); } }';
 
@@ -62,7 +62,7 @@ describe('X93: a diagnostic position inside an imported file names that file', (
   it('GUARD: a contract with no imports prints the position exactly as before', () => {
     const noImports = 'pragma solidity ^0.8.20;\ncontract Solo { uint256 public x;\n'
       + ' function f(uint256 a) public { uint256 mine = 7; x = a; } }';
-    const warns = warningsOf(() => compileString(noImports, { solidityImportCompat: true }));
+    const warns = warningsOf(() => compileString(noImports, { evmCompat: true }));
     const own = warns.find((w) => /unused variable 'mine'/.test(w));
     expect(own).toBe("Warning: unused variable 'mine' at line 3.");
   });
@@ -77,7 +77,7 @@ describe('X93: a diagnostic position inside an imported file names that file', (
     const src = 'pragma solidity ^0.8.20;\nimport "./Base.sol";\n'
       + 'contract Child is Base { uint256 public x; function f() public { hook(1, 2); x = 1; } }';
     const warns = warningsOf(() => compileString(src,
-      { importResolver: r, rootFileId: '/main.sol', solidityImportCompat: true }));
+      { importResolver: r, rootFileId: '/main.sol', evmCompat: true }));
     const virt = warns.find((w) => /'virtual' function modifier is a no-op/.test(w));
     expect(virt).toContain('at line 3 of imported "/Base.sol"');
     const unused = warns.filter((w) => /unused variable '(from|to)'/.test(w));
@@ -93,7 +93,7 @@ describe('X93: a diagnostic position inside an imported file names that file', (
     const src = 'pragma solidity ^0.8.20;\nimport "./Ctx.sol";\n'
       + 'contract Child is Ctx { address public a; function f() public { a = _who(); } }';
     const warns = warningsOf(() => compileString(src,
-      { importResolver: r, rootFileId: '/main.sol', solidityImportCompat: true }));
+      { importResolver: r, rootFileId: '/main.sol', evmCompat: true }));
     const hit = warns.find((w) => /'msg\.sender' used/.test(w));
     expect(hit).toContain('at line 3 of imported "/Ctx.sol"');
   });

@@ -33,7 +33,7 @@ function compileSol(source: string, name = 'Impl'): Artifact {
   const file = path.join(dir, `${name}.sol`);
   fs.writeFileSync(file, source);
   try {
-    return (compileFileMulti(file, { composition: 'framed', solidityImportCompat: true } as never) as
+    return (compileFileMulti(file, { composition: 'framed', evmCompat: true } as never) as
       Record<string, Artifact>)[name]!;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

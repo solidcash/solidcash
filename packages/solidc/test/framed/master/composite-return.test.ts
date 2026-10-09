@@ -97,7 +97,7 @@ const wordList = (values: readonly bigint[]): Uint8Array =>
   new Uint8Array(values.flatMap((value) => [...abiWord(value)]));
 
 const compiling = (source: string): ReturnType<typeof compileString> =>
-  compileString(source, { composition: 'framed', solidityImportCompat: true } as never);
+  compileString(source, { composition: 'framed', evmCompat: true } as never);
 
 /** Asks the machine whether a master whose filled program is `filled` is accepted with one `retval` recorded. */
 function verdictOf(filled: Uint8Array, retval: Uint8Array): boolean {

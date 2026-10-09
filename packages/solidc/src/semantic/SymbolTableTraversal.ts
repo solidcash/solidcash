@@ -1067,7 +1067,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const fileErrorNames = new Set<string>();
     for (const err of node.errorDefinitions) {
       if (!node.libraryErrorDefinitions.has(err)) {
-        if (this.compilerOptions.solidityImportCompat && fileErrorNames.has(err.name)) {
+        if (this.compilerOptions.evmCompat && fileErrorNames.has(err.name)) {
           throw new ErrorRedefinitionError(err);
         }
         fileErrorNames.add(err.name);
@@ -1252,7 +1252,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
       const paramTypes = func.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type);
-      if (this.compilerOptions.solidityImportCompat && !func.isLibraryFunction && fileErrorNames.has(func.name)) {
+      if (this.compilerOptions.evmCompat && !func.isLibraryFunction && fileErrorNames.has(func.name)) {
         throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
       }
       const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
@@ -1478,9 +1478,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const directlyStateful = node.stateVariables.length > 0
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
-      || node.functions.some((func) => func.impliedSelfdestruct
-        || (this.compilerOptions.solidityImportCompat
-          && func.modifiers.includes(FunctionModifier.SELFDESTRUCT)))
+      || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))
       || (this.compilerOptions.forceStateful ?? false)
       || node.usesBlockhash;
     if (directlyStateful) {
@@ -1571,7 +1569,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Register event definitions (keyed by full signature to allow overloading). The redefinition check is
     // within-contract only: a same-sig event registered by a sibling/library scope is not a redefinition.
     const localEventSigs = new Set<string>();
-    if (this.compilerOptions.solidityImportCompat && node.hasDuplicateInheritedEventSignature) {
+    if (this.compilerOptions.evmCompat && node.hasDuplicateInheritedEventSignature) {
       throw new EventRedefinitionError(node.eventDefinitions[0] ?? node);
     }
     // Signature -> indexed layout of every event an implemented interface declares. A contract that redeclares an
@@ -1580,7 +1578,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const indexedKey = (ev: { parameters: { indexed?: boolean }[] }): string =>
       ev.parameters.map((parameter) => (parameter.indexed ? '1' : '0')).join(',');
     const interfaceEventIndexed = new Map<string, string>();
-    if (this.compilerOptions.solidityImportCompat) {
+    if (this.compilerOptions.evmCompat) {
       const visitedInterfaces = new Set<string>();
       const collectInterfaceEvents = (name: string): void => {
         if (visitedInterfaces.has(name)) return;
@@ -1614,7 +1612,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const localErrorNames = new Set<string>();
     for (const err of node.errorDefinitions) {
       const sig = computeErrorSignature(err.name, err.parameters.map((p) => p.type.toString()));
-      if (this.compilerOptions.solidityImportCompat && localErrorNames.has(err.name)) {
+      if (this.compilerOptions.evmCompat && localErrorNames.has(err.name)) {
         throw new ErrorRedefinitionError(err);
       }
       localErrorNames.add(err.name);
@@ -1809,7 +1807,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Pre-register all user-defined functions (before visiting bodies)
     for (const func of node.functions) {
       this.validateModifiers(func, node);
-      if (this.compilerOptions.solidityImportCompat && localErrorNames.has(func.name)) {
+      if (this.compilerOptions.evmCompat && localErrorNames.has(func.name)) {
         throw new FunctionRedefinitionError(
           func, func.parameters.map((parameter) => parameter.type.toString()).join(', '),
         );
@@ -1834,7 +1832,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
       // A contract function may shadow a same-signature FREE function under Solidity-compat (legal Solidity);
       // native solidcash keeps the strict check (the free/contract collision is an error there).
-      const collidesFree = !this.compilerOptions.solidityImportCompat && this.freeFunctionSignatures.has(sig);
+      const collidesFree = !this.compilerOptions.evmCompat && this.freeFunctionSignatures.has(sig);
       if (this.functionSignatures.has(sig) || collidesFree) {
         throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
       }
@@ -2255,7 +2253,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // the same name as its function, `function max(..) returns (int max)`, which is legal Solidity. Both live at
     // contract/library level, so this never masks a genuine same-scope param/local collision. Native solidcash
     // keeps the strict check.
-    const shadowsOuter = this.compilerOptions.solidityImportCompat
+    const shadowsOuter = this.compilerOptions.evmCompat
       && (existing?.symbolType === SymbolType.STATE_VARIABLE || existing?.symbolType === SymbolType.FUNCTION);
     if (existing && !shadowsOuter) {
       throw new VariableRedefinitionError(node);
@@ -2276,7 +2274,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Solidity permits a contract constant to shadow a file-level/global declaration (warning only), including
     // builtin functions such as `min`/`max`. The contract scope's own table remains authoritative for genuine
     // same-scope duplicates.
-    const shadowsOuter = this.compilerOptions.solidityImportCompat && !own && visible !== undefined;
+    const shadowsOuter = this.compilerOptions.evmCompat && !own && visible !== undefined;
     const alreadyPredeclared = own?.definition === node;
     if ((own && !alreadyPredeclared) || (visible && !alreadyPredeclared && !shadowsOuter)) {
       throw new VariableRedefinitionError(node);
@@ -2313,7 +2311,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const node of nodes) {
       const own = this.symbolTables[0].symbols.get(node.name);
       const visible = this.symbolTables[0].get(node.name);
-      const shadowsOuter = this.compilerOptions.solidityImportCompat && !own && visible !== undefined;
+      const shadowsOuter = this.compilerOptions.evmCompat && !own && visible !== undefined;
       if (own || (visible && !shadowsOuter)) throw new VariableRedefinitionError(node);
       const symbol = Symbol.constant(node);
       symbol.references.push({ name: node.name } as IdentifierNode);
@@ -3448,7 +3446,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const sym = this.symbolTables[0].get('__internal__msgSenderCategory');
           if (sym) sym.references.push({ name: '__internal__msgSenderCategory' } as IdentifierNode);
           this.pushToStack(categoryParam);
-          if (this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat) {
+          if (this.compilerOptions.evmCompat) {
             const anchorParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__msgSenderAnchorIdx');
             anchorParam.location = node.location;
             anchorParam.syntheticallyUsed = true;
@@ -4626,7 +4624,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }));
         // A Solidity-compat call/staticcall site pins its co-spent callee to the call's target (see
         // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.
-        if (this.compilerOptions.solidityImportCompat && this.compilerOptions.composition !== 'framed') {
+        if (this.compilerOptions.evmCompat && this.compilerOptions.composition !== 'framed') {
           this.publishLowLevelCallSources(node);
         }
 
@@ -4807,7 +4805,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(param);
       // A proxy delegate's Solidity address(this) is the authenticated CREATE lock when the SDK names
       // that anchor. -1 keeps the replaceable master, which is what a self-delegate hash160(self) checks.
-      if ((this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat)
+      if ((this.compilerOptions.evmCompat)
         && !node.messageBusRoute
         && !node.parameters.some((parameter) => parameter.name === '__internal__graphSelfIdentityInput')
         && delegateReadsOwnAddress(node)) {
@@ -5706,9 +5704,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isStatefulContract = contract.stateVariables.length > 0
       || contract.collections.length > 0
       || contract.eventDefinitions.length > 0
-      || contract.functions.some((func) => func.impliedSelfdestruct
-        || (this.compilerOptions.solidityImportCompat
-          && func.modifiers.includes(FunctionModifier.SELFDESTRUCT)))
+      || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))
       || contract.deploysWithValue
       || contract.usesBlockhash
       || (this.compilerOptions.forceStateful ?? false);
@@ -12076,7 +12072,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private compileTimeKeyContext(): CompileTimeKeyContext {
     return {
       constantOf: (name) => this.constantMap.get(name),
-      solidityCompat: this.compilerOptions.solidityImportCompat === true,
+      solidityCompat: this.compilerOptions.evmCompat === true,
     };
   }
 
@@ -12120,7 +12116,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Solidity. set() below adds it to the inner scope, so the shadow resolves correctly. Shadowing an outer
       // LOCAL that is still live is NOT accepted: codegen slots locals by name, so a live shadow would reuse the
       // outer's slot and miscompile - a clean rejection is sound; disjoint sibling scopes reuse names fine.
-      const shadowsOuter = this.compilerOptions.solidityImportCompat
+      const shadowsOuter = this.compilerOptions.evmCompat
         && (existing.symbolType === SymbolType.FUNCTION || existing.symbolType === SymbolType.STATE_VARIABLE);
       if (!loopReuse && !shadowsOuter) {
         throw new VariableRedefinitionError(node);
@@ -12261,7 +12257,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (sym) {
       // Reference element/field writes are lowered to AssignNode but explicitly marked by AstBuilder.
       this.checkReadOnlyModification(sym, !node.isReferenceDataWrite);
-    } else if (this.compilerOptions.solidityImportCompat) {
+    } else if (this.compilerOptions.evmCompat) {
       throw new UndefinedReferenceError(node.identifier);
     }
 
@@ -12830,7 +12826,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Tuple-declared locals follow the same Solidity shadowing rule as an ordinary declaration: an inner
       // local may shadow a contract state variable/function. A live local in this scope still cannot be
       // shadowed because stack slots are name-keyed.
-      const shadowsOuter = this.compilerOptions.solidityImportCompat
+      const shadowsOuter = this.compilerOptions.evmCompat
         && (existing?.symbolType === SymbolType.FUNCTION || existing?.symbolType === SymbolType.STATE_VARIABLE);
       if (existing && !shadowsOuter) {
         throw new VariableRedefinitionError(definition);
@@ -12963,7 +12959,6 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private validateExternalCallMutability(callee: InterfaceFunctionNode | FunctionDefinitionNode): void {
-    if (!this.compilerOptions.solidityImportCompat) return;
     const callerPure = this.currentFunction?.modifiers.includes(FunctionModifier.PURE);
     const callerView = this.currentFunction?.modifiers.includes(FunctionModifier.VIEW);
     const calleeMutability = callee instanceof InterfaceFunctionNode ? callee.stateMutability
@@ -12984,7 +12979,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     overloads: FunctionDefinitionNode[],
     node: FunctionCallNode | MethodCallNode,
   ): void {
-    if (!this.compilerOptions.solidityImportCompat || !this.currentFunction?.isLibraryFunction) return;
+    if (!this.compilerOptions.evmCompat || !this.currentFunction?.isLibraryFunction) return;
     const declaringLibrary = this.currentFunction.name.includes('.')
       ? this.currentFunction.name.slice(0, this.currentFunction.name.indexOf('.')) : undefined;
     const targetLibrary = fullFunctionName.includes('.')
@@ -13007,7 +13002,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {
-    if (this.compilerOptions.solidityImportCompat && this.isDeclaredErrorCall(node.identifier.name)) {
+    if (this.compilerOptions.evmCompat && this.isDeclaredErrorCall(node.identifier.name)) {
       throw new InvalidErrorUsageError(node, node.identifier.name);
     }
     this.qualifyLibrarySiblingCall(node.identifier);
@@ -13380,11 +13375,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     // bare `m(k)` still denotes the storage variable and is not a function. Getter synthesis intentionally keeps
     // SolidCash's storage lowering machinery intact, so reject the invalid bare spelling before its synthetic
     // overload can make the state variable appear callable.
-    if (this.compilerOptions.solidityImportCompat && !node.fromThisCall && !isIndirect
+    if (this.compilerOptions.evmCompat && !node.fromThisCall && !isIndirect
       && (this.stateVariableMap.has(node.identifier.name) || this.collectionMap.has(node.identifier.name))) {
       throw new UndefinedReferenceError(node.identifier);
     }
-    if (this.compilerOptions.solidityImportCompat && isIndirect && calleeSym?.type instanceof FunctionType) {
+    if (isIndirect && calleeSym?.type instanceof FunctionType) {
       const callerPure = this.currentFunction?.modifiers.includes(FunctionModifier.PURE);
       const callerView = this.currentFunction?.modifiers.includes(FunctionModifier.VIEW);
       const calleeMutability = calleeSym.type.stateMutability;
@@ -13464,7 +13459,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!node.call.identifier) {
       throw new MethodCallNotSupportedError(node);
     }
-    if (this.compilerOptions.solidityImportCompat && this.isDeclaredErrorCall(node.call.identifier.name)) {
+    if (this.compilerOptions.evmCompat && this.isDeclaredErrorCall(node.call.identifier.name)) {
       throw new InvalidErrorUsageError(node.call, node.call.identifier.name);
     }
     // A library sibling called in statement position (void call, return unused) needs qualifying too - the
@@ -13588,8 +13583,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       NullaryOperator.BLOCK_TOTAL_FEES, NullaryOperator.BLOCK_BASEFEE, NullaryOperator.BLOCK_BLOBBASEFEE,
       NullaryOperator.BLOCK_GASLIMIT, NullaryOperator.BLOCK_PREVRANDAO, NullaryOperator.BLOCK_COINBASE,
     ]);
-    if (this.compilerOptions.solidityImportCompat
-      && this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
       && environmentReads.has(node.operator)
       && !(node.operator === NullaryOperator.CHAIN_ID && node.fromInlineAssembly)) {
       throw new InvalidModifierCombinationError(
@@ -13601,7 +13595,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       : this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)
         && !this.currentFunction.isLibraryFunction
         && (this.currentFunction.visibility === 'public' || this.currentFunction.visibility === 'external');
-    if (this.compilerOptions.solidityImportCompat && node.operator === NullaryOperator.MSG_VALUE
+    if (node.operator === NullaryOperator.MSG_VALUE
       && this.currentFunction && !this.currentFunction.modifiers.includes(FunctionModifier.PAYABLE)
       && msgValueForbidden) {
       throw new InvalidModifierCombinationError(
@@ -13639,9 +13633,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     if (contract) {
       if (this.currentFunction) this.currentFunction.hasContractInstantiation = true;
-      if (this.compilerOptions.solidityImportCompat
-        && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
-          || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
+      if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+        || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
         throw new InvalidModifierCombinationError(
           this.currentFunction, 'pure or view functions cannot create contracts',
         );
@@ -13675,8 +13668,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!this.isStatefulContract) {
           throw new DeployValueInNonStatefulError(node, contract.name);
         }
-        if (this.compilerOptions.solidityImportCompat
-          && !contract.constructorDef?.modifiers.includes(FunctionModifier.PAYABLE)) {
+        if (!contract.constructorDef?.modifiers.includes(FunctionModifier.PAYABLE)) {
           throw new InvalidDeploymentValueError(
             node, `cannot set deployment value because constructor of '${contract.name}' is not payable`,
           );
@@ -13841,6 +13833,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot modify contract state",
+      );
+    }
     const coll = this.collectionMap.get(node.name);
     if (!coll) {
       throw new UndefinedCollectionError(node);
@@ -13875,6 +13873,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot modify contract state",
+      );
+    }
     const coll = this.collectionMap.get(node.name);
     if (!coll) {
       throw new UndefinedCollectionError(node);
@@ -13897,6 +13901,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitMappingDelete(node: MappingDeleteNode): Node {
     if (this.insideConstructor) {
       throw new MappingAccessInConstructorError(node);
+    }
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot modify contract state",
+      );
     }
     const coll = this.collectionMap.get(node.name);
     if (!coll) {
@@ -14257,7 +14267,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     const storageAliasRebind = (node.expression instanceof StateAccessNode
       || node.expression instanceof IdentifierNode) && node.expression.name === node.name;
     if (!node.fromModifier && !storagePointerRebind && !storageAliasRebind
-      && (this.compilerOptions.solidityImportCompat || node.qualifiedBaseAccess)
       && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
       || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
       throw new InvalidModifierCombinationError(
@@ -14321,9 +14330,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitStateArrayPush(node: StateArrayPushNode): Node {
-    if (this.compilerOptions.solidityImportCompat
-      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
-        || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
       throw new InvalidModifierCombinationError(
         this.currentFunction, "'pure'/'view' functions cannot modify contract state",
       );
@@ -14348,9 +14356,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitStateArrayPop(node: StateArrayPopNode): Node {
-    if (this.compilerOptions.solidityImportCompat
-      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
-        || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
       throw new InvalidModifierCombinationError(
         this.currentFunction, "'pure'/'view' functions cannot modify contract state",
       );
@@ -14368,6 +14375,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitStateArrayAssign(node: StateArrayAssignNode): Node {
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot modify contract state",
+      );
+    }
     const sv = this.stateVariableMap.get(node.name);
     if (!sv || !(sv.isPacked || sv.isDynamic) || !(sv.type instanceof ArrayType)) {
       throw new UndefinedStateVariableError(node);
@@ -14382,6 +14395,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitStateArrayDelete(node: StateArrayDeleteNode): Node {
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot modify contract state",
+      );
+    }
     const sv = this.stateVariableMap.get(node.name);
     if (!sv || !(sv.isPacked || sv.isDynamic) || !(sv.type instanceof ArrayType)) {
       throw new UndefinedStateVariableError(node);
@@ -14715,7 +14734,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new ReservedErrorSelectorError(err, selectorHex);
     }
     const selectorOwner = this.errorSelectorMap.get(selectorHex);
-    if (this.compilerOptions.solidityImportCompat && selectorOwner
+    if (this.compilerOptions.evmCompat && selectorOwner
       && selectorOwner.signature !== sig) {
       throw new ErrorSelectorCollisionError(err, selectorOwner, selectorHex);
     }
@@ -15631,7 +15650,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private resolveNumericType(typeText: string): IntType | FixedType | undefined {
     // Under Solidity-compat, bare `uint`/`int` alias uint256/int256 (so `type(uint).max` works like
     // `type(uint256).max`). Native solidcash requires the explicit width (int is the unbounded VM integer).
-    if (this.compilerOptions.solidityImportCompat) {
+    if (this.compilerOptions.evmCompat) {
       if (typeText === 'uint') return new IntType(false, 256);
       if (typeText === 'int') return new IntType(true, 256);
     }
@@ -15690,7 +15709,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    if (this.compilerOptions.solidityImportCompat && node.isGlobal && !this.typeDefMap.has(typeKey)) {
+    if (this.compilerOptions.evmCompat && node.isGlobal && !this.typeDefMap.has(typeKey)) {
       throw new GlobalUsingForNonUDVTError(node, node.targetTypeName ?? '*');
     }
 
@@ -15720,12 +15739,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!overloads || overloads.length === 0) {
           throw new UsingForUndefinedFunctionError(node, funcRef);
         }
-        if (this.compilerOptions.solidityImportCompat && overloads.length !== 1) {
+        if (this.compilerOptions.evmCompat && overloads.length !== 1) {
           throw new UsingForInvalidFunctionReferenceError(node, funcRef);
         }
         const attachedFunction = overloads[0];
         const declaringLibrary = funcRef.includes('.') ? funcRef.slice(0, funcRef.lastIndexOf('.')) : undefined;
-        if (this.compilerOptions.solidityImportCompat
+        if (this.compilerOptions.evmCompat
           && attachedFunction.modifiers.includes(FunctionModifier.PRIVATE)
           && node.declaringLibraryName !== declaringLibrary) {
           throw new UsingForPrivateFunctionError(node, funcRef);
@@ -15737,7 +15756,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else {
           const firstParameter = attachedFunction.parameters
             .find((parameter) => !parameter.name.startsWith('__internal__'));
-          if (this.compilerOptions.solidityImportCompat && resolvedTargetType && firstParameter
+          if (this.compilerOptions.evmCompat && resolvedTargetType && firstParameter
             && !implicitlyCastable(resolvedTargetType, firstParameter.type)) {
             throw new UsingForIncompatibleTargetError(
               node,
@@ -15765,7 +15784,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const operator = binding.operator!;
     const funcName = binding.funcName;
 
-    if (this.compilerOptions.solidityImportCompat
+    if (this.compilerOptions.evmCompat
       && (!node.isGlobal || !this.processingFileUsingDirective)) {
       throw new OperatorOverloadSignatureError(
         node, funcName, "operators can only be defined in a file-level global 'using for' directive",
@@ -15796,7 +15815,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!func.isFreeFunction) {
       throw new OperatorOverloadSignatureError(node, funcName, 'operator implementations must be free functions');
     }
-    if (this.compilerOptions.solidityImportCompat && !func.modifiers.includes(FunctionModifier.PURE)) {
+    if (this.compilerOptions.evmCompat && !func.modifiers.includes(FunctionModifier.PURE)) {
       throw new OperatorOverloadSignatureError(node, funcName, 'operator implementations must be declared pure');
     }
 
@@ -16754,8 +16773,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitLowLevelCall(node: LowLevelCallNode): Node {
-    if (this.compilerOptions.solidityImportCompat
-      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+    if ((this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
         || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))
       && node.callMode !== 'staticcall') {
       throw new InvalidModifierCombinationError(
@@ -16777,8 +16795,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitLowLevelCallStatement(node: LowLevelCallStatementNode): Node {
-    if (this.compilerOptions.solidityImportCompat
-      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+    if ((this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
         || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))
       && node.callMode !== 'staticcall' && !node.synthesizedFromLibraryCall) {
       throw new InvalidModifierCombinationError(

@@ -30,7 +30,7 @@ describe('no-arg push() appends the element-type default', () => {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function dep(): Promise<any> {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     return StatefulContract.withCategory(contract, categoryId);

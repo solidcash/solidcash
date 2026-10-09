@@ -10,7 +10,7 @@ export default defineConfig({
   // This project composes graph-free ERC-20 leaves into caller-authenticated atomic routes. Explicitly request
   // leaf participant routes; no marketplace source or test changes are required.
   compiler: {
-    solidityImportCompat: true,
+    evmCompat: true,
     messageBus: true,
     messageBusKernel: true,
     messageBusGraphContext: true,

@@ -50,7 +50,7 @@ const SOURCE = `pragma solidity ^0.8.7;
     function touchB(uint256 v) public { _setB(v); own = v + block.timestamp; require(v >= 0, "n"); }
   }`;
 
-const OPTIONS = { solidityImportCompat: true, forceSplit: true };
+const OPTIONS = { evmCompat: true, forceSplit: true };
 
 const slots = (layout: any): string[] => (layout?.variables ?? [])
   .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);

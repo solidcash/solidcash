@@ -8,7 +8,7 @@ import { messageBusVmAccepts } from './vm-accepts.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
-  solidityImportCompat: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
+  evmCompat: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
 } as const;
 const owner = hexToBin(`76a914${'31'.repeat(20)}88ac`);
 const reviewer = hexToBin(`76a914${'42'.repeat(20)}88ac`);

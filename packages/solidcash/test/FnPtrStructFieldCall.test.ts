@@ -36,7 +36,7 @@ async function expectStatefulFailure(call: StatefulCall): Promise<void> {
 
 const build = async (src: string, fn: 'ok' | 'wrong'): Promise<TransactionBuilder> => {
   const provider = createTestProvider();
-  const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+  const contract = new Contract(compileString(src, { evmCompat: true }), [], { provider });
   await provider.addUtxo(contract.address, randomUtxo());
   const [utxo] = await provider.getUtxos(contract.address);
   const tx = new TransactionBuilder({ provider })
@@ -111,7 +111,7 @@ describe('fn-ptr struct field call (s.x(), t[i].x(), s.inner.x()) - VM-verified'
 // entry, read it back, invoke). Also covers the arg form, whose bytecode differs from the hoist.
 describe('fn-ptr call on a MAPPING-value struct field (m[k].x()) - VM-verified (stateful)', () => {
   const deploy = async (src: string): Promise<Record<string, () => StatefulCall>> =>
-    getContractFactory(compileString(src, { solidityImportCompat: true }), await fundedSigner()).deploy() as never;
+    getContractFactory(compileString(src, { evmCompat: true }), await fundedSigner()).deploy() as never;
 
   const MAP = (expected: string): string => `contract C {
     struct S { function() internal returns (uint) x; }

@@ -36,7 +36,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const LEDGER = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never)
+const LEDGER = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never)
   .Ledger as Artifact;
 
 /** The guard's left operand and the call's one argument, as the entry's only call site publishes them. */

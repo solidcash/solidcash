@@ -37,7 +37,7 @@ describe('projectGraphEmissionAddressArgs', () => {
         function act(Peer memory peer) public { require(peer.tag > 0); require(true); }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const lock = new Uint8Array(35);
     lock[0] = 0xaa;
@@ -64,7 +64,7 @@ describe('projectGraphEmissionAddressArgs', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const value = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x31), 0x88, 0xac);
     const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
@@ -104,7 +104,7 @@ describe('projectGraphEmissionAddressArgs', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const value = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x31), 0x88, 0xac);
     const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
@@ -131,7 +131,7 @@ describe('projectGraphEmissionAddressArgs', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const recipient = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x31), 0x88, 0xac);
     const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
@@ -151,7 +151,7 @@ describe('projectGraphEmissionAddressArgs', () => {
         function act(address value) public { require(value != address(0)); require(true); }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const lock = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x31), 0x88, 0xac);
     const address = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchtest' });

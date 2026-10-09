@@ -10,7 +10,7 @@ const KERNEL = {
   forceStateful: true,
   messageBus: true,
   messageBusKernel: true,
-  solidityImportCompat: true,
+  evmCompat: true,
   suppressWarnings: true,
   maximumInputBytes: 1_000_000,
 } as const;

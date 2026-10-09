@@ -6,7 +6,7 @@ import { deriveCompiledGraphPlan } from '../../src/message-bus/worklist.js';
 
 const options = {
   forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-  solidityImportCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+  evmCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
 } as const;
 const leaf = compileString(`pragma solidity ^0.8.0;
   contract Receiver { function accept(address value) public returns (bool) { require(value != address(0)); return true; } }
@@ -24,7 +24,7 @@ const root = compileString(`pragma solidity ^0.8.0;
 function derive(expected: Uint8Array, actual: Uint8Array, compatible = true): ReturnType<typeof deriveCompiledGraphPlan> {
   return deriveCompiledGraphPlan({
     root: {
-      artifact: { ...root, compiler: { ...root.compiler, options: { solidityImportCompat: compatible } } },
+      artifact: { ...root, compiler: { ...root.compiler, options: { evmCompat: compatible } } },
       lockingBytecode: '51', constructorArgs: [hexToBin('52')],
     },
     function: 'forward', args: [expected], targets: {},

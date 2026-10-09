@@ -79,7 +79,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
     readonly held: () => Promise<string | undefined>;
   }> {
     directRun ??= (async (): Promise<DirectDeployment> => {
-      const artifact = compileStringMulti(DIRECT_SOURCE, { composition: 'framed', solidityImportCompat: true })
+      const artifact = compileStringMulti(DIRECT_SOURCE, { composition: 'framed', evmCompat: true })
         .Ledger!;
       const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
       const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });

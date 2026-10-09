@@ -22,7 +22,7 @@ const artifacts = (): ReturnType<typeof compileStringMulti> => compiled ??= comp
       ITarget(target).run(value);
       this.count += 1;
     }
-  }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+  }`, { forceStateful: true, evmCompat: true, messageBus: true,
   messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
   suppressWarnings: true, optimizeForCompilationSpeed: true });
 

@@ -12,7 +12,7 @@ type MessageBusHandler = NonNullable<ReturnType<typeof compileString>['messageBu
 
 const handler = (source: string, name: string, solidity = false): MessageBusHandler | undefined => compileString(source, {
   ...KERNEL,
-  ...(solidity && { solidityImportCompat: true }),
+  ...(solidity && { evmCompat: true }),
 }).messageBus?.handlers.find((candidate) => candidate.name === name);
 
 describe('kernel aggregate return admission', () => {
@@ -71,7 +71,7 @@ describe('kernel aggregate return admission', () => {
         function read() public view returns (Node memory) { return root; }
       }`;
 
-    expect(() => compileString(source, { ...KERNEL, solidityImportCompat: true }))
+    expect(() => compileString(source, { ...KERNEL, evmCompat: true }))
       .toThrow(/cannot be used as return values of an external\/public function/);
   });
 

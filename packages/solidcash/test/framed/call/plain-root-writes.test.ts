@@ -60,7 +60,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const artifacts = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 
 /** The user who deploys and enters every call: each frame's `msg.sender`. */
 const USER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);

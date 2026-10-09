@@ -59,7 +59,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifact = compileString(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const artifact = compileString(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 
 /** The activation the entry publishes for its write of `collection`. */
 function activationOf(entry: string, collection: string): ExternalCallExpression | undefined {

@@ -13,7 +13,7 @@ describe('try/catch clause parameter scope', () => {
       + ' function f(I i) public { try i.g() returns (uint256 v) { require(v > 0); }'
       + ' catch Error(string memory reason) { emit L(reason); }'
       + ' catch (bytes memory reason) { emit LB(reason); } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('A');
   });
@@ -27,14 +27,14 @@ describe('emit inside a try block (allocate its event slot)', () => {
   it('compiles emit inside try/catch on an external call', () => {
     const a = compileString(`${IFACE} contract C { event L(uint256 v); uint256 n;`
       + ' function f(I i) external { try i.g() returns (uint256 v) { emit L(v); this.n = 1; }'
-      + ' catch { emit L(0); this.n = 2; } } }', { solidityImportCompat: true });
+      + ' catch { emit L(0); this.n = 2; } } }', { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
   it('compiles emit inside try/catch on a contract creation (try new Foo(...) returns (...))', () => {
     const a = compileString('contract Foo { address o; constructor(address _o) { o = _o; } }'
       + ' contract C { event L(address a); uint256 n; function f(address o) external {'
       + ' try new Foo(o) returns (Foo foo) { emit L(address(foo)); this.n = 1; } catch { this.n = 2; } } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
 });
@@ -47,11 +47,11 @@ describe('emit inside a try block (allocate its event slot)', () => {
 describe('try on a void external call, return in both arms (returnOutputIdx stack fix)', () => {
   const PRE = 'contract C{function g(bool x)external pure{assert(x);}function f(bool x)external returns(uint){';
   it('compiles a terminal try/catch whose try block returns (void call)', () => {
-    expect(compileString(`${PRE}try this.g(x){return 1;}catch{return 2;}}}`, { solidityImportCompat: true }).contractName)
+    expect(compileString(`${PRE}try this.g(x){return 1;}catch{return 2;}}}`, { evmCompat: true }).contractName)
       .toBe('C');
   });
   it('compiles when the catch reverts instead of returning', () => {
-    expect(compileString(`${PRE}try this.g(x){return 1;}catch{revert();}}}`, { solidityImportCompat: true }).contractName)
+    expect(compileString(`${PRE}try this.g(x){return 1;}catch{revert();}}}`, { evmCompat: true }).contractName)
       .toBe('C');
   });
   it('still binds return values in a returns-clause try (single and multiple)', () => {
@@ -59,7 +59,7 @@ describe('try on a void external call, return in both arms (returnOutputIdx stac
       + 'contract C(I t){function f(uint x)external returns(uint){try t.h(x)returns(uint r){return r;}catch{return 0;}}}';
     const two = 'interface I{function h(uint x)external returns(uint,uint);}'
       + 'contract C(I t){function f(uint x)external returns(uint){try t.h(x)returns(uint a,uint b){return a+b;}catch{return 0;}}}';
-    expect(compileString(one, { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(two, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(one, { evmCompat: true }).contractName).toBe('C');
+    expect(compileString(two, { evmCompat: true }).contractName).toBe('C');
   });
 });

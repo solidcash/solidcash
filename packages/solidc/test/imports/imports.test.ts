@@ -183,7 +183,7 @@ describe('Imports', () => {
         importPath === './Base.sol' ? { source: lib, id: '/Base.sol' } : undefined);
       const code = 'import {Base} from "./Base.sol"; contract Tok is Base { }';
       const artifact = compileString(code, {
-        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+        importResolver: resolver, rootFileId: '/main.sol', evmCompat: true,
       });
       expect(artifact.contractName).toBe('Tok');
     });
@@ -200,7 +200,7 @@ describe('Imports', () => {
         + ' function upd() public { jobs.push(); uint256 id = jobs.length - 1;'
         + ' JobPost storage jp = jobs[id]; jp.flag = true; jp.creator = msg.sender; } }';
       expect(() => compileString(code, {
-        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+        importResolver: resolver, rootFileId: '/main.sol', evmCompat: true,
       })).not.toThrow();
     });
 
@@ -214,7 +214,7 @@ describe('Imports', () => {
       const code = 'import {Data} from "./Data.sol"; contract V is Data { JobPost[] public jobs;'
         + ' function upd(uint256 id) public { JobPost storage jp = jobs[id]; jp.roles.creator = msg.sender; } }';
       expect(() => compileString(code, {
-        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+        importResolver: resolver, rootFileId: '/main.sol', evmCompat: true,
       })).not.toThrow();
     });
 
@@ -228,7 +228,7 @@ describe('Imports', () => {
         + ' function upd(uint256 jobId, uint256 n) public { for (uint256 i=0;i<n;i++){ jobs.push(); }'
         + ' JobPost storage jp = jobs[jobId]; jp.owed += 5; } }';
       expect(() => compileString(code, {
-        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+        importResolver: resolver, rootFileId: '/main.sol', evmCompat: true,
       })).not.toThrow();
     });
 
@@ -248,7 +248,7 @@ describe('Imports', () => {
       const code = 'import { MsgUtils } from "./MsgUtils.sol";'
         + ' contract C { function g(uint8 x) public pure returns (bytes1) { return MsgUtils.fmt(x); } }';
       expect(() => compileString(code, {
-        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+        importResolver: resolver, rootFileId: '/main.sol', evmCompat: true,
       })).not.toThrow();
     });
 
@@ -268,7 +268,7 @@ describe('Imports', () => {
       };
       const code = 'import { Parent } from "./Parent.sol"; contract C is Parent { constructor(string memory n) Parent(n) {} }';
       expect(() => compileString(code, {
-        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+        importResolver: resolver, rootFileId: '/main.sol', evmCompat: true,
       })).not.toThrow();
     });
 
@@ -285,7 +285,7 @@ describe('Imports', () => {
         + ' contract C { using Counters for Counters.Counter; Counters.Counter public counter; int n;'
         + ' function f() public { counter.increment(); this.n = int(counter.current()); } }';
       const artifact = compileString(code, {
-        solidityImportCompat: true,
+        evmCompat: true,
         importResolver: resolver,
         rootFileId: '/main.sol',
       });
@@ -304,7 +304,7 @@ describe('Imports', () => {
         + ' contract C { mapping(uint => Escrow) escrows; event E(Escrow escrow);'
         + ' function f(uint k, Escrow memory e) public { escrows[k] = e; require(true); } }';
       const artifact = compileString(code, {
-        solidityImportCompat: true, importResolver: resolver, rootFileId: '/main.sol',
+        evmCompat: true, importResolver: resolver, rootFileId: '/main.sol',
       });
       expect(artifact.contractName).toBe('C');
     });
@@ -323,7 +323,7 @@ describe('Imports', () => {
         + ' LockupDynamic.SegmentWithDuration memory s, Broker memory b)'
         + ' public pure returns (uint128) { return p.amount + s.amount + uint128(b.fee); } }';
       const artifact = compileString(code, {
-        solidityImportCompat: true, importResolver: resolver, rootFileId: '/main.sol',
+        evmCompat: true, importResolver: resolver, rootFileId: '/main.sol',
       });
       expect(artifact.contractName).toBe('C');
     });
@@ -340,7 +340,7 @@ describe('Imports', () => {
         + ' contract C { function f(uint64 v) public pure returns (uint64) {'
         + ' Dur d = Dur.wrap(v); return Dur.unwrap(d); } }';
       const artifact = compileString(code, {
-        solidityImportCompat: true, importResolver: resolver, rootFileId: '/main.sol',
+        evmCompat: true, importResolver: resolver, rootFileId: '/main.sol',
       });
       expect(artifact.contractName).toBe('C');
     });
@@ -357,7 +357,7 @@ describe('Imports', () => {
       const artifact = compileString(
         'import {Overflow} from "./Errors.sol"; contract C { function f() public { require(true); } }',
         {
-          solidityImportCompat: true,
+          evmCompat: true,
           importResolver: resolver,
           rootFileId: '/main.sol',
         },
@@ -383,7 +383,7 @@ describe('Imports', () => {
         + ' using {Casting.unwrap, Casting.neg as -} for U global;'
         + ' contract C { function f(U x) public pure returns (uint64) { return (-x).unwrap(); } }',
         {
-          solidityImportCompat: true,
+          evmCompat: true,
           importResolver: resolver,
           rootFileId: '/main.sol',
         },
@@ -403,10 +403,10 @@ describe('Imports', () => {
       const resolver = (importPath: string): { source: string; id: string } | undefined => (
         importPath === './T.sol' ? { source: escrowStruct, id: '/T.sol' } : undefined);
       const imported = compileString(`import "./T.sol"; ${body}`, {
-        solidityImportCompat: true, importResolver: resolver, rootFileId: '/main.sol',
+        evmCompat: true, importResolver: resolver, rootFileId: '/main.sol',
       });
       const sameFile = compileString(`${escrowStruct} ${body}`, {
-        solidityImportCompat: true, rootFileId: '/main.sol',
+        evmCompat: true, rootFileId: '/main.sol',
       });
       expect(imported.contractName).toBe('C');
       expect(imported.bytecode).toBe(sameFile.bytecode);
@@ -3037,7 +3037,7 @@ describe('Imports', () => {
       const artifact = compileString(code, {
         importResolver: createMapResolver(files),
         rootFileId: '/main.scash',
-        solidityImportCompat: true,
+        evmCompat: true,
       });
       expect(artifact.contractName).toBe('Forecast');
     });
@@ -3900,12 +3900,12 @@ describe('Imports', () => {
     // `uint public constant` parses as a state variable; it must not make the library look state-touching
     // (auto-delegate + pure is invalid) and must be importable + usable via `using L for *`.
     it('compiles the library standalone (no delegate marking, sibling constant resolves)', () => {
-      const artifact = compileFile(path.join(fixtures, 'pure_library_constants.sol'), { solidityImportCompat: true });
+      const artifact = compileFile(path.join(fixtures, 'pure_library_constants.sol'), { evmCompat: true });
       expect(artifact.contractName).toBe('PureMath');
     });
 
     it('compiles a consumer using the imported library and its namespaced constant', () => {
-      const artifact = compileFile(path.join(fixtures, 'pure_library_consumer.sol'), { solidityImportCompat: true });
+      const artifact = compileFile(path.join(fixtures, 'pure_library_consumer.sol'), { evmCompat: true });
       expect(artifact.contractName).toBe('PureLibConsumer');
     });
   });
@@ -3913,12 +3913,12 @@ describe('Imports', () => {
   describe('using-for on a known library with no registrable functions', () => {
     it('accepts an empty library as a no-op binding', () => {
       const src = 'library L {}\ncontract C { using L for *; function f() public pure { require(true); } }';
-      expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+      expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
     });
 
     it('still rejects an unknown library name', () => {
       const src = 'contract C { using Nope for *; function f() public pure { require(true); } }';
-      expect(() => compileString(src, { solidityImportCompat: true })).toThrow(/Nope/);
+      expect(() => compileString(src, { evmCompat: true })).toThrow(/Nope/);
     });
   });
 });

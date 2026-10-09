@@ -23,7 +23,7 @@ let artifact: Artifact;
 
 beforeAll(() => {
   artifact = compileFile(source, {
-    solidityImportCompat: true,
+    evmCompat: true,
     messageBus: false,
     suppressWarnings: true,
   }) as Artifact;
@@ -131,7 +131,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
 
   it('wraps on the root, withdraws and inserts a transfer balance through split facets within 9 KB shards', async () => {
     const split = compileFileSplit(source, {
-      solidityImportCompat: true, messageBus: false, maxShardBytes: 9_000,
+      evmCompat: true, messageBus: false, maxShardBytes: 9_000,
       // The unsplit redeem script fits under 9 KB, so ask for a shard plan anyway. This title checks that
       // wrap can stay on the root while withdraw and transfer run on facets whose scripts also fit.
       forceSplit: true,

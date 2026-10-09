@@ -348,7 +348,7 @@ and guards amounts), and a compiler lowering for "mapping value backed by tokenA
 
 ## v3: drop-in compile of unmodified Solidity
 
-`solidityImportCompat` substitutes the OZ/standard `ERC20` base contract with the native template, so
+`evmCompat` substitutes the OZ/standard `ERC20` base contract with the native template, so
 existing Solidity token sources compile to native-FT-backed artifacts unchanged. Required diagnostic:
 `cap * 10^decimals > 2^63 - 1` is a compile error suggesting a decimals reduction (see gaps below).
 
@@ -1301,7 +1301,7 @@ described the DEMOTED bank model; it survives only as an optional preset.
   anywhere except the claimant's balance or the depositor's P2PKH (no-confiscation invariant); a claim
   co-spending several pending notes must credit each to its own reconstructed claimant (no pooling into one
   balance); `deposit` must require no minting capability (regression guard on the pure-FT shape).
-- **P5 - drop-in.** `solidityImportCompat` base-class substitution; mandatory `initialSupply` param; int64 /
+- **P5 - drop-in.** `evmCompat` base-class substitution; mandatory `initialSupply` param; int64 /
   decimals diagnostic (`cap * 10^decimals <= 2^63-1`).
 - **Later.** Master/thread sharding for transfer throughput; BCMR emission at deploy; ERC-4626 vault; native-
   form DEX integration; Model B (registered self-custody) as a separate product.

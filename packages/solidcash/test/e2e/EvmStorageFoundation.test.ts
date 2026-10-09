@@ -8,7 +8,7 @@ const provider = createTestProvider();
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
 async function deploy(src: string): Promise<StatefulContract> {
-  const art = compileString(src, { solidityImportCompat: true });
+  const art = compileString(src, { evmCompat: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);
@@ -89,7 +89,7 @@ contract T() {
 
 describe('EVM-storage: OZ StorageSlot pointer (write-to-any-slot)', () => {
   it('compiles the OZ StorageSlot idiom (synthesizes __evm_storage)', () => {
-    const art = compileString(SLOTPTR_ADDR, { solidityImportCompat: true });
+    const art = compileString(SLOTPTR_ADDR, { evmCompat: true });
     expect(art.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBe(true);
     // The factory library function is consumed (never emitted as a callable).
     expect(art.abi.some((f) => f.name === 'getAddressSlot')).toBe(false);

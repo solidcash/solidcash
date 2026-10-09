@@ -57,7 +57,7 @@ const SOURCE = (plainGateway: boolean): string => [
   '}',
 ].join('\n');
 
-const OPTIONS = { solidityImportCompat: true, composition: 'framed' } as never;
+const OPTIONS = { evmCompat: true, composition: 'framed' } as never;
 const proxiedUnit = compileStringMulti(SOURCE(false), OPTIONS);
 const plainUnit = compileStringMulti(SOURCE(true), OPTIONS);
 const REGISTRY = proxiedUnit.Registry!;

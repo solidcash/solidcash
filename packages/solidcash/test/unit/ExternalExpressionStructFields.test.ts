@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { evaluateExternalExpression } from '../../src/stateful/sc-evaluate-external-expression.js';
 
 const artifact = {
-  compiler: { options: { solidityImportCompat: true } },
+  compiler: { options: { evmCompat: true } },
   structs: [
     { name: 'Party', fields: [{ name: 'recipient', type: 'address' }, { name: 'fee', type: 'uint16' },
       { name: 'raw', type: 'bytes32' }] },

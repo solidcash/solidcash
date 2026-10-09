@@ -18,7 +18,7 @@ const KERNEL = {
   messageBus: true,
   messageBusKernel: true,
   maximumInputBytes: 1_000_000,
-  solidityImportCompat: true,
+  evmCompat: true,
   suppressWarnings: true,
 } as const;
 
@@ -63,7 +63,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const probeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Probe() { function touch() public { require(true); } }`, {
-      ...KERNEL, solidityImportCompat: false, messageBusGraphContext: true,
+      ...KERNEL, evmCompat: false, messageBusGraphContext: true,
     });
     const accArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function touch() external; }
@@ -76,7 +76,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
           this.counter = this.counter + 1;
           IProbe(probe).touch();
         }
-      }`, { ...KERNEL, solidityImportCompat: false });
+      }`, { ...KERNEL, evmCompat: false });
     expect(accArtifact.abi.find((entry) => entry.name === 'reveal')?.keccakCompute).toBe(true);
     expect(accArtifact.messageBus?.route.blockLayout?.slots.some(
       (slot) => slot.kind === 'keccakSideCar',
@@ -163,7 +163,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const probeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Probe() { function touch() public { require(true); } }`, {
-      ...KERNEL, solidityImportCompat: false, messageBusGraphContext: true,
+      ...KERNEL, evmCompat: false, messageBusGraphContext: true,
     });
     const accArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function touch() external; }
@@ -182,7 +182,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
           IProbe(probe).touch();
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: false });
+      }`, { ...KERNEL, evmCompat: false });
     expect(accArtifact.messageBus?.handlers.find((handler) => handler.name === 'credit'))
       .toMatchObject({ eligible: true });
     expect(accArtifact.messageBus?.route.blockLayout?.slots.some(
@@ -253,7 +253,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const probeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Probe() { function touch() public { require(true); } }`, {
-      ...KERNEL, solidityImportCompat: false, messageBusGraphContext: true,
+      ...KERNEL, evmCompat: false, messageBusGraphContext: true,
     });
     const accArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function touch() external; }
@@ -266,7 +266,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
           IProbe(probe).touch();
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: false });
+      }`, { ...KERNEL, evmCompat: false });
     const probeBase = new Contract(probeArtifact, [], { provider });
     const probeSetup = await setupStatefulUtxos(
       provider, probeBase, probeArtifact.stateLayout!, {}, { saltContract: true },

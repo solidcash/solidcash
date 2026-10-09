@@ -333,7 +333,7 @@ describe('Release 3 collection journal SDK E2E', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       maximumInputBytes: 10_000,
       optimizeForCompilationSpeed: true,

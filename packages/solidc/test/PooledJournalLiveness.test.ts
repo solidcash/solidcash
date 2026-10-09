@@ -32,7 +32,7 @@ describe('pooled collection journal liveness', () => {
       }`;
     const artifact = compileString(source, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,

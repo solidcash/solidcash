@@ -15,7 +15,7 @@ describe('legacy generated-clone semantic arity', () => {
         function relay(uint key) external view returns (uint) { return IReader(reader).read(key); }
       }`, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       importResolver: createMapResolver({
         '/Types.scash': `pragma solidity ^0.8.20;
           struct Record { string note; uint flag; }`,

@@ -5,7 +5,7 @@ import { compileString } from './direct-compile.js';
 // When no function in the program names its returns, the compiler skips NamedReturnTransformation and runs only its
 // fall-through default step, for the functions the final check would otherwise refuse.
 describe('fall-through default return when no function names its returns', () => {
-  const contractName = (source: string): string => compileString(source, { solidityImportCompat: true }).contractName;
+  const contractName = (source: string): string => compileString(source, { evmCompat: true }).contractName;
 
   it('completes a helper whose other arm ends in an inline-assembly revert (OZ Address._verifyCallResult)', () => {
     // The assembly revert lowers to require(false), which the final check does not count as an exit.

@@ -34,7 +34,7 @@ describe('compileSolidityProject', () => {
       calls.push(path.basename(file));
       return { Root: {}, Middle: {}, Leaf: {} };
     };
-    const result = await compileSolidityProject(files, { solidityImportCompat: true }, compile);
+    const result = await compileSolidityProject(files, { evmCompat: true }, compile);
     expect(calls).toEqual(['Root.sol', 'Leaf.sol', 'Middle.sol']);
     expect(Object.keys(result.artifacts)).toEqual(['Root', 'Leaf', 'Middle']);
   });
@@ -50,7 +50,7 @@ describe('compileSolidityProject', () => {
         ? { Root: { from: 'root' }, Leaf: { from: 'root-import' } }
         : { Leaf: { from: 'leaf-file' } };
     };
-    const result = await compileSolidityProject(files, { solidityImportCompat: true }, compile);
+    const result = await compileSolidityProject(files, { evmCompat: true }, compile);
     expect(result.artifacts.Leaf).toEqual({ from: 'leaf-file' });
     expect(result.artifacts.Root).toEqual({ from: 'root' });
   });
@@ -70,7 +70,7 @@ describe('compileSolidityProject', () => {
       return { Base: { from: name } };
     };
 
-    const result = await compileSolidityProject(files, { solidityImportCompat: true }, compile);
+    const result = await compileSolidityProject(files, { evmCompat: true }, compile);
 
     expect(calls).toEqual(['Root.sol', 'Implementation.sol', 'Feature.sol']);
     expect(result.artifacts).toEqual({
@@ -188,7 +188,7 @@ describe('compileSolidityProject', () => {
         : { Leaf: { abi: [] } };
     };
 
-    await compileSolidityProject(files, { solidityImportCompat: true }, compile);
+    await compileSolidityProject(files, { evmCompat: true }, compile);
 
     expect(requested['Root.sol']).toEqual(['Root']);
     expect(requested['Leaf.sol']).toEqual(['Leaf']);
@@ -205,7 +205,7 @@ describe('compileSolidityProject', () => {
       calls.push(name);
       return name === 'Root.sol' ? { Root: {}, Used: {} } : { Used: {}, Unused: {} };
     };
-    const result = await compileSolidityProject(files, { solidityImportCompat: true }, compile);
+    const result = await compileSolidityProject(files, { evmCompat: true }, compile);
     expect(calls).toEqual(['Root.sol', 'Library.sol']);
     expect(Object.keys(result.artifacts)).toEqual(['Root', 'Used', 'Unused']);
   });

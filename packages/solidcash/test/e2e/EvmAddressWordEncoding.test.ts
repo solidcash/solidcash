@@ -21,7 +21,7 @@ const artifact = compileString(`pragma solidity ^0.8.0;
     function record(Record memory value, bytes memory expected) public pure {
       require(abi.encode(value) == expected);
     }
-  }`, { solidityImportCompat: true, evmCompat: true, suppressWarnings: true });
+  }`, { evmCompat: true, suppressWarnings: true });
 
 async function evaluate(name: string, ...args: Parameters<Contract['unlock'][string]>): Promise<true | string> {
   const provider = createMessageBusSemanticTestProvider();
@@ -72,7 +72,7 @@ describe('compiler EVM address-word encoding', () => {
     const provider = createMessageBusSemanticTestProvider();
     const options = {
       forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      solidityImportCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+      evmCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
     } as const;
     const storeArtifact = compileKernel(`pragma solidity ^0.8.0;
       struct Record { address owner; address[2] peers; string note; }

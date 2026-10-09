@@ -70,7 +70,7 @@ describe('Porting features (runtime)', () => {
     const artifact = compileString(
       `pragma solidity ^0.8.26;
       contract C { function f() external { require(block.timestamp >= 1000); } }`,
-      { forceStateful: true, solidityImportCompat: true },
+      { forceStateful: true, evmCompat: true },
     );
     expect(artifact.bytecode).not.toContain('OP_TXLOCKTIME');
     expect(JSON.stringify(artifact)).toContain('__block_timestamp');

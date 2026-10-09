@@ -242,7 +242,7 @@ stubs. Three compiler/harness portbacks landed (commits on solidcash_v0.13.1):
   corrupted a shared entry slot. Now the dead 0-iteration loop is dropped post-inline (sound). All 4 Marketplace
   advance past it.
 
-**Cross-compile bench = 10/15** (real `.sol`, opts `{solidityImportCompat:true, ecrecover:'p2pkh'}`). The 5 fails are
+**Cross-compile bench = 10/15** (real `.sol`, opts `{evmCompat:true, ecrecover:'p2pkh'}`). The 5 fails are
 DEEP compiler regressions in the vmap/block-layout codegen (NOT harness gaps), both in the compiler owner's active lane:
 1. **Marketplace V1/V2/V3 + DataV1 = `Block slot not found: entry[0]`** in `publishJobPost` (`jobs.push()` struct-array
    + storage-ptr field writes + many external calls + an event; the epilogue expects an entry slot the block layout
@@ -255,7 +255,7 @@ fixture stays blocked on the real MarketplaceV1 compiling (still needs the entry
 
 ## 2026-07-20 (cont) - RECONCILED to 14/15: all 4 Marketplace cross-compile
 User: "attempt to fix this yourself." The 10/15 was a compiler REGRESSION (not options - all historical drivers use
-the same `{solidityImportCompat:true}`). Peeled the Marketplace whitelistWorkers -> entry[0] -> `new address[](1)`
+the same `{evmCompat:true}`). Peeled the Marketplace whitelistWorkers -> entry[0] -> `new address[](1)`
 -> nested-write chain (commit 6275653c, 3 linked fixes in UnrollFixedBoundEntryLoop + GTT): hasMappingWrite now
 detects nested/multi-key mapping writes (the key fix), mutatedNames excludes only length-changing ops (push/pop/
 delete, not element writes - so `new address[](1); a[0]=w;` folds), and the GTT branch mapping-write pre-allocation
@@ -279,7 +279,7 @@ suite + FakeToken + TreasurySplit + MockSablier + libraries) now cross-compile f
 ## 2026-07-20 (cont3) - REAL artifacts wired into the test; RUNTIME deploy is the next frontier
 Now that all 15 EACC contracts cross-compile (15/15), switched the harness OFF the contracts-scash stubs onto the
 REAL cross-compiled artifacts: `solidcash.config.ts` paths.contracts -> the real source, paths.artifacts ->
-artifacts-real/ (28 real artifacts via `tasks/compile-real.mjs`), solc { solidityImportCompat, ecrecover:'p2pkh' }.
+artifacts-real/ (28 real artifacts via `tasks/compile-real.mjs`), solc { evmCompat, ecrecover:'p2pkh' }.
 The stubs are KEPT (per "do not delete the shims") as the fallback. `npx vitest run` -> marketplace.test.ts loads +
 runs all 66 tests against REAL contracts (no stubs, no source edits).
 

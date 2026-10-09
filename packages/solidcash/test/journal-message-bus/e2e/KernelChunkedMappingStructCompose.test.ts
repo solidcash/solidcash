@@ -54,7 +54,7 @@ describe('kernel chunked mapping struct composition', () => {
             && current.tail == "${tail}");
           IStore(store).finish(key, finalValue);
         }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
 
     const storeBase = new Contract(artifacts.Store, [], { provider });
     const storeSetup = await setupStatefulUtxos(
@@ -128,7 +128,7 @@ describe('kernel chunked mapping struct composition', () => {
           records[key] = Record("${note}", 7);
         }
         function read(uint256 key) public view returns (Record memory) { return records[key]; }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     const base = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(
       provider, base, artifact.stateLayout!, {}, { saltContract: true },
@@ -266,7 +266,7 @@ describe('kernel chunked mapping struct composition', () => {
           IStore(store).release(key);
           this.count = this.count + 1;
         }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     const probeBase = new Contract(artifacts.Probe, [], { provider });
     const probeSetup = await setupStatefulUtxos(
       provider, probeBase, artifacts.Probe.stateLayout!, {}, { saltContract: true },
@@ -355,10 +355,10 @@ describe('kernel chunked mapping struct composition', () => {
     const observations = [];
     for (const messageBusKernel of [true, false]) {
       const artifact = compileString(storeSource, {
-        ...KERNEL, solidityImportCompat: true, messageBusKernel, messageBusGraphContext: true,
+        ...KERNEL, evmCompat: true, messageBusKernel, messageBusGraphContext: true,
       });
       const coordinatorArtifact = compileString(coordinatorSource, {
-        ...KERNEL, solidityImportCompat: true, messageBusKernel,
+        ...KERNEL, evmCompat: true, messageBusKernel,
       });
       expect(artifact.messageBus?.convention)
         .toBe(messageBusKernel ? 'kernel-row-loop' : 'legacy-unroll');

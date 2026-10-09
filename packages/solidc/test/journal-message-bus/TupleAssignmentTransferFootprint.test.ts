@@ -43,7 +43,7 @@ describe('tuple assignment transfer footprints', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,

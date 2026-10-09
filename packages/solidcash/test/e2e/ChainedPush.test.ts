@@ -47,7 +47,7 @@ contract ChainedPush {
 }`;
 
 describe('chained storage push (runtime)', () => {
-  const artifact = compileString(SOURCE, { solidityImportCompat: true, forceStateful: true });
+  const artifact = compileString(SOURCE, { evmCompat: true, forceStateful: true });
   it('runs every chained push form with the expected lengths and values', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();

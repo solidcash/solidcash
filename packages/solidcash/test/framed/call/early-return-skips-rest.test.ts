@@ -35,7 +35,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   function setY(uint256 v) external { y = v; }'
   + '   fallback() external payable { if (y > 0) { if (y == 2) return; } x = x + 100; } }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
 
 /** A 32-byte outpoint hash whose bytes are not all the same. */
 function outpointHash(seed: number): string {

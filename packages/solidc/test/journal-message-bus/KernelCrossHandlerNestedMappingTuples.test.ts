@@ -28,7 +28,7 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
           require(__internal__msgSenderAnchorIdx > 0);
         }
       }
-    `, { solidityImportCompat: true })).toThrow(/uses reserved prefix '__internal__'/);
+    `, { evmCompat: true })).toThrow(/uses reserved prefix '__internal__'/);
   });
 
   it.each([2, 7])(
@@ -36,7 +36,7 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
     (maximumRows) => {
       const artifact = compileString(SOURCE, {
         forceStateful: true,
-        solidityImportCompat: true,
+        evmCompat: true,
         messageBus: true,
         messageBusKernel: true,
         __messageBusMaximumRows: maximumRows,
@@ -93,7 +93,7 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
         }
       }
     `, {
-      forceStateful: true, solidityImportCompat: true,
+      forceStateful: true, evmCompat: true,
       messageBus: true, messageBusKernel: true,
       maximumInputBytes: 10_000_000, suppressWarnings: true,
     });
@@ -114,7 +114,7 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
         }
       }
     `, {
-      forceStateful: true, solidityImportCompat: true,
+      forceStateful: true, evmCompat: true,
       messageBus: true, messageBusKernel: true,
       maximumInputBytes: 10_000_000, suppressWarnings: true,
     });
@@ -142,7 +142,7 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
         mapping(uint256 => uint256) public scores;
       }
     `, {
-      forceStateful: true, solidityImportCompat: true,
+      forceStateful: true, evmCompat: true,
       messageBus: true, messageBusKernel: true,
       maximumInputBytes: 10_000_000, suppressWarnings: true,
     });

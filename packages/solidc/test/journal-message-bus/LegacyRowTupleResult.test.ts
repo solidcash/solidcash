@@ -52,7 +52,7 @@ describe('legacy message-bus row result locals', () => {
         }
       }
     `, {
-      solidityImportCompat: true,
+      evmCompat: true,
       forceStateful: true,
       messageBus: true,
       messageBusKernel: false,
@@ -113,7 +113,7 @@ describe('legacy message-bus row result locals', () => {
         }
       }
     `, {
-      solidityImportCompat: true,
+      evmCompat: true,
       forceStateful: true,
       messageBus: true,
       messageBusKernel: false,

@@ -19,7 +19,7 @@ const relaxed = new MockNetworkProvider({
 async function mk(
   src: string, provider: ReturnType<typeof createTestProvider> = relaxed,
 ): Promise<StatefulContract> {
-  const art = compileString(src, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true });
+  const art = compileString(src, { evmCompat: true, forceStateful: true, chunkedArrays: true });
   const c = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, c, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(c, categoryId);

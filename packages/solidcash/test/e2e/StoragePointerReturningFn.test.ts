@@ -34,7 +34,7 @@ describe('returning struct storage-pointer fn on a mapping element (RMW + return
     c: Record<string, (...a: unknown[]) => { send: () => Promise<{ txid: string }> }>;
     fund: () => Promise<void>; elasticOf: (k: bigint) => Promise<bigint | undefined>; inner: unknown; cat: string;
   }> => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     const uid = (): string => { deploymentNonce += 1; return deploymentNonce.toString(16).padStart(64, '0'); };
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
@@ -102,7 +102,7 @@ describe('returning struct storage-pointer fn on a mapping element (RMW + return
         function checkT(int k, int eb, int eel, pubkey pk, sig s) { require(checkSig(s, pk)); require(totals[k].base == eb); require(totals[k].elastic == eel); }
         function checkLast(int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(last == e); }
       }`;
-    const art = compileString(BARE, { solidityImportCompat: true });
+    const art = compileString(BARE, { evmCompat: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     let nonce = 0x6b00;
     const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };

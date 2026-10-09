@@ -26,7 +26,7 @@ describe('fixed-inner nested array uint256[2][] (chunk-packed)', () => {
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
   it('push rows, index a[i][j], write a[i][j]=v, length', async () => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);
@@ -49,7 +49,7 @@ describe('fixed-inner nested array uint256[2][] (chunk-packed)', () => {
   });
 
   it('whole-array assign a = [[..],[..]] (rows encode flat)', async () => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);
@@ -63,7 +63,7 @@ describe('fixed-inner nested array uint256[2][] (chunk-packed)', () => {
   });
 
   it('no-arg push in a loop appends default (zero) rows (loop-cache preserves noArg)', async () => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);

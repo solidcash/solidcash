@@ -24,7 +24,7 @@ contract Guarded {
   fallback() external { if (y > 0) { if (y == 2) return; } x = 777; }
 }`;
 
-const guarded = compileString(GUARDED, { solidityImportCompat: true });
+const guarded = compileString(GUARDED, { evmCompat: true });
 
 const raw = (builder: TransactionBuilder): string => binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
@@ -115,7 +115,7 @@ contract Locked {
 
 describe('a return inside a modifier\'s placeholder or a modifier (direct convention)', () => {
   it('runs the statements after `_` of every modifier around the return, in the EVM\'s order', async () => {
-    const ordered = compileString(ORDERED, { solidityImportCompat: true });
+    const ordered = compileString(ORDERED, { evmCompat: true });
     const run = async (g: boolean, a: boolean): Promise<{ x: bigint; result: unknown }> => {
       const sc: any = await getContractFactory(ordered, await fundedSigner()).deploy();
       const result = await sc.call.f(g, a).staticCall();
@@ -128,7 +128,7 @@ describe('a return inside a modifier\'s placeholder or a modifier (direct conven
   }, 120_000);
 
   it('releases a reentrancy lock on the path the body returns from', async () => {
-    const sc: any = await getContractFactory(compileString(LOCKED, { solidityImportCompat: true }), await fundedSigner())
+    const sc: any = await getContractFactory(compileString(LOCKED, { evmCompat: true }), await fundedSigner())
       .deploy();
     await sc.f(true);
     expect((await sc.getState()).x).toBe(0n);

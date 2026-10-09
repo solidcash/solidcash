@@ -245,7 +245,7 @@ describe('msg.sender and tx.origin', () => {
     });
 
     it('validates the SCID v1 identity-anchor length and prefix in Solidity mode', () => {
-      const artifact = compileString(SENDER_CHECKER, { solidityImportCompat: true });
+      const artifact = compileString(SENDER_CHECKER, { evmCompat: true });
       expect(artifact.abi.find((fn) => fn.name === 'checkSender')?.inputs.map((input) => input.name))
         .toContain('__internal__msgSenderAnchorIdx');
       // The function body is packed into an OP_DEFINE hex segment; inspect the exact opcode sequence there.
@@ -1085,7 +1085,7 @@ contract TickCaller(bytes bAddr) {
             require(true);
           }
         }
-      `, { solidityImportCompat: true });
+      `, { evmCompat: true });
       const run = artifact.abi.find((f) => f.name === 'run');
       expect(run?.externalCalls?.[0].argSources).toEqual([
         { kind: 'msgSender' },

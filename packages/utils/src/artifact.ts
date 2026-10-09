@@ -73,8 +73,9 @@ export interface CompilerOptions {
   // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
   allowUnsafeOperations?: boolean;
   commitmentLimit?: number;
-  // EVM byte-parity mode for the abi.* family (temporary gate; to be dropped once parity is green). Under
-  // evmCompat, abi.encode/encodePacked emit EVM-faithful bytes: 32-byte big-endian two's-complement words.
+  // Solidity-source compatibility and EVM byte-parity mode: resolve `.sol` imports as solidcash sources,
+  // accept `pragma solidity`, apply Solidity literal/type semantics, and emit EVM-faithful ABI words (32-byte
+  // big-endian two's-complement) for the abi.* family.
   evmCompat?: boolean;
   importResolver?: ImportResolverFn;
   rootFileId?: string;
@@ -84,9 +85,6 @@ export interface CompilerOptions {
   // Disable the auto-inline heuristic (small, single-call libraries inline by default). Explicit
   // inlineLibraries entries still apply.
   disableAutoInline?: boolean;
-  // Solidity-source compatibility: resolve `.sol` imports as solidcash sources, accept `pragma solidity`,
-  // and skip the pragma version check. For porting Solidity codebases.
-  solidityImportCompat?: boolean;
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];

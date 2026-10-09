@@ -93,7 +93,7 @@ function solidityIdentity(lockingBytecode: Uint8Array): Uint8Array {
 
 function compileFactory(src: string): { factory: any; child: any } {
   const arts = compileStringMulti(src, {
-    solidityImportCompat: true,
+    evmCompat: true,
     rootFileId: '/main.scash',
     importResolver: (importPath: string, currentFile: string): ResolvedImport | undefined => {
       const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
@@ -188,7 +188,7 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
   it('C0: dual getPair vmap writes without deploy succeed via normal call path', async () => {
     // Single-file compile (no import)
     const { compileString } = await import('../direct-compile.js');
-    const art = compileString(factoryVMapOnly, { solidityImportCompat: true });
+    const art = compileString(factoryVMapOnly, { evmCompat: true });
     const fundF = await mintFund(300_000n);
     const { contract: factory } = await StatefulContract.deploy(art, [alicePub], {
       provider, fundingUtxo: fundF, funder, changeAddress: p2pkh.address,

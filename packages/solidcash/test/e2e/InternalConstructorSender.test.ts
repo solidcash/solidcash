@@ -27,7 +27,7 @@ contract Owned {
 
 describe('an internal constructor reading msg.sender', () => {
   it('records the deployer as the owner, and only the owner passes the owner check', async () => {
-    const artifact = compileString(SOURCE, { solidityImportCompat: true, forceStateful: true });
+    const artifact = compileString(SOURCE, { evmCompat: true, forceStateful: true });
     const provider = createTestProvider();
     const [alice, bob] = await getSigners(2, { provider, fundingUtxos: 4 });
     const owned: any = await new ContractFactory(artifact, alice).deploy();

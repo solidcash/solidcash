@@ -19,7 +19,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Walls ahead: an integer packed with `abi.encodePacked` into a store call's argument, through the shipped hop
- * (`callFramedProxyEntry`), compiled with the fixture's options (`solidityImportCompat` among them).
+ * (`callFramedProxyEntry`), compiled with the fixture's options (`evmCompat` among them).
  *
  * The body packs an integer by its declared type (`emitEvmPackedValue`): its natural width, big-endian. The compiler
  * publishes a parameter, a cast and a one-level struct field typed, but a nested struct field, an element of an
@@ -125,7 +125,7 @@ const SOURCE = [
 
 /** The fixture's compile options (`examples/effectiveacceleration/solidcash.config.ts`, as the mock network sets them). */
 const FIXTURE_OPTIONS = {
-  solidityImportCompat: true,
+  evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
   messageBus: true,

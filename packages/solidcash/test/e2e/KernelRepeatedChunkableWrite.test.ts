@@ -10,7 +10,7 @@ import { generateLibauthSourceOutputs } from '../../src/utils.js';
 
 const options = {
   forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-  solidityImportCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+  evmCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
 } as const;
 
 describe('kernel repeated chunkable whole-entry writes', () => {

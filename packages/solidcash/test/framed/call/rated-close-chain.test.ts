@@ -145,7 +145,7 @@ const SOURCE = [
 
 /** The options an imported Solidity project compiles with under the framed composition. */
 const OPTIONS = {
-  solidityImportCompat: true,
+  evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
   messageBus: true,

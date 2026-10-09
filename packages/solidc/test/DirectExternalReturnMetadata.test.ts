@@ -11,7 +11,7 @@ contract ExactExternalReturn {
     require(source != address(0));
     return ISource(source).read();
   }
-}`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+}`, { forceStateful: true, evmCompat: true, messageBus: true,
   messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
   suppressWarnings: true, optimizeForCompilationSpeed: true });
 

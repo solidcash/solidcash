@@ -24998,7 +24998,7 @@
       "commitmentLimit": 128,
       "messageBus": true,
       "messageBusKernel": true,
-      "solidityImportCompat": true
+      "evmCompat": true
     }
   },
   "invocationAnalysis": {

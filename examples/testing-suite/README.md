@@ -35,7 +35,7 @@ import { solidcash, withSolidCash } from '@solidcash/testing/hardhat';
 export default withSolidCash(defineConfig({
   solidity: '0.8.24',
 }), solidcash({
-  compiler: { solidityImportCompat: true, ecrecover: 'p2pkh' },
+  compiler: { evmCompat: true, ecrecover: 'p2pkh' },
   paths: { contracts: './contracts', artifacts: './artifacts' },
 }));
 ```

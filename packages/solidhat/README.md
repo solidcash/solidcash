@@ -136,7 +136,7 @@ export default defineConfig({
     cache: 'cache',
   },
   compiler: {
-    solidityImportCompat: true,
+    evmCompat: true,
   },
   typegen: {
     targets: [{ target: 'ethers6', layout: 'typechain', outDir: 'typechain-types' }],

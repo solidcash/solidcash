@@ -8,7 +8,7 @@ import { lockingBytecodeToSolidityAddressPayload } from '../../src/utils.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
-  solidityImportCompat: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
+  evmCompat: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
 } as const;
 const leaf = ownerParticipantArtifact(compileString(`pragma solidity ^0.8.0;
   contract Leaf { function read() public pure returns (uint256) { return 1; } }
@@ -26,12 +26,12 @@ const payload = (lock: string): string => binToHex(lockingBytecodeToSolidityAddr
 
 function derive(
   targetLockingBytecode: string,
-  solidityImportCompat = true,
+  evmCompat = true,
   locks = { physical, logical },
 ): ReturnType<typeof deriveCompiledGraphPlan> {
   return deriveCompiledGraphPlan({
     root: {
-      artifact: { ...root, compiler: { ...root.compiler, options: { solidityImportCompat } } },
+      artifact: { ...root, compiler: { ...root.compiler, options: { evmCompat } } },
       lockingBytecode: `aa20${'11'.repeat(32)}87`,
       constructorArgs: [hexToBin(logical)],
     },
@@ -57,9 +57,9 @@ describe('worklist Solidity target identity projection', () => {
       }
     `, KERNEL);
     const plan = (
-      argument: string, locks = { physical, logical }, solidityImportCompat = true,
+      argument: string, locks = { physical, logical }, evmCompat = true,
     ): ReturnType<typeof deriveCompiledGraphPlan> => deriveCompiledGraphPlan({
-      root: { artifact: { ...forwarding, compiler: { ...forwarding.compiler, options: { solidityImportCompat } } },
+      root: { artifact: { ...forwarding, compiler: { ...forwarding.compiler, options: { evmCompat } } },
         lockingBytecode: `aa20${'11'.repeat(32)}87` },
       function: 'check', args: [hexToBin(argument)], targets: {},
       target: () => ({ participant: {
@@ -98,10 +98,10 @@ describe('worklist Solidity target identity projection', () => {
     const valueLock = hexToBin(`76a914${'55'.repeat(20)}88ac`);
     const valueAddress = lockingBytecodeToCashAddress({ bytecode: valueLock, prefix: 'bchtest' });
     if (typeof valueAddress === 'string') throw new Error(valueAddress);
-    const deriveValue = (solidityImportCompat: boolean): ReturnType<typeof deriveCompiledGraphPlan> =>
+    const deriveValue = (evmCompat: boolean): ReturnType<typeof deriveCompiledGraphPlan> =>
       deriveCompiledGraphPlan({
         root: { artifact: { ...forwarding, compiler: { ...forwarding.compiler,
-          options: { ...forwarding.compiler?.options, solidityImportCompat } } },
+          options: { ...forwarding.compiler?.options, evmCompat } } },
         lockingBytecode: `aa20${'11'.repeat(32)}87`, constructorArgs: [hexToBin(receiverLock)] },
         function: 'run', args: [valueAddress.address], targets: {},
         target: () => ({ participant: { artifact: receiving, lockingBytecode: receiverLock },

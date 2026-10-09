@@ -12,7 +12,7 @@ describe('compiler-owned witness ABI publication', () => {
           this.left[key] = value;
           if (value.length > 1) { this.right[key] = value; }
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus,
+      }`, { forceStateful: true, evmCompat: true, messageBus,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     if (messageBus) {

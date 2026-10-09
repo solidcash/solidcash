@@ -97,11 +97,9 @@ function compute(int a, int b) internal pure returns (int) {
 receive() external payable { }
 ```
 
-Mutability checking depends on the compilation mode. Native SolidCash always rejects contract-state reads from a
-`pure` function, but some direct state writes from a native `view` function remain accepted. With
-`solidityImportCompat: true`, Solidity's state-effect rules are enforced across state, transient state, contract
-creation, low-level calls, function pointers, and internal/external calls. Treat native `view` as an API contract
-which should still be reviewed; use compatibility mode when compiling imported `.sol` code.
+Mutability checking is uniform across native and compatibility modes. `pure` functions reject contract-state and
+environment reads, and both `pure` and `view` reject state/transient-state writes, contract creation, low-level
+calls, function pointers, and calls to less-restrictive internal/external functions.
 
 `payable` is largely cosmetic: every BCH address can receive value. It is accepted so Solidity sources compile,
 and it enables `msg.value` in the body.

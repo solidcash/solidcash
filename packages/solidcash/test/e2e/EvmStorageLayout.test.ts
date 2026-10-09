@@ -8,7 +8,7 @@ const provider = createTestProvider();
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
 async function deploy(src: string): Promise<StatefulContract> {
-  const art = compileString(src, { solidityImportCompat: true });
+  const art = compileString(src, { evmCompat: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);
@@ -53,7 +53,7 @@ contract C() {
 describe('EVM storage layout: composite state vars occupy full EVM slots (P3)', () => {
   it('assigns the var after a fixed array its correct EVM slot (no __evm_storage needed)', () => {
     // sload(3) resolves to the declared var x, so no __evm_storage collection is synthesized.
-    const art = compileString(AFTER_ARRAY, { solidityImportCompat: true });
+    const art = compileString(AFTER_ARRAY, { evmCompat: true });
     const cols = (art.stateLayout as unknown as { collections?: { name: string }[] })?.collections ?? [];
     expect(cols.some((c) => c.name === '__evm_storage')).toBe(false);
   });
@@ -65,7 +65,7 @@ describe('EVM storage layout: composite state vars occupy full EVM slots (P3)', 
   });
 
   it('reads a high-level scalar written after a 2-word struct via its literal EVM slot', async () => {
-    const art = compileString(AFTER_STRUCT, { solidityImportCompat: true });
+    const art = compileString(AFTER_STRUCT, { evmCompat: true });
     const cols = (art.stateLayout as unknown as { collections?: { name: string }[] })?.collections ?? [];
     // If the struct is pre-flattened to scalar leaves, slot 2 still resolves to x; either way no __evm_storage.
     expect(cols.some((c) => c.name === '__evm_storage')).toBe(false);
@@ -241,7 +241,7 @@ describe('64-byte composite occupies [p, p+1]; next var at p+2', () => {
     // fail-closed (never a silent __evm_storage read). Value-field structs are handled below.
     const src = 'contract C { struct T { address a; uint96 b; } T t; uint256 x;'
       + ' function f() public returns (uint r) { assembly { r := sload(0) } require(true); } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).toThrow(/inline assembly/i);
+    expect(() => compileString(src, { evmCompat: true })).toThrow(/inline assembly/i);
   });
 });
 

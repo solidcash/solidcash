@@ -22,14 +22,14 @@ describe('packed-struct field array push (s.xs.push / s.xs.pop)', () => {
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
   it('flattens the array field to a dynamic state var s__xs', () => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const sv = art.stateLayout!.variables.find((v) => v.name === 's__xs');
     expect(sv).toBeDefined();
     expect(sv!.dynamic).toBe(true);
   });
 
   it('push accumulates [a, b] and pop drops the last element', async () => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);

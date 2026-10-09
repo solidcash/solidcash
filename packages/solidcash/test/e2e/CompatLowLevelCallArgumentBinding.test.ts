@@ -12,7 +12,7 @@ import { createTestProvider, getSigners } from '../test-util.js';
 // them) and requires each to be the payload's: EVM words of encodeWithSelector decoded per type (an address word to
 // a lock of that 20-byte identity), SolidCash pushes of encodeCall byte for byte. An argument the compiler sees but
 // cannot bind that way is refused at compile time; a payload whose encoding it cannot see keeps the pin alone.
-const OPTIONS = { solidityImportCompat: true, forceStateful: true, messageBus: false } as any;
+const OPTIONS = { evmCompat: true, forceStateful: true, messageBus: false } as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 
 const LEDGER = `

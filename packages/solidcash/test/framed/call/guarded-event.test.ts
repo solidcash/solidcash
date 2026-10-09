@@ -45,7 +45,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * payload, and a skipped emit left unlisted.
  */
 
-const OPTIONS = { solidityImportCompat: true, composition: 'framed' } as never;
+const OPTIONS = { evmCompat: true, composition: 'framed' } as never;
 
 /** The role whose holders may grant and revoke `role`: its admin role, or the default admin role. */
 const adminOf = (constructor: boolean): string => (constructor ? 'DEFAULT_ADMIN_ROLE' : 'getRoleAdmin(role)');

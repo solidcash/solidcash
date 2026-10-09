@@ -13,7 +13,7 @@ import { createBareP2pkhFeeFunder } from '../test-util.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-  solidityImportCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+  evmCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
 } as const;
 
 describe('kernel forwarded contract caller identity', () => {

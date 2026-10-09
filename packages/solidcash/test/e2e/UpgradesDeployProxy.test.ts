@@ -218,7 +218,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
         modifier initializer() { _; }
         function initialize(int initial) public initializer { this.count = initial; }
         function increment() public { this.count = this.count + 1; }
-      }`, { solidityImportCompat: true });
+      }`, { evmCompat: true });
     expect(artifact.abi.find((entry) => entry.name === 'initialize')?.modifiers).toContain('delegate');
     expect(artifact.abi.find((entry) => entry.name === 'increment')?.modifiers).toContain('delegate');
 
@@ -238,7 +238,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
         modifier onlyInitializing() { require(initializing); _; }
         function __Base_init(int initial) internal onlyInitializing { count = initial; }
         function initialize(int initial) public initializer { __Base_init(initial); }
-      }`, { solidityImportCompat: true });
+      }`, { evmCompat: true });
 
     const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), [9n]);
     expect((await (proxy.proxy as any).getState()).count).toBe(9n);
@@ -254,7 +254,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
         uint16 d;
         modifier initializer() { _; }
         function initialize(uint16 value) public initializer { this.d = value; }
-      }`, { solidityImportCompat: true, commitmentLimit: 3 });
+      }`, { evmCompat: true, commitmentLimit: 3 });
     expect(artifact.stateLayout?.dataNftCount).toBeGreaterThan(1);
 
     const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), [4n]);
@@ -382,7 +382,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
   it('preserves msg.sender through an inherited owner modifier with an address argument', async () => {
     const signer = await fundedSigner();
     await signer.provider.addUtxo(signer.getAddress(), { txid: 'c4'.repeat(32), vout: 0, satoshis: 1_000_000n });
-    const implArtifact = compileString(INHERITED_OWNER_IMPL, { solidityImportCompat: true });
+    const implArtifact = compileString(INHERITED_OWNER_IMPL, { evmCompat: true });
     expect(implArtifact.abi.find((entry) => entry.name === 'transferOwnership')?.emits).toEqual([
       expect.objectContaining({ eventSignature: 'OwnershipTransferred(address,address)' }),
     ]);
@@ -464,14 +464,14 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
       contract ValueSource() {
         int marker;
         function twice(int value) view returns (int) { return value * 2; }
-      }`, { solidityImportCompat: true });
+      }`, { evmCompat: true });
     const implArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IValueSource { function twice(int value) external view returns (int); }
       contract NestedCallImpl() {
         int result;
         function initialize() public { this.result = 0; }
         function run(address source, int value) public { this.result = IValueSource(source).twice(value); }
-      }`, { solidityImportCompat: true });
+      }`, { evmCompat: true });
     const callee = await getContractFactory(calleeArtifact, signer).deploy({ initialState: { marker: 1n } });
     const proxy = await upgrades.deployProxy(
       getContractFactory(implArtifact, signer),
@@ -502,7 +502,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
         function run(address source, int value) public {
           this.result = IProxyValueSource(source).twice(value);
         }
-      }`, { solidityImportCompat: true });
+      }`, { evmCompat: true });
     const valueProxy = await upgrades.deployProxy(
       getContractFactory(valueArtifact, signer), [1n],
     );

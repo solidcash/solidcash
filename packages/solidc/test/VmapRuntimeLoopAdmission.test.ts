@@ -3,7 +3,7 @@ import { compileString } from '../src/index.js';
 
 const OPTIONS = {
   forceStateful: true,
-  solidityImportCompat: true,
+  evmCompat: true,
   messageBus: true,
   messageBusGraphContext: true,
   optimizeForCompilationSpeed: true,

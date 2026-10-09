@@ -10,7 +10,7 @@ import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 // (keccak256 over the runtime buffer is exercised separately in Keccak256.test.ts - it needs a side-car library.)
 async function call(method: string, args: FunctionArgument[]): Promise<void> {
   const provider = createTestProvider();
-  const artifact = compileString(SRC, { solidityImportCompat: true });
+  const artifact = compileString(SRC, { evmCompat: true });
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },

@@ -43,7 +43,7 @@ const GRAPH_SOURCE = `pragma solidity ^0.8.0;
 
 const GRAPH_OPTIONS = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
-  messageBusGraphContext: true, solidityImportCompat: true, suppressWarnings: true,
+  messageBusGraphContext: true, evmCompat: true, suppressWarnings: true,
   optimizeForCompilationSpeed: true,
 } as const;
 

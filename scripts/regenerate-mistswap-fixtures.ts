@@ -21,7 +21,7 @@ for (const name of selected) {
 for (const [name, source] of Object.entries(fixtures)) {
   if (selected.length > 0 && !selected.includes(name)) continue;
   const artifact = compileFile(path.join(sourceDir, source), {
-    solidityImportCompat: true,
+    evmCompat: true,
     ecrecover: 'p2pkh',
     forceStateful: true,
     maximumInputBytes: 100_000,

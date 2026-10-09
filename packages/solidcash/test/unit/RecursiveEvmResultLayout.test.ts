@@ -8,7 +8,7 @@ import {
 
 const artifact = {
   contractName: 'RecursiveResult', constructorInputs: [], abi: [], bytecode: '', source: '',
-  compiler: { name: 'solidc', version: 'test', options: { solidityImportCompat: true } },
+  compiler: { name: 'solidc', version: 'test', options: { evmCompat: true } },
   structs: [
     { name: 'Rec', fields: [{ name: 'value', type: 'uint256' }, { name: 'status', type: 'Status' }] },
     { name: 'Box', fields: [{ name: 'label', type: 'string' }, { name: 'values', type: 'uint256[]' }] },

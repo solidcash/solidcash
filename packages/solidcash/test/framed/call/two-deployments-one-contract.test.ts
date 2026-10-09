@@ -73,7 +73,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const artifacts = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 const token = artifacts.Token!;
 const proxiedToken = artifacts.ProxiedToken!;
 const basket = artifacts.Basket!;

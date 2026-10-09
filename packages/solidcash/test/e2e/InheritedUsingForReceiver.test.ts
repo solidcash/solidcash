@@ -32,7 +32,7 @@ contract Token is Ledger {
 
 describe('inherited using-for receiver keyed by a substituted msg.sender', () => {
   it('mints to and transfers from the caller', async () => {
-    const artifact = compileString(SOURCE, { solidityImportCompat: true, forceStateful: true });
+    const artifact = compileString(SOURCE, { evmCompat: true, forceStateful: true });
     const signer = await fundedSigner();
     const token = await getContractFactory(artifact, signer).deploy();
     const caller = addressToLockScript(signer.getAddress());

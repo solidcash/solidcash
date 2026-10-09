@@ -12,7 +12,7 @@ describe('external argument array indices', () => {
           ISink(sink).put(values[${index}]);
           require(true);
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, maximumInputBytes: 1_000_000, suppressWarnings: true });
     const source = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls![0].argSources![0];
     // A named constant index is the literal it stands for. The published element names that fixed index

@@ -33,7 +33,7 @@ describe('incremental compile task', () => {
     const root = tempProject();
     const hre = createHardhatRuntimeEnvironment(resolveConfig({
       paths: { contracts: './contracts', artifacts: './artifacts', cache: './cache', tests: './test' },
-      compiler: { solidityImportCompat: true },
+      compiler: { evmCompat: true },
     }, root));
     const previous = process.env.SOLIDC_COMPILE_CACHE;
     try {
@@ -77,7 +77,7 @@ describe('incremental compile task', () => {
         cache: './cache',
         tests: './test',
       },
-      compiler: { solidityImportCompat: true },
+      compiler: { evmCompat: true },
     }, root);
     const hre = createHardhatRuntimeEnvironment(config);
 
@@ -127,7 +127,7 @@ describe('incremental compile task', () => {
         cache: './cache',
         tests: './test',
       },
-      compiler: { solidityImportCompat: true },
+      compiler: { evmCompat: true },
     }, root);
     const hre = createHardhatRuntimeEnvironment(config);
     await runTask('compile', { quiet: true, 'skip-split': true }, hre);
@@ -169,7 +169,7 @@ describe('incremental compile task', () => {
       paths: {
         contracts: './contracts', artifacts: './artifacts', cache: './cache', tests: './test',
       },
-      compiler: { solidityImportCompat: true, ...extra },
+      compiler: { evmCompat: true, ...extra },
     }, root);
     await runTask('compile', { quiet: true, 'skip-split': true },
       createHardhatRuntimeEnvironment(configured({ ecrecover: 'p2sh32' })));
@@ -191,7 +191,7 @@ describe('incremental compile task', () => {
       paths: {
         contracts: './contracts', artifacts: './artifacts', cache: './cache', tests: './test',
       },
-      compiler: { solidityImportCompat: true, ...extra },
+      compiler: { evmCompat: true, ...extra },
     }, root);
     await runTask('compile', { quiet: true, 'skip-split': true },
       createHardhatRuntimeEnvironment(configured({ ecrecover: 'p2sh32' })));

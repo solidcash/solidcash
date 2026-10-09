@@ -72,7 +72,7 @@ describe('AbiFunction.writesState classification', () => {
       contract C {
         ICounter counter;
         function length() public view returns (uint256) { return counter.length(); }
-      }`, { solidityImportCompat: true });
+      }`, { evmCompat: true });
     expect(r.length).toBe(false);
   });
 

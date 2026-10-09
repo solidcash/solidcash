@@ -62,7 +62,7 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
     }
   }`, {
   forceStateful: true,
-  solidityImportCompat: true,
+  evmCompat: true,
   messageBus: true,
   messageBusKernel: true,
   messageBusGraphContext: true,

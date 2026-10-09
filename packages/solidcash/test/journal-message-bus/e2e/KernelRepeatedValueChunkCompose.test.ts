@@ -16,7 +16,7 @@ import { messageBusVmAccepts } from './vm-accepts.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
-  maximumInputBytes: 1_000_000, solidityImportCompat: true, suppressWarnings: true,
+  maximumInputBytes: 1_000_000, evmCompat: true, suppressWarnings: true,
 } as const;
 const storeArtifact = compileString(`pragma solidity ^0.8.0;
 contract Store() {

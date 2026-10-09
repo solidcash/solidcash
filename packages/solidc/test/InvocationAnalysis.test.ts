@@ -144,7 +144,7 @@ describe('Release 0 shared invocation analysis', () => {
           if (!probe(target, payload)) { require(false); }
           require(true);
         }
-      }`, { solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+      }`, { evmCompat: true, messageBus: true, messageBusKernel: true });
     const call = artifact.invocationAnalysis!.functions
       .find((fn) => fn.name === 'run')!.externalCalls![0];
     expect(call).toMatchObject({ callsiteId: 0, occurrence: 'once', maximumOccurrences: 1 });
@@ -164,7 +164,7 @@ describe('Release 0 shared invocation analysis', () => {
           return 0;
         }
       }`, {
-      forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
     expect(calls).toHaveLength(2);
@@ -428,7 +428,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(n >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
     });
     const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'dispatch')!;
     expect(fn.externalCalls?.map((call) => call.occurrence)).toEqual([
@@ -451,7 +451,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(n > 11);
         }
       }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
     });
     const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
     expect(fn.externalCalls?.[0]).toMatchObject({
@@ -489,7 +489,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(n >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
     });
     const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
     const call = fn.externalCalls?.find((candidate) => candidate.functionName === 'publish');
@@ -514,7 +514,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
     });
     const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
     expect(fn.externalCalls?.[0].iterationDomain).toMatchObject({ maximumIterations: 3 });
@@ -532,7 +532,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(n > 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
     });
     const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
     expect(fn.externalCalls?.[0].condition).toMatchObject({
@@ -556,7 +556,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(balance >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
     });
     const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
     expect(fn.externalCalls?.[0].condition).toMatchObject({
@@ -587,7 +587,7 @@ describe('Release 0 shared invocation analysis', () => {
           sink.publish(amount);
           require(true);
         }
-      }`, { forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true });
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true });
     const expression = artifact.abi.find((candidate) => candidate.name === 'run')
       ?.externalCalls?.find((call) => call.functionName === 'publish')?.argSources?.[0].expression;
     expect(expression?.kind).toBe('ternary');
@@ -1012,7 +1012,7 @@ describe('Release 0 shared invocation analysis', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
     expect(calls.map((call) => call.iterationDomain?.counterName)).toEqual(['i', 'j']);
@@ -1041,7 +1041,7 @@ describe('Release 0 shared invocation analysis', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
     expect(calls[0].iterationDomain).toBeDefined();
@@ -1063,7 +1063,7 @@ describe('Release 0 shared invocation analysis', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const domain = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls![0].iterationDomain;
     expect(domain?.continueCondition).toMatchObject({
@@ -1135,7 +1135,7 @@ describe('Release 0 shared invocation analysis', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      messageBusGraphContext: true, solidityImportCompat: true, suppressWarnings: true,
+      messageBusGraphContext: true, evmCompat: true, suppressWarnings: true,
     });
     const fn = artifact.abi.find((candidate) => candidate.name === 'collect')!;
     expect(fn.externalCalls?.map((call) => [call.callsiteId, call.functionName])).toEqual([
@@ -1160,7 +1160,7 @@ describe('Release 0 shared invocation analysis', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true,
-      messageBusGraphContext: true, solidityImportCompat: true, suppressWarnings: true,
+      messageBusGraphContext: true, evmCompat: true, suppressWarnings: true,
     });
     const fn = artifact.abi.find((candidate) => candidate.name === 'validate')!;
     expect(fn.externalCalls?.[0]).toMatchObject({ occurrence: 'loop', hasReturnValues: true });

@@ -245,7 +245,7 @@ describe('chunk-packed array: write inside a loop (P2c local-cache transform)', 
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
   it('push-in-loop and shift-remove-in-loop produce correct state', async () => {
-    const artifact = compileString(LOOPW, { solidityImportCompat: true });
+    const artifact = compileString(LOOPW, { evmCompat: true });
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { nums: [] }, { saltContract: true },

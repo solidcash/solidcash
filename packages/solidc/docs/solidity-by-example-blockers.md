@@ -2,7 +2,7 @@
 
 A coverage run of the [solidity-by-example](https://github.com/solidity-by-example/solidity-by-example.github.io)
 corpus (152 standalone contracts under `examples/solidity-by-example/contracts/src/`, all `^0.8.26`, MIT)
-through `solidc` with `solidityImportCompat`. Goal: surface the blockers to prioritize compiler work.
+through `solidc` with `evmCompat`. Goal: surface the blockers to prioritize compiler work.
 
 Re-run: `node examples/solidity-by-example/bench.mjs` (scorecard) then `categorize.mjs` (buckets).
 
@@ -36,7 +36,7 @@ many files carry several blockers, so the error *distribution* moved much more t
 
 - **FinalRequire relaxation** - two parts. (1) Always-on, safe: an *unconditional* require/assert/revert/
   timeop anywhere in a function gates the whole path (codegen appends `OP_1` after trailing statements), so
-  `require(authorized); _mint(...)` no longer needs the require to be last. (2) Under `solidityImportCompat`: a
+  `require(authorized); _mint(...)` no longer needs the require to be last. (2) Under `evmCompat`: a
   void path that verifies *nothing* and changes no state downgrades from a hard error to a warning (compiles
   as an unconditionally-spendable path, matching Solidity). It stays a **hard error by default** so SolidCash
   contracts can't silently expose an always-spendable UTXO. - DONE

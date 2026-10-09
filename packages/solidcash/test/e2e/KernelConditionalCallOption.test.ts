@@ -10,7 +10,7 @@ import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e
 import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
 
 const KERNEL = {
-  forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+  forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
   messageBusGraphContext: true, suppressWarnings: true, maximumInputBytes: 1_000_000,
 } as const;
 

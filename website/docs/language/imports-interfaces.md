@@ -102,7 +102,7 @@ Two import forms have known gaps in the current compiler:
 
 ### Importing Solidity sources
 
-With the `solidityImportCompat` compiler option, `.sol` files are parsed as SolidCash and the import resolver
+With the `evmCompat` compiler option, `.sol` files are parsed as SolidCash and the import resolver
 also tries `.sol` candidates, so a Solidity dependency tree can be imported directly. `pragma solidity ...` is
 accepted and its version constraint is not enforced.
 

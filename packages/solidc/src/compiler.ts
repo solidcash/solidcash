@@ -1162,7 +1162,7 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
       ?? publicCompilerOptions(options),
   } as InternalCompilerOptions;
   // Solidity's builtin returns the canonical 20-byte EVM address. Preserve an explicit projection override.
-  if (normalized.solidityImportCompat && options.ecrecover === undefined) normalized.ecrecover = 'evm';
+  if (normalized.evmCompat && options.ecrecover === undefined) normalized.ecrecover = 'evm';
   return normalized;
 }
 
@@ -1221,9 +1221,9 @@ const importedParseCache = new Map<string, Ast>();
 const MAXIMUM_CACHED_IMPORTED_PARSES = 24;
 
 export function parseImportedFileCached(
-  source: string, solidityImportCompat: boolean, fileId: string,
+  source: string, evmCompat: boolean, fileId: string,
 ): Ast {
-  const key = `${solidityImportCompat ? '1' : '0'}\x00${fileId}\x00${source}`;
+  const key = `${evmCompat ? '1' : '0'}\x00${fileId}\x00${source}`;
   const cached = importedParseCache.get(key);
   if (cached !== undefined) {
     // Refresh recency for the small bound below.
@@ -1231,7 +1231,7 @@ export function parseImportedFileCached(
     importedParseCache.set(key, cached);
     return cloneAst(cached, 'imported-parse-cache');
   }
-  const ast = parseCode(source, undefined, solidityImportCompat, true, fileId);
+  const ast = parseCode(source, undefined, evmCompat, true, fileId);
   importedParseCache.set(key, cloneAst(ast, 'imported-parse-cache-store'));
   if (importedParseCache.size > MAXIMUM_CACHED_IMPORTED_PARSES) {
     const oldest = importedParseCache.keys().next().value as string | undefined;
@@ -3191,7 +3191,7 @@ function parseAndResolve(
     )
     : code;
   // Lexing + parsing
-  let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.solidityImportCompat,
+  let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.evmCompat,
     mergedCompilerOptions.chunkedArrays);
   // Hardhat's console library is a compiler/runtime debugging hook, not a source dependency that SolidCash
   // should parse or link. Its calls are represented by ConsoleStatementNode and already emit no BCH bytecode,
@@ -3209,7 +3209,7 @@ function parseAndResolve(
       );
     }
     const resolver = new ImportResolver(
-      mergedCompilerOptions.importResolver, mergedCompilerOptions.solidityImportCompat,
+      mergedCompilerOptions.importResolver, mergedCompilerOptions.evmCompat,
     );
     ast = resolver.resolve(ast, mergedCompilerOptions.rootFileId ?? 'main');
   }
@@ -3300,7 +3300,7 @@ const detachedVerifierLockCache = new Map<string, Uint8Array>();
 
 /**
  * The options identity of a detached verifier emit: what the artifact cache keys a compile on, with the env feature
- * bits folded in. The emit reads the whole option set (codegen's casts read solidityImportCompat), so any narrower
+ * bits folded in. The emit reads the whole option set (codegen's casts read evmCompat), so any narrower
  * key lets a program emitted under one setting serve a later compile under another. Undefined when the options do
  * not serialize; the caller then emits without the cache.
  */
@@ -5557,7 +5557,7 @@ function synthesizeMessageBusRoute(
     FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
     FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.UNSAFE,
   ]);
-  const inferredSolidityImplementation = !!compilerOptions.solidityImportCompat
+  const inferredSolidityImplementation = !!compilerOptions.evmCompat
     && contract.functions.some((candidate) => candidate.isEntryPoint
       && candidate.modifiers.includes(FunctionModifier.DELEGATE));
   if (compilerOptions.autoDelegate || inferredSolidityImplementation) {
@@ -8928,7 +8928,7 @@ function synthesizeMessageBusRoute(
     // signing the transaction which contains the return-event output. Solidity ABI mode has no canonical word
     // type for these SolidCash primitives, so it retains the conservative result fence.
     if (type === PrimitiveType.PUBKEY || type === PrimitiveType.SIG || type === PrimitiveType.DATASIG) {
-      return !(compilerOptions.evmCompat || compilerOptions.solidityImportCompat);
+      return !(compilerOptions.evmCompat);
     }
     if (type instanceof IntType || type instanceof FixedType || type instanceof BytesType) return true;
     if (type instanceof AddressType) {
@@ -11719,7 +11719,7 @@ function synthesizeMessageBusRoute(
     'bigint __internal__graphSettlementBoundary',
     'bytes __internal__graphCompletionPositions',
     'bytes __internal__graphSettlementTable',
-    ...((compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
+    ...((compilerOptions.evmCompat)
       ? ['bigint __internal__graphSelfIdentityInput'] : []),
     ...(graphBlockhashReadWidth > 0 ? ['bigint __internal__blockhashInputIndex'] : []),
   ];
@@ -13562,7 +13562,7 @@ function synthesizeMessageBusRoute(
     : `require(__internal__graphEmissions == __internal__graphEmissions);
         require(__internal__graphCallers == __internal__graphCallers);`}
         ${graphExecutionContext
-    && (compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
+    && (compilerOptions.evmCompat)
     ? 'require(__internal__graphSelfIdentityInput == __internal__graphSelfIdentityInput);' : ''}
         ${returnStatement}
       }
@@ -14376,14 +14376,14 @@ function compileResolvedAst(
       // emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
       // Inline-only library functions still require source-level parameter/return location validation before
       // this early declaration-artifact return.
-      ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
+      ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.evmCompat ?? false)) as Ast;
       // Interfaces/declaration-only files still require semantic validation (X184). A generic-storage library,
       // however, has already representation-lowered its storage pointer names for later import/inlining; running
       // the ordinary contract symbol pass here mistakes those placeholders for unresolved source identifiers.
       if (!ast.libraryName || !ast.declaredLibraryNames.includes(ast.libraryName)) {
         ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
         ast = ast.accept(new TypeCheckTraversal(
-          true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
+          true, mergedCompilerOptions.evmCompat ?? false, mergedCompilerOptions.rootFileId,
           mergedCompilerOptions.composition === 'framed',
         )) as Ast;
       }
@@ -14415,12 +14415,12 @@ function compileResolvedAst(
     }
   }
 
-  if (mergedCompilerOptions.solidityImportCompat) {
-    validateAbstractContractInstantiations(ast);
+  validateAbstractContractInstantiations(ast);
+  validateLibrarySelfExternalCalls(ast);
+  validateKnownUserTypes(ast);
+  validateInheritedPrivateFunctionAccess(ast);
+  if (mergedCompilerOptions.evmCompat) {
     validateFunctionNamespaceShadows(ast);
-    validateLibrarySelfExternalCalls(ast);
-    validateKnownUserTypes(ast);
-    validateInheritedPrivateFunctionAccess(ast);
   }
 
   // Desugar `using L for T` method calls in each contract's OWN lexical scope BEFORE inheritance/modifier expansion
@@ -14449,8 +14449,8 @@ function compileResolvedAst(
       fn?.modifiers.includes(FunctionModifier.OVERRIDE));
   if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0
     || ast.importedContracts.some((contract) => contract.implements.length > 0)
-    || (mergedCompilerOptions.solidityImportCompat && hasRootOverride)) {
-    ast = expandInheritance(ast, mergedCompilerOptions.solidityImportCompat ?? false);
+    || (mergedCompilerOptions.evmCompat && hasRootOverride)) {
+    ast = expandInheritance(ast, mergedCompilerOptions.evmCompat ?? false);
   }
   detectMappingArrayPagination(ast.contract);
 
@@ -14458,13 +14458,13 @@ function compileResolvedAst(
   // They carry no runtime value and are never read; materializing them in CashToken commitments can consume
   // kilobytes (e.g. uint256[50]) while providing none of their EVM layout benefit. In Solidity-compat mode,
   // preserve their intended meaning by omitting the reservation from BCH state altogether.
-  if (mergedCompilerOptions.solidityImportCompat) {
+  if (mergedCompilerOptions.evmCompat) {
     ast.contract.stateVariables = ast.contract.stateVariables.filter((variable) => variable.name !== '__gap');
   }
 
   // Validate source-level location and modifier rules before storage/memory pointer lowerings erase the
   // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
-  ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
+  ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.evmCompat ?? false)) as Ast;
   ast = ast.accept(new OptimizeFixedArrayValues()) as Ast;
 
   // Every mapping uses the authenticated vmap backend. There is no omission-prone legacy mapping fallback.
@@ -14546,8 +14546,8 @@ function compileResolvedAst(
   }
 
   // Solidity public state-var/mapping auto-getters -> real entry-point functions, so a ported callee invoked
-  // via a getter (`timeLock.lockTime(addr)`) actually dispatches it. Gated on solidityImportCompat.
-  if (mergedCompilerOptions.solidityImportCompat) {
+  // via a getter (`timeLock.lockTime(addr)`) actually dispatches it. Gated on evmCompat.
+  if (mergedCompilerOptions.evmCompat) {
     ast = ast.accept(new SynthesizePublicGetters(true)) as Ast;
   }
 
@@ -14559,7 +14559,7 @@ function compileResolvedAst(
   // `__internal__proxyMasterIndex`. A framed master reads its frames' blocks instead, and a DELEGATE frame is a
   // frame kind the head establishes rather than a property of a body, so the marking and its operand do not apply
   // to this convention.
-  if (mergedCompilerOptions.solidityImportCompat && mergedCompilerOptions.composition !== 'framed'
+  if (mergedCompilerOptions.evmCompat && mergedCompilerOptions.composition !== 'framed'
     && ast.contract.functions.some((fn) => fn.customModifiers.some(
       (modifier) => modifier.name === 'initializer' || modifier.name === 'reinitializer',
     ))) {
@@ -14721,7 +14721,7 @@ function compileResolvedAst(
   }
   if (earlyEntryFeatures?.needsBlockOracle) {
     ast = ast.accept(new SynthesizeBlockOracle(
-      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.evmCompat ?? false,
       oracleDelegateExecutionContext,
     )) as Ast;
   }
@@ -14828,13 +14828,13 @@ function compileResolvedAst(
       markConstructorCapturedHelperGraphEffects(ast);
     }
     ast = ast.accept(new InlineStoragePointerCalls(
-      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.evmCompat ?? false,
       inlineDelegateStateHelpers,
       mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
     )) as Ast;
     ast = ast.accept(new InlineReturningStateHelpers(
-      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.evmCompat ?? false,
       mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
     )) as Ast;
@@ -14843,7 +14843,7 @@ function compileResolvedAst(
     // the non-message-bus pipeline below; otherwise the wrapper survives as an ordinary OP_INVOKE body and a
     // delegate variant reads the implementation block rather than the co-spent proxy block.
     ast = ast.accept(new InlineStoragePointerCalls(
-      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.evmCompat ?? false,
       inlineDelegateStateHelpers,
       mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
@@ -15092,7 +15092,7 @@ function compileResolvedAst(
   }
 
   // Prove legacy checked-math wrapper shapes before named-return desugaring changes their minimal source form.
-  if (mergedCompilerOptions.solidityImportCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;
+  if (mergedCompilerOptions.evmCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
   // The lanes admit this pass differently. The default composition runs it wherever a function has return types
@@ -15250,13 +15250,13 @@ function compileResolvedAst(
     if (framedHasHelpers) {
       framedInlinedHelpers = true;
       ast = ast.accept(new InlineStoragePointerCalls(
-        mergedCompilerOptions.solidityImportCompat ?? false,
+        mergedCompilerOptions.evmCompat ?? false,
         inlineDelegateStateHelpers,
         mergedCompilerOptions.composition === 'framed',
         signatureChecksInlined,
       )) as Ast;
       ast = ast.accept(new InlineReturningStateHelpers(
-        mergedCompilerOptions.solidityImportCompat ?? false,
+        mergedCompilerOptions.evmCompat ?? false,
         mergedCompilerOptions.composition === 'framed',
         signatureChecksInlined,
       )) as Ast;
@@ -15312,7 +15312,7 @@ function compileResolvedAst(
       return found;
     });
     if (callsPublic) ast = ast.accept(new InlineReturningStateHelpers(
-      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.evmCompat ?? false,
     )) as Ast;
   }
   if (needsDynamicStateJournal && !cheapAdmissionCodegen) {
@@ -15353,7 +15353,7 @@ function compileResolvedAst(
     || (mergedCompilerOptions.composition !== 'framed' && hasInternallyCalledPublicEntry);
   if (inlinesOwnCalls) {
     ast = ast.accept(new InlineReturningStateHelpers(
-      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.evmCompat ?? false,
       mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
     )) as Ast;
@@ -15374,7 +15374,7 @@ function compileResolvedAst(
   // parameters, which that call does not pass.
   if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && inlinesOwnCalls) {
     ast = ast.accept(new InlineStoragePointerCalls(
-      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.evmCompat ?? false,
       inlineDelegateStateHelpers,
       mergedCompilerOptions.composition === 'framed',
       signatureChecksInlined,
@@ -15476,7 +15476,7 @@ function compileResolvedAst(
   }
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
   const blockOracle = new SynthesizeBlockOracle(
-    mergedCompilerOptions.solidityImportCompat ?? false,
+    mergedCompilerOptions.evmCompat ?? false,
     oracleDelegateExecutionContext,
   );
   // Yul context builtins become ordinary block.* reads and gasleft() only after assembly lowering. The initial
@@ -16093,7 +16093,7 @@ function compileResolvedAst(
   }
   const typeCheckStarted = Date.now();
   ast = ast.accept(new TypeCheckTraversal(
-    true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
+    true, mergedCompilerOptions.evmCompat ?? false, mergedCompilerOptions.rootFileId,
     mergedCompilerOptions.composition === 'framed',
   )) as Ast;
   profileLog('resolved:typecheck', typeCheckStarted, { contract: contractName });
@@ -19111,12 +19111,12 @@ function prepareSplitAst(
   }
   // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
   // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
-  // Match the ordinary pipeline's Solidity-compat mode. In that mode block.timestamp is lowered directly to
-  // tx.locktime rather than allocated as an oracle register; using the native default here made split roots
-  // append __block_timestamp ahead of __block_number while their unsplit baseline did not.
+  // Match the ordinary pipeline's block-oracle synthesis so split roots append the same canonical register
+  // order (__block_number before __block_timestamp) as their unsplit baseline. block.timestamp always lowers
+  // to the __block_timestamp oracle register.
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
     ast = ast.accept(new SynthesizeBlockOracle(
-      options.solidityImportCompat ?? false,
+      options.evmCompat ?? false,
       options.autoDelegate === true,
     )) as Ast;
   }
@@ -19156,7 +19156,7 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
     ...ast.interfaceDefinitions,
     ...ast.importedContracts.map((imported) => new InterfaceNode(imported.name, [], [], [])),
   ];
-  getterProbeAst.accept(new SynthesizePublicGetters(options.solidityImportCompat ?? false));
+  getterProbeAst.accept(new SynthesizePublicGetters(options.evmCompat ?? false));
   const getterDeclarations = getterProbe.functions.slice(sourceFunctionCount);
   if (getterDeclarations.length > 0) {
     ast.interfaceDefinitions.push(new InterfaceNode(contract.name, [], [], getterDeclarations.map((getter) =>
@@ -19407,7 +19407,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new LowerInlineAssembly()) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers(
-      compilerOptions.solidityImportCompat ?? false,
+      compilerOptions.evmCompat ?? false,
       compilerOptions.composition === 'framed',
       inlinesSignatureChecks(compilerOptions),
     )) as Ast;
@@ -19416,7 +19416,7 @@ function compileReferencedContracts(
       compilerOptions.messageBusKernel === true,
     )) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls(
-      compilerOptions.solidityImportCompat ?? false, false, compilerOptions.composition === 'framed',
+      compilerOptions.evmCompat ?? false, false, compilerOptions.composition === 'framed',
       inlinesSignatureChecks(compilerOptions),
     )) as Ast;
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
@@ -19435,7 +19435,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new CaptureBranchExternalCallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(
-      compilerOptions.solidityImportCompat ?? false,
+      compilerOptions.evmCompat ?? false,
       compilerOptions.autoDelegate === true,
     )) as Ast;
     // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/
@@ -19452,7 +19452,7 @@ function compileReferencedContracts(
     }
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal(
-      true, compilerOptions.solidityImportCompat ?? false, compilerOptions.rootFileId,
+      true, compilerOptions.evmCompat ?? false, compilerOptions.rootFileId,
       compilerOptions.composition === 'framed',
     )) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
@@ -20571,13 +20571,13 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
 export function parseCode(
   code: string,
   errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
-  solidityImportCompat = false,
+  evmCompat = false,
   chunkedArrays = true,
   importedFileId?: string,
 ): Ast {
   // Solidity corpus files append diagnostic expectations after `// ----`; that trailer is test metadata, not
   // source text, and often repeats the SPDX spelling inside warning prose.
-  if (solidityImportCompat) {
+  if (evmCompat) {
     const diagnosticTrailer = code.includes('// ----') ? code.search(/\n\/\/ ----/) : -1;
     const spdxSource = diagnosticTrailer >= 0 ? code.slice(0, diagnosticTrailer) : code;
     // Large compatibility sources normally have no bidi overrides. The token walk is linear in file size; skip it unless a
@@ -20604,7 +20604,7 @@ export function parseCode(
   // carry the requested EVM version in their harness trailer. Rename inactive spellings consistently so their
   // declarations remain legal, while an undeclared reference/call still produces the expected undefined-name
   // diagnostic. Equal-length replacements preserve all source offsets.
-  if (solidityImportCompat && code.includes('EVMVersion:')) {
+  if (evmCompat && code.includes('EVMVersion:')) {
     const inactiveYulNames: string[] = [];
     if (/\/\/\s*EVMVersion:\s*(?:<=\s*berlin|<\s*london)\b/i.test(code)) inactiveYulNames.push('basefee');
     if (/\/\/\s*EVMVersion:\s*<\s*paris\b/i.test(code)) inactiveYulNames.push('prevrandao');
@@ -20623,7 +20623,7 @@ export function parseCode(
   // specifiers only belong to contracts), and has no BCH meaning. In import-compat mode, blank this exact
   // no-expression shape while retaining line/column positions; do not consume a real modifier invocation or
   // any expression between `at` and the body.
-  if (solidityImportCompat && code.includes('layout at')) {
+  if (evmCompat && code.includes('layout at')) {
     code = code.replace(
       /(\bfunction\b[^{};]*?)(\s+layout\s+at\s*)(?=\{)/g,
       (_m, header, clause) => header + clause.replace(/[^\r\n]/g, ' '),
@@ -20699,7 +20699,7 @@ export function parseCode(
     // Solidity's semantic predicates (e.g. `hasFunctionCallAhead`) routinely defeat SLL. Trying SLL first on
     // `.sol` import graphs pays a full failed parse of the primary plus several library units before LL retries.
     // Native SolidCash and compiler-generated helpers still take the SLL fast path.
-    const trySll = !solidityImportCompat;
+    const trySll = !evmCompat;
     let parseTree: ReturnType<SolidCashParser['sourceFile']>;
     const antlrStarted = compilerProfileEnabled() ? Date.now() : 0;
     if (trySll) {
@@ -20736,7 +20736,7 @@ export function parseCode(
     // AST building
     const astStarted = compilerProfileEnabled() ? Date.now() : 0;
     const built = new AstBuilder(
-      parseTree, solidityImportCompat, chunkedArrays, code, importedFileId,
+      parseTree, evmCompat, chunkedArrays, code, importedFileId,
     ).build() as Ast;
     if (compilerProfileEnabled()) {
       profileLog('parseCode:file', parseStarted, {

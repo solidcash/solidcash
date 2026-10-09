@@ -1,10 +1,10 @@
 # Solidity import compatibility and porting notes
 
-This documents `solidityImportCompat` and the language-level features added so real Solidity sources (the
+This documents `evmCompat` and the language-level features added so real Solidity sources (the
 Sablier exercises) compile as SolidCash with minimal edits. Tests: `test/PortingFixes.test.ts`,
 `test/SafetyDefaults.test.ts`.
 
-## `solidityImportCompat`
+## `evmCompat`
 
 A `CompilerOptions` flag now narrowed to two things: parsing Solidity *source files*, and the two porting
 behaviors that change a contract's ABI or bytecode (so they cannot be a silent default). When set:
@@ -93,7 +93,7 @@ Each was surfaced by a real Solidity line and has a clean BCH mapping.
 - A returning function that **reads a mapping** does not crash (its result is returned in an output, like a
   logged event).
 
-(Public-getter synthesis and declaration-only-file artifacts are described under `solidityImportCompat` above -
+(Public-getter synthesis and declaration-only-file artifacts are described under `evmCompat` above -
 the former stays flag-gated because it changes the ABI/bytecode, the latter is now a default.)
 
 ### Surfaced by the modern Sablier Flow port
@@ -163,7 +163,7 @@ contract Guard {
 
 ## Sablier Flow exercise: where "compile as-is" stops
 
-`solidityImportCompat` resolves every real import (`@openzeppelin@5.3.0`, `@prb/math@4.1.0`,
+`evmCompat` resolves every real import (`@openzeppelin@5.3.0`, `@prb/math@4.1.0`,
 `@sablier/evm-utils@1.0.3`). After the features above, the interfaces and pure libraries parse; the remaining
 blockers are EVM substance with no BCH mapping, not language gaps:
 

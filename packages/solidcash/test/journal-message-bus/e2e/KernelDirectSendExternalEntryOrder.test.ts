@@ -13,7 +13,7 @@ const KERNEL = {
   messageBus: true,
   messageBusKernel: true,
   maximumInputBytes: 1_000_000,
-  solidityImportCompat: true,
+  evmCompat: true,
   suppressWarnings: true,
 } as const;
 
@@ -27,7 +27,7 @@ describe('kernel direct send external-call entry ordering', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const probeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Probe() { function touch() public { require(true); } }`, {
-      ...KERNEL, solidityImportCompat: false, messageBusGraphContext: true,
+      ...KERNEL, evmCompat: false, messageBusGraphContext: true,
     });
     const accArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function touch() external; }
@@ -39,7 +39,7 @@ describe('kernel direct send external-call entry ordering', () => {
           IProbe(probe).touch();
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: false });
+      }`, { ...KERNEL, evmCompat: false });
 
     const probeBase = new Contract(probeArtifact, [], { provider });
     const probeSetup = await setupStatefulUtxos(
@@ -103,7 +103,7 @@ describe('kernel direct send external-call entry ordering', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const probeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Probe() { function touch() public { require(true); } }`, {
-      ...KERNEL, solidityImportCompat: false, messageBusGraphContext: true,
+      ...KERNEL, evmCompat: false, messageBusGraphContext: true,
     });
     const accArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function touch() external; }
@@ -116,7 +116,7 @@ describe('kernel direct send external-call entry ordering', () => {
           IProbe(probe).touch();
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: false });
+      }`, { ...KERNEL, evmCompat: false });
 
     const probeBase = new Contract(probeArtifact, [], { provider });
     const probeSetup = await setupStatefulUtxos(

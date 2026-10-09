@@ -56,8 +56,8 @@ contract MoreHalts {
   }
 }`;
 
-const halts = compileString(HALTS, { solidityImportCompat: true });
-const more = compileString(MORE, { solidityImportCompat: true });
+const halts = compileString(HALTS, { evmCompat: true });
+const more = compileString(MORE, { evmCompat: true });
 
 /** A fresh deployment of `artifact`. */
 async function deploy(artifact: typeof halts): Promise<any> {

@@ -257,7 +257,7 @@ contract Pay {
   function denied(address payable to) public { to.transfer(1); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -274,7 +274,7 @@ contract Pay {
   function denied(address payable to) public { require(to.send(1)); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -307,7 +307,7 @@ contract Pay {
   }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -322,7 +322,7 @@ contract Pay {
   function denied(address payable to) public { _pay(to); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -355,7 +355,7 @@ contract C {
   function denied(Rec[] memory xs) public { I(dest).r(xs); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -375,7 +375,7 @@ contract C {
   function denied(address to, uint amt) public { IERC20(token).send(to, amt); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -417,7 +417,7 @@ contract C {
   function denied(address payable to) public { to.sendValue(uint(1)); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -434,7 +434,7 @@ contract C {
   function denied(address payable to, uint amt) public { Address.sendValue(to, amt); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -725,7 +725,7 @@ contract Registry {
     require(true);
   }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'consume')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'permissions')?.eligible)
       .toBe(true);
@@ -758,7 +758,7 @@ contract Auth {
     require(last != address(0));
   }
 }
-`, { ...OPTIONS, solidityImportCompat: true, ecrecover: 'p2pkh' });
+`, { ...OPTIONS, evmCompat: true, ecrecover: 'p2pkh' });
     const ping = artifact.messageBus?.handlers.find((handler) => handler.name === 'ping');
     expect(ping?.eligible).toBe(true);
     expect(artifact.messageBus?.maximumRows).toBeGreaterThan(1);
@@ -867,7 +867,7 @@ contract Pay {
     require(token.transfer(to, amount) || ret.length == 0);
   }
 }
-`, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+`, { ...OPTIONS, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')?.eligible).toBe(true);
     const asm = routeAsm(artifact);
     expect(asm).toMatch(/OP_UNTIL|OP_BEGIN/);
@@ -929,7 +929,7 @@ contract Registry {
   }
   function release(uint recordId) public { _release(recordId, true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+`, { ...OPTIONS, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'release')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
@@ -962,7 +962,7 @@ contract C {
     require(true);
   }
 }
-`, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+`, { ...OPTIONS, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
     const asm = routeAsm(artifact);
@@ -1024,7 +1024,7 @@ contract C {
   function denied(uint k, uint x) public { items[k].push(Rec(x)); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+`, { ...OPTIONS, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
   });
@@ -1037,7 +1037,7 @@ contract C {
   function denied(uint x) public { emit E(x); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
@@ -1051,7 +1051,7 @@ contract C {
   function denied(uint x) public { emit E(x); emit F(x); require(true); }
   function ping(uint x) public { emit E(x); require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'ping')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -1150,7 +1150,7 @@ contract C {
   }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+`, { ...OPTIONS, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
   });
@@ -1201,7 +1201,7 @@ contract C {
   function denied(uint k, uint i, uint x) public { items[k][i].x = x; require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+`, { ...OPTIONS, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
   });
@@ -1215,7 +1215,7 @@ contract C {
   function denied(uint k, uint x) public { items[k][0].x = x; require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+`, { ...OPTIONS, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
 
@@ -1275,7 +1275,7 @@ contract C {
   function denied(uint id) public { try I(a).r(id) {} catch {} require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+`, { ...OPTIONS, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
   });
@@ -1288,7 +1288,7 @@ contract C {
   function denied(uint x) public { items.push(x); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'items')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
@@ -1349,7 +1349,7 @@ contract C {
   function denied(uint x) public { rec.x = x; require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'rec')).toMatchObject({
       eligible: true,
       outputs: [{ type: 'uint256' }, { type: 'address' }],
@@ -1368,7 +1368,7 @@ contract C {
   Record public record;
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'record')).toMatchObject({
       eligible: true,
       outputs: [{ type: 'Phase' }, { type: 'uint256' }],
@@ -1386,7 +1386,7 @@ contract C {
   mapping(uint => Record) public records;
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'records')).toMatchObject({
       eligible: true,
       inputs: [{ name: '__getterKey1', type: 'uint256' }],
@@ -1454,7 +1454,7 @@ contract C {
   receive() external payable { last = msg.value; require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === '__receive')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
@@ -1525,7 +1525,7 @@ contract C {
   fallback() external { hits[msg.sig] = 1; I(dest).r(); require(true); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === '__fallback')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'hits')?.eligible).toBe(true);
@@ -1542,7 +1542,7 @@ contract C {
   function denied(uint id, uint n) public onlyOwner(id) { ownerOf[id] = msg.sender; require(n >= 0); }
   function control() public { require(true); }
 }
-`, { ...OPTIONS, solidityImportCompat: true });
+`, { ...OPTIONS, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);

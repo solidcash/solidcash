@@ -37,7 +37,7 @@ describe('external expression local array provenance', () => {
         function relay(address[] memory values) internal {
           ISink(sink).accept(abi.encodePacked(values[0]));
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
       __artifactCache: false });
     const entry = artifact.abi.find((candidate) => candidate.name === 'publish')!;

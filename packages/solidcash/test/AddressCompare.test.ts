@@ -12,7 +12,7 @@ describe('address ordering comparison (VM, unsigned big-endian)', () => {
   const spend = (op: string, a: string, bb: string): TransactionBuilder => {
     const provider = createTestProvider();
     const src = `contract C { function f(address a, address b) { require(a ${op} b); require(true); } }`;
-    const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(src, { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })

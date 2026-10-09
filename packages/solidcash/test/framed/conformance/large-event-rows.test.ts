@@ -78,7 +78,7 @@ const ROOT_SOURCE = 'pragma solidcash ^0.13.0;'
 describe('spec section 23 row 13: events above 128 bytes from nested frames', () => {
   it('refuses the nested-frame entry by name, unable to plan the callee frame', async () => {
     const artifacts = compileStringMulti(
-      NESTED_SOURCE, { composition: 'framed', solidityImportCompat: true } as never,
+      NESTED_SOURCE, { composition: 'framed', evmCompat: true } as never,
     );
     const root = artifacts.Root!;
     const emitter = artifacts.Emitter!;
@@ -121,7 +121,7 @@ describe('spec section 23 row 13: events above 128 bytes from nested frames', ()
 
   it('serves and decodes the same payload emitted by the root frame, the control for the size', async () => {
     const artifact = compileStringMulti(
-      ROOT_SOURCE, { composition: 'framed', solidityImportCompat: true } as never,
+      ROOT_SOURCE, { composition: 'framed', evmCompat: true } as never,
     ).Solo!;
 
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });

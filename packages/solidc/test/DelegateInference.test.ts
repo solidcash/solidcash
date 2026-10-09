@@ -30,7 +30,7 @@ describe('delegate inference', () => {
           value = 1;
           require(value == 1);
         }
-      }`, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+      }`, { evmCompat: true, forceStateful: true, messageBus: true });
     const delegated = artifact.delegateArtifact?.abi
       .filter((fn) => fn.modifiers?.includes('delegate')).map((fn) => fn.name);
     expect(delegated).toEqual(['setValue', 'setThroughHelper']);
@@ -215,7 +215,7 @@ describe('delegate inference', () => {
             Sink(sink).ping(who);
           }
         }
-      `, { messageBus: true, solidityImportCompat: true });
+      `, { messageBus: true, evmCompat: true });
 
       expect(artifact.messageBus?.route?.modifiers).toContain('delegate');
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')?.keccakPreimageParams)
@@ -320,7 +320,7 @@ describe('delegate inference', () => {
             require(pong >= prior);
           }
         }
-      `, { messageBus: true, solidityImportCompat: true, maximumInputBytes: 100_000 });
+      `, { messageBus: true, evmCompat: true, maximumInputBytes: 100_000 });
 
       expect(artifact.messageBus?.route?.modifiers).toContain('delegate');
       // Compact direct delegates and generated route handlers share one explicit transaction coordinate for the
@@ -402,7 +402,7 @@ describe('delegate inference', () => {
           return payload.length;
         }
       }
-    `, { messageBus: true, solidityImportCompat: true, maximumInputBytes: 100_000 });
+    `, { messageBus: true, evmCompat: true, maximumInputBytes: 100_000 });
     expect(artifact.abi.find((entry) => entry.name === 'lengthOf')?.inputs.some((input) => (
       input.name === '__internal__dynamicChunkInputBase'
     ))).toBe(false);
@@ -432,7 +432,7 @@ describe('delegate inference', () => {
         }
       `, {
         messageBus: true,
-        solidityImportCompat: true,
+        evmCompat: true,
         maximumInputBytes: 1_000_000,
         optimizeForCompilationSpeed: true,
         suppressWarnings: true,
@@ -538,7 +538,7 @@ describe('delegate inference', () => {
       forceStateful: true,
       messageBus: true,
       messageBusGraphContext: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,

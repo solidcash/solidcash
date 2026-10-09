@@ -4,7 +4,7 @@ import { compileString, compileStringMulti } from './helpers.js';
 // Focused regression guards derived from the Solidity compiler corpus.
 describe('inline-only library declaration validation', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('infers locations on reference-type parameters and returns before the declaration-artifact return', () => {
     expect(cc('library L { function f(uint[] values) internal pure {} }')).toBe('L');
@@ -22,14 +22,14 @@ describe('Solidity free-function contract context', () => {
   it("rejects 'this' outside a contract", () => {
     expect(() => compileString(
       'contract C {} function f() { this; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/'this'.*not available.*free function/i);
   });
 
   it("retains 'this' inside a contract function", () => {
     expect(compileString(
       'contract C { function f() public { address a = address(this); require(a == address(this)); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -39,13 +39,13 @@ describe('Solidity free-function duplicate signatures', () => {
     expect(() => compileString(
       'function f() pure returns (uint) { return 1; }'
       + ' function f() pure returns (uint) { return 2; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Redefinition of function 'f\(\)'/i);
     expect(() => compileString(
       'function f(uint x) pure returns (uint) { return x; }'
       + ' function f(uint x) pure returns (uint) { return x + 1; }'
       + ' function f(uint x) pure returns (uint) { return x + 2; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Redefinition of function 'f\(uint256\)'/i);
   });
 
@@ -54,7 +54,7 @@ describe('Solidity free-function duplicate signatures', () => {
       'function f(uint x) pure returns (uint) { return x; }'
       + ' function f(bytes32 x) pure returns (bytes32) { return x; }'
       + ' contract C { function g(uint x) public pure returns (uint) { return f(x); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -64,7 +64,7 @@ describe('Solidity free-function call options', () => {
     for (const option of ['gas: 1', 'value: 1']) {
       expect(() => compileString(
         `function f() { f{${option}}(); }`,
-        { solidityImportCompat: true },
+        { evmCompat: true },
       )).toThrow(/call options.*external function calls or contract creations/i);
     }
   });
@@ -74,7 +74,7 @@ describe('Solidity free-function call options', () => {
       'interface I { function f() external payable; }'
       + ' function call(I target) { target.f{gas: 1, value: 1}(); }'
       + ' contract C { function run(I target) public { call(target); require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -83,14 +83,14 @@ describe('Solidity pure free-function storage mutation', () => {
   it('rejects writes through a storage reference parameter', () => {
     expect(() => compileString(
       'function g(uint[] storage x) pure { x[0] = 1; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/pure function 'g'.*cannot modify storage parameter 'x'/i);
   });
 
   it('retains the same storage mutation in a non-pure free function', () => {
     expect(compileString(
       'function g(uint[] storage x) { x[0] = 1; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('definitions');
   });
 });
@@ -99,7 +99,7 @@ describe('Solidity free-function literal overload ambiguity', () => {
   it('rejects an integer literal accepted by multiple bounded overloads', () => {
     expect(() => compileString(
       'function g(uint8) {} function g(uint16) {} function t() { g(2); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/No unique declaration.*overloaded function 'g'/i);
   });
 
@@ -107,7 +107,7 @@ describe('Solidity free-function literal overload ambiguity', () => {
     expect(compileString(
       'function g(uint8) {} function g(uint16) {}'
       + ' contract C { function t() public { g(uint8(2)); require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -119,7 +119,7 @@ describe('using-for method named length', () => {
       + ' contract C { using D for string; string x;'
       + ' function f() public returns (uint) { x = "abc"; return x.length(); }'
       + ' function g() public returns (uint) { string memory s = "abc"; return s.length(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(artifact.contractName).toBe('C');
   });
@@ -133,10 +133,10 @@ describe('library-namespaced member access', () => {
   it('L.E.Member compiles and matches the bare enum member bytecode', () => {
     const qualified = compileString(`${lib}contract C() {
       function f(int e) { L.Dir d = L.Dir.Right; require(int(d) == e); }
-    }`, { solidityImportCompat: true }).bytecode;
+    }`, { evmCompat: true }).bytecode;
     const bare = compileString(`contract C() { enum Dir { Left, Right }
       function f(int e) { Dir d = Dir.Right; require(int(d) == e); }
-    }`, { solidityImportCompat: true }).bytecode;
+    }`, { evmCompat: true }).bytecode;
     expect(qualified).toBe(bare);
   });
 
@@ -147,16 +147,16 @@ describe('library-namespaced member access', () => {
   it('L.f({named}) matches the positional call and reorders args', () => {
     const named = compileString(`${mathLib}contract C() {
       function f(uint256 e) { require(M.sub({y: 2, x: 9}) == e); }
-    }`, { solidityImportCompat: true }).bytecode;
+    }`, { evmCompat: true }).bytecode;
     const positional = compileString(`${mathLib}contract C() {
       function f(uint256 e) { require(M.sub(9, 2) == e); }
-    }`, { solidityImportCompat: true }).bytecode;
+    }`, { evmCompat: true }).bytecode;
     expect(named).toBe(positional);
   });
 });
 
 describe('contract-qualified constant access (C.X / Base.X)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves a self-qualified constant C.X', () => {
     expect(cc('contract C { uint256 constant X = 5;'
       + ' function f() external pure returns (uint256) { return C.X; } }')).toBe('C');
@@ -173,7 +173,7 @@ describe('contract-qualified constant access (C.X / Base.X)', () => {
 });
 
 describe('contract/interface-qualified type access (C.T / I.Enum)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves an interface-qualified enum member (I.Dir.Right)', () => {
     expect(cc('interface I { enum Dir { Left, Right } }'
       + ' contract C is I { function f() external pure returns (uint256) { return uint256(I.Dir.Right); } }')).toBe('C');
@@ -189,7 +189,7 @@ describe('contract/interface-qualified type access (C.T / I.Enum)', () => {
 });
 
 describe('contract-qualified UDVT wrap/unwrap (C.T.wrap / C.T.unwrap)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves C.T.unwrap(C.T.wrap(x)) as identity casts', () => {
     expect(cc('contract C { type T is bool;'
       + ' function f() external pure returns (bool) { return C.T.unwrap(C.T.wrap(true)); } }')).toBe('C');
@@ -220,12 +220,12 @@ describe('prune an UNREACHABLE storage-pointer library (OZ EnumerableSet importe
     const resolver = (p: string): { source: string; id: string } | undefined => (
       p === './ES.sol' ? { source: `pragma solidity ^0.8.0;${es}`, id: '/ES.sol' } : undefined);
     expect(() => compileString('import "./ES.sol"; contract C { uint256 x; function f() public { x = 1; } }',
-      { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true })).not.toThrow();
+      { importResolver: resolver, rootFileId: '/main.sol', evmCompat: true })).not.toThrow();
   });
 });
 
 describe('using-for directive inside an interface body (SushiSwap IRewarder, valid Solidity 0.6.x)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts `using L for T;` inside an interface (a no-op there - no bodies to bind)', () => {
     expect(cc('library L { function f(uint256 a) internal pure returns (uint256) { return a; } }'
       + ' interface IFoo { using L for uint256; function g() external; }'
@@ -234,7 +234,7 @@ describe('using-for directive inside an interface body (SushiSwap IRewarder, val
 });
 
 describe('using-for on a NESTED mapping element receiver (SushiSwap/OZ ERC20 allowances)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const lib = 'library SM { function sub(uint256 a, uint256 b) internal pure returns (uint256) { return a - b; }'
     + ' function add(uint256 a, uint256 b) internal pure returns (uint256) { return a + b; } }';
   it('resolves `allo[x][y].sub(v)` (a 2-key mapping element) through `using SM for uint256`', () => {
@@ -255,7 +255,7 @@ describe('using-for on a NESTED mapping element receiver (SushiSwap/OZ ERC20 all
 });
 
 describe('using-for on non-struct receiver types (address / string / contract)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves x.method() for `using L for address`', () => {
     expect(cc('library L { function foo(address a) internal pure returns (address) { return a; } }'
       + ' contract C { using L for address;'
@@ -287,12 +287,12 @@ describe('free function shadowed by a same-name contract function (compat)', () 
     expect(compileString('function f() pure returns (uint256) { return 1; }'
       + ' contract C { function f() public pure returns (uint256) { return 2; }'
       + ' function g() external pure returns (uint256) { return f(); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
   it('still rejects two free functions with the same signature', () => {
     expect(() => compileString('function f() pure returns (uint256) { return 1; }'
       + ' function f() pure returns (uint256) { return 2; } contract C { function g() external pure {} }',
-    { solidityImportCompat: true })).toThrow(/Redefinition of function/);
+    { evmCompat: true })).toThrow(/Redefinition of function/);
   });
 });
 
@@ -300,12 +300,12 @@ describe('library/contract-qualified enum cast (L.E(x) / Contract.E(x))', () => 
   it('resolves L.E(x) as an int -> enum cast', () => {
     expect(compileString('library L { enum E { A, B } }'
       + ' contract C { function f(uint256 c) external pure returns (uint256) { return uint256(L.E(c)); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('library-namespaced constant in a constant initializer (D = L.INT)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves L.CONST in a plain and arithmetic constant initializer', () => {
     expect(cc('library L2 { uint256 constant INT = 5; }'
       + ' contract C { uint256 constant D = L2.INT; function f() external pure returns (uint256) { return D; } }')).toBe('C');
@@ -315,7 +315,7 @@ describe('library-namespaced constant in a constant initializer (D = L.INT)', ()
 });
 
 describe('state and library declaration capabilities', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('rejects external visibility on scalar, mapping, and array state variables', () => {
     for (const declaration of ['uint external x', 'mapping(uint => uint) external x', 'uint[] external x']) {
@@ -335,7 +335,7 @@ describe('state and library declaration capabilities', () => {
 });
 
 describe('chained getter returning a contract + using-for on computed receivers', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const MATH = 'library Math { function mul(uint a, uint b) internal pure returns (uint) { return a * b; }'
     + ' function add(uint a, uint b) internal pure returns (uint) { return a + b; }'
     + ' function mul(int a, int b) internal pure returns (int) { return a * b; } }\n';
@@ -371,14 +371,14 @@ describe('qualified interface enum references', () => {
       + ' function f() public pure returns (I.Direction) { return I.Direction.B; } }'
       + ' contract C is I { function f() public pure returns (Direction) { return Direction.B; }'
       + ' function g() public pure returns (I.Direction) { return I.Direction.B; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('resolves an interface-qualified enum inside a reachable library helper', () => {
     expect(compileString('interface I { enum Direction { A, B } } library L {'
       + ' function g() public pure returns (I.Direction) { return I.Direction.B; } }'
       + ' contract C { function f() public pure returns (I.Direction) { return L.g(); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -387,7 +387,7 @@ describe('inline deploy receiver in a file-level free function', () => {
     const src = 'contract Child { uint public x = 2; }'
       + ' function readFresh() returns (uint) { return (new Child()).x(); }'
       + ' contract C { function f() public returns (uint) { return readFresh(); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -401,19 +401,19 @@ describe('early return inside an `unchecked` block in a LIBRARY function (OZ Mat
     + ' contract C { using Math for uint256; function f(uint256 x, uint256 y) public pure returns (uint256) {'
     + ' (bool ok, uint256 r) = Math.tryAdd(x, y); require(ok); return r; } }';
   it('compiles a called library tryAdd with an unchecked early return', () => {
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
   it('compiles when tryAdd is DEAD (uncalled) too', () => {
     const dead = 'library Math { function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {'
       + ' unchecked { uint256 c = a + b; if (c < a) return (false, 0); return (true, c); } } }'
       + ' contract C { function f(uint256 x) public pure returns (uint256) { return x; } }';
-    expect(() => compileString(dead, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(dead, { evmCompat: true })).not.toThrow();
   });
 });
 
 describe('interface-cast using-for + resolved-back-edge recursion robustness (OZ SafeERC20 shape)', () => {
   const ok = (src: string): void => {
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   };
   const lib = 'interface IERC20 { function transfer(address to, uint256 v) external returns (bool); }'
     + ' library SafeERC20 { function safeTransfer(IERC20 token, address to, uint256 v) internal {'
@@ -442,7 +442,7 @@ describe('interface-cast using-for + resolved-back-edge recursion robustness (OZ
       + ' contract C { using SafeERC20 for IERC20;'
       + ' function f(address x, address to, uint256 v, uint256 n) public {'
       + ' for (uint256 i = 0; i < n; i++) { IERC20(x).safeTransfer(to, v); } } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow(/Maximum call stack/);
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow(/Maximum call stack/);
   });
 });
 
@@ -454,7 +454,7 @@ describe('using-for on an interface-typed struct-field / state-var receiver (not
   const lib = 'interface IERC20 { function balanceOf(address a) external view returns (uint256); }'
     + ' library L { function tag(IERC20 t) internal pure returns (uint256) { return 7; } }';
   const ok = (src: string): void => {
-    expect(() => compileString(`pragma solidity ^0.8.0; ${lib} ${src}`, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(`pragma solidity ^0.8.0; ${lib} ${src}`, { evmCompat: true })).not.toThrow();
   };
   it('resolves a pure library method on an interface-typed struct field', () => {
     ok('contract C { struct Pool { IERC20 lpToken; uint256 x; } Pool[] poolInfo; using L for IERC20; uint256 s;'
@@ -467,7 +467,7 @@ describe('using-for on an interface-typed struct-field / state-var receiver (not
 });
 
 describe('chained overloaded using-for + interface-local-var dispatch (MistSwap SafeMath/SafeERC20)', () => {
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
   const ok = (src: string): void => {
     expect(() => compileString(`pragma solidity ^0.8.0; ${src}`, opts)).not.toThrow();
   };
@@ -608,7 +608,7 @@ describe('using-for external-call library method on an interface-typed state var
     + ' library SafeERC20 { function safeTransfer(IERC20 token, address to, uint256 v) internal {'
     + ' require(token.transfer(to, v), "f"); } }';
   const ok = (src: string): void => {
-    expect(() => compileString(`pragma solidity ^0.8.0; ${lib} ${src}`, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(`pragma solidity ^0.8.0; ${lib} ${src}`, { evmCompat: true })).not.toThrow();
   };
   it('compiles token.safeTransfer(..) on an interface state var', () => {
     ok('contract C { IERC20 tok; using SafeERC20 for IERC20;'
@@ -631,7 +631,7 @@ describe('using-for external-call library method on an interface-typed struct FI
   const ok = (body: string): void => {
     expect(() => compileString(`pragma solidity ^0.8.0; ${lib} contract C { struct Pool { IERC20 lpToken; uint256 x; }`
       + ' Pool[] poolInfo; using SafeERC20 for IERC20; uint256 s; function f(uint256 pid, address to, uint256 v)'
-      + ` public { Pool storage pool = poolInfo[pid]; ${body} } }`, { solidityImportCompat: true })).not.toThrow();
+      + ` public { Pool storage pool = poolInfo[pid]; ${body} } }`, { evmCompat: true })).not.toThrow();
   };
   it('compiles safeTransfer on an interface-typed struct field', () => ok('pool.lpToken.safeTransfer(to, v);'));
   it('mixes a using-for external-call method and a genuine interface method on the same field', () => {
@@ -645,7 +645,7 @@ describe('library sibling constant inside an inlined low-level call (BoringERC20
   // (`t.call(abi.encodeWithSelector(SIG, ..))`) is registered qualified (`L.SIG`). The helper is inlined into the
   // consumer before semantic analysis, losing the library context - so the ref must be qualified up front (mirrors
   // the sibling-call qualification). Direct use / encodeWithSelector-only already worked; the low-level call did not.
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
   const lib = 'library L { bytes4 private constant SIG = 0x23b872dd;'
     + ' function f(address t) internal returns (bytes memory) {'
     + ' (bool ok, bytes memory d) = t.call(abi.encodeWithSelector(SIG, t)); return d; } }';
@@ -663,7 +663,7 @@ describe('library sibling constant inside an inlined low-level call (BoringERC20
 });
 
 describe('MasterChefV2 semantic walls (struct scoping + using-for receiver resolution)', () => {
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
   it('a contract struct shadows a same-named interface struct (distinct contract-scoped types)', () => {
     // IMasterChef.UserInfo{uint256 rewardDebt} vs MasterChefV2.UserInfo{int256 rewardDebt} - distinct types that
     // must not collide in the global structMap. The contract's wins the bare name; the interface's stays qualified.
@@ -692,7 +692,7 @@ describe('RETURNING storage-pointer library fn on a mapping element (BentoBox ad
   // machinery, so the mutation persists AND the return value is captured - in statement position (discarded) and
   // expression position (return used). Was: "Undefined reference to symbol <param>" (grabbed by the read-oriented
   // eligibleStructPtr inline that left the write's param dangling).
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true, forceStateful: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true, forceStateful: true }).contractName;
   const LIB = 'struct T { int base; int elastic; }'
     + ' library L { function addElastic(T storage t, int e) returns (int newElastic) { newElastic = t.elastic = t.elastic + e; } }';
   it('statement position: L.addElastic(this.m[k], e) - return discarded', () => {
@@ -718,7 +718,7 @@ describe('overloaded returning-helper inline disambiguated by return arity (Kash
   // A using-for method call in the bodies marks them for inline; the ambiguous inline is disambiguated by RETURN
   // ARITY at the call site (a 1-value assign -> the 1-return overload, a tuple -> the K-return one) rather than
   // failing "Cannot inline call ... multiple N-argument overloads". Advances KashiPairMediumRiskV1 past this wall.
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true, forceStateful: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true, forceStateful: true }).contractName;
   const LIB = 'struct R { int e; int b; }'
     + ' library M { function id(int a) internal pure returns (int) { return a; } }'
     + ' library L { using M for int;'
@@ -741,14 +741,14 @@ describe('nested library helpers that perform external calls', () => {
     expect(compileString(iface
       + ' library L { function inner(I t) internal { t.ping(); }'
       + ' function outer(I t) internal { inner(t); } }'
-      + consumer, { solidityImportCompat: true }).contractName).toBe('C');
+      + consumer, { evmCompat: true }).contractName).toBe('C');
   });
 
   it('inlines a cross-library external-call helper in the retained wrapper body', () => {
     expect(compileString(iface
       + ' library M { function inner(I t) internal { t.ping(); } }'
       + ' library L { function outer(I t) internal { M.inner(t); } }'
-      + consumer, { solidityImportCompat: true }).contractName).toBe('C');
+      + consumer, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -758,7 +758,7 @@ describe('parenthesized using-for calls with named arguments', () => {
       + ' function mul(S storage self, uint x) public returns (uint) { return self.a *= x; } }'
       + ' contract C { using D for D.S; D.S public x;'
       + ' function f(uint a) public returns (uint) { x.a = 6; return (x.mul)({x: a}); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -772,7 +772,7 @@ describe('experimental standard-library imports', () => {
       'import { identity as id, other } from std.stub;',
     ]) {
       expect(() => compileString(`pragma experimental solidity; ${directive}`,
-        { solidityImportCompat: true })).not.toThrow();
+        { evmCompat: true })).not.toThrow();
     }
   });
 });
@@ -782,7 +782,7 @@ describe('statement-form using-for library calls', () => {
     expect(compileString('library L { function e(uint x) external pure {}'
       + ' function p(uint x) public pure {} function i(uint x) internal pure {} }'
       + ' using L for uint; contract C { function f() public pure { uint x; x.e(); x.p(); x.i(); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -793,7 +793,7 @@ describe('using-for method named selector on function values', () => {
       + ' contract C { using L for function(uint256) internal pure returns (uint256);'
       + ' function identity(uint256 x) internal pure returns (uint256) { return x; }'
       + ' function test(uint256 x) public pure returns (uint256) { return identity.selector(x); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -804,7 +804,7 @@ describe('using-for on an external self-function value', () => {
       + ' contract C { using L for function(uint256) external pure returns (uint256);'
       + ' function identity(uint256 x) external pure returns (uint256) { return x; }'
       + ' function test(uint256 x) public returns (uint256) { return this.identity.double(x); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   it('does not guess an overloaded function receiver', () => {
@@ -812,7 +812,7 @@ describe('using-for on an external self-function value', () => {
       + ' contract C { using L for function(uint256) external;'
       + ' function f(uint256) external {} function f(bytes32) external {}'
       + ' function test() public { this.f.tag(); } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).toThrow();
+    expect(() => compileString(src, { evmCompat: true })).toThrow();
   });
 });
 
@@ -820,7 +820,7 @@ describe('discarded contract-qualified function references', () => {
   it('accepts an external function literally named selector with and without metadata access', () => {
     expect(compileString('contract C { constructor() { C.selector.selector; C.selector; }'
       + ' function selector() external pure returns (uint256) { return 3; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -829,13 +829,13 @@ describe('contract-qualified internal function-pointer state variables', () => {
     expect(compileString('contract C { function() returns (uint256) internal x;'
       + ' function set() public { C.x = g; } function g() public pure returns (uint256) { return 2; }'
       + ' function get() public returns (uint256) { return C.x(); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('library names as array element types', () => {
   it('rejects library arrays and metatype indexing while retaining contract arrays', () => {
-    const compat = { solidityImportCompat: true };
+    const compat = { evmCompat: true };
     expect(() => compileString('library L {} contract C { function f() public { L[] memory x; } }', compat))
       .toThrow(/Invalid use of library name/);
     expect(() => compileString('library L {} contract C { function f() public { new L[](2); } }', compat))
@@ -851,7 +851,7 @@ describe('discarded using-for function values', () => {
   it('accepts a uniquely attached library member without calling it', () => {
     expect(compileString('library L { function twice(uint x) public pure returns (uint) { return x * 2; } }'
       + ' contract C { using L for uint; function f(uint x) public pure { x.twice; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('does not guess among overloaded attached members', () => {
@@ -859,7 +859,7 @@ describe('discarded using-for function values', () => {
       + ' function f(uint x) public pure returns (uint) { return x; }'
       + ' function f(uint x, uint y) public pure returns (uint) { return x + y; } }'
       + ' contract C { using L for uint; function g(uint x) public pure { x.f; } }',
-    { solidityImportCompat: true })).toThrow();
+    { evmCompat: true })).toThrow();
   });
 });
 
@@ -870,7 +870,7 @@ describe('fixed-array using-for methods named like array builtins', () => {
       + ' function pop(uint[2] memory a) internal {} }'
       + ' contract C { using L for uint[2]; function f() public {'
       + ' uint[2] memory input; input.push(); input.pop(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -881,7 +881,7 @@ describe('imported enum declaration types', () => {
       'import "./Enums.sol"; contract C { function f(Color c) public pure returns (Color) {'
       + ' Color local = Color.Red; return c == local ? Color.Green : c; } }',
       {
-        solidityImportCompat: true,
+        evmCompat: true,
         importResolver: (path) => path === './Enums.sol'
           ? { source: 'enum Color { Red, Green }', id: '/Enums.sol' }
           : undefined,
@@ -895,13 +895,13 @@ describe('discarded library values', () => {
   it('accepts a library namespace and unique member as no-effect statements', () => {
     expect(compileString('library L { function f(uint x) public pure returns (uint) { return x; } }'
       + ' contract C { function g() public pure { L; L.f; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('does not discard an unknown library member', () => {
     expect(() => compileString('library L { function f() public pure {} }'
       + ' contract C { function g() public pure { L.missing; } }',
-    { solidityImportCompat: true })).toThrow();
+    { evmCompat: true })).toThrow();
   });
 });
 
@@ -909,17 +909,17 @@ describe('own-contract-qualified state arrays', () => {
   it('treats C.a push/pop/index/length exactly like bare state access', () => {
     const qualified = compileString('contract C { uint[] a; function f() public {'
       + ' C.a.push(2); require(C.a[C.a.length - 1] == 2); C.a.pop(); require(C.a.length == 0); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     const bare = compileString('contract C { uint[] a; function f() public {'
       + ' a.push(2); require(a[a.length - 1] == 2); a.pop(); require(a.length == 0); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(qualified.bytecode).toBe(bare.bytecode);
   });
 });
 
 describe('using-for attachment declaration validation', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('requires explicit file-level and specific-function target types', () => {
     expect(() => cc('library L {} using L for *; contract C {}'))
@@ -952,7 +952,7 @@ describe('using-for attachment declaration validation', () => {
 
 describe('Solidity using-for declaration eligibility', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('requires a source-local using name to denote a declared library', () => {
     expect(() => cc('using Missing for uint; contract C {}'))
@@ -967,7 +967,7 @@ describe('Solidity using-for declaration eligibility', () => {
     expect(() => cc('library L {} contract C { using L for L; }'))
       .toThrow(/Invalid use of a library name/);
     expect(compileString('library L {} interface I { using L for uint; function g(); }', {
-      solidityImportCompat: false,
+      evmCompat: false,
     }).contractName).toBeTruthy();
   });
 
@@ -1000,7 +1000,7 @@ describe('sibling-contract-qualified enums', () => {
   it('resolves the qualified enum type and member from another contract in the source unit', () => {
     const artifacts = compileStringMulti('contract Types { enum Status { One, Two } }'
       + ' contract C { function f() public pure returns (Types.Status) { return Types.Status.Two; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(artifacts.C.contractName).toBe('C');
   });
 });
@@ -1009,7 +1009,7 @@ describe('current-contract-qualified state deletion', () => {
   it('routes delete C.x through the same state reset as delete this.x', () => {
     const bc = (statement: string): string => compileString(
       `contract C { uint x; function f() public { ${statement} } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).bytecode;
     expect(bc('delete C.x;')).toBe(bc('delete this.x;'));
   });
@@ -1027,7 +1027,7 @@ describe('library storage pointers to mappings with typed keys', () => {
       + ' contract C { mapping(I => uint8) im; mapping(E => uint8) em;'
       + ' function f(I ik, E ek, uint8 v) public { L.setI(im, ik, v); L.setE(em, ek, v);'
       + ' require(L.getI(im, ik) == v && L.getE(em, ek) == v); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1039,7 +1039,7 @@ describe('flattened library struct pointers bound to mapping entries', () => {
       + ' s.a = 7; while (s.b.length < 4) s.b.push(); s.b[3] = 8; } }'
       + ' contract C { mapping(string => L.S) data; function f() public { L.set(data["abc"]);'
       + ' require(data["abc"].a == 7 && data["abc"].b[3] == 8); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1049,7 +1049,7 @@ describe('global using-for target types', () => {
     expect(compileString(
       'type T is uint; function f(T x) pure returns (T) { return x; } using {f} for T global;'
       + ' contract C { function g(T x) public pure returns (T) { return x.f(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -1062,7 +1062,7 @@ describe('global using-for target types', () => {
       'using {f} for * global; function f(uint x) pure returns (uint) { return x; } contract C {}',
     ];
     for (const source of sources) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/Can only use ["']global["'] with user-defined value types/);
     }
   });
@@ -1073,7 +1073,7 @@ describe('calldata locations on attached library functions', () => {
     expect(() => compileString(
       'library D { function f(bytes calldata) internal pure {} }'
         + ' contract C { using D for bytes; function f(bytes memory x) public pure { x.f(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/cannot pass memory reference to calldata parameter/);
   });
 
@@ -1082,7 +1082,7 @@ describe('calldata locations on attached library functions', () => {
       'library D { function f(bytes calldata) internal pure {}'
         + ' function g(bytes memory) internal pure {} }'
         + ' contract C { using D for bytes; function f(bytes calldata x) external pure { x.f(); x.g(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1102,7 +1102,7 @@ describe('source-unit declaration namespace', () => {
       'event E(uint); error E(uint);',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/Identifier .* is already declared/);
     }
   });
@@ -1112,7 +1112,7 @@ describe('source-unit declaration namespace', () => {
       'event E(uint); event E(bytes32);'
       + ' function f(uint x) pure returns (uint) { return x; }'
       + ' function f(bytes32 x) pure returns (bytes32) { return x; } contract C {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1129,7 +1129,7 @@ describe('contract-local declaration namespace', () => {
       'contract C { enum E { A, B, A } }',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/Identifier .* is already declared/);
     }
   });
@@ -1138,7 +1138,7 @@ describe('contract-local declaration namespace', () => {
     expect(compileString(
       'contract C { event E(uint); event E(bytes32);'
       + ' function f(uint) public {} function f(bytes32) public {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1154,7 +1154,7 @@ describe('explicit using-for function references', () => {
       + ' function f(bytes32 x) pure returns (bytes32) { return x; } using {f} for uint;',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/not a function name or not unique/);
     }
   });
@@ -1165,7 +1165,7 @@ describe('explicit using-for function references', () => {
       + ' library L { function inc(uint x) internal pure returns (uint) { return x + 1; } }'
       + ' using {twice, L.inc} for uint; contract C {'
       + ' function f(uint x) public pure returns (uint) { return x.twice().inc(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1176,7 +1176,7 @@ describe('function declarations shadow contract namespaces', () => {
       'contract A { function f() public {} }'
       + ' contract B is A { function A() public pure returns (uint8) {}'
       + ' function g() public { A.f(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Undefined reference to symbol A\.f/);
   });
 
@@ -1184,7 +1184,7 @@ describe('function declarations shadow contract namespaces', () => {
     expect(compileString(
       'contract A { function f() public {} }'
       + ' contract B is A { function g() public { A.f(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('B');
   });
 });
@@ -1198,7 +1198,7 @@ describe('library self-external calls through using-for', () => {
         + ' library L2 { using L1 for *;'
         + ' function f() public pure returns (uint r) { return r.g(); }'
         + ' function g(uint) public pure returns (uint) { return 2; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Library cannot call its own function 'L1\.g' externally/);
   });
 
@@ -1209,7 +1209,7 @@ describe('library self-external calls through using-for', () => {
         + ' function g(uint) internal pure returns (uint) { return 2; } }'
         + ' library L2 { using L1 for *;'
         + ' function f() public pure returns (uint r) { return r.g(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('L2');
   });
 });

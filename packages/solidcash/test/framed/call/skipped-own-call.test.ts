@@ -32,7 +32,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
 
 describe('an entry whose own argument guards a call away, on the plain call path', () => {
   it('settles the calls each argument makes, one record per call the execution made', async () => {
-    const compiled = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+    const compiled = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
     const artifacts: Readonly<Record<string, Artifact>> = { A: compiled.A!, B: compiled.B! };
     const { framedValidator } = await import('solidc');
     const validatorProgram = framedValidator.buildValidatorProgram();

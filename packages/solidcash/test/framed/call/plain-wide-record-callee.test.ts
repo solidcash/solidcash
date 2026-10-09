@@ -72,7 +72,7 @@ const SOURCE = [
 ].join('\n');
 
 const artifacts = compileStringMulti(SOURCE, {
-  solidityImportCompat: true, composition: 'framed', commitmentLimit: 10_000_000, maximumInputBytes: 10_000_000,
+  evmCompat: true, composition: 'framed', commitmentLimit: 10_000_000, maximumInputBytes: 10_000_000,
 } as never);
 
 /** The contract-shaped addresses the board's constructor stores beside the log's, each a distinct P2SH32 lock. */

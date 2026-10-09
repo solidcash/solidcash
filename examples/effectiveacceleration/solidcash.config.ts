@@ -5,7 +5,7 @@ export default defineConfig({
   // historical fixture material; it is not part of the canonical compile or test path.
   paths: { contracts: 'contracts', artifacts: 'artifacts', tests: 'test' },
   solc: {
-    solidityImportCompat: true,
+    evmCompat: true,
     // Keep the production state-partitioning layout while the mock VM relaxes execution ceilings.
     commitmentLimit: 128,
     maximumInputBytes: 10_000_000,

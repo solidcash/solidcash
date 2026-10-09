@@ -39,7 +39,7 @@ describe('overloaded returning-helper inline disambiguated by return arity (Kash
   const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
 
   const deploy = async (): Promise<{ c: Record<string, (...a: unknown[]) => { send: () => Promise<{ txid: string }> }>; fund: () => Promise<void> }> => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);

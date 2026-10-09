@@ -24,7 +24,7 @@ describe('empty-calldata raw value transfers', () => {
       const failures: unknown[] = [];
       const artifact = compileString(SOURCE, {
         forceStateful: true,
-        solidityImportCompat: true,
+        evmCompat: true,
         messageBus: true,
         messageBusKernel,
         messageBusGraphContext: true,

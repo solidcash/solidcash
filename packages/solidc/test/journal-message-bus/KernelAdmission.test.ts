@@ -122,7 +122,7 @@ describe('required kernel admission', () => {
         }
         function control() public { require(true); }
       }
-    `, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    `, { ...KERNEL, evmCompat: true, maximumInputBytes: 1_000_000 });
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'setFields');
     const abi = artifact.abi.find((candidate) => candidate.name === 'setFields');
     const collection = artifact.stateLayout?.collections?.find((candidate) => candidate.name === 'records');
@@ -190,7 +190,7 @@ describe('required kernel admission', () => {
         }
         function control() public { require(true); }
       }
-    `, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    `, { ...KERNEL, evmCompat: true, maximumInputBytes: 1_000_000 });
     const abi = artifact.abi.find((candidate) => candidate.name === 'appendEntry');
     expect(abi?.sourceEffectOrder).toBe('unsupported-flow');
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendEntry'))
@@ -390,7 +390,7 @@ describe('required kernel admission', () => {
       }`;
     const options = {
       ...KERNEL,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBusGraphContext: true,
       suppressWarnings: true,
       maximumInputBytes: 10_000_000,
@@ -448,7 +448,7 @@ describe('required kernel admission', () => {
         }
       }`, {
       ...KERNEL,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBusGraphContext: true,
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,
@@ -695,7 +695,7 @@ describe('required kernel admission', () => {
       Rec public current;
       Rec[] records;
       function all() public view returns (Rec[]) { return this.records; }
-    }`, { ...KERNEL, solidityImportCompat: true });
+    }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'current'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'all'))
@@ -718,7 +718,7 @@ describe('required kernel admission', () => {
         }
         function read() public view returns (Rec memory) { return record; }
       }
-    `, { ...KERNEL, solidityImportCompat: true });
+    `, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'mutate'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'read'))
@@ -941,7 +941,7 @@ describe('required kernel admission', () => {
         require(true);
       }
       function control() public { require(true); }
-    }`, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    }`, { ...KERNEL, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
@@ -957,7 +957,7 @@ describe('required kernel admission', () => {
         }
         function control() public { require(true); }
       }
-    `, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    `, { ...KERNEL, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate'))
       .toMatchObject({ eligible: true });
   });
@@ -1670,7 +1670,7 @@ describe('required kernel admission', () => {
         function current() public view returns (uint) { return block.number; }
       }
     `, {
-      ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000,
+      ...KERNEL, evmCompat: true, maximumInputBytes: 1_000_000,
     });
     const updater = artifact.messageBus?.handlers.find((handler) =>
       handler.name === '__updateBlockOracle');
@@ -3409,7 +3409,7 @@ describe('required kernel admission', () => {
           require(true);
         }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set')).toMatchObject({
       eligible: true,
     });
@@ -3424,7 +3424,7 @@ describe('required kernel admission', () => {
           require(true);
         }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fire')).toMatchObject({
       eligible: true,
     });
@@ -7633,7 +7633,7 @@ describe('required kernel admission', () => {
         Status public last;
         function denied() public { last = Status.B; require(true); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'last')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
@@ -7645,7 +7645,7 @@ describe('required kernel admission', () => {
         contract C {
           function echo(${type} value) public pure returns (${type}) { return value; }
           function control() public { require(true); }
-        }`, { ...KERNEL, solidityImportCompat: true });
+        }`, { ...KERNEL, evmCompat: true });
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echo'))
         .toMatchObject({ eligible: true });
     },
@@ -7659,7 +7659,7 @@ describe('required kernel admission', () => {
           public pure returns (fixed128x18[] memory) { return values; }
         function echoQuote(Quote calldata value) public pure returns (Quote memory) { return value; }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echoArray'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echoQuote'))
@@ -7722,7 +7722,7 @@ describe('required kernel admission', () => {
         Rec[] records;
         function denied() public view returns (Rec[] memory) { return records; }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
       .toMatchObject({ eligible: true, outputs: [{ type: 'Rec[]' }] });
     expect(artifact.abi.find((handler) => handler.name === 'denied')?.dynamicReads).toEqual(['records']);
@@ -7741,7 +7741,7 @@ describe('required kernel admission', () => {
           return values;
         }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
@@ -7751,7 +7751,7 @@ describe('required kernel admission', () => {
       contract C {
         function denied(address payable to) public { to.transfer(1); require(true); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: true,
       transfers: [{
@@ -7768,7 +7768,7 @@ describe('required kernel admission', () => {
       contract C {
         function denied(address payable to) public { require(to.send(1)); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: true,
       transfers: [{
@@ -7814,7 +7814,7 @@ describe('required kernel admission', () => {
           if (useSend) require(to.send(amount)); else to.transfer(amount);
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')?.eligible).toBe(true);
     expect(artifact.abi.find((handler) => handler.name === 'pay')?.transfers).toEqual([
       expect.objectContaining({
@@ -8394,7 +8394,7 @@ describe('required kernel admission', () => {
         function _pay(address payable sink) internal { sink.transfer(1); }
         function denied(address payable beneficiary) public { _pay(beneficiary); require(true); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: true,
       transfers: [{
@@ -8427,7 +8427,7 @@ describe('required kernel admission', () => {
         address dest;
         function denied(Rec[] memory xs) public { I(dest).r(xs); require(true); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
 
@@ -8442,7 +8442,7 @@ describe('required kernel admission', () => {
         address token;
         function denied(address to, uint amt) public { IERC20(token).send(to, amt); require(true); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
 
@@ -8472,7 +8472,7 @@ describe('required kernel admission', () => {
         using Address for address payable;
         function denied(address payable to) public { to.sendValue(uint(1)); require(true); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: true,
       transfers: [{
@@ -8491,7 +8491,7 @@ describe('required kernel admission', () => {
       contract C {
         function denied(address payable to, uint amt) public { Address.sendValue(to, amt); require(true); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
@@ -8994,7 +8994,7 @@ describe('required kernel admission', () => {
         mapping(bytes4 => uint) hits;
         fallback() external { hits[msg.sig] = 1; I(dest).r(); require(true); }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === '__fallback')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
@@ -10181,7 +10181,7 @@ describe('required kernel admission', () => {
           }
           require(true);
         }
-      }`, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+      }`, { ...KERNEL, evmCompat: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'around'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'inside'))

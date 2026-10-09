@@ -20,7 +20,7 @@ import AstTraversal from '../ast/AstTraversal.js';
  * Empty-body VOID function (e.g. `receive() external payable {}`, an empty payable `deposit()`, an empty internal
  * hook): Solidity accepts the call and does nothing. Synthesize `require(true);` so it compiles - a
  * state-preserving no-op spend path (with a warning). Constructors may stay empty (parent-only) and abstract
- * functions have no body, so both are excluded. (Default; was gated behind solidityImportCompat, except empty
+ * functions have no body, so both are excluded. (Default; was gated behind evmCompat, except empty
  * receive/fallback which were always synthesized.) Returns whether the body was synthesized.
  */
 export function synthesizeEmptyVoidBody(node: FunctionDefinitionNode): boolean {
@@ -119,7 +119,7 @@ export default class NamedReturnTransformation extends AstTraversal {
     // Function with (unnamed) return types that does not already end in a return: return the type defaults on
     // fall-through (Solidity semantics; whether the body is empty or just assigns state). Synthesize a trailing
     // `return <defaults>;` so it compiles - matches the named-return handling below. (Default; was gated behind
-    // solidityImportCompat.)
+    // evmCompat.)
     if (node.body && node.returnTypes.length > 0 && node.returnNames.length === 0) {
       // Only synthesize a fall-through default return when the body does NOT already return on every path. A
       // terminal if/else (or switch) whose branches all return needs no default - and the synthesized

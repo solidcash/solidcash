@@ -64,7 +64,7 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       expect(() => compileString(`
         contract C() {
           function f(address impl) { uint r; assembly { r := ${mode}(${nargs}) } require(r == r); }
-        }`, { solidityImportCompat: true })).not.toThrow();
+        }`, { evmCompat: true })).not.toThrow();
     }
   });
 
@@ -75,7 +75,7 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
           uint ok;
           assembly { ok := call(0, a, 0, 0, 0, 0, 0) s := returndatasize() returndatacopy(0, 0, s) }
         }
-      }`, { solidityImportCompat: true })).not.toThrow();
+      }`, { evmCompat: true })).not.toThrow();
   });
 
   it('returndatacopy then mload reads the copied return data (proper copy, not a rejected no-op)', () => {
@@ -92,7 +92,7 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
             r := mload(0)
           }
         }
-      }`, { solidityImportCompat: true })).not.toThrow();
+      }`, { evmCompat: true })).not.toThrow();
   });
 
   it('compiles calldataload/calldatasize against function parameters', () => {
@@ -144,15 +144,15 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       ['chainid()', 'block.chainid'], ['gaslimit()', 'block.gaslimit'], ['gasprice()', 'tx.gasprice'],
     ];
     for (const [yul, sol] of intPairs) {
-      expect(compileString(asm(yul), { solidityImportCompat: true }).bytecode)
-        .toBe(compileString(bare(sol), { solidityImportCompat: true }).bytecode);
+      expect(compileString(asm(yul), { evmCompat: true }).bytecode)
+        .toBe(compileString(bare(sol), { evmCompat: true }).bytecode);
     }
-    expect(compileString(asm('caller()'), { solidityImportCompat: true }).bytecode)
-      .toBe(compileString(bare('uint256(msg.sender)'), { solidityImportCompat: true }).bytecode);
-    expect(compileString(asm('coinbase()'), { solidityImportCompat: true }).bytecode)
-      .toBe(compileString(bare('uint256(block.coinbase)'), { solidityImportCompat: true }).bytecode);
-    expect(compileString(asm('blockhash(1)'), { solidityImportCompat: true }).bytecode)
-      .toBe(compileString(bare('uint256(blockhash(1))'), { solidityImportCompat: true }).bytecode);
+    expect(compileString(asm('caller()'), { evmCompat: true }).bytecode)
+      .toBe(compileString(bare('uint256(msg.sender)'), { evmCompat: true }).bytecode);
+    expect(compileString(asm('coinbase()'), { evmCompat: true }).bytecode)
+      .toBe(compileString(bare('uint256(block.coinbase)'), { evmCompat: true }).bytecode);
+    expect(compileString(asm('blockhash(1)'), { evmCompat: true }).bytecode)
+      .toBe(compileString(bare('uint256(blockhash(1))'), { evmCompat: true }).bytecode);
   });
 
   it('lowers gas/codesize/selfbalance to gasleft()/activeBytecode.length/address(this).balance', () => {
@@ -166,8 +166,8 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       ['selfbalance()', 'uint256(address(this).balance)'],
     ];
     for (const [yul, sol] of pairs) {
-      expect(compileString(asm(yul), { solidityImportCompat: true }).bytecode)
-        .toBe(compileString(bare(sol), { solidityImportCompat: true }).bytecode);
+      expect(compileString(asm(yul), { evmCompat: true }).bytecode)
+        .toBe(compileString(bare(sol), { evmCompat: true }).bytecode);
     }
   });
 
@@ -182,90 +182,90 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       ['address()', 'uint256(address(this))'],
     ];
     for (const [yul, sol] of pairs) {
-      expect(compileString(asm(yul), { solidityImportCompat: true }).bytecode)
-        .toBe(compileString(bare(sol), { solidityImportCompat: true }).bytecode);
+      expect(compileString(asm(yul), { evmCompat: true }).bytecode)
+        .toBe(compileString(bare(sol), { evmCompat: true }).bytecode);
     }
   });
 
   it('lowers addmod/mulmod to the solidc builtins and pop to a discard/effect', () => {
     const asm = compileString('contract C() { function f(uint a, uint b, uint n) { uint r;'
-      + ' assembly { r := addmod(a, b, n) } require(r == r); } }', { solidityImportCompat: true });
+      + ' assembly { r := addmod(a, b, n) } require(r == r); } }', { evmCompat: true });
     const hand = compileString('contract C() { function f(uint a, uint b, uint n) { uint r;'
-      + ' r = addmod(a, b, n); require(r == r); } }', { solidityImportCompat: true });
+      + ' r = addmod(a, b, n); require(r == r); } }', { evmCompat: true });
     expect(asm.bytecode).toBe(hand.bytecode);
     // pop(pure) discards; pop(low-level call) evaluates the call for its effect.
     expect(() => compileString('contract C() { function f(address a) { assembly { pop(add(1, 2))'
-      + ' pop(staticcall(0, a, 0, 0, 0, 0)) } require(true); } }', { solidityImportCompat: true })).not.toThrow();
+      + ' pop(staticcall(0, a, 0, 0, 0, 0)) } require(true); } }', { evmCompat: true })).not.toThrow();
   });
 
   it('inlines a leaf local Yul function (0-param and parameterised) - param binding + body splice', () => {
     // 0-param: the call yields the body expression, byte-identical to writing it directly.
     const asm = compileString('contract C() { function g() pure returns (uint ret) {'
-      + ' assembly { function konst() -> r { r := 1000 } ret := konst() } } }', { solidityImportCompat: true });
+      + ' assembly { function konst() -> r { r := 1000 } ret := konst() } } }', { evmCompat: true });
     const direct = compileString('contract C() { function g() pure returns (uint ret) { assembly { ret := 1000 } } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(asm.bytecode).toBe(direct.bytecode);
     // Parameterised: `double(a)` binds v:=a, declares the return, splices the body - byte-identical to that manual form.
     const param = compileString('contract C() { function f(uint a) returns (uint x) {'
-      + ' assembly { function double(v) -> r { r := mul(v, 2) } x := double(a) } } }', { solidityImportCompat: true });
+      + ' assembly { function double(v) -> r { r := mul(v, 2) } x := double(a) } } }', { evmCompat: true });
     const manual = compileString('contract C() { function f(uint a) returns (uint x) {'
-      + ' assembly { let pp := a let rr := 0 rr := mul(pp, 2) x := rr } } }', { solidityImportCompat: true });
+      + ' assembly { let pp := a let rr := 0 rr := mul(pp, 2) x := rr } } }', { evmCompat: true });
     expect(param.bytecode).toBe(manual.bytecode);
     // Multi-statement body + the same function called twice (fresh names per call site) compiles.
     expect(() => compileString('contract C() { function f(uint a) returns (uint x) {'
-      + ' assembly { function sq(v) -> r { r := mul(v, v) } x := add(sq(a), sq(a)) } } }', { solidityImportCompat: true }))
+      + ' assembly { function sq(v) -> r { r := mul(v, v) } x := add(sq(a), sq(a)) } } }', { evmCompat: true }))
       .not.toThrow();
   });
 
   it('lowers signextend(i, v) for a constant i (branchless sign-extend identity)', () => {
     // signextend(0, v) = sign-extend the low byte. Compiles; the identity ((v&mask)^signBit)-signBit is exercised.
     expect(() => compileString('contract C() { function f(uint v) returns (uint x) { assembly { x := signextend(0, v) } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
     // i >= 31 is a no-op (already full width): byte-identical to reading v directly.
     const noop = compileString('contract C() { function f(uint v) returns (uint x) { assembly { x := signextend(31, v) } } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const direct = compileString('contract C() { function f(uint v) returns (uint x) { assembly { x := v } } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(noop.bytecode).toBe(direct.bytecode);
   });
 
   it('lowers `x.slot` of a state var to its constant storage-slot number', () => {
     const slotv = compileString('contract C() { int a; int s; function f() returns (uint z) { assembly { z := s.slot } } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const num = compileString('contract C() { int a; int s; function f() returns (uint z) { assembly { z := 1 } } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(slotv.bytecode).toBe(num.bytecode); // s is the 2nd state var -> slot 1
     expect(() => compileString('contract C() { int x; function f() { assembly { sstore(add(x.slot, 1), 4) } require(true); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('accepts the assembly dialect string and ("memory-safe") flags annotation', () => {
     for (const head of ['assembly', 'assembly "evmasm"', 'assembly ("memory-safe")', 'assembly "evmasm" ("memory-safe")']) {
       expect(() => compileString(`contract C() { function f() { uint x; ${head} { x := 1 } require(x == 1); } }`,
-        { solidityImportCompat: true })).not.toThrow();
+        { evmCompat: true })).not.toThrow();
     }
   });
 
   it('lowers Yul string / hex-string literals to their left-aligned word', () => {
     const strv = compileString('contract C() { function f() returns (uint x) { assembly { x := "abc" } } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const word = compileString(`contract C() { function f() returns (uint x) { assembly { x := ${0x616263n << 232n} } } }`,
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(strv.bytecode).toBe(word.bytecode);
     expect(() => compileString('contract C() { function f() returns (uint x) { assembly { x := hex"112233" } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('lowers invalid() to require(false), and stop() to a halt nothing after runs', () => {
     expect(compileString('contract C() { function f() { assembly { invalid() } require(true); } }',
-      { solidityImportCompat: true }).bytecode)
+      { evmCompat: true }).bytecode)
       .toBe(compileString('contract C() { function f() { require(false); require(true); } }',
-        { solidityImportCompat: true }).bytecode);
+        { evmCompat: true }).bytecode);
     // The dead `pc()` would leave the block unlowered, and the dead require would run, if either were kept.
     expect(compileString('contract C() { function f() { assembly { stop() let x := pc() } require(true); } }',
-      { solidityImportCompat: true }).bytecode)
+      { evmCompat: true }).bytecode)
       .toBe(compileString('contract C() { function f() { assembly { stop() } } }',
-        { solidityImportCompat: true }).bytecode);
+        { evmCompat: true }).bytecode);
   });
 
   it('ends the path of a switch arm that reverts, so the return in the other arm is the function\'s', () => {
@@ -273,31 +273,31 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     // hand-written branch, and the dead require after the block is dropped. Before, the return was confined. Code
     // generation reads the arm's end as the nesting does, through a nested block too.
     const hand = compileString('contract C() { function f(uint c, uint a) returns (uint) {'
-      + ' if (uint(c) == uint(0)) { revert(); } else { return a; } } }', { solidityImportCompat: true });
+      + ' if (uint(c) == uint(0)) { revert(); } else { return a; } } }', { evmCompat: true });
     for (const arm of ['revert(0, 0)', 'invalid()', '{ revert(0, 0) }']) {
       const yul = compileString('contract C() { function f(uint c, uint a) returns (uint) { assembly {'
         + ` mstore(0, a) switch c case 0 { ${arm} } default { return(0, 32) } } require(a > 1); } }`,
-      { solidityImportCompat: true });
+      { evmCompat: true });
       expect(yul.bytecode).toBe(hand.bytecode);
     }
     // Raw bytes are no value of the results, so the confined form refused them; at the tail they are the result.
     expect(() => compileString('contract C() { function f(uint c, uint n) returns (bytes memory) {'
       + ' assembly { mstore(0, c) switch c case 0 { revert(0, 0) } default { return(0, n) } } } }',
-    { solidityImportCompat: true })).not.toThrow();
+    { evmCompat: true })).not.toThrow();
   });
 
   it('lowers a single-word return(p, 32) to a function return, byte-identical to `return v`', () => {
     // The lowered block ends in a return; it must splice into the function body so the return sits at the tail
     // (a nested block would hide it from the terminal-return codegen and duplicate the trailing covenant).
     const yul = compileString('contract C() { function f(uint a) returns (uint) { assembly { mstore(0, a) return(0, 32) } } }',
-      { solidityImportCompat: true, messageBus: false });
+      { evmCompat: true, messageBus: false });
     const hand = compileString('contract C() { function f(uint a) returns (uint) { return a; } }', {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     expect(yul.bytecode).toBe(hand.bytecode);
     const unreachable = compileString('contract C() { function f(uint a) returns (uint) {'
       + ' assembly { mstore(0, a) return(0, 32) } return 5; } }', {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     expect(unreachable.bytecode).toBe(hand.bytecode);
   });
@@ -306,9 +306,9 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     // The dead `pc()` would leave the block unlowered, and the dead require would run, if either were kept.
     const yul = compileString('contract C() { function f(uint a) returns (uint) {'
       + ' assembly { mstore(0, a) return(0, 32) let x := pc() } require(a > 1); } }',
-    { solidityImportCompat: true, messageBus: false });
+    { evmCompat: true, messageBus: false });
     const hand = compileString('contract C() { function f(uint a) returns (uint) { return a; } }', {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     });
     expect(yul.bytecode).toBe(hand.bytecode);
   });
@@ -325,8 +325,8 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       ['clz(0x4000000000000000000000000000000000000000000000000000000000000000)', '1'],
     ];
     for (const [yul, n] of pairs) {
-      expect(compileString(asm(yul), { solidityImportCompat: true }).bytecode)
-        .toBe(compileString(bare(n), { solidityImportCompat: true }).bytecode);
+      expect(compileString(asm(yul), { evmCompat: true }).bytecode)
+        .toBe(compileString(bare(n), { evmCompat: true }).bytecode);
     }
   });
 
@@ -335,104 +335,104 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     // runtime __yulmem buffer (a bytes result), where the single-word compile-time path cannot apply.
     expect(() => compileString(
       'contract C() { function f(uint x) returns (bytes) { assembly { mstore(0, 0x20) mstore(0x20, 0x21) return(0, x) } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('lowers codecopy/extcodecopy onto the runtime __yulmem buffer (own bytecode / addr.code source)', () => {
     expect(() => compileString(
       'contract C() { function f() { uint r; assembly { codecopy(0, 0, 32) r := mload(0) } require(r == r); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
     expect(() => compileString(
       'contract C() { function f(address a) { uint r; assembly { extcodecopy(a, 0, 0, 32) r := mload(0) } require(r == r); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('lowers calldatacopy: synthesized calldata (msg.sig ++ param words) + a bytes calldata param copy', () => {
     // General form copies the synthesized EVM calldata (msg.sig ++ 32-byte int-param words) into __yulmem.
     expect(() => compileString(
       'contract C() { function f(uint a, uint b) { uint r; assembly { calldatacopy(0, 0, 68) r := mload(0) } require(r == r); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
     // `calldatacopy(dst, P.offset, P.length)` on a bytes calldata param copies the param's bytes directly.
     expect(() => compileString(
       'contract C() { function f(bytes data) { uint r; assembly { let p := mload(0x40) calldatacopy(p, data.offset, data.length) r := mload(p) } require(r == r); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('lowers an empty `let x` and multi-var `let y, z` to zero-initialized words', () => {
     // `let x` == `let x := 0`; multi-var `let y, z` declares both, each 0. Byte-identical to explicit 0-inits.
     const asm = compileString('contract C() { function f() returns (uint a, uint b) { assembly { let x let y, z a := x b := z } } }',
-      { solidityImportCompat: true, messageBus: false });
+      { evmCompat: true, messageBus: false });
     const hand = compileString('contract C() { function f() returns (uint a, uint b) { uint x = 0; uint y = 0; uint z = 0; a = x; b = z; } }',
-      { solidityImportCompat: true, messageBus: false });
+      { evmCompat: true, messageBus: false });
     expect(asm.bytecode).toBe(hand.bytecode);
   });
 
   it('lowers switch cases with hex/string literal values', () => {
     expect(() => compileString(
       'contract C() { function f(uint s) { uint r; assembly { switch s case hex"1122" { r := 1 } case "ab" { r := 2 } default { r := 3 } } require(r == r); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('lowers calldataload(0) / unaligned offsets via the synthesized calldata slice', () => {
     // calldataload(0) = the selector word (msg.sig + partial first arg); no longer a hard reject.
     expect(() => compileString('contract C() { function f() { uint w; assembly { w := calldataload(0) } require(w == w); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('lowers x.length of a bytes/string calldata param and x.offset of a state var', () => {
     expect(() => compileString('contract C() { function f(bytes x) { uint l; assembly { l := x.length } require(l == l); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
     expect(() => compileString('contract C() { uint256 a; uint256 x; function f() { uint s; uint o; assembly { s := x.slot o := x.offset } require(s == o); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('normalizes a keccak256/sha256 result to a uint256 word in a let/assignment binding', () => {
     // `let a := keccak256(p, n)` binds a bytes32 hash to a uint256 Yul var - cast to the word (mstore keeps bytes32).
     expect(() => compileString(
       'contract C() { function f(uint v) returns (uint r) { assembly { mstore(0, v) let h := keccak256(0, 32) r := keccak256(0, 4) r := eq(r, h) } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('drops a dead local Yul function (an unused def with a leave does not block the block; a called one inlines)', () => {
     expect(() => compileString(
       'contract C() { function f() returns (uint r) { assembly { function dead() { leave } function dbl(x) -> y { y := mul(x, 2) } r := dbl(21) } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('normalizes a keccak256 sstore value and accepts a literal address for extcodesize/balance/extcodehash', () => {
     // sstore stores a word - a keccak256 value casts to uint256 (like a let binding).
     expect(() => compileString(
       'contract C() { function f(uint v) { assembly { sstore(0, keccak256(0, 32)) } require(v == v); } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
     // a literal (or word) address arg reinterprets to an AddressType, so extcodesize(0)/balance(0)/extcodehash(0) lower.
     expect(() => compileString(
       'contract C() { function f() view returns (uint s) { assembly { s := extcodesize(0) s := balance(0) s := extcodehash(0) } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('inlines a local Yul function with an unconditional leave (dead code after the leave is dropped)', () => {
     // `function f() -> t { t := 2 leave t := 9 }` returns 2; the `t := 9` after the leave is dead.
     expect(() => compileString(
       'contract C() { function f() returns (uint w) { assembly { function g() -> t { t := 2 leave t := 9 } w := g() } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
     // A recursive local function is still (correctly) unsupported.
     expect(() => compileString(
       'contract C() { function f() { assembly { function rec(n) -> r { switch n case 0 { r := 1 } default { r := rec(sub(n, 1)) } } let x := rec(3) } require(true); } }',
-      { solidityImportCompat: true })).toThrow(/not yet lowerable|local Yul function/);
+      { evmCompat: true })).toThrow(/not yet lowerable|local Yul function/);
   });
 
   it('lowers Yul inside a fallback/receive function (base traversal skips those separate fields)', () => {
     expect(() => compileString('contract C() { fallback() external { uint x; assembly { x := callvalue() } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
     expect(() => compileString('contract C() { receive() external payable { uint x; assembly { x := caller() } } }',
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
 
   it('lowers mcopy in the compile-time memory model (word-copy = mstore(mload))', () => {
     const mcopy = compileString('contract C() { function f(uint a) returns (uint) { uint r;'
-      + ' assembly { mstore(0, a) mcopy(64, 0, 32) r := mload(64) } return r; } }', { solidityImportCompat: true });
+      + ' assembly { mstore(0, a) mcopy(64, 0, 32) r := mload(64) } return r; } }', { evmCompat: true });
     const explicit = compileString('contract C() { function f(uint a) returns (uint) { uint r;'
-      + ' assembly { mstore(0, a) mstore(64, mload(0)) r := mload(64) } return r; } }', { solidityImportCompat: true });
+      + ' assembly { mstore(0, a) mstore(64, mload(0)) r := mload(64) } return r; } }', { evmCompat: true });
     expect(mcopy.bytecode).toBe(explicit.bytecode);
   });
 
@@ -507,12 +507,12 @@ describe('Yul memory (constant-offset scratch)', () => {
     const yul = compileString(
       'contract C(){function f(bytes32 a,bytes32 b)returns(bytes32 value){'
       + 'assembly{mstore(0,a) mstore(0x20,b) value:=keccak256(0,0x40)}}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     const direct = compileString(
       'contract C(){function f(bytes32 a,bytes32 b)returns(bytes32 value){'
       + 'value=keccak256(bytes.concat(bytes32(a),bytes32(b)));}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -531,11 +531,11 @@ describe('Yul memory (constant-offset scratch)', () => {
     const yul = compileString(
       'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){'
       + 'assembly{r:=mload(add(buf,32)) s:=mload(add(buf,64))}}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     const direct = compileString(
       'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){r=bytes32(buf.slice(0,32));s=bytes32(buf.slice(32,64));}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -543,7 +543,7 @@ describe('Yul memory (constant-offset scratch)', () => {
   it('accepts soft-keyword identifiers (e.g. sig) as Yul variables', () => {
     expect(() => compileString(
       'contract C(){function f(bytes sig)returns(bytes32 r){assembly{r:=mload(add(sig,32))}}}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).not.toThrow();
   });
 
@@ -552,7 +552,7 @@ describe('Yul memory (constant-offset scratch)', () => {
     // sig[64], so it must fold to a 1-byte slice, not a bytes32 read.
     const yul = compileString(
       'contract C(){function f(bytes65 sig)returns(uint8 v){assembly{v:=byte(0,mload(add(sig,96)))}}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     const asm = bytecodeToAsm(hexToBin(yul.debug.bytecode));
     // `byte` is a uint256 Yul operation, so its width-normalization need not be byte-identical to a source-level
@@ -565,7 +565,7 @@ describe('Yul memory (constant-offset scratch)', () => {
     expect(() => compileString(
       'contract C(){function f(bytes65 sig)returns(bytes32 r,bytes32 s,uint8 v){'
       + 'assembly{r:=mload(add(sig,32)) s:=mload(add(sig,64)) v:=byte(0,mload(add(sig,96)))}}}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).not.toThrow();
   });
 
@@ -576,12 +576,12 @@ describe('Yul memory (constant-offset scratch)', () => {
     const asString = compileString(
       'contract C(){function f(bytes32 w,uint256 len)returns(string r){'
       + 'string memory str=new string(32);assembly{mstore(str,len) mstore(add(str,0x20),w)}return str;}}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     const asBytes = compileString(
       'contract C(){function f(bytes32 w,uint256 len)returns(bytes r){'
       + 'bytes memory str=new bytes(32);assembly{mstore(str,len) mstore(add(str,0x20),w)}return str;}}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(asString.bytecode).toBe(asBytes.bytecode);
   });
@@ -594,7 +594,7 @@ describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)',
     const a = compileString(
       'function r(bytes memory rd) pure { assembly { let sz := mload(rd) revert(add(32, rd), sz) } }'
       + ' contract C { int n; function f(bytes d) public { r(d); this.n = 1; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -602,11 +602,11 @@ describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)',
   it('mload(<bytes memory var>) == the value byte length', () => {
     const yul = compileString(
       'contract C(){function f(bytes buf)returns(uint256 n){assembly{n:=mload(buf)}}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     const direct = compileString(
       'contract C(){function f(bytes buf)returns(uint256 n){n=uint256(buf.length);}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -614,11 +614,11 @@ describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)',
   it('extcodesize(addr) == addr.code.length', () => {
     const yul = compileString(
       'contract C(){function f(address a)returns(uint256 s){assembly{s:=extcodesize(a)}}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     const direct = compileString(
       'contract C(){function f(address a)returns(uint256 s){s=uint256(a.code.length);}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -632,14 +632,14 @@ describe('Yul packed storage slots', () => {
   it('sload(0) combines packed sub-word vars (uint256(a) + uint256(b)*2^128 + ...)', () => {
     const yul = compileString(
       'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){assembly{w:=sload(0)}}}',
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     // Yul arithmetic is unchecked; `bigint` factors keep the source's sum unchecked too.
     const direct = compileString(
       'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){'
       + `w=uint256(this.a)+uint256(this.b)*bigint(${POW(128)})+uint256(this.c)*bigint(${POW(192)})`
       + `+uint256(this.d)*bigint(${POW(224)});}}`,
-      { solidityImportCompat: true, messageBus: false },
+      { evmCompat: true, messageBus: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -648,7 +648,7 @@ describe('Yul packed storage slots', () => {
     expect(() => compileString(
       'contract C(){uint128 s_a;uint64 s_b;uint32 s_c;uint32 s_d;function f(){assembly{'
       + 'let v:=sload(0) let m:=not(sub(shl(128,1),1)) v:=and(v,m) v:=or(v,11) sstore(0,v)}require(true);}}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).not.toThrow();
   });
 
@@ -671,7 +671,7 @@ describe('EVM-storage foundation: sstore/sload -> __evm_storage', () => {
     const a = compileString(
       'contract A { function set(uint256 v) public { assembly { sstore(0, v) } }'
       + ' function get() public view returns (uint256 r) { assembly { r := sload(0) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBe(true);
   });
@@ -679,7 +679,7 @@ describe('EVM-storage foundation: sstore/sload -> __evm_storage', () => {
   it('routes a computed (non-literal) slot to __evm_storage', () => {
     const a = compileString(
       'contract A { function set(uint256 k, uint256 v) public { assembly { sstore(add(k, 7), v) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBe(true);
   });
@@ -688,7 +688,7 @@ describe('EVM-storage foundation: sstore/sload -> __evm_storage', () => {
     const a = compileString(
       'contract A { uint256 x; function set(uint256 v) public { assembly { sstore(0, v) } }'
       + ' function get() public view returns (uint256) { return this.x; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBeFalsy();
   });
@@ -701,7 +701,7 @@ describe('keccak256/sha256 literal folding', () => {
     const a = compileString(
       'contract C { bytes32 constant R = keccak256("MINTER_ROLE"); bytes32 constant H = sha256("x");'
       + ' function f() public pure returns (bytes32) { return R == H ? R : H; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -725,7 +725,7 @@ describe('Yul create with a constant hex bytecode (compile-time p2sh32 deploy)',
     + ' require(addr != address(0)); emit Log(addr); } }';
   it('lowers create(0, add(bytecode, 0x20), size) to the derived p2sh32 address', () => {
     const a = compileString(factory('assembly { addr := create(0, add(bytecode, 0x20), 0x13) }'),
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const blob = hexToBin('6960ff60005260206000f3600052600a6016f3');
     const p2sh32 = binToHex(Uint8Array.from([0xaa, 0x20, ...hash256(blob), 0x87]));
     expect(a.bytecode.includes(p2sh32)).toBe(true);
@@ -735,13 +735,13 @@ describe('Yul create with a constant hex bytecode (compile-time p2sh32 deploy)',
     // address is still p2sh32(c), derived on-stack (OP_HASH256 over c ++ the aa20/87 wrapper). See YulCreateAddress.
     const a = compileString('contract F { function deploy(bytes memory code) external returns (address addr) {'
       + ' assembly { addr := create(0, add(code, 0x20), mload(code)) } require(addr != address(0)); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.contractName).toBe('F');
   });
   it('still rejects a non-zero-value create on a runtime bytes local (funded deploy needs an output)', () => {
     expect(() => compileString('contract F { function deploy(bytes memory code, uint256 v) external returns'
       + ' (address addr) { assembly { addr := create(v, add(code, 0x20), mload(code)) } } }',
-    { solidityImportCompat: true })).toThrow(/no BCH|assembly|create/i);
+    { evmCompat: true })).toThrow(/no BCH|assembly|create/i);
   });
 });
 
@@ -757,7 +757,7 @@ describe('Yul create over a free-memory buffer (EIP-1167 minimal proxy)', () => 
     + ' mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000)'
     + ' result := create(0, ptr, 0x37) } } }';
   it('compiles and derives the p2sh32 from the reconstructed clone bytecode', () => {
-    const a = compileString(clone, { solidityImportCompat: true });
+    const a = compileString(clone, { evmCompat: true });
     expect(a.contractName).toBe('C');
     // buffer = prefix(20) || target(20) || suffix(15), hashed, wrapped as p2sh32
     expect(a.bytecode).toContain('3d602d80600a3d3981f3363d3d373d3d3d363d73'); // 20-byte prefix slice
@@ -767,7 +767,7 @@ describe('Yul create over a free-memory buffer (EIP-1167 minimal proxy)', () => 
   });
   it('still rejects a non-zero-value buffer create (funded deploy needs an output)', () => {
     expect(() => compileString(clone.replace('create(0, ptr, 0x37)', 'create(1, ptr, 0x37)'),
-      { solidityImportCompat: true })).toThrow(/no BCH|assembly|create/i);
+      { evmCompat: true })).toThrow(/no BCH|assembly|create/i);
   });
 });
 
@@ -780,13 +780,13 @@ describe('inline StorageSlot pointer read (factory(slot).value)', () => {
   it('lowers an inline factory(slot).value read to the __evm_storage register', () => {
     const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
       + ' function f() external view returns (address) { return StorageSlot.getAddressSlot(S).value; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
   it('still lowers the local-alias form (no regression)', () => {
     const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
       + ' function f(address v) external { StorageSlot.AddressSlot storage p = StorageSlot.getAddressSlot(S);'
-      + ' p.value = v; } }', { solidityImportCompat: true });
+      + ' p.value = v; } }', { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
 });
@@ -800,14 +800,14 @@ describe('inline StorageSlot pointer write (factory(slot).value = v)', () => {
     + ' assembly { pointer.slot := slot } } }';
   it('compiles an inline factory(slot).value write', () => {
     const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
-      + ' function f(address a) external { StorageSlot.getAddressSlot(S).value = a; } }', { solidityImportCompat: true });
+      + ' function f(address a) external { StorageSlot.getAddressSlot(S).value = a; } }', { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
   it('is byte-identical to the local-pointer form', () => {
     const pre = `${LIB} contract C { bytes32 constant S = keccak256("s"); function f(address a) external { `;
-    const inline = compileString(`${pre} StorageSlot.getAddressSlot(S).value = a; } }`, { solidityImportCompat: true });
+    const inline = compileString(`${pre} StorageSlot.getAddressSlot(S).value = a; } }`, { evmCompat: true });
     const local = compileString(`${pre} StorageSlot.AddressSlot storage p = StorageSlot.getAddressSlot(S); p.value = a; } }`,
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(inline.bytecode).toBe(local.bytecode);
   });
 });
@@ -821,12 +821,12 @@ describe('YulMem.sol compat gaps', () => {
     const a = compileString('contract Uses { function f(address t, bytes calldata data) external view {'
       + ' assembly { let p := mload(0x40) calldatacopy(p, data.offset, data.length) } } }'
       + ' contract Prim { function g() external pure returns (uint256) { return 1; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(a.contractName).toBe('Prim');
   });
   it('accepts a mix of named and unnamed return values under compat', () => {
     const a = compileString('contract C { function f() public pure returns (bytes32 p, uint256[] memory) {'
-      + ' p = bytes32(0); uint256[] memory a2; return (p, a2); } }', { solidityImportCompat: true });
+      + ' p = bytes32(0); uint256[] memory a2; return (p, a2); } }', { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
   it('accepts a mix of named/unnamed returns natively (always on, the default)', () => {
@@ -836,10 +836,10 @@ describe('YulMem.sol compat gaps', () => {
   it('compiles new bytes(n) with a runtime length to n zero bytes (0 n OP_NUM2BIN)', () => {
     // Runtime `new bytes(n)` is a real allocation now (the memory model's malloc growth primitive).
     expect(compileString('contract C { function f(uint n) external pure returns (bytes memory) {'
-      + ' return new bytes(n); } }', { solidityImportCompat: true }).contractName).toBe('C');
+      + ' return new bytes(n); } }', { evmCompat: true }).contractName).toBe('C');
   });
   it('still folds new bytes(constant) to a zero-filled literal', () => {
     expect(compileString('contract C { function f() external pure returns (bytes memory) { return new bytes(4); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
 });

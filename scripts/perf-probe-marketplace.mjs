@@ -44,7 +44,7 @@ delete process.env.SOLIDC_COMPILE_CACHE;
 delete process.env.SOLIDC_COMPILE_CACHE_DIR;
 
 const options = {
-  solidityImportCompat: true,
+  evmCompat: true,
   messageBus: true,
   ecrecover: 'p2pkh',
   optimizeForCompilationSpeed: true,

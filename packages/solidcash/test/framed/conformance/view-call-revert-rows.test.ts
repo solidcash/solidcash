@@ -68,7 +68,7 @@ interface RegistryCalls {
 
 /** Deploys the contract through the shipped deployment, seeding the registries the constructor writes. */
 async function deployFresh(): Promise<RegistryCalls> {
-  const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Registry!;
+  const artifact = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true }).Registry!;
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signer = HDSigner.fromPhrase(PHRASE, provider);
   const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };

@@ -232,7 +232,7 @@ accepted in Yul.
 
 ## Porting and security checklist
 
-- Compile imported Solidity with `solidityImportCompat: true`; inspect warnings and the emitted state layout.
+- Compile imported Solidity with `evmCompat: true`; inspect warnings and the emitted state layout.
 - Treat the artifact as the storage schema. Hidden namespace and raw-slot collections are part of deployment.
 - Preserve canonical Yul mapping/array derivation shapes so the compiler can bind them to native state.
 - Prefer declared native `address`, mapping, array, string, and bytes state over raw words in new code.

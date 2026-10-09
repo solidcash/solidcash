@@ -31,7 +31,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '     (bool ok, ) = payable(address(vault)).call{value: msg.value}(""); require(ok);'
   + '     return (vault.lastSender(), vault.total()); } }';
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+const artifacts = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
 const AMOUNT = 5_000n;
 const RECEIVE_SELECTOR = computeFunctionSelector(computeFunctionSignature('__receive', []));
 

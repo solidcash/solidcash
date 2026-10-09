@@ -19,7 +19,7 @@ describe('generic upsert fixed-key recovery', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusGraphContext: true,
       optimizeForCompilationSpeed: true,
@@ -49,7 +49,7 @@ describe('generic upsert fixed-key recovery', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusGraphContext: true,
       optimizeForCompilationSpeed: true,
@@ -76,7 +76,7 @@ describe('generic upsert fixed-key recovery', () => {
         update(members);
         require(true);
       }
-    }`, { forceStateful: true, solidityImportCompat: true });
+    }`, { forceStateful: true, evmCompat: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.inputs
       .some((input) => input.name.startsWith('__internal__vmapCounter'))).toBe(false);
   });

@@ -18,7 +18,7 @@ const readVmNumber = (instruction: { opcode: number; data?: Uint8Array }): bigin
 // Focused regression guards derived from the Solidity compiler corpus.
 describe('transient and storage declaration placement', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('rejects an explicit storage location on state variables', () => {
     expect(() => cc('contract C { uint storage value; }'))
@@ -48,7 +48,7 @@ describe('transient and storage declaration placement', () => {
 
 describe('function-type state declaration compatibility', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('allows payable only on external function types', () => {
     expect(() => cc('contract C { function(uint) internal payable returns(uint) callback; }'))
@@ -83,7 +83,7 @@ describe('Solidity state variables are not internally callable getters', () => {
   it('rejects bare call syntax on an implicitly visible mapping', () => {
     expect(() => compileString(
       'contract C { mapping(uint => uint) m; uint a = m(1000); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow();
   });
 
@@ -91,7 +91,7 @@ describe('Solidity state variables are not internally callable getters', () => {
     expect(() => compileString(
       'contract C { mapping(uint => uint) public m;'
       + ' function f() public view returns (uint) { return m(1000); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow();
   });
 
@@ -99,14 +99,14 @@ describe('Solidity state variables are not internally callable getters', () => {
     expect(compileString(
       'contract C { mapping(uint => uint) public m;'
       + ' function f() public view returns (uint) { return this.m(1000); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
 
 describe('implicit fixed-bytes widening at array element write boundaries', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+    compileString(src, { evmCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
 
   it('right-pads bytesM assigned into a wider bytesN fixed-state-array element', () => {
     expect(cc('contract C { bytes17[2] a; function f(bytes8 x) public { a[0] = a[1] = x; } }')).toBe('C');
@@ -126,7 +126,7 @@ describe('pure and view state effects', () => {
       + ' function g() public pure { f().x; }',
     ];
     for (const body of invalid) {
-      expect(() => compileString(`contract C { ${body} }`, { solidityImportCompat: true }))
+      expect(() => compileString(`contract C { ${body} }`, { evmCompat: true }))
         .toThrow(/pure.*cannot read contract state/);
     }
   });
@@ -138,7 +138,7 @@ describe('pure and view state effects', () => {
       'modifier m() { require(msg.value >= 0); _; } function f() public pure m {}',
     ];
     for (const body of invalid) {
-      expect(() => compileString(`contract C { ${body} }`, { solidityImportCompat: true }))
+      expect(() => compileString(`contract C { ${body} }`, { evmCompat: true }))
         .toThrow(/pure.*cannot read 'msg.value'/);
     }
   });
@@ -146,11 +146,11 @@ describe('pure and view state effects', () => {
   it('rejects transient reads in pure functions and writes in view functions', () => {
     expect(() => compileString(
       'contract C { uint transient x; function f() public pure returns (uint) { return x; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/pure.*cannot read transient state/);
     expect(() => compileString(
       'contract C { uint transient x; function f() public view { x = 1; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/view.*cannot modify transient state/);
   });
 
@@ -161,12 +161,12 @@ describe('pure and view state effects', () => {
       'function f() public view { function() external fp; fp(); }',
     ];
     for (const body of invalid) {
-      expect(() => compileString(`contract C { ${body} }`, { solidityImportCompat: true }))
+      expect(() => compileString(`contract C { ${body} }`, { evmCompat: true }))
         .toThrow(/function cannot call a '.*' function pointer/);
     }
     expect(compileString(
       'contract C { function f() public pure { function() external pure fp; fp; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -176,7 +176,7 @@ describe('pure and view state effects', () => {
       + ' function add(T a, T b) pure returns (T) { return TARGET.read(a, b); }'
       + ' using {add as +} for T global;'
       + ' interface I { function read(T, T) external view returns (T); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/pure.*cannot call 'view' external function/);
   });
 
@@ -186,7 +186,7 @@ describe('nested public array and mapping getters', () => {
   const ok = (decl: string, setup: string, call: string): string => compileString(
     `contract C { ${decl} constructor() { ${setup} }`
     + ` function f() public view returns (uint) { return ${call}; } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
 
   it('synthesizes all array indices after a mapping key', () => {
@@ -209,13 +209,13 @@ describe('nested public array and mapping getters', () => {
     expect(compileString(
       'contract C { enum Choice { Left, Right } Choice public choice;'
       + ' function f() public view returns (Choice) { return this.choice(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
 
 describe('no-arg push on a struct array appends the struct default (data.push() on Data[])', () => {
-  const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
+  const bc = (src: string): string => compileString(src, { evmCompat: true }).bytecode;
   const mk = (body: string): string => 'contract C { struct Data { uint256 x; uint256 y; } Data[] data;'
     + ` function f(uint256 n) public { ${body} require(true); } }`;
   it('reduces data.push() to data.push(Data(0,0)) (byte-identical)', () => {
@@ -228,7 +228,7 @@ describe('no-arg push on a struct array appends the struct default (data.push() 
 });
 
 describe('struct storage reference returned by no-arg push', () => {
-  const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
+  const bc = (src: string): string => compileString(src, { evmCompat: true }).bytecode;
 
   it('reduces rows.push().field = value to a push of the final struct value', () => {
     const head = 'contract C { struct S { uint x; uint y; } S[] rows; function f(uint v) public {';
@@ -248,12 +248,12 @@ describe('struct storage reference returned by no-arg push', () => {
       + ' mapping(uint => mapping(uint => S[5])) rows;'
       + ' function f(uint a, uint b, uint i, uint j, uint v) public {'
       + ' rows[a][b][i].items[j] = v; require(true); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
 describe('bare array member references are no-op statements', () => {
-  const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
+  const bc = (src: string): string => compileString(src, { evmCompat: true }).bytecode;
   const mk = (type: string, statement: string): string => `contract C { ${type} data;`
     + ` function f() public returns (uint256 x) { x = 2; ${statement} x = 3; } }`;
 
@@ -271,7 +271,7 @@ describe('legacy soft-keyword struct type name', () => {
     expect(compileString(
       'struct error { uint value; } contract C { error item;'
       + ' function f(uint x) public returns(uint) { item.value = x; return item.value; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -284,7 +284,7 @@ describe('enum / contract mapping key types', () => {
       enum Status { Pending, Active, Closed }
       mapping(Status => uint256) counts;
       function set(Status k, uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); counts[k] = v; }
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 
@@ -294,7 +294,7 @@ describe('enum / contract mapping key types', () => {
       mapping(C => bool) a;
       mapping(address => bool) b;
       mapping(E => bool) c;
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 });
@@ -305,24 +305,24 @@ describe('bare state-struct field write (Solidity form of this.s.field = v)', ()
   it('bare s.field = v matches this.s.field = v bytecode', () => {
     const bare = compileString(`contract C() { struct S { uint256 x; uint256 y; } S s;
       function f(uint256 e) { s.x = 13; s.y = 4; require(s.x == e); }
-    }`, { solidityImportCompat: true }).bytecode;
+    }`, { evmCompat: true }).bytecode;
     const thisPrefixed = compileString(`contract C() { struct S { uint256 x; uint256 y; } S s;
       function f(uint256 e) { this.s.x = 13; this.s.y = 4; require(this.s.x == e); }
-    }`, { solidityImportCompat: true }).bytecode;
+    }`, { evmCompat: true }).bytecode;
     expect(bare).toBe(thisPrefixed);
   });
 
   it('handles a nested field chain (a.b.x = v)', () => {
     const art = compileString(`contract C() { struct Inner { uint256 x; } struct Outer { Inner b; } Outer a;
       function f(uint256 e) { a.b.x = 13; require(a.b.x == e); }
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 
   it('a local struct field write is unaffected (stays a local rebuild)', () => {
     const art = compileString(`contract C() { struct S { uint256 x; }
       function f(uint256 e) { S memory s = S(1); s.x = 13; require(s.x == e); }
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 });
@@ -336,14 +336,14 @@ describe('mapping-bearing struct scalar field write (flattened to s__field)', ()
   it('writes a scalar field of a mapping-bearing struct', () => {
     const art = compileString(`contract C() { ${decl}
       function f(uint256 e) { s.a = 7; require(s.a == e); }
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 
   it('writes a bytes field and a compound scalar, and the mapping field still uses a keyed write', () => {
     const art = compileString(`contract C() { ${decl}
       function f(uint256 k, uint256 v) { s.a = 2; s.a += 5; s.b = 0x616263; s.c[k] = v; require(s.c[k] == v); }
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 });
@@ -355,7 +355,7 @@ describe('struct field types: struct arrays and forward / recursive references',
     const art = compileString(`contract C() {
       struct T { uint256 x; } struct S { uint256 a; T[] sub; } S s;
       function f() { s.a = 1; }
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 
@@ -363,7 +363,7 @@ describe('struct field types: struct arrays and forward / recursive references',
     const art = compileString(`contract C() {
       struct S { uint256 a; T[] sub; bytes b; } struct T { uint256 x; } S s;
       function f() { s.a = 1; }
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 
@@ -371,19 +371,19 @@ describe('struct field types: struct arrays and forward / recursive references',
     const art = compileString(`contract C() {
       struct R { uint256 v; R[] children; } R r;
       function f() { r.v = 1; }
-    }`, { solidityImportCompat: true });
+    }`, { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 
   it('accepts an unused array of a mapping-bearing storage-only struct', () => {
     expect(compileString('contract C { struct Outer { Inner[1] values; }'
       + ' struct Inner { uint x; mapping(uint => Outer)[] entries; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('still rejects a directly recursive fixed struct array', () => {
     expect(() => compileString('contract C { struct S { uint x; S[1] child; } }',
-      { solidityImportCompat: true })).toThrow(/not supported as a struct field|recursive struct/);
+      { evmCompat: true })).toThrow(/not supported as a struct field|recursive struct/);
   });
 });
 
@@ -391,7 +391,7 @@ describe('view-function state-effect validation', () => {
   const bad = (body: string, prefix = ''): void => {
     expect(() => compileString(
       `${prefix} contract C { uint x; uint[] a; function f(address target) public view { ${body} } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/view|state|modif/i);
   };
 
@@ -408,11 +408,11 @@ describe('view-function state-effect validation', () => {
   it('rejects non-view internal calls and transient Yul writes', () => {
     expect(() => compileString(
       'contract C { function g() public {} function f() public view { C.g(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/view|state|modif/i);
     expect(() => compileString(
       'contract C { function f() public view { assembly { tstore(0, 0) } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/view|state|modif/i);
   });
 });
@@ -423,7 +423,7 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
   // correct because a state read always reads the input commitment.
   const bc = (body: string): string => compileString(
     `contract C() { uint256 x; uint256 y; function f(uint256 a, uint256 b) { ${body} } }`,
-    { solidityImportCompat: true, forceStateful: true },
+    { evmCompat: true, forceStateful: true },
   ).bytecode;
 
   it('(x, y) = (a, b) matches x = a; y = b', () => {
@@ -440,7 +440,7 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
       constructor() { ${body} }
       function f() private pure returns (uint256, uint256) { return (3, 4); }
       function check() { require(x == 3 && y == 4); }
-    }`, { solidityImportCompat: true }).bytecode;
+    }`, { evmCompat: true }).bytecode;
     expect(compileConstructor('(x, y) = f();'))
       .toBe(compileConstructor('uint256 a, uint256 b = f(); x = a; y = b;'));
   });
@@ -448,7 +448,7 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
   it('a tuple assignment to locals is unaffected', () => {
     expect(compileString(`contract C() {
       function f(uint256 a, uint256 b) { uint256 p; uint256 q; (p, q) = (a, b); require(p == a); }
-    }`, { solidityImportCompat: true }).contractName).toBe('C');
+    }`, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -462,12 +462,12 @@ describe('string / hex literal coercion at array & mapping element writes', () =
       'contract C() { mapping(uint256 => bytes4) m; function f(uint256 k) { m[k] = "abcd"; } }',
       'contract C() { bytes8[] a; function f(uint256 i) { a[i] = hex"0102"; } }',
     ];
-    for (const s of srcs) expect(compileString(s, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    for (const s of srcs) expect(compileString(s, { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
   it('right-pads to the element width (byte-identical to the padded literal)', () => {
     const bc = (v: string): string => compileString(`contract C() { bytes4[] a; function f(uint256 i) { a[i] = ${v}; } }`,
-      { solidityImportCompat: true, forceStateful: true }).bytecode;
+      { evmCompat: true, forceStateful: true }).bytecode;
     expect(bc('"abcd"')).toBe(bc('0x61626364'));
   });
 });
@@ -476,7 +476,7 @@ describe('string / hex literal coercion at array & mapping element writes', () =
 // function (no body), so it has no super implementation to resolve - it must not be rejected as "not a base".
 
 describe('public array auto-getter (this.a(i) -> element)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('synthesizes a value-array getter callable as this.a(i)', () => {
     expect(cc('contract C { uint256[] public a;'
       + ' function f() external view returns (uint256) { uint256 y = this.a(2); return y; } }')).toBe('C');
@@ -492,7 +492,7 @@ describe('public array auto-getter (this.a(i) -> element)', () => {
 });
 
 describe('bytes state-var element write (data[i] = v)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles a byte write with a literal, expression and variable value', () => {
     expect(cc('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external { data[31] = 0x77; data[i] = bytes1(uint8(i)); data[0] = v; require(true); } }'))
@@ -500,12 +500,12 @@ describe('bytes state-var element write (data[i] = v)', () => {
   });
   it('is byte-identical to the hand-written slice+concat reassignment', () => {
     const sugar = compileString('contract C { bytes data; function f(uint256 i, bytes1 v) external { data[i] = v; require(true); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     // The sugar's `i + 1` is compiler-built and unchecked; the source's own `i + 1` would be range-checked.
     const hand = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external {'
       + ' data = data.slice(0, i) + v + data.slice(bigint(i) + 1, data.length); require(true); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
@@ -514,12 +514,12 @@ describe('fresh local bytes element write', () => {
   it('compiles an indexed write in a loop over a runtime-sized bytes allocation', () => {
     expect(compileString('contract C { function f(uint64 n) public pure returns (bytes memory) {'
       + ' bytes memory b = new bytes(n); for (uint64 i = 0; i < n; i++) {'
-      + ' b[i] = bytes1(uint8(i)); } return b; } }', { solidityImportCompat: true }).contractName).toBe('C');
+      + ' b[i] = bytes1(uint8(i)); } return b; } }', { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('bytes element compound write (data[i] |= v / &=)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles a compound byte write on state and local bytes', () => {
     expect(cc('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external { data[i] |= v; require(true); } }')).toBe('C');
@@ -528,17 +528,17 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
   });
   it('is byte-identical to the hand-written read-modify-slice-concat', () => {
     const s = compileString('contract C { bytes data; function f(uint256 i, bytes1 v) external { data[i] |= v; require(true); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const h = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external {'
       + ' data = data.slice(0, i) + (data[i] | v) + data.slice(bigint(i) + 1, data.length); require(true); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
 
 describe('contract-typed arrays resolve to address arrays (contract handle = address)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('types new C[](n) as an address array, not undefined[]', () => {
     expect(cc('contract C { function f() external returns (C[] memory) { C[] memory c = new C[](2); return c; } }'))
       .toBe('C');
@@ -550,8 +550,8 @@ describe('contract-typed arrays resolve to address arrays (contract handle = add
 });
 
 describe('whole fixed-array copy with differing length/element (desugar by reduction)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
+  const bc = (src: string): string => compileString(src, { evmCompat: true }).bytecode;
   it('compiles a diff-length same-element fixed-array copy (copy prefix + zero-fill leftover)', () => {
     expect(cc('contract C { uint256[4] a; uint256[2] b; function f() external { a = b; require(true); } }')).toBe('C');
   });
@@ -572,11 +572,11 @@ describe('whole fixed-array copy with differing length/element (desugar by reduc
 describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
   it('compiles delete on a state and local bytes element, identical to data[i] = 0x00', () => {
     expect(compileString('contract C { bytes data; function f(uint256 i) external { delete data[i]; require(true); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
     const s = compileString('contract C { bytes data; function f(uint256 i) external { delete data[i]; require(true); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     const h = compileString('contract C { bytes data; function f(uint256 i) external { data[i] = 0x00; require(true); } }',
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
@@ -586,18 +586,18 @@ describe('recursive struct types reject cleanly (no compiler stack overflow)', (
     // struct that reaches itself through a dynamic array of itself: its inline encoding is infinite on BCH.
     const src = 'contract C { struct R { R[] vals; } '
       + 'function f() public pure { R[1] memory v = [ R(new R[](2)) ]; require(v[0].vals.length == 2); } }';
-    expect(() => compileString(src, { solidityImportCompat: true }))
+    expect(() => compileString(src, { evmCompat: true }))
       .toThrow(/Recursive struct types are unsupported/);
   });
   it('a non-recursive struct with a dynamic array field still compiles', () => {
     expect(compileString('contract C { struct S { uint x; uint[] a; } S s; function f() external view { require(s.x == 0); } }',
-      { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+      { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
 describe('nested write to a local-memory struct multi-D array field (s.a[i][j] = v)', () => {
   const cc = (src: string): string => compileString(src,
-    { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+    { evmCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
   it('accepts s.a[i][j] = v / s.a[i][j]++ / s.a[i][j][k] = v on a local struct', () => {
     expect(cc('contract C { struct S { uint[][] a; } '
       + 'function f(uint i,uint j,uint v) public pure { S memory s; s.a[i][j]=v; require(true); } }')).toBe('C');
@@ -614,7 +614,7 @@ describe('nested write to a local-memory struct multi-D array field (s.a[i][j] =
 });
 
 describe('contract/interface-typed struct fields (struct S { C y; })', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves a scalar contract/interface-typed struct field to an address placeholder', () => {
     expect(cc('contract C {} contract T { struct S { C y; } S s; function f() external { require(true); } }'))
       .toBe('T');
@@ -629,7 +629,7 @@ describe('contract/interface-typed struct fields (struct S { C y; })', () => {
 
 describe('indexed struct-field array push/pop (data[i].d.push, s1.arr[i].push, m[k].d.push)', () => {
   const cc = (src: string): string => compileString(src,
-    { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+    { evmCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
   it('compiles push/pop on an index+struct-field receiver across array, struct-field, and mapping bases', () => {
     expect(cc('contract C { struct S { uint[] d; } S[] data; '
       + 'function f(uint v) external { data[1].d.push(v); data[0].d.pop(); } }')).toBe('C');
@@ -649,7 +649,7 @@ describe('indexed struct-field array push/pop (data[i].d.push, s1.arr[i].push, m
 });
 
 describe('delete on a nested array element (delete d[i][j] -> element default)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles a 2D/3D delete on memory and state arrays', () => {
     expect(cc('contract C { function f() public pure { uint[][] memory x = new uint[][](5); '
       + 'x[3] = new uint[](3); delete x[3][2]; require(true); } }')).toBe('C');
@@ -659,29 +659,29 @@ describe('delete on a nested array element (delete d[i][j] -> element default)',
   });
   it('a memory 2D delete is identical to writing the element default in place', () => {
     const P = 'contract C { function f() public pure { uint[][] memory x = new uint[][](5); x[3] = new uint[](3); ';
-    const del = compileString(`${P} delete x[3][2]; require(true); } }`, { solidityImportCompat: true });
-    const asg = compileString(`${P} x[3][2] = 0; require(true); } }`, { solidityImportCompat: true });
+    const del = compileString(`${P} delete x[3][2]; require(true); } }`, { evmCompat: true });
+    const asg = compileString(`${P} x[3][2] = 0; require(true); } }`, { evmCompat: true });
     expect(del.bytecode).toBe(asg.bytecode);
   });
 });
 
 describe('tuple destructure in a for-loop init and update', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts a tuple init and a tuple update', () => {
     expect(cc('contract C { function f() external pure returns (uint256) { uint256 r = 0;'
       + ' for ((uint256 x, uint256 y) = (0, 1); x < 10; (x, y) = (x + 1, y + 1)) { r += y; } return r; } }')).toBe('C');
   });
   it('a tuple for-init is byte-identical to hand-desugared declarations', () => {
     const s = compileString('contract C { function f() external pure returns (uint256) { uint256 r = 0;'
-      + ' for ((uint256 x, uint256 y) = (0, 1); x < 3; x++) { r += y; } return r; } }', { solidityImportCompat: true });
+      + ' for ((uint256 x, uint256 y) = (0, 1); x < 3; x++) { r += y; } return r; } }', { evmCompat: true });
     const h = compileString('contract C { function f() external pure returns (uint256) { uint256 r = 0;'
-      + ' uint256 x = 0; uint256 y = 1; for (; x < 3; x++) { r += y; } return r; } }', { solidityImportCompat: true });
+      + ' uint256 x = 0; uint256 y = 1; for (; x < 3; x++) { r += y; } return r; } }', { evmCompat: true });
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
 
 describe('bounded integer state assignments and unsigned negation', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('rejects state initializer literals outside the destination range', () => {
     for (const declaration of ['int8 x = -129', 'int8 x = 128', 'uint8 x = -1', 'uint8 x = 700']) {
@@ -704,7 +704,7 @@ describe('bounded integer state assignments and unsigned negation', () => {
 });
 
 describe('function-type and state-variable modifier consistency', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('rejects repeated or conflicting function-type modifiers', () => {
     for (const modifiers of ['pure pure', 'pure view', 'internal external']) {
@@ -726,7 +726,7 @@ describe('function-type and state-variable modifier consistency', () => {
 });
 
 describe('fixed-width-element array slice arr[start:end] (VM-verified in solidcash/test/ArraySlice.test.ts)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles slices of value-element arrays (uint256[], int8[], bytes32[])', () => {
     for (const t of ['uint256', 'int8', 'bytes32']) {
       expect(cc(`contract C { function f(${t}[] calldata b, uint256 s, uint256 e) external pure returns (${t}[] memory) {`
@@ -745,7 +745,7 @@ describe('fixed-width-element array slice arr[start:end] (VM-verified in solidca
 });
 
 describe('array dimensions accept compile-time constant expressions', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles power/arithmetic dimensions (2**10, 2**10 + 3, N * 2)', () => {
     expect(cc('contract C { uint256[2**10] a; function f() external { require(true); } }')).toBe('C');
     expect(cc('contract C { uint256[2**10 + 3] a; function f() external { require(true); } }')).toBe('C');
@@ -765,7 +765,7 @@ describe('array dimensions accept compile-time constant expressions', () => {
 });
 
 describe('whole-struct <-> mapping-entry copies (VM-verified in solidcash/test/e2e/MappingStructCopy.test.ts)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const P = 'struct S { bytes b; uint u; } contract C { mapping(uint => S) m; mapping(uint => S) m2; S s;';
   it('writes a struct constructor into a mapping entry (named and positional)', () => {
     expect(cc(`${P} function f() external { m[0] = S({b: "x", u: 7}); require(true); } }`)).toBe('C');
@@ -780,7 +780,7 @@ describe('whole-struct <-> mapping-entry copies (VM-verified in solidcash/test/e
 });
 
 describe('struct storage pointer to a state variable aliases (VM in solidcash/StructStoragePointer.test.ts)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const P = 'contract C { struct S { uint x; uint u; } S s;';
   it('accepts field write / whole assign / delete through a non-flattened struct storage pointer', () => {
     expect(cc(`${P} function f() external { S storage sL = s; sL.u = 5; require(true); } }`)).toBe('C');
@@ -790,7 +790,7 @@ describe('struct storage pointer to a state variable aliases (VM in solidcash/St
 });
 
 describe('parenthesised / arithmetic constant array dimensions', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts a parenthesised or arithmetic constant as an array dimension', () => {
     expect(cc('contract C { uint constant L1 = (2); uint constant L2 = (2 + 1) / 1; uint[L1] a1; uint[L2] a2;'
       + ' function f() external { require(a1.length == 2 && a2.length == 3); } }')).toBe('C');
@@ -802,13 +802,13 @@ describe('parenthesised / arithmetic constant array dimensions', () => {
   });
   it('still rejects a non-integer-typed constant as a dimension', () => {
     expect(() => compileString('contract C { bytes constant S = 0x00; int[S] xs; function f() external { require(true); } }',
-      { solidityImportCompat: true })).toThrow(/compile-time integer constant/);
+      { evmCompat: true })).toThrow(/compile-time integer constant/);
   });
 });
 
 describe('mapping-entry array/bytes element access m[k][i] (VM in solidcash/MappingEntryArrayElement.test.ts)', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+    compileString(src, { evmCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
   it('reads an element of an array/bytes-valued mapping entry (entrySlotIndex now recurses index bases)', () => {
     expect(cc('contract C { mapping(uint => uint16[]) ma; function r() external view { require(ma[0][0] == 13); } }'))
       .toBe('C');
@@ -821,7 +821,7 @@ describe('mapping-entry array/bytes element access m[k][i] (VM in solidcash/Mapp
 
 describe('push onto a nested flattened-struct-field array t.s.b.push() (VM in solidcash/NestedFieldPush.test.ts)', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+    compileString(src, { evmCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
   it('collapses the nested member chain so the array-field push resolves', () => {
     expect(cc('contract C { struct Inner { uint[] b; } struct S { Inner s; uint u; } S t;'
       + ' function f() external { t.s.b.push(1); } }')).toBe('C');
@@ -831,7 +831,7 @@ describe('push onto a nested flattened-struct-field array t.s.b.push() (VM in so
 });
 
 describe('contract/interface type as a mapping VALUE type', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   // The key type already defaulted an unknown name to an address handle; the value type did not, so
   // `mapping(K => IFoo)` tripped UnsupportedMappingValueTypeError('undefined'). Now both match.
   it('resolves an interface/contract mapping value to an address handle', () => {
@@ -842,7 +842,7 @@ describe('contract/interface type as a mapping VALUE type', () => {
 });
 
 describe('string-literal mapping key coerced to bytesN (compat)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   // `m["foo"]` where the key type is bytesN right-pads the literal like an assignment value does; byte-identical
   // to the explicit `m[hex"666f6f00..00"]` form. This matches Solidity (a string literal implicitly converts to a
   // bytesN it fits), so the coercion is now a default (native too), not compat-gated.
@@ -861,7 +861,7 @@ describe('string-literal mapping key coerced to bytesN (compat)', () => {
 });
 
 describe('foreign external fn-ptr state var (fixed method on runtime address)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const IF = 'interface IFoo { function addTwo(uint x) external returns(uint); }';
   // `x = IFoo(a).addTwo; x(v)` lowers to an address state var + IFoo(x).addTwo(v) (the tested state-address
   // external call). Sound by reduction; VM-verified in ForeignFunctionPointerStateVar.test.ts.
@@ -876,7 +876,7 @@ describe('foreign external fn-ptr state var (fixed method on runtime address)', 
       + ' contract C { function(uint) external returns(uint) x;'
       + ' function set(address addr, bool t) public { if (t) x = IFoo(addr).a; else x = IFoo(addr).b; }'
       + ' function callIt(uint v) public returns(uint) { return x(v); } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).toThrow();
+    expect(() => compileString(src, { evmCompat: true })).toThrow();
   });
 });
 
@@ -887,7 +887,7 @@ describe('foreign external fn-ptr STATE storage of a received value (x = y)', ()
   it('flattens the fn-ptr state var + splits the stored param + marks the call fnPtrCall', () => {
     const art = compileString('contract C { function(uint) external returns(uint) stored;'
       + ' function save(function(uint) external returns(uint) y) public { stored = y; }'
-      + ' function run(uint v) public returns(uint) { return stored(v); } }', { solidityImportCompat: true });
+      + ' function run(uint v) public returns(uint) { return stored(v); } }', { evmCompat: true });
     const stateVars = art.stateLayout!.variables.map((v) => `${v.name}:${v.type}`);
     expect(stateVars).toContain('stored:address');          // fn-ptr var lowered to address
     expect(stateVars).toContain('__fnsel_stored:bytes4');   // companion selector field injected
@@ -903,7 +903,7 @@ describe('foreign external fn-ptr STATE storage of a received value (x = y)', ()
     const art = compileString('contract C { function(uint) internal returns(uint) fp;'
       + ' function g(uint x) internal returns(uint) { return x + 1; }'
       + ' function set() public { fp = g; } function run(uint v) public returns(uint) { return fp(v); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     const stateVars = art.stateLayout!.variables.map((v) => v.name);
     expect(stateVars).not.toContain('__fnsel_fp'); // internal pointer keeps its functionId representation
   });
@@ -916,7 +916,7 @@ describe('foreign external fn-ptr in a STRUCT FIELD (fixed method on a runtime a
   it('retypes the fn-ptr struct field to interface-typed + dispatches its fixed method', () => {
     const art = compileString(`${IF} contract C { struct S { function(uint) external returns(uint) fn; uint x; }`
       + ' S s; function reg(address a) public { s.fn = IFoo(a).addTwo; }'
-      + ' function run(uint v) public returns(uint) { return s.fn(v); } }', { solidityImportCompat: true });
+      + ' function run(uint v) public returns(uint) { return s.fn(v); } }', { evmCompat: true });
     const sDef = art.structs!.find((s) => s.name === 'S')!;
     expect(sDef.fields.find((f) => f.name === 'fn')!.type).toBe('address'); // fn-ptr field lowered to address
     const run = art.abi.find((f) => f.name === 'run')!;
@@ -932,7 +932,7 @@ describe('foreign external fn-ptr ARRAY dispatch table (fixed method on runtime 
   it('bare fns[idx](v) is a SINGLE-element call (no broadcast loop)', () => {
     const art = compileString(`${IF} contract C { function(uint) external[] fns;`
       + ' function reg(address a) public { this.fns.push(IFoo(a).ping); }'
-      + ' function fire(uint v) public { fns[0](v); } }', { solidityImportCompat: true });
+      + ' function fire(uint v) public { fns[0](v); } }', { evmCompat: true });
     const fns = art.stateLayout!.variables.find((v) => v.name === 'fns')!;
     expect(fns.type).toBe('address[]'); // fn-ptr array collection moved to a plain address[] state var
     const fire = art.abi.find((f) => f.name === 'fire')!;
@@ -943,14 +943,14 @@ describe('foreign external fn-ptr ARRAY dispatch table (fixed method on runtime 
     const art = compileString(`${IF} contract C { function(uint) external[] fns;`
       + ' function reg(address a) public { this.fns.push(IFoo(a).ping); }'
       + ' function fire(uint v) public { for (uint i = 0; i < 2; i++) { fns[i](v); } } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     const fire = art.abi.find((f) => f.name === 'fire')!;
     expect(fire.externalCalls!.some((e) => e.loopArrayVar === 'fns' && e.functionName === 'ping')).toBe(true);
   });
 });
 
 describe('low-level .call on a struct-field address receiver (MultiSigWallet transaction.destination.call)', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const S = 'struct T { address dest; bytes data; }';
   it('plain state-struct field: t.dest.call(t.data)', () => {
     expect(ok(`${S} contract C { T t; function f() public {`
@@ -977,7 +977,7 @@ describe('low-level .call on a struct-field address receiver (MultiSigWallet tra
 // pre-declared is the driver (MultiSigWallet-style low-level-call return capture).
 
 describe('partial tuple-assign to a state variable ((z,) = f() / (z,) = addr.call(x))', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const two = 'function two() pure returns (bool, uint) { return (true, 1); }';
   it('partial tuple-assign of a multi-return call to a state var', () => {
     expect(ok(`${two} contract C { bool z; function f() public { (z,) = two(); require(z); } }`)).toBe('C');
@@ -1005,7 +1005,7 @@ describe('bare struct type expression statements', () => {
   it('treats a library-qualified struct type as a no-op value expression', () => {
     expect(compileString('library L { struct S { uint x; } } contract C {'
       + ' function f() public pure returns (uint) { L.S; return 1; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1014,13 +1014,13 @@ describe('public external-function state variable getter', () => {
     const artifact = compileString('contract C { function (uint256) external public x;'
       + ' function g(uint256) public {} function set() public { x = this.g; }'
       + ' function read() public view returns (function(uint256) external) { return this.x(); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(artifact.contractName).toBe('C');
   });
 
   it('does not synthesize an ABI getter for an internal-function state variable', () => {
     const artifact = compileString('contract C { function (uint256) internal x;'
-      + ' function g(uint256) internal {} }', { solidityImportCompat: true });
+      + ' function g(uint256) internal {} }', { evmCompat: true });
     expect(artifact.abi.some((entry) => entry.name === 'x')).toBe(false);
   });
 
@@ -1028,7 +1028,7 @@ describe('public external-function state variable getter', () => {
     expect(compileString('contract C { function () external returns (uint) public g;'
       + ' function f() public { g = this.X; function () external returns (uint) e = this.g();'
       + ' assert(e() == g()); } function X() public pure returns (uint) { return 42; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1037,7 +1037,7 @@ describe('internal forwarding of chunked mapping value witnesses', () => {
     const src = 'contract C { mapping(uint256 => string) m;'
       + ' function read(uint256 k) private view returns (string memory) { return m[k]; }'
       + ' function f(uint256 k) public view returns (string memory) { return read(k); } }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 });
 
@@ -1047,7 +1047,7 @@ describe('chunkable mapping output-base witness', () => {
       + ' function store(uint256 key, bytes calldata value) public {'
       + ' values[key] = value; require(true); }'
       + ' function publishJobEvent() public { require(true); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     const store = artifact.abi.find((entry) => entry.name === 'store');
     const sameHistoricalNameWithoutWrite = artifact.abi.find((entry) => entry.name === 'publishJobEvent');
     expect(store?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')).toBe(true);
@@ -1058,7 +1058,7 @@ describe('chunkable mapping output-base witness', () => {
 });
 
 describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EACC IERC20(job.token) shape)', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const iface = 'interface ITok { function transfer(address to, uint256 v) external returns (bool); }';
   const struc = 'struct Job { address token; address creator; }';
   it('casts a mapping-struct field: IFoo(jobs[id].token).transfer(..)', () => {
@@ -1078,7 +1078,7 @@ describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EA
     expect(compileString(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
       + ' function pay(uint256 id) public { ITok(jobs[id].token).transfer(msg.sender, 1);'
       + ' ITok(jobs[id].token).transfer(msg.sender, 2); require(true); } }', {
-      solidityImportCompat: true, messageBus: true,
+      evmCompat: true, messageBus: true,
     }).contractName).toBe('C');
   });
 });
@@ -1088,7 +1088,7 @@ describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EA
 // to a caller input. This is Unicrow's `IERC20(input.currency).balanceOf(..)` (input is a calldata struct param).
 
 describe('inlined value helper: local sharing a struct-field name does not corrupt the field access', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles a single-tail-return external-call helper with a field-name-colliding local (Unicrow calculateSplits)', () => {
     const src = 'interface IArb { function calc(uint16 x) external view returns (uint16); }'
       + ' struct Arb { bool consensus; uint16 arbitratorFee; }'
@@ -1109,7 +1109,7 @@ describe('inlined value helper: local sharing a struct-field name does not corru
       + ' struct Post { uint8 state; Roles roles; uint256 amount; }';
     const compileBody = (body: string): string => compileString(
       `${S} contract C { Post[] jobs; function f(uint id) public { ${body} require(true); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName;
     expect(compileBody('jobs[id].roles.creator = msg.sender;')).toBe('C');            // direct
     expect(compileBody('Post storage p = jobs[id]; p.roles.creator = msg.sender;')).toBe('C'); // via storage pointer
@@ -1120,7 +1120,7 @@ describe('inlined value helper: local sharing a struct-field name does not corru
       + ' struct Outer { uint8 state; Mid mid; uint256 amount; }';
     const src = `${S} contract C { Outer[] xs; function f(uint id) public {`
       + ' xs[id].mid.inner.a = msg.sender; require(true); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
   it('renames abi.encodeCall(token.method) interfaceName when the helper is inlined (OZ SafeERC20.forceApprove)', () => {
     // `_enc` is inlined (reads state bal[id]), renaming its `token` param to `__rh0_token`. The abi.encodeCall's
@@ -1147,7 +1147,7 @@ describe('contract reads through plain-address state struct fields', () => {
     const art = compileString('contract D { uint public x; } contract C { struct S { address d; } S s;'
       + ' constructor() { s.d = address(new D()); assert(D(s.d).x() == 0); }'
       + ' function f() public view returns (uint) { return D(s.d).x(); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(art.stateLayout?.constructorInputs.some((i) => i.name.startsWith('__ctorread_D_x_'))).toBe(true);
     expect(art.abi.find((f) => f.name === 'f')?.externalCalls?.[0].addressParam)
       .toMatch(/^__extaddr_/);
@@ -1155,10 +1155,10 @@ describe('contract reads through plain-address state struct fields', () => {
   it('promotes a constructor read with literal arguments but not a side-effectful argument', () => {
     const head = 'contract D { function x(uint v) public pure returns (uint) { return v; } }';
     const art = compileString(`${head} contract C { D d; uint z; constructor() { z = d.x(2); } }`,
-      { solidityImportCompat: true });
+      { evmCompat: true });
     expect(art.stateLayout?.constructorInputs.some((i) => i.name.startsWith('__ctorread_d_x_'))).toBe(true);
     expect(() => compileString(`${head} contract C { D d; uint z; constructor() { z = d.x(z++); } }`,
-      { solidityImportCompat: true })).toThrow();
+      { evmCompat: true })).toThrow();
   });
 });
 
@@ -1290,7 +1290,7 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
       + '   this.whitelistWorkers[jobId][allowedWorkers_[i]] = true;'
       + ' } } }',
-      { forceStateful: true, solidityImportCompat: true },
+      { forceStateful: true, evmCompat: true },
     );
     const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
     expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
@@ -1395,7 +1395,7 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       + ' uint total; for(uint i=0;i<tos.length;i++){address to=tos[i];'
       + ' balanceOf[token][to]=balanceOf[token][to].add(shares[i]); total=total.add(shares[i]);}'
       + ' balanceOf[token][from]=balanceOf[token][from].sub(total); require(true); } }',
-    { forceStateful: true, solidityImportCompat: true });
+    { forceStateful: true, evmCompat: true });
     const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
     expect(info).toMatchObject({ collection: 'balanceOf', fixedKeyParams: ['token'],
       varyingArrayParam: 'tos', valueArrayParam: 'shares', op: '+' });
@@ -1406,7 +1406,7 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       + '} contract C { using L for R; mapping(address=>R) totals;'
       + ' function f(address[] tokens,uint128[] fees) public {'
       + ' for(uint i=0;i<tokens.length;i++){address token=tokens[i];require(totals[token].addElastic(fees[i])>=0);}'
-      + ' require(true); } }', { forceStateful: true, solidityImportCompat: true });
+      + ' require(true); } }', { forceStateful: true, evmCompat: true });
     expect(art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0]).toMatchObject({
       collection: 'totals', varyingArrayParam: 'tokens', op: 'set',
       valueRuntimeLocal: expect.any(String), oldValuesWitnessParam: expect.any(String),
@@ -1418,7 +1418,7 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       + ' function addOne(address to, uint share) public { m[to] = m[to].add(share); v.ping(); require(true); }'
       + ' function cook(uint[] actions, bytes[] datas) public { for (uint i=0; i<actions.length; i=i+1) {'
       + ' if (actions[i] == 1) { (address to, uint share) = abi.decode(datas[i], (address,uint)); addOne(to,share); }'
-      + ' } require(true); } }', { forceStateful: true, solidityImportCompat: true });
+      + ' } require(true); } }', { forceStateful: true, evmCompat: true });
     const info = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo?.[0];
     expect(info?.varyingArrayParam).toBe('datas');
     expect(info?.keyDecodeTupleIndex).toBe(0);
@@ -1432,14 +1432,14 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       + ' function cook(uint[] actions, bytes[] datas) public { uint value1=0; for (uint i=0;i<actions.length;i=i+1) {'
       + ' if(actions[i]==1) { (address to,uint share)=abi.decode(datas[i],(address,uint)); value1=addOne(to,share); }'
       + ' } require(value1>=0); } }';
-    const art = compileString(source(''), { forceStateful: true, solidityImportCompat: true });
+    const art = compileString(source(''), { forceStateful: true, evmCompat: true });
     const info = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo?.[0];
     expect(info?.varyingArrayParam).toBe('datas');
     expect(info?.keyDecodeTupleIndex).toBe(0);
     expect(info?.valueRuntimeExpression).toBe(true);
     // An early return on the decoded share skips the write, which the published recipe cannot tell apart.
     const guarded = compileString(source('if (fraction < 2) { return 0; }'), {
-      forceStateful: true, solidityImportCompat: true,
+      forceStateful: true, evmCompat: true,
     });
     expect(guarded.refusedFunctions?.map((entry) => entry.functionName)).toEqual(['C.cook()']);
   });
@@ -1448,7 +1448,7 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       + ' function cook(uint[] actions,bytes[] datas) public { for(uint i=0;i<actions.length;i=i+1) {'
       + ' if(actions[i]==1){(address k,uint v)=abi.decode(datas[i],(address,uint));a[k]=a[k]+v;}'
       + ' else if(actions[i]==2){(address k,uint v)=abi.decode(datas[i],(address,uint));b[k]=b[k]+v;}'
-      + '} require(true); } }', { forceStateful: true, solidityImportCompat: true });
+      + '} require(true); } }', { forceStateful: true, evmCompat: true });
     const infos = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo ?? [];
     expect(infos.map((info) => info.collection)).toEqual(['a', 'b']);
     expect(infos.map((info) => info.predicateEquals)).toEqual(['1', '2']);
@@ -1527,11 +1527,11 @@ describe('postfix on a mapping/array element in a return: `return m[k]++` (OZ No
   // read BEFORE the postfix (`m[a] + m[b]++`) still fails closed (the reconstruction would see the post-value).
   it('lowers `return m[k]++` on a mapping element', () => {
     expect(() => compileString('pragma solidity ^0.8.20; contract C { mapping(uint=>uint) m;'
-      + ' function f(uint k) public returns (uint) { return m[k]++; } }', { solidityImportCompat: true })).not.toThrow();
+      + ' function f(uint k) public returns (uint) { return m[k]++; } }', { evmCompat: true })).not.toThrow();
   });
   it('still FAILS CLOSED when the base is read before the postfix (`return m[a] + m[b]++`)', () => {
     expect(() => compileString('pragma solidity ^0.8.20; contract C { mapping(uint=>uint) m;'
-      + ' function f(uint a, uint b) public returns (uint) { return m[a] + m[b]++; } }', { solidityImportCompat: true }))
+      + ' function f(uint a, uint b) public returns (uint) { return m[a] + m[b]++; } }', { evmCompat: true }))
       .toThrow(/read before the/);
   });
 });
@@ -1545,7 +1545,7 @@ describe('nested mapping to a struct value, outer index a number literal (COMP c
     expect(() => compileString(`contract T { ${S}`
       + ' mapping(address => mapping(uint32 => CP)) public cps;'
       + ` function f(address a, uint32 n) public view returns (uint256) { ${body} } }`,
-    { solidityImportCompat: true })).not.toThrow();
+    { evmCompat: true })).not.toThrow();
   };
   it('reads a field via a literal outer index', () => ok('return cps[a][0].votes;'));
   it('reads the whole struct to memory via a literal outer index', () => ok('CP memory c = cps[a][0]; return c.votes;'));
@@ -1570,7 +1570,7 @@ describe('a loop over a compile-time-empty new-array is eliminated (post-inline 
   // `disallowed` loop iterates over `new address[](0)` = 0 times. A second UnrollFixedBoundEntryLoop pass (post-
   // inline) folds the constant bound and drops the dead loop, so its vmap sorted-mapping write never reaches codegen
   // (was: SortedMappingCodegenPendingError 'whitelistWorkers'). Sound: the body provably never runs.
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles an internal vmap mapping-write loop called with new T[](0)', () => {
     expect(ok('contract C { mapping(uint256 => mapping(address => bool)) w;'
       + ' function upd(uint256 id, address[] memory a, address[] memory d) internal {'
@@ -1588,7 +1588,7 @@ describe('a loop over a compile-time-empty new-array is eliminated (post-inline 
     expect(() => compileString('contract C { mapping(address => bool) w;'
       + ' function f() public { address[] memory a = new address[](0); a.push(address(0));'
       + ' for (uint256 i = 0; i < a.length; i++) { w[a[i]] = true; } require(true); } }',
-    { solidityImportCompat: true })).toThrow(/vmap linked-list transition generator|only available.*storage/);
+    { evmCompat: true })).toThrow(/vmap linked-list transition generator|only available.*storage/);
   });
 });
 
@@ -1596,7 +1596,7 @@ describe('BARE mapping access (no this.) as a storage-pointer arg - real-Solidit
   // Solidity code without `this.` writes `totals[k].addElastic(x)` / `L.f(totals[k], x)`; the bare `totals[k]`
   // parses as an array-access on the mapping-name identifier, not a MappingAccessNode, so the inline RMW must
   // normalize it to a mapping access (else "Undefined state variable 'totals'"). Both the void and returning passes.
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true, forceStateful: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true, forceStateful: true }).contractName;
   const VOID = 'struct T { int base; int elastic; }'
     + ' library L { function addBase(T storage t, int x) { t.base += x; } }';
   const RET = 'struct T { int base; int elastic; }'
@@ -1620,7 +1620,7 @@ describe('writable bytes view of a storage string', () => {
   it('supports push and indexed writes through bytes(s)', () => {
     expect(compileString('contract C { string x; function f() public {'
       + ' bytes(x).push(0); bytes(x)[0] = bytes1(uint8(1)); require(true); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -1629,7 +1629,7 @@ describe('field writes through a storage-reference-returning call', () => {
     expect(compileString('contract C { struct S { uint x; } mapping(uint => S) m;'
       + ' function ref(uint k) internal view returns (S storage r) { return m[k]; }'
       + ' function f(uint k, uint v) public { ref(k).x = v; require(true); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -1638,7 +1638,7 @@ describe('indexed write through a parenthesized mapping-storage rebind', () => {
     const head = 'contract C { mapping(uint => uint) a; mapping(uint => uint) b;'
       + ' function f(uint k, uint v) public { mapping(uint => uint) storage p = a;';
     const tail = ' require(true); } }';
-    const compat = { solidityImportCompat: true, forceStateful: true };
+    const compat = { evmCompat: true, forceStateful: true };
     const combined = compileString(`${head} (p = b)[k] = v;${tail}`, compat);
     const sequential = compileString(`${head} p = b; p[k] = v;${tail}`, compat);
     expect(combined.bytecode).toBe(sequential.bytecode);
@@ -1650,7 +1650,7 @@ describe('push through a simple storage-return alias helper', () => {
     expect(compileString('contract C { bytes data;'
       + ' function getData() internal view returns (bytes storage) { return data; }'
       + ' function f() public { getData().push("a"); require(true); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
   it('preserves a push-only helper prelude before pushing through its returned array element', () => {
@@ -1658,7 +1658,7 @@ describe('push through a simple storage-return alias helper', () => {
       + ' function slot() internal returns (int[] storage) {'
       + ' values.push(); values.push(); values.push(); return values[2]; }'
       + ' function f() public { slot().push(); require(values[2].length > 0); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -1668,7 +1668,7 @@ describe('prefix mutation of a local struct field expression', () => {
       'contract C { struct S { uint x; uint y; }'
       + ' function f() public { S memory s = S(0, 7);'
       + ' for (uint i = 0; i < 3; ++s.x) { i = i + 1; } require(s.y == 7); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1679,7 +1679,7 @@ describe('indexed aggregate fields in local struct arrays', () => {
       + ' function f() public returns (uint, bytes1) { S[] memory z = new S[](2);'
       + ' z[1].a[0] = 4; z[1].b = new bytes(2); z[1].b[1] = "B";'
       + ' return (z[1].a[0], z[1].b[1]); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('rebuilds a struct array nested inside a local struct, including an indexed array field', () => {
@@ -1688,7 +1688,7 @@ describe('indexed aggregate fields in local struct arrays', () => {
       + ' S memory s; s.rows = new T[](2); s.rows[0].y = 5;'
       + ' s.rows[1].a = new uint[](2); s.rows[1].a[1] = 6;'
       + ' return (s.rows[0].y, s.rows[1].a[1]); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('writes a nested dynamic-array field through a state struct-array element', () => {
@@ -1697,14 +1697,14 @@ describe('indexed aggregate fields in local struct arrays', () => {
       + ' while (data[0].rows.length < 1) data[0].rows.push();'
       + ' while (data[0].rows[0].length < 1) data[0].rows[0].push();'
       + ' data[0].rows[0][0] = 8; require(data[0].rows[0][0] == 8); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
   it('rebuilds a struct selected through multiple state-array dimensions', () => {
     expect(compileString('contract C { struct T { uint x; uint y; uint[] z; } T[2][] rows;'
       + ' function f() public { rows.push(); rows[0][1].x = 11; rows[0][1].y = 12;'
       + ' rows[0][1].z.push(1); require(rows[0][1].x == 11); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -1713,7 +1713,7 @@ describe('nested struct fields in mapping values', () => {
     expect(compileString('contract C { struct N { uint x; uint y; } struct S { uint a; N n; }'
       + ' mapping(uint => S) data; function f(uint k) public {'
       + ' data[k].n.x = 3; data[k].n.y = 4; require(data[k].n.x == 3); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -1729,7 +1729,7 @@ describe('message-bus mapping struct-field writes', () => {
           records[id].ready = true;
         }
       }
-    `, { solidityImportCompat: true, messageBus: true });
+    `, { evmCompat: true, messageBus: true });
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set');
     expect(handler?.eligible).toBe(true);
     expect(handler?.batchKeyWitnesses).toEqual([{
@@ -1749,7 +1749,7 @@ describe('message-bus mapping struct-field writes', () => {
         }
       }
     `, {
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusHandlers: ['publish'],
       maximumInputBytes: 10_000_000,
@@ -1764,25 +1764,25 @@ describe('dynamic state-array copies with wider fixed rows', () => {
   it('copies shared elements and zero-fills the wider destination row', () => {
     expect(compileString('contract C { uint[4][] rows; function f(uint[2][] memory src) public {'
       + ' rows = src; require(rows.length == src.length); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
   it('copies a shorter fixed local outer array and zero-fills state-array tail rows', () => {
     expect(compileString('contract C { uint[2][3] rows; function f() public {'
       + ' uint[2][2] memory src; src[0][0] = 1; rows = src; require(rows[2][0] == 0); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
   it('recursively widens nested fixed rows and zero-fills both dimensions', () => {
     expect(compileString('contract C { uint120[6][3] dst; uint48[5][2] src; function f() public {'
       + ' src[0][1] = 7; dst = src; require(dst[0][1] == 7 && dst[2][0] == 0); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
   it('widens every element when pushing a dynamic state array into a nested dynamic array', () => {
     expect(compileString('contract C { bytes16[] inner; bytes32[][] data; function f() public {'
       + ' data.push(inner); require(data.length > 0); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
 });
@@ -1791,7 +1791,7 @@ describe('parenthesized array-member invocation', () => {
   it('lowers (data.pop)() like data.pop()', () => {
     expect(compileString('contract C { int[] data; function f() public returns (uint) {'
       + ' data.push(1); (data.pop)(); return data.length; } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -1799,13 +1799,13 @@ describe('three-level chained array push', () => {
   it('appends defaults through every array level', () => {
     expect(compileString('contract C { uint[][][] data; function f() public {'
       + ' data.push().push().push(); require(data.length == 1); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
   it('assigns the element returned by the final push', () => {
     expect(compileString('contract C { uint[][][] data; function f() public {'
       + ' data.push().push().push() = 2; require(data[0][0][0] == 2); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -1813,7 +1813,7 @@ describe('explicit array conversion', () => {
   it('converts a calldata array slice to the same dynamic array type', () => {
     expect(compileString('contract C { function f(uint256[] calldata x, uint256 s, uint256 e)'
       + ' external returns (uint256) { return uint256[](x[s:e]).length; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1823,7 +1823,7 @@ describe('delete through nested mapping-struct paths', () => {
       + ' struct P { mapping(uint256 => D) data; } contract C { mapping(address => P) providers;'
       + ' function f(address sender, uint256 height, uint256 round) public {'
       + ' delete providers[sender].data[height].supply[round]; require(true); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
@@ -1835,7 +1835,7 @@ describe('multiline storage-layout specifiers', () => {
       + ' /** expression docs */\n'
       + ' 0x1234\n'
       + ' { function f() public pure returns (uint256) { return 7; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1844,33 +1844,33 @@ describe('state-variable initializer assignment chains', () => {
     expect(compileString(
       'contract C { uint immutable z = 2; uint immutable x = z = y = 3;'
       + ' uint immutable y = 5; function f() public view returns (uint) { return x + y + z; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
     expect(compileString(
       'contract D { int immutable x = x = 5; function f() public view returns (int) { return x; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('D');
   });
 
   it('recognizes a current-contract-qualified target before that state slot is registered', () => {
     expect(compileString(
       'contract C { uint x = (C).x = 2; function f() public view returns (uint) { return x; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
     expect(compileString(
       'contract B { uint x = 1; } contract C is B { uint y = (B).x = 3; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
   it('retains pure-read and view-write diagnostics for qualified state access', () => {
     expect(() => compileString(
       'contract A { uint x; } contract C is A { function f() public pure returns (uint) { return A.x; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/pure.*cannot read/i);
     expect(() => compileString(
       'contract A { uint x; } contract C is A { function f() public view { A.x = 2; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/cannot modify/i);
   });
 });
@@ -1881,7 +1881,7 @@ describe('standalone generic-storage libraries', () => {
       'library Set { struct Data { mapping(uint => bool) flags; }'
       + ' function insert(Data storage self, uint value) public returns (bool) {'
       + ' if (self.flags[value]) return false; self.flags[value] = true; return true; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(artifact.contractName).toBe('Set');
     expect(artifact.bytecode).toBe('');
@@ -1892,11 +1892,11 @@ describe('returning a no-argument array push', () => {
   it('appends and returns the fresh element default', () => {
     const fromPush = compileString(
       'contract C { uint[] x; function f() public returns (uint) { return x.push(); } }',
-      { solidityImportCompat: true, forceStateful: true },
+      { evmCompat: true, forceStateful: true },
     );
     const explicit = compileString(
       'contract C { uint[] x; function f() public returns (uint) { x.push(0); return 0; } }',
-      { solidityImportCompat: true, forceStateful: true },
+      { evmCompat: true, forceStateful: true },
     );
     expect(fromPush.bytecode).toBe(explicit.bytecode);
   });
@@ -1906,7 +1906,7 @@ describe('discarded user-defined array type expressions', () => {
   it('accepts a struct array type without turning ordinary indexed values into no-ops', () => {
     expect(compileString('contract C { struct S { uint256 x; } function f(uint256[] memory a)'
       + ' public pure returns (uint256) { S[7][]; a[0]; return 3; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1915,7 +1915,7 @@ describe('whole-mapping storage aliases', () => {
     expect(compileString('contract C { mapping(uint256 key => uint256[] values) data;'
       + ' function f() external { mapping(uint256 key => uint256[] values) storage alias_ = data;'
       + ' alias_[1].push(2); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1924,14 +1924,14 @@ describe('mapping storage-pointer rebinding', () => {
     expect(compileString('contract C { mapping(uint8 => uint8) m1; mapping(uint8 => uint8) m2;'
       + ' function f() public returns (uint8, uint8) { mapping(uint8 => uint8) storage m = m1;'
       + ' m[1] = 42; m = m2; m[2] = 21; return (m1[1], m2[2]); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('removes a mapping pointer from a parallel tuple assignment and retains scalar writes', () => {
     expect(compileString('contract C { mapping(uint8 => uint8) m1; mapping(uint8 => uint8) m2;'
       + ' function f() public returns (uint8, uint8) { mapping(uint8 => uint8) storage m = m1;'
       + ' uint8 v; (m, v) = (m2, 21); m[2] = v; return (m1[2], m2[2]); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1943,14 +1943,14 @@ describe('tuple assignment targets returned by storage push()', () => {
       + ' (x.push(), x[0]) = (0, 0);'
       + ' bytes1[] storage y = x; (x.push(), y.push()) = (0, 0);'
       + ' (x.push(), z.push()) = (0, 0); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('supports the same push-return assignment targets on bytes storage', () => {
     expect(compileString('contract C { bytes x; function f() public {'
       + ' (x.push(), x.push()) = (0, 0);'
       + ' (((x.push())), (x.push())) = (0, 0); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1961,7 +1961,7 @@ describe('storage-pointer expression inlining with same-arity overloads', () => 
       + ' function mul(S storage, bytes32) public returns (bytes32) {} }'
       + ' contract C { using D for D.S; D.S x;'
       + ' function f(uint a) public returns (uint) { return x.mul(a); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1971,13 +1971,13 @@ describe('UDVT dynamic state-array copies', () => {
       + ' Small[] public small; Left[] public left;'
       + ' function fromCalldata(Small[] calldata values) external { small = values; }'
       + ' function fromMemory(Left[] memory values) public { left = values; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('copies address-backed UDVT arrays through the framed chunk layout', () => {
     expect(compileString('type Account is address; contract C { Account[] public accounts;'
       + ' function set(Account[] calldata values) external { accounts = values; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1985,7 +1985,7 @@ describe('UDVT arrays in struct fields', () => {
   it('resolves a contract-level UDVT before building struct field types', () => {
     expect(compileString('contract C { type U is uint; struct S { U[] values; }'
       + ' function f() public { S memory s; s.values = new U[](1); s.values[0] = U.wrap(7); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -1993,7 +1993,7 @@ describe('public transient state getters', () => {
   it('synthesizes an entry getter and inlines a self getter read to the transaction-local binding', () => {
     const artifact = compileString('contract C { int8 public transient x;'
       + ' function f() public returns (int8) { x = -1; return this.x(); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(artifact.abi.map((entry) => entry.name)).toEqual(expect.arrayContaining(['x', 'f']));
   });
 
@@ -2001,13 +2001,13 @@ describe('public transient state getters', () => {
     expect(compileString('contract C { uint16 transient x;'
       + ' modifier m(uint16 v) { x += v + 10; _; }'
       + ' function f() public m(x) returns (uint16) { x *= 10; return x; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('initializes synthesized transient getters in secondary source contracts', () => {
     const artifact = compileString('contract B { uint256 transient public value; }'
       + ' contract A { B b; function f() public view returns (uint256) { return b.value(); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(artifact.contractName).toBe('A');
   });
 });
@@ -2016,7 +2016,7 @@ describe('public state getter function values', () => {
   it('contextually treats uncalled this.x as the external getter function', () => {
     const artifact = compileString('contract C { uint immutable public x = 42;'
       + ' function h() public view returns (function () external view returns (uint)) { return this.x; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(artifact.abi.map((entry) => entry.name)).toEqual(expect.arrayContaining(['x', 'h']));
   });
 });
@@ -2024,15 +2024,15 @@ describe('public state getter function values', () => {
 describe('fixed array dimension range validation', () => {
   it('rejects zero and values above uint256 before choosing the state representation', () => {
     expect(() => compileString('contract C { uint[0] a; }',
-      { solidityImportCompat: true })).toThrow(/positive integer/);
+      { evmCompat: true })).toThrow(/positive integer/);
     expect(() => compileString('contract C { uint[2**256] a; }',
-      { solidityImportCompat: true })).toThrow(/too large/);
+      { evmCompat: true })).toThrow(/too large/);
   });
 });
 
 describe('Solidity array length mutation receivers', () => {
   it('permits push/pop only on dynamic storage arrays', () => {
-    const compat = { solidityImportCompat: true };
+    const compat = { evmCompat: true };
     expect(() => compileString('contract C { function f() public { uint[] memory x; x.push(); } }', compat))
       .toThrow(/only available.*storage/);
     expect(() => compileString('contract C { uint[3] x; function f() public { x.pop(); } }', compat))
@@ -2046,13 +2046,13 @@ describe('state assignments in short-circuit branch conditions', () => {
   it('keeps right-side && and || writes conditional', () => {
     expect(compileString('contract C { bool b; function f(bool choose) public {'
       + ' if (choose && (b = true)) {} if (choose || (b = false)) {} } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('contextually typed inline-array literals', () => {
   it('encodes a returned array literal using its declared result type', () => {
-    const options = { forceStateful: true, solidityImportCompat: true, suppressWarnings: true } as const;
+    const options = { forceStateful: true, evmCompat: true, suppressWarnings: true } as const;
     const inline = compileString('pragma solidity ^0.8.0; contract C {'
       + ' function read() public pure returns (uint256[5] memory) {'
       + ' return [uint256(1), uint256(2), uint256(3), uint256(4), uint256(5)]; } }', options);
@@ -2065,7 +2065,7 @@ describe('contextually typed inline-array literals', () => {
   });
 
   it('preserves the following result slot after a returned array literal', () => {
-    const options = { forceStateful: true, solidityImportCompat: true, suppressWarnings: true } as const;
+    const options = { forceStateful: true, evmCompat: true, suppressWarnings: true } as const;
     const inline = compileString('pragma solidity ^0.8.0; contract C {'
       + ' function read() public pure returns (uint256[3] memory, bool) {'
       + ' return ([uint256(1), uint256(2), uint256(3)], true); } }', options);
@@ -2080,17 +2080,17 @@ describe('contextually typed inline-array literals', () => {
   it('interprets hex-number elements from an integer array destination', () => {
     const hex = compileString('contract C { function f() public pure returns (uint[2] memory) {'
       + ' uint[2] memory a = [0x111, 0x333333]; return a; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     const decimal = compileString('contract C { function f() public pure returns (uint[2] memory) {'
       + ' uint[2] memory a = [273, 3355443]; return a; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(hex.bytecode).toBe(decimal.bytecode);
   });
 
   it('right-pads a string literal from a fixed-bytes array destination', () => {
     expect(compileString('contract C { function f() public pure {'
       + ' bytes7[2] memory a = [bytes7("A"), "B"]; assert(a[1] == bytes7("B")); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2098,7 +2098,7 @@ describe('state-struct tuple swaps', () => {
   it('captures both struct values before writing either state slot', () => {
     expect(compileString('contract C { struct S { uint a; uint b; } S x; S y;'
       + ' function f() public { (x, y) = (y, x); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2106,7 +2106,7 @@ describe('self public array-of-struct getter destructuring', () => {
   it('inlines each ABI-visible struct field while retaining indexed state reads', () => {
     expect(compileString('contract C { struct Item { uint x; uint y; } Item[] public items;'
       + ' function f() public view returns (uint) { (uint x, uint y) = this.items(0); return x + y; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2116,7 +2116,7 @@ describe('self public struct getter with external function member', () => {
       + ' function () external returns (uint) f; } S public s; function test() public view {'
       + ' (D d, function () external returns (uint) f) = this.s();'
       + ' assert(d == s.d); assert(address(d) == address(this)); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('retains a nested value-struct member after dynamic-field state flattening', () => {
@@ -2124,7 +2124,7 @@ describe('self public struct getter with external function member', () => {
       + ' struct S { uint x; T t; bool b; uint[] a; } S public s; function f() public view {'
       + ' uint y; bool c; T memory t; (y, t, c) = this.s();'
       + ' assert(y == s.x); assert(c == s.b); assert(t.t == s.t.t); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
 });
@@ -2135,7 +2135,7 @@ describe('storage struct references returned by no-argument push', () => {
       + ' function g(S storage s, uint y) internal { s.x = y; }'
       + ' function f(uint y) public { S storage s = array.push(); g(s, y); }'
       + ' function h(uint y) public { g(array.push(), y); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2148,14 +2148,14 @@ describe('fixed arrays containing mappings', () => {
       + ' function set(uint8 key, uint8 x, uint8 y) public returns (uint8 ox, uint8 oy) {'
       + ' (ox, oy) = setInternal(a, key, x, y); }'
       + ' function get(uint8 key) public view returns (uint8, uint8) { return (a[0][key], a[1][key]); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('folds the compile-time length and retains direct mixed-key reads and writes', () => {
     expect(compileString('contract C { mapping(uint => uint)[2] entries;'
       + ' function f(uint k, uint v) public returns (uint) {'
       + ' require(entries.length == 2); entries[1][k] = v; return entries[1][k]; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('substitutes a mapping pointer bound to a runtime-selected fixed-array element', () => {
@@ -2163,12 +2163,12 @@ describe('fixed arrays containing mappings', () => {
       + ' function set(mapping(uint => uint) storage map) internal {'
       + ' severalMaps[0][0] = 42; map[0] = 2; assert(severalMaps[0][0] == 42); }'
       + ' function f(uint x) public { require(x < severalMaps.length); set(severalMaps[x]); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
     expect(compileString('contract C { mapping(uint => uint)[2][2] maps;'
       + ' function set(mapping(uint => uint) storage map) internal {'
       + ' map[0] = 42; assert(map[0] == 42); assert(maps[0][0][0] == 42); }'
       + ' function f(uint x) public { require(x < 2); set(maps[x][0]); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2178,7 +2178,7 @@ describe('state-backed external target through address casts', () => {
       + ' interface IChild { function f() external pure returns (uint); }'
       + ' contract C { Child immutable child = new Child();'
       + ' function g() public returns (uint) { return IChild(address(child)).f(); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2188,7 +2188,7 @@ describe('delete on a flattened struct with array leaves', () => {
       + ' function f() public { s.a = 1; s.b[0] = 2; s.b[1] = 3;'
       + ' s.x.push(4); delete s;'
       + ' require(s.a == 0 && s.b[0] == 0 && s.b[1] == 0 && s.x.length == 0); } }';
-    expect(compileString(src, { solidityImportCompat: true, chunkedArrays: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true, chunkedArrays: true }).contractName).toBe('C');
   });
 });
 
@@ -2197,7 +2197,7 @@ describe('whole fixed-array literals on flattened struct fields', () => {
     const compile = (body: string): string => compileString(
       `contract C { struct S { uint8[2] x; mapping(uint => uint) m; } S src;
        constructor() { ${body} } function f() public { require(src.x[0] == 3 && src.x[1] == 5); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).bytecode;
     expect(compile('src.x = [3, 5];')).toBe(compile('src.x[0] = 3; src.x[1] = 5;'));
   });
@@ -2207,7 +2207,7 @@ describe('whole fixed-array literals on flattened struct fields', () => {
       `contract C { struct S { uint8[2] x; uint8 y; mapping(uint => uint) m; } S src; S dst;
        constructor() { src.x = [3, 5]; src.y = 7; src.m[0] = 9; dst = src; }
        function f() public { require(dst.x[0] == 3 && dst.x[1] == 5 && dst.y == 7); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2218,12 +2218,12 @@ describe('whole storage aliases to flattened structs', () => {
       `contract C { struct S { uint sum; mapping(uint => uint) m; } S s;
        function f() public { S storage p = s; p.sum = 4; p.m[1] = 7;
        require(s.sum == 4 && s.m[1] == 7); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).bytecode;
     const direct = compileString(
       `contract C { struct S { uint sum; mapping(uint => uint) m; } S s;
        function f() public { s.sum = 4; s.m[1] = 7; require(s.sum == 4 && s.m[1] == 7); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).bytecode;
     expect(alias).toBe(direct);
   });
@@ -2233,12 +2233,12 @@ describe('whole storage aliases to flattened structs', () => {
       `contract C { struct S { mapping(uint => uint) m; uint sum; } struct T { uint x; S s; } T t;
        function put(T storage p) internal { p.s.m[1] = 7; p.s.sum = 7; }
        function f() public { put(t); require(t.s.m[1] == 7 && t.s.sum == 7); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).bytecode;
     const direct = compileString(
       `contract C { struct S { mapping(uint => uint) m; uint sum; } struct T { uint x; S s; } T t;
        function f() public { t.s.m[1] = 7; t.s.sum = 7; require(t.s.m[1] == 7 && t.s.sum == 7); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).bytecode;
     expect(helper).toBe(direct);
   });
@@ -2250,7 +2250,7 @@ describe('defined-later struct storage-return helpers', () => {
       `contract C { struct S { uint x; } S[4] data;
        function f(uint v) public { get().x = v; require(data[1].x == v); }
        function get() internal view returns (S storage p) { return data[1]; } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2261,7 +2261,7 @@ describe('dead mapping-bearing storage-pointer return helpers', () => {
       `contract C { mapping(uint => uint)[] m;
        function dead() internal view returns (mapping(uint => uint)[] storage) { return m; }
        function alsoDead() private view returns (mapping(uint => uint)[] storage r) { r = m; } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2271,7 +2271,7 @@ describe('increment and decrement on flattened struct scalar leaves', () => {
     const compile = (body: string): string => compileString(
       `contract C { struct S { uint x; S[] children; } S s;
        function f() public { s.x = 10; ${body} require(s.x == 10); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).bytecode;
     expect(compile('++s.x; s.x++; --s.x; s.x--;'))
       .toBe(compile('s.x = s.x + 1; s.x = s.x + 1; s.x = s.x - 1; s.x = s.x - 1;'));
@@ -2282,14 +2282,14 @@ describe('recursive mapping-bearing struct flattening', () => {
   it('does not recursively expand an unused self-referential mapping declaration', () => {
     expect(compileString('contract C { struct S { uint z; mapping(uint => S) next; } S data;'
       + ' function f() public pure { require(true); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('does not recursively expand mutually recursive mapping declarations', () => {
     expect(compileString('contract C { struct A { uint x; mapping(uint => B) b; }'
       + ' struct B { uint y; mapping(uint => A) a; } A data;'
       + ' function f() public pure { require(true); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2300,13 +2300,13 @@ describe('UDVT operator overloads on state values', () => {
       + ' return U8.wrap(U8.unwrap(a) + U8.unwrap(b)); }'
       + ' contract C { U8 x = U8.wrap(1); function f() public {'
       + ' x = x + U8.wrap(1); require(U8.unwrap(x) > 0); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
 
 describe('user-defined value type construction validation', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('rejects direct UDVT conversion syntax in favor of wrap', () => {
     expect(() => cc('type MyT is uint; contract C { function f() public pure { MyT(1); } }'))
@@ -2335,7 +2335,7 @@ describe('user-defined value type construction validation', () => {
 
 describe('Solidity constant state eligibility', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('requires every constant state variable to have an initializer', () => {
     expect(() => cc('contract C { uint constant value; }'))
@@ -2363,15 +2363,15 @@ describe('Solidity constant state eligibility', () => {
 describe('discarded contract fixed-array type expressions', () => {
   it('drops a declared contract type with a literal bound but not an unknown runtime base', () => {
     expect(compileString('contract C { function f() public pure { C[0]; } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
     expect(() => compileString('contract C { function f() public pure { Unknown[0]; } }',
-      { solidityImportCompat: true })).toThrow(/Undefined reference/);
+      { evmCompat: true })).toThrow(/Undefined reference/);
   });
 
   it('drops a contract-qualified struct fixed-array type expression', () => {
     expect(compileString('contract C { struct S { uint x; }'
       + ' function f() public pure { C.S[10]; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2381,7 +2381,7 @@ describe('tx-named storage aliases in tuple lvalues', () => {
       + ' mapping(uint => T) transactions; function f(uint id, address target) public {'
       + ' T storage tx = transactions[id];'
       + ' (tx.executed,) = target.call(""); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2390,7 +2390,7 @@ describe('parallel whole-struct storage-pointer rebinding', () => {
     expect(compileString('contract C { struct S { uint a; uint b; } S x; S y;'
       + ' function f() public { S storage x_local = x; S storage y_local = y; S storage z_local = x;'
       + ' (x, y_local, x_local, z_local) = (y, x_local, y_local, y); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2398,14 +2398,14 @@ describe('explicit array-pointer casts', () => {
   it('parses a dynamic array cast before the scalar cast alternative', () => {
     expect(compileString('contract C { uint[] a; uint[] b; function f() public view {'
       + ' uint[] storage c = a; uint[] storage d = b; d = uint[](c); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('delete of a freshly pushed array element', () => {
   const bc = (body: string): string => compileString(
     `contract C { uint[][] data; function f() public { ${body} } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).bytecode;
 
   it('retains the push side effect for scalar and nested fresh elements', () => {
@@ -2422,7 +2422,7 @@ describe('returning helpers with mapping storage parameters', () => {
       + ' internal returns (uint8) { uint8 oldValue = m[key]; m[key] = value; return oldValue; }'
       + ' function set(uint8 key, uint8 value) public returns (uint8) {'
       + ' return setInternal(a, key, value); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2432,7 +2432,7 @@ describe('numeric nested-mapping reads', () => {
     expect(compileString(
       'contract C { mapping(uint => mapping(uint => mapping(uint => uint))) map;'
       + ' function f() public { map[13][14][15] = 42; require(map[13][14][15] == 42); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2443,7 +2443,7 @@ describe('deleting flattened struct array leaves', () => {
       'contract C { struct S { uint a; uint[] x; } S s; function f() public {'
       + ' s.x.push(42); delete s.x; uint[] storage x = s.x;'
       + ' assembly { sstore(x.slot, 3) } require(s.x.length == 3); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2452,7 +2452,7 @@ describe('no-argument pushes on both sides of a struct-field assignment', () => 
   it('preserves right-before-left evaluation while appending both default elements', () => {
     expect(compileString('contract C { struct S { int[] b; } S s;'
       + ' struct T { S s; } T t; function f() public { s.b.push() = t.s.b.push(); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2461,7 +2461,7 @@ describe('indexed reads through an array storage-pointer alias', () => {
     expect(compileString('contract C { uint[][] data; function f() public { data.push();'
       + ' uint[] storage row = data[0]; row.push(8);'
       + ' require(row[row.length - 1] == data[0][data[0].length - 1]); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -2469,7 +2469,7 @@ describe('selfdestruct implies a stateful contract', () => {
   it('creates the master-NFT state layout without an explicit state declaration or forceStateful option', () => {
     const artifact = compileString(
       'contract C { function destroy(address payable recipient) public { selfdestruct(recipient); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(artifact.stateLayout).toBeDefined();
   });
@@ -2477,7 +2477,7 @@ describe('selfdestruct implies a stateful contract', () => {
   it('still requires Solidity payable-address conversion for the recipient', () => {
     expect(() => compileString(
       'contract C { function destroy(address recipient) public { selfdestruct(recipient); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/recipient|payable/i);
   });
 });
@@ -2489,7 +2489,7 @@ describe('default struct pushes into mapping-held arrays', () => {
       + ' constructor() { values[0].push(); }'
       + ' function f() public { values[1].push(); values[1][0].x = 7;'
       + ' require(values[1][0].x == 7); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2500,7 +2500,7 @@ describe('mapping reads inside a try success block', () => {
       'contract C { mapping(uint => uint[]) public m; constructor() { m[0].push(42); }'
       + ' function f() public view { try this.m(0, 0) returns (uint y) {'
       + ' assert(y == m[0][0]); } catch { assert(false); } } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2514,7 +2514,7 @@ describe('multi-return internal collection helpers', () => {
       + ' if (values[k] == 1) { values[k] = 2; return true; }'
       + ' else { values[k] = 1; return false; } }'
       + ' function f(uint k) public returns (bool) { return update(k); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2529,7 +2529,7 @@ describe('transient state value types', () => {
       'contract C { bytes transient x; string transient y; }',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/Transient data location is only supported for value types/);
     }
   });
@@ -2538,7 +2538,7 @@ describe('transient state value types', () => {
     expect(compileString(
       'contract C { uint transient x; bytes32 transient y;'
       + ' function f(uint a) public { x = a; y = bytes32(a); require(x == a); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -2549,7 +2549,7 @@ describe('upgradeable implementation metadata', () => {
       'contract C { mapping(uint => uint) values; bool initialized;'
       + ' modifier initializer() { require(!initialized); initialized = true; _; }'
       + ' function initialize() public initializer { values[0] = 1; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(artifact.abi.find((fn) => fn.name === 'initialize')?.modifiers).toContain('delegate');
     expect(artifact.delegateProxyStateOutputCountPinned).toBe(true);
@@ -2571,7 +2571,7 @@ describe('upgradeable implementation metadata', () => {
       + ' function initialize(address o) public initializer { __Ownable_init(o); }'
       + ' function setData(address d) public onlyOwner { data = d; }'
       + '}',
-      { solidityImportCompat: true, forceStateful: true },
+      { evmCompat: true, forceStateful: true },
     );
     expect(artifact.abi.find((fn) => fn.name === 'setData')?.modifiers).toContain('delegate');
     const outlined = Object.values(artifact.debug?.invokeDebug ?? {})

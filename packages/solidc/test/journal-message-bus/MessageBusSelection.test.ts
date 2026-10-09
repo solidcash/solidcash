@@ -51,9 +51,9 @@ describe('message-bus compilation selection', () => {
           require(value > 0);
         }
       }`;
-    const automatic = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    const automatic = compileString(source, { evmCompat: true, suppressWarnings: true });
     const direct = compileString(source, {
-      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+      evmCompat: true, suppressWarnings: true, messageBus: false,
     });
     expect(automatic.compiler.options?.messageBus).toBe(false);
     expect(automatic.messageBus).toBeUndefined();
@@ -72,7 +72,7 @@ describe('message-bus compilation selection', () => {
           require(value > 0);
         }
       }`;
-    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const options = { evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
     const automatic = compileString(source, options);
     const direct = compileString(source, { ...options, messageBus: false });
     expect(automatic.compiler.options?.messageBus).toBe(false);
@@ -92,7 +92,7 @@ describe('message-bus compilation selection', () => {
           require(value > 0);
         }
       }`;
-    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const options = { evmCompat: true, suppressWarnings: true };
     const automatic = compileString(source, options);
     const direct = compileString(source, { ...options, messageBus: false });
     expect(automatic.compiler.options?.messageBus).toBe(false);
@@ -111,7 +111,7 @@ describe('message-bus compilation selection', () => {
         using Forward for ISink;
         function invoke(uint value) public { sink.forward(value); }
       }`;
-    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const options = { evmCompat: true, suppressWarnings: true };
     const automatic = compileString(source, options);
     const optedIn = compileString(source, { ...options, messageBus: true });
     expect(automatic.compiler.options?.messageBus).toBe(true);
@@ -134,7 +134,7 @@ describe('message-bus compilation selection', () => {
         }
         function unrelated() public { int Helpers = 0; require(Helpers == 0); }
       }`;
-    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const options = { evmCompat: true, suppressWarnings: true };
     const automatic = compileString(source, options);
     const direct = compileString(source, { ...options, messageBus: false });
     expect(automatic.compiler.options?.messageBus).toBe(false);
@@ -147,7 +147,7 @@ describe('message-bus compilation selection', () => {
         (bool ok,) = peer.call(payload);
         require(ok);
       }
-    }`, { solidityImportCompat: true, suppressWarnings: true });
+    }`, { evmCompat: true, suppressWarnings: true });
     expect(lowLevel.compiler.options?.messageBus).toBe(true);
   });
 
@@ -180,7 +180,7 @@ describe('message-bus compilation selection', () => {
           require(next >= 0);
         }
       }`;
-    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const options = { evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
     const automatic = compileString(source, options);
     const direct = compileString(source, { ...options, messageBus: false });
     expect(automatic.compiler.options?.messageBus).toBe(false);
@@ -227,7 +227,7 @@ describe('message-bus compilation selection', () => {
           require(next >= 0);
         }
       }`;
-    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const options = { evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
     const automatic = compileString(source, options);
     const direct = compileString(source, { ...options, messageBus: false });
     expect(automatic.compiler.options?.messageBus).toBe(false);
@@ -255,7 +255,7 @@ describe('message-bus compilation selection', () => {
         function set(int next) public { value = next; require(next >= 0); }
         function dormant(int next) internal { ISink(target).ping(next); }
       }`;
-    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const options = { evmCompat: true, suppressWarnings: true };
     const automatic = compileString(source, options);
     const direct = compileString(source, { ...options, messageBus: false });
     expect(automatic.compiler.options?.messageBus).toBe(false);
@@ -276,7 +276,7 @@ describe('message-bus compilation selection', () => {
       function save(function(uint) external returns (uint) next) public { stored = next; }
       function run(uint value) public returns (uint) { return stored(value); }
     }`;
-    const artifact = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    const artifact = compileString(source, { evmCompat: true, suppressWarnings: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     const save = artifact.abi.find((entry) => entry.name === 'save');
@@ -294,7 +294,7 @@ describe('message-bus compilation selection', () => {
         int value;
         function retain(function() external pointer) public { require(true); }
         function callSink() public { ISink(target).ping(); value = value + 1; require(true); }
-      }`, { solidityImportCompat: true, suppressWarnings: true });
+      }`, { evmCompat: true, suppressWarnings: true });
     expect(unlowered.compiler.options?.messageBus).toBe(true);
     expect(unlowered.messageBus?.available).toBe(true);
     expect(unlowered.abi.find((entry) => entry.name === 'retain')?.inputs)
@@ -392,7 +392,7 @@ describe('message-bus compilation selection', () => {
             (bool ok,) = this.peer.${mode}(payload);
             require(ok);
           }
-        }`, { solidityImportCompat: true, suppressWarnings: true });
+        }`, { evmCompat: true, suppressWarnings: true });
       expect(artifact.compiler.options?.messageBus).toBe(true);
       expect(artifact.messageBus?.available).toBe(true);
       expect(artifact.abi.find((entry) => entry.name === 'invoke')?.externalCalls).toHaveLength(1);
@@ -406,9 +406,9 @@ describe('message-bus compilation selection', () => {
         require(ok);
       }
     }`;
-    const automatic = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    const automatic = compileString(source, { evmCompat: true, suppressWarnings: true });
     const direct = compileString(source, {
-      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+      evmCompat: true, suppressWarnings: true, messageBus: false,
     });
     expect(automatic.compiler.options?.messageBus).toBe(true);
     expect(automatic.abi.find((entry) => entry.name === 'invoke')?.externalCalls).toHaveLength(1);
@@ -423,7 +423,7 @@ describe('message-bus compilation selection', () => {
           strategy[id].note(1);
           require(true);
         }
-      }`, { solidityImportCompat: true, suppressWarnings: true });
+      }`, { evmCompat: true, suppressWarnings: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
@@ -438,7 +438,7 @@ describe('message-bus compilation selection', () => {
           holders[id].target.note(1);
           require(true);
         }
-      }`, { solidityImportCompat: true, suppressWarnings: true });
+      }`, { evmCompat: true, suppressWarnings: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
@@ -453,7 +453,7 @@ describe('message-bus compilation selection', () => {
           getSink().note(value);
           require(value >= 0);
         }
-      }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+      }`, { evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
@@ -467,7 +467,7 @@ describe('message-bus compilation selection', () => {
           sinks[0].note(value);
           require(value >= 0);
         }
-      }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+      }`, { evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
@@ -484,7 +484,7 @@ describe('message-bus compilation selection', () => {
         }
       }`;
     const artifact = compileString(source, {
-      solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
+      evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
     });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
@@ -492,7 +492,7 @@ describe('message-bus compilation selection', () => {
     // The direct epilogue re-evaluates this choice. If an operand changes after the call, it must not
     // authenticate a different co-spent owner from the one selected at the callsite.
     expect(() => compileString(source.replace('value = next;', 'choose = !choose; value = next;'), {
-      solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
+      evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
     })).toThrow(/external call target address must be a constructor\/function parameter or self-pinned state value/);
   });
 
@@ -504,7 +504,7 @@ describe('message-bus compilation selection', () => {
         nonce = nonce + 1;
         require(ok);
       }
-    }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    }`, { evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'forward'))
@@ -517,7 +517,7 @@ describe('message-bus compilation selection', () => {
         (bool ok, bytes result) = msg.sender.call(payload);
         require(ok);
       }
-    }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    }`, { evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.routeInBytecode).toBe(false);
     expect(artifact.diagnostics).toEqual(expect.arrayContaining([
@@ -539,7 +539,7 @@ describe('message-bus compilation selection', () => {
           value = next;
           require(next >= 0);
         }
-      }`, { optimizeForCompilationSpeed: true, solidityImportCompat: true, suppressWarnings: true });
+      }`, { optimizeForCompilationSpeed: true, evmCompat: true, suppressWarnings: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus).toBeDefined();
   });
@@ -570,7 +570,7 @@ describe('message-bus compilation selection', () => {
           value = next;
           require(next >= 0);
         }
-      }`, { optimizeForCompilationSpeed: true, solidityImportCompat: true, suppressWarnings: true });
+      }`, { optimizeForCompilationSpeed: true, evmCompat: true, suppressWarnings: true });
     expect(artifact.compiler.options?.messageBus).toBe(false);
     expect(artifact.messageBus).toBeUndefined();
   });
@@ -746,7 +746,7 @@ describe('message-bus compilation selection', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,
@@ -795,7 +795,7 @@ describe('message-bus compilation selection', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,
@@ -898,7 +898,7 @@ describe('message-bus compilation selection', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
@@ -933,7 +933,7 @@ describe('message-bus compilation selection', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
@@ -972,7 +972,7 @@ describe('message-bus compilation selection', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
@@ -1012,7 +1012,7 @@ describe('message-bus compilation selection', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
@@ -1036,7 +1036,7 @@ describe('message-bus compilation selection', () => {
         require(records[id].value == 7);
       }
     }`, {
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
@@ -1111,7 +1111,7 @@ describe('message-bus compilation selection', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusGraphContext: true,
       maximumInputBytes: 10_000_000,

@@ -26,8 +26,7 @@ function preparedArgsMatchAuthenticatedAddressTargets(
   index: number,
   supplied: CallDescriptor,
 ): boolean {
-  if (supplied.artifact.compiler?.options?.solidityImportCompat !== true
-    && supplied.artifact.compiler?.options?.evmCompat !== true) return false;
+  if (supplied.artifact.compiler?.options?.evmCompat !== true) return false;
   const invocation = plan.invocations[index];
   const abi = supplied.artifact.abi.find((candidate) =>
     candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());

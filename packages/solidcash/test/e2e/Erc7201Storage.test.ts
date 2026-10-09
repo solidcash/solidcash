@@ -8,7 +8,7 @@ const provider = createTestProvider();
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
 async function deploy(src: string): Promise<StatefulContract> {
-  const art = compileString(src, { solidityImportCompat: true });
+  const art = compileString(src, { evmCompat: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);
@@ -41,7 +41,7 @@ contract Counter() {
 
 describe('ERC-7201 namespaced storage: const-slot factory -> promoted state (MVP-1)', () => {
   it('compiles the const-slot factory idiom (promotes the field, consumes the factory)', () => {
-    const art = compileString(NS_SINGLE, { solidityImportCompat: true });
+    const art = compileString(NS_SINGLE, { evmCompat: true });
     // The no-param factory is consumed (never emitted as a callable).
     expect(art.abi.some((f) => f.name === 'layout')).toBe(false);
     // The scalar field is promoted to a hidden PACKED register state var (one data NFT), not an __evm_storage entry.
@@ -89,7 +89,7 @@ contract App() {
 
 describe('ERC-7201 namespaced storage: multi-scalar packing (MVP-2)', () => {
   it('packs all fields into ONE data NFT (not one UTXO per slot)', () => {
-    const art = compileString(NS_MULTI, { solidityImportCompat: true });
+    const art = compileString(NS_MULTI, { evmCompat: true });
     const sl = art.stateLayout as unknown as { variables?: { name: string }[]; dataNftCount?: number };
     expect(sl?.dataNftCount).toBe(1);
     expect((sl?.variables ?? []).map((v) => v.name).sort())
@@ -138,7 +138,7 @@ contract Token() {
 
 describe('ERC-7201 namespaced storage: mapping field (MVP-3)', () => {
   it('promotes a mapping field to a collection and a scalar to the register', () => {
-    const art = compileString(NS_MAPPING, { solidityImportCompat: true });
+    const art = compileString(NS_MAPPING, { evmCompat: true });
     const sl = art.stateLayout as unknown as { variables?: { name: string }[]; collections?: { name: string }[] };
     expect((sl?.variables ?? []).map((v) => v.name)).toContain('Layout__totalSupply');
     expect((sl?.collections ?? []).map((c) => c.name)).toContain('Layout__balances');
@@ -200,7 +200,7 @@ describe('ERC-7201 namespaced storage: contract-method factory + modifier usage 
       function pause() public { S storage $ = _get(); $.paused = true; }
       function isPaused() public view returns (bool) { S storage $ = _get(); return $.paused; }
     }`;
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 
   it('compiles a contract-method factory used INSIDE a modifier body (inlined by expansion), inherited', () => {
@@ -211,6 +211,6 @@ describe('ERC-7201 namespaced storage: contract-method factory + modifier usage 
       modifier guard() { S storage $ = _get(); require(!$.entered); $.entered = true; _; }
     }
     contract C is Base { function act() public guard() { } }`;
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 });

@@ -45,7 +45,7 @@ contract C {
 describe('return nested under conditions with fall-through (VM-verified)', () => {
   const setup = async (): Promise<{ contract: Contract, provider: ReturnType<typeof createTestProvider> }> => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(SOURCE, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(SOURCE, { evmCompat: true }), [], { provider });
     await provider.addUtxo(contract.address, randomUtxo());
     return { contract, provider };
   };

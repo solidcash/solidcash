@@ -19,7 +19,7 @@ describe('kernel typed mapping array getters', () => {
         uint public count;
         mapping(address => Note[]) public notes;
         function initialize() public { this.count = 0; }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();

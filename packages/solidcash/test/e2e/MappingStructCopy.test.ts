@@ -15,7 +15,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 const provider = createTestProvider();
 
 async function mk(src: string): Promise<StatefulContract> {
-  const art = compileString(src, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true });
+  const art = compileString(src, { evmCompat: true, forceStateful: true, chunkedArrays: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);

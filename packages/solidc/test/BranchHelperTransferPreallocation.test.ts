@@ -13,7 +13,7 @@ describe('conditional transfer reached through an internal helper', () => {
           require(true);
         }
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
 
     expect(artifact.contractName).toBe('C');
     expect(artifact.abi.find((entry) => entry.name === 'maybePay')?.name).toBe('maybePay');
@@ -31,7 +31,7 @@ describe('conditional transfer reached through an internal helper', () => {
           require(true);
         }
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
 
     expect(artifact.contractName).toBe('C');
   });

@@ -95,7 +95,7 @@ const SOURCE = [
 ].join('\n');
 
 const OPTIONS = {
-  solidityImportCompat: true,
+  evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
   messageBus: true,

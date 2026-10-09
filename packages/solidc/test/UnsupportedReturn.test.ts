@@ -7,7 +7,7 @@ import { compileString } from './direct-compile.js';
  * that is not lowered lets the statements after it run: these shapes compiled before and ignored the return.
  */
 const SOL = 'pragma solidity ^0.8.0;';
-const compile = (source: string): unknown => compileString(source, { solidityImportCompat: true, forceStateful: true });
+const compile = (source: string): unknown => compileString(source, { evmCompat: true, forceStateful: true });
 
 describe('a return no lowering can end a path at', () => {
   it('refuses a return in an unchecked block inside a loop, which the loop lowering does not reach', () => {

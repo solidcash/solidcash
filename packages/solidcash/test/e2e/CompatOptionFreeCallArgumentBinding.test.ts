@@ -12,7 +12,7 @@ import { createTestProvider, getSigners, setupStatefulUtxos } from '../test-util
 // site now binds the selector and the visible arguments the same redeem-end way the `{value:}` pin does, reading
 // the callee's unlocking pushes before its redeem script. The epilogue's 20-byte identity target is also tightened
 // to a canonical lock of the identity (the shared emitCompatAddressMatch), not any script carrying it at an offset.
-const OPTIONS = { solidityImportCompat: true } as any;
+const OPTIONS = { evmCompat: true } as any;
 
 const LEDGER = `pragma solidcash >=0.8.0;
 contract Ledger() {
@@ -174,8 +174,8 @@ contract Vault {
 
 describe('Solidity-compat target identity: a non-lock carrying the identity is refused', () => {
   const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
-  const ledgerArt = compileString(PIN_LEDGER, { solidityImportCompat: true, forceStateful: true, messageBus: false } as any);
-  const vaultArt = compileString(PIN_VAULT, { solidityImportCompat: true, forceStateful: true, messageBus: false } as any);
+  const ledgerArt = compileString(PIN_LEDGER, { evmCompat: true, forceStateful: true, messageBus: false } as any);
+  const vaultArt = compileString(PIN_VAULT, { evmCompat: true, forceStateful: true, messageBus: false } as any);
 
   it('rejects the caller covenant when the co-spent lock is a non-lock carrying the identity', async () => {
     const provider = createTestProvider();

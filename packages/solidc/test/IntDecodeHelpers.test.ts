@@ -3310,7 +3310,7 @@ describe('shared integer helpers', () => {
       }
     `, {
       messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
-      solidityImportCompat: true,
+      evmCompat: true,
     }));
   });
 
@@ -3331,7 +3331,7 @@ describe('shared integer helpers', () => {
       }
     `, {
       messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
-      solidityImportCompat: true,
+      evmCompat: true,
       compileDeclarations: ['Store'],
     });
     expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
@@ -4829,7 +4829,7 @@ contract Store {
     require(this.a == this.b);
   }
 }
-    `, { forceStateful: true, solidityImportCompat: true, messageBus: true });
+    `, { forceStateful: true, evmCompat: true, messageBus: true });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5348,7 +5348,7 @@ contract Store {
           require(this.x >= a);
         }
       }
-    `, { messageBus: false, solidityImportCompat: true });
+    `, { messageBus: false, evmCompat: true });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -5382,7 +5382,7 @@ contract Store {
           require(this.blob.length > 0);
         }
       }
-    `, { messageBus: false, solidityImportCompat: true });
+    `, { messageBus: false, evmCompat: true });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];

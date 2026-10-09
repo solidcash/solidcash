@@ -117,7 +117,7 @@ full suite with the flag forced on and getting ZERO new failures.
   and native `this.s = a` on a memory value-array no longer taint it: it stays a pointer (aliasing/composition work
   through the body) and a shared `serializeArray` helper emits `uint[] __ser = new uint[](a.length); while(i<len)
   __ser[i]=a[i];` at the boundary (reuses the value-copy `new T[]`+writes path, each elem mload'd from the buffer -
-  no manual packed re-encode). State-write is native `this.s=a` only: bare `s=a` under solidityImportCompat is an
+  no manual packed re-encode). State-write is native `this.s=a` only: bare `s=a` under evmCompat is an
   AssignNode at AstBuilder time (state resolution is later, in SymbolTable) so it stays on value-copy fallback.
   abi.encode / extcall boundaries DEFERRED as narrow completeness: abi.encode(a) is already byte-identical
   flag-on/off (gate -> value-copy -> encodes CONTENTS not pointer), and the boundary is expression-context hoisting

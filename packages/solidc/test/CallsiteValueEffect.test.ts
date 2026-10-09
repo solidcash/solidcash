@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
 
-const options = { forceStateful: true, solidityImportCompat: true, messageBus: true,
+const options = { forceStateful: true, evmCompat: true, messageBus: true,
   messageBusKernel: true, messageBusGraphContext: true, suppressWarnings: true,
   maximumInputBytes: 1_000_000 } as const;
 

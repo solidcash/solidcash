@@ -55,7 +55,7 @@ describe('kernel inactive dynamic writes beside mapping appends', () => {
           require(ILedger(ledger).label(key).length == 0);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed });
     expect(artifacts.Ledger.delegateArtifact!.messageBus?.handlers.find((handler) => handler.name === 'append'))

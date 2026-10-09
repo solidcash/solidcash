@@ -38,7 +38,7 @@ contract LongRecords() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function dep(): Promise<any> {
   const provider = createTestProvider();
-  const art = compileString(SRC, { solidityImportCompat: true });
+  const art = compileString(SRC, { evmCompat: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);
@@ -47,7 +47,7 @@ async function dep(): Promise<any> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function longDep(): Promise<any> {
   const provider = createTestProvider();
-  const art = compileString(LONG_SRC, { solidityImportCompat: true });
+  const art = compileString(LONG_SRC, { evmCompat: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);
@@ -55,7 +55,7 @@ async function longDep(): Promise<any> {
 
 describe('mapping(K => T[]) .push() / .pop()', () => {
   it('compiles; push is a read-modify-write entry access', () => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     expect(art.contractName).toBe('C');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ea = (art.abi.find((f: any) => f.name === 'push') as any)?.entryAccesses?.[0];

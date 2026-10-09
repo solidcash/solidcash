@@ -130,7 +130,7 @@ describe('atomic route ineligibility matrix', () => {
     const artifact = compileString(`contract C() {
       int[] public values;
       function control() public { require(true); }
-    }`, { forceStateful: true, messageBus: true, solidityImportCompat: true });
+    }`, { forceStateful: true, messageBus: true, evmCompat: true });
     expect(artifact.abi.some((entry) => entry.name === 'values')).toBe(true);
     expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'values')).toMatchObject({
       eligible: false,
@@ -180,7 +180,7 @@ describe('atomic route ineligibility matrix', () => {
     const artifact = compileString(`contract C() {
       function page() public pure returns (uint256[400] memory values) {}
       function control() public { require(true); }
-    }`, { forceStateful: true, messageBus: true, solidityImportCompat: true });
+    }`, { forceStateful: true, messageBus: true, evmCompat: true });
     expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'page')).toMatchObject({
       eligible: false,
       rejectionReason: 'result-route-static-payload-too-large',

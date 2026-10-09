@@ -53,7 +53,7 @@ const GRAPH_SOURCE = `pragma solidity ^0.8.0;
 
 const GRAPH_OPTIONS = {
   ...OPTIONS, messageBusGraphContext: true, messageBusEntryPoolCapacity: 3,
-  solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
+  evmCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
 } as const;
 
 type NestedTuple = readonly [bigint, bigint, bigint];
@@ -1100,7 +1100,7 @@ describe('kernel complete nested-mapping tuple pool', () => {
           trace[key] = value + 100;
           require(true);
         }
-      }`, { ...OPTIONS, solidityImportCompat: true });
+      }`, { ...OPTIONS, evmCompat: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0]?.activation)
       .toMatchObject({ kind: 'source', source: { paramIndex: 2 } });
     const provider = createMessageBusCapstoneTestProvider();
@@ -1133,7 +1133,7 @@ describe('kernel complete nested-mapping tuple pool', () => {
           trace[key] = value + 100;
           require(true);
         }
-      }`, { ...OPTIONS, solidityImportCompat: true });
+      }`, { ...OPTIONS, evmCompat: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0]?.activation)
       .toMatchObject({ kind: 'binary', operator: '&&' });
     const provider = createMessageBusCapstoneTestProvider();
@@ -1169,7 +1169,7 @@ describe('kernel complete nested-mapping tuple pool', () => {
           trace[key] = value + 100;
           require(true);
         }
-      }`, { ...OPTIONS, solidityImportCompat: true });
+      }`, { ...OPTIONS, evmCompat: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0]?.activation)
       .toMatchObject({ kind: 'source', source: { paramIndex: 2 } });
     expect(artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0]?.valueSource)
@@ -1205,7 +1205,7 @@ describe('kernel complete nested-mapping tuple pool', () => {
           trace[key] = value + 100;
           require(true);
         }
-      }`, { ...OPTIONS, solidityImportCompat: true });
+      }`, { ...OPTIONS, evmCompat: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0]?.valueSource)
       .toMatch(/^ternary\(/);
     const provider = createMessageBusCapstoneTestProvider();

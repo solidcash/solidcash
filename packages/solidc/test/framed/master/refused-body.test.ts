@@ -259,7 +259,7 @@ const INITIALIZER_SOURCE = 'pragma solidity ^0.8.19;'
 describe('a Solidity-compatible proxy implementation', () => {
   it('is served, and no entry carries the proxy-master operand', () => {
     const artifacts = compileStringMulti(INITIALIZER_SOURCE, {
-      composition: 'framed', solidityImportCompat: true,
+      composition: 'framed', evmCompat: true,
     });
     expect(publishedRefusals(artifacts)).toStrictEqual([]);
     for (const compiled of Object.values(artifacts)) {
@@ -274,7 +274,7 @@ describe('a Solidity-compatible proxy implementation', () => {
   it('keeps the marking and the operand under the direct convention', () => {
     // The control for the inference the framed convention skips: the direct build still marks the surface and
     // still publishes the operand its delegate frame addresses through.
-    const direct = compileString(INITIALIZER_SOURCE, { solidityImportCompat: true });
+    const direct = compileString(INITIALIZER_SOURCE, { evmCompat: true });
     const initialize = direct.abi.find((entry) => entry.name === 'initialize')!;
     expect(initialize.modifiers).toContain('delegate');
     expect(initialize.inputs.map((input) => input.name)).toContain('__internal__proxyMasterIndex');
@@ -299,7 +299,7 @@ const STORE_BEFORE = 42n;
 const STORE_WRITTEN = 7n;
 
 const storeArtifact = compileString(INITIALIZER_WRITE_SOURCE, {
-  composition: 'framed', solidityImportCompat: true,
+  composition: 'framed', evmCompat: true,
 });
 const storeProgram = fillPlaceholders(
   scriptToBytecode(asmToScript(storeArtifact.bytecode)),

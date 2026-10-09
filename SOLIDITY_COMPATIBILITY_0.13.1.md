@@ -1,7 +1,7 @@
 # SolidCash 0.13.1 Solidity Compatibility Manifest
 
 Status: release-candidate contract (conservative)
-Applies to: `solidc` 0.13.1 with `solidityImportCompat: true`
+Applies to: `solidc` 0.13.1 with `evmCompat: true`
 
 This manifest defines the compatibility claims for 0.13.1. “Supported” means the construct has parser, semantic,
 code-generation, and behavioral coverage on Bitcoin Cash. It does not imply EVM execution, EVM storage layout, or

@@ -21,7 +21,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Walls ahead: an `address` packed with `abi.encodePacked` into a store call's argument, through the shipped hop
- * (`callFramedProxyEntry`), compiled with the fixture's options (`solidityImportCompat` among them).
+ * (`callFramedProxyEntry`), compiled with the fixture's options (`evmCompat` among them).
  *
  * `refund`, `arbitrate` and `refuseArbitration` pack `job.roles.worker` or `job.roles.arbitrator` into their event,
  * and the compiler publishes that struct field read with no type (`fields: ['']`: it serializes the argument before
@@ -184,7 +184,7 @@ const SOURCE = [
 
 /** The fixture's compile options (`examples/effectiveacceleration/solidcash.config.ts`, as the mock network sets them). */
 const FIXTURE_OPTIONS = {
-  solidityImportCompat: true,
+  evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
   messageBus: true,

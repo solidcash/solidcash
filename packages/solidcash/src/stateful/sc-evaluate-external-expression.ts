@@ -125,7 +125,7 @@ export function evaluateExternalExpression(
     }
     return '';
   };
-  const solidityImportCompat = artifactUsesSolidityAbi(artifact);
+  const evmCompat = artifactUsesSolidityAbi(artifact);
   // The type the artifact's own declarations give a read: a struct field through its struct, a state variable
   // through the state layout, an element through its array's type, an array literal through its first element.
   const declaredType = (candidate: ExternalCallExpression): string => {
@@ -153,7 +153,7 @@ export function evaluateExternalExpression(
   // natural width big-endian, an `address` as its 20-byte identity. Such a read is packed by that type rather than
   // by its value's shape: an integer field, element or state variable, and an address field.
   const packedReadType = (candidate: ExternalCallExpression | undefined): string => {
-    if (!solidityImportCompat || candidate === undefined) return '';
+    if (!evmCompat || candidate === undefined) return '';
     if (candidate.kind !== 'field' && candidate.kind !== 'arrayAccess' && candidate.kind !== 'state') return '';
     const type = declaredType(candidate);
     if (/^u?int\d+$/.test(type)) return type;
@@ -203,20 +203,20 @@ export function evaluateExternalExpression(
       return new Uint8Array([value ? 1 : 0]);
     }
     if (typeof value === 'bigint' || typeof value === 'number') {
-      if (solidityImportCompat && (typeHint === 'address' || typeHint === 'address payable')) {
+      if (evmCompat && (typeHint === 'address' || typeHint === 'address payable')) {
         return numberBe(BigInt(value), 20);
       }
       const widthMatch = typeHint.match(/^u?int(\d+)$/);
       // Solidity abi.encodePacked uses the declared natural width, big-endian (and two's-complement for signed
       // values). Native SolidCash keeps its BCH VM-number contract below: little-endian sign-magnitude with one
       // spare sign bit. Mixing the two encoded uint16(2) as 02 00 00 where Solidity bytecode emits 00 02.
-      if (solidityImportCompat && widthMatch) {
+      if (evmCompat && widthMatch) {
         return numberBe(BigInt(value), Math.ceil(Number(widthMatch[1]) / 8));
       }
       // Some imported-Solidity expression metadata cannot preserve the source field's numeric type. Solidity's
       // only safe fallback for an untyped packed number is its 256-bit big-endian ABI word. Explicitly typed
       // numeric fields retain the compiler's BCH-native width/endianness contract below.
-      if (solidityImportCompat && stateIncludesPriorWrites && !widthMatch
+      if (evmCompat && stateIncludesPriorWrites && !widthMatch
         && readsAuthenticatedState(sourceExpression)) {
         return numberBe(BigInt(value), 32);
       }
@@ -231,7 +231,7 @@ export function evaluateExternalExpression(
     // else (including a user string that merely starts with malformed hex) keeps the text encoding.
     if (typeof value === 'string') {
       const canonicalHex = /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
-      if (solidityImportCompat && typeHint === 'uint160') {
+      if (evmCompat && typeHint === 'uint160') {
         const locking = addressBytes(value);
         return locking === undefined ? undefined : narrowAddress(locking);
       }
@@ -260,7 +260,7 @@ export function evaluateExternalExpression(
           locking = addressToLockScript(value);
         }
         if (locking) {
-          if (solidityImportCompat) return narrowAddress(locking);
+          if (evmCompat) return narrowAddress(locking);
           return locking.length === 20 ? p2pkhLockingBytecode(locking) : locking;
         }
         return utf8ToBin(value);
@@ -275,7 +275,7 @@ export function evaluateExternalExpression(
       // Match the compiler's packed address-as-integer extension: native locks remain intact, but a
       // Solidity ABI word contributes only its address identity, not its twelve framing bytes. Check this
       // before zero-address handling because a zero ABI word still packs twenty bytes.
-      if (solidityImportCompat && typeHint === 'uint160') return narrowAddress(value);
+      if (evmCompat && typeHint === 'uint160') return narrowAddress(value);
       if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
       // Native artifacts retain their established unprojected representation.
       if (typeHint === 'uint160' && value.length === 32) return value;
@@ -287,7 +287,7 @@ export function evaluateExternalExpression(
         return concat([narrowed, new Uint8Array([0])]);
       }
       if (typeHint === 'address' || typeHint === 'address payable') {
-        if (solidityImportCompat) return narrowAddress(value);
+        if (evmCompat) return narrowAddress(value);
         if (isStandardLockingBytecode(value)) return value;
         if (value.length === 20) return p2pkhLockingBytecode(value);
         return value;
@@ -533,12 +533,12 @@ export function evaluateExternalExpression(
     if (value === undefined) return undefined;
     if (expression.type === 'bytes' && typeof value === 'string') return utf8ToBin(value);
     if (expression.type === 'uint160'
-      && (value instanceof Uint8Array || (solidityImportCompat && typeof value === 'string'
+      && (value instanceof Uint8Array || (evmCompat && typeof value === 'string'
         && ['address', 'address payable'].includes(inferredType(expression.expression))))) {
       const raw = typeof value === 'string' ? addressBytes(value) : value;
       if (raw === undefined) return undefined;
       const bytes = narrowAddress(raw);
-      return solidityImportCompat
+      return evmCompat
         ? bytes.reduce((number, byte) => (number << 8n) | BigInt(byte), 0n)
         : [...bytes].reverse().reduce((number, byte) => (number << 8n) | BigInt(byte), 0n);
     }

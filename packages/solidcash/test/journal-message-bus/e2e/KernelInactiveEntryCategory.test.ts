@@ -14,7 +14,7 @@ describe('kernel inactive entry category verification', () => {
     'does not dereference an unselected sibling proof for rows $values', async ({ values }) => {
       const options = {
         forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-        solidityImportCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+        evmCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
       } as const;
       const artifact = compileString(`contract Store() {
       mapping(address => int) levels;

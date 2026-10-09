@@ -26,7 +26,7 @@ describe('repeated verified-mapping reads through a delegate', () => {
         txid: index.toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: 1_000_000n,
       });
     }
-    const artifact = compileString(SOURCE, { solidityImportCompat: true });
+    const artifact = compileString(SOURCE, { evmCompat: true });
     const read = artifact.abi.find((candidate) => candidate.name === 'guardedRead')!;
     expect(read.entryAccesses).toHaveLength(1);
     expect(artifact.functionBodies?.[read.selector!]).toBeDefined();

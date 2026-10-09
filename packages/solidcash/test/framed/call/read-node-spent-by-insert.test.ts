@@ -106,7 +106,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const artifacts = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 const registry = artifacts.Registry!;
 const members = artifacts.Members!;
 const roster = artifacts.Roster!;

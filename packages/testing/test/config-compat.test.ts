@@ -27,7 +27,7 @@ describe('Hardhat config compatibility', () => {
       export default {
         paths: { sources: './evm', artifacts: './artifacts' },
         solidcash: {
-          compiler: { solidityImportCompat: true, ecrecover: 'p2pkh' },
+          compiler: { evmCompat: true, ecrecover: 'p2pkh' },
           paths: { contracts: './cash' }
         }
       };
@@ -37,7 +37,7 @@ describe('Hardhat config compatibility', () => {
     const config = await loadConfig(child);
     expect(config.paths.contracts).toBe(path.join(root, 'cash'));
     expect(config.paths.artifacts).toBe(path.join(root, 'artifacts'));
-    expect(config.compiler).toEqual({ solidityImportCompat: true, ecrecover: 'p2pkh' });
+    expect(config.compiler).toEqual({ evmCompat: true, ecrecover: 'p2pkh' });
     expect(config.solc).toBe(config.compiler);
   });
 
@@ -55,7 +55,7 @@ describe('Hardhat config compatibility', () => {
     expect(fs.readFileSync(hardhatFile, 'utf8')).toBe(original);
     const output = fs.readFileSync(generated, 'utf8');
     expect(output).toContain('contracts');
-    expect(output).toContain('compiler: { solidityImportCompat: true }');
+    expect(output).toContain('compiler: { evmCompat: true }');
     expect(output).toContain('mnemonic: "test words"');
   });
 });

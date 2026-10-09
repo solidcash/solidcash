@@ -21,7 +21,7 @@ describe('Fence #10 aggregate residuals', () => {
         Node root;
         function read() public view returns (Node memory) { return root; }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true }))
+      }`, { ...KERNEL, evmCompat: true }))
       .toThrow(/cannot be used as return values|recursive/i);
   });
 
@@ -51,7 +51,7 @@ describe('Fence #10 aggregate residuals', () => {
           return Result(signer, hex"01");
         }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'data'))
       .toMatchObject({
         eligible: false,
@@ -69,7 +69,7 @@ describe('Fence #10 aggregate residuals', () => {
           return Record(9, Detail(70, 1));
         }
         function control() public { require(true); }
-      }`, { ...KERNEL, solidityImportCompat: true });
+      }`, { ...KERNEL, evmCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'snapshot'))
       .toMatchObject({ eligible: true, outputs: [{ type: 'Record' }] });
   });

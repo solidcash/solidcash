@@ -125,7 +125,7 @@ describe('State-variable inline initializers (lowered into the constructor)', ()
 
 describe('transient state variables (EIP-1153 porting)', () => {
   const layout = (body: string): { variables: { name: string }[] } | undefined =>
-    compileString(`pragma solidity ^0.8.24;\n${body}`, { solidityImportCompat: true }).stateLayout;
+    compileString(`pragma solidity ^0.8.24;\n${body}`, { evmCompat: true }).stateLayout;
 
   it('excludes a transient var from the persisted state layout (only `n` is stored)', () => {
     const sl = layout('contract C() { uint256 n; uint256 transient scratch;'
@@ -141,11 +141,11 @@ describe('transient state variables (EIP-1153 porting)', () => {
 
   it('lowers a transient var to a usable zero-init local (read + write)', () => {
     const art = compileString('pragma solidity ^0.8.24;\ncontract C() { uint256 transient tmp;'
-      + ' function f(uint256 x) { tmp = x; require(tmp == x); } }', { solidityImportCompat: true });
+      + ' function f(uint256 x) { tmp = x; require(tmp == x); } }', { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
 
-  it('works in native mode too (transient is not gated on solidityImportCompat)', () => {
+  it('works in native mode too (transient is not gated on evmCompat)', () => {
     const art = compileString('contract C() { uint256 transient tmp;'
       + ' function f(uint256 x) { tmp = x; require(tmp == x); } }');
     expect(art.contractName).toBe('C');
@@ -154,7 +154,7 @@ describe('transient state variables (EIP-1153 porting)', () => {
   it('warns once per transient var that it has no UTXO analogue', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     compileString('pragma solidity ^0.8.24;\ncontract C() { uint256 transient a; uint256 transient b;'
-      + ' function f() { a = 1; b = 2; require(a == 1); } }', { solidityImportCompat: true });
+      + ' function f() { a = 1; b = 2; require(a == 1); } }', { evmCompat: true });
     const w = spy.mock.calls.filter((c) => String(c[0]).includes('has no UTXO analogue'));
     spy.mockRestore();
     expect(w.length).toBe(2);
@@ -214,7 +214,7 @@ describe('const array dimensions T[N] (Solidity parity)', () => {
 });
 
 describe('public state vars satisfy interface getter compliance (ERC20 pattern)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('a public state var / mapping satisfies an interface getter function', () => {
     expect(cc('interface IERC20 { function totalSupply() external view returns (uint256);'
@@ -243,7 +243,7 @@ describe('A contract-level `constant` works as an array dimension', () => {
 // A public state variable may carry `override` (its auto-getter overrides a base getter). EVM inheritance
 // is a no-op in SolidCash, so `override` is accepted and ignored.
 describe('state variable override specifier', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts `uint256 public override x`', () => {
     expect(cc('contract C { uint256 public override x; function f() public { x = 1; require(true); } }')).toBe('C');
   });
@@ -256,7 +256,7 @@ describe('state variable override specifier', () => {
 // but it is a compile-time constant and must be baked, not stored in the state NFT.
 describe('public constant is baked, not stored as state', () => {
   const compile = (src: string): ReturnType<typeof compileString> =>
-    compileString(src, { solidityImportCompat: true });
+    compileString(src, { evmCompat: true });
   it('does not put a public constant in the state layout', () => {
     const a = compile('contract C { uint256 public constant ONE = 5;'
       + ' function f() public pure returns (uint256) { return ONE; } }');
@@ -275,7 +275,7 @@ describe('OpenZeppelin storage gaps', () => {
   it('omits __gap EVM slot reservations from Solidity-compat BCH state', () => {
     const artifact = compileString(
       'contract C { uint16 value; uint256[50] private __gap; function set(uint16 x) public { value = x; } }',
-      { solidityImportCompat: true, commitmentLimit: 16 },
+      { evmCompat: true, commitmentLimit: 16 },
     );
     expect(artifact.stateLayout?.variables.map((variable) => variable.name)).toEqual(['value']);
     expect(artifact.stateLayout?.dataNftCount).toBe(1);
@@ -288,17 +288,17 @@ describe('OpenZeppelin storage gaps', () => {
 describe('bare `delete x` on a state variable routes to a state delete', () => {
   const bareSrc = 'contract C{uint16 y;uint8 x;function f()external returns(uint){y=2;if(x!=1)return 2;delete y;return 1;}}';
   it('compiles a bare state-var delete nested after an early-return branch', () => {
-    expect(compileString(bareSrc, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(bareSrc, { evmCompat: true }).contractName).toBe('C');
   });
   it('is byte-identical to `delete this.y` (sound - actually deletes the state var)', () => {
     const explicit = 'contract C{uint16 y;uint8 x;function f()external returns(uint){this.y=2;if(x!=1)return 2;delete this.y;return 1;}}';
-    expect(compileString(bareSrc, { solidityImportCompat: true, messageBus: false }).bytecode)
+    expect(compileString(bareSrc, { evmCompat: true, messageBus: false }).bytecode)
       .toBe(compileString(explicit, {
-        solidityImportCompat: true, messageBus: false,
+        evmCompat: true, messageBus: false,
       }).bytecode);
   });
   it('leaves a genuine local delete alone', () => {
     expect(compileString('contract C{function f(uint x)external returns(uint){uint y=5;if(x!=1)return 2;delete y;return y;}}',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
 });

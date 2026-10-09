@@ -49,7 +49,7 @@ async function fundedSigner(): Promise<Signer> {
 
 describe('Q1 row B: a divided call-edge union settles on the VM', () => {
   it('settles both the caller and the separately-routed callee against one shared state', async () => {
-    const options = { solidityImportCompat: true, forceSplit: true };
+    const options = { evmCompat: true, forceSplit: true };
     const union = compileStringSplit(SOURCE, options);
     const unionBytes = union.manifest.facets[0].estimatedRedeemBytes;
     expect([...union.manifest.facets[0].functions].sort()).toEqual(['publish', 'updateTail']);
@@ -103,7 +103,7 @@ describe('Q1 row B: a divided call-edge union settles on the VM', () => {
           return v + 1;
         }
       }`;
-    const options = { solidityImportCompat: true, forceSplit: true };
+    const options = { evmCompat: true, forceSplit: true };
     const union = compileStringSplit(source, options);
     const divided = compileStringSplit(source, {
       ...options, maxShardBytes: union.manifest.facets[0].estimatedRedeemBytes - 1,
@@ -130,7 +130,7 @@ describe('Q1 row B: a divided call-edge union settles on the VM', () => {
    * way, and reaches the same state - so the assertions above are about the division, not about the fixture.
    */
   it('CONTROL: the undivided union reaches the identical state', async () => {
-    const union = compileStringSplit(SOURCE, { solidityImportCompat: true, forceSplit: true });
+    const union = compileStringSplit(SOURCE, { evmCompat: true, forceSplit: true });
     expect(union.manifest.facets).toHaveLength(1);
     const signer = await fundedSigner();
     const deployed = await SplitContractBundle.from(union, signer)

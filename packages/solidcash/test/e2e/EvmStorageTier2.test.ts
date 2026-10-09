@@ -9,7 +9,7 @@ const provider = createTestProvider();
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
 async function deploy(src: string): Promise<StatefulContract> {
-  const art = compileString(src, { solidityImportCompat: true });
+  const art = compileString(src, { evmCompat: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);
@@ -48,7 +48,7 @@ contract C() {
 
 describe('EVM storage Tier-2: assembly mapping-slot idiom <-> high-level mapping (P4)', () => {
   it('routes the assembly keccak mapping-slot idiom to the high-level mapping (no __evm_storage)', () => {
-    const art = compileString(TIER2, { solidityImportCompat: true });
+    const art = compileString(TIER2, { evmCompat: true });
     const cols = (art.stateLayout as unknown as { collections?: { name: string }[] })?.collections ?? [];
     expect(cols.map((c) => c.name)).toContain('balances');
     expect(cols.some((c) => c.name === '__evm_storage')).toBe(false); // idiom bridged, not routed to __evm_storage
@@ -90,7 +90,7 @@ contract C() {
 
 describe('EVM storage Tier-2: canonical let-bound mapping-slot idiom (P4)', () => {
   it('bridges the canonical `let slot := keccak256(0x00,0x40)` form to the high-level mapping', async () => {
-    const art = compileString(TIER2_CANONICAL, { solidityImportCompat: true });
+    const art = compileString(TIER2_CANONICAL, { evmCompat: true });
     const cols = (art.stateLayout as unknown as { collections?: { name: string }[] })?.collections ?? [];
     expect(cols.some((c) => c.name === '__evm_storage')).toBe(false);
     const sc = await deploy(TIER2_CANONICAL);
@@ -138,7 +138,7 @@ contract C() {
 
 describe('EVM storage Tier-2: nested mapping via double-keccak idiom (P4)', () => {
   it('routes allowances[a][b] assembly to the high-level nested mapping (both keys)', () => {
-    const art = compileString(TIER2_NESTED, { solidityImportCompat: true });
+    const art = compileString(TIER2_NESTED, { evmCompat: true });
     const ea = art.abi.find((f) => f.name === 'approveViaAsm') as { entryAccesses?: { collection: string; keyParams: string[] }[] };
     expect(ea?.entryAccesses?.[0]?.collection).toBe('allowances');
     expect(ea?.entryAccesses?.[0]?.keyParams).toEqual(['a', 'b']);

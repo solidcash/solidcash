@@ -421,7 +421,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: a call argument read fr
     const { Desk } = compiled();
     expect(Desk!.composition!.refusedEntries ?? []).toStrictEqual([]);
     // The post's own spelling: the storage-pointer field is published as `allowedWorkers_.length > 0`.
-    const post = compileStringMulti(POST_SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+    const post = compileStringMulti(POST_SOURCE, { composition: 'framed', evmCompat: true } as never);
     expect(noteData(post.Post, 'publishJobPost').args![1]).toStrictEqual(forwardedGate(1));
     expect(noteData(Desk, 'openConcat').args![1]).toStrictEqual(forwardedGate(2));
     expect(noteData(Desk, 'openPointer').args![1]).toStrictEqual(forwardedGate(1));

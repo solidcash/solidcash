@@ -70,7 +70,6 @@ Compile with `evmCompat: true` when bytes must match Ethereum ABI encoders:
 
 ```ts
 const artifact = compileFile('Bridge.scash', {
-  solidityImportCompat: true,
   evmCompat: true,
 });
 ```

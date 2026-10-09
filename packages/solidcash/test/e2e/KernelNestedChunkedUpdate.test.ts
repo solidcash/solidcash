@@ -53,7 +53,7 @@ describe('kernel participant-local identity and chunked updates', () => {
           ${separateHandlers ? 'IClaim(store).claim(key);' : ''}
           this.count = this.count + 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
         messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
         optimizeForCompilationSpeed: true, sortedMappingsAll: false });
       const signer = new Signer(new Uint8Array(32).fill(0x76), provider);

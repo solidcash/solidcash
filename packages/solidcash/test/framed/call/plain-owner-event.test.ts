@@ -48,7 +48,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const artifacts = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 
 /** The owner: the user who deploys and calls the setter. */
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);

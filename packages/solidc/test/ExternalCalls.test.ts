@@ -84,7 +84,7 @@ describe('returned external-call loop metadata', () => {
     `;
     const compileAt = (messageBusKernel: boolean): ReturnType<typeof compileMessageBus> => compileMessageBus(source, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel,
       maximumInputBytes: 1_000_000,
@@ -130,7 +130,7 @@ describe('returned external-call loop metadata', () => {
         }
       }`, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
@@ -165,7 +165,7 @@ describe('returned external-call loop metadata', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
@@ -212,11 +212,11 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
     expect(withLoop.bytecode).not.toContain(uniquenessPin);
   });
 
-  it('solidityImportCompat .call(data) compiles a presence pin for the callee input', () => {
+  it('evmCompat .call(data) compiles a presence pin for the callee input', () => {
     const artifact = compileString(
       'contract C() { int n; function f(address to, bytes data) {'
       + ' (bool ok, bytes res) = to.call(data); require(ok); this.n = res.length; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(artifact.contractName).toBe('C');
     expect(artifact.abi.some((fn) => fn.name === 'f')).toBe(true);
@@ -254,7 +254,7 @@ describe('state-backed external-call expected address', () => {
           require(true);
         }
       }
-    `, { solidityImportCompat: true, forceStateful: true });
+    `, { evmCompat: true, forceStateful: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'forward')
       ?.externalCalls?.[0]?.argSources?.[0]).toMatchObject({
       kind: 'expression',
@@ -282,7 +282,7 @@ describe('state-backed external-call expected address', () => {
           require(true);
         }
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
     const call = artifact.abi.find((candidate) => candidate.name === 'values')?.externalCalls?.[0];
     expect(call?.occurrence).toBe('loop');
     expect(call?.argSources).toEqual([{
@@ -334,7 +334,7 @@ describe('state-field arguments after sibling writes', () => {
           require(true);
         }
       }
-    `, { solidityImportCompat: true, forceStateful: true });
+    `, { evmCompat: true, forceStateful: true });
     const call = artifact.abi.find((candidate) => candidate.name === 'pay')?.externalCalls
       ?.find((candidate) => candidate.functionName === 'getFee');
     const source = JSON.stringify(call?.argSources);
@@ -436,7 +436,7 @@ describe('inactive conditional external-call identity', () => {
           require(true);
         }
       }
-    `, { solidityImportCompat: true, messageBus: true });
+    `, { evmCompat: true, messageBus: true });
     const calls = artifact.abi.find((candidate) => candidate.name === 'approveResult')?.externalCalls ?? [];
     expect(calls.map((call) => call.functionName)).toEqual(['updateUserRating']);
     expect(calls[0].condition).toEqual({
@@ -551,7 +551,7 @@ describe('SBE-7: ether-send via low-level call{value:}', () => {
       + '(bool ok, bytes ret) = dst.call{value: value}(data); require(ok); return ret; } '
       + 'contract C() { int n; function f(address dst, bytes data) { '
       + 'bytes ret = invoke(dst, data, 0); this.n = ret.length; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'f')!;
     expect(fn.transferCount).toBeUndefined();
@@ -568,7 +568,7 @@ describe('SBE-7: ether-send via low-level call{value:}', () => {
       + 'return relay(dst, data, 0); } '
       + 'contract C() { int n; function f(address dst, bytes data) { '
       + 'bytes ret = safeRelay(dst, data); this.n = ret.length; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'f')!;
     expect(fn.transferCount).toBeUndefined();
@@ -668,7 +668,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' function llWrap(address a, bytes d) view returns (bytes) { return llCall(a, d); }'
       + ' contract C { int n; function f(address t, bytes d) public {'
       + ' bytes out = llWrap(t, d); this.n = int(out.length); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   it('inlines a multi-return wrapper which directly forwards an external call', () => {
@@ -676,7 +676,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' contract C { uint n; function wrap(IVault v, uint a) internal returns (uint, uint) {'
       + ' return v.deposit(a); } function f(IVault v, uint a) public {'
       + ' (uint x, uint y) = wrap(v, a); this.n = x + y; require(this.n >= x); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   it('lowers a recursive external-call helper and binds its loop-local returned target', () => {
@@ -688,7 +688,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' if (n == 0) result = n; else result = step(a, n - 1); }'
       + ' function run(address a, uint n) public {'
       + ' total = step(a, n); require(true); } }';
-    const artifact = compileString(src, { solidityImportCompat: true, messageBus: false });
+    const artifact = compileString(src, { evmCompat: true, messageBus: false });
     const run = artifact.abi.find((entry) => entry.name === 'run');
     expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['pair', 'swap']);
     expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
@@ -705,7 +705,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' if (n == 0) result = out; else result = step(token, n - 1); }'
       + ' function run(address token, uint n) public {'
       + ' total = step(token, n); require(true); } }';
-    const artifact = compileString(src, { solidityImportCompat: true, messageBus: false });
+    const artifact = compileString(src, { evmCompat: true, messageBus: false });
     const run = artifact.abi.find((entry) => entry.name === 'run');
     expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['move']);
     expect(run?.externalCalls?.[0].addressSource).toEqual({ kind: 'forward', paramIndex: 0 });
@@ -722,7 +722,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' (bool ok, bytes ret) = a.call{value: value}(d); require(ok); return ret; }'
       + ' contract C { int n; function f(address t, bytes d) public {'
       + ' bytes out = llCall(t, d); this.n = int(out.length); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   // Same-library sibling calls are written unqualified (`fwd(a,d,0)` inside library V's other `fwd`); they must be
@@ -733,7 +733,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' (bool ok, bytes ret) = a.call{value: value}(d); require(ok); return ret; } }'
       + ' contract C { int n; function f(address t, bytes d) public {'
       + ' bytes out = V.fwd(t, d); this.n = int(out.length); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   // Full SafeERC20 shape: a VOID library wrapper -> a value-returning library chain -> a {value:} low-level call.
@@ -750,7 +750,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' (bool ok, bytes ret) = token.call(data); return ok; }'
       + ' function force(address token, bytes data) internal { if (!tryXfer(token, data)) { require(false); } } }'
       + ' contract C { int n; function f(address t, bytes d) public { Safe.xfer(t, d); Safe.force(t, d); this.n = 1; } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   // The exact OZ SafeERC20 shape: a void wrapper calls the value chain via the using-for `address(x).method()`
@@ -763,7 +763,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' library Safe { using Address for address;'
       + ' function xfer(address token, bytes data) internal { address(token).functionCall(data); } }'
       + ' contract C { int n; function f(address t, bytes d) public { Safe.xfer(t, d); this.n = 1; } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   it('publishes an inlined returning raw call as a decoded graph edge', () => {
@@ -780,7 +780,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' contract C { uint256 n; function f(IERC20 token, address from, address to, uint256 value) public {'
       + ' Safe.xfer(token, from, to, value); this.n = value; require(true); } }';
     const artifact = compileString(src, {
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
@@ -808,7 +808,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' Raw.call(target, abi.encodeCall(ITarget.approve, (address(this), value)));'
       + ' this.marker = 1; require(true); } }';
     const artifact = compileString(src, {
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,
@@ -843,7 +843,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' function fcv2(address t, bytes d) view returns (bytes) { return fcv(t, d, 0); }'
       + ' contract C { int n; function f(address t, bytes d) public {'
       + ' bytes a = fcv(t, d, 0); bytes b = fcv2(t, d); this.n = int(a.length + b.length); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
   // A void wrapper that discards a value-chain call's result: the wrapper inlines, the discarded value call is
@@ -854,15 +854,15 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' function vwrap(address a, bytes d) view { llCall(a, d); }'
       + ' contract C { int n; function f(address t, bytes d) public { vwrap(t, d); this.n = 1; } }';
     let msg = '';
-    try { compileString(src, { solidityImportCompat: true }); } catch (e) { msg = (e as Error).message; }
+    try { compileString(src, { evmCompat: true }); } catch (e) { msg = (e as Error).message; }
     expect(msg).not.toMatch(/Undefined reference/);
     expect(msg).toBe('');
   });
 });
 
 describe('external call on a tuple-destructured / copied local interface var', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  const ccBus = (src: string): string => compileMessageBus(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
+  const ccBus = (src: string): string => compileMessageBus(src, { evmCompat: true }).contractName;
   const iface = 'interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool);'
     + ' function balanceOf(address o) external view returns (uint256); function transfer(address t, uint256 a) external returns (bool); }';
 
@@ -882,7 +882,7 @@ describe('external call on a tuple-destructured / copied local interface var', (
 });
 
 describe('SBE-21: external call on a state-var target in fallback/receive', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   // SynthesizeExternalAddressLocals visits fallback/receive too, so a re-entrancy-style fallback that calls
   // back into an interface/contract-typed state var resolves the target like any function (unblocks ReEntrancy).
   it('compiles a fallback + receive that call a contract-typed state var', () => {
@@ -907,7 +907,7 @@ describe('Low-level call on a struct-field / array-element address receiver', ()
       'contract C { struct T { address to; uint256 value; bytes data; } T[] txs;'
       + ' function exec(uint256 i) public { T storage t = txs[i];'
       + ' (bool ok,) = t.to.call{value: t.value}(t.data); require(ok); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
     expect(a.bytecode.length).toBeGreaterThan(0);
@@ -918,7 +918,7 @@ describe('Low-level call on a struct-field / array-element address receiver', ()
 // where `pool` is already IFoo-typed) is a no-op cast; it must route through the same synthesized __extaddr_
 // local as the bare `pool.bar()` form instead of demanding a param target.
 describe('redundant interface cast on a state-var external-call target', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const iface = 'interface IFoo { function bar() external; }';
   it('accepts IFoo(statePool).bar() like the bare statePool.bar()', () => {
     expect(cc(`${iface} contract C { IFoo pool; constructor(address _p) { pool = IFoo(_p); }`
@@ -938,7 +938,7 @@ describe('public state getter on a self-pinned contract target', () => {
       + ' constructor(Master _master) { masterContract = _master; }'
       + ' function liquidate(ISwapper swapper) public {'
       + ' require(masterContract.swappers(swapper), "invalid swapper"); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(artifact.contractName).toBe('C');
     expect(artifact.abi.find((entry) => entry.name === 'liquidate')?.externalCalls?.[0]).toMatchObject({
@@ -956,7 +956,7 @@ describe('external-call address local survives a same-function balance read', ()
     + ' function owner_() external view returns (address) { return owner; } }';
   const cc = (body: string): string => compileString(
     `${base} contract F { Car[] cars; function g(uint i) public view returns (${body} } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
   it('compiles ext-call then address(handle).balance in a tuple', () => {
     expect(cc('address, uint) { Car car = cars[i]; return (car.owner_(), address(car).balance);')).toBe('F');
@@ -970,7 +970,7 @@ describe('external-call address local survives a same-function balance read', ()
 // synthesized (so `other.owner()` resolves). Enum placeholders are now resolved against the declaring contract
 // before getter synthesis; unrelated contract-typed placeholders retain their address-getter behavior.
 describe('public address state-var auto-getter (external-callable)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('synthesizes an address getter and resolves an external call to it', () => {
     expect(cc('contract Car { address public owner; constructor(address _o) { owner = _o; } }'
       + ' contract F { Car[] cars; function g(uint i) public view returns (address) {'
@@ -978,13 +978,13 @@ describe('public address state-var auto-getter (external-callable)', () => {
   });
   it('exposes the address getter in the contract ABI', () => {
     const abi = compileString('contract Car { address public owner; constructor(address _o) { owner = _o; } }',
-      { solidityImportCompat: true }).abi;
+      { evmCompat: true }).abi;
     const g = abi.find((f) => f.name === 'owner');
     expect(g?.outputs?.[0]?.type).toBe('address');
   });
   it('resolves and exposes an enum-typed public getter', () => {
     const abi = compileString('contract C { enum S { A, B } S public status; int n; function f() public { this.n = 1; } }',
-      { solidityImportCompat: true }).abi;
+      { evmCompat: true }).abi;
     expect(abi.find((f) => f.name === 'status')?.outputs?.[0]?.type).toBe('S');
   });
 });
@@ -1017,7 +1017,7 @@ describe('pre-call require reachability metadata', () => {
         require(jobs[id].state == 1, "wrong state");
         target.ping();
       }
-    }`, { solidityImportCompat: true, forceStateful: true });
+    }`, { evmCompat: true, forceStateful: true });
     const call = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0];
     expect(call?.condition).toBeUndefined();
     expect(call?.preCallRequires).toHaveLength(2);
@@ -1034,7 +1034,7 @@ describe('pre-call require reachability metadata', () => {
         jobs[id].state = 0;
         target.ping();
       }
-    }`, { solidityImportCompat: true, forceStateful: true });
+    }`, { evmCompat: true, forceStateful: true });
     const guard = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0]?.preCallRequires?.[0];
     expect(guard?.left).toMatchObject({ kind: 'field', name: 'state' });
     expect(guard?.left?.expression).toMatchObject({ kind: 'stateAccess', name: 'jobs' });
@@ -1046,7 +1046,7 @@ describe('pre-call require reachability metadata', () => {
       interface IOther { function ping() external; }
       contract C { ITarget target; IOther other;
         function run() public { require(target.check() > 0); other.ping(); }
-      }`, { solidityImportCompat: true, forceStateful: true });
+      }`, { evmCompat: true, forceStateful: true });
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls ?? [];
     expect(calls.map((call) => call.functionName)).toEqual(['check', 'ping']);
     expect(calls[1]?.preCallRequires).toBeUndefined();
@@ -1062,7 +1062,7 @@ describe('pre-call require reachability metadata', () => {
           sink.ping();
           require(true);
         }
-      }`, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+      }`, { evmCompat: true, forceStateful: true, messageBus: true });
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls ?? [];
     expect(calls.map((call) => call.functionName)).toEqual(['balanceOf', 'ping']);
     expect(calls[1]?.preCallRequires).toContainEqual({
@@ -1082,7 +1082,7 @@ describe('SBE-25: msg.sender category forwarded across internal calls', () => {
   // internal call to such a function must forward the caller's own category (msg.sender is identical across an
   // internal call), otherwise the call is short an argument -> InvalidParameterTypeError. Unblocks ERC721
   // (safeTransferFrom -> transferFrom) and WETH (fallback -> deposit -> _mint(msg.sender, ..)).
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('forwards the synthetic category on an internal call to a msg.sender-using function', () => {
     expect(cc('contract C { mapping(uint256 => address) o;'
@@ -1106,7 +1106,7 @@ describe('try/catch around a VOID external call', () => {
   // (a pending state write, the __extaddr_ address local) and broke the epilogue. Sound by reduction: the
   // try form must be byte-identical to the bare call-statement form (catch is dead code on BCH).
   const DECL = 'abstract contract D { function d() external virtual; }\n';
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
 
   it('is byte-identical to the bare statement form (state-var target, prior state write)', () => {
     const tryForm = compileString(
@@ -1131,7 +1131,7 @@ describe('try/catch around a VOID external call', () => {
 
 describe('external call on a struct-field target (s.field.m())', () => {
   const IF = 'interface IFoo { function m() external returns (uint); }\n';
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
 
   it('compiles a call on an interface-typed struct STATE-var field', () => {
     const a = compileString(
@@ -1169,7 +1169,7 @@ describe('external call on a struct-field target (s.field.m())', () => {
 
 describe('external call on a state-rooted access-chain target (ss[i].f.m(), ms[k].f.m(), s.a.b.m())', () => {
   const IF = 'interface IFoo { function m() external returns (uint); }\n';
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
   // Each chain hoists to `IFoo x = <chain>; x.m()` - byte-identical to the manual hoist that uses the audited
   // interface-local dispatch (sound by reduction; every step is self-pinned state).
 
@@ -1248,7 +1248,7 @@ describe('an interface method named split is called as the interface method', ()
 
   it.each([
     ['native', NATIVE, {}],
-    ['Solidity-compatible', SOLIDITY, { solidityImportCompat: true }],
+    ['Solidity-compatible', SOLIDITY, { evmCompat: true }],
   ])('calls IScale.split from the %s spelling and keeps the bytes built-in', (_spelling, source, options) => {
     const artifact = compileString(source, options);
     expect(callsOf(artifact, 'pay')).toEqual(['IScale.split']);
@@ -1280,7 +1280,7 @@ describe('an interface method named split is called as the interface method', ()
     expect(() => compileString(`pragma solidity ^0.8.0;
       interface IScale { function split(uint amount) external returns (uint); }
       contract Payer { IScale[] scales; function pay(uint i, uint amount) public { scales[i].split(amount); } }`,
-    { solidityImportCompat: true })).toThrow(StructFieldExternalCallError);
+    { evmCompat: true })).toThrow(StructFieldExternalCallError);
   });
 
   it('serves the entry under the framed convention, publishing the call site as IScale.split', () => {
@@ -1295,7 +1295,7 @@ describe('an interface method named split is called as the interface method', ()
 // method, while each built-in keeps its own receivers (bytes/string, arrays, address payable, tx introspection).
 const externalCallsOf = (artifact: ReturnType<typeof compileString>, name: string): string[] => (artifact.abi
   .find((entry) => entry.name === name)?.externalCalls ?? []).map((call) => `${call.interfaceName}.${call.functionName}`);
-const SOLIDITY_COMPAT = { solidityImportCompat: true };
+const SOLIDITY_COMPAT = { evmCompat: true };
 const payCalls = (iface: string, header: string, body: string): string[] => externalCallsOf(compileString(
   `pragma solidcash ^0.13.0; ${iface} contract Payer(${header}) { function pay(int a) { ${body} } }`,
 ), 'pay');

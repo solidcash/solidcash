@@ -30,7 +30,7 @@ contract C is I {
 }
 `;
 
-const artifact = compileString(SOURCE, { forceStateful: true, solidityImportCompat: true });
+const artifact = compileString(SOURCE, { forceStateful: true, evmCompat: true });
 
 describe('Solidity enum_referencing semantic fixture', () => {
   it('spends with the qualified Solidity enum ordinals', async () => {

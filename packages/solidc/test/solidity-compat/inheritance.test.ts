@@ -4,7 +4,7 @@ import { compileString, compileStringRaw, compileStringMulti } from './helpers.j
 // Focused regression guards derived from the Solidity compiler corpus.
 describe('constructor visibility compatibility', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('rejects external constructors', () => {
     expect(() => cc('contract C { constructor() external {} }'))
@@ -37,7 +37,7 @@ describe('abstract contract instantiation eligibility', () => {
         constructor() internal { emit Initialized(1); }
       }
       contract Child is Base { function use() public { require(true); } }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
     expect(Object.keys(artifacts)).toEqual(['Child']);
   });
 
@@ -45,7 +45,7 @@ describe('abstract contract instantiation eligibility', () => {
     expect(() => compileStringRaw(
       'contract B { A a; constructor() { a = new A(address(this)); } }'
       + ' abstract contract A { constructor(address) {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Cannot instantiate abstract contract 'A'/);
   });
 
@@ -53,7 +53,7 @@ describe('abstract contract instantiation eligibility', () => {
     expect(compileStringRaw(
       'contract B { A a; constructor() { a = new A(address(this)); } }'
       + ' contract A { constructor(address) {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('A');
   });
 });
@@ -62,28 +62,28 @@ describe('abstract-contract modifier declaration validation', () => {
   it('rejects an implemented modifier without a placeholder before emitting a declaration artifact', () => {
     expect(() => compileString(
       'abstract contract A { function f() public view mod { require(true); } modifier mod() virtual {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/must contain at least one.*placeholder/i);
   });
 
   it('still emits an abstract declaration when each implemented modifier has a placeholder', () => {
     expect(compileString(
       'abstract contract A { function f() public view mod { require(true); } modifier mod() virtual { _; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('A');
   });
 
   it('rejects an unimplemented modifier which is not virtual', () => {
     expect(() => compileString(
       'abstract contract A { modifier mod(); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/unimplemented modifier.*must be virtual/i);
   });
 });
 
 describe('inherited constructor argument compatibility', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('rejects concrete derived contracts which omit required base-constructor arguments', () => {
     expect(() => cc('contract A { constructor(uint x) {} } contract B is A {}'))
@@ -116,7 +116,7 @@ describe('inherited constructor argument compatibility', () => {
 
 describe('constructor-list invocation compatibility', () => {
   const cc = (src: string): string =>
-    compileString(src, { solidityImportCompat: true }).contractName;
+    compileString(src, { evmCompat: true }).contractName;
 
   it('rejects a bare modifier-style base constructor invocation', () => {
     expect(() => cc(
@@ -144,31 +144,31 @@ describe('Solidity base-constructor argument validation', () => {
   it('rejects an out-of-range literal even when the base parameter is unused', () => {
     expect(() => compileString(
       'contract Base { constructor(uint8) {} } contract Derived is Base(300) {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/300.*uint8|uint8.*300/i);
   });
 
   it('rejects error and event declarations used as constructor arguments', () => {
     expect(() => compileString(
       'error E(uint, bool); contract Base { constructor(uint8) {} } contract D is Base(E) {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/E.*declaration.*not a value/i);
     expect(() => compileString(
       'contract Base { event E(uint); constructor(uint8) {} } contract D is Base(Base.E) {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Base\.E.*declaration.*not a value/i);
   });
 
   it('retains an in-range argument consumed by the base constructor', () => {
     expect(compileString(
       'contract Base { uint8 public x; constructor(uint8 v) { x = v; } } contract D is Base(255) {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('D');
   });
 });
 
 describe('payable/external modifier ordering on receive() and constructor()', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts receive() payable external (either order)', () => {
     const mk = (mods: string): string => `contract C { uint256 y; receive() ${mods} { y = y + 1; require(true); }`
       + ' function f() public { require(true); } }';
@@ -188,7 +188,7 @@ describe('block.coinbase is address payable', () => {
     expect(compileString(
       'contract C { function p() public view returns(address payable) { return block.coinbase; }'
       + ' function a() public view returns(address) { return block.coinbase; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -200,27 +200,27 @@ describe('qualified base-contract modifiers', () => {
       + ' contract C is A { modifier m override { x = 1; _; }'
       + ' function f() public A.m returns (uint) { return x; }'
       + ' function g() public m returns (uint) { return x; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
   it('rejects a qualifier that does not name an inherited modifier implementation', () => {
     expect(() => compileString(
       'contract A { modifier m { _; } } contract C is A { function f() public Missing.m {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/undefined modifier/i);
   });
 
   it('rejects an implemented modifier whose body has no placeholder', () => {
     expect(() => compileString(
       'contract C { modifier stop { require(true); } function f() public stop { revert(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/must contain at least one.*placeholder/i);
   });
 });
 
 describe('fallback and receive override validation', () => {
-  const compat = { solidityImportCompat: true };
+  const compat = { evmCompat: true };
 
   it('requires override on inherited fallback and receive declarations', () => {
     expect(() => compileString(
@@ -259,7 +259,7 @@ describe('fallback and receive override validation', () => {
 });
 
 describe('base-constructor argument path validation', () => {
-  const compat = { solidityImportCompat: true };
+  const compat = { evmCompat: true };
 
   it('rejects constructor arguments supplied by two inheritance branches', () => {
     expect(() => compileString(
@@ -293,7 +293,7 @@ describe('override list may name an interface base', () => {
       + ' contract ERC21 { function transfer(address to, uint amount) virtual external returns (bool) { return false; } }'
       + ' contract Token is ERC21, ERC20 {'
       + '   function transfer(address to, uint amount) override(ERC21, ERC20) external returns (bool) { return false; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(art.contractName).toBe('Token');
   });
@@ -303,7 +303,7 @@ describe('override list may name an interface base', () => {
 // exactly `arr.push(value)` on BCH (push the element type's default, then set it == push the value).
 
 describe('function overload resolution (inheritance + entry-point synthetic params)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('keeps both inherited overloads after inheritance flattening', () => {
     // The merge used to key functions by name only and drop the second same-name overload as a diamond dup.
     expect(cc('contract B { function f(uint a) internal pure returns (uint) { return a; }'
@@ -325,7 +325,7 @@ describe('function overload resolution (inheritance + entry-point synthetic para
 });
 
 describe('imported/sibling contracts with their own inheritance are flattened', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('instantiates a sibling contract that inherits a base (base merged in, not an undefined interface)', () => {
     // Previously only the primary contract was flattened, so a used/instantiated sibling that `is Base` kept an
     // unresolved base -> "undefined interface". Now non-ancestor imported/sibling contracts are flattened too.
@@ -341,7 +341,7 @@ describe('imported/sibling contracts with their own inheritance are flattened', 
 });
 
 describe('virtual/override on modifiers and fallback', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts virtual on a modifier (with and without parens)', () => {
     expect(cc('contract C { int256 x; modifier m() virtual { x = 2; _; }'
       + ' function f() external m { require(true); } }')).toBe('C');
@@ -354,7 +354,7 @@ describe('virtual/override on modifiers and fallback', () => {
 });
 
 describe('power operator result type is the base type (-1 ** e)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('int base ** uint exponent yields the int base type', () => {
     expect(cc('contract C { function f(uint256 e) external pure returns (int256) { return (-1) ** e; } }')).toBe('C');
     expect(cc('contract C { function f(int256 b, uint256 e) external pure returns (int256) { return b ** e; } }')).toBe('C');
@@ -362,7 +362,7 @@ describe('power operator result type is the base type (-1 ** e)', () => {
 });
 
 describe('constructor with a modifier invocation', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts a modifier on a constructor (no args)', () => {
     expect(cc('contract C { int256 x; modifier m { x = 1; _; } constructor() m { x = 2; }'
       + ' function f() external view returns (int256) { return x; } }')).toBe('C');
@@ -375,7 +375,7 @@ describe('constructor with a modifier invocation', () => {
 });
 
 describe('abstract modifier and receive (no body)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts an abstract modifier declaration', () => {
     expect(cc('abstract contract C { modifier mod virtual;'
       + ' function h() external pure returns (uint256) { return 1; } }')).toBe('C');
@@ -387,7 +387,7 @@ describe('abstract modifier and receive (no body)', () => {
 });
 
 describe('super in a constructor (C3-linearized, matching solc)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves a direct super.f() call in a constructor', () => {
     expect(cc('contract A { function f() public virtual pure returns (uint256) { return 1; } }'
       + ' contract B is A { uint256 d; constructor() { d = super.f(); }'
@@ -403,7 +403,7 @@ describe('super in a constructor (C3-linearized, matching solc)', () => {
 });
 
 describe('base function call eligibility', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('rejects calling an external base function through super', () => {
     expect(() => cc('contract A { function f() external virtual pure {} }'
@@ -423,7 +423,7 @@ describe('base function call eligibility', () => {
 });
 
 describe('inherited modifier override and declaration namespace collisions', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('lets a child modifier override a parent virtual/abstract modifier of the same name', () => {
     expect(cc('abstract contract A { function f() public mod returns (bool r) { return true; } modifier mod virtual; }'
       + ' contract C is A { modifier mod override { if (false) _; } }')).toBe('C');
@@ -449,7 +449,7 @@ describe('inherited modifier override and declaration namespace collisions', () 
         event PairCreated(address a, address b);
         function create() public { emit PairCreated(address(0), address(0)); require(true); }
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
     const events = artifacts.C.events ?? [];
     expect(events).toHaveLength(1);
     expect(events[0].name).toBe('PairCreated');
@@ -462,7 +462,7 @@ describe('inherited modifier override and declaration namespace collisions', () 
         function set(uint256 next) public { value = next; emit Changed(next); }
       }
       contract NoticeLeaf is NoticeBase {}
-    `, { solidityImportCompat: true, messageBus: true });
+    `, { evmCompat: true, messageBus: true });
     const leaf = artifacts.NoticeLeaf;
     expect(leaf.messageBus?.handlers.find((handler) => handler.name === 'set')?.emits)
       .toEqual([expect.objectContaining({ eventSignature: 'Changed(uint256)' })]);
@@ -475,7 +475,7 @@ describe('inherited modifier override and declaration namespace collisions', () 
       interface A { event E(uint256 x); }
       interface Unrelated { event E(string x); }
       contract C is A { function f(uint256 x) public { emit E(x); } }
-    `, { solidityImportCompat: true, messageBus: true });
+    `, { evmCompat: true, messageBus: true });
     // The handler selected E(uint256); sibling overload E(string) must not reach the artifact's event inventory.
     expect(artifacts.C.events?.map((event) => event.signature)).toEqual(['E(uint256)']);
   });
@@ -483,7 +483,7 @@ describe('inherited modifier override and declaration namespace collisions', () 
     const artifacts = compileStringMulti(`
       contract Emitter { event Used(uint256 v); event Unused(uint256 v); }
       contract User { function f(uint256 v) public { emit Emitter.Used(v); } }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
     expect(artifacts.User.events?.map((event) => event.signature)).toEqual(['Used(uint256)']);
   });
   it('rejects same-name parent+child errors even when signatures differ', () => {
@@ -497,18 +497,18 @@ describe('discarded qualified base-function references', () => {
     const src = 'contract B { function readX() internal virtual returns (uint) { return 3; } }'
       + ' contract C is B { constructor() { B.readX; }'
       + ' function readX() internal pure override returns (uint) { return 3; } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
   it('routes a current-contract-qualified call through direct internal dispatch', () => {
     const qualified = compileString(
       'contract C { function f() public pure returns(uint){return 3;}'
       + ' function g() public pure returns(uint){return C.f();} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     const direct = compileString(
       'contract C { function f() public pure returns(uint){return 3;}'
       + ' function g() public pure returns(uint){return f();} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(qualified.bytecode).toBe(direct.bytecode);
   });
@@ -517,7 +517,7 @@ describe('discarded qualified base-function references', () => {
       'contract LibraryLock { bool initialized; function initialize() internal { initialized = true; } }'
       + ' contract C is LibraryLock { function initialize(uint value) external {'
       + ' require(!initialized && value > 0); LibraryLock.initialize(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(artifact.contractName).toBe('C');
   });
@@ -527,18 +527,18 @@ describe('discarded qualified base-function references', () => {
       + ' function f(uint a,uint b) public override {} }'
       + ' contract C is B { function g(uint a) public { A.f(a); }'
       + ' function g(uint a,uint b) public { A.f(a,b); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
   it('rewrites an explicitly qualified inherited helper used as a function value', () => {
     const src = 'abstract contract S { function value() internal pure returns(uint){return 7;} }'
       + ' contract C is S { function() internal pure returns(uint) f;'
       + ' constructor(){ f = S.value; } function get() public view returns(uint){return f();} }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('chained getters on computed bases + inherited using-for', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const MM = 'contract MM { function calc(address m, uint o) public returns (uint) { return 0; } }'
     + ' contract Market { MM public marketMaker; }\n';
 
@@ -559,7 +559,7 @@ describe('contract-qualified named struct constructors', () => {
     const artifacts = compileStringMulti('contract Lib { struct S { uint a; uint b; } }'
       + ' contract C { function f() public pure returns (uint) {'
       + ' Lib.S memory x = Lib.S({a: 2, b: 3}); return x.b; } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(artifacts.C.contractName).toBe('C');
   });
 });
@@ -569,12 +569,12 @@ describe('override lists name transitive interface bases', () => {
     expect(compileString('interface A { function f() external pure returns (uint); }'
       + ' interface B is A {} contract C is B {'
       + ' function f() external pure override(A) returns (uint) { return 1; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('prunes dead internal methods that read msg.data (inherited OZ Context._msgData)', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles when an UNREACHABLE internal method reads msg.data (dropped, not codegen-ed)', () => {
     // The dead `_msgData` never runs; msg.data is only reconstructible at an entry point, so keeping it would
     // fail the whole compile with MsgDataInSubroutineError. It is pruned by name-conservative reachability.
@@ -600,7 +600,7 @@ describe('using-for reverse overrides the native bytes reverse member', () => {
     expect(compileString('library L { function reverse(bytes calldata b) internal pure'
       + ' returns (bytes1, bytes1) { return (b[1], b[0]); } } contract C { using L for bytes;'
       + ' function f(bytes calldata b) external pure returns (bytes1, bytes1) { return b.reverse(); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -617,12 +617,12 @@ describe('vmap-default: an inherited method accessing its OWN contract private m
     + ` contract Derived is Base { ${deriveBody} }`;
   it('compiles read+write of a base private mapping through an inherited helper (vmap-default)', () => {
     expect(() => compileString(base('function mint(address a, uint256 v) public { _upd(a, v); }'),
-      { solidityImportCompat: true })).not.toThrow();
+      { evmCompat: true })).not.toThrow();
   });
   it('still REJECTS a derived contract accessing a base private mapping directly (real visibility violation)', () => {
     expect(() => compileString('pragma solidity ^0.8.20; contract Base { mapping(address => uint256) private _balances; }'
       + ' contract Derived is Base { function poke(address a, uint256 v) public { _balances[a] = v; } }',
-    { solidityImportCompat: true })).toThrow(/Cannot access private collection '_balances'/);
+    { evmCompat: true })).toThrow(/Cannot access private collection '_balances'/);
   });
 
   it('preserves the base scope when a generated batch route journals inherited private mappings', () => {
@@ -639,7 +639,7 @@ describe('vmap-default: an inherited method accessing its OWN contract private m
       }
       contract Derived is Base {}
     `, {
-      solidityImportCompat: true,
+      evmCompat: true,
       forceStateful: true,
       messageBus: true,
       messageBusGraphContext: true,
@@ -661,14 +661,14 @@ describe('same-named PRIVATE state var in different ancestors is origin-mangled,
       + ' contract A { string private _name; function aName() public view returns (string memory) { return _name; } }'
       + ' contract B { bytes32 private _name; function bName() public view returns (bytes32) { return _name; } }'
       + ' contract C is A, B { }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
   it('compiles the diamond-via-intermediate shape (ERC20Permit is ERC20, EIP712 both with _name)', () => {
     const src = 'pragma solidity ^0.8.20;'
       + ' contract ERC20 { string private _name; function n() public view returns (string memory) { return _name; } }'
       + ' contract EIP712 { bytes32 private _name; function h() public view returns (bytes32) { return _name; } }'
       + ' contract Permit is ERC20, EIP712 { } contract Tok is ERC20, Permit { }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 });
 
@@ -680,14 +680,14 @@ describe('override(Interface) survives flattening: a parent interface base carri
     const src = 'pragma solidity ^0.8.20; interface I { function f() external view returns (uint256); }'
       + ' contract Mid is I { function f() public view virtual override(I) returns (uint256) { return 1; } }'
       + ' contract Derived is Mid { }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
   it('compiles override(I, Base) multi-base after flattening', () => {
     const src = 'pragma solidity ^0.8.20; interface I { function f() external view returns (uint256); }'
       + ' contract Base { function f() public view virtual returns (uint256) { return 0; } }'
       + ' contract Mid is Base, I { function f() public view virtual override(I, Base) returns (uint256) { return 1; } }'
       + ' contract Derived is Mid { }';
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   });
 });
 
@@ -703,7 +703,7 @@ describe('inherited `using L for T` resolves in a derived contract (OZ ERC20 Saf
   const resolver = (p: string): { source: string; id: string } | undefined =>
     (p === './B.sol' ? { source: base, id: '/B.sol' } : undefined);
   const ok = (src: string): void => {
-    expect(() => compileString(src, { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true }))
+    expect(() => compileString(src, { importResolver: resolver, rootFileId: '/main.sol', evmCompat: true }))
       .not.toThrow();
   };
   it('derived call to inherited _mint (private scalar + vmap mapping via SafeMath) compiles', () => {
@@ -718,7 +718,7 @@ describe('inherited `using L for T` resolves in a derived contract (OZ ERC20 Saf
 
 describe('return f(); void tail form + base-as-primary derived-sibling flatten (SushiToken/MasterChef)', () => {
   const ok = (src: string): void => {
-    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(src, { evmCompat: true })).not.toThrow();
   };
   // `return f();` in a VOID function where f is itself void (OZ/COMP `delegate` returns `_delegate(..)`).
   it('lowers return <void-call>() to <call>; return;', () => {
@@ -745,7 +745,7 @@ describe('return f(); void tail form + base-as-primary derived-sibling flatten (
     expect(() => compileString(
       'import {ERC20, Ownable} from "./B.sol"; contract Tok is ERC20("Sushi", "SUSHI"), Ownable {'
       + ' function f() public { require(true); } }',
-      { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true },
+      { importResolver: resolver, rootFileId: '/main.sol', evmCompat: true },
     )).not.toThrow();
   });
 });
@@ -755,7 +755,7 @@ describe('inherited-private access via assignment-as-expression (BentoBoxV1 DOMA
   // assignment-as-expression on its OWN private immutable. Hoisting `x = v` before the call leaves a fresh read
   // `x` in the argument; that read must carry the ctor's origin tag or the flattened child trips the
   // inherited-private-access check. The write keeps its tag; the read now copies it.
-  const opts = { solidityImportCompat: true };
+  const opts = { evmCompat: true };
   const parent = 'contract Parent { uint256 private immutable X; uint256 private Y;'
     + ' constructor() public { Y = id(X = 5); }'
     + ' function id(uint256 v) internal pure returns (uint256) { return v; } }';
@@ -775,7 +775,7 @@ describe('void storage-pointer library fn on a mapping/array element (BentoBox B
   // lowers the element arg to a read-modify-write (`S t = m[k]; <body>; m[k] = t;`) instead of substituting the
   // element into the mis-built AssignNode lvalue (was: "Undefined reference to symbol <param>"). The using-for
   // spelling resolves via RedesugarImportedUsingForCalls (struct-valued mapping element receiver -> L.f(m[k], ..)).
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   const LIB = 'struct Total { int base; int elastic; }'
     + ' library L { function addBase(Total storage t, int x) { t.base += x; }'
     + ' function setBoth(Total storage t, int a, int b) { t.base = a; t.elastic = b; } }';
@@ -798,7 +798,7 @@ describe('void storage-pointer library fn on a mapping/array element (BentoBox B
 });
 
 describe('interface fallback declarations and abstract compliance', () => {
-  const options = { solidityImportCompat: true };
+  const options = { evmCompat: true };
 
   it('accepts an interface fallback while an abstract implementer defers remaining obligations', () => {
     expect(compileString('interface I { function f() external; function g() external; fallback() external; }'
@@ -823,7 +823,7 @@ describe('base-constructor assignment arguments', () => {
       'contract B { uint immutable x; constructor(uint v) { x = v; } }'
       + ' contract C is B(C.y = 3) { uint immutable y;'
       + ' function f() public view returns (uint) { return x + y; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
     expect(compileString(
       'contract A { uint immutable x = x + 1; uint immutable y = x += 2;'
@@ -831,7 +831,7 @@ describe('base-constructor assignment arguments', () => {
       + ' modifier m(uint) { _; } function get() public view returns (uint) { return x; } }'
       + ' contract B is A(A.x += 8) { constructor(uint) {} }'
       + ' contract C is B { constructor() B(x += 4) {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -840,7 +840,7 @@ describe('inherited state-struct field writes', () => {
   it('rebuilds an inherited struct whose type was unavailable while parsing the derived body', () => {
     expect(compileString('struct S { uint256 x; address a; bool b; } contract A { S public s; }'
       + ' contract C is A { function init() public { s.x = 7; s.a = address(0x1234); s.b = true; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -851,7 +851,7 @@ describe('external self-calls through a base-contract cast', () => {
       + ' function f(uint256[] memory a) public override returns (uint256) { return a[1]; }'
       + ' function g() public returns (uint256) { uint256[] memory m = new uint256[](2);'
       + ' m[0] = 42; m[1] = 23; return A(this).f(m); } }',
-    { solidityImportCompat: true }).contractName).toBe('B');
+    { evmCompat: true }).contractName).toBe('B');
   });
 });
 
@@ -859,7 +859,7 @@ describe('constructor argument literal coercion', () => {
   it('contextually converts a string literal to a fixed-bytes constructor parameter', () => {
     expect(compileString('contract D { bytes3 value; constructor(bytes3 v) { value = v; } }'
       + ' contract C { D d; constructor() { d = new D("abc"); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -867,7 +867,7 @@ describe('private base state-variable shadowing', () => {
   it('keeps the inaccessible base slot distinct from a child variable with the same name', () => {
     expect(compileString('contract A { uint private value; } contract B is A { uint value;'
       + ' function f() public { value = 1; } }',
-    { solidityImportCompat: true }).contractName).toBe('B');
+    { evmCompat: true }).contractName).toBe('B');
   });
 });
 
@@ -876,7 +876,7 @@ describe('public variable explicit function override', () => {
     expect(compileString('contract A { function foo() external virtual view returns(uint) { return 5; } }'
       + ' contract B { function foo() external virtual view returns(uint) { return 6; } }'
       + ' contract X is A, B { uint public override(A, B) foo; }',
-    { solidityImportCompat: true }).contractName).toBe('X');
+    { evmCompat: true }).contractName).toBe('X');
   });
 });
 
@@ -884,26 +884,26 @@ describe('public getters implementing abstract functions', () => {
   it('accepts a public constant as a zero-argument abstract getter implementation', () => {
     expect(compileString('abstract contract A { function value() external pure virtual returns (uint); }'
       + ' contract C is A { uint public constant override value = 7; }',
-    { solidityImportCompat: true }).abi.map((entry) => entry.name)).toContain('value');
+    { evmCompat: true }).abi.map((entry) => entry.name)).toContain('value');
   });
 
   it('accepts a public mapping-to-struct getter with matching tuple returns', () => {
     expect(compileString('abstract contract A { struct S { uint x; string y; }'
       + ' function data(address key) external virtual returns (uint, string memory); }'
       + ' contract C is A { mapping(address => S) public override data; }',
-    { solidityImportCompat: true }).abi.map((entry) => entry.name)).toContain('data');
+    { evmCompat: true }).abi.map((entry) => entry.name)).toContain('data');
   });
 
   it('still rejects a genuinely unimplemented abstract function', () => {
     expect(() => compileString('abstract contract A { function f() public virtual; } contract C is A {}',
-      { solidityImportCompat: true })).toThrow(/must implement abstract function/);
+      { evmCompat: true })).toThrow(/must implement abstract function/);
   });
 
   it('does not let a view state getter weaken an abstract pure function', () => {
     expect(() => compileString('abstract contract A {'
       + ' function value() external pure virtual returns (uint); }'
       + ' contract C is A { uint public override value; }',
-    { solidityImportCompat: true })).toThrow();
+    { evmCompat: true })).toThrow();
   });
 });
 
@@ -914,20 +914,20 @@ describe('public getter interface override lists', () => {
   it('requires every parallel interface provider in an explicit override list', () => {
     expect(() => compileString(prefix
       + ' contract C is A, B { uint public override(A) foo; }',
-    { solidityImportCompat: true })).toThrow(/must specify bases.*A.*B|must specify bases.*B.*A/);
+    { evmCompat: true })).toThrow(/must specify bases.*A.*B|must specify bases.*B.*A/);
   });
 
   it('accepts a complete parallel interface override list', () => {
     expect(compileString(prefix
       + ' contract C is A, B { uint public override(A, B) foo; }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('lets a derived interface provider dominate its ancestor', () => {
     expect(compileString('interface A { function foo() external returns (uint); }'
       + ' interface B is A { function foo() external returns (uint); }'
       + ' contract C is B { uint public override(B) foo; }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -935,7 +935,7 @@ describe('bare inherited dynamic-array mutations', () => {
   it('classifies push and pop as state-array operations after inheritance expansion', () => {
     expect(compileString('contract A { uint[] public values; }'
       + ' contract C is A { function f() public { values.push(1); values.pop(); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -944,7 +944,7 @@ describe('private helpers in a directly compiled library', () => {
     const src = 'library L { using {L.bump} for uint;'
       + ' function bump(uint x) private pure returns (uint) { return x + 1; }'
       + ' function f() public pure returns (uint) { uint x = 1; return x.bump(); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('L');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('L');
   });
 });
 
@@ -952,13 +952,13 @@ describe('constructor external-read promotion', () => {
   it('does not replace a zero-argument void call with a deploy-input getter witness', () => {
     const src = 'contract Child { event E(); function f() public { emit E(); } }'
       + ' contract Parent { Child child; constructor() { child = new Child(); child.f(); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('Parent');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('Parent');
   });
 
   it('captures a contract-typed state receiver after assigning it from a constructor parameter', () => {
     const src = 'contract Peer { function f() public pure {} }'
       + ' contract Parent { Peer peer; constructor(Peer other) { peer = other; other.f(); peer.f(); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('Parent');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('Parent');
   });
 });
 
@@ -969,7 +969,7 @@ describe('flattened storage-pointer constructor arguments', () => {
        abstract contract A { constructor(S storage p) { p.m[5] = 16; } }
        contract C is A { mapping(uint => S) data; constructor() A(data[1]) {}
        function f() public { require(data[1].m[5] == 16); } }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -978,13 +978,13 @@ describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'
       + ' contract C is Base { constructor() Base(2) { require(Base.a == a); } }',
-    { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
   it('rejects qualifying an inherited slot with the child rather than its declaring base', () => {
     expect(() => compileString('contract Base { uint internal a; }'
       + ' contract C is Base { function f() public view returns (uint) { return C.a; } }',
-    { solidityImportCompat: true })).toThrow();
+    { evmCompat: true })).toThrow();
   });
 });
 
@@ -993,14 +993,14 @@ describe('inherited constructor function-pointer arguments', () => {
     expect(compileString('abstract contract B { uint immutable x;'
       + ' constructor(function() internal returns (uint) fp) { x = fp(); } }'
       + ' contract C is B(C.f) { function f() internal view returns (uint) { return x + 2; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 
   it('retains the direct-constructor-only rule for immutable writes in the referenced helper', () => {
     expect(() => compileString('abstract contract B { uint immutable x;'
       + ' constructor(function() internal returns (uint) fp) { x = fp(); } }'
       + ' contract C is B(C.f) { function f() internal returns (uint) { return x = 2; } }',
-    { solidityImportCompat: true })).toThrow(/immutable/i);
+    { evmCompat: true })).toThrow(/immutable/i);
   });
 });
 
@@ -1009,7 +1009,7 @@ describe('stateful child deployment from a constructor', () => {
     const artifact = compileString(
       'contract Child { uint public value = 42; }'
       + ' contract C { constructor() { new Child(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(artifact.stateLayout).toBeDefined();
   });
@@ -1020,12 +1020,12 @@ describe('public state-variable getter override visibility', () => {
     expect(compileString(
       'abstract contract A { function value() external virtual returns (uint); }'
       + ' contract C is A { uint public override value = 1; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
     expect(() => compileString(
       'abstract contract A { function value() internal virtual returns (uint); }'
       + ' contract C is A { uint public override value = 1; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/only override an external function/);
   });
 });
@@ -1036,7 +1036,7 @@ describe('parent-constructor argument substitution inside assertions', () => {
       'contract A { int x; constructor(int a) { x = a; } }'
       + ' contract B is A { constructor(int b) A(b) { assert(x == b); } }'
       + ' contract C is B { constructor(int c) B(-c) { assert(x == -c); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1054,7 +1054,7 @@ describe('inherited declaration namespace', () => {
       + ' contract C is A, B {}',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/already defined in parent contract/);
     }
   });
@@ -1062,7 +1062,7 @@ describe('inherited declaration namespace', () => {
   it('does not expose a private ancestor variable in the derived namespace', () => {
     expect(compileString(
       'contract A { uint private x; } contract B is A { function x() public pure returns (uint) { return 1; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('B');
   });
 
@@ -1071,12 +1071,12 @@ describe('inherited declaration namespace', () => {
       'contract A { function foo() external virtual returns (uint) { return 1; }'
       + ' function foo(uint) external virtual returns (uint) { return 2; } }'
       + ' contract B is A { uint public override foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('B');
     expect(compileString(
       'contract A { function foo(uint) internal virtual pure returns (uint) { return 1; } }'
       + ' contract B is A { uint public foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('B');
   });
 });
@@ -1090,7 +1090,7 @@ describe('override state mutability', () => {
       'contract A { function f() public virtual {} } contract B is A { function f() public payable override {} }',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/changes state mutability/);
     }
   });
@@ -1099,7 +1099,7 @@ describe('override state mutability', () => {
     expect(compileString(
       'contract A { function f() public virtual {} function g() public view virtual {} }'
       + ' contract B is A { function f() public pure override {} function g() public pure override {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('B');
   });
 });
@@ -1113,7 +1113,7 @@ describe('override base-list uniqueness', () => {
       + ' contract B is A { uint public override(A, A) foo; }',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/Duplicate contract 'A' in override list/);
     }
   });
@@ -1123,7 +1123,7 @@ describe('override base-list uniqueness', () => {
       'abstract contract A { function f() public virtual; }'
       + ' abstract contract B { function f() public virtual; }'
       + ' contract C is A, B { function f() public override(A, B) {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1132,14 +1132,14 @@ describe('private virtual functions', () => {
   it('rejects virtual on a private function', () => {
     expect(() => compileString(
       'abstract contract A { function f() private virtual returns (uint); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/'private' functions cannot be 'virtual'/);
   });
 
   it('accepts virtual on an internal function', () => {
     expect(compileString(
       'abstract contract A { function f() internal virtual returns (uint); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('A');
   });
 });
@@ -1148,14 +1148,14 @@ describe('override lists on root contracts', () => {
   it('rejects a library named as an override base', () => {
     expect(() => compileString(
       'library L {} contract C { function f() public override(L) {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/'L' is not a base contract/);
   });
 
   it('retains ordinary root contracts without override lists', () => {
     expect(compileString(
       'contract C { function f() public pure returns (uint) { return 1; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1172,7 +1172,7 @@ describe('modifier override validation', () => {
       + ' contract B is A { modifier m() override { _; } }',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true })).toThrow();
+      expect(() => compileString(source, { evmCompat: true })).toThrow();
     }
   });
 
@@ -1181,7 +1181,7 @@ describe('modifier override validation', () => {
       'contract A { modifier m(uint x) virtual { require(x > 0); _; } }'
       + ' contract B is A { modifier m(uint x) override { require(x < 10); _; }'
       + ' function f(uint x) public m(x) { require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('B');
   });
 });
@@ -1190,14 +1190,14 @@ describe('virtual function declaration rules', () => {
   it('requires virtual on an unimplemented contract function', () => {
     expect(() => compileString(
       'abstract contract A { function f() external; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/without implementation must be marked virtual/);
   });
 
   it('rejects virtual library functions', () => {
     expect(() => compileString(
       'library L { function f() internal pure virtual returns (uint) { return 0; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Library functions cannot be 'virtual'/);
   });
 
@@ -1205,7 +1205,7 @@ describe('virtual function declaration rules', () => {
     expect(() => compileString(
       'abstract contract A { modifier onlyOwner { _; }'
       + ' function f() public virtual onlyOwner; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/without implementation cannot have modifiers/);
   });
 });
@@ -1223,7 +1223,7 @@ describe('unimplemented overrides of implemented functions', () => {
       + ' abstract contract C is B, A { function f() external virtual override(A, B); }',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/cannot override implemented function/);
     }
   });
@@ -1233,7 +1233,7 @@ describe('unimplemented overrides of implemented functions', () => {
       'abstract contract A { function f() public virtual; }'
       + ' abstract contract B { function f() public virtual; }'
       + ' abstract contract C is A, B { function f() public virtual override(A, B); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1246,21 +1246,21 @@ describe('bare override on root declarations', () => {
       'contract C { fallback() external override {} }',
     ];
     for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
+      expect(() => compileString(source, { evmCompat: true }))
         .toThrow(/override specified but does not override anything/);
     }
   });
 
   it('accepts getter override markers without a concrete base declaration', () => {
     expect(compileString('contract C { uint public override value; mapping(address => uint) public override values; }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
 
   it('accepts the same declarations without override', () => {
     expect(compileString(
       'contract C { uint public value; modifier m() { _; }'
       + ' function f() public m {} fallback() external {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1270,7 +1270,7 @@ describe('public-getter override base lists', () => {
     expect(() => compileString(
       'interface A { function foo() external view returns (uint); } interface B {}'
       + ' contract C is A { uint public override(A, B) foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/'B' is not a base contract/);
   });
 
@@ -1278,7 +1278,7 @@ describe('public-getter override base lists', () => {
     expect(compileString(
       'interface A { function foo() external view returns (uint); }'
       + ' contract C is A { uint public override(A) foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1288,12 +1288,12 @@ describe('public-getter override signatures', () => {
     expect(() => compileString(
       'contract A { function foo() internal virtual view returns (uint) { return 1; } }'
       + ' contract C is A { uint public foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Use 'override'/);
     expect(compileString(
       'contract A { function foo(uint) internal virtual pure returns (uint) { return 1; } }'
       + ' contract C is A { uint public foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -1301,12 +1301,12 @@ describe('public-getter override signatures', () => {
     expect(() => compileString(
       'contract A { function balanceOf(uint) external virtual view returns (uint) { return 1; } }'
       + ' contract C is A { mapping(address => uint) public override balanceOf; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/does not override anything/);
     expect(() => compileString(
       'contract A { function foo() external virtual view returns (address) { return address(0); } }'
       + ' contract C is A { uint public override foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/does not match the overridden function return type/);
   });
 
@@ -1315,14 +1315,14 @@ describe('public-getter override signatures', () => {
       'contract A { function foo() external virtual view returns (uint) { return 1; } }'
       + ' contract B { function foo() external virtual view returns (uint) { return 2; } }'
       + ' contract C is A, B { uint public override foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/must specify bases/);
     expect(compileString(
       'contract A { function foo() external virtual view returns (uint) { return 1; } }'
       + ' contract B is A { function foo() external virtual override view returns (uint) { return 2; } }'
       + ' contract C { function foo() external virtual view returns (uint) { return 3; } }'
       + ' contract D is B, C { uint public override(B, C) foo; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('D');
   });
 });
@@ -1333,7 +1333,7 @@ describe('function override provider lists', () => {
       'abstract contract A { function f(uint) internal virtual; }'
       + ' abstract contract B { function f() internal virtual; }'
       + ' abstract contract C is A, B { function f() internal virtual override(A, B); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/'A' is not a base contract that declares it/);
   });
 
@@ -1342,11 +1342,11 @@ describe('function override provider lists', () => {
       + ' abstract contract B { function f() internal virtual; }';
     expect(() => compileString(
       `${bases} abstract contract C is A, B { function f() internal virtual override(A); }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/must specify bases/);
     expect(compileString(
       `${bases} abstract contract C is A, B { function f() internal virtual override(A, B); }`,
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -1357,7 +1357,7 @@ describe('direct-base effective function origins', () => {
       'contract A { function f() public pure virtual {} }'
       + ' contract B is A { function f() public pure virtual override {} }'
       + ' contract C is A, B {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -1366,24 +1366,24 @@ describe('direct-base effective function origins', () => {
       'contract A { function f() public pure virtual {} }'
       + ' contract B is A { function f() public pure virtual override {} }'
       + ' contract C is A, B { function f() public pure override(A, B) {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
     expect(compileString(
       'contract A { function f() public pure virtual {} }'
       + ' contract B is A {} contract C is A {} contract D is B, C {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('D');
     expect(compileString(
       'abstract contract A { function f() public pure virtual; }'
       + ' contract B is A { function f() public pure virtual override {} }'
       + ' contract C is A, B {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
     expect(compileString(
       'abstract contract A { function f() public virtual; }'
       + ' abstract contract B is A { function f() public virtual override; }'
       + ' abstract contract C is A {} abstract contract D is B, C {}',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('D');
   });
 });
@@ -1394,7 +1394,7 @@ describe('inherited private function visibility', () => {
       expect(() => compileString(
         'contract Base { function f() private {} }'
           + ` contract Derived is Base { function g() public { ${call}; } }`,
-        { solidityImportCompat: true },
+        { evmCompat: true },
       )).toThrow(/Undefined reference to symbol/);
     }
   });
@@ -1403,7 +1403,7 @@ describe('inherited private function visibility', () => {
     expect(compileString(
       'contract Base { function f() private {} function g() public { f(); } }'
         + ' contract Derived is Base { function h() private {} function i() public { h(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('Derived');
   });
 });

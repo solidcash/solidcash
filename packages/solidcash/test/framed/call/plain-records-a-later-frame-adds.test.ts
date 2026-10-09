@@ -124,7 +124,7 @@ const SOURCE = [
 
 /** Solidity-import compile options, as the hop's replica compiles the same vault. */
 const FIXTURE_OPTIONS = {
-  solidityImportCompat: true,
+  evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
   messageBus: true,

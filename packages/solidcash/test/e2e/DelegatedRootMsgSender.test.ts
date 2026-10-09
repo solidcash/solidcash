@@ -50,7 +50,7 @@ describe('delegated root caller identity', () => {
       }
     `, {
       forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      solidityImportCompat: true,
+      evmCompat: true,
     });
     expect(artifact.delegateArtifact?.abi.find((entry) => entry.name === 'initialize')?.inputs)
       .toEqual(expect.arrayContaining([
@@ -70,7 +70,7 @@ describe('delegated root caller identity', () => {
         address public owner;
         function initialize() public { this.owner = msg.sender; }
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
     const abi = (artifact.delegateArtifact ?? artifact).abi.find((entry) => entry.name === 'initialize')!;
     const frameOf = (hex: string): number => decodeTransactionUnsafe(hexToBin(hex)).inputs.findIndex((input) => {
       const [selector] = decodeAuthenticationInstructions(input.unlockingBytecode);
@@ -125,7 +125,7 @@ describe('delegated root caller identity', () => {
     const [deployer, invoker] = await getSigners(2, { provider, fundingUtxos: 8 });
     const options = {
       forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      solidityImportCompat: true,
+      evmCompat: true,
     } as const;
     const targetArtifact = compileString(TARGET, options);
     const callerArtifact = compileString(CALLER, options);

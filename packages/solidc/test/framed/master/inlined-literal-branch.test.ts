@@ -12,7 +12,7 @@ import { publishedRefusals } from './refused-entry.js';
  * the arm and its write.
  */
 
-const OPTIONS = { composition: 'framed', solidityImportCompat: true } as never;
+const OPTIONS = { composition: 'framed', evmCompat: true } as never;
 
 /** The marketplace's refund shape, with the whitelist update behind the helper's own flag. */
 const source = (refuseCall: string): string => 'pragma solidity ^0.8.20;'

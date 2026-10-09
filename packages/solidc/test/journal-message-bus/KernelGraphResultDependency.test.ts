@@ -9,7 +9,7 @@ import { compileAddressToEvmIdentity } from '../../src/generation/utils.js';
 
 const KERNEL = {
   forceStateful: true,
-  solidityImportCompat: true,
+  evmCompat: true,
   messageBus: true,
   messageBusKernel: true,
   maximumInputBytes: 1_000_000,
@@ -117,7 +117,7 @@ describe('kernel graph result dependencies', () => {
       }
     `, {
       ...KERNEL,
-      solidityImportCompat: false,
+      evmCompat: false,
     });
 
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');

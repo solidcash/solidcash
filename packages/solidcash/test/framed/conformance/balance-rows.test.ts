@@ -90,7 +90,7 @@ const FORWARD_SOURCE = 'pragma solidity ^0.8.0;'
 
 describe('spec section 23 row 10: address(this).balance compared with 0', () => {
   it('serves the value-0 guard: the entry answers its balance and records the branch it took', async () => {
-    const vault = compileStringMulti(VAULT_SOURCE, { composition: 'framed', solidityImportCompat: true }).Vault!;
+    const vault = compileStringMulti(VAULT_SOURCE, { composition: 'framed', evmCompat: true }).Vault!;
     expect(vault.composition?.balanceReaders)
       .toStrictEqual(['Vault.guarded()']);
     const deployed = await deployedFor(vault);
@@ -119,7 +119,7 @@ describe('spec section 23 row 10: address(this).balance compared with 0', () => 
   }, 120_000);
 
   it('refuses the functionCallWithValue shape by name: its target is no deployment\'s', async () => {
-    const forwarder = compileStringMulti(FORWARD_SOURCE, { composition: 'framed', solidityImportCompat: true })
+    const forwarder = compileStringMulti(FORWARD_SOURCE, { composition: 'framed', evmCompat: true })
       .Forwarder!;
     // The body itself compiles: the value-0 call lowers, so the refusal is the call path's, not the compiler's.
     expect(forwarder.composition?.refusedEntries).toBeUndefined();

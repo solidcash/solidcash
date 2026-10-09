@@ -58,7 +58,7 @@ describe('framed wide record dust', () => {
   it('deploys a record over 252 bytes and settles a call that rewrites it wider', async () => {
     const world = await newWorld(0x5d);
     const artifact = compileStringMulti(SOURCE, {
-      solidityImportCompat: true, composition: 'framed', commitmentLimit: COMMITMENT_LIMIT,
+      evmCompat: true, composition: 'framed', commitmentLimit: COMMITMENT_LIMIT,
     } as never).Wide!;
     const deployment = await deployStatefulContract(artifact, [WIDE] as never, {
       provider: world.network,

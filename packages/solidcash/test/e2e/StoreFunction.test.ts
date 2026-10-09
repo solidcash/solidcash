@@ -11,7 +11,7 @@ import { decodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js'
 
 // Every fixture here deploys a child through a deliberately unguarded deploy entry (these tests cover the
 // store_function mechanic, not caller authorization), so compile with the explicit permissionless opt-in.
-const DEPLOY_OPTS = { solidityImportCompat: true, allowUnsafeOperations: true } as const;
+const DEPLOY_OPTS = { evmCompat: true, allowUnsafeOperations: true } as const;
 
 describe('split (two tx)', () => {
   // Split store_function: install() deploys Other and stores its method as a fn-ptr; run() co-spends the

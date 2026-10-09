@@ -51,7 +51,7 @@ machinery; `basefee` lowers to `Floor(1000 * __block_totalFees / __block_size)`.
 owner key + update function and makes the contract stateful, so reads ride the master spend (isolation/
 master-bind) and only the owner can refresh. Registers use the framed pushdata state encoding (not the
 fixed-offset 128-byte layout sketched below) - functionally equivalent, reuses tested code. Under
-`solidityImportCompat`, `block.timestamp` keeps the native `tx.locktime` mapping instead of the oracle.
+`evmCompat`, `block.timestamp` keeps the native `tx.locktime` mapping instead of the oracle.
 Tests: `packages/solidcash/test/e2e/BlockOracle.test.ts` (chainid, reads, owner-update, keeper).
 
 This consolidates the design discussion for exposing Solidity-style block and transaction properties
@@ -542,7 +542,7 @@ extensions are added on top.
 | `block.gaslimit` (uint) | **yes** | fixed shim `1000000` (warned) | no gas metering on BCH |
 | `block.number` (uint) | **yes** | oracle register (uint32), owner-updated, freshness-bound | a value, not just a CLTV floor |
 | `block.prevrandao` (uint) | **yes** | tx-local `abs(int(sha256(input[0] prevout txid)))` (warned) | no beacon/VM randomness; grindable by the builder - not secure (s12-adjacent note in field table) |
-| `block.timestamp` (uint) | **yes** | oracle register (uint32) | under `solidityImportCompat`, maps to native `tx.locktime` instead |
+| `block.timestamp` (uint) | **yes** | oracle register (uint32) | under `evmCompat`, maps to native `tx.locktime` instead |
 | `gasleft() -> uint256` | **yes** | fixed shim `1000000` (warned) | no gas metering |
 | `msg.data` (bytes) | **yes** | the call's argument bytes (calldata) | see docs/call-model.md |
 | `msg.sender` (address) | **yes** | the calling contract's locking bytecode; `tx.origin` for a direct (EOA) call | EVM-parity caller, from the external-call model (`__internal__msgSenderCategory`) |

@@ -156,8 +156,7 @@ set. See [Large Contracts & Split Bundles](./large-contracts.md) for planning, d
 | `allowUnsafeOperations` | Explicitly admit detected caller-controlled delegate/selfdestruct authority |
 | `commitmentLimit` | Set the state-layout NFT commitment budget (bounded by the target network) |
 | `maximumInputBytes` | Validate against a private/mock per-input ceiling; production defaults to 10,000 |
-| `solidityImportCompat` | Accept Solidity pragmas/imports and enable the Solidity porting pipeline |
-| `evmCompat` | Use EVM word encoding for the `abi.*` family |
+| `evmCompat` | Accept Solidity pragmas/imports, enable the Solidity porting pipeline, and use EVM word encoding for the `abi.*` family |
 | `chunkedArrays` | Select the dense chunk backend for eligible unbounded state arrays |
 | `chainId` | Bake `block.chainid` as a `uint256`; the current network convention uses only `chainId & 0xff` |
 | `ecrecover` | Select the `p2pkh` or `evm` address projection for imported Solidity |

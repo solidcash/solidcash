@@ -70,13 +70,13 @@ describe('malformed bounded-type spellings are identifiers', () => {
   it('accepts non-canonical uint/bytes/fixed spellings as variable names', () => {
     expect(compileString(
       'contract C { uint uint7; uint bytes01; uint uint300; uint fixed1x01; uint ufixed0x0; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
   it('keeps canonical bounded types reserved in identifier positions', () => {
     for (const name of ['uint8', 'int256', 'bytes32', 'fixed8x0', 'ufixed256x80']) {
-      expect(() => compileString(`contract C { uint ${name}; }`, { solidityImportCompat: true })).toThrow();
+      expect(() => compileString(`contract C { uint ${name}; }`, { evmCompat: true })).toThrow();
     }
   });
 });
@@ -88,11 +88,11 @@ describe('integer literal 0 coerces to bytesN', () => {
     const a = compileString(
       'contract C { bytes32 constant S = 0; function f() public pure returns (bytes32 x) {'
       + ' bytes20 y = 0; x = 0; require(x == S); require(y == bytes20(0)); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
     expect(() => compileString('contract C { function f() public pure returns (bytes32 r) { r = 5; } }',
-      { solidityImportCompat: true })).toThrow(/can not be assigned/);
+      { evmCompat: true })).toThrow(/can not be assigned/);
   });
 });
 
@@ -105,7 +105,7 @@ describe('literal 0 -> bytesN at all assignment sites', () => {
       + ' function g(bytes32 x) internal pure {}'
       + ' function f(uint256 k) public returns (bytes32) { this.s = 0; this.arr[0] = 0; this.m[k] = 0;'
       + ' g(0); emit E(0); return 0; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -114,7 +114,7 @@ describe('literal 0 -> bytesN at all assignment sites', () => {
 // A value unit (wei/gwei/ether) after a decimal literal (`0.2 ether`) folds to an integer, the same units the
 // integer form (`1 ether`) already accepts. Common in ported Solidity.
 describe('decimal literal with a value unit (0.2 ether)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts and folds `0.2 ether` to its integer value', () => {
     expect(cc('contract C { function f() public pure returns (bool) {'
       + ' require(0.2 ether == 200000000000000000); return true; } }')).toBe('C');
@@ -128,7 +128,7 @@ describe('decimal literal with a value unit (0.2 ether)', () => {
 // Unspaced subtraction of a number literal (`i-1`, `a[i-1]`, `i-2*3`) was lexed as `i` `-1` (a signed literal),
 // so it failed to parse. A leading minus is no longer part of a number literal; negation is a unary operator.
 describe('unspaced subtraction of a number literal (i-1)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('parses `i-1`', () => {
     expect(cc('contract C { function f(uint i) public pure returns (uint) { return i-1; } }')).toBe('C');
   });
@@ -145,6 +145,6 @@ describe('unspaced subtraction of a number literal (i-1)', () => {
   });
   it('still rejects a constant negative array index', () => {
     expect(() => compileString('contract C { function f() public pure { uint[3] memory a; uint v = a[-1];'
-      + ' require(v == 0); } }', { solidityImportCompat: true })).toThrow();
+      + ' require(v == 0); } }', { evmCompat: true })).toThrow();
   });
 });

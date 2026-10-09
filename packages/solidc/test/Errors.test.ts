@@ -36,15 +36,15 @@ describe('unnamed custom error parameters', () => {
   it('compiles `error Bad(uint256)` and reverts with it', () => {
     const a = compileString(
       'contract C { error Bad(uint256); function f(uint256 x) public pure { if (x == 0) revert Bad(x); require(true); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
 
   it('accepts array-typed error parameters (named and unnamed)', () => {
     expect(compileString('contract C { error E(uint[] a, uint[1] b); function f() { require(false); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
     expect(compileString('contract C { error E(uint[], uint[1]); function f() { require(false); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
 });

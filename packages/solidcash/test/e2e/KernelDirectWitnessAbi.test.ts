@@ -23,7 +23,7 @@ describe('kernel direct handler witness ABI', () => {
           IStore(store).write(key, value);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifacts.Store.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(false);

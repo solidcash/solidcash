@@ -53,7 +53,7 @@ These Solidity constructs work as written.
 
 **Solidity source files**
 
-The `solidityImportCompat` compiler option lets `.sol` files be parsed directly and accepts
+The `evmCompat` compiler option lets `.sol` files be parsed directly and accepts
 `pragma solidity ...`. Several porting affordances that never relax soundness are plain defaults and need no
 flag at all: hex-literal integer coercion, string-literal `bytesN` right-padding, empty function bodies
 synthesising type defaults, declaration-only files compiling to an ABI-only artifact, `uint`/`int` aliases,

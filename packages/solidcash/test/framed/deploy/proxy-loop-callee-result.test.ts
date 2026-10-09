@@ -122,14 +122,14 @@ async function deployBehindProxy(
  * A genesis-outpoint reservation is process-local and keyed by the outpoint, so the two cases each fund from their
  * own `seed`: sharing one outpoint across chains would hold it out of the second case's funding selection.
  */
-async function run(solidityImportCompat: boolean, seed: number): Promise<{
+async function run(evmCompat: boolean, seed: number): Promise<{
   readonly accepted: boolean;
   readonly objections: readonly string[];
   readonly broadcast?: { readonly txid: string };
 }> {
   const artifacts = compileStringMulti(
-    solidityImportCompat ? SOURCES.compat : SOURCES.native,
-    { composition: 'framed', ...(solidityImportCompat ? { solidityImportCompat: true } : {}) },
+    evmCompat ? SOURCES.compat : SOURCES.native,
+    { composition: 'framed', ...(evmCompat ? { evmCompat: true } : {}) },
   );
   const wire = await wired();
   const data = await deployBehindProxy(wire, artifacts.Data!, seed, []);

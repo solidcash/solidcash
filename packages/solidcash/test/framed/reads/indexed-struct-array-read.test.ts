@@ -33,7 +33,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   mapping(address => Note[]) public notes;'
   + ' }';
 
-const artifact = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true }).Board!;
+const artifact = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true }).Board!;
 const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'notes')!;
 const STRUCTS = artifact.stateLayout!.structs;
 const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);

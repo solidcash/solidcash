@@ -23,12 +23,12 @@ export function compileBch(source: string, evmCompat = false): BchArtifact {
   return artifact;
 }
 
-// Stateful compile (state vars / assembly `.slot` layout): needs solidityImportCompat + a data-NFT genesis.
+// Stateful compile (state vars / assembly `.slot` layout): needs evmCompat + a data-NFT genesis.
 export function compileBchStateful(source: string): BchArtifact {
   const key = `state::${source}`;
   let artifact = cache.get(key);
   if (artifact === undefined) {
-    artifact = compileString(source, { solidityImportCompat: true });
+    artifact = compileString(source, { evmCompat: true });
     cache.set(key, artifact);
   }
   return artifact;

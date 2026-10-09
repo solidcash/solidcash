@@ -20,14 +20,14 @@ describe('enum mapping key (int-backed)', () => {
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
   it('exposes the enum key name in the ABI', () => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const setFn = art.abi.find((f: any) => f.name === 'set') as any;
     expect(setFn.inputs[0].type).toBe('Status');
   });
 
   it('write with Status.Active(1) then read back', async () => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);

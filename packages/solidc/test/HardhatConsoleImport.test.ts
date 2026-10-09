@@ -26,7 +26,7 @@ describe('Hardhat console.sol compatibility', () => {
             require(value > 0);
           }
         }
-      `, { solidityImportCompat: true });
+      `, { evmCompat: true });
 
       expect(importArtifact.debug?.logs).toHaveLength(1);
       expect(importArtifact.debug?.logs[0].data).toHaveLength(2);
@@ -44,7 +44,7 @@ describe('Hardhat console.sol compatibility', () => {
       contract C {
         ${functions}
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
 
     const logs = Object.values(typedArtifact.debug?.functionDebug ?? {}).flatMap((debug) => debug.logs);
     expect(logs).toHaveLength(wrappers.length);
@@ -69,7 +69,7 @@ describe('Hardhat console.sol compatibility', () => {
           require(true);
         }
       }
-    `, { solidityImportCompat: true });
+    `, { evmCompat: true });
 
     expect(calls).toHaveLength(341);
     expect(overloadArtifact.debug?.logs).toHaveLength(341);

@@ -16,7 +16,7 @@ const OPTIONS = {
   messageBusKernel: true,
   messageBusGraphContext: true,
   maximumInputBytes: 1_000_000,
-  solidityImportCompat: true,
+  evmCompat: true,
   suppressWarnings: true,
 } as const;
 
@@ -127,7 +127,7 @@ const setupRawSenderCallback = async (signed = false): Promise<{
       }
     }`, {
     forceStateful: true, messageBusKernel: true, messageBusGraphContext: true,
-    maximumInputBytes: 1_000_000, solidityImportCompat: true, suppressWarnings: true,
+    maximumInputBytes: 1_000_000, evmCompat: true, suppressWarnings: true,
   });
   const aBase = new Contract(aArtifact, [], { provider });
   const bBase = new Contract(bArtifact, [], { provider });

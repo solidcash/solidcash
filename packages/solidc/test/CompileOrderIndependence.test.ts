@@ -28,11 +28,11 @@ const json = (value: unknown): string => JSON.stringify(value, (key, item: unkno
 describe('compile order independence', () => {
   it('gives each artifact the same bytes whichever contract compiled first', async () => {
     const splitFirst = json(compileStringSplit(SPLIT, { forceSplit: true, suppressWarnings: true }));
-    const compatAfter = json(compileStringMulti(COMPAT, { solidityImportCompat: true, suppressWarnings: true }));
+    const compatAfter = json(compileStringMulti(COMPAT, { evmCompat: true, suppressWarnings: true }));
     // The other order needs a compiler with no module state from the compiles above.
     vi.resetModules();
     const fresh = await import('../src/index.js');
-    const compatFirst = json(fresh.compileStringMulti(COMPAT, { solidityImportCompat: true, suppressWarnings: true }));
+    const compatFirst = json(fresh.compileStringMulti(COMPAT, { evmCompat: true, suppressWarnings: true }));
     const splitAfter = json(fresh.compileStringSplit(SPLIT, { forceSplit: true, suppressWarnings: true }));
     expect(splitAfter).toBe(splitFirst);
     expect(compatAfter).toBe(compatFirst);

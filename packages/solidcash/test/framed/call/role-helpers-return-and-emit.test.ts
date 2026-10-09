@@ -79,7 +79,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const roles = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never).Roles!;
+const roles = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never).Roles!;
 const eventOf = (name: string): NonNullable<typeof roles.events>[number] =>
   roles.events!.find((definition) => definition.name === name)!;
 const GRANTED = eventOf('RoleGranted');

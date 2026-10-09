@@ -17,7 +17,7 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
   contract Facade {
     address public source;
     function get() public delegate returns (int) { return ISource(source).read() + 1; }
-  }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+  }`, { forceStateful: true, evmCompat: true, messageBus: true,
   messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
   suppressWarnings: true, optimizeForCompilationSpeed: true });
 

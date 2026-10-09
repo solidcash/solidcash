@@ -4,7 +4,7 @@ import { compileString } from './direct-compile.js';
 // Functions: visibility, unused params, named returns, mutability, internal-helper inlining.
 
 describe('internal helpers that read a state entry (inlined, not subroutined)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('inlines a void private helper with a compound mapping write (_mint pattern)', () => {
     expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal; uint256 totalSupply;'
@@ -74,7 +74,7 @@ describe('SBE-3: unused vars/params warn but never fail (Solidity-style)', () =>
           uint256 unusedLocal = 7;
           return used;
         }
-      }`, { solidityImportCompat: true });
+      }`, { evmCompat: true });
     expect(a.contractName).toBe('C');
   });
   it('also accepts an unused param in a native SolidCash contract (no flag, warn-only)', () => {
@@ -87,7 +87,7 @@ describe('SBE-15: empty-body returning function + named-arg call to a returning 
   it('an empty-body function with return types compiles (Solidity returns defaults) under compat', () => {
     const a = compileString(
       'contract X() { function f(uint256 x) public pure returns (uint256) {} function g() external pure returns (uint256) { return f(1); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('X');
   });
@@ -101,7 +101,7 @@ describe('SBE-15: empty-body returning function + named-arg call to a returning 
     const a = compileString(
       'contract X() { function f(uint256 x, uint256 y) public pure returns (uint256) { return x + y; }'
       + ' function g() external pure returns (uint256) { return f({y: 2, x: 1}); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('X');
   });
@@ -111,7 +111,7 @@ describe('SBE-24: named returns of address/pubkey/sig zero-init correctly', () =
   // A named return desugars to a local pre-initialized to the type's default. address/pubkey/sig/datasig have
   // no int-0 default, so the prior explicit-0 init tripped AssignTypeError. Uninitialized declarations zero-init
   // via the delete path for every type, so the desugar now uses that.
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
 
   it('compiles a named address return assigned from a mapping read (ERC721 ownerOf shape)', () => {
     expect(cc('contract C { mapping(uint256 => address) _ownerOf;'
@@ -137,7 +137,7 @@ describe('function-type mutability + new bytes(constant)', () => {
     const a = compileString(
       'contract C { function h(function(uint256) view returns (uint256) g) internal pure {}'
       + ' function f() public pure returns (uint256) { return 1; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -145,14 +145,14 @@ describe('function-type mutability + new bytes(constant)', () => {
   it('folds new bytes(3) to a 3-zero-byte buffer', () => {
     const a = compileString(
       'contract C { function f() public pure returns (uint256) { bytes memory b = new bytes(3); return b.length; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
 
   it('folds new string(constant) to an n-zero-byte string', () => {
     expect(compileString('contract C { function f() public pure returns (string memory) { return new string(5); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -160,7 +160,7 @@ describe('function-type mutability + new bytes(constant)', () => {
 // return) must NOT get a synthesized fall-through `return <defaults>` - that default is dead code and, for
 // address/enum returns, was typed (int, int), producing a spurious return-type mismatch (OZ ECDSA pattern).
 describe('unnamed-return fall-through: no dead default when all paths return', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('compiles an (address, enum) return ending in if/else where both branches return', () => {
     expect(cc('contract C { enum E { A, B }'
       + ' function f(uint x) internal pure returns (address, E) {'
@@ -200,7 +200,7 @@ describe('unnamed-return fall-through: no dead default when all paths return', (
 // legal Solidity (the named return shadows the function name within the body). A local may shadow an outer
 // function or state variable in general (both are contract/library-level, never a same-scope collision).
 describe('local / named return may shadow an outer function or state var', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts a named return with the same name as its function', () => {
     expect(cc('contract C { function max(int x) public pure returns (int max) { max = x; }'
       + ' function f() public pure returns (int) { return max(3); } }')).toBe('C');

@@ -18,7 +18,7 @@ describe('bounded integer overflow guard (VM)', () => {
           require(true, "n");
         }
       }`;
-    const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(src, { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })
@@ -63,7 +63,7 @@ describe('bounded integer overflow guard (VM)', () => {
           require(true, "n");
         }
       }`;
-    const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(src, { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })

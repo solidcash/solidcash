@@ -41,7 +41,7 @@ describe('external-result physical slot identity', () => {
         }
       }`, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,

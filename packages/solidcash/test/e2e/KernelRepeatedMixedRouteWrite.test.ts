@@ -71,7 +71,7 @@ describe('kernel repeated writes beside a direct-only participant', () => {
           this.runs = this.runs + 1;
         }
       }`;
-    const options = { forceStateful: true, solidityImportCompat: true, messageBus: true,
+    const options = { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true,
       messageBusDirectParticipant: true, messageBusProxyForwardEnvelope: true,
       maximumInputBytes: 1_000_000,

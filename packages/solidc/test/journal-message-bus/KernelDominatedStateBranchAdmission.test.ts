@@ -7,7 +7,7 @@ const OPTIONS = {
   forceStateful: true,
   messageBus: true,
   messageBusKernel: true,
-  solidityImportCompat: true,
+  evmCompat: true,
   maximumInputBytes: 10_000_000,
   suppressWarnings: true,
 } as const;

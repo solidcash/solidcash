@@ -193,11 +193,11 @@ export default class TypeCheckTraversal extends AstTraversal {
   // `at line N` cites a line that only exists in an import and is impossible in the file the user named.
   private importedLocations = new ImportedLocations();
 
-  // The `solidityImportCompat`-named literal coercions (hex->int/address, string->bytesN, bytes widen, negate)
+  // The `evmCompat`-named literal coercions (hex->int/address, string->bytesN, bytes widen, negate)
   // are now plain SolidCash defaults - they only fire on source/target pairings that are a native type error, so
   // they can't change working code. Default true; kept as a field so the coercion helpers read uniformly.
   constructor(
-    private solidityImportCompat: boolean = true,
+    private evmCompat: boolean = true,
     private strictSolidityValidation: boolean = false,
     rootFileId?: string,
     /**
@@ -1600,7 +1600,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (this.strictSolidityValidation && node.sourceCast
       && node.type instanceof BytesType && node.type.bound !== undefined) {
       if (node.expression instanceof IntLiteralNode && node.expression.value !== 0n) {
-        if (this.solidityImportCompat) {
+        if (this.evmCompat) {
           const maxVal = (1n << (BigInt(node.type.bound) * 8n)) - 1n;
           const absVal = node.expression.value < 0n ? -node.expression.value : node.expression.value;
           if (absVal > maxVal) {
@@ -1628,7 +1628,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       && node.expression.numericValue >= (1n << 160n)) {
       throw new CastTypeError(node);
     }
-    if (this.solidityImportCompat && node.type === PrimitiveType.STRING
+    if (this.evmCompat && node.type === PrimitiveType.STRING
       && node.expression instanceof StringLiteralNode && node.expression.solidityInvalidUtf8) {
       throw new CastTypeError(node);
     }
@@ -1758,7 +1758,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
 
-    if (this.solidityImportCompat && this.isEvmCreate2AddressHash(node)) {
+    if (this.evmCompat && this.isEvmCreate2AddressHash(node)) {
       const loc = this.diagLine(node.location);
       console.log(`Warning: EVM CREATE2 address computation${loc} cannot derive a native BCH contract address. `
         + 'BCH deployments use P2SH32 locking bytecode, and stateful contract addresses also commit to their '
@@ -2300,10 +2300,10 @@ export default class TypeCheckTraversal extends AstTraversal {
   // Solidity treats a `0x..` literal as a big-endian NUMBER whose concrete type is context-driven: in an
   // integer context it is that integer value (Solidity docs: "Conversions between Literals and Elementary
   // Types"). SolidCash natively types `0x..` as a bytes value (the deliberate inverse), so under
-  // solidityImportCompat reinterpret it as an int when the target type is integral. Non-integer targets
+  // evmCompat reinterpret it as an int when the target type is integral. Non-integer targets
   // (bytesN etc.) keep the native bytes literal.
   private maybeCoerceHexToInt(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!this.solidityImportCompat) return expr;
+    if (!this.evmCompat) return expr;
     if (expr instanceof HexLiteralNode && this.isIntegerType(expected)) return this.hexLiteralToInt(expr);
     return expr;
   }
@@ -2312,7 +2312,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   // directly with an already-typed integer operand. Apply an integral destination to the literal leaves before
   // visiting the tree, otherwise `uint x = 0x12 + 0x34` is prematurely typed as bytes1 concatenation.
   private contextualizeHexArithmetic(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!this.solidityImportCompat || !this.isIntegerType(expected)) return expr;
+    if (!this.evmCompat || !this.isIntegerType(expected)) return expr;
     if (expr instanceof HexLiteralNode) return this.hexLiteralToInt(expr);
     if (expr instanceof UnaryOpNode && (expr.operator === UnaryOperator.NEGATE
       || expr.operator === UnaryOperator.INVERT)) {
@@ -2373,7 +2373,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   // to a bytesN hex literal so the existing fixed-bytes codegen handles it (string -> dynamic bytes already
   // works). Porting mode only. Over-long literals fall through to the normal (rejecting) assignability check.
   private maybeCoerceStringToBytesN(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!this.solidityImportCompat || !(expected instanceof BytesType) || expected.bound === undefined) return expr;
+    if (!this.evmCompat || !(expected instanceof BytesType) || expected.bound === undefined) return expr;
     // String literal -> bytesN: right-pad the UTF-8 bytes to the target width.
     if (expr instanceof StringLiteralNode) {
       const bytes = expr.solidityBytes ?? encodeString(expr.value);
@@ -2404,7 +2404,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   // ordinary bytesN value may not implicitly convert to string. AstBuilder represents the literal as fixed bytes,
   // so restore the literal-only conversion with an explicit no-op bytes->string cast.
   private maybeCoerceHexLiteralToString(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!this.solidityImportCompat || expected !== PrimitiveType.STRING || !(expr instanceof HexLiteralNode)) {
+    if (!this.evmCompat || expected !== PrimitiveType.STRING || !(expr instanceof HexLiteralNode)) {
       return expr;
     }
     // Solidity rejects a hex literal containing malformed UTF-8 when the destination is string. Leave it as
@@ -2425,7 +2425,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   // (FixedBytesType::isImplicitlyConvertibleTo: convertTo.m_bytes >= m_bytes). Insert an explicit cast so the
   // working bytesN-cast codegen performs the zero-pad. Porting mode only; the reverse (narrowing) still fails.
   private maybeCoerceBytesWiden(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!this.solidityImportCompat) return expr;
+    if (!this.evmCompat) return expr;
     if (!(expected instanceof BytesType) || expected.bound === undefined) return expr;
     if (!(expr.type instanceof BytesType) || expr.type.bound === undefined) return expr;
     if (expr.type.bound >= expected.bound) return expr;
@@ -2438,7 +2438,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   // A hex literal (`0x1234..`) compared/assigned against an address is a Solidity address literal; cast it to
   // the address type so it is an address value at the VM level. Porting mode only.
   private maybeCoerceHexToAddress(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!this.solidityImportCompat || !(expected instanceof AddressType) || !(expr instanceof HexLiteralNode)) {
+    if (!this.evmCompat || !(expected instanceof AddressType) || !(expr instanceof HexLiteralNode)) {
       return expr;
     }
     const cast = new CastNode(expected, expr, false);
@@ -2449,7 +2449,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   // Coerce each `0x..` / literal-0 argument against its target parameter type (the call-site analogue).
   private coerceHexArgs(args: ExpressionNode[], expected: (Type | undefined)[]): ExpressionNode[] {
-    if (!this.solidityImportCompat) return args;
+    if (!this.evmCompat) return args;
     return args.map((a, i) => this.maybeCoerceBytesWiden(this.maybeCoerceStringToBytesN(
       this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(a, expected[i]), expected[i]), expected[i],
     ), expected[i]));
@@ -2620,7 +2620,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Solidity hex number literals (`0x100...`) are big-endian integers, not byte strings. On a hex-vs-int
     // pairing (e.g. `x >= 0x100000000000000000000000000000000`), reinterpret the literal as its integer
     // value. Only fires on that pairing, which would otherwise be a type error, so it never changes working code.
-    if (this.solidityImportCompat) {
+    if (this.evmCompat) {
       if (node.left instanceof HexLiteralNode && this.isIntegerType(node.right.type)) {
         node.left = this.hexLiteralToInt(node.left);
       } else if (node.right instanceof HexLiteralNode && this.isIntegerType(node.left.type)) {
@@ -2789,7 +2789,7 @@ export default class TypeCheckTraversal extends AstTraversal {
             // Solidity-compat arithmetic over integer constants can leave a non-literal expression carrying the
             // legacy unbounded `int` marker (`(2 + 2) & ~1`). Solidity evaluates that word operation as int256;
             // restore the target width here. Native SolidCash bigint remains widthless and still fails closed.
-            if (this.solidityImportCompat && lt === PrimitiveType.INT && rt === PrimitiveType.INT) {
+            if (this.evmCompat && lt === PrimitiveType.INT && rt === PrimitiveType.INT) {
               // An all-positive mask such as `((2**224-1)<<32) | 0xef...` is uint256 (and can exceed int256.max);
               // a subtree containing a negative literal, unary minus, or bitwise complement needs signed int256.
               const signedSyntax = (e: ExpressionNode): boolean => {
@@ -2835,7 +2835,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         if (node.right instanceof IntLiteralNode && Number(node.right.value) < 0) {
           throw new BitshiftBitcountNegativeError(node, Number(node.right.value));
         }
-        if (this.solidityImportCompat && node.right instanceof IntLiteralNode
+        if (this.evmCompat && node.right instanceof IntLiteralNode
           && node.right.value > 0xffffffffn) {
           throw new BitshiftBitcountTooLargeError(node, node.right.value);
         }
@@ -2857,7 +2857,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // Unary minus and complement give a Solidity hex-NUMBER literal an integer context (`-0x42`, `~0xff`).
     // Distinguish these from hex-string literals (`hex"ff"`), which deliberately remain bytes.
-    if (this.solidityImportCompat && (node.operator === UnaryOperator.NEGATE
+    if (this.evmCompat && (node.operator === UnaryOperator.NEGATE
       || node.operator === UnaryOperator.INVERT)
       && node.expression instanceof HexLiteralNode && node.expression.numericValue !== undefined) {
       node.expression = this.hexLiteralToInt(node.expression);
@@ -2873,7 +2873,7 @@ export default class TypeCheckTraversal extends AstTraversal {
           node.type = node.expression.type;
         } else {
           expectInt(node, node.expression.type);
-          if (this.solidityImportCompat && node.expression.type instanceof IntType
+          if (this.evmCompat && node.expression.type instanceof IntType
             && !node.expression.type.signed && !node.legacyWrappingNegation) {
             throw new TypeError(
               node,
@@ -3187,13 +3187,13 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitArrayAccess(node: ArrayAccessNode): Node {
     node.array = this.visit(node.array);
     node.index = this.visit(node.index);
-    const rationalIndex = this.solidityImportCompat ? this.evalLiteralRational(node.index) : undefined;
+    const rationalIndex = this.evmCompat ? this.evalLiteralRational(node.index) : undefined;
     const constantIndex = rationalIndex?.denominator === 1n ? rationalIndex.numerator : undefined;
 
     // Solidity array indices are uint256. Evaluate literal-only rational trees exactly, then reject signed or
     // oversized integral values for every indexable type before applying any fixed-size bound.
     if ((node.index instanceof IntLiteralNode && node.index.value < 0n)
-      || (this.solidityImportCompat && constantIndex !== undefined
+      || (this.evmCompat && constantIndex !== undefined
         && (constantIndex < 0n || constantIndex >= (1n << 256n)))) {
       throw new IndexOutOfBoundsError(node as any);
     }

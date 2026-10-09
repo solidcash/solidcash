@@ -8,7 +8,7 @@ console.log = console.error = console.warn = console.info = noop;
 parentPort.on('message', ({ id, file }) => {
   let error = null;
   try {
-    compileFile(file, { solidityImportCompat: true });
+    compileFile(file, { evmCompat: true });
   } catch (cause) {
     error = `${cause?.name || 'Error'}: ${String(cause?.message).split('\n')[0]}`;
   }

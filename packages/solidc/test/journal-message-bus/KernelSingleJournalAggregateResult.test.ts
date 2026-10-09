@@ -17,7 +17,7 @@ describe('kernel single-entry journal aggregate results', () => {
         }
       }`, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       importResolver: createMapResolver({
         '/Types.scash': `pragma solidity ^0.8.20;
           struct Entry { uint value; }

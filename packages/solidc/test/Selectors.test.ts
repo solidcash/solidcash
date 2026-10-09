@@ -8,7 +8,7 @@ describe('SBE-17: this.<fn>.selector resolves to the function selector (bytes4)'
     const a = compileString(
       'contract C() { function test(uint256 i) external pure returns (uint256) { return i; }'
       + ' function getData(uint256 i) external pure returns (bytes) { return abi.encodeWithSelector(this.test.selector, i); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -20,31 +20,31 @@ describe('SBE-19: Interface.method.selector / Contract.method.selector resolve t
       'interface IFoo { function bar(address a, uint256 b) external; }'
       + ' contract C { function f(address to, uint256 amt) external pure returns (bytes) {'
       + ' return abi.encodeWithSelector(IFoo.bar.selector, to, amt); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
   it('resolves a sibling contract method selector (Contract.method.selector)', () => {
     expect(compileString(
       'contract Other { function ping(uint256 x) external {} }'
       + ' contract C { function f(uint256 x) external pure returns (bytes) {'
       + ' return abi.encodeWithSelector(Other.ping.selector, x); } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
   it('resolves a contract/interface-typed VARIABLE method selector (v.method.selector)', () => {
     expect(compileString(
       'interface IFoo { function bar(address a) external returns (bool); }'
       + ' contract C { IFoo t; function f() external returns (bytes4) { return t.bar.selector; } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
   it('resolves a bare own/inherited function selector (fn.selector)', () => {
     expect(compileString(
       'contract B { function ext(uint256 x) external {} } contract C is B {'
       + ' function f() external returns (bytes4) { return ext.selector; } }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('abi.encodeCall(this.method, (args)) targets a current-contract function', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves this.method with a multi-arg tuple', () => {
     expect(cc('contract C { function g(uint256 a, uint256 b) external {}'
       + ' function f() external pure returns (bytes memory) { return abi.encodeCall(this.g, (1, 2)); } }')).toBe('C');

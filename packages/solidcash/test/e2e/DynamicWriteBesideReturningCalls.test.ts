@@ -58,7 +58,7 @@ contract Pools {
     }
 }`;
 
-const options = { solidityImportCompat: true, forceStateful: true } as const;
+const options = { evmCompat: true, forceStateful: true } as const;
 
 type Captured = { hex: string; send: (hex: string) => Promise<string> };
 

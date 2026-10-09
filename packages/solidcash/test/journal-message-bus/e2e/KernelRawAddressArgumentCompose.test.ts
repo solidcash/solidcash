@@ -9,7 +9,7 @@ import { messageBusVmAccepts } from './vm-accepts.js';
 
 const OPTIONS = {
   forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-  solidityImportCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+  evmCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
 } as const;
 
 describe('kernel raw address argument composition', () => {
@@ -56,7 +56,7 @@ describe('kernel raw address argument composition', () => {
       source: string, args: string[] = [], graphLeaf = false,
     ): Promise<StatefulContract> => {
       const artifact = compileString(source, {
-        forceStateful: true, solidityImportCompat: true, maximumInputBytes: 1_000_000,
+        forceStateful: true, evmCompat: true, maximumInputBytes: 1_000_000,
         suppressWarnings: true, ...(graphLeaf && { messageBus: true }),
       });
       const base = new Contract(artifact, args, { provider });

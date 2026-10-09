@@ -9,7 +9,7 @@ const OPTIONS = {
   messageBus: true,
   messageBusKernel: true,
   maximumInputBytes: 1_000_000,
-  solidityImportCompat: true,
+  evmCompat: true,
   suppressWarnings: true,
 } as const;
 
@@ -41,7 +41,7 @@ describe('kernel whole-struct state getters', () => {
           require(checkSig(proof, owner));
           return this.record;
         }
-      }`, { ...OPTIONS, solidityImportCompat: false });
+      }`, { ...OPTIONS, evmCompat: false });
 
     expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read')).toMatchObject({
       eligible: false,

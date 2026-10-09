@@ -107,8 +107,8 @@ export const evmResultMayNeedPreimage = (types: readonly Type[]): boolean => {
 
 /** Tuple-wide wire representation emitted and expected by this exact compiler boundary. */
 export const externalResultEncoding = (
-  types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat' | 'solidityImportCompat'>,
-): ExternalResultEncoding => (options.evmCompat || options.solidityImportCompat)
+  types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat'>,
+): ExternalResultEncoding => (options.evmCompat)
   && isEvmExternalResultSchemaDecodable(types)
   ? 'evm-abi-v1'
   : 'compact-pushdata-v1';

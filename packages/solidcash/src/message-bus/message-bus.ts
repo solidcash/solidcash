@@ -443,8 +443,7 @@ export function projectMessageBusHandlerArguments(
   selector: string | undefined,
   args: readonly FunctionArgument[],
 ): FunctionArgument[] {
-  if (artifact.compiler?.options?.solidityImportCompat !== true
-    && artifact.compiler?.options?.evmCompat !== true) return [...args];
+  if (artifact.compiler?.options?.evmCompat !== true) return [...args];
   const handler = resolveMessageBusHandler(artifact, functionName, selector);
   const abiFunction = resolveMessageBusAbiFunction(artifact, functionName, selector);
   if (!handler || !abiFunction) return [...args];
@@ -1071,8 +1070,7 @@ export function encodeMessageBatch(
     // Address params used as IFoo(addr) call targets must stay native locking bytecode so emission
     // targets EQUALVERIFY against authenticated participant locks. Other address value-args under
     // solidity-compat use ABI words so nested returning addresses match constructed emission rows.
-    const projectAddressValueArgs = artifact.compiler?.options?.solidityImportCompat === true
-      || artifact.compiler?.options?.evmCompat === true;
+    const projectAddressValueArgs = artifact.compiler?.options?.evmCompat === true;
     const projectedArgs = projectAddressValueArgs
       ? projectMessageBusHandlerArguments(artifact, invocation.function, invocation.selector, args)
       : args;

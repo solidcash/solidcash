@@ -38,7 +38,7 @@ describe('X107: a HARD error inside an imported file names the file that holds i
     if (p === './C.sol') return { source: C, id: '/C.sol' };
     return undefined;
   };
-  const opt = { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true };
+  const opt = { importResolver: resolver, rootFileId: '/main.sol', evmCompat: true };
   const root = 'pragma solidity ^0.8.20;\nimport "./B.sol";\ncontract Root { uint256 public x;\n'
     + ' function f(uint256 a) public { x = L.bad(a); } }';
 
@@ -60,7 +60,7 @@ describe('X107: a HARD error inside an imported file names the file that holds i
     const ownError = 'pragma solidity ^0.8.20;\nimport "./C.sol";\ncontract Own { uint256 public x;\n'
       + ' function f(uint256 a) public { bytes memory wrong = a; x = L2.twice(a); } }';
     const { error } = compileCapturing(() => compileString(ownError, {
-      importResolver: only, rootFileId: '/main.sol', solidityImportCompat: true,
+      importResolver: only, rootFileId: '/main.sol', evmCompat: true,
     }));
     expect(error?.name).toBe('AssignTypeError');
     expect(error?.message).toMatch(/at Line \d+, Column \d+$/);
@@ -72,7 +72,7 @@ describe('X107: a HARD error inside an imported file names the file that holds i
     // so that a future "label everything" regression is caught by something.
     const bare = 'pragma solidity ^0.8.20;\ncontract Bare { uint256 public x;\n'
       + ' function f(uint256 a) public { bytes memory wrong = a; x = a; } }';
-    const { logs, error } = compileCapturing(() => compileString(bare, { solidityImportCompat: true }));
+    const { logs, error } = compileCapturing(() => compileString(bare, { evmCompat: true }));
     expect(error?.message).toMatch(/at Line \d+, Column \d+$/);
     expect(error?.message).not.toContain('of imported');
     expect(logs.join('\n')).not.toContain('of imported');
@@ -91,7 +91,7 @@ describe('X107: the two warn sites that bypassed the shared helper', () => {
     const root = 'pragma solidity ^0.8.20;\nimport "./C.sol";\ncontract R2 { address public a;\n'
       + ' function f() public { a = M.who(); require(true); } }';
     const { logs } = compileCapturing(() => compileString(root, {
-      importResolver: only, rootFileId: '/main.sol', solidityImportCompat: true,
+      importResolver: only, rootFileId: '/main.sol', evmCompat: true,
     }));
     const hit = logs.find((w) => /'msg\.sender' used/.test(w));
     expect(hit).toBeDefined();
@@ -103,7 +103,7 @@ describe('X107: the two warn sites that bypassed the shared helper', () => {
     const both = 'pragma solidity ^0.8.20;\nimport "./C.sol";\ncontract R3 { address public a;\n'
       + ' function f() public { a = msg.sender; a = M.who(); require(true); } }';
     const { logs } = compileCapturing(() => compileString(both, {
-      importResolver: only, rootFileId: '/main.sol', solidityImportCompat: true,
+      importResolver: only, rootFileId: '/main.sol', evmCompat: true,
     }));
     const hits = logs.filter((w) => /'msg\.sender' used/.test(w));
     expect(hits.length).toBeGreaterThanOrEqual(2);

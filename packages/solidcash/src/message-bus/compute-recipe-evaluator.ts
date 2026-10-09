@@ -222,8 +222,7 @@ export function evaluateComputeRecipeExpression(
     const value = evaluate(expression.expression);
     const fromType = expressionType(expression.expression, ctx);
     const target = expression.type;
-    const solidity = ctx.artifact.compiler?.options?.solidityImportCompat === true
-      || ctx.artifact.compiler?.options?.evmCompat === true;
+    const solidity = ctx.artifact.compiler?.options?.evmCompat === true;
     const toInteger = integerBounds(target);
     if (toInteger) {
       let number: bigint;
@@ -274,7 +273,7 @@ export function evaluateComputeRecipeExpression(
     throw new Error(`messageBus: unsupported compute recipe cast to ${target}`);
   }
   if (expression.kind === 'abiEncode') {
-    if (ctx.artifact.compiler?.options?.solidityImportCompat !== true) {
+    if (ctx.artifact.compiler?.options?.evmCompat !== true) {
       throw new Error('messageBus: compute recipe abi.encode needs Solidity ABI');
     }
     const children = expression.args ?? [];
@@ -296,8 +295,7 @@ export function evaluateComputeRecipeExpression(
     if (!types || types.length !== children.length || types.some((type) => !type)) {
       throw new Error('messageBus: compute recipe abi.encodePacked has an untyped operand');
     }
-    const solidity = ctx.artifact.compiler?.options?.solidityImportCompat === true
-      || ctx.artifact.compiler?.options?.evmCompat === true;
+    const solidity = ctx.artifact.compiler?.options?.evmCompat === true;
     return concat(children.map((child, index) => solidity
       ? solidityPacked(evaluate(child), types[index], ctx)
       : nativePacked(evaluate(child), types[index])));
@@ -323,8 +321,7 @@ export function evaluateSignature65RecoveryArgument(
   signature: ExternalCallExpression,
   ctx: ComputeRecipeContext,
 ): Uint8Array {
-  if (ctx.artifact.compiler?.options?.solidityImportCompat !== true
-    && ctx.artifact.compiler?.options?.evmCompat !== true) {
+  if (ctx.artifact.compiler?.options?.evmCompat !== true) {
     throw new Error('messageBus: signature65 compute recipe requires EVM-compatible scalar encoding');
   }
   const digest = bytesOf(evaluateComputeRecipeExpression(hash, ctx), expressionType(hash, ctx));
@@ -366,8 +363,7 @@ export function evaluateArgs4RecoveryArgument(
     || (recoveryId !== 27n && recoveryId !== 28n)) {
     throw new Error('messageBus: compute recipe recovery arguments are non-canonical');
   }
-  const reverseEvmScalars = ctx.artifact.compiler?.options?.solidityImportCompat === true
-    || ctx.artifact.compiler?.options?.evmCompat === true;
+  const reverseEvmScalars = ctx.artifact.compiler?.options?.evmCompat === true;
   return Uint8Array.from([
     ...(reverseEvmScalars ? hashBytes.reverse() : hashBytes), Number(recoveryId),
     ...(reverseEvmScalars ? rBytes.reverse() : rBytes),

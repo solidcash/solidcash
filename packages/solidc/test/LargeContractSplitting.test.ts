@@ -51,7 +51,7 @@ describe('large-contract state-local splitting', () => {
           for (uint i = 0; i < data.length; i++) { invoke(data[i]); }
           value = next;
         }
-      }`, { solidityImportCompat: true, forceStateful: true, forceSplit: true });
+      }`, { evmCompat: true, forceStateful: true, forceSplit: true });
 
     expect(bundle.manifest.facets.length).toBeGreaterThan(0);
   });
@@ -87,7 +87,7 @@ describe('large-contract state-local splitting', () => {
           return ${result};
         }
       }`;
-    const options = { solidityImportCompat: true, messageBus: false, forceSplit: true };
+    const options = { evmCompat: true, messageBus: false, forceSplit: true };
     const projected = compileStringSplit(source('[payments[B],payments[S],payments[M],payments[P],payments[A]]'), options);
     const forwarded = compileStringSplit(source('payments'), options);
     const projectedTarget = projected.manifest.routes.find((route) => route.function === 'claim')?.target;
@@ -130,7 +130,7 @@ describe('large-contract state-local splitting', () => {
         uint256 public value;
         mapping(address => uint256) public balances;
         function set(uint256 next) public { value = next; require(next >= 0); }
-      }`, { solidityImportCompat: true, messageBus: false, forceSplit: true });
+      }`, { evmCompat: true, messageBus: false, forceSplit: true });
     const facet = bundle.facets[bundle.manifest.facets[0].name];
     expect(bundle.root.abi.map((fn) => fn.name)).toEqual(expect.arrayContaining(['value', 'balances']));
     expect(facet.abi.map((fn) => fn.name)).not.toEqual(expect.arrayContaining(['value', 'balances']));
@@ -158,7 +158,7 @@ describe('large-contract state-local splitting', () => {
       return undefined;
     };
     const bundle = compileStringSplit(source, {
-      solidityImportCompat: true, forceSplit: true, rootFileId: '/Main.sol', importResolver: resolver,
+      evmCompat: true, forceSplit: true, rootFileId: '/Main.sol', importResolver: resolver,
     });
     const facet = bundle.facets[bundle.manifest.facets[0].name];
     expect(facet.abi.map((fn) => fn.name)).not.toContain('escrows');
@@ -175,7 +175,7 @@ describe('large-contract state-local splitting', () => {
           require(next >= 0);
         }
       }`, {
-      solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      evmCompat: true, messageBus: true, messageBusKernel: true,
       messageBusGraphContext: true, optimizeForCompilationSpeed: true,
       suppressWarnings: true, forceSplit: true,
     });
@@ -237,9 +237,9 @@ describe('large-contract state-local splitting', () => {
       function b(uint v) public onlyOwner { x = v + 1; }
       ${unrelated}
     }`;
-    const unsplitBytes = asmToBytecode(compileString(source, { solidityImportCompat: true }).bytecode).length;
+    const unsplitBytes = asmToBytecode(compileString(source, { evmCompat: true }).bytecode).length;
     const bundle = compileStringSplit(source, {
-      solidityImportCompat: true, maxShardBytes: unsplitBytes - 1,
+      evmCompat: true, maxShardBytes: unsplitBytes - 1,
     });
     const hasProxy = (facetName: string, functionName: string): boolean => bundle.facets[facetName].abi
       .find((fn) => fn.name === functionName)?.inputs
@@ -259,7 +259,7 @@ describe('large-contract state-local splitting', () => {
       'contract BrokenRewarder { uint touched;'
       + ' function pending() public returns (uint[] memory amounts) { touched = 1; revert(); }'
       + ' function notify() public { require(true); } }',
-      { solidityImportCompat: true, forceSplit: true },
+      { evmCompat: true, forceSplit: true },
     );
     expect(bundle.manifest.routes.find((route) => route.function === 'pending')?.target).not.toBe('root');
   });
@@ -341,7 +341,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     try {
       compileStringSplit(source, {
-        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true, suppressWarnings: true,
+        forceSplit: true, maxShardBytes: 100, evmCompat: true, suppressWarnings: true,
       });
       throw new Error('expected split capacity diagnostic');
     } catch (error) {
@@ -380,7 +380,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     try {
       compileStringSplit(source, {
-        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true, suppressWarnings: true,
+        forceSplit: true, maxShardBytes: 100, evmCompat: true, suppressWarnings: true,
       });
       throw new Error('expected split capacity diagnostic');
     } catch (error) {
@@ -418,7 +418,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     try {
       compileStringSplit(source, {
-        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true,
+        forceSplit: true, maxShardBytes: 100, evmCompat: true,
       });
       throw new Error('expected split capacity diagnostic');
     } catch (error) {
@@ -447,7 +447,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     try {
       compileStringSplit(source, {
-        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true, suppressWarnings: true,
+        forceSplit: true, maxShardBytes: 100, evmCompat: true, suppressWarnings: true,
       });
       throw new Error('expected split capacity diagnostic');
     } catch (error) {
@@ -495,7 +495,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     // This test derives a shard limit from direct physical facet sizes; keep the default hidden route out of
     // that ruler so it measures only call-closure partitioning.
-    const options = { solidityImportCompat: true, forceSplit: true, messageBus: false };
+    const options = { evmCompat: true, forceSplit: true, messageBus: false };
     const union = compileStringSplit(source, options);
     const unionBytes = union.manifest.facets[0].estimatedRedeemBytes;
     expect([...union.manifest.facets[0].functions].sort()).toEqual(['publish', 'updateWhitelist']);
@@ -570,7 +570,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     // Storage-layout agreement is independent of the hidden route, while the historical 1,100-byte threshold
     // is a direct-facet size fixture.
-    const options = { solidityImportCompat: true, forceSplit: true, messageBus: false };
+    const options = { evmCompat: true, forceSplit: true, messageBus: false };
     const slots = (layout: any): string[] => (layout?.variables ?? [])
       .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
     // One facet holds every entry: the case that always agreed, so the divided case below is compared
@@ -591,7 +591,7 @@ describe('large-contract state-local splitting', () => {
     });
     expect(divided.manifest.facets.length).toBeGreaterThan(1);
     const expected = slots(compileString(source, {
-      solidityImportCompat: true, messageBus: false,
+      evmCompat: true, messageBus: false,
     }).stateLayout);
     expect(expected).toEqual(slots(together.root.stateLayout));
     expect(slots(divided.root.stateLayout)).toEqual(expected);
@@ -613,7 +613,7 @@ describe('large-contract state-local splitting', () => {
           require(v >= 0, "n");
         }
       }`;
-    const options = { solidityImportCompat: true, forceSplit: true, messageBus: false };
+    const options = { evmCompat: true, forceSplit: true, messageBus: false };
     const slots = (layout: any): string[] => (layout?.variables ?? []).map((v: any) => v.name);
     const baselineSlots = slots(compileString(source, options).stateLayout);
     const bundle = compileStringSplit(source, options);
@@ -641,7 +641,7 @@ describe('large-contract state-local splitting', () => {
           paid = amount;
           require(amount >= 0, "n");
         }
-      }`, { solidityImportCompat: true, messageBus: true });
+      }`, { evmCompat: true, messageBus: true });
 
     expect(artifact.abi.some((entry: any) => entry.name === 'pay')).toBe(true);
     expect(asmToBytecode(artifact.bytecode).length).toBeGreaterThan(0);
@@ -837,7 +837,7 @@ contract Mixed() {
         uint x;
         function set(uint value) public { reset(); x = value; require(value >= 0, "n"); }
         function reset() public { x = 0; require(true, "n"); }
-      }`, { solidityImportCompat: true, forceSplit: true });
+      }`, { evmCompat: true, forceSplit: true });
     expect(bundle.manifest.facets).toHaveLength(1);
     expect([...bundle.manifest.facets[0].functions].sort()).toEqual(['reset', 'set']);
     expect(bundle.facets[bundle.manifest.facets[0].name].abi.some((fn) => fn.name === 'reset')).toBe(true);

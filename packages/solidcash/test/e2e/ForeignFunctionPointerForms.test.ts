@@ -593,7 +593,7 @@ describe('cross-contract', () => {
   }`;
 
   describe('foreign fn-ptr PASSED cross-CONTRACT (A -> B.register -> B.fire)', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, { evmCompat: true });
     const provider = createTestProvider();
     const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
@@ -661,7 +661,7 @@ describe('cross-contract', () => {
   // call, and slices it into (address, selector) to dispatch the co-spent target. B captures A's returned blob
   // via the return-event NFT and fires the target through it, all in one transaction.
   describe('foreign fn-ptr RETURNED cross-CONTRACT (B <- A.getPtr)', () => {
-    const arts = compileStringMulti(RET_SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(RET_SRC, { evmCompat: true });
     const provider = createTestProvider();
     const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
@@ -793,7 +793,7 @@ describe('contract member', () => {
 
   describe('contract-member fn-ptr value via direct `o.method` syntax', () => {
     // install() is a deliberately unguarded deploy entry (this fixture tests the member fn-ptr form).
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true, allowUnsafeOperations: true });
+    const arts = compileStringMulti(SRC, { evmCompat: true, allowUnsafeOperations: true });
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
@@ -854,7 +854,7 @@ describe('member to internal', () => {
   }`;
 
   describe('pass a fn-ptr member to an internal function that stores it', () => {
-    const arts = compileStringMulti(SRC, { solidityImportCompat: true });
+    const arts = compileStringMulti(SRC, { evmCompat: true });
     const provider = createTestProvider();
     const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 

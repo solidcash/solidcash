@@ -38,8 +38,8 @@ import AstTraversal from '../ast/AstTraversal.js';
  * freshness/anti-over-reporting bound `tx.time >= number` (the owner cannot report a height above the
  * chain), then writes each register. block.chainid is a separate baked constant (NOT here).
  *
- * Runs before semantic analysis so injected decls/reads/writes resolve normally. Under
- * solidityImportCompat, `block.timestamp` keeps the native tx.locktime mapping (porting) instead.
+ * Runs before semantic analysis so injected decls/reads/writes resolve normally. `block.timestamp` always
+ * lowers to the injected `__block_timestamp` oracle register; the compat-only tx.locktime mapping was removed.
  */
 const FIELD_VAR: Partial<Record<NullaryOperator, string>> = {
   [NullaryOperator.BLOCK_NUMBER]: '__block_number',
@@ -101,6 +101,8 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private userGasleft = false;
 
   constructor(
+    // Strict Solidity validation is not a timestamp switch: it only turns the Solidity <0.7 `now` alias into a
+    // deprecated-name error. block.timestamp routes through the oracle register in every mode.
     private strictSolidityValidation = false,
     private delegateExecutionContext = false,
   ) {

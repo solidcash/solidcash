@@ -62,7 +62,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const batch = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never).Batch!;
+const batch = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never).Batch!;
 const NOTED = batch.events!.find((definition) => definition.name === 'Noted')!;
 
 const MASTER = 'master';

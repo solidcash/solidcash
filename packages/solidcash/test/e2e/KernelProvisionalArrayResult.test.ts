@@ -34,7 +34,7 @@ describe('kernel provisional fixed-array result', () => {
           ISink(sink).record(values[0], values[1]);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();

@@ -64,7 +64,7 @@ async function deployed(): Promise<{
   ) => Promise<CallResult>;
   readonly field: (name: string) => Promise<unknown>;
 }> {
-  const compiled = compileStringMulti(SOURCE, { composition: 'framed', solidityImportCompat: true } as never);
+  const compiled = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
   const artifacts: Readonly<Record<string, Artifact>> = { A: compiled.A!, B: compiled.B! };
   const { framedValidator } = await import('solidc');
   const validatorProgram = framedValidator.buildValidatorProgram();

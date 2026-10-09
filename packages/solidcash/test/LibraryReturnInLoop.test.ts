@@ -39,7 +39,7 @@ contract LibFindLoop {
 describe('library function with return-in-loop (VM-verified)', () => {
   it('finds the right indices and returns max on a miss', async () => {
     const sc = await getContractFactory(
-      compileString(SOURCE, { solidityImportCompat: true }), await fundedSigner(),
+      compileString(SOURCE, { evmCompat: true }), await fundedSigner(),
     ).deploy();
     await sc.seed();
     await expect(sc.check()).resolves.toBeDefined();
@@ -47,7 +47,7 @@ describe('library function with return-in-loop (VM-verified)', () => {
 
   it('rejects a wrong expected index (guard against vacuous pass)', async () => {
     const sc = await getContractFactory(
-      compileString(SOURCE, { solidityImportCompat: true }), await fundedSigner(),
+      compileString(SOURCE, { evmCompat: true }), await fundedSigner(),
     ).deploy();
     await sc.seed();
     await expect(sc.checkWrong()).rejects.toThrow(

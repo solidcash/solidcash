@@ -12,7 +12,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 const provider = createTestProvider();
 
 async function mk(src: string): Promise<StatefulContract> {
-  const art = compileString(src, { solidityImportCompat: true, forceStateful: true });
+  const art = compileString(src, { evmCompat: true, forceStateful: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);
@@ -115,7 +115,7 @@ contract ArrayLeaf {
 
 describe('flattened struct array-leaf whole assign (runtime)', () => {
   it('assigns a memory array to a chunk-dynamic array leaf and reads elements back', async () => {
-    const art = compileString(ARRAY_LEAF, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true });
+    const art = compileString(ARRAY_LEAF, { evmCompat: true, forceStateful: true, chunkedArrays: true });
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);

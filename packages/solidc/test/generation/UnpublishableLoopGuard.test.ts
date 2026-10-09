@@ -117,7 +117,7 @@ describe('a loop guard the published upsert recipe cannot carry', () => {
     ['a journal flush the body always reaches', token('', '', transfer), undefined],
     ['a journal flush behind a guard', token(revert, '', `{ if (amounts[i] > 5) ${transfer} }`), 'Line 27'],
   ])('reads an ERC-20 transfer loop with %s', (_label, source, guard) => {
-    const artifact = compileString(source, { solidityImportCompat: true, forceStateful: true, suppressWarnings: true });
+    const artifact = compileString(source, { evmCompat: true, forceStateful: true, suppressWarnings: true });
     if (guard === undefined) {
       expect(artifact.refusedFunctions).toBeUndefined();
       expect(artifact.abi.find((fn) => fn.name === 'multitransfer')?.sortedUpsertLoopInfo?.[0]?.collection)

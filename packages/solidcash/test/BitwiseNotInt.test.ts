@@ -11,7 +11,7 @@ describe('~ (bitwise NOT) on unbounded int (VM, ~x == -x - 1)', () => {
   const SRC = 'contract C { function f(bigint x, bigint expected) { require(~x == expected); require(true); } }';
   const spend = (x: bigint, expected: bigint): TransactionBuilder => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(SRC, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(SRC, { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })
@@ -31,7 +31,7 @@ describe('~ (bitwise NOT) on unbounded int (VM, ~x == -x - 1)', () => {
     const provider = createTestProvider();
     const contract = new Contract(
       compileString('contract C { function f() { require(~1 == -2); require(~~7 == 7); require(true); } }',
-        { solidityImportCompat: true }), [], { provider });
+        { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     const tx = new TransactionBuilder({ provider })

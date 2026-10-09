@@ -29,7 +29,7 @@ contract NeutralMappingReads {
 }`;
 
 describe('direct mapping return metadata', () => {
-  const artifact = compileString(SOURCE, { solidityImportCompat: true, forceStateful: true });
+  const artifact = compileString(SOURCE, { evmCompat: true, forceStateful: true });
 
   it('proves exact one-key and two-key mapping returns without relying on declaration names', () => {
     expect(artifact.abi.find((fn) => fn.name === 'creditsOf')?.directMappingReturn).toEqual({

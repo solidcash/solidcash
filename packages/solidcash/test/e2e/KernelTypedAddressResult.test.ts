@@ -19,7 +19,7 @@ describe('kernel typed address results', () => {
         function readRecord(uint id) public returns (Record memory) {
           return this.records[id];
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();

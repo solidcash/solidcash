@@ -3,7 +3,7 @@ import type { AbiFunction } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
 const options = {
-  forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+  forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
 };
 const compileWriter = (body: string): AbiFunction => compileString(`pragma solidity ^0.8.0;
   struct Record { uint256 amount; bytes payload; uint32 writtenAt; }

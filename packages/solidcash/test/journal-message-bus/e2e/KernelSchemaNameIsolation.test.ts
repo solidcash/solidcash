@@ -14,7 +14,7 @@ const OPTIONS = {
   messageBus: true,
   messageBusKernel: true,
   maximumInputBytes: 1_000_000,
-  solidityImportCompat: true,
+  evmCompat: true,
   suppressWarnings: true,
 } as const;
 
@@ -106,7 +106,7 @@ describe('kernel schema-name isolation', () => {
         records[key].push(Cell(delta + 2, payload));
         require(records[key].length > 0);
       }
-    }`, { ...OPTIONS, solidityImportCompat: false, messageBusHandlers: ['append'] });
+    }`, { ...OPTIONS, evmCompat: false, messageBusHandlers: ['append'] });
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'append'))
       .toMatchObject({ eligible: true });
     expect(artifact.abi.find((candidate) => candidate.name === 'append')

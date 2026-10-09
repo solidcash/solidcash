@@ -37,7 +37,7 @@ contract SelfCall {
 }`;
 
 describe('self low-level call (runtime)', () => {
-  const artifact = compileString(SOURCE, { solidityImportCompat: true, forceStateful: true });
+  const artifact = compileString(SOURCE, { evmCompat: true, forceStateful: true });
   it('routes raw payloads to the fallback and returns its value', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
@@ -96,7 +96,7 @@ contract SelfCallSelector {
 }`;
 
 describe('self low-level call: selector dispatch + msg.data substitution (runtime)', () => {
-  const artifact = compileString(SELECTOR_SRC, { solidityImportCompat: true, forceStateful: true });
+  const artifact = compileString(SELECTOR_SRC, { evmCompat: true, forceStateful: true });
   it('dispatches encodeWithSelector, roundtrips encoded retvals, substitutes msg.data', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();

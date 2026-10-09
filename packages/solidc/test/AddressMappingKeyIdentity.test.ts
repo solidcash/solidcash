@@ -3,10 +3,9 @@ import { compileString } from '../src/index.js';
 
 describe('address mapping key encoding metadata', () => {
   it.each([
-    { solidityImportCompat: false, evmCompat: false, encoding: undefined },
-    { solidityImportCompat: true, evmCompat: false, encoding: 'identity20' },
-    { solidityImportCompat: false, evmCompat: true, encoding: 'identity20' },
-  ])('describes typed and aliased keys with $solidityImportCompat/$evmCompat compatibility', (options) => {
+    { evmCompat: false, encoding: undefined },
+    { evmCompat: true, encoding: 'identity20' },
+  ])('describes typed and aliased keys with $evmCompat compatibility', (options) => {
     const artifact = compileString(`type Account is address;
       contract Store() {
         mapping(Account => mapping(bytes32 => int)) records;
@@ -18,7 +17,7 @@ describe('address mapping key encoding metadata', () => {
         }
       }`, {
       messageBus: false, suppressWarnings: true,
-      solidityImportCompat: options.solidityImportCompat, evmCompat: options.evmCompat,
+      evmCompat: options.evmCompat,
     });
     const collections = artifact.stateLayout!.collections!;
     expect(collections.find((entry) => entry.name === 'records')).toMatchObject({

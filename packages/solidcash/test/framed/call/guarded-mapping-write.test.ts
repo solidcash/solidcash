@@ -77,7 +77,7 @@ const body = (constructor: boolean): string => [
   '}',
 ].join('\n');
 
-const OPTIONS = { solidityImportCompat: true, composition: 'framed' } as never;
+const OPTIONS = { evmCompat: true, composition: 'framed' } as never;
 const proxied = compileStringMulti(body(false), OPTIONS).Registry!;
 const plain = compileStringMulti(body(true), OPTIONS).Registry!;
 

@@ -5,7 +5,7 @@ import { compileString } from './helpers.js';
 describe('event indexed-parameter limits', () => {
   const cc = (declaration: string): string => compileString(
     `contract C { ${declaration} }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
 
   it('rejects more than three indexed parameters on ordinary events', () => {
@@ -30,7 +30,7 @@ describe('event indexed-parameter limits', () => {
 describe('reserved built-in error names', () => {
   const cc = (declaration: string): string => compileString(
     `${declaration} contract C { function f() public { require(true); } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
 
   it.each(['error Error(uint value);', 'error Panic(bytes2 code);'])(
@@ -46,7 +46,7 @@ describe('reserved built-in error names', () => {
 describe('Solidity custom-error ABI parameter types', () => {
   const cc = (source: string): string => compileString(
     `${source} contract C { function f() public { require(true); } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
 
   it('rejects internal function pointers', () => {
@@ -71,7 +71,7 @@ describe('Solidity custom-error ABI parameter types', () => {
 
 describe('Solidity custom-error selector collisions', () => {
   const cc = (source: string): string => compileString(source, {
-    solidityImportCompat: true,
+    evmCompat: true,
   }).contractName;
 
   it('rejects colliding signatures declared in one contract', () => {
@@ -94,7 +94,7 @@ describe('Solidity custom-error selector collisions', () => {
 describe('Solidity custom-error call contexts', () => {
   const cc = (body: string): string => compileString(
     `error E(uint value); contract C { function f() public { ${body} } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).contractName;
 
   it('rejects a custom error used as an ordinary call or assert argument', () => {
@@ -102,18 +102,18 @@ describe('Solidity custom-error call contexts', () => {
     expect(() => cc('assert(E(1));')).toThrow(/only be used with a revert statement.*require error/i);
     expect(() => compileString(
       'error FreeError(); function f() pure { FreeError(); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/only be used with a revert statement.*require error/i);
     expect(() => compileString(
       'error FreeError(); function f() pure { assert(FreeError()); }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/only be used with a revert statement.*require error/i);
   });
 
   it('rejects a namespaced library error used as an ordinary call', () => {
     expect(() => compileString(
       'library L { error Bad(); } contract C { function f() public { L.Bad(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/only be used with a revert statement.*require error/i);
   });
 
@@ -127,16 +127,16 @@ describe('Solidity anonymous event selectors', () => {
     expect(() => compileString(
       'library L { event E() anonymous; }'
       + ' contract C { function f() public pure returns (bytes32) { return L.E.selector; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Anonymous event 'L\.E'.*does not have a selector/i);
     expect(() => compileString(
       'library L { event E() anonymous; } contract C { bytes32 x = L.E.selector; }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Anonymous event 'L\.E'.*does not have a selector/i);
     expect(() => compileString(
       'contract C { event E() anonymous;'
       + ' function f() public pure returns (bytes32) { return E.selector; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/Anonymous event 'E'.*does not have a selector/i);
   });
 
@@ -144,7 +144,7 @@ describe('Solidity anonymous event selectors', () => {
     expect(compileString(
       'library L { event E(); }'
       + ' contract C { function f() public pure returns (bytes32) { return L.E.selector; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -154,7 +154,7 @@ describe('Solidity named event overload ambiguity', () => {
     expect(() => compileString(
       'contract C { event E(uint u, string s); event E(string s, uint u);'
       + ' function f() public { emit E({u: 2, s: "abc"}); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/No unique declaration.*overloaded event 'E'/i);
   });
 
@@ -162,7 +162,7 @@ describe('Solidity named event overload ambiguity', () => {
     expect(() => compileString(
       'contract C { event E(uint u, string s); event E(bytes s, int u);'
       + ' function f() public { emit E({u: 2, s: "abc"}); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/No unique declaration.*overloaded event 'E'/i);
   });
 
@@ -170,7 +170,7 @@ describe('Solidity named event overload ambiguity', () => {
     expect(compileString(
       'contract C { event E(uint a, bool b); event E(bytes x, string y);'
       + ' function f() public { emit E({b: true, a: 2}); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -179,14 +179,14 @@ describe('Solidity contract event shadowing', () => {
   it('hides a same-named file event from bare emit lookup', () => {
     expect(() => compileString(
       'event E(); contract C { event E(uint value); function f() public { emit E(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     )).toThrow(/expects 1 arguments.*got 0/i);
   });
 
   it('retains a file-level event when the contract does not shadow its name', () => {
     expect(compileString(
       'event E(); contract C { function f() public { emit E(); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 
@@ -196,7 +196,7 @@ describe('Solidity contract event shadowing', () => {
       + ' contract Base { function f() public { emit I.E(1); emit F(1); } }'
       + ' contract C is Base { event E(string value); event F(string value);'
       + ' function g() public { emit E("ok"); emit L.E(1); } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
@@ -204,7 +204,7 @@ describe('Solidity contract event shadowing', () => {
 describe('event argument literal coercion', () => {
   const bc = (arg: string): string => compileString(
     `contract C { event E(bytes3 indexed value); function f() public { emit E(${arg}); } }`,
-    { solidityImportCompat: true },
+    { evmCompat: true },
   ).bytecode;
 
   it('right-pads a string literal for a bytesN event parameter', () => {
@@ -217,13 +217,13 @@ describe('future soft-keyword names in function types and errors', () => {
     expect(compileString(
       'error E(uint transient); contract C { function (uint transient) external transient y;'
       + ' function transient() public pure {} }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     ).contractName).toBe('C');
   });
 });
 
 describe('crash-bucket triage (internal errors -> clean diagnostics or fixes)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('resolves a struct field that forward-references a later user-defined value type', () => {
     // `struct S { U u; }` before `type U is address;` crashed artifact generation on the unresolved field type.
     expect(cc('struct S { U u; } contract C { S s; function f() external pure { require(true); } } type U is address;'))
@@ -235,7 +235,7 @@ describe('crash-bucket triage (internal errors -> clean diagnostics or fixes)', 
     // a nested branch so its state write executes only when short-circuit evaluation reaches it.
     expect(compileString('contract C { bool b; function f() external {'
       + ' if (b && (b = false)) {} require(true); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
   it('compiles assignment-as-argument f(x = v) by hoisting it (BentoBox domain separator)', () => {
     // `_calculateDomainSeparator(DOMAIN_SEPARATOR_CHAIN_ID = chainId)` - the assignment argument hoists to
@@ -256,13 +256,13 @@ describe('crash-bucket triage (internal errors -> clean diagnostics or fixes)', 
 describe('crash-bucket triage round 2 (internal errors -> clean diagnostics)', () => {
   it('threads the originating msg.sig through an internal function', () => {
     const src = 'contract C { function f() external pure { g(); } function g() internal pure { require(msg.sig == 0x00000000); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
   it('compiles a statement call on a deploy-into-state contract variable', () => {
     // A zero-argument void call is not a constructor external READ and must remain a call after deployment.
     const src = 'contract C { event e(); function f() public { emit e(); } }'
       + ' contract D { C c; constructor() { c = new C(); c.f(); } function g() public { require(true); } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('D');
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('D');
   });
 });
 
@@ -270,18 +270,18 @@ describe('external function pointers in events', () => {
   it('encodes both self and foreign values as selector plus address', () => {
     const art = compileString('contract C { event E(function() external indexed);'
       + ' function f() public { emit E(this.f); emit E(C(address(0x1234)).f); } }',
-    { solidityImportCompat: true });
+    { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
   it('retains an unused internal-function event declaration but rejects an attempted emit', () => {
     expect(compileString('contract C { event E(function() internal); }',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
     expect(() => compileString('contract C { event E(function() internal);'
       + ' function target() internal {} function f() public { emit E(target); } }',
-    { solidityImportCompat: true })).toThrow(/not supported as an event parameter/);
+    { evmCompat: true })).toThrow(/not supported as an event parameter/);
     expect(() => compileString('struct S { S[] ss; } contract C {'
       + ' event E1(function() internal); event E2(S); }',
-    { solidityImportCompat: true })).toThrow(/not supported as an event parameter/);
+    { evmCompat: true })).toThrow(/not supported as an event parameter/);
   });
 });
 
@@ -289,13 +289,13 @@ describe('qualified custom error resolution', () => {
   it('selects the error declared by the qualifier despite a same-named local declaration', () => {
     expect(compileString('contract D { error E(uint value); } contract C { error E();'
       + ' function f() public { revert D.E(1); } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { evmCompat: true }).contractName).toBe('C');
   });
 });
 
 describe('custom error name uniqueness', () => {
   it('rejects error overloads and effective-scope function collisions', () => {
-    const compat = { solidityImportCompat: true };
+    const compat = { evmCompat: true };
     expect(() => compileString('error E(uint); error E(bytes32); contract C {}', compat))
       .toThrow();
     expect(() => compileString('contract A { function E() public {} }'
@@ -307,7 +307,7 @@ describe('custom error name uniqueness', () => {
 
 describe('exact event signature redeclarations', () => {
   it('rejects file-level and inherited duplicates while retaining true overloads', () => {
-    const compat = { solidityImportCompat: true };
+    const compat = { evmCompat: true };
     expect(() => compileString('event E(uint); event E(uint); contract C {}', compat)).toThrow();
     expect(() => compileString('contract A { event E(uint); }'
       + ' contract B is A { event E(uint indexed); }', compat)).toThrow();
@@ -319,8 +319,8 @@ describe('exact event signature redeclarations', () => {
 describe('reserved-name exceptions for events', () => {
   it('accepts this and super only through the event-name grammar alternative', () => {
     expect(compileString('event this(); event super(); event _(); contract C {}',
-      { solidityImportCompat: true }).contractName).toBe('C');
+      { evmCompat: true }).contractName).toBe('C');
     expect(() => compileString('contract C { uint this; }',
-      { solidityImportCompat: true })).toThrow();
+      { evmCompat: true })).toThrow();
   });
 });

@@ -53,7 +53,7 @@ function compileSol(source: string, name = 'Helper'): ArtifactMap {
   const file = path.join(dir, `${name}.sol`);
   fs.writeFileSync(file, source);
   try {
-    return compileFileMulti(file, { composition: 'framed', solidityImportCompat: true } as never);
+    return compileFileMulti(file, { composition: 'framed', evmCompat: true } as never);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

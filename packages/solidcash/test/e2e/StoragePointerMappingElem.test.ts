@@ -31,7 +31,7 @@ describe('storage-pointer library fn on a mapping element (RMW inline)', () => {
     }`;
 
   const deploy = async (): Promise<{ contract: Record<string, (...a: unknown[]) => { send: () => Promise<{ txid: string }> }>; fund: () => Promise<void> }> => {
-    const art = compileString(SRC, { solidityImportCompat: true });
+    const art = compileString(SRC, { evmCompat: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     const uid = (): string => { deploymentNonce += 1; return deploymentNonce.toString(16).padStart(64, '0'); };
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
@@ -78,7 +78,7 @@ describe('storage-pointer library fn on a mapping element (RMW inline)', () => {
           require(checkSig(s, pk)); require(this.pos[k].x == ex); require(this.pos[k].y == ey);
         }
       }`;
-    const art = compileString(USRC, { solidityImportCompat: true });
+    const art = compileString(USRC, { evmCompat: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     let nonce = 0x5d00;
     const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
@@ -112,7 +112,7 @@ describe('storage-pointer library fn on a mapping element (RMW inline)', () => {
         function bumpArr(int i, int d, pubkey pk, sig s) { require(checkSig(s, pk)); L.addX(this.arr[i], d); }
         function checkArr(int i, int ex, int ey, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.arr[i].x == ex); require(this.arr[i].y == ey); }
       }`;
-    const art = compileString(VSRC, { solidityImportCompat: true });
+    const art = compileString(VSRC, { evmCompat: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     let nonce = 0x5e00;
     const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };

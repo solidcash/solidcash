@@ -71,7 +71,7 @@ describe('DEFINE frame emission (item 3 real path)', () => {
       contract View() {
         function read(int value) public pure returns (int) { return value + 7; }
         function twin(int a, int b) public pure returns (int, int) { return (a + 1, b + 2); }
-      }`, { ...KERNEL, solidityImportCompat: false });
+      }`, { ...KERNEL, evmCompat: false });
     expect(returning.messageBus?.route?.blockLayout).toBeDefined();
     const returningRecords = getDefineFrameValidations();
     expect(returningRecords.filter((record) => (
@@ -102,7 +102,7 @@ describe('DEFINE frame emission (item 3 real path)', () => {
     ];
     for (const [, src] of sources) {
       clearDefineFrameValidations();
-      compileString(src, { ...KERNEL, solidityImportCompat: false, maximumInputBytes: 1_000_000 });
+      compileString(src, { ...KERNEL, evmCompat: false, maximumInputBytes: 1_000_000 });
       const soft = getDefineFrameValidations().filter(
         (record) => record.handlerName.startsWith('__') && !record.result.ok,
       );

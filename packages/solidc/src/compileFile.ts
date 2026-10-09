@@ -15,8 +15,8 @@ function readSourceWithResolver(
   const fileStr = codeFile instanceof URL ? fileURLToPath(codeFile) : codeFile.toString();
   const filePath = path.resolve(fileStr);
 
-  // With solidityImportCompat, `.sol` files resolve as solidcash sources (so OZ/Solidity imports load).
-  const compat = compilerOptions.solidityImportCompat ?? false;
+  // With evmCompat, `.sol` files resolve as solidcash sources (so OZ/Solidity imports load).
+  const compat = compilerOptions.evmCompat ?? false;
   // Ordered file candidates for a base path: keep an explicit extension, else try .scash (then .sol).
   const candidatesFor = (base: string): string[] => {
     if (base.endsWith('.scash')) return [base];

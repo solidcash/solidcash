@@ -8,7 +8,7 @@ import { createTestProvider, gatherUtxos } from '../test-util.js';
 describe('calldata pointer reassignment (x = y)', () => {
   const run = async (src: string, unlock: (c: Contract) => any): Promise<boolean> => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(src, { evmCompat: true }), [], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
     const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount: 1000n, fee: 20000n });
     try {

@@ -16,7 +16,7 @@ describe('porting parse features', () => {
   const provider = createTestProvider();
   for (const [label, src] of PRAGMA_CASES) {
     it(`${label} compiles and runs`, async () => {
-      const art = compileString(src, { solidityImportCompat: true, forceStateful: true });
+      const art = compileString(src, { evmCompat: true, forceStateful: true });
       const contract = new Contract(art, [], { provider });
       const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
       const sc = StatefulContract.withCategory(contract, categoryId);
@@ -31,9 +31,9 @@ describe('porting parse features', () => {
   // canonical `public constant`. Byte-identical bytecode is the precise proof that order is immaterial.
   it('state-var modifiers in any order compile identically', () => {
     const mk = (order: string): string => `contract C() { uint ${order} X = 7; function f(uint e) { require(X == e); } }`;
-    const canonical = compileString(mk('public constant'), { solidityImportCompat: true, forceStateful: true }).bytecode;
+    const canonical = compileString(mk('public constant'), { evmCompat: true, forceStateful: true }).bytecode;
     for (const order of ['constant public', 'public constant']) {
-      expect(compileString(mk(order), { solidityImportCompat: true, forceStateful: true }).bytecode).toBe(canonical);
+      expect(compileString(mk(order), { evmCompat: true, forceStateful: true }).bytecode).toBe(canonical);
     }
   });
 });

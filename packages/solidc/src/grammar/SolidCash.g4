@@ -245,7 +245,7 @@ pragmaName
 
 pragmaValue
     // Solidity version expressions also permit hyphen ranges and disjunctions. They are ignored in
-    // solidityImportCompat mode, but must still parse so the source can reach the compiler proper.
+    // evmCompat mode, but must still parse so the source can reach the compiler proper.
     : versionAlternative ('||' versionAlternative)*
     | '*'          // wildcard version (`pragma solidity *;`)
     ;
@@ -260,7 +260,7 @@ versionAlternative
 versionConstraint
     // Accept 2-part versions (DecimalLiteral, e.g. 0.0) in addition to X.Y.Z, so ported `pragma solidity >=0.0;`
     // forms parse. Bare numbers (`>1`) stay a parse error - they are not valid version constraints. The version
-    // is validated for solidcash pragmas in the AST builder; ignored under solidityImportCompat.
+    // is validated for solidcash pragmas in the AST builder; ignored under evmCompat.
     : versionOperator? (VersionLiteral | DecimalLiteral | NumberLiteral)
     ;
 

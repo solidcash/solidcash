@@ -68,7 +68,7 @@ for (const f of files) {
   // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound), so using it forces
   // the contract stateful - no deploy-time oracle-category config needed. See block-and-transaction-properties.md.
   try {
-    compileFile(f, { solidityImportCompat: true });
+    compileFile(f, { evmCompat: true });
   } catch (e) { status = 'FAIL'; err = (e.name || 'Error') + ': ' + String(e.message).split('\n')[0]; }
   unmute();
   results.push({ rel, status, err });

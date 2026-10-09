@@ -966,8 +966,7 @@ const GROUPS = [
       ],
       'block.timestamp': [
         'uint32 block.timestamp',
-        'Block time as a uint32, read from a co-spent block oracle. Under `solidityImportCompat` it maps '
-        + 'to `tx.locktime` instead.',
+        'Block time as a uint32, read from a co-spent block oracle.',
         `${GLOBALS}#block-properties`,
       ],
       'block.chainid': [

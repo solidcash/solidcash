@@ -30,7 +30,7 @@ Interface artifacts on both sides have an empty script. A framed call still spen
 
 ## MistSwap fixtures
 
-Compiled 2026-10-05 from `/Code/mistswap/mistswap/contracts` with `compileFile`. Both conventions use `solidityImportCompat`, `ecrecover: 'p2pkh'`, `forceStateful`, and the message bus with the kernel and the speed hint. Per-call adds `composition: 'framed'`. All five files compiled. The compiler still warns that the direct scripts exceed 10,000 bytes.
+Compiled 2026-10-05 from `/Code/mistswap/mistswap/contracts` with `compileFile`. Both conventions use `evmCompat`, `ecrecover: 'p2pkh'`, `forceStateful`, and the message bus with the kernel and the speed hint. Per-call adds `composition: 'framed'`. All five files compiled. The compiler still warns that the direct scripts exceed 10,000 bytes.
 
 | contract | direct bytes | framed bytes | delta | framed refused | over 10k |
 |---|---:|---:|---:|---:|---|
@@ -44,7 +44,7 @@ Per-call deployment UTXOs are 17 to 21 (state records plus the default 12 master
 
 ## Solidity corpus
 
-`examples/solidity-corpus` compiles `/Code/solidity/test/libsolidity/semanticTests` and `syntaxTests`: 5,202 files. Each file was compiled twice with `compileFile`, 8 second timeout, zero timeouts. Direct options are `solidityImportCompat: true`. Per-call adds `composition: 'framed'`. Artifacts are paired by source path and contract name.
+`examples/solidity-corpus` compiles `/Code/solidity/test/libsolidity/semanticTests` and `syntaxTests`: 5,202 files. Each file was compiled twice with `compileFile`, 8 second timeout, zero timeouts. Direct options are `evmCompat: true`. Per-call adds `composition: 'framed'`. Artifacts are paired by source path and contract name.
 
 | | direct | framed |
 |---|---:|---:|

@@ -51,7 +51,7 @@ describe('kernel mixed continuation and scalar entry insertion', () => {
           ILedger(ledger).update(key);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     expect(artifacts.Ledger.stateLayout?.collections?.find((collection) => collection.name === 'stats'))

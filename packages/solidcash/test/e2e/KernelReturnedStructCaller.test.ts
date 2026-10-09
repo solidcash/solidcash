@@ -37,7 +37,7 @@ describe('kernel returned struct caller context', () => {
           IEditor(editor).edit(key);
           this.count += 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
     const provider = createMessageBusCapstoneTestProvider();

@@ -13,7 +13,7 @@ describe('kernel dynamic-array cache identity', () => {
     );
     const options = {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       messageBusKernel: true,
       messageBusGraphContext: true,

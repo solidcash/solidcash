@@ -4,7 +4,7 @@ import path from 'node:path';
 import { compileFileMulti } from 'solidc';
 const source = path.join(process.cwd(), '.marketplace/contracts/MarketplaceV1.sol');
 const options = {
-  solidityImportCompat: true, messageBus: true, messageBusKernel: false, messageBusGraphContext: true,
+  evmCompat: true, messageBus: true, messageBusKernel: false, messageBusGraphContext: true,
   ecrecover: 'p2pkh', optimizeForCompilationSpeed: true, suppressWarnings: true,
   maximumInputBytes: 10_000_000, commitmentLimit: 10_000_000,
 };

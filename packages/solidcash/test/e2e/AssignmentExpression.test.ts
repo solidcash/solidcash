@@ -80,7 +80,7 @@ contract Chains {
 }`;
 
 describe('assignment chains and ternary branch assignments (runtime)', () => {
-  const artifact = compileString(CHAINS, { solidityImportCompat: true, forceStateful: true });
+  const artifact = compileString(CHAINS, { evmCompat: true, forceStateful: true });
   it('runs every chained/ternary assignment form with the expected values and order', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();

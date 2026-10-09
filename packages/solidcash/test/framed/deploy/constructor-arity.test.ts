@@ -32,7 +32,7 @@ const SOURCE = [
 ].join('\n');
 
 const artifact: Artifact = compileStringMulti(
-  SOURCE, { solidityImportCompat: true, composition: 'framed' } as never,
+  SOURCE, { evmCompat: true, composition: 'framed' } as never,
 ).Settings!;
 
 /** A mock chain carrying the shipped validator facets, and a deployer holding fresh vout-0 coins. */

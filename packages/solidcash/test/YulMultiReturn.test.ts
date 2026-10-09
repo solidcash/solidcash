@@ -10,7 +10,7 @@ import { createTestProvider, verifyTransaction } from './test-util.js';
 describe('multi-return local Yul function inlining (VM)', () => {
   const spend = (src: string, args: bigint[]): TransactionBuilder => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+    const contract = new Contract(compileString(src, { evmCompat: true }), [], { provider });
     const utxo = randomUtxo();
     provider.addUtxo(contract.address, utxo);
     return new TransactionBuilder({ provider })

@@ -18,7 +18,7 @@ describe('kernel typed state array getters', () => {
           this.records.push(Record(Party(recipient, digest), [recipient, address(0)]));
           this.owner = recipient;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();

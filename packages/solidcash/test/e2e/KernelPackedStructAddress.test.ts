@@ -29,7 +29,7 @@ describe('kernel packed nested struct addresses', () => {
           IReceiver(receiver).store(abi.encodePacked(this.record.party.recipient), expected);
           this.record.status = 1;
         }
-      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
     const provider = createMessageBusCapstoneTestProvider();

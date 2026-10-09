@@ -11,7 +11,7 @@ describe('`_;` modifier placeholder inside a conditional', () => {
     const a = compileString(
       'contract C { int x; modifier ifZero() { if (this.x == 0) { _; } else { require(false); } }'
       + ' function f() ifZero { this.x = 1; } }',
-      { solidityImportCompat: true },
+      { evmCompat: true },
     );
     expect(a.contractName).toBe('C');
   });
@@ -41,7 +41,7 @@ describe('`_;` modifier placeholder inside a for-loop', () => {
 });
 
 describe('function modifier / custom-modifier interleaving (Solidity allows any order)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('accepts a custom modifier invocation BEFORE visibility (function f() M(1) public {})', () => {
     expect(cc('pragma solidity ^0.8.0; contract C { modifier M(uint i){_;}'
       + ' function f() M(1) public { require(true); } }')).toBe('C');

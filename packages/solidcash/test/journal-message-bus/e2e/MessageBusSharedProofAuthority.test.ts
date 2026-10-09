@@ -28,7 +28,7 @@ describe('message-bus shared sorted-proof authority', () => {
       }
     `, {
       forceStateful: true,
-      solidityImportCompat: true,
+      evmCompat: true,
       messageBus: true,
       maximumInputBytes: 10_000,
       optimizeForCompilationSpeed: true,

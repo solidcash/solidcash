@@ -74,7 +74,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const compiled = compileStringMulti(SOURCE, { solidityImportCompat: true, composition: 'framed' } as never);
+const compiled = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never);
 const bank = compiled.Bank!;
 const vault = compiled.Vault!;
 

@@ -91,7 +91,7 @@ describe('sound external-call target pinning', () => {
       'interface IFoo { function x() external; } '
       + 'contract C { function g() external { '
       + 'IFoo(0x1234567890123456789012345678901234567890).x(); require(true); } }',
-      { solidityImportCompat: true, forceStateful: true },
+      { evmCompat: true, forceStateful: true },
     );
     const g = art.abi.find((f) => f.name === 'g')!;
     expect(g.externalCalls?.[0]?.addressLiteral).toBe('1234567890123456789012345678901234567890');

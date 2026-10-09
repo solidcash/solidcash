@@ -24,8 +24,11 @@ export * from 'ethers/wordlists';
 
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from 'solidcash/dist/stateful/logical-identity.js';
-import { createLookaheadForAddress, predictCreateAddress } from 'solidcash/dist/framed/deploy/create-lookahead-session.js';
+// Reach the SDK through its named subpaths rather than through physical `dist` leaf files. The subpath is a
+// stable package entry a test can `vi.mock` back onto the sources, which is what keeps a test's reservations
+// and this shim's reads in one module instance; a `dist` leaf path can be neither redirected nor deduplicated.
+import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from 'solidcash/stateful';
+import { framedDeploy } from 'solidcash/framed';
 // CashAddress-aware ABI coder (wins over ethers/utils re-export for defaultAbiCoder / AbiCoder).
 // Cycle-free: cash-abi-coder only imports ethers/abi + libauth.
 import { AbiCoder as CashAbiCoder, defaultAbiCoder as cashDefaultAbiCoder } from './cash-abi-coder.js';
@@ -229,8 +232,8 @@ function prefixOf(from: string): Prefix {
  * logical CREATE address stands in.
  */
 export function getCreateAddress(tx: { from: string; nonce: number | bigint }): string {
-  if (createLookaheadForAddress(tx.from) !== undefined) {
-    return binToHex(predictCreateAddress(tx.from, tx.nonce));
+  if (framedDeploy.createLookaheadForAddress(tx.from) !== undefined) {
+    return binToHex(framedDeploy.predictCreateAddress(tx.from, tx.nonce));
   }
   return deriveLogicalCreateAddress(tx.from, tx.nonce);
 }

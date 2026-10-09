@@ -186,6 +186,17 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     warn.mockRestore();
   });
 
+  it("addressForm: 'hash' is assertable natively too, so the identity is the caller's choice either way", () => {
+    const source = 'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(a); } }';
+    const native = bytecodeToAsm(hexToBin(compileString(source, { messageBus: false }).debug.bytecode));
+    const forced = bytecodeToAsm(hexToBin(compileString(source, {
+      messageBus: false, addressForm: 'hash',
+    }).debug.bytecode));
+    // A native compile packs the lock by default; asking for 'hash' inserts the identity narrowing.
+    expect(native).not.toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(forced).toContain('OP_3 OP_SPLIT OP_NIP');
+  });
+
   it("addressForm: 'bytecode' packs the whole lock where 'hash' packs the 20-byte identity", () => {
     const source = 'contract C() { function f(address a) returns (bytes) '
       + '{ return abi.encodePacked(a); } }';

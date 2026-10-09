@@ -20976,6 +20976,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Pad VM number to declared byte width
         this.emit(encodeInt(BigInt(param.type.byteWidth)), locationData);
         this.emit(Op.OP_NUM2BIN, locationData);
+      } else if (param.type instanceof AddressType && this.addressForm === 'hash') {
+        // A native compile packs an address whole by default, so an explicit `addressForm: 'hash'` has to ask for
+        // the identity here. Without this the option would be honoured by the decoded presentation and ignored by
+        // the packing, and one transaction would carry the identity out of one surface and the lock out of the
+        // other. Under the native default ('bytecode') nothing is emitted, as before.
+        this.emit(compileCast(param.type, new BytesType(20), false, this.compilerOptions.evmCompat ?? false), locationData);
       }
 
       // CAT with previous if not the first

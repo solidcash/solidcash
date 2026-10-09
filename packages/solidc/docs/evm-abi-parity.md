@@ -245,8 +245,9 @@ Residual: a selector folded for a **library-declared** member (`L.f.selector`, `
 `libraryFunctionSignatures`/`libraryEventSignatures`/`libraryErrorSignatures`, whose event-map keys are shared
 with the event covenant salt. Those keep the platform spelling in both modes; a library member with a struct,
 enum or UDVT parameter therefore folds its selector as it does natively. `abi.encodeWithSignature(<string>, ...)`
-also hashes the caller's string verbatim (solc does not normalize it) - only literal signatures are accepted
-under `evmCompat`.
+still hashes the caller's string verbatim (solc does not normalize it), and a non-literal signature lowers to
+`encodeWithSelector(bytes4(keccak256(bytes(sig))), args)` so the keccak256 side-car supplies the digest
+(`LowerRuntimeSignatureSelectors`); the literal form folds at compile time.
 
 ### 6.3 Builders
 

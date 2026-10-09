@@ -255,6 +255,7 @@ import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers, { validateModifierDefinitions } from './semantic/ModifierExpansionTransformation.js';
 import FoldHashLiterals from './semantic/FoldHashLiterals.js';
+import LowerRuntimeSignatureSelectors from './semantic/LowerRuntimeSignatureSelectors.js';
 import FoldConstantBoolBranches from './semantic/FoldConstantBoolBranches.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
@@ -14552,6 +14553,14 @@ function compileResolvedAst(
   // domains, EVM storage slots). Both fold to their REAL hash (keccak256 -> real keccak, Ethereum-identical).
   if (!(rootSourceCoversProgram(ast) && !code.includes('keccak256') && !code.includes('sha256'))) {
     ast = ast.accept(new FoldHashLiterals()) as Ast;
+  }
+
+  // A NON-literal `abi.encodeWithSignature(sig, args)` hashes a runtime string in Solidity. Under evmCompat lower
+  // it to `abi.encodeWithSelector(bytes4(keccak256(bytes(sig))), args)` so the keccak256 side-car supplies the
+  // selector; the literal form was folded by the symbol pass, and native keeps its OP_SHA256 codegen path.
+  if (mergedCompilerOptions.evmCompat
+    && !(rootSourceCoversProgram(ast) && !code.includes('encodeWithSignature'))) {
+    ast = ast.accept(new LowerRuntimeSignatureSelectors()) as Ast;
   }
 
   // Solidity public state-var/mapping auto-getters -> real entry-point functions, so a ported callee invoked

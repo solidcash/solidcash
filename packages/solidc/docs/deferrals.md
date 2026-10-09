@@ -427,10 +427,11 @@ compile time (the `computeAbiSelector` path in `SymbolTableTraversal.ts`, so it 
 const-`keccak256` fold; the argument half then became conformance-testable, because the differential harness
 compares the whole `selector ++ args` blob.
 
-**Residual.** `abi.encodeWithSignature(<runtime signature>, ...)` is refused under `evmCompat`: a runtime
-keccak256 selector would need the keccak compute side-car, so only a literal signature is accepted there. A
-native compile still hashes the runtime string with `OP_SHA256`. Solidity hashes the runtime bytes, so a ported
-source that passes a non-literal signature needs a literal (or the side-car work).
+**Residual.** None for the selector: a NON-literal `abi.encodeWithSignature(sig, ...)` lowers pre-semantic to
+`abi.encodeWithSelector(bytes4(keccak256(bytes(sig))), args)`, so the keccak256 side-car supplies the runtime
+digest (the ABI row publishes `keccakCompute` + one `keccakPreimageParams` entry, which the SDK co-spends
+exactly as for a source-level `keccak256`). A native compile hashes the runtime string with `OP_SHA256` and
+needs no side-car.
 
 ---
 

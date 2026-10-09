@@ -418,10 +418,13 @@ Priorities carry the PACKING lens above: each phase lowers to a 128B-aware subst
   NESTED (`allowances[a][b]` double-keccak: the first keccak is the partial `m[a]`, the second extends to
   `m[a][b]`) - assembly and high-level share the entry collection, bidirectional (`EvmStorageTier2.test.ts`);
   the dead keccak binding is dropped (no on-chain keccak). This covers the vast majority of hand-written
-  storage assembly (mapping access dominates). REMAINING (lower-value extensions, not the common case):
-  dynamic-ARRAY element idiom `sload(add(keccak256(p),i))` (needs single-word-keccak array-base tracking +
-  add-offset recognition + high-level array routing - rare in real code, most array access is high-level);
-  struct-field slot math past a composite base.
+  storage assembly (mapping access dominates). The two lower-value extensions listed here earlier are also
+  delivered: the dynamic-ARRAY element idiom `sload/sstore(keccak256(0,32))` and `add(keccak256(0,32), i)`
+  (both inline and the `let pos := add(keccak256(0,32), i)` form), the `bytes` data-word form, and
+  struct-field / composite sub-slot math `add(sv.slot, k)` - see `solidity-compat/yul-evm.test.ts`
+  ("reads a rel!=0 sub-slot via add(m.slot, 1)", the array-element and resize cases). Recognition is narrow
+  and fail-closed: a different `keccak256` length is NOT this array's base, and an unrecognized computed slot
+  still falls back to the raw `__evm_storage[slot]` register.
 - **P2 - sorted-list soundness re-homing [DROPPED BY DESIGN].** The premise was wrong: the slot space does
   not need absence proofs (see Soundness above). Elements are directly located by slot id at a deterministic
   address; declared-var guards are sound via the always-present register; mapping guards use the existing vmap

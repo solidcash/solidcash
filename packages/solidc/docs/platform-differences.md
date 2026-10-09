@@ -110,8 +110,8 @@ grows to the stack-element limit.
 - **A source-visible identifier follows the compile's mode.** The selector scheme (function/error selectors,
   `type(I).interfaceId`, `msg.sig`, and the `E.selector` bytes32 event topic-hash value) is real keccak256 under
   `evmCompat` and sha256 (BCH-native) otherwise, so a ported source reads the same selectors and topic hashes it
-  would on the EVM. `abi.encodeWithSignature` / `abi.encodeCall` do the same (a literal signature only; a runtime
-  signature is refused under `evmCompat`).
+  would on the EVM. `abi.encodeWithSignature` / `abi.encodeCall` do the same; a literal signature folds at compile
+  time and a runtime signature hashes through the keccak256 side-car.
 - **The physical STORAGE-SLOT SPACE is BCH-native (sha256).** A mapping/array's on-chain slot, and the 20-byte
   sha256 salt that addresses an event's covenant output, are derived with sha256 - BCH has its own UTXO/covenant
   storage model, not the EVM trie. So although `erc7201("x")` yields Ethereum's slot *number*, the data physically

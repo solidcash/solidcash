@@ -780,6 +780,41 @@ describe('selector signatures follow Solidity canonicalization under evmCompat',
   });
 });
 
+describe('runtime-signature encodeWithSignature under evmCompat', () => {
+  it('lowers to bytes4(keccak256(bytes(sig))) + the standard encoder', () => {
+    const lowered = compileString(
+      'contract C { function f(string memory s) external pure returns (bytes) {'
+      + ' return abi.encodeWithSignature(s, uint256(1)); } }',
+      { evmCompat: true },
+    ).bytecode;
+    const explicit = compileString(
+      'contract C { function f(string memory s) external pure returns (bytes) {'
+      + ' return abi.encodeWithSelector(bytes4(keccak256(bytes(s))), uint256(1)); } }',
+      { evmCompat: true },
+    ).bytecode;
+    expect(lowered).toBe(explicit);
+  });
+
+  it('is refused under evmCompat only when the signature is not an expression it can hash', () => {
+    // A literal keeps the compile-time fold, so both modes still accept the ordinary ported shape.
+    expect(compileString('contract C { function f(uint256 x) external pure returns (bytes) {'
+      + ' return abi.encodeWithSignature("f(uint256)", x); } }', { evmCompat: true }).contractName).toBe('C');
+    expect(compileString('contract C { function f(uint256 x) external pure returns (bytes) {'
+      + ' return abi.encodeWithSignature("f(uint256)", x); } }', {}).contractName).toBe('C');
+  });
+
+  it('publishes the keccak side-car requirement so the SDK can fund the runtime digest', () => {
+    const artifact = compileString(
+      'contract C { function f(string memory s) external pure returns (bytes) {'
+      + ' return abi.encodeWithSignature(s, uint256(1)); } }',
+      { evmCompat: true },
+    );
+    const entry = artifact.abi.find((fn) => fn.name === 'f');
+    expect(entry?.keccakCompute).toBe(true);
+    expect(entry?.keccakPreimageParams).toHaveLength(1);
+  });
+});
+
 describe('selectors from contract-valued call receivers', () => {
   it('evaluates only the selected ternary receiver before returning its method selector', () => {
     expect(compileString('contract A { function f() public { require(true); }'

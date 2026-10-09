@@ -6,7 +6,7 @@ import {
   type ValueProvenance, type ValueProvenanceKind, type DynamicWriteGrowthAbi, ValueType,
   AddressType,
   abiTypeString, type ChildDeploymentValueRecipe, type FixedBchTransferAbi, type ExternalResultConsumerAbi,
-  canonicalSelectorType,
+  canonicalSelectorType, isEvmNotationScalarType,
   type ComputeSideCarRecipesAbi,
   ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature,
 } from '@solidcash/utils';
@@ -4220,6 +4220,7 @@ export function generateDeclarationArtifact(
           name: p.name,
           type: abiTypeString(p.type),
           ...(p.indexed && { indexed: true }),
+          ...(compilerOptions.evmCompat && isEvmNotationScalarType(p.type) && { notation: 'evm' as const }),
         })),
         ...(ev.isAnonymous && { anonymous: true }),
       }] as const;
@@ -4483,6 +4484,7 @@ export function generateArtifact(
         name: p.name,
         type: abiTypeString(p.type),
         ...(p.indexed && { indexed: true }),
+        ...(compilerOptions.evmCompat && isEvmNotationScalarType(p.type) && { notation: 'evm' as const }),
       })),
       ...(ev.isAnonymous && { anonymous: true }),
     }))

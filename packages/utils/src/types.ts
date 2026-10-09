@@ -173,6 +173,18 @@ export function abiTypeString(type: Type | undefined): string {
 }
 
 /**
+ * Whether a value of this type is written in the standard EVM notation (`evmCompat` event arguments): a scalar
+ * whose bytes are big-endian two's-complement at the type's natural width (bool one byte, uintN N/8, enum uint8),
+ * or the plain byte string for a bytesN/bytes/string/pubkey/sig/datasig. An array, struct, user-defined value
+ * type or function pointer keeps the platform frame - solc has no packed form for a struct, its array rule pads
+ * every element to 32 bytes, and a UDVT's notation is its underlying type's.
+ */
+export function isEvmNotationScalarType(type: Type): boolean {
+  return !(type instanceof ArrayType || type instanceof StructType || type instanceof ValueType
+    || type instanceof FunctionType || type instanceof MappingType || type instanceof TokenContainerType);
+}
+
+/**
  * Solidity's canonical ABI type name for a selector signature: the spelling solc hashes into
  * `keccak256(sig)[:4]` (and into an event's topic hash). It erases address payability and contract/interface
  * identity to `address`, maps an enum to `uint8`, a struct to its parenthesized field tuple (recursively), a

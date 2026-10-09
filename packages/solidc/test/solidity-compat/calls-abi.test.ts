@@ -780,6 +780,24 @@ describe('selector signatures follow Solidity canonicalization under evmCompat',
   });
 });
 
+describe('event arguments use the standard EVM notation under evmCompat', () => {
+  const eventsOf = (opts: object): any[] => compileString(
+    'contract C { struct S { uint256 x; } event E(uint256 n, address payable p, S s);'
+    + ' function f(uint256 n, address payable p) external { require(true); } }',
+    opts,
+  ).events;
+
+  it('marks a scalar parameter and leaves a struct on the platform frame', () => {
+    const marked = eventsOf({ evmCompat: true }).find((event) => event.name === 'E');
+    expect(marked.parameters.map((parameter: any) => parameter.notation)).toEqual(['evm', 'evm', undefined]);
+  });
+
+  it('leaves every parameter on the platform frame natively', () => {
+    const native = eventsOf({}).find((event) => event.name === 'E');
+    expect(native.parameters.every((parameter: any) => parameter.notation === undefined)).toBe(true);
+  });
+});
+
 describe('runtime-signature encodeWithSignature under evmCompat', () => {
   it('lowers to bytes4(keccak256(bytes(sig))) + the standard encoder', () => {
     const lowered = compileString(

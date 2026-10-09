@@ -118,6 +118,33 @@ grows to the stack-element limit.
   lives in BCH's `__evm_storage` space. This is internal and never cross-chain-compared, so on-chain correctness
   within BCH is unaffected. The selector/`E.selector` values above are observed by source and do follow the mode;
   the physical slot ids and the event covenant salt are not.
+
+### Event arguments under `evmCompat`
+
+An event's payload is one NFT commitment (128-byte cap), so it cannot be a standard ABI tuple: `abi.encode` of
+six static arguments is already 192 bytes, and there is no topic channel on BCH. Under `evmCompat` each SCALAR
+argument is therefore written as a one-byte payload length followed by the value in **standard EVM notation** -
+big-endian two's-complement at the type's natural width, the bytes `abi.encodePacked` produces - and the artifact
+marks that parameter `notation: 'evm'`, so a standard decoder reads it without the platform's little-endian
+sign-magnitude encoding. Natively every argument keeps the platform pushdata frame.
+
+| Argument type | `evmCompat` payload | Native frame |
+|---|---|---|
+| `bool` | 1 byte, `0x00`/`0x01` | 1 byte, `0x00`/`0x51` |
+| `uintN`/`intN` | `N/8` bytes, BE two's-complement | script push of the LE sign-magnitude number |
+| `fixedMxN` | `M/8` bytes, BE two's-complement | script push of the LE scaled integer |
+| `enum` | 1 byte ordinal (`uint8`, the ABI type) | script push of the ordinal |
+| `bigint` | 32 bytes, BE two's-complement | script push of the LE number |
+| `bytesN` (1..32) | `N` bytes verbatim | `N` bytes (int-like for `bytes1`) |
+| `bytes`/`string` | raw bytes | pushdata frame |
+| `address` | 20-byte identity (with `addressForm: 'hash'`) | pushdata frame of the full lock |
+| `pubkey`/`sig`/`datasig` | raw bytes | pushdata frame |
+| struct / array / UDVT / function pointer | platform frame, unchanged | platform frame |
+
+The last row is a deliberate residual, not an omission: solc has no packed form for a struct (`abi.encodePacked`
+rejects it), its array rule pads every element to a 32-byte word, and a UDVT's notation is its underlying type's.
+An array of dynamic elements is already length-prefixed per element, so its leaves stay readable. The decoder
+dispatches per argument on the artifact's `notation` field, so the two frames never mix within one parameter.
 - The `contract C layout at <expr>` storage-layout-offset clause is not supported (ignored, warned) - BCH storage
   is not a linear slot array to offset.
 

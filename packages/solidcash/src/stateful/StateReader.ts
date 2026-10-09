@@ -3,6 +3,7 @@ import {
   type StateValue, type StateRecord, isMultiDataNftLayout, attachDecodedAccessors,
   parseChunkCommitment, joinChunks, dynamicLenKey,
   parseArrayTypeString, isFixedWidthType, unpackFixedWidthArray, decodePackedEventArray,
+  decodeEvmNotationEventValue,
 } from '@solidcash/utils';
 
 /** Attach typechain .toObject()/.toArray() to each struct/array member of a decoded event-args record (parity). */
@@ -324,9 +325,11 @@ export function parseEventCommitment(
   if (eventDef.parameters.length === 0) return result;
 
   for (const param of eventDef.parameters) {
-    const { value, bytesConsumed } = parseArrayTypeString(param.type)
-      ? decodePackedEventArray(data, offset, param.type, structs)
-      : decodePushdataValue(data, offset, param.type, structs);
+    const { value, bytesConsumed } = param.notation === 'evm'
+      ? decodeEvmNotationEventValue(data, offset, param.type)
+      : parseArrayTypeString(param.type)
+        ? decodePackedEventArray(data, offset, param.type, structs)
+        : decodePushdataValue(data, offset, param.type, structs);
     result[param.name] = value;
     offset += bytesConsumed;
   }
@@ -414,9 +417,11 @@ export function tryParseEventCommitment(
 
     for (const param of eventDef.parameters) {
       if (offset >= data.length) return null; // not enough data
-      const { value, bytesConsumed } = parseArrayTypeString(param.type)
-        ? decodePackedEventArray(data, offset, param.type, structs)
-        : decodePushdataValue(data, offset, param.type, structs);
+      const { value, bytesConsumed } = param.notation === 'evm'
+        ? decodeEvmNotationEventValue(data, offset, param.type)
+        : parseArrayTypeString(param.type)
+          ? decodePackedEventArray(data, offset, param.type, structs)
+          : decodePushdataValue(data, offset, param.type, structs);
       result[param.name] = value;
       offset += bytesConsumed;
     }

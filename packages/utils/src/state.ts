@@ -1050,6 +1050,54 @@ export function decodePushdataValue(
 }
 
 /**
+ * Decode one event argument written in the `evmCompat` standard-notation frame: a one-byte payload length
+ * followed by the value in standard EVM notation - big-endian two's-complement at the type's natural width for
+ * numbers, the plain byte string for a bytesN/bytes/string/pubkey/sig/datasig, the 20-byte identity for an
+ * `address` (the form the encoder writes under `addressForm: 'hash'`). The event ABI's `notation: 'evm'` marks
+ * which arguments use this frame; the platform `decodePushdataValue` reads the rest.
+ */
+export function decodeEvmNotationEventValue(
+  data: Uint8Array,
+  offset: number,
+  type: string,
+): { value: StateValue; bytesConsumed: number } {
+  if (offset < 0 || offset >= data.length) {
+    throw new Error(`decodeEvmNotationEventValue: offset ${offset} out of bounds (buffer length ${data.length})`);
+  }
+  const length = data[offset];
+  const start = offset + 1;
+  if (start + length > data.length) {
+    throw new Error(
+      `decodeEvmNotationEventValue: declared length ${length} at offset ${offset} runs past the buffer`,
+    );
+  }
+  const payload = data.slice(start, start + length);
+  const bytesConsumed = 1 + length;
+  if (type === 'bool') {
+    if (length !== 1) throw new Error(`decodeEvmNotationEventValue: bool payload must be 1 byte, got ${length}`);
+    return { value: payload[0] !== 0, bytesConsumed };
+  }
+  if (type === 'string') return { value: binToUtf8(payload), bytesConsumed };
+  const fixedBytes = /^bytes(\d+)$/.exec(type);
+  if (fixedBytes) {
+    const n = Number(fixedBytes[1]);
+    if (length !== n) {
+      throw new Error(`decodeEvmNotationEventValue: bytes${n} payload must be ${n} bytes, got ${length}`);
+    }
+    return { value: payload, bytesConsumed };
+  }
+  if (type === 'bytes' || type === 'address' || type === 'pubkey' || type === 'sig' || type === 'datasig') {
+    return { value: payload, bytesConsumed };
+  }
+  // int/uint/fixed/bigint and an enum's ordinal: big-endian two's-complement, sign-extended from the first byte.
+  if (length === 0) return { value: 0n, bytesConsumed };
+  let value = 0n;
+  for (const byte of payload) value = (value << 8n) | BigInt(byte);
+  if ((payload[0] & 0x80) !== 0) value -= 1n << BigInt(length * 8);
+  return { value, bytesConsumed };
+}
+
+/**
  * Encoded length of the pushdata operation at `offset`, resolved from its length prefix alone.
  *
  * Mirrors `decodeGenericPushdata`'s acceptance exactly (including the one-byte constant opcodes, which decode

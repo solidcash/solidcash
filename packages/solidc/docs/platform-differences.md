@@ -94,9 +94,10 @@ grows to the stack-element limit.
 | Constant `keccak256("literal")` | folded to real keccak256 | **Yes** |
 | Yul `keccak256(ptr, len)` | real keccak (folded / side-car) | **Yes** |
 | `erc7201(id)` namespaced slot (EIP-7201) | real keccak256, full spec formula | **Yes** |
-| Function selector under `evmCompat` | real keccak256 | **Yes** |
+| Selector scheme (function/error selectors, `type(I).interfaceId`, `msg.sig`) | real keccak256 under `evmCompat`; sha256 (BCH-native) otherwise | **Yes under `evmCompat`** |
+| `E.selector` (bytes32 event topic-hash value) | real keccak256 under `evmCompat`; sha256 (BCH-native) otherwise | **Yes under `evmCompat`** |
 | Mapping/array physical STORAGE-SLOT space | sha256 (BCH-native) | **No** |
-| Event `.selector` / topic0 | sha256 (BCH-native) | **No** |
+| Event covenant name hash (the 20-byte event address salt) | sha256 (BCH-native) | **No** |
 | `sha256(x)` | sha256 | Yes (it is sha256) |
 
 ### What this affects
@@ -106,10 +107,17 @@ grows to the stack-element limit.
   the Yul builtin), so they equal what an Ethereum contract derives for the same input. `erc7201("...")` folds to
   the EIP-7201 slot `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff))`, verified
   byte-identical to the spec's reference values.
-- **The physical STORAGE-SLOT SPACE is BCH-native (sha256).** A mapping/array's on-chain slot (and an event's
-  topic0) is derived with sha256 - BCH has its own UTXO/covenant storage model, not the EVM trie. So although
-  `erc7201("x")` yields Ethereum's slot *number*, the data physically lives in BCH's `__evm_storage` space. This
-  is internal and never cross-chain-compared, so on-chain correctness within BCH is unaffected.
+- **A source-visible identifier follows the compile's mode.** The selector scheme (function/error selectors,
+  `type(I).interfaceId`, `msg.sig`, and the `E.selector` bytes32 event topic-hash value) is real keccak256 under
+  `evmCompat` and sha256 (BCH-native) otherwise, so a ported source reads the same selectors and topic hashes it
+  would on the EVM. `abi.encodeWithSignature` / `abi.encodeCall` do the same (a literal signature only; a runtime
+  signature is refused under `evmCompat`).
+- **The physical STORAGE-SLOT SPACE is BCH-native (sha256).** A mapping/array's on-chain slot, and the 20-byte
+  sha256 salt that addresses an event's covenant output, are derived with sha256 - BCH has its own UTXO/covenant
+  storage model, not the EVM trie. So although `erc7201("x")` yields Ethereum's slot *number*, the data physically
+  lives in BCH's `__evm_storage` space. This is internal and never cross-chain-compared, so on-chain correctness
+  within BCH is unaffected. The selector/`E.selector` values above are observed by source and do follow the mode;
+  the physical slot ids and the event covenant salt are not.
 - The `contract C layout at <expr>` storage-layout-offset clause is not supported (ignored, warned) - BCH storage
   is not a linear slot array to offset.
 

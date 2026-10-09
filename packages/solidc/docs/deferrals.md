@@ -418,28 +418,19 @@ duplicate, or a contract needs many heterogeneous co-spent auxiliaries whose ad-
 
 ---
 
-## evmCompat `abi.encodeWithSignature` / `abi.encodeCall` - not at EVM parity (selector + args)
+## evmCompat `abi.encodeWithSignature` / `abi.encodeCall` - RESOLVED (keccak selector + EVM arg framing)
 
-**What.** Under `evmCompat`, `abi.encode` / `abi.encodePacked` / `abi.encodeWithSelector` are byte-identical to
-solc (331 conformance cases). But `abi.encodeWithSignature(sig, args)` and `abi.encodeCall(fn, args)` are NOT:
-they emit (1) a **SHA256**-derived 4-byte selector (`computeFunctionSelector` = `sha256(sig)[:4]`) where the EVM
-uses **keccak256**, and (2) **native pushdata** args (`emitEncodeArgsAndCatSelector` -> `emitPushdataEncode`)
-instead of the EVM head/tail ABI encoding. So both the selector and the argument bytes diverge from solc.
-`encodeWithSelector` is fine because the selector is passed in explicitly and its args already route through
-`emitEvmAbiEncode`.
+**Resolved.** Under `evmCompat` both now emit the EVM form: a `keccak256(sig)[:4]` selector const-folded at
+compile time (the `computeAbiSelector` path in `SymbolTableTraversal.ts`, so it matches dispatch, `.selector` and
+`msg.sig`) and the standard head/tail ABI encoding of the args (`emitEvmAbiEncode` in
+`GenerateTargetTraversal.ts` `visitAbiEncodeWithSignature` / `visitAbiEncodeCall`). The selector half followed the
+const-`keccak256` fold; the argument half then became conformance-testable, because the differential harness
+compares the whole `selector ++ args` blob.
 
-**Why deferred.** The selector needs keccak256, which is entangled with the concurrent keccak256 rework in
-`GenerateTargetTraversal.ts` (compute-and-commit side-car). The args half is independent (just route through
-`emitEvmAbiEncode`) but can't be conformance-verified on its own: the differential harness compares the whole
-`selector ++ args` blob, so a SHA256 selector makes every case mismatch until keccak lands.
-
-**What it'd take.** (1) An `evmCompat` branch in `visitAbiEncodeWithSignature` / `visitAbiEncodeCall` that encodes
-args via `emitEvmAbiEncode(node.parameters)` instead of `emitEncodeArgsAndCatSelector`. (2) A keccak256 selector:
-signatures are compile-time constants, so const-fold `keccak256(sig)[:4]` (the const-keccak256 path) - no runtime
-side-car needed. (3) `selCase`-style conformance cases for both, cross-checked against ethers `id(sig).slice(0,10)`.
-
-**Revisit if.** The const-`keccak256` work lands (it already covers `keccak256(<const>)`); computing a selector
-from a literal signature is exactly that shape, so this becomes a small, testable follow-up.
+**Residual.** `abi.encodeWithSignature(<runtime signature>, ...)` is refused under `evmCompat`: a runtime
+keccak256 selector would need the keccak compute side-car, so only a literal signature is accepted there. A
+native compile still hashes the runtime string with `OP_SHA256`. Solidity hashes the runtime bytes, so a ported
+source that passes a non-literal signature needs a literal (or the side-car work).
 
 ---
 

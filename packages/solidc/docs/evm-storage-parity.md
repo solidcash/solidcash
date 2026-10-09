@@ -78,8 +78,9 @@ sound, do not rebuild it.
   `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` / `d.value` rewrite to
   `__evm_storage[uint256(SLOT)]` with per-field-type casts. `.value` is a writable field (grammar);
   constant-key reads resolve (the SDK matches the entry, covenant re-derives + `OP_EQUALVERIFY`s the key so
-  a wrong entry fails safe); high-bit slots write correctly (`uint(bytesN)` sign-pad). `erc7201(id)` lowers
-  to `uint256(sha256(id))`.
+  a wrong entry fails safe); high-bit slots write correctly (`uint(bytesN)` sign-pad). `erc7201(id)` lowers to
+  the EIP-7201 namespaced slot `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff))`
+  with real keccak, byte-identical to Ethereum (`computeErc7201Slot`; the literal form folds at compile time).
 - **uint256 / bool / bytes32 slots roundtrip fully.** **Address-valued** slots compile but the runtime
   roundtrip is out of scope: a BCH `address` is the full variable-length locking bytecode, not a 20-byte
   hash, so it cannot round-trip through a uint160 word.

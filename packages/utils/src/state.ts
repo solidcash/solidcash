@@ -1955,12 +1955,21 @@ export function computeEventNameHash(eventSignature: string): Uint8Array {
 }
 
 /**
- * Compute the 32-byte event selector (`E.selector`, bytes32): the full SHA-256 of the UTF-8 event
- * signature - the platform's analog of Solidity's keccak-based topic hash (signature-injective, so
- * equal signatures give equal selectors and distinct signatures distinct ones).
+ * Compute the 32-byte event selector (`E.selector`, bytes32). Native BCH uses the full SHA-256 of the UTF-8 event
+ * signature - the platform's analog of Solidity's keccak-based topic hash (signature-injective, so equal
+ * signatures give equal selectors and distinct signatures distinct ones). Under evmCompat it follows Solidity and
+ * is `keccak256(signature)`, like the function and error selector scheme, so a ported source reads the same event
+ * topic hash it would on the EVM.
  */
-export function computeEventSelector(eventSignature: string): Uint8Array {
-  return sha256(utf8ToBin(eventSignature));
+export function computeEventSelector(eventSignature: string, evmCompat = false): Uint8Array {
+  return evmCompat
+    ? computeEvmEventSelector(eventSignature)
+    : sha256(utf8ToBin(eventSignature));
+}
+
+/** EVM/Solidity 32-byte event topic hash: `keccak256(signature)`. Used under evmCompat (see computeEventSelector). */
+export function computeEvmEventSelector(eventSignature: string): Uint8Array {
+  return keccak_256(utf8ToBin(eventSignature));
 }
 
 /**

@@ -730,6 +730,28 @@ describe('declaration selectors in constant initializers', () => {
     expect(() => compileString('error test266151307(); contract C {}',
       { evmCompat: true })).toThrow('reserved selector 0xffffffff');
   });
+
+  it('reserves them only under evmCompat; a native compile uses the platform selector and accepts', () => {
+    expect(compileString('error buyAndFree22457070633(uint256); contract C {}', {}).contractName).toBe('C');
+    expect(compileString('error test266151307(); contract C {}', {}).contractName).toBe('C');
+  });
+});
+
+describe('event selector follows the compile mode', () => {
+  const withConstant = (init: string, opts: object): string => compileString(
+    'contract C { event E(uint256 x); bytes32 constant S = ' + init + ';'
+    + ' function f() external pure returns (bytes32) { return S; } }',
+    opts,
+  ).bytecode;
+
+  it('is keccak256(signature) under evmCompat and sha256(signature) natively', () => {
+    expect(withConstant('E.selector', { evmCompat: true }))
+      .toBe(withConstant('keccak256("E(uint256)")', { evmCompat: true }));
+    expect(withConstant('E.selector', {}))
+      .toBe(withConstant('sha256("E(uint256)")', {}));
+    expect(withConstant('E.selector', { evmCompat: true }))
+      .not.toBe(withConstant('E.selector', {}));
+  });
 });
 
 describe('selectors from contract-valued call receivers', () => {

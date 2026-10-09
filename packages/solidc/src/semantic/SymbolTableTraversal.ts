@@ -2364,7 +2364,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (event) {
         if (event.isAnonymous) throw new AnonymousEventSelectorError(expr, event.name);
         const signature = computeEventSignature(event.name, event.parameters.map((p) => p.type.toString()));
-        return literal(computeEventSelector(signature), 32);
+        return literal(computeEventSelector(signature, this.compilerOptions.evmCompat), 32);
       }
 
       const error = this.currentContract?.errorDefinitions.find((definition) => definition.name === name)
@@ -2394,7 +2394,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (event) {
         if (event.isAnonymous) throw new AnonymousEventSelectorError(expr, `${qualifier}.${event.name}`);
         const signature = computeEventSignature(event.name, event.parameters.map((p) => p.type.toString()));
-        return literal(computeEventSelector(signature), 32);
+        return literal(computeEventSelector(signature, this.compilerOptions.evmCompat), 32);
       }
       const error = holder?.errorDefinitions.find((definition) => definition.name === name);
       if (error) {
@@ -14736,10 +14736,12 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private registerError(err: ErrorDefinitionNode): void {
     const sig = computeErrorSignature(err.name, err.parameters.map((p) => p.type.toString()));
-    // Solidity reserves the all-zero/all-one EVM (keccak) selectors even though SolidCash dispatch itself uses
-    // the platform selector hash.
+    // Solidity reserves the all-zero/all-one EVM (keccak) custom-error selectors. That is an EVM rule, so it is
+    // enforced under evmCompat only: native SolidCash dispatch uses the platform selector hash, and nothing on a
+    // native chain observes the EVM selector. The map stays keyed by the EVM selector because the collision check
+    // below is the other consumer and is itself compat-gated.
     const selectorHex = binToHex(computeEvmFunctionSelector(sig));
-    if (selectorHex === '00000000' || selectorHex === 'ffffffff') {
+    if (this.compilerOptions.evmCompat && (selectorHex === '00000000' || selectorHex === 'ffffffff')) {
       throw new ReservedErrorSelectorError(err, selectorHex);
     }
     const selectorOwner = this.errorSelectorMap.get(selectorHex);
@@ -15203,12 +15205,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // `Q.E.selector` (library/contract/interface-qualified EVENT) and bare `E.selector`: the 32-byte event
-    // selector = sha256 of the signature (the platform analog of Solidity's topic hash; signature-injective).
-    // Function selectors above take precedence - this only fires when no function matched.
+    // selector = sha256 of the signature (the platform analog of Solidity's topic hash; signature-injective), or
+    // keccak256(signature) under evmCompat. Function selectors above take precedence - this only fires when no
+    // function matched.
     if (node.name === 'selector') {
       const eventSelectorLit = (evName: string, paramTypes?: string[]): HexLiteralNode | undefined => {
         if (!paramTypes) return undefined;
-        const lit = new HexLiteralNode(computeEventSelector(computeEventSignature(evName, paramTypes)));
+        const lit = new HexLiteralNode(
+          computeEventSelector(computeEventSignature(evName, paramTypes), this.compilerOptions.evmCompat));
         lit.location = node.location;
         lit.type = new BytesType(32);
         return lit;

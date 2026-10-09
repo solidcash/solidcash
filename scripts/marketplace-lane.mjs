@@ -18,6 +18,10 @@
  * fixture publishes. Getting this wrong is silent until the compile, and a half-switched lane (proxied
  * `tests:` beside no-proxy symlinks) is what a previous session left behind.
  *
+ * A switch also stamps `.marketplace/lane`, which `scripts/marketplace-fixture-fresh.mjs` reads: the two lanes
+ * compile different sources into one `.marketplace/artifacts`, so its timestamp check alone cannot tell whether
+ * the artifacts on disk belong to the lane a run is about to measure.
+ *
  * The fixture is read from disk, so a lane switch must be followed by a cold recompile before a ladder run:
  *
  *   rm -rf .marketplace/cache node_modules/.experimental-vitest-cache
@@ -37,6 +41,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const configPath = path.join(root, 'solidcash.config.ts');
 const contractsView = path.join(root, '.marketplace/contracts');
 const projectDir = path.join(root, '.marketplace/project');
+const laneMarker = path.join(root, '.marketplace/lane');
 const EA = '/Code/effectiveacceleration.ai';
 
 /** The fixture view the proxied lane needs, relative to `.marketplace/contracts`. */
@@ -166,6 +171,9 @@ function report() {
   console.log(`checkout lane: ${name ?? 'UNKNOWN (the config lines name no single lane)'}`);
   console.log(`  contracts: ${paths.contracts.value}`);
   console.log(`  tests:     ${paths.tests.value}`);
+  console.log(existsSync(laneMarker)
+    ? `  last switch: ${readFileSync(laneMarker, 'utf8').trim()} at ${new Date(lstatSync(laneMarker).mtimeMs).toISOString()}`
+    : '  last switch: (no stamp; the fixture\'s lane cannot be checked)');
   console.log('');
   console.log('run a lane:');
   console.log('  node scripts/marketplace-lane.mjs <proxied|noproxy>');
@@ -204,6 +212,14 @@ if (args.includes('--check')) {
     `${lane.project}/test/marketplace.test.ts`, dryRun, changes,
   );
   applyConfig(name, dryRun, changes);
+  // Stamped only on a real switch, so re-preparing the lane it is already in does not invalidate a fresh fixture.
+  if (changes.length > 0) {
+    changes.push(`stamp ${rel(laneMarker)} with '${name}'`);
+    if (!dryRun) {
+      mkdirSync(path.dirname(laneMarker), { recursive: true });
+      writeFileSync(laneMarker, `${name}\n`);
+    }
+  }
   for (const change of changes) console.log(`${dryRun ? 'would ' : ''}${change}`);
   if (changes.length === 0) console.log(`${name} lane already prepared`);
   const problems = checkLane(name);

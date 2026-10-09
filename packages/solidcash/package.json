@@ -43,7 +43,9 @@
     "./package.json": "./package.json",
     "./*": "./*"
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/test/TestExtensions.js"
+  ],
   "directories": {
     "lib": "src",
     "test": "test"

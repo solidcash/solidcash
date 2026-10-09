@@ -158,11 +158,11 @@ For lower-level access, derive the address and decode the UTXOs explicitly:
 
 ```typescript
 import {
-    readEventsFromChain,
-    readAnonymousEventsFromChain,
-    getEventNftAddress,
-    getAnonymousEventNftAddress,
-} from 'solidcash';
+  readEventsFromChain,
+  readAnonymousEventsFromChain,
+  getEventNftAddress,
+  getAnonymousEventNftAddress,
+} from 'solidcash/stateful';
 
 // Named events
 const eventAddr = getEventNftAddress(contract.inner, categoryId, 'Transfer');

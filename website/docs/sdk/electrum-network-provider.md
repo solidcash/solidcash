@@ -45,7 +45,7 @@ interface CustomElectrumOptions extends OptionsBase {
 
 #### Example
 ```ts
-import { ElectrumNetworkProvider } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const hostname = 'chipnet.bch.ninja';
 const provider = new ElectrumNetworkProvider('chipnet', { hostname });
@@ -167,7 +167,7 @@ If intending to use electrum-cash subscriptions, make sure to set `manualConnect
 
 ```ts
 import { ElectrumClient } from '@electrum-cash/network';
-import { ElectrumNetworkProvider } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const electrum = new ElectrumClient('SolidCash Application', '1.4.1', 'chipnet.bch.ninja');
 const provider = new ElectrumNetworkProvider('chipnet', {

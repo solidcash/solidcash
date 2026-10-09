@@ -7,7 +7,9 @@ The `StatefulContract` class manages the full lifecycle of stateful contracts: d
 ## Deploying with a signer
 
 ```typescript
-import { ContractFactory, ElectrumNetworkProvider, Signer } from 'solidcash';
+import { Signer } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 import artifact from './Counter.artifact.js';
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -29,7 +31,7 @@ the returned contract to itself, and creates an authenticated logical CREATE ide
 `deployContract()` expose the same flow as convenience functions.
 
 ```typescript
-import { deployContract, getContractFactory } from 'solidcash';
+import { deployContract, getContractFactory } from 'solidcash/contract-factory';
 
 const sameFactory = getContractFactory(artifact, signer);
 const sameContract = await deployContract(artifact, [adminPub], signer, {
@@ -42,7 +44,7 @@ const sameContract = await deployContract(artifact, [adminPub], signer, {
 Use the lower-level API when a wallet or transaction service supplies the exact genesis input and unlocker:
 
 ```typescript
-import { StatefulContract } from 'solidcash';
+import { StatefulContract } from 'solidcash/stateful';
 
 const { contract, tx, categoryId } = await StatefulContract.deploy(
     artifact,
@@ -325,7 +327,7 @@ typed `new Child(...)` targets resolve automatically.
 ## Multi-contract artifact bundles
 
 ```typescript
-import { ContractBundle } from 'solidcash';
+import { ContractBundle } from 'solidcash/stateful';
 import { compileFileMulti } from 'solidc';
 
 const artifacts = compileFileMulti('Protocol.scash');

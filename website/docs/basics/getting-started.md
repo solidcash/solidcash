@@ -126,7 +126,8 @@ For a code example of how to generate key-pairs with Libauth, see the [SolidCash
 With the instantiated contract, we can now get the contract address and get the contract balance and UTXOs in the following way:
 
 ```javascript
-import { ElectrumNetworkProvider, Contract } from 'solidcash';
+import { Contract } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 import artifact from './TransferWithTimeout.json' with { type: 'json' };
 import { alicePub, bobPub } from './keys.js';
 
@@ -154,7 +155,8 @@ Finally to create a transaction spending from the smart contract UTXO we use the
 To spend from an input you specify the `UTXO` together with an `Unlocker` to actually provide the 'unlock' script matching the input's locking bytecode. For the initialized smart contract the `Unlockers` are available as methods on the `Contract` instance. Below we will invoke the `transfer` function on the contract utxo through `contract.unlock.transfer(...)`.
 
 ```javascript
-import { MockNetworkProvider, Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
+import { Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import { alicePub, bobPriv, bobPub } from './keys.js';
 import artifact from './TransferWithTimeout.json' with { type: 'json' };
 

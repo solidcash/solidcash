@@ -122,7 +122,7 @@ deployable entries. Duplicate top-level names are a compile error.
 For a deploy-aware wrapper which carries the complete artifact graph into the SDK, use `ContractBundle`:
 
 ```ts
-import { ContractBundle } from 'solidcash';
+import { ContractBundle } from 'solidcash/stateful';
 
 const bundle = ContractBundle.from(artifacts, { provider, signer });
 const { contract: factory } = await bundle.deploy('Factory', [owner], deployOptions);

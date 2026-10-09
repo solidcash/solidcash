@@ -28,11 +28,9 @@ genesis input, creates one when the wallet has no suitable `vout: 0`, sends chan
 the returned contract for immediate use.
 
 ```ts
-import {
-  ContractFactory,
-  ElectrumNetworkProvider,
-  Signer,
-} from 'solidcash';
+import { Signer } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 import counterArtifact from './Counter.artifact.js';
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -56,7 +54,7 @@ console.log(counter.deploymentTransaction().txid);
 overrides)` is a one-call shortcut.
 
 ```ts
-import { deployContract, getContractFactory } from 'solidcash';
+import { deployContract, getContractFactory } from 'solidcash/contract-factory';
 
 const sameFactory = getContractFactory(counterArtifact, deployer);
 const sameContract = await deployContract(
@@ -126,7 +124,7 @@ The compiler warns about the rewrite and records it in `artifact.stateLayout.dep
 from authenticated on-chain state before deployment:
 
 ```ts
-import { resolveDeployReads, StatefulContract } from 'solidcash';
+import { resolveDeployReads, StatefulContract } from 'solidcash/stateful';
 
 const constructorArgs = await resolveDeployReads(
   routedTokenArtifact,
@@ -223,7 +221,7 @@ recreates one verifier NFT; provisioning more instances permits more message-bus
 Wallet adapters and transaction services can supply the genesis input and unlocker directly:
 
 ```ts
-import { StatefulContract } from 'solidcash';
+import { StatefulContract } from 'solidcash/stateful';
 
 const { contract, tx, categoryId } = await StatefulContract.deploy(
   counterArtifact,
@@ -253,7 +251,7 @@ A source file can compile to several deployable artifacts. Register the whole `A
 so child artifacts and interface implementations remain available to deployment and call composition:
 
 ```ts
-import { ContractBundle } from 'solidcash';
+import { ContractBundle } from 'solidcash/stateful';
 import artifacts from './Protocol.artifacts.js';
 
 const bundle = ContractBundle.from(artifacts, { provider, signer: deployer });

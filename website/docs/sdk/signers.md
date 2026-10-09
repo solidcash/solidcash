@@ -12,7 +12,8 @@ It is not an account-chain signer. Bitcoin Cash has no gas account, account tran
 ## Single-key signer
 
 ```ts
-import { ElectrumNetworkProvider, Network, Signer } from 'solidcash';
+import { Network, Signer } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider('chipnet');
 const signer = new Signer(privateKeyOrWif, provider);
@@ -126,11 +127,7 @@ the corresponding UTXO workflow.
 runner is accepted.
 
 ```ts
-import {
-  BCH_ACCOUNT_BRANCH,
-  BCH_DEFAULT_HD_PATH,
-  HDSigner,
-} from 'solidcash';
+import { BCH_ACCOUNT_BRANCH, BCH_DEFAULT_HD_PATH, HDSigner } from 'solidcash/hdsigner';
 
 const wallet = HDSigner.fromPhrase(mnemonic, provider);
 const child = wallet.deriveChild(1);

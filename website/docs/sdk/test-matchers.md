@@ -103,11 +103,9 @@ await expect(contract.call.debug(42).send())
 ```typescript
 import { describe, it, expect, beforeAll } from 'vitest';
 import 'solidcash/vitest';
-import {
-    ContractFactory,
-    MockNetworkProvider,
-    SignatureTemplate,
-} from 'solidcash';
+import { SignatureTemplate } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import artifact from './Counter.artifact.js';
 
 describe('Counter', () => {

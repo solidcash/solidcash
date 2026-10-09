@@ -71,7 +71,7 @@ Seed the compiler-injected owner and register values at deployment. The exact re
 properties the artifact uses:
 
 ```ts
-import { ContractFactory } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
 
 const [keeper] = await ethers.getSigners();
 const factory = new ContractFactory(timeVaultArtifact, keeper);
@@ -90,10 +90,7 @@ configuration so the keeper identity is auditable.
 ### Run one synchronization
 
 ```ts
-import {
-  BlockOracleUpdater,
-  createRpcClient,
-} from 'solidcash';
+import { BlockOracleUpdater, createRpcClient } from 'solidcash/oracle';
 
 const updater = new BlockOracleUpdater({
   contract: vault.inner,

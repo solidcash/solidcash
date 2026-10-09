@@ -86,7 +86,8 @@ The `fromP2PKH()` function allows you to provide a list of P2PKH UTXOs to be use
 #### Example
 ```ts
 import { bobAddress, bobPrivateKey } from './somewhere';
-import { ElectrumNetworkProvider, SignatureTemplate } from 'solidcash';
+import { SignatureTemplate } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider();
 const bobUtxos = await provider.getUtxos(bobAddress);

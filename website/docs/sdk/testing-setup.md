@@ -22,7 +22,8 @@ To create a new virtual UTXO use `provider.addUtxo(address, utxo)`. You can use 
 #### Example
 
 ```ts
-import { MockNetworkProvider, randomUtxo, randomToken, randomNFT } from 'solidcash';
+import { randomUtxo, randomToken, randomNFT } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 
 const provider = new MockNetworkProvider();
 const contractUtxo = provider.addUtxo(contract.address, { vout: 0, txid: "ab...", satoshis: 10000n });

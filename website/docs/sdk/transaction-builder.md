@@ -28,7 +28,8 @@ interface TransactionBuilderOptions {
 
 #### Example
 ```ts
-import { ElectrumNetworkProvider, TransactionBuilder, Network } from 'solidcash';
+import { TransactionBuilder, Network } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider(Network.MAINNET);
 const transactionBuilder = new TransactionBuilder({ provider });
@@ -380,7 +381,8 @@ See the [WalletConnect guide](/docs/guides/walletconnect) for more information o
 #### Example
 ```ts
 import { aliceAddress, contract, provider, signWcTransaction } from './somewhere.js';
-import { TransactionBuilder, placeholderP2PKHUnlocker, placeholderPublicKey, placeholderSignature } from 'solidcash';
+import { TransactionBuilder } from 'solidcash';
+import { placeholderP2PKHUnlocker, placeholderPublicKey, placeholderSignature } from 'solidcash/walletconnect';
 
 const contractUtxos = await contract.getUtxos();
 const aliceUtxos = await provider.getUtxos(aliceAddress);

@@ -72,7 +72,8 @@ bytecode; an explicit `constructor { ... }` state-initialization block is not re
 ### SDK migration
 
 ```ts
-import { SignatureTemplate, StatefulContract } from 'solidcash';
+import { SignatureTemplate } from 'solidcash';
+import { StatefulContract } from 'solidcash/stateful';
 
 const result = await StatefulContract.upgrade({
   provider,
@@ -147,7 +148,8 @@ script, so use an implementation with at least two ABI functions.
 returns one handle that dispatches implementation method names:
 
 ```ts
-import { getContractFactory, upgrades } from 'solidcash';
+import { getContractFactory } from 'solidcash/contract-factory';
+import { upgrades } from 'solidcash/stateful';
 
 const implementationFactory = getContractFactory(counterArtifact, signer);
 const proxy = await upgrades.deployProxy(

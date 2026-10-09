@@ -11,7 +11,7 @@ in-process provider, a live BCHN regtest adapter, and two narrower legacy backen
 e2e tests, not as a public network emulator or persistence layer.
 
 ```ts
-import { MockNetworkProvider } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 
 const provider = new MockNetworkProvider();
 const [owner, user] = await provider.getSigners(2, {

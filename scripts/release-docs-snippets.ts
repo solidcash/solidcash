@@ -93,6 +93,11 @@ if (failures.length > 0) {
  * when `index.ts` re-exports it perfectly well through `export * from './walletconnect-utils.js'`.
  */
 const OWN_PACKAGES = new Set(['solidcash', 'solidc', '@solidcash/utils']);
+// Subpaths of our packages count as ours too. After the SDK's lean-root split most documented names arrive through
+// a subpath (`solidcash/stateful`, `solidcash/walletconnect`, ...), so checking only the bare specifiers would let a
+// documented subpath import rot silently - the exact rename this gate exists to catch.
+const isOwnSpecifier = (specifier: string): boolean =>
+  [...OWN_PACKAGES].some((name) => specifier === name || specifier.startsWith(`${name}/`));
 const documentedNames = new Map<string, Set<string>>();
 for (const file of files) {
   const source = fs.readFileSync(file, 'utf8');
@@ -103,7 +108,7 @@ for (const file of files) {
     let imported: RegExpExecArray | null;
     while ((imported = imports.exec(block[1])) !== null) {
       const pkg = imported[2];
-      if (!OWN_PACKAGES.has(pkg)) continue;
+      if (!isOwnSpecifier(pkg)) continue;
       if (!documentedNames.has(pkg)) documentedNames.set(pkg, new Set());
       for (const raw of imported[1].split(',')) {
         const name = raw.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();

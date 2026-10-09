@@ -149,7 +149,7 @@ which exceed the published participant, row, byte, or standardness limits before
 Prepare calls from category-bound `StatefulContract` instances in compiler-authored depth-first execution order:
 
 ```ts
-import { messageBus } from 'solidcash';
+import * as messageBus from 'solidcash/message-bus';
 
 const composition = messageBus.compose({
   calls: [

@@ -90,7 +90,7 @@ participants; a split bundle partitions one logical contract's code while retain
 ## Deploy and call
 
 ```ts
-import { SplitContractBundle } from 'solidcash';
+import { SplitContractBundle } from 'solidcash/stateful';
 
 const factory = SplitContractBundle.from(bundle, signer);
 const app = await factory.deploy([owner], {
@@ -169,7 +169,7 @@ not supported by split v1 and fail closed.
 ## Proxies and upgrades
 
 ```ts
-import { upgrades } from 'solidcash';
+import { upgrades } from 'solidcash/stateful';
 
 const proxied = await upgrades.deployProxy(factory, { count: 0n });
 ```

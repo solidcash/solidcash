@@ -25,11 +25,9 @@ also be attached to its CashToken category or deployed through a genesis transac
 ## Stateful quick start
 
 ```ts
-import {
-  ContractFactory,
-  ElectrumNetworkProvider,
-  Signer,
-} from 'solidcash';
+import { Signer } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 import counterArtifact from './Counter.artifact.js';
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -62,12 +60,8 @@ See [Stateful Contracts](/docs/sdk/stateful-contracts), [Contract Deployment](/d
 ## Stateless quick start
 
 ```ts
-import {
-  Contract,
-  ElectrumNetworkProvider,
-  SignatureTemplate,
-  TransactionBuilder,
-} from 'solidcash';
+import { Contract, SignatureTemplate, TransactionBuilder } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 import vaultArtifact from './Vault.artifact.js';
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -174,13 +168,22 @@ source maps, composition routes, split metadata, and security requirements may a
 ## Package entry points
 
 ```ts
-import { Contract, StatefulContract, messageBus, utils } from 'solidcash';
-import { expect } from 'solidcash/vitest';
+import { Contract, utils } from 'solidcash';
+import { StatefulContract } from 'solidcash/stateful';
+import * as messageBus from 'solidcash/message-bus';
+import { expect } from 'vitest';
+import 'solidcash/vitest';
 ```
 
-- The package root is the runtime SDK.
+- The package root is the stateless runtime SDK: `Contract`, `TransactionBuilder`, `Signer`, `SignatureTemplate`,
+  the errors, and the `utils` namespace. Keep importing it for those.
+- Everything stateful lives on `solidcash/stateful` (`StatefulContract`, `StateReader`, `ContractBundle`, the
+  covenant helpers, entry-commitment codecs, and `upgrades`). The factory entry `ContractFactory`,
+  `getContractFactory`, and `deployContract` have their own `solidcash/contract-factory` subpath.
+- Other subpaths: `solidcash/message-bus` (composition and preflight namespace), `solidcash/framed`,
+  `solidcash/oracle`, `solidcash/network/electrum`, `solidcash/network/mock`, `solidcash/hdsigner`,
+  `solidcash/loop-call`, and `solidcash/walletconnect`.
 - `solidcash/vitest` installs SolidCash-aware Vitest matchers.
-- The `messageBus` namespace exposes explicit composition and preflight utilities.
 - The `utils` namespace re-exports shared artifact, bytecode, encoding, and state-layout utilities.
 
 For a complete project environment, use [SolidHat](/docs/tooling/solidhat). For direct test harness use, see

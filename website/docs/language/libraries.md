@@ -175,7 +175,8 @@ The SDK co-spends the linked library automatically after the deployed instance h
 manually assembled deployment, link the consumer to the library locking bytecode and register the live instance:
 
 ```ts
-import { Contract, StatefulContract } from 'solidcash';
+import { Contract } from 'solidcash';
+import { StatefulContract } from 'solidcash/stateful';
 import { hexToBin } from '@bitauth/libauth';
 
 const library = StatefulContract.withCategory(

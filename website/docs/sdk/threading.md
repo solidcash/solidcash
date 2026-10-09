@@ -14,7 +14,8 @@ SDK reference.
 ## Deploying several masters
 
 ```ts
-import { ContractFactory, ThreadManager } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { ThreadManager } from 'solidcash/stateful';
 
 const contract = await new ContractFactory(artifact, signer).deploy({
   initialState: { west: 0n, east: 0n },
@@ -226,7 +227,7 @@ form. Its gate uses `unsafe`, so the gate's authorization is security-critical.
 ## Reading state and masters
 
 ```ts
-import { StateReader, getContractState } from 'solidcash';
+import { StateReader, getContractState } from 'solidcash/stateful';
 
 const onChain = await getContractState(contract.inner, contract.categoryId);
 console.log(onChain.state);

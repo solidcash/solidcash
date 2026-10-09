@@ -61,6 +61,12 @@ tested native upgrade path preserves the published append-only layout.
 
 ### SDK and tests
 
+- The `solidcash` root is now the lean stateless surface only. Stateful contracts, the factory, the message bus,
+  framed composition, block oracles, network providers, HD signers, loop-call helpers, and WalletConnect helpers
+  moved to subpaths: `solidcash/stateful`, `solidcash/contract-factory`, `solidcash/message-bus`,
+  `solidcash/framed`, `solidcash/oracle`, `solidcash/network/electrum`, `solidcash/network/mock`,
+  `solidcash/hdsigner`, `solidcash/loop-call`, and `solidcash/walletconnect`. The root no longer re-exports them,
+  so importing it stays fast; update the affected `import` statements rather than the SDK.
 - `Signer`/`ContractFactory` and connected methods are the maintained high-level workflow. Raw `Contract` and
   `TransactionBuilder` remain available for explicit transaction composition.
 - `MockNetworkProvider` starts empty, updates its UTXO set by default, and supports funded signers, snapshots,
@@ -187,7 +193,8 @@ Since the new transaction builder is quite different from the old one, it may be
 With the deprecated 'simple transaction builder' the API looked like this:
 
 ```js
-import { ElectrumNetworkProvider, SignatureTemplate } from 'solidcash';
+import { SignatureTemplate } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider(Network.MAINNET);
 
@@ -215,7 +222,8 @@ With the new transaction builder the API looks like this:
 
 
 ```js
-import { TransactionBuilder, ElectrumNetworkProvider, SignatureTemplate } from 'solidcash';
+import { TransactionBuilder, SignatureTemplate } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider(Network.MAINNET);
 
@@ -254,7 +262,7 @@ Before:
 
 ```ts
 import { ElectrumCluster, ClusterOrder } from 'electrum-cash';
-import { ElectrumNetworkProvider } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const customCluster = new ElectrumCluster('SolidCash Application', '1.4.1', 2, 3, ClusterOrder.PRIORITY);
 customCluster.addServer('bch.imaginary.scash', 50004, ElectrumTransport.WSS.Scheme, false);
@@ -268,7 +276,7 @@ After:
 
 ```ts
 import { ElectrumClient } from '@electrum-cash/network';
-import { ElectrumNetworkProvider } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const customClient = new ElectrumClient('SolidCash Application', '1.4.1', 'bch.imaginary.scash');
 const provider = new ElectrumNetworkProvider('mainnet', { electrum: customClient });

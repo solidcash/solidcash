@@ -1,7 +1,8 @@
 import { scriptToBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { encodeFunctionArgument, messageBus } from '../../src/index.js';
+import { encodeFunctionArgument } from '../../src/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 
 const OPTIONS = {
   forceStateful: true,

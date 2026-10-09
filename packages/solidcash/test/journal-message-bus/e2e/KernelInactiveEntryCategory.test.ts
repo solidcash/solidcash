@@ -1,7 +1,9 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { getEntryNftAddress } from '../../../src/stateful/covenant-helpers.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';

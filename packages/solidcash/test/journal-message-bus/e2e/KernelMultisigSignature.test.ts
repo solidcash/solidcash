@@ -2,9 +2,14 @@ import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, HashType, messageBus, SignatureAlgorithm, SignatureTemplate, StatefulContract,
+  Contract,
+  HashType,
+  SignatureAlgorithm,
+  SignatureTemplate,
   type TransactionBuilder,
 } from '../../../src/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';

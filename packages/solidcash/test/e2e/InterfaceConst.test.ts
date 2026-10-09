@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // `IERC20 constant U = IERC20(0)` (BentoBoxV1's USE_ETHEREUM sentinel): the parser emits a FunctionCall for the

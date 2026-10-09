@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
+import { Contract } from '../src/index.js';
 import {
-  Contract, StatefulContract, getDataNftAddress, getEntryNftAddress,
-  encodeEntryCommitment, keyToSlot, keyToSlotMulti, slotValueToBytes,
-} from '../src/index.js';
+  StatefulContract,
+  getDataNftAddress,
+  getEntryNftAddress,
+  encodeEntryCommitment,
+  keyToSlot,
+  keyToSlotMulti,
+  slotValueToBytes,
+} from '../src/stateful/index.js';
 import {
   buildInitialStateCommitments, type StateLayout,
 } from '@solidcash/utils';

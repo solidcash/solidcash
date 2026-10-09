@@ -1,7 +1,8 @@
 /* eslint-disable max-len -- contract source fixtures remain readable as complete declarations */
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // A chunk-backed (dynamic) state array mutated AFTER an early-return guard. Unlike an explicit-branch mutation

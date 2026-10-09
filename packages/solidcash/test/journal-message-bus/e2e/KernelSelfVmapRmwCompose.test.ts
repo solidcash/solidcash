@@ -1,9 +1,12 @@
 import { bigIntToVmNumber, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
+import { Contract } from '../../../src/index.js';
 import {
-  Contract, StatefulContract, SortedList, getEntryNftAddress,
-} from '../../../src/index.js';
+  StatefulContract,
+  SortedList,
+  getEntryNftAddress,
+} from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { keyToSlot } from '../../../src/stateful/SortedList.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';

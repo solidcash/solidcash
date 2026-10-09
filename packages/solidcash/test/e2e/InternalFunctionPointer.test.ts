@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // Internal function pointer: `f` is chosen at runtime (up ? inc : dec) and called indirectly. The spend

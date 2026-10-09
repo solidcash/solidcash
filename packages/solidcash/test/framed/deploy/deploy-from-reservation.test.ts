@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { HDSigner, StatefulContract, type Utxo } from '../../../src/index.js';
+import { type Utxo } from '../../../src/index.js';
+import { HDSigner } from '../../../src/HDSigner.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { CreateLookahead } from '../../../src/framed/deploy/create-lookahead.js';
 

@@ -2,9 +2,13 @@ import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, MockNetworkProvider, TransactionBuilder, SignatureTemplate,
-  StatefulContract, FailedRequireError,
+  Contract,
+  MockNetworkProvider,
+  TransactionBuilder,
+  SignatureTemplate,
+  FailedRequireError,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, gatherUtxos, getTxOutputs, setupStatefulUtxos } from '../test-util.js';

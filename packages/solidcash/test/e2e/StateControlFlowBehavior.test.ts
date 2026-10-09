@@ -2,7 +2,7 @@
 // if-branch locals, return-in-loop entry points.
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 describe('conditional state re-write', () => {

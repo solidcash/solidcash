@@ -4,7 +4,12 @@ import {
 import { MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, scriptToBytecode } from '@solidcash/utils';
 import { compileString, compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { getContractFactory, messageBus, Signer, upgrades } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';

@@ -2,8 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
-  Contract, StatefulContract, Signer, SortedList, getEntryNftAddress, keyToSlot,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  SortedList,
+  getEntryNftAddress,
+  keyToSlot,
+} from '../../src/stateful/index.js';
 import { addressPayloadToLockingBytecode } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';

@@ -3,7 +3,13 @@ import { compileString } from './direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { keccakComputeLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
-import { Contract, StatefulContract, SignatureTemplate, TransactionBuilder, MockNetworkProvider } from '../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
+  MockNetworkProvider,
+} from '../src/index.js';
+import { StatefulContract } from '../src/stateful/index.js';
 import { randomUtxo } from '../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 import { alicePub, alicePriv } from './fixture/vars.js';

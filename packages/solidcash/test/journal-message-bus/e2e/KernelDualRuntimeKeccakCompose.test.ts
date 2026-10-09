@@ -4,8 +4,15 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, Signer, StatefulContract, messageBus, SortedList, getEntryNftAddress,
+  Contract,
+  Signer,
 } from '../../../src/index.js';
+import {
+  StatefulContract,
+  SortedList,
+  getEntryNftAddress,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { keyToSlot } from '../../../src/stateful/SortedList.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../../src/utils.js';

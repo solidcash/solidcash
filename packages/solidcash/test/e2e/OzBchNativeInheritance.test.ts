@@ -6,9 +6,16 @@ import { compileFile, compileFileSplit } from 'solidc';
 import { asmToScript, buildChunkCommitment, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
 import {
-  Contract, encodeEntryCommitment, SignatureTemplate, Signer, slotValueToBytes,
-  SplitContractBundle, StatefulContract,
+  Contract,
+  SignatureTemplate,
+  Signer,
 } from '../../src/index.js';
+import {
+  encodeEntryCommitment,
+  slotValueToBytes,
+  SplitContractBundle,
+  StatefulContract,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 import {

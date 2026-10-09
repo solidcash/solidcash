@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { HDSigner } from '../../../src/index.js';
+import { HDSigner } from '../../../src/HDSigner.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import type { FramedFunctionCall } from '../../../src/framed/call/index.js';

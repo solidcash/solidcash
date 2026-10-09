@@ -4,9 +4,18 @@ import {
   deriveSeedFromBip39Mnemonic, deriveHdPrivateNodeFromSeed, deriveHdPath,
 } from '@bitauth/libauth';
 import {
-  HDSigner, HDPublicSigner, signersFromMnemonic, BCH_DEFAULT_HD_PATH, BCH_ACCOUNT_BRANCH,
-  Signer, Network, MockNetworkProvider, getContractFactory,
+  Signer,
+  Network,
+  MockNetworkProvider,
 } from '../../src/index.js';
+import {
+  HDSigner,
+  HDPublicSigner,
+  signersFromMnemonic,
+  BCH_DEFAULT_HD_PATH,
+  BCH_ACCOUNT_BRANCH,
+} from '../../src/HDSigner.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { getSigners, getSigner, DEFAULT_TEST_MNEMONIC } from '../test-util.js';
 
 // Standard BIP-39 test vector (Trezor), 12 words.

@@ -1,5 +1,10 @@
 import { compileString } from '../direct-compile.js';
-import { Contract, SignatureTemplate, TransactionBuilder, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePkh,

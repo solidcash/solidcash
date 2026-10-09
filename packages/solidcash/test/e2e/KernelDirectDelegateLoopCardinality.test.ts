@@ -1,6 +1,10 @@
 import { compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { getContractFactory, Signer, upgrades } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
 // Two sibling loops write one mapping and call out through an internal helper, so the compiler threads one

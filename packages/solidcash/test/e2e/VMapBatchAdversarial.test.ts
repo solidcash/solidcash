@@ -3,9 +3,13 @@ import { compileString as compile } from '../direct-compile.js';
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
+import { Contract } from '../../src/index.js';
 import {
-  bytesToSlotValue, Contract, getEntryNftAddress, keyToSlotMulti, StatefulContract,
-} from '../../src/index.js';
+  bytesToSlotValue,
+  getEntryNftAddress,
+  keyToSlotMulti,
+  StatefulContract,
+} from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 const SOURCE = `contract C {

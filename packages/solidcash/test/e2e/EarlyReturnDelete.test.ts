@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // `if(guard) return; delete m[k];` - the delete lives in the else branch after EarlyReturnTransformation. It is

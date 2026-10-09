@@ -4,9 +4,15 @@ import { sha256 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
-  MockNetworkProvider, Signer, deployProxy, getContractFactory,
-  type FramedArtifact, type FramedProxyHandle,
+  MockNetworkProvider,
+  Signer,
 } from '../../../src/index.js';
+import {
+  deployProxy,
+  getContractFactory,
+  type FramedArtifact,
+  type FramedProxyHandle,
+} from '../../../src/stateful/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**

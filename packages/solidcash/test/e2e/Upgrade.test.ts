@@ -3,8 +3,13 @@ import {
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, type FunctionArgument, HashType, SignatureAlgorithm, SignatureTemplate, StatefulContract,
+  Contract,
+  type FunctionArgument,
+  HashType,
+  SignatureAlgorithm,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { buildPushdataCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,

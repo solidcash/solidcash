@@ -1,7 +1,11 @@
 import { hexToBin, hash160 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, registerDeployment } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import {
+  StatefulContract,
+  registerDeployment,
+} from '../../../src/stateful/index.js';
 import { setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 import { messageBusVmAccepts } from './vm-accepts.js';

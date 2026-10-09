@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 

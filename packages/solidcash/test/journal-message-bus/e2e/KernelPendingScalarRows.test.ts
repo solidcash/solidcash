@@ -5,7 +5,11 @@ import {
 import { decodePushdataValue, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, encodeFunctionArgument } from '../../../src/index.js';
+import {
+  Contract,
+  encodeFunctionArgument,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { getEntryNftAddress } from '../../../src/stateful/covenant-helpers.js';
 import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';

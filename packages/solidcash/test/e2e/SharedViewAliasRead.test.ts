@@ -1,6 +1,10 @@
 import { compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, Signer, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  Signer,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 

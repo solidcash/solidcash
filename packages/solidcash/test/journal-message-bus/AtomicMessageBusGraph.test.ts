@@ -5,7 +5,8 @@ import {
   type ChildDeploymentSiteAbi,
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
-import { messageBus, SignatureTemplate } from '../../src/index.js';
+import { SignatureTemplate } from '../../src/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { hasTransientConvergenceResultSeed } from '../../src/message-bus/compose-prepared-invocation.js';
 import { valueChunkEffectDomainId } from '../../src/stateful/index.js';
 

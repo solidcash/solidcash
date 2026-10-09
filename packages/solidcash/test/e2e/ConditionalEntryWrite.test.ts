@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // A conditional mapping WRITE `if(cond){ m[k] = v; }` has the same not-taken-preservation gap a conditional

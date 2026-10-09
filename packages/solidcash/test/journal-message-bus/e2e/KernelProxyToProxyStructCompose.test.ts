@@ -1,8 +1,11 @@
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
+import { Signer } from '../../../src/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import {
-  messageBus, getContractFactory, upgrades, Signer,
-} from '../../../src/index.js';
+  getContractFactory,
+  upgrades,
+} from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';

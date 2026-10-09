@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { compileFile, compileFileSplit } from 'solidc';
-import { ContractFactory, Signer, SplitContractBundle } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  ContractFactory,
+  SplitContractBundle,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';

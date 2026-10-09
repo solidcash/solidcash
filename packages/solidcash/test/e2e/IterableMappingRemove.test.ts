@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { compileString as _csRawSolidc } from '../direct-compile.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';

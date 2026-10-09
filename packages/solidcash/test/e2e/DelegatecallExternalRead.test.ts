@@ -3,7 +3,11 @@ import { parsePushdataCommitment } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, getDataNftLockingBytecode } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import {
+  StatefulContract,
+  getDataNftLockingBytecode,
+} from '../../src/stateful/index.js';
 import type { TransactionDetails } from '../../src/interfaces.js';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 

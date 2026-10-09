@@ -1,11 +1,18 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, StatefulContract, SignatureTemplate,
-  getEventNftAddress, getAnonymousEventNftAddress,
-  readEventsFromChain, readEventsFiltered,
-  readAnonymousEventsFromChain,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import type { Artifact } from '../../src/index.js';
+import {
+  StatefulContract,
+  getEventNftAddress,
+  getAnonymousEventNftAddress,
+  readEventsFromChain,
+  readEventsFiltered,
+  readAnonymousEventsFromChain,
+} from '../../src/stateful/index.js';
 import {
   parsePushdataCommitment,
 } from '@solidcash/utils';

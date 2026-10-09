@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../../solidc/src/index.js';
-import { getContractFactory, StatefulContract } from '../../src/index.js';
+import {
+  getContractFactory,
+  StatefulContract,
+} from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 async function deploy(source: string): Promise<StatefulContract> {

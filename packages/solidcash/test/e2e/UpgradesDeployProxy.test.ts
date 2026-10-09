@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
+import { Signer } from '../../src/index.js';
 import {
-  Signer, deriveLogicalCreateAddress, getContractFactory, resolveLogicalIdentity, upgrades,
-} from '../../src/index.js';
-import type { EventLog } from '../../src/index.js';
+  deriveLogicalCreateAddress,
+  getContractFactory,
+  resolveLogicalIdentity,
+  upgrades,
+} from '../../src/stateful/index.js';
+import type { EventLog } from '../../src/stateful/index.js';
 import { encodeEventCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 

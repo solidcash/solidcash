@@ -1,8 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
-import { keyToSlotMulti, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, SortedList } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import {
+  keyToSlotMulti,
+  encodeEntryCommitment,
+  slotValueToBytes,
+  getEntryNftAddress,
+  SortedList,
+} from '../../src/stateful/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 

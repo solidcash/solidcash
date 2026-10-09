@@ -2,8 +2,15 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
-  Contract, StatefulContract, TransactionBuilder, SignatureTemplate, resolveBlockhashCoSpend, getContractFactory,
+  Contract,
+  TransactionBuilder,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  getContractFactory,
+} from '../../src/stateful/index.js';
+import { resolveBlockhashCoSpend } from '../../src/oracle/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { Utxo } from '../../src/interfaces.js';
 import {

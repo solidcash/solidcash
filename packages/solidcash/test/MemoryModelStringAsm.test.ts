@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { Contract, StatefulContract } from '../src/index.js';
+import { Contract } from '../src/index.js';
+import { StatefulContract } from '../src/stateful/index.js';
 import type { FunctionArgument } from '../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 

@@ -5,8 +5,11 @@ import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it, beforeAll } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, StatefulContract,
+  Contract,
+  MockNetworkProvider,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { alicePub, alicePriv, alicePkh, bobPriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';

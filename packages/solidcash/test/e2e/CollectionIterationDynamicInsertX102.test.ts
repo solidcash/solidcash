@@ -4,10 +4,16 @@ import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { buildInitialStateCommitments } from '@solidcash/utils';
+import { Contract } from '../../src/index.js';
 import {
-  Contract, StatefulContract, bytesToSlotValue, encodeEntryCommitment,
-  getDataNftAddress, getEntryNftAddress, keyToSlot, slotValueToBytes,
-} from '../../src/index.js';
+  StatefulContract,
+  bytesToSlotValue,
+  encodeEntryCommitment,
+  getDataNftAddress,
+  getEntryNftAddress,
+  keyToSlot,
+  slotValueToBytes,
+} from '../../src/stateful/index.js';
 import { alicePkh, bobPkh } from '../fixture/vars.js';
 import { createTestProvider, expectScriptRejection } from '../test-util.js';
 

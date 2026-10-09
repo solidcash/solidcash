@@ -2,12 +2,20 @@ import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, MockNetworkProvider, RegtestNetworkProvider,
-  StatefulContract, SignatureTemplate,
-  getDataNftAddress, getEntryNftAddress,
-  encodeEntryCommitment, decodeEntryCommitment, keyToSlot,
-  type ConnectedStatefulContract,
+  Contract,
+  MockNetworkProvider,
+  RegtestNetworkProvider,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  getDataNftAddress,
+  getEntryNftAddress,
+  encodeEntryCommitment,
+  decodeEntryCommitment,
+  keyToSlot,
+  type ConnectedStatefulContract,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments,
   encodePushdataValue,

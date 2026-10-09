@@ -2,7 +2,11 @@ import { binToHex } from '@bitauth/libauth';
 import { encodeEventCommitment } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, readEventsFromChain } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import {
+  StatefulContract,
+  readEventsFromChain,
+} from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';

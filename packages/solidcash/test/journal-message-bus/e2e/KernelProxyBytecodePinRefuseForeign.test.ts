@@ -4,10 +4,13 @@ import { describe, expect, it } from 'vitest';
 import {
   Artifact, buildInitialStateCommitments, parsePushdataCommitment,
 } from '@solidcash/utils';
+import { Contract } from '../../../src/index.js';
 import {
-  Contract, StatefulTransactionBuilder, messageBus,
-  getDataNftAddress, createDataNftUnlocker,
-} from '../../../src/index.js';
+  StatefulTransactionBuilder,
+  getDataNftAddress,
+  createDataNftUnlocker,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { ExternalCallUtxoGroup } from '../../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript } from '../../../src/utils.js';
 import type { Utxo } from '../../../src/interfaces.js';

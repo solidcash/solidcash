@@ -3,8 +3,16 @@ import { compileString } from '../direct-compile.js';
 import {
   binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
-import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import {
+  keyToSlot,
+  getEntryNftAddress,
+  SortedList,
+} from '../../src/stateful/index.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 

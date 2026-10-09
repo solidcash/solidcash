@@ -1,9 +1,14 @@
 import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin, bigIntToVmNumber } from '@bitauth/libauth';
+import { Contract } from '../../src/index.js';
 import {
-  Contract, StatefulContract,
-  getDataNftAddress, getEntryNftAddress, encodeEntryCommitment, keyToSlot, keyToSlotMulti,
-} from '../../src/index.js';
+  StatefulContract,
+  getDataNftAddress,
+  getEntryNftAddress,
+  encodeEntryCommitment,
+  keyToSlot,
+  keyToSlotMulti,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments,
   type StateLayout,

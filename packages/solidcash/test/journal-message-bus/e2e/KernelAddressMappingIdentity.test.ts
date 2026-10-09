@@ -1,7 +1,12 @@
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, Signer, StatefulContract, messageBus } from '../../../src/index.js';
+import {
+  Contract,
+  Signer,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { addressToLockScript } from '../../../src/utils.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';

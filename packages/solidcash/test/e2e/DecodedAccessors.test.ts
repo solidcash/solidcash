@@ -1,7 +1,8 @@
 /* eslint-disable max-len -- decoded-access fixture remains readable as one source declaration */
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // Typechain/ethers .toObject()/.toArray() parity on values the SDK hands back to the caller. Attached at the

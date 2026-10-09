@@ -1,5 +1,5 @@
 import { compileString } from '../direct-compile.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call

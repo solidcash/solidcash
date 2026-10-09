@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { messageBus } from '../../../src/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 
 describe('atomic single-transaction admission limit', () => {
   it('publishes and enforces the adjacent measured BCH-2026 participant bound', () => {

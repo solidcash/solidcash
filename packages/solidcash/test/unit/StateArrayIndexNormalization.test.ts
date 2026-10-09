@@ -1,6 +1,6 @@
 import { compileString } from 'solidc';
 import { describe, expect, it, vi } from 'vitest';
-import { StatefulContract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 
 describe('state array index normalization', () => {

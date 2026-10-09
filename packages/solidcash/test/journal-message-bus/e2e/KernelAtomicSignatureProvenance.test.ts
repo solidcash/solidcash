@@ -5,8 +5,12 @@ import { sha256 } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, SignatureTemplate, StatefulContract, messageBus, type TransactionBuilder,
+  Contract,
+  SignatureTemplate,
+  type TransactionBuilder,
 } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import {
   decodeAtomicMessageEnvelope, encodeAtomicMessageEnvelope,
 } from '../../../src/message-bus/atomic.js';

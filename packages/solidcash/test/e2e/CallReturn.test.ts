@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, StatefulContract, SignatureTemplate,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 

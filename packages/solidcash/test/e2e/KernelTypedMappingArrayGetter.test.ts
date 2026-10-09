@@ -5,7 +5,11 @@ import {
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { getContractFactory, Signer, upgrades } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { getEntryNftAddress, getValueChunkAddress } from '../../src/stateful/covenant-helpers.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../src/stateful/SortedList.js';

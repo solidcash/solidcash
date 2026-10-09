@@ -2,8 +2,14 @@ import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, StatefulContract, TransactionBuilder, getEventNftAddress, readEventsFromChain,
+  Contract,
+  TransactionBuilder,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  getEventNftAddress,
+  readEventsFromChain,
+} from '../../src/stateful/index.js';
 import { createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos }
   from '../test-util.js';
 

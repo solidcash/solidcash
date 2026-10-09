@@ -1,7 +1,11 @@
 import { binToHex } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, MockNetworkProvider, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  MockNetworkProvider,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { participantOf } from '../../src/message-bus/compose-participant-helpers.js';
 import { deriveComposeInvocationPlan } from '../../src/message-bus/compose-plan-graph.js';
 import type { CallDescriptor } from '../../src/message-bus/compose-prepared-invocation.js';

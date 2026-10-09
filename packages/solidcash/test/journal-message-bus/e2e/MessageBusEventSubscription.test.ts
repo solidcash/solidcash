@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
-import { Contract, Signer, StatefulContract, messageBus, type TransactionBuilder } from '../../../src/index.js';
+import {
+  Contract,
+  Signer,
+  type TransactionBuilder,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { randomUtxo } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';

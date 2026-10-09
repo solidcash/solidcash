@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, HDSigner, SignatureTemplate } from '../../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../../src/index.js';
+import { HDSigner } from '../../../src/HDSigner.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';

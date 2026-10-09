@@ -3,7 +3,8 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { keccakComputeLockingBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { isRepairableNftOutput } from '../../../src/stateful/computed-output-repair.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 

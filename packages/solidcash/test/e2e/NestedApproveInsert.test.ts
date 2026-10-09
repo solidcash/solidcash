@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory, upgrades } from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 import { addressToLockScript } from '../../src/utils.js';
 

@@ -1,8 +1,11 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, StatefulContract, SignatureTemplate, Signer,
+  Contract,
+  SignatureTemplate,
+  Signer,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { getNetworkPrefix } from '../../src/utils.js';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 // Nested writes to a local-memory struct's multi-dimensional array field (s.a[i][j] = v, s.a[i][j]++).
 const SRC = `contract C {

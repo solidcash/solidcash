@@ -1,7 +1,12 @@
 import { binToHex } from '@bitauth/libauth';
 import { compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Signer, getContractFactory, messageBus, upgrades } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { isContractUnlocker } from '../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { getEntryNftLockingBytecode } from '../../src/stateful/covenant-helpers.js';

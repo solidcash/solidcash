@@ -5,8 +5,12 @@ import {
   asmToScript, bytecodeToScript, decodeInt, Op, scriptToBytecode,
 } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, Signer, StatefulContract,
+  Contract,
+  MockNetworkProvider,
+  SignatureTemplate,
+  Signer,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';

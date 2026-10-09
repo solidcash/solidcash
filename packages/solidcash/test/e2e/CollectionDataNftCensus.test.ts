@@ -4,7 +4,8 @@ import {
 } from '@bitauth/libauth';
 import { buildDataNftCovenantScript, scriptToBytecode } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 import { getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
 

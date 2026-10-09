@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
-import { Contract, ContractFactory, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import {
+  ContractFactory,
+  StatefulContract,
+} from '../../src/stateful/index.js';
 import { compileString } from '../direct-compile.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';

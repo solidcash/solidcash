@@ -2,8 +2,15 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, getContractFactory, type ProxyContract, Signer, StatefulContract, upgrades,
+  Contract,
+  Signer,
 } from '../../../src/index.js';
+import {
+  getContractFactory,
+  type ProxyContract,
+  StatefulContract,
+  upgrades,
+} from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';

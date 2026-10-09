@@ -1,6 +1,10 @@
 import { compileString } from '../direct-compile.js';
 import { describe, it, expect } from 'vitest';
-import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import {
   alicePub, alicePriv, alicePkh, bobPkh, bobAddress,
 } from '../fixture/vars.js';

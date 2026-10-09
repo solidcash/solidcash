@@ -17,8 +17,10 @@
  */
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, StatefulContract, SignatureTemplate,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePub, alicePriv, alicePkh, aliceAddress, bobPub, bobPriv, bobAddress } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';

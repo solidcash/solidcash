@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { ContractFactory, HDSigner } from '../../src/index.js';
+import { ContractFactory } from '../../src/stateful/index.js';
+import { HDSigner } from '../../src/HDSigner.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider } from '../test-util.js';
 /**

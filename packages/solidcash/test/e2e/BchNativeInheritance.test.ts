@@ -6,8 +6,11 @@ import { URL } from 'url';
 import type { Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
 import {
-  Contract, SignatureTemplate, Signer, StatefulContract,
+  Contract,
+  SignatureTemplate,
+  Signer,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import {
   createTestProvider, plainNumerics, setupStatefulUtxos,

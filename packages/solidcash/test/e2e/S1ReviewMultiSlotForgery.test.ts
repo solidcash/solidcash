@@ -4,7 +4,8 @@ import { compileString as compile } from '../direct-compile.js';
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 import {
   bytesToSlotValue, encodeEntryCommitment, keyToSlot,

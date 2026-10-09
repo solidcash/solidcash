@@ -3,8 +3,12 @@ import { asmToBytecode } from '@solidcash/utils';
 import { describe, expect, it, vi } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, SignatureTemplate, StatefulContract, TransactionBuilder, messageBus,
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { randomUtxo } from '../../src/utils.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';

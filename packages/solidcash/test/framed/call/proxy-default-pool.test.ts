@@ -3,9 +3,11 @@ import { binToHex } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
-  MockNetworkProvider, Signer, deployProxy, getContractFactory,
-  type FramedArtifact, type FramedProxyHandle,
+  MockNetworkProvider, Signer,
 } from '../../../src/index.js';
+import {
+  deployProxy, getContractFactory, type FramedArtifact, type FramedProxyHandle,
+} from '../../../src/stateful/index.js';
 import { DEFAULT_MASTER_POOL_SIZE, readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
 import { callFramedProxyEntry, type FramedProxyCallResult } from '../../../src/framed/proxy/deploy.js';

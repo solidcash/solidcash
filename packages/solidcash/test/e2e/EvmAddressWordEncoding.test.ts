@@ -3,7 +3,12 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { scriptToBytecode, sha256 } from '@solidcash/utils';
 import { compileString as compileKernel } from 'solidc';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, TransactionBuilder, messageBus } from '../../src/index.js';
+import {
+  Contract,
+  TransactionBuilder,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 import { encodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';

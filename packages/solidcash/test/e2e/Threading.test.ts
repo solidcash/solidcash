@@ -1,9 +1,16 @@
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, StatefulContract,
-  StateReader, ThreadManager, ThreadHandle,
-  getDataNftAddress,
+  Contract,
+  MockNetworkProvider,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  StateReader,
+  ThreadManager,
+  ThreadHandle,
+  getDataNftAddress,
+} from '../../src/stateful/index.js';
 import {
   buildInitialStateCommitments,
 } from '@solidcash/utils';

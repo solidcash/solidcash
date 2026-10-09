@@ -3,8 +3,14 @@ import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { compileString, compileStringSplit } from '../direct-compile.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, Signer, SplitContractBundle, StatefulContract, readEventsFromChain,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  SplitContractBundle,
+  StatefulContract,
+  readEventsFromChain,
+} from '../../src/stateful/index.js';
 import { alicePriv } from '../fixture/vars.js';
 import { createTestProvider, expectScriptRejection, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 

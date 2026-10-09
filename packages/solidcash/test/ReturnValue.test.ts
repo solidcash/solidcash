@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { Contract, StatefulContract } from '../src/index.js';
+import { Contract } from '../src/index.js';
+import { StatefulContract } from '../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 
 // B8: returning entry functions. A function that returns values is spendable standalone (the value is

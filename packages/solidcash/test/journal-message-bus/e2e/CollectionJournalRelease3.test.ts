@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../direct-compile.js';
 import { compileString as compileMessageBusString } from 'solidc';
-import { Contract, StatefulContract } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
   aliceAddress, alicePkh, bobAddress, bobPkh, carolAddress, carolPkh,

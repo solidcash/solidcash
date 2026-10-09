@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileString } from '../direct-compile.js';
-import { ContractFactory, HDSigner } from '../../src/index.js';
+import { ContractFactory } from '../../src/stateful/index.js';
+import { HDSigner } from '../../src/HDSigner.js';
 import { createTestProvider } from '../test-util.js';
 import { addressToLockScript } from '../../src/utils.js';
 

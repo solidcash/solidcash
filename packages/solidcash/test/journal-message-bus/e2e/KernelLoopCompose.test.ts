@@ -5,8 +5,12 @@ import { bytecodeToAsm, encodeEventCommitment } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, SignatureAlgorithm, SignatureTemplate, StatefulContract, messageBus,
+  Contract,
+  SignatureAlgorithm,
+  SignatureTemplate,
 } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';

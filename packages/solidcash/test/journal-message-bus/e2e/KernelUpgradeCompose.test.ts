@@ -2,7 +2,12 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus, type TransactionBuilder } from '../../../src/index.js';
+import {
+  Contract,
+  type TransactionBuilder,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { assertAuthenticatingVmEvidence } from '../vm-evidence.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';

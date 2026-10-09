@@ -4,7 +4,8 @@ import {
   utf8ToBin,
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePkh } from '../fixture/vars.js';
 

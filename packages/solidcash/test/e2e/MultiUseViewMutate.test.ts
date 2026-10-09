@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { Contract, TransactionBuilder, buildTypedLoopCallTransaction } from '../../src/index.js';
+import {
+  Contract,
+  TransactionBuilder,
+} from '../../src/index.js';
+import { buildTypedLoopCallTransaction } from '../../src/loop-call.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
 
 // R11 multi-use view+mutate: `IPair pair = IPair(pairFor(p[i], p[i+1])); int r = pair.getReserve(); pair.swap(r)`.

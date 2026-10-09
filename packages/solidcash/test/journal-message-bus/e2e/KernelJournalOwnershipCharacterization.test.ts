@@ -1,8 +1,12 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, getEntryNftAddress } from '../../../src/index.js';
-import type { StatefulFunctionCall } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import {
+  StatefulContract,
+  getEntryNftAddress,
+} from '../../../src/stateful/index.js';
+import type { StatefulFunctionCall } from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';

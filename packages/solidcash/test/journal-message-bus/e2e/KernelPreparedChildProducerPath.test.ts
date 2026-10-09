@@ -1,7 +1,15 @@
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, getContractFactory, Signer, StatefulContract, upgrades } from '../../../src/index.js';
+import {
+  Contract,
+  Signer,
+} from '../../../src/index.js';
+import {
+  getContractFactory,
+  StatefulContract,
+  upgrades,
+} from '../../../src/stateful/index.js';
 import type { PreparedAtomicMessageBusCall } from '../../../src/message-bus/compose.js';
 import { setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';

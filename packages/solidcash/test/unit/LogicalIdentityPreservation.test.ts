@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
+import { Signer } from '../../src/index.js';
 import {
-  ContractFactory, Signer, resolveLogicalIdentity, deriveLogicalCreateAddress,
+  ContractFactory,
+  resolveLogicalIdentity,
+  deriveLogicalCreateAddress,
   buildLogicalIdentityCommitment,
-} from '../../src/index.js';
+} from '../../src/stateful/index.js';
 import {
   isScidIdentityCommitment, logicalIdentityAddressVariants, sameLogicalIdentityAddress,
   logicalLockFromScidCommitment, resolveLogicalIdentityFromAddresses,

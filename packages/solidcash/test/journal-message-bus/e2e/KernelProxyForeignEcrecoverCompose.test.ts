@@ -4,8 +4,15 @@ import { ethers } from 'ethers';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, StatefulContract, getContractFactory, upgrades, messageBus, Signer,
+  Contract,
+  Signer,
 } from '../../../src/index.js';
+import {
+  StatefulContract,
+  getContractFactory,
+  upgrades,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';

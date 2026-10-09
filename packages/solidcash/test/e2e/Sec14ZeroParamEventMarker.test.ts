@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
+import { Contract } from '../../src/index.js';
 import {
-  Contract, StatefulContract, getEventNftAddress, readEventsFromChain,
-} from '../../src/index.js';
+  StatefulContract,
+  getEventNftAddress,
+  readEventsFromChain,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos }
   from '../test-util.js';

@@ -12,8 +12,13 @@ import {
 } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
-  Contract, TransactionBuilder, HDSigner, signersFromMnemonic,
+  Contract,
+  TransactionBuilder,
 } from '../src/index.js';
+import {
+  HDSigner,
+  signersFromMnemonic,
+} from '../src/HDSigner.js';
 import {
   MockNetworkProvider, RegtestNetworkProvider, Contract, SignatureTemplate,
 } from '../src/index.js';

@@ -3,8 +3,14 @@ import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import type { Artifact } from '@solidcash/utils';
 import {
-  Contract, ContractFactory, Signer, getContractFactory, upgrades,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  ContractFactory,
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { DEFAULT_PROXY_SOURCE, defaultProxyArtifact } from '../../src/stateful/defaultProxyArtifact.js';
 import { ProxyContract } from '../../src/stateful/upgrades.js';
 import { classifyDelegateParticipant } from '../../src/message-bus/delegate.js';

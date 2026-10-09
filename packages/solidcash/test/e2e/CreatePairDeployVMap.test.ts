@@ -3,7 +3,10 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { binToHex } from '@bitauth/libauth';
 import { parsePushdataCommitment } from '@solidcash/utils';
-import { ContractFactory, StatefulContract } from '../../src/index.js';
+import {
+  ContractFactory,
+  StatefulContract,
+} from '../../src/stateful/index.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { getDataNftAddress } from '../../src/stateful/covenant-helpers.js';

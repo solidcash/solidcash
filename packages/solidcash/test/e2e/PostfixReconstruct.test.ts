@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, StatefulContract, SignatureTemplate, randomUtxo, TransactionBuilder,
+  Contract,
+  SignatureTemplate,
+  randomUtxo,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, gatherUtxos, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 

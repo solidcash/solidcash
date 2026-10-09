@@ -1,9 +1,13 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, SignatureTemplate, StatefulContract,
-  getDataNftAddress,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  getDataNftAddress,
+} from '../../src/stateful/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,

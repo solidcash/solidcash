@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, Signer, StatefulContract } from '../../../src/index.js';
+import {
+  Contract,
+  Signer,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { randomUtxo } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 import { alicePriv } from '../../fixture/vars.js';

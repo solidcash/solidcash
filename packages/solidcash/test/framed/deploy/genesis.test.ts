@@ -9,7 +9,12 @@ import {
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { buildValidatorProgram } from '../../../../solidc/src/framed/validator/index.js';
 import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../../../../solidc/test/framed/machine.js';
-import { Contract, SignatureTemplate, StatefulContract, encodeFunctionArgument } from '../../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+  encodeFunctionArgument,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode, deployMaster, deriveFramedGenesis,

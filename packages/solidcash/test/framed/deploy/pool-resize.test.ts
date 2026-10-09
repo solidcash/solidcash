@@ -7,7 +7,12 @@ import { framedLifecycle, framedValidator } from 'solidc';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
-import { Contract, HashType, SignatureTemplate, StatefulContract } from '../../../src/index.js';
+import {
+  Contract,
+  HashType,
+  SignatureTemplate,
+} from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { createSighashPreimage } from '../../../src/utils.js';
 import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/index.js';

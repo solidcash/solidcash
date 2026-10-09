@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { compileString as _csRawSolidc } from 'solidc';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 
 // This suite exercises + asserts the DEFAULT (entry-model) push/pop byte format. vmap push/pop (the default now) is
 // covered by SortedMappingArrayElementWrite; opt this file out so it keeps testing the default entry model.

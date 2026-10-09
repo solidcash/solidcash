@@ -5,8 +5,13 @@ import {
 } from '@bitauth/libauth';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, StatefulContract, StatefulFunctionCall, Signer,
+  Contract,
+  Signer,
 } from '../../src/index.js';
+import {
+  StatefulContract,
+  StatefulFunctionCall,
+} from '../../src/stateful/index.js';
 import { alicePriv } from '../fixture/vars.js';
 import { createBareP2pkhFeeFunder, createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 

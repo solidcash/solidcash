@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, SignatureAlgorithm, SignatureTemplate, StatefulContract,
+  Contract,
+  SignatureAlgorithm,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { compileString } from '../direct-compile.js';
 import { alicePriv, alicePub, bobPriv, bobPub } from '../fixture/vars.js';

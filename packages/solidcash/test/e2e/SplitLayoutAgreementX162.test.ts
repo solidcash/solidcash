@@ -3,8 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { compileStringSplit } from '../direct-compile.js';
 import {
-  ContractFactory, Signer, SignatureTemplate, SplitContractBundle, StatefulContract,
+  Signer,
+  SignatureTemplate,
 } from '../../src/index.js';
+import {
+  ContractFactory,
+  SplitContractBundle,
+  StatefulContract,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';

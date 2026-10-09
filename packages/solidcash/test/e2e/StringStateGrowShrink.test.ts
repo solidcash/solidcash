@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import {
   createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos,
 } from '../test-util.js';

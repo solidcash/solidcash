@@ -4,7 +4,10 @@ import {
   encodeTransaction, hashTransactionUiOrder, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { getContractFactory, upgrades } from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';

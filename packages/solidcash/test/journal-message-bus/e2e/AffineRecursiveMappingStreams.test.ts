@@ -3,9 +3,16 @@ import { messageBusVerifierCommitment } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  bytesToSlotValue, Contract, encodeEntryCommitment, messageBus, slotValueToBytes, StatefulContract,
+  Contract,
   TransactionBuilder,
 } from '../../../src/index.js';
+import {
+  bytesToSlotValue,
+  encodeEntryCommitment,
+  slotValueToBytes,
+  StatefulContract,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';

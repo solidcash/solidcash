@@ -1,7 +1,9 @@
 import { compileString, compileStringMulti } from '../direct-compile.js';
 import {
-  Contract, SignatureTemplate, StatefulContract,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { buildEntryCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';

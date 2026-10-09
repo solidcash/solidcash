@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
-import { messageBus } from '../../src/index.js';
+import * as messageBus from '../../src/message-bus/index.js';
 
 const sample = (): messageBus.AtomicMessageBusCallManifest => ({
   participants: [

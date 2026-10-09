@@ -2,8 +2,18 @@ import { describe, it, expect } from 'vitest';
 const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 import { hexToBin, binToHex, bigIntToVmNumber } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
-import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, SortedList } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
+import {
+  keyToSlot,
+  encodeEntryCommitment,
+  slotValueToBytes,
+  getEntryNftAddress,
+  SortedList,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub, aliceAddress, bobAddress } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, StatefulContract } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { aliceAddress, bobAddress, carolAddress } from '../../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';

@@ -4,7 +4,9 @@ import {
 import type { Artifact } from '@solidcash/utils';
 import { compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, messageBus, StatefulContract } from '../../../src/index.js';
+import { Contract } from '../../../src/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
+import { StatefulContract } from '../../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { decodeEvmScalarReturn } from '../../../src/stateful/StatefulContract.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';

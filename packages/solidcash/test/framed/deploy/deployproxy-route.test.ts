@@ -3,9 +3,16 @@ import { hexToBin } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
-  MockNetworkProvider, Signer, getContractFactory, deployProxy, ProxyContract,
-  type FramedArtifact, type FramedProxyHandle,
+  MockNetworkProvider,
+  Signer,
 } from '../../../src/index.js';
+import {
+  getContractFactory,
+  deployProxy,
+  ProxyContract,
+  type FramedArtifact,
+  type FramedProxyHandle,
+} from '../../../src/stateful/index.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';

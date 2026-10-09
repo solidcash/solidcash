@@ -5,7 +5,11 @@ import {
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Signer, getContractFactory, upgrades } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { externalReturnsForCallsites } from '../../src/stateful/external-returns-for-callsites.js';
 import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';

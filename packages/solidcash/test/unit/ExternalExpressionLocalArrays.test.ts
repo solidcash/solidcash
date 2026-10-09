@@ -3,7 +3,7 @@ import type { ArgSource, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { StatefulContract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 
 type Evaluator = {

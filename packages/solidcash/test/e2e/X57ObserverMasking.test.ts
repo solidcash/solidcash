@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { StatefulContract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 

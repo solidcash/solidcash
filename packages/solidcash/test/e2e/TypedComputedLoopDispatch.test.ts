@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { Contract, buildTypedLoopCallTransaction, deriveTypedLoopCoSpends } from '../../src/index.js';
+import { Contract } from '../../src/index.js';
+import {
+  buildTypedLoopCallTransaction,
+  deriveTypedLoopCoSpends,
+} from '../../src/loop-call.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
 
 // A COMPUTED per-iteration external-call target `IFoo(pairFor(path[i], path[i+1])).m(x)` in a loop (the Router02

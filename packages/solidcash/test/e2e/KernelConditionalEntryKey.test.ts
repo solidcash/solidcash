@@ -1,7 +1,14 @@
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { getContractFactory, SignatureTemplate, Signer, upgrades } from '../../src/index.js';
+import {
+  SignatureTemplate,
+  Signer,
+} from '../../src/index.js';
+import {
+  getContractFactory,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 

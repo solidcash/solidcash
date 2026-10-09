@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, SignatureTemplate, getContractFactory } from '../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+} from '../../src/index.js';
+import {
+  StatefulContract,
+  getContractFactory,
+} from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos, fundedSigner } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 

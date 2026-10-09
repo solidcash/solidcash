@@ -2,7 +2,8 @@ import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileStringSplit } from '../direct-compile.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
-import { Signer, SplitContractBundle } from '../../src/index.js';
+import { Signer } from '../../src/index.js';
+import { SplitContractBundle } from '../../src/stateful/index.js';
 import { alicePriv } from '../fixture/vars.js';
 import {
   createTestProvider, expectScriptRejection, getTxOutputs,

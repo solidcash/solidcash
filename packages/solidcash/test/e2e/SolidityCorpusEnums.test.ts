@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 // Exercise this worktree's compiler source. A shared monorepo node_modules can otherwise point at the main
 // checkout's built solidc package while this test is run from a linked worktree.
 import { compileString } from '../../../solidc/src/index.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // Runtime adaptation of Solidity's semantic fixture:

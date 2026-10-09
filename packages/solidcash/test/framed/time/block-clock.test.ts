@@ -3,7 +3,12 @@ import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import type { StateLayout } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileString, compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, ContractFactory, SignatureTemplate, Signer } from '../../../src/index.js';
+import {
+  Contract,
+  SignatureTemplate,
+  Signer,
+} from '../../../src/index.js';
+import { ContractFactory } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import { readFramedState } from '../../../src/framed/deploy/index.js';

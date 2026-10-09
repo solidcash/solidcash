@@ -4,8 +4,10 @@ import { compileStringMulti } from '../direct-compile.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, SignatureTemplate, StatefulContract,
+  Contract,
+  SignatureTemplate,
 } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,

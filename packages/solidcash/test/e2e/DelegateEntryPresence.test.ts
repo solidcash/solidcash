@@ -5,8 +5,16 @@ import {
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import {
-  SignatureTemplate, Signer, SortedList, getContractFactory, getEntryNftAddress, keyToSlotMulti, upgrades,
+  SignatureTemplate,
+  Signer,
 } from '../../src/index.js';
+import {
+  SortedList,
+  getContractFactory,
+  getEntryNftAddress,
+  keyToSlotMulti,
+  upgrades,
+} from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';

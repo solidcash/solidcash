@@ -5,7 +5,7 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { compileString } from '../direct-compile.js';
-import { StatefulContract } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import {
   anchorRoutedDynamicResourcesAtOwner,
   compilerRouteUsesPhysicalWrapper,

@@ -6,9 +6,17 @@ import {
   Artifact, buildInitialStateCommitments, buildPushdataCommitment, parsePushdataCommitment,
 } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulTransactionBuilder, TransactionBuilder, messageBus,
-  getDataNftAddress, createDataNftUnlocker, createReadOnlyDataNftUnlocker,
+  Contract,
+  SignatureTemplate,
+  TransactionBuilder,
 } from '../../../src/index.js';
+import {
+  StatefulTransactionBuilder,
+  getDataNftAddress,
+  createDataNftUnlocker,
+  createReadOnlyDataNftUnlocker,
+} from '../../../src/stateful/index.js';
+import * as messageBus from '../../../src/message-bus/index.js';
 import { ExternalCallUtxoGroup } from '../../../src/stateful/StatefulTransactionBuilder.js';
 import { DEFAULT_PROXY_SOURCE, defaultProxyArtifact } from '../../../src/stateful/defaultProxyArtifact.js';
 import { addressToLockScript } from '../../../src/utils.js';

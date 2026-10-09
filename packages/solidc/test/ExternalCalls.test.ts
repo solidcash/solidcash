@@ -824,7 +824,8 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       interfaceName: '__raw__',
       functionName: '__raw__',
       rawFunctionName: 'approve',
-      rawSelector: '9f0bb8a9',
+      // evmCompat uses keccak256(sig)[:4] (EVM parity): keccak256("approve(address,uint256)") = 095ea7b3.
+      rawSelector: '095ea7b3',
       rawArgSources: [
         expect.objectContaining({ kind: 'selfAddress' }),
         expect.objectContaining({ kind: 'forward' }),

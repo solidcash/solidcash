@@ -164,7 +164,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
   });
 
   it('keeps an inlined nested payout after the repeated producer calls', () => {
-    const artifact = compileFile('../../examples/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol', {
+    const artifact = compileFile('../../bench/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol', {
       evmCompat: true, suppressWarnings: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
     });

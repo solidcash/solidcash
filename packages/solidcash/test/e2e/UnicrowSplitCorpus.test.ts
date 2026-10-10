@@ -17,7 +17,7 @@ describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', 
       txid: 'df'.repeat(32), vout: 0, satoshis: 1_000_000n,
     });
     const artifact = compileFile(
-      '../../examples/effectiveacceleration/contracts/unicrow/Unicrow.sol',
+      '../../bench/effectiveacceleration/contracts/unicrow/Unicrow.sol',
       { evmCompat: true },
     );
     const address = signer.getAddress();
@@ -43,7 +43,7 @@ describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', 
     }
 
     const compiled = compileFileSplit(
-      '../../examples/effectiveacceleration/contracts/unicrow/Unicrow.sol',
+      '../../bench/effectiveacceleration/contracts/unicrow/Unicrow.sol',
       { evmCompat: true },
     );
     const address = signer.getAddress();

@@ -48,7 +48,7 @@ contracts, and nothing distinguishes "the compiler changed" from "the corpus cha
 
 Identity is now recorded in `packages/solidcash/test/journal-message-bus/e2e/message-bus-corpus-pins.json` and verified by
 `message-bus-corpus-pins.ts`. The sources are not vendored: the manifest records identity, not content. It
-follows the pattern `examples/solidity-by-example/SBE_SOURCE.md` already set and the census had not
+follows the pattern `bench/solidity-by-example/SBE_SOURCE.md` already set and the census had not
 adopted.
 
 | corpus | env var | default root | pinned commit | files / in-scope |
@@ -61,7 +61,7 @@ adopted.
 Measured at the time of pinning: all four checkouts ARE at these commits, and all four census
 subdirectories are clean, so the corpus has not drifted. Two independent corroborations that these are
 the states the recorded figures were taken against: solc-corpus in-scope 4,876 and total 7,343 both
-match the denominators `examples/solidity-corpus` quotes, and every per-corpus `files` count in
+match the denominators `bench/solidity-corpus` quotes, and every per-corpus `files` count in
 `message-bus-corpus-census-f3.ts` reconciles with these populations.
 
 Verification is three-layered because no single layer suffices:

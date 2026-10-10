@@ -170,9 +170,9 @@ manual-test.ts
 packages/solidcash/.regtest-progress.json
 
 # The effectiveacceleration bench's build products
-/examples/effectiveacceleration/artifacts/
-/examples/effectiveacceleration/cache/
-/examples/effectiveacceleration/typechain-types/
+/bench/effectiveacceleration/artifacts/
+/bench/effectiveacceleration/cache/
+/bench/effectiveacceleration/typechain-types/
 
 # transient probe dir written by scripts/release-docs-snippets.ts
 /.docs-check/

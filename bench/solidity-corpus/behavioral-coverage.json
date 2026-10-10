@@ -1,5 +1,5 @@
 {
-  "generatedFrom": "examples/solidity-corpus/results.json",
+  "generatedFrom": "bench/solidity-corpus/results.json",
   "corpusRoot": "/Code/solidity",
   "compiledExecutableFixtures": 1504,
   "explicitlyCoveredFixtures": 161,

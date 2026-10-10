@@ -182,7 +182,7 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-/** The fixture's compile options (`examples/effectiveacceleration/solidcash.config.ts`, as the mock network sets them). */
+/** The fixture's compile options (`bench/effectiveacceleration/solidcash.config.ts`, as the mock network sets them). */
 const FIXTURE_OPTIONS = {
   evmCompat: true,
   commitmentLimit: 128,

@@ -13,7 +13,7 @@ const SBE_ROOT = process.env.SBE_ROOT || join(here, '..', '..', '..', 'solidity-
 const ROOT = join(SBE_ROOT, 'contracts', 'src');
 if (!existsSync(ROOT)) {
   console.error(`solidity-by-example corpus not found at ${ROOT}.\n`
-    + 'Check out the pinned corpus next to this repo (see examples/solidity-by-example/SBE_SOURCE.md):\n'
+    + 'Check out the pinned corpus next to this repo (see bench/solidity-by-example/SBE_SOURCE.md):\n'
     + '  git clone -b gh-pages https://github.com/solidity-by-example/solidity-by-example.github.io '
     + '../solidity-by-example\n'
     + '  git -C ../solidity-by-example checkout 5bcdca0239409d7336a07b66a6fca8d0bcc710e6\n'

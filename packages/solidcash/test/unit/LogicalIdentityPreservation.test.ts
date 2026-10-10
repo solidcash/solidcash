@@ -399,7 +399,7 @@ describe('logical CREATE identity at getAddress()', () => {
   it('preserves FakeToken.json identity across the marketplace fixture transfer/approve sequence', async () => {
     const { readFileSync, existsSync } = await import('fs');
     const artifactPath = new URL(
-      '../../../../examples/effectiveacceleration/artifacts/solidcash/FakeToken.json',
+      '../../../../bench/effectiveacceleration/artifacts/solidcash/FakeToken.json',
       import.meta.url,
     );
     const path = artifactPath.pathname;
@@ -431,7 +431,7 @@ describe('logical CREATE identity at getAddress()', () => {
   it('preserves FakeToken.json identity across transfer to another account', async () => {
     const { readFileSync, existsSync } = await import('fs');
     const artifactPath = new URL(
-      '../../../../examples/effectiveacceleration/artifacts/solidcash/FakeToken.json',
+      '../../../../bench/effectiveacceleration/artifacts/solidcash/FakeToken.json',
       import.meta.url,
     );
     const path = artifactPath.pathname;

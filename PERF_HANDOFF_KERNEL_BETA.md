@@ -535,7 +535,7 @@ so that window is waiting on something outside the two JS stacks.
 
 **One concrete trace of it:** the vitest processes write **~4-7 MB/s in two bursts, ~23 MB per run**, and it is not
 the Vite cache (`.marketplace/vite-cache-marketplace` is 4 KB of `results.json`) and not the repo (nothing new
-under `.marketplace/` or `examples/effectiveacceleration/` survives the run), so it is temp files that are deleted
+under `.marketplace/` or `bench/effectiveacceleration/` survives the run), so it is temp files that are deleted
 again. Locating that writer is the top remaining harness item: run with `TMPDIR` pointed at a directory that is
 polled during the run, or sample `/proc/<worker>/fd` for regular-file descriptors.
 

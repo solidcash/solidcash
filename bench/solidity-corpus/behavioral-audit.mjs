@@ -69,7 +69,7 @@ for (const fixture of fixtures) {
 
 const explicitlyCovered = fixtures.filter((fixture) => fixture.explicitRuntimeTests.length > 0).length;
 const report = {
-  generatedFrom: 'examples/solidity-corpus/results.json',
+  generatedFrom: 'bench/solidity-corpus/results.json',
   corpusRoot: CORPUS_ROOT,
   compiledExecutableFixtures: fixtures.length,
   explicitlyCoveredFixtures: explicitlyCovered,

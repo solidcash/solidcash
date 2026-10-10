@@ -28,7 +28,7 @@ lands it removes the claim line.
 
 - `packages/solidcash/src/framed/proxy/**` (hop planning, `callFramedProxyEntry`, entry writes, the hop trace).
 - `packages/solidcash/src/framed/composer/**` derivation host and draft (the repeated-site fill is being changed).
-- The ladder harness and fixture: `vitest.marketplace.config.ts`, `examples/effectiveacceleration/**`,
+- The ladder harness and fixture: `vitest.marketplace.config.ts`, `bench/effectiveacceleration/**`,
   `.marketplace/**`, `packages/testing/src/chai.ts` (the strict matchers), and the scoreboard ticks.
 - `packages/solidc/src/framed/master/support.ts` and `stop-sites.ts` write-segment publication (`f22ecc5ff`);
   the second worker also edits `support.ts` (self-call admission).

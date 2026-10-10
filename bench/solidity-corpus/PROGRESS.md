@@ -3,7 +3,7 @@
 Absolute count of single-file, in-scope contracts from `../solidity` (the ethereum/solidity compiler test
 corpus) that SolidCash compiles, tracked as gaps are closed. In-scope = files that should compile as a single
 unit; excludes solc negative tests (deliberately-uncompilable) and multi-file `==== Source:` tests. Regenerate
-the current number with `node examples/solidity-corpus/bench.mjs` (the scorecard's first line).
+the current number with `node bench/solidity-corpus/bench.mjs` (the scorecard's first line).
 
 | date | compiled / in-scope | commit(s) | Δ | change |
 |---|---|---|---|---|

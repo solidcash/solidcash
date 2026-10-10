@@ -10,7 +10,7 @@ chunks, or pending vmap compiler/SDK plumbing predate the completed 2026-07-22 v
 defined only by [`verified-mappings.md`](verified-mappings.md); every mapping is vmap and unsupported shapes fail
 closed. Do not use historical opt-out instructions from this log.
 
-Related: `examples/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
+Related: `bench/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
 `docs/platform-differences.md` (BCH-vs-EVM primitives), `docs/solidity-gap-analysis.md`.
 
 Format per entry: **what**, **why deferred**, **what it'd take**, **revisit if**.
@@ -1648,7 +1648,7 @@ stored value through all neighboring forms.
 
   **Acceptance:** Hardhat artifact lookup automatically chooses a split bundle; four circular Unicrow peer addresses
   predicted from one signer nonce sequence resolve after deployment; forged anchors/categories and physical facet
-  addresses fail; snapshots preserve sequencing; and `examples/effectiveacceleration/test/marketplace.test.ts`
+  addresses fail; snapshots preserve sequencing; and `bench/effectiveacceleration/test/marketplace.test.ts`
   runs unchanged on the BCH HRE.
 
 ## Factory deploy of a stateful child alongside vmap mapping writes (2026-08-07)
@@ -1852,7 +1852,7 @@ size-constrained contract the duplication would be a real trade and would argue 
 as a frame argument instead, the way the parameterized outliner threads altstack depth.
 
 **Acceptance:** a stateful contract whose constructor calls a private `keccak256` helper deploys and reads the
-hash back; `examples/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/PairKashi.test.ts` and
+hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/PairKashi.test.ts` and
 `test/SushiMakerKashi.test.ts` reach contract behaviour instead of dying in `beforeEach`.
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)

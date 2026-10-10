@@ -91,7 +91,7 @@ none of the underlying facts did):
   `native-usdt-port.md` s3. Any facet-split realization of this design must create keys from the master.
 - `ERC20.sol` already compiles virtually: NOT in-tree. It is the SBE bench corpus at
   `/Code/solidity-by-example/contracts/src/app/erc20/` - a sibling checkout pinned in
-  `examples/solidity-by-example/SBE_SOURCE.md` (`_bench/` is generated and empty in a fresh tree).
+  `bench/solidity-by-example/SBE_SOURCE.md` (`_bench/` is generated and empty in a fresh tree).
 
 ---
 
@@ -325,7 +325,7 @@ Verified against the codebase:
   (`state.ts:1354-1360`), container merge path - FTs parked on state UTXOs cannot be drained by readers.
 - **Entry write path is master-gated with NO self-preservation** (`state.ts:1302-1373`): master-authorized
   FT decreases on entries are already legal. This makes v2 below covenant-free.
-- **ERC20.sol already compiles virtually** (`examples/solidity-by-example/.../app/erc20/`): balances lower to
+- **ERC20.sol already compiles virtually** (`bench/solidity-by-example/.../app/erc20/`): balances lower to
   entry-NFT commitments. v1 is "re-back that contract with real FTs", not "build an ERC-20".
 - **New**: genesis FT amount in the SDK deploy; the bridge + mint/burn template methods; BCMR emission.
 

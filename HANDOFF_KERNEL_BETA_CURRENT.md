@@ -12,7 +12,7 @@ Work only in `/Code/cashscript/.worktrees/kernel-beta-candidate` on branch
 `grok/message-bus-kernel-beta`, HEAD `6d24edb404aee62903f69cd59f7ea64ec43d19ba`.
 
 The active goal is to make all 66 unchanged titles in
-`examples/effectiveacceleration/test/marketplace.test.ts` green on mock BCH-2026 while preserving
+`bench/effectiveacceleration/test/marketplace.test.ts` green on mock BCH-2026 while preserving
 `artifact.messageBus.convention === 'kernel-row-loop'` and the `OP_INVOKE` graph boundary.
 
 Read this file before editing. `HANDOFF_NEXT_SESSION.md` is stale historical material.

@@ -8,22 +8,22 @@ The release compatibility denominator is intentionally limited to upstream `test
 and `test/libsolidity/syntaxTests/**`. Other Solidity compiler subsystem fixtures are inventoried but excluded.
 
 ```bash
-node examples/solidity-corpus/bench.mjs          # full run -> scorecard on stdout + results.json
-SOLC_CORPUS=/path/to/solidity node examples/solidity-corpus/bench.mjs   # override corpus path
-LIMIT=200 node examples/solidity-corpus/bench.mjs                       # smoke test on N files
-FIXTURE_TIMEOUT_MS=10000 node examples/solidity-corpus/bench.mjs        # override the 5s per-fixture budget
-CORPUS_WORKERS=4 node examples/solidity-corpus/bench.mjs                # override the default 8 workers
-CHECK_NEGATIVES=false node examples/solidity-corpus/bench.mjs          # positive-only diagnostic pass
-RETRY_TIMEOUT_MS=60000 RETRY_WORKERS=2 node examples/solidity-corpus/bench.mjs  # isolated retry tier
+node bench/solidity-corpus/bench.mjs          # full run -> scorecard on stdout + results.json
+SOLC_CORPUS=/path/to/solidity node bench/solidity-corpus/bench.mjs   # override corpus path
+LIMIT=200 node bench/solidity-corpus/bench.mjs                       # smoke test on N files
+FIXTURE_TIMEOUT_MS=10000 node bench/solidity-corpus/bench.mjs        # override the 5s per-fixture budget
+CORPUS_WORKERS=4 node bench/solidity-corpus/bench.mjs                # override the default 8 workers
+CHECK_NEGATIVES=false node bench/solidity-corpus/bench.mjs          # positive-only diagnostic pass
+RETRY_TIMEOUT_MS=60000 RETRY_WORKERS=2 node bench/solidity-corpus/bench.mjs  # isolated retry tier
 RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUT_MS=60000 RETRY_WORKERS=2 \
-  node examples/solidity-corpus/bench.mjs                               # resume only retained timeouts
+  node bench/solidity-corpus/bench.mjs                               # resume only retained timeouts
 RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUTS=false RETRY_ERROR_NAMES=Error,RangeError \
-  RETRY_TIMEOUT_MS=60000 node examples/solidity-corpus/bench.mjs        # reclassify selected error names
+  RETRY_TIMEOUT_MS=60000 node bench/solidity-corpus/bench.mjs        # reclassify selected error names
 CHECK_NEGATIVES_FROM_RESULTS=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
-  node examples/solidity-corpus/bench.mjs                               # audit only unchecked/timeout negatives
+  node bench/solidity-corpus/bench.mjs                               # audit only unchecked/timeout negatives
 RECHECK_ACCEPTED_NEGATIVES=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
-  node examples/solidity-corpus/bench.mjs                               # recheck retained over-accepted negatives
-CORPUS_OUTPUT_DIR=/tmp/corpus-run node examples/solidity-corpus/bench.mjs      # alternate artifact directory
+  node bench/solidity-corpus/bench.mjs                               # recheck retained over-accepted negatives
+CORPUS_OUTPUT_DIR=/tmp/corpus-run node bench/solidity-corpus/bench.mjs      # alternate artifact directory
 ```
 
 ## What this bench is (and is NOT)

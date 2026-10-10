@@ -7,7 +7,7 @@
     "from 'the corpus changed'.",
     "",
     "The sources are NOT vendored: this records identity, not content. It follows the pattern already set by",
-    "examples/solidity-by-example/SBE_SOURCE.md, which the census had simply not adopted.",
+    "bench/solidity-by-example/SBE_SOURCE.md, which the census had simply not adopted.",
     "",
     "WHY BOTH A COMMIT AND DERIVED COUNTS ARE RECORDED. An upstream commit alone does not pin the denominator,",
     "because the denominator also depends on the harness's own exclusion sets. The solidity-by-example pin has",
@@ -145,7 +145,7 @@
       "inScopeCount": 141,
       "fileSetDigest": "sha256:1d8f9da773c62d27c77ca61859eddc8904f7cd0265a12b0f7d1d18c946ba1672",
       "notes": [
-        "Already pinned independently by examples/solidity-by-example/SBE_SOURCE.md, and the live checkout",
+        "Already pinned independently by bench/solidity-by-example/SBE_SOURCE.md, and the live checkout",
         "matches that pin. This manifest records the same commit so the census does not depend on a pin",
         "documented for a different harness.",
         "inScopeCount is 141: 152 files less 10 EXCLUDED and 1 NEGATIVE. The board's SBE bench line quotes a",
@@ -172,7 +172,7 @@
       "fileSetDigest": "sha256:327b248534cdef8fdc3e70b8af1dd268664db65aa5e32874687965f5028a97f6",
       "notes": [
         "The whole checkout is the corpus (every .sol anywhere in it), so censusSubdir is the repository root.",
-        "fileCount 7343 and inScopeCount 4876 both match the denominators examples/solidity-corpus quotes,",
+        "fileCount 7343 and inScopeCount 4876 both match the denominators bench/solidity-corpus quotes,",
         "which is independent corroboration that this checkout has not drifted since that scorecard was taken.",
         "in-scope excludes the NEGATIVE and MULTIFILE buckets the probe classifies by file content."
       ],

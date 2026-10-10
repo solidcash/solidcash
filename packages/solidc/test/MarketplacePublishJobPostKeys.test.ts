@@ -8,7 +8,7 @@ import { compileFile, compileFileMulti } from '../src/compileFile.js';
 
 const marketplaceV1 = path.resolve(
   fileURLToPath(new URL('.', import.meta.url)),
-  '../../../examples/effectiveacceleration/contracts/MarketplaceV1.sol',
+  '../../../bench/effectiveacceleration/contracts/MarketplaceV1.sol',
 );
 
 const JOBS_LENGTH_MINUS_ONE = 'binop:-(unop:.length(state:jobs),lit:1)';

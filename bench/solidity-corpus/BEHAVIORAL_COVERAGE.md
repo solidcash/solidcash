@@ -7,7 +7,7 @@ by itself prove that a compiled Solidity semantic fixture can be spent successfu
 expectations with explicit fixture references in SolidCash e2e and conformance tests. Run it with:
 
 ```sh
-node examples/solidity-corpus/behavioral-audit.mjs
+node bench/solidity-corpus/behavioral-audit.mjs
 ```
 
 Set `SOLC_CORPUS` when the Solidity checkout is not at `/Code/solidity`. The generated

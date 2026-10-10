@@ -398,4 +398,4 @@ smaller than first assumed (calldata and own-code were both initially miscategor
   script), not EVM `keccak256(code)`. Fine for "is this a known contract" comparisons (both sides on-chain),
   not byte-identical to EVM. Document as a routed-but-not-identical op.
 
-Bench runner: `examples/solidity-by-example/bench.mjs` (`node bench.mjs`).
+Bench runner: `bench/solidity-by-example/bench.mjs` (`node bench.mjs`).

@@ -1,7 +1,7 @@
 # Solidity compatibility tests
 
 These focused compiler regressions are derived from gaps found by
-`examples/solidity-corpus/bench.mjs`. Keep new corpus-gap tests in the topic file that best matches the compiler
+`bench/solidity-corpus/bench.mjs`. Keep new corpus-gap tests in the topic file that best matches the compiler
 behavior under test rather than creating another chronological catch-all.
 
 Run this suite with:

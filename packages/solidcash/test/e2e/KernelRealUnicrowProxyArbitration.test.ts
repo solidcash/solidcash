@@ -33,7 +33,7 @@ const names = ['UnicrowArbitrator', 'UnicrowClaim', 'Unicrow'] as const;
 const compileArtifacts = (entryPoolCapacity?: number): Record<(typeof names)[number], ReturnType<typeof compileFile>> =>
   Object.fromEntries(names.map((name) => [
     name,
-    compileFile(`../../examples/effectiveacceleration/contracts/unicrow/${name}.sol`, {
+    compileFile(`../../bench/effectiveacceleration/contracts/unicrow/${name}.sol`, {
       ...OPTIONS,
       ...(entryPoolCapacity === undefined ? {} : { messageBusEntryPoolCapacity: entryPoolCapacity }),
     }),

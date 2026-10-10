@@ -45,11 +45,11 @@ state safety rather than only source compatibility.
 
 ```bash
 CHECK_NEGATIVES_FROM_RESULTS=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
-  node examples/solidity-corpus/bench.mjs
+  node bench/solidity-corpus/bench.mjs
 CHECK_NEGATIVES_FROM_RESULTS=true NEGATIVE_TIMEOUT_MS=120000 NEGATIVE_WORKERS=4 \
-  node examples/solidity-corpus/bench.mjs
+  node bench/solidity-corpus/bench.mjs
 RECHECK_ACCEPTED_NEGATIVES=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
-  node examples/solidity-corpus/bench.mjs
+  node bench/solidity-corpus/bench.mjs
 ```
 
 The runner preserves negative diagnostics and timeouts in `results.json`, records both passes in

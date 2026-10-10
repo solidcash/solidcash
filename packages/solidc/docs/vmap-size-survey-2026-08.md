@@ -203,7 +203,7 @@ different times on 2026-08-11. The following is therefore application evidence f
 reproducible commit-to-commit compiler benchmark.
 
 Using each artifact's actual hex `debug.bytecode` rather than the stale assembly-character metric in
-`examples/effectiveacceleration/BYTECODE_OPTIMIZATION_BASELINE.md`:
+`bench/effectiveacceleration/BYTECODE_OPTIMIZATION_BASELINE.md`:
 
 | Contract | Whole binary | Mapping collections | ABI entry accesses |
 |---|---:|---:|---:|

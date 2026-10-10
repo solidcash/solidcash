@@ -19,7 +19,7 @@ describe('AST clone alias semantics', () => {
 
   it('compiles a routed type-only dependency diamond without expanding shared import subtrees', () => {
     const fixture = fileURLToPath(new URL(
-      '../../../../examples/effectiveacceleration/contracts/MockSablierLockup.sol', import.meta.url,
+      '../../../../bench/effectiveacceleration/contracts/MockSablierLockup.sol', import.meta.url,
     ));
     const artifacts = compileFileMulti(fixture, {
       evmCompat: true,

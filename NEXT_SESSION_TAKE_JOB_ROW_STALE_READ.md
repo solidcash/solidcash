@@ -4256,8 +4256,8 @@ remaining producers, in order of likelihood:
   early-return in `buildVirtualMachineBch2026ForProvider`), reached from a provider whose `consensusLimits` is
   undefined — note the `vm-unhooked` counter read **zero** in a `take job$` run, so if this is the path, the
   factory is being reached through a module instance other than the one instrumented (check for a second
-  installed copy of `@solidcash/solidcash` under `examples/effectiveacceleration/` or `.marketplace/`, which the
-  marketplace config aliases/redirects into `examples/effectiveacceleration/src`).
+  installed copy of `@solidcash/solidcash` under `bench/effectiveacceleration/` or `.marketplace/`, which the
+  marketplace config aliases/redirects into `bench/effectiveacceleration/src`).
 * A prepared-tx / P2SH phase evaluator installed by `createPreparedTxVerifier.ts` (its own
   `createVirtualMachineBch2026ForProvider(provider, undefined, { standard })` call at `:259`/`:261`).
 * libauth's internal P2SH redeem-script evaluator, handed an instruction set at construction time.

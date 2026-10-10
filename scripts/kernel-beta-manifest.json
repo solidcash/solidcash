@@ -376,7 +376,7 @@
     {
       "name": "marketplace-v1",
       "contract": "MarketplaceV1",
-      "source": "examples/effectiveacceleration/contracts/MarketplaceV1.sol",
+      "source": "bench/effectiveacceleration/contracts/MarketplaceV1.sol",
       "sourceSha256": "57d93a5bdf0edff5dfd74d5cda445f9b8653fc29ee10ba8b3e482b2be925bd72",
       "sourceClosureSha256": "e0a1f481c9c49ed096035fddf25afc0bda1bec73cccf391f204e9630317e4749",
       "evidenceKind": "compile-compatibility-only",
@@ -411,7 +411,7 @@
     {
       "name": "unicrow-claim",
       "contract": "UnicrowClaim",
-      "source": "examples/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol",
+      "source": "bench/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol",
       "sourceSha256": "7881e9d98e6239931e92a3ee07d364180d87789719c50917aa117901457fd3db",
       "sourceClosureSha256": "e31d24048163d88b62040380b046ad93ef2c359017ea41811a8a110aedc13461",
       "evidenceKind": "compile-compatibility-only",

@@ -2,15 +2,14 @@
  * The EffectiveAcceleration marketplace bench.
  *
  * It runs the application's own `test/marketplace.test.ts`, where it lives in
- * `../effectiveacceleration.ai/contract`, against the contracts this bench compiles, together with this bench's
- * own cases. Nothing of the application is copied, linked or shadowed here: the compile root is the application's
- * `contract/contracts` (`solidcash.config.ts`), the test is included by absolute path, and its `../src/**` and
- * `../typechain-types/**` resolve through the aliases below. The carried files are this config,
- * `solidcash.config.ts` and `test/`.
+ * `../effectiveacceleration.ai/contract`, against the contracts this bench compiles. Nothing of the application is
+ * copied, linked or shadowed here: the compile root is the application's `contract/contracts`
+ * (`solidcash.config.ts`), the test is included by absolute path, and its `../typechain-types/**` resolves through
+ * the alias below. The carried files are this config and `solidcash.config.ts`.
  *
  * Run it from this directory (there are no npm scripts):
  *   node ../../packages/testing/dist/cli.js compile   // writes artifacts/ and typechain-types/
- *   node ../../node_modules/vitest/vitest.mjs run     // the suite plus this bench's cases
+ *   node ../../node_modules/vitest/vitest.mjs run     // the application's suite
  *
  * `artifacts/`, `cache/` and `typechain-types/` are build products of that compile, ignored by the repository's
  * root `.gitignore`.
@@ -55,9 +54,9 @@ export default defineConfig(solidhatPreset(
     root: here,
     cacheDir: 'cache/vite',
     test: {
-      // The application's own marketplace test, run from where it lives, plus this project's own cases. Nothing
-      // of the application's tree is copied or linked into this project.
-      include: [path.join(application, 'test', 'marketplace.test.ts'), 'test/*.test.ts'],
+      // The application's own marketplace test, run from where it lives. Nothing of the application's tree is
+      // copied or linked into this bench.
+      include: [path.join(application, 'test', 'marketplace.test.ts')],
       testTimeout: 1_800_000,
       hookTimeout: 1_800_000,
       fileParallelism: false,
@@ -65,12 +64,10 @@ export default defineConfig(solidhatPreset(
       reporters: ['verbose'],
     },
     resolve: {
-      // The application's test resolves its sources beside itself, but its bindings are this project's generated
-      // ones: `../typechain-types/**` points here while `../src/**` keeps reading the application's own sources,
-      // which a case of ours also imports from this project.
+      // The application's test resolves its sources beside itself, but its bindings are this bench's generated
+      // ones, so `../typechain-types/**` points here.
       alias: [
         { find: /^\.\.\/typechain-types\//, replacement: `${path.join(here, 'typechain-types')}/` },
-        { find: /^\.\.\/src\//, replacement: `${path.join(application, 'src')}/` },
         { find: '@noble/ciphers/chacha', replacement: cipher('chacha') },
         { find: '@noble/ciphers/crypto', replacement: cipher('utils') },
         { find: '@noble/ciphers/utils', replacement: cipher('utils') },

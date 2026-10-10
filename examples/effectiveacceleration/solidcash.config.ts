@@ -4,14 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from '@solidcash/testing';
 
 /**
- * The sibling `effectiveacceleration.ai` checkout. Its application sources, tests and deploy scripts are the
- * literal ones and live there; this project references them in place and mirrors nothing.
+ * The sibling `effectiveacceleration.ai` checkout. Its application sources, tests, deploy scripts and configs are
+ * the literal ones and live there; this bench references them in place and mirrors nothing.
  *
  * The root is found by walking up from this file rather than written as a relative path: the repo is checked out
  * both at `/Code/cashscript` and in worktrees under `/Code/cashscript/.worktrees/<name>`, and only an absolute
- * path (or an env override) resolves the sibling from both. `tasks/compile-real.mjs` looks it up the same way.
+ * path (or an env override) resolves the sibling from both. `vitest.config.ts` looks it up the same way.
  */
-export function effectiveAccelerationRoot(): string {
+function effectiveAccelerationRoot(): string {
   const fromEnv = process.env.EACC_ROOT;
   if (fromEnv !== undefined && fromEnv !== '') return path.resolve(fromEnv);
   let dir = path.dirname(fileURLToPath(import.meta.url));
@@ -29,13 +29,6 @@ export function effectiveAccelerationRoot(): string {
 const eaRoot = effectiveAccelerationRoot();
 /** The sibling project's Solidity tree: the compile root and the typegen source dir, referenced, never copied. */
 const eaContracts = path.join(eaRoot, 'contract', 'contracts');
-/**
- * The sibling project's own marketplace test. It is linked into `test/` at run time (see `vitest.config.ts`), not
- * copied: only its location under this project makes its relative imports read this project's BCH-aware `src/` and
- * generated `typechain-types/` instead of the sibling's.
- */
-export const eaMarketplaceTest = path.join(eaRoot, 'contract', 'test', 'marketplace.test.ts');
-
 export default defineConfig({
   paths: { contracts: eaContracts, artifacts: 'artifacts', tests: 'test' },
   // The options the marketplace lane compiles with (the repo root's `solidcash.config.ts`). This project runs the

@@ -138,6 +138,37 @@ const artifact = compileFile('Bridge.sol', {
 Even then, SolidCash `address` remains variable-length BCH locking bytecode. Use an explicit `uint160` at an EVM
 wire boundary. See [Data Encoding & ABI](/docs/language/abi-encoding).
 
+### The form of an address value: `addressForm`
+
+An `address` value is its exact BCH locking bytecode; `addressForm` decides the form it takes where the compiler
+turns it into bytes.
+
+| form | `abi.encodePacked(<address>)` | a decoded address read |
+| --- | --- | --- |
+| `'hash'` | the 20-byte Solidity identity: the embedded payload of a standard P2PKH/P2SH20 lock, or `HASH160` of the lock | the 20-byte identity |
+| `'bytecode'` | the whole locking bytecode (23, 25 or 35 bytes) | the exact lock the contract stored |
+
+```ts
+const artifact = compileFile('Bridge.sol', {
+  evmCompat: true,
+  addressForm: 'bytecode', // keep the whole lock where an address becomes bytes
+});
+```
+
+`addressForm` is omitted by default: it resolves to `'hash'` under `evmCompat` and `'bytecode'` otherwise, so a
+port keeps the identity it already had. What the option does **not** change:
+
+- the narrowing casts. `uint160(a)` and `bytes20(a)` truncate to 20 bytes and `address(x)` stays a no-op in
+  either form, because the cast is the narrowing; a cast that stopped truncating would hand a 35-byte lock to a
+  20-byte type;
+- a fixed-width EVM ABI word. `abi.encode(<address>)` and an address *argument* carry the 20-byte identity in
+  either form, because a 32-byte word cannot hold a variable-length lock, and a word-encoded (`evm-abi-v1`)
+  result is the identity for the same reason. Ask the SDK which form an artifact was compiled with through
+  `artifactAddressForm` (`solidcash/stateful`).
+
+A packed payload that carries locks is longer than one that carries identities, which matters at the 128-byte
+NFT commitment limit and for any offset arithmetic over the payload.
+
 Compatibility mode defaults bare Solidity `ecrecover(hash, v, r, s)` to the `evm` address projection unless an
 explicit `ecrecover: 'p2pkh' | 'evm'` option overrides it. Recovery still executes through BCH computation
 sidecars.

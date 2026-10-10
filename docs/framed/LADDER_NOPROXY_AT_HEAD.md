@@ -1,5 +1,9 @@
 # The no-proxy marketplace ladder at HEAD
 
+> Why this lane's wall time is ~4x the proxied lane's: `docs/framed/NOPROXY_LANE_COST.md`
+> (2026-10-10, read-only investigation; the cause is the plain framed call path re-deriving the whole
+> composition per learned value, not the lane's contract size, deploy count or harness).
+
 First full run of the no-proxy twin of the marketplace fixture since the two fixes landed (`cee831dc2`,
 `8c4671242`). The ladder is NOT green: two titles time out at the 20-minute per-title cap, and both pass when run
 alone. So the failures are a budget/load effect, not a functional one.

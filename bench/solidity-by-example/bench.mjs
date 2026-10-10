@@ -1,4 +1,4 @@
-import { compileFile } from '/Code/cashscript/packages/solidc/dist/index.js';
+import { compileFile } from '../../packages/solidc/dist/index.js';
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -9,7 +9,20 @@ import { dirname, join } from 'path';
 // commit is pinned in SBE_SOURCE.md next to this file. The corpus is compiled AS-IS (correctness, not porting -
 // no source interventions).
 const here = dirname(fileURLToPath(import.meta.url));
-const SBE_ROOT = process.env.SBE_ROOT || join(here, '..', '..', '..', 'solidity-by-example');
+// The corpus is a sibling checkout of this repo (`/Code/solidity-by-example`). Walk up to find it rather than
+// counting directories, so the bench resolves the same corpus from the main checkout and from a worktree.
+const findCorpus = () => {
+  // Match the corpus shape, not the directory name: this bench's own directory is also called
+  // `solidity-by-example`.
+  for (let dir = dirname(here); ;) {
+    const candidate = join(dir, 'solidity-by-example');
+    if (existsSync(join(candidate, 'contracts', 'src'))) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return join(here, '..', '..', '..', 'solidity-by-example');
+    dir = parent;
+  }
+};
+const SBE_ROOT = process.env.SBE_ROOT || findCorpus();
 const ROOT = join(SBE_ROOT, 'contracts', 'src');
 if (!existsSync(ROOT)) {
   console.error(`solidity-by-example corpus not found at ${ROOT}.\n`
@@ -68,7 +81,10 @@ for (const f of files) {
   // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound), so using it forces
   // the contract stateful - no deploy-time oracle-category config needed. See block-and-transaction-properties.md.
   try {
-    compileFile(f, { evmCompat: true });
+    // This bench measures language/source conformance on UNMODIFIED upstream Solidity, so the compiler's
+    // covenant-safety policy is stated explicitly: the final-require rule guards a CashScript spending path
+    // and is exercised by the solidc suite and the application benches, not by a conformance sweep.
+    compileFile(f, { evmCompat: true, enforceFinalRequire: false });
   } catch (e) { status = 'FAIL'; err = (e.name || 'Error') + ': ' + String(e.message).split('\n')[0]; }
   unmute();
   results.push({ rel, status, err });

@@ -5,7 +5,9 @@ The solidity-by-example contracts are **not** vendored into this repository - th
 sibling checkout so we don't carry third-party Solidity in-tree.
 
 The corpus is compiled **as-is** (correctness, not porting): we measure how far `solidc` gets on the unmodified
-upstream sources. There are no source interventions.
+upstream sources. There are no source interventions. The harness states `enforceFinalRequire: false`, because
+the final-require rule is a CashScript covenant-safety policy for spending paths (checked by the compiler suite
+and the app benches), not a rule Solidity sources carry.
 
 ## Pinned upstream
 

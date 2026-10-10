@@ -2,14 +2,24 @@
 // Records pass/fail + first blocker per contract. BCH specifics are NOT considered; this measures how
 // far solidc gets parsing/checking real Solidity. Usage: node _bench/run.mjs
 import { compileFile } from '../../../packages/solidc/dist/compileFile.js';
-import { readdirSync, statSync, writeFileSync } from 'fs';
+import { existsSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { join, dirname, relative } from 'path';
 import { fileURLToPath } from 'url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// The solidity-by-example corpus lives OUTSIDE this repo (see ../SBE_SOURCE.md). Default: sibling checkout at
-// ../../../../solidity-by-example (i.e. next to the cashscript repo); override with SBE_ROOT.
-const SBE_ROOT = process.env.SBE_ROOT || join(here, '..', '..', '..', '..', 'solidity-by-example');
+// The solidity-by-example corpus lives OUTSIDE this repo (see ../SBE_SOURCE.md): a sibling of the repo root,
+// which is a different number of levels away from the main checkout than from a worktree. Walk up to find it
+// by shape instead of counting directories; override with SBE_ROOT.
+const findCorpus = () => {
+  for (let dir = here; ;) {
+    const candidate = join(dir, 'solidity-by-example');
+    if (existsSync(join(candidate, 'contracts', 'src'))) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return candidate;
+    dir = parent;
+  }
+};
+const SBE_ROOT = process.env.SBE_ROOT || findCorpus();
 const SRC = join(SBE_ROOT, 'contracts', 'src');
 
 function walk(dir) {
@@ -28,7 +38,10 @@ const results = [];
 for (const f of files) {
   const rel = relative(SRC, f);
   try {
-    compileFile(f, { evmCompat: true });
+    // This bench measures language/source conformance on UNMODIFIED upstream Solidity, so the compiler's
+    // covenant-safety policy is stated explicitly: the final-require rule guards a CashScript spending path
+    // and is exercised by the solidc suite and the application benches, not by a conformance sweep.
+    compileFile(f, { evmCompat: true, enforceFinalRequire: false });
     results.push({ file: rel, ok: true });
   } catch (e) {
     const name = e?.constructor?.name ?? 'Error';

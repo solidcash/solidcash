@@ -2,7 +2,9 @@
 
 A breadth stress-test parallel to `../solidity-by-example`: attempt to compile every `.sol` in the
 ethereum/solidity compiler test corpus (`../solidity`, i.e. `/Code/solidity`) with SolidCash, reusing the SBE
-bench shape (`compileFile` + `evmCompat` + an OK/FAIL scorecard).
+bench shape (`compileFile` + `evmCompat` + an OK/FAIL scorecard). The harness states
+`enforceFinalRequire: false` because it measures language/source conformance on unmodified Solidity, while the
+final-require rule is a CashScript covenant-safety policy checked by the compiler suite and the app benches.
 
 The release compatibility denominator is intentionally limited to upstream `test/libsolidity/semanticTests/**`
 and `test/libsolidity/syntaxTests/**`. Other Solidity compiler subsystem fixtures are inventoried but excluded.

@@ -596,6 +596,11 @@ type InternalCompilerOptions = CompilerOptions & {
    */
   __referencedChildOptions?: CompilerOptions;
   __messageBusExplicitlyDisabled?: boolean;
+  /**
+   * Set when graph-free auto-selection chose the direct path for a caller who never asked for it. A later
+   * refusal must then offer `messageBus: true` instead of telling the caller to omit an option they omitted.
+   */
+  __messageBusAutoNarrowed?: boolean;
   __messageBusMode?: MessageBusMode;
   /**
    * Disk hits rebuild the delegate from caller options, which have not been through graph-free narrowing.
@@ -4254,6 +4259,7 @@ function narrowGraphFreeAutoMessageBus(ast: Ast, options: CompilerOptions): void
   options.messageBus = false;
   options.messageBusKernel = false;
   internal.__messageBusExplicitlyDisabled = true;
+  internal.__messageBusAutoNarrowed = true;
 }
 
 /**
@@ -4418,6 +4424,15 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   if (externalPointerCall) return true;
   const surveyedFunctions = opaqueLocalDispatch ? functions : reachableFunctionList;
   const interfaceNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
+  // A cast receiver names the type it converts to. A call through a cast to a contract declared in this
+  // compilation - a sibling in the file, an imported contract, or the compiled contract itself - reaches a
+  // caller-chosen address exactly like an interface-typed receiver does, so it is a graph edge for the same
+  // reason. A library name is not: its calls lower to local or delegate code, never to a co-spent callee.
+  const castReceiverNames = new Set<string>([
+    contract.name,
+    ...ast.importedContracts.map((imported) => imported.name),
+    ...interfaceNames,
+  ]);
   // A call through an interface-typed variable parses as a namespaced FunctionCallNode (`sink.note`), not a
   // MethodCallNode. Detect it from declared receiver types before semantic lowering, while allowing a parameter
   // or local declaration to shadow a same-named contract state variable with an ordinary type.
@@ -4622,7 +4637,8 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       || (node instanceof LowLevelCallStatementNode && node.callMode !== 'delegatecall')
       || (node instanceof MethodCallNode && node.methodName !== 'delegatecall'
         && ((node.object instanceof InstantiationNode)
-          || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))
+          || (node.object instanceof FunctionCallNode
+            && castReceiverNames.has(node.object.identifier.name))
           // `this.sink.note(...)` is a MethodCallNode on a StateAccessNode, not a namespaced
           // FunctionCallNode. Its explicit state qualification cannot be shadowed by a local.
           || (node.object instanceof StateAccessNode

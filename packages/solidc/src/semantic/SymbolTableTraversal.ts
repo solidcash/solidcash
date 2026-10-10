@@ -3865,6 +3865,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const messageBusExplicitlyDisabled =
           (this.compilerOptions as CompilerOptions & { __messageBusExplicitlyDisabled?: boolean })
             .__messageBusExplicitlyDisabled === true;
+        const messageBusAutoNarrowed =
+          (this.compilerOptions as CompilerOptions & { __messageBusAutoNarrowed?: boolean })
+            .__messageBusAutoNarrowed === true;
         if (!node.messageBusRoute) {
           const callOccursInLoop = (target: ExternalFunctionCallNode | undefined): boolean => {
             if (!target) return false;
@@ -4028,7 +4031,10 @@ export default class SymbolTableTraversal extends AstTraversal {
               'MESSAGE_BUS_REQUIRED',
               `Function '${node.name}' repeats calls to the same state owner (${chains.join('; ')}). `
               + 'A UTXO master can be spent only once, so this transaction cannot be built with '
-              + '`messageBus: false`; omit the option to infer message-bus support or set it to true.',
+              + (messageBusAutoNarrowed
+                ? 'the automatic direct path: the automatic selection did not read the repeated call as a '
+                  + 'graph edge. State the option and set `messageBus: true`.'
+                : '`messageBus: false`; omit the option to infer message-bus support or set it to true.'),
               { functionName: node.name, callChains: chains, option: 'messageBus' },
             );
           }

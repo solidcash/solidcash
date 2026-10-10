@@ -1,12 +1,15 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { execSync } from 'child_process';
-import { readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { Worker } from 'worker_threads';
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
 const OUTPUT_DIR = process.env.CORPUS_OUTPUT_DIR || BENCH_DIR;
+// An alternate output directory is a documented run mode (`CORPUS_OUTPUT_DIR=/tmp/corpus-run`), so create it
+// rather than failing at the first write after a full sweep.
+if (OUTPUT_DIR !== BENCH_DIR) mkdirSync(OUTPUT_DIR, { recursive: true });
 const compilerUrl = new URL('../../packages/solidc/dist/index.js', import.meta.url).href;
 
 // Parallel bench to solidity-by-example: attempt to compile every .sol in the ethereum/solidity compiler test

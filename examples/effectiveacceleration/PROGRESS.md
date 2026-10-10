@@ -6,11 +6,23 @@ config + portbacks. This is the Hardhat-config-compatibility stress test.
 
 ## STRUCTURE (2026-10-10): the lane harness, and no copy of the application
 
-This project is configuration plus this project's own cases. `artifacts/`, `cache/` and `typechain-types/` are
-build products of `solidcash compile` (the compile task generates the bindings), all three gitignored; nothing
-generated is carried. There is no `wagmi/` here: the application's own `wagmi/**` is what its `src/interfaces.ts`
-imports, and the copy this project used to carry was output of another project's ABI extractor, so the case that
-pinned it now reads the compiled artifact instead (`test/marketplaceAbi.test.ts`).
+This bench is one directory of configuration plus its own cases, and nothing else. It tracks
+`solidcash.config.ts`, `vitest.config.ts`, the three cases under `test/`, and these two notes; there is no
+`package.json`, `tsconfig.json`, `.gitignore` or `tasks/` here, because those belonged to the Hardhat project in
+`../effectiveacceleration.ai/contract` (or existed to prove real cross-compilation while `artifacts/` still held
+stubs). Dependencies resolve from the monorepo root, and the `.ts` configs load through the tooling, so none of
+them is needed.
+
+Run it from this directory (there are no npm scripts):
+
+    node ../../packages/testing/dist/cli.js compile   # writes artifacts/ and typechain-types/
+    node ../../node_modules/vitest/vitest.mjs run     # the application's suite plus this bench's cases
+
+`artifacts/`, `cache/` and `typechain-types/` are build products of that compile (the compile task runs the
+typegen); they are transient and ignored by the repository's root `.gitignore`. There is no `wagmi/` here: the
+application's own `wagmi/**` is what its `src/interfaces.ts` imports, and the copy this bench used to carry was
+output of another project's ABI extractor, so the case that pinned it reads the compiled artifact instead
+(`test/marketplaceAbi.test.ts`).
 
 The application's Solidity tree, sources, tests,
 deploy scripts and configs are the sibling `effectiveacceleration.ai` checkout's files, used where they live:

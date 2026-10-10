@@ -1,5 +1,7 @@
 node_modules/
+
+# Build products: `solidcash compile` writes both.
 artifacts/
 artifacts-real/
-
 cache/
+typechain-types/

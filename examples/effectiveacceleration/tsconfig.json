@@ -10,6 +10,6 @@
     "outDir": "./dist",
     "declaration": true,
   },
-  "include": ["src/**/*.ts", "wagmi/**/*.ts"],
+  "include": ["test/**/*.ts"],
   "exclude": ["node_modules"]
 }

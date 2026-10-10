@@ -6,7 +6,13 @@ config + portbacks. This is the Hardhat-config-compatibility stress test.
 
 ## STRUCTURE (2026-10-10): the lane harness, and no copy of the application
 
-This project is configuration plus this project's own cases. The application's Solidity tree, sources, tests,
+This project is configuration plus this project's own cases. `artifacts/`, `cache/` and `typechain-types/` are
+build products of `solidcash compile` (the compile task generates the bindings), all three gitignored; nothing
+generated is carried. There is no `wagmi/` here: the application's own `wagmi/**` is what its `src/interfaces.ts`
+imports, and the copy this project used to carry was output of another project's ABI extractor, so the case that
+pinned it now reads the compiled artifact instead (`test/marketplaceAbi.test.ts`).
+
+The application's Solidity tree, sources, tests,
 deploy scripts and configs are the sibling `effectiveacceleration.ai` checkout's files, used where they live:
 `solidcash.config.ts` points `paths.contracts` and `typegen.sourceDir` at its `contract/contracts`, and
 `vitest.config.ts` runs its `test/marketplace.test.ts` by absolute path with the test's `../typechain-types/**`
@@ -30,7 +36,7 @@ ceiling. `solidcash.config.ts` compiles with the lane's options. Both matter: th
 and failed the fixture at `setMarketplaceDataAddress` instead of running the suite.
 
 Result: `node ../../node_modules/vitest/vitest.mjs run` is green - `marketplace.test.ts` 66/66 in about 33
-minutes, plus `decodeData` 3, `encryption` 2, `wagmiAbi` 2. `test/utils.test.ts` stays out of the selection: it
+minutes, plus `decodeData` 2, `encryption` 2, `marketplaceAbi` 2. `test/utils.test.ts` stays out of the selection: it
 reads IPFS content the suite does not publish (it needs a live gateway).
 
 ## STATUS (2026-07-19): drop-in LOADS + all 66 tests RUN under our harness; failing at the CONTRACT layer.

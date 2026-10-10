@@ -43,6 +43,10 @@ export default defineConfig({
   // or graph context and pinned commitmentLimit 128, and its fixture failed at the proxy deploy the lane passes.
   compiler: {
     evmCompat: true,
+    // The suite decodes addresses itself (`decodeAddress` reads a packed identity) and compares them to
+    // signer.getAddress(), so a packed address value is its 20-byte identity: `addressForm: 'hash'` (the
+    // evmCompat default, ticked here so the suite states it).
+    addressForm: 'hash',
     messageBus: true,
     messageBusKernel: true,
     messageBusGraphContext: true,

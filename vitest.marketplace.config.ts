@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from 'vitest/config';
+import { defineConfig } from 'vitest/config';
 import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -8,51 +8,6 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const cipher = (entry: string): string => require.resolve(`@noble/ciphers/${entry}.js`);
 const worktreeRoot = fileURLToPath(new URL('.', import.meta.url));
-const bchCompatSrc = fileURLToPath(new URL('examples/effectiveacceleration/src', import.meta.url));
-
-/**
- * Relative imports skip Vite aliases; remap the Ethereum EA src onto the BCH-aware copy. The no-proxy twin's src is
- * the same source as the proxied project's, so a run retargeted onto it decodes with the same copy: both lanes
- * publish the same payload (a packed `uint160(address)` is the lock), and only the copy reads the lock back.
- */
-export function redirectEffectiveAccelerationSrc(id: string): string | undefined {
-  const normalized = id.replace(/\\/g, '/');
-  const markers = [
-    '/.marketplace/project/src/', '/effectiveacceleration.ai/contract/src/',
-    '/effectiveacceleration.ai/contract-noproxy/src/',
-  ];
-  for (const marker of markers) {
-    const index = normalized.indexOf(marker);
-    if (index < 0) continue;
-    return path.join(bchCompatSrc, normalized.slice(index + marker.length));
-  }
-  return undefined;
-}
-
-function existingSource(candidate: string): string | undefined {
-  if (!candidate) return undefined;
-  if (existsSync(candidate)) return candidate;
-  if (existsSync(`${candidate}.ts`)) return `${candidate}.ts`;
-  if (existsSync(`${candidate}.js`)) return `${candidate}.js`;
-  if (existsSync(path.join(candidate, 'index.ts'))) return path.join(candidate, 'index.ts');
-  return undefined;
-}
-
-function eaSrcRedirectPlugin(): Plugin {
-  return {
-    name: 'ea-bch-src-redirect',
-    enforce: 'pre',
-    resolveId(source, importer) {
-      const direct = existingSource(redirectEffectiveAccelerationSrc(source) ?? '');
-      if (direct) return direct;
-      if (!source.startsWith('.') || !importer) return undefined;
-      const resolved = path.resolve(path.dirname(importer), source);
-      const redirected = redirectEffectiveAccelerationSrc(resolved);
-      return redirected ? existingSource(redirected) : undefined;
-    },
-  };
-}
-
 const projectRoot = fileURLToPath(new URL('./.marketplace/project/', import.meta.url));
 const requestedWorkerHeapMb = Number.parseInt(
   process.env.SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB ?? '8192', 10,
@@ -80,7 +35,6 @@ export default defineConfig(solidhatPreset(
   {
     root: worktreeRoot,
     cacheDir: '.marketplace/vite-cache-marketplace',
-    plugins: [eaSrcRedirectPlugin()],
     resolve: {
       // Keep the canonical test and application source symlinks rooted under this checkout so all bare package
       // imports resolve through this worktree's fully materialized node_modules tree.

@@ -7,13 +7,23 @@ config + portbacks. This is the Hardhat-config-compatibility stress test.
 ## STRUCTURE (2026-10-10): the lane harness, and no copy of the application
 
 This project holds its run configuration (`solidcash.config.ts`, `vitest.config.ts`, `package.json`,
-`tsconfig.json`) plus the BCH-aware `src/`, the authored `test/`, `typechain-types/`, `wagmi/` and
-`tasks/compile-real.mjs`. The application's own Solidity tree, deploy scripts, Hardhat configs and the
-`marketplace.test.ts` this project exists to run are the sibling `effectiveacceleration.ai` checkout's files,
-referenced in place: `paths.contracts` and `typegen.sourceDir` are its `contract/contracts`, and
-`vitest.config.ts` links its `test/marketplace.test.ts` into `test/` (gitignored, with `preserveSymlinks` so the
-link's relative imports still read this project's `src/` and bindings). `scripts/config*.json` stay because
-`src/utils/config.ts` imports them by a relative path.
+`tsconfig.json`) plus the authored `test/`, `typechain-types/`, `wagmi/`, `tasks/compile-real.mjs` and the notes.
+The application's own Solidity tree, sources, deploy scripts, Hardhat configs and the `marketplace.test.ts` this
+project exists to run are the sibling `effectiveacceleration.ai` checkout's files, referenced in place:
+`paths.contracts` and `typegen.sourceDir` are its `contract/contracts`, and `vitest.config.ts` links its `src/**`
+and its `test/marketplace.test.ts` under this project (gitignored) so the test's relative imports read the
+application's sources while its `../typechain-types/**` reads this project's generated bindings. `preserveSymlinks`
+is what keeps that split. `scripts/config*.json` stay because the application's `src/utils/config.ts` imports them
+by a relative path.
+
+`addressForm: 'hash'` in `solidcash.config.ts` states that a packed address value is its 20-byte identity, which is
+what the application's `decodeAddress` reads. Nothing of the application is forked any more: the July port had
+replaced `decodeAddress` with lock-form sniffing plus a `decodePackedUint160Address`, added a `decodeUint16` that
+read a uint32, reimplemented `getAddress`, and kept a local IPFS store with a WebCrypto nonce. The harness covers
+all of it now: its `getAddress` (ethers shim) renders a lock or an identity in the same domain as
+`signer.getAddress()`, chai bridges the lock-versus-CashAddress comparisons, the offline runtime serves IPFS, and
+the `@noble/ciphers` alias map mirrors the lane's (`crypto` and `utils` both resolve to the installed v2
+`utils.js`).
 
 `vitest.config.ts` now runs the lane harness (`/Code/cashscript/vitest.marketplace.config.ts`): the SolidHat
 compatibility preset with its hermetic offline runtime, the same 8 GB worker heap, serialized files and 30-minute

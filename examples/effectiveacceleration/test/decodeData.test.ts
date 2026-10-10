@@ -1,19 +1,12 @@
 import { getAddress, hexlify } from 'ethers';
 import { describe, expect, it } from 'vitest';
-import { decodeAddress, decodeBool, decodeString, decodeUint16, decodeUint256 } from '../src/utils/decodeData.ts';
+import { decodeAddress, decodeString, decodeUint256, decodeUint32 } from '../src/utils/decodeData.ts';
 import { decodeJobCreatedEvent } from '../src/utils/decodeEvents.ts';
 
+// The suite compiles with `addressForm: 'hash'` (see `solidcash.config.ts`), so an address field is the packed
+// 20-byte identity and the decoders read exactly those 20 bytes: no form sniffing is involved.
 describe('Marketplace packed-address decoding', () => {
-  it('preserves a full native locking bytecode before a packed bool', () => {
-    const lock = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87]);
-    const ptr = { bytes: Uint8Array.from([...lock, 1]), index: 0 };
-
-    expect(decodeAddress(ptr)).toBe(hexlify(lock));
-    expect(ptr.index).toBe(35);
-    expect(decodeBool(ptr)).toBe(true);
-  });
-
-  it('advances exactly 20 bytes for a Solidity identity before trailing fields', () => {
+  it('advances exactly 20 bytes for a packed identity before trailing fields', () => {
     const identity = new Uint8Array(20).fill(0x23);
     const amount = new Uint8Array(32);
     amount[31] = 5;
@@ -26,14 +19,13 @@ describe('Marketplace packed-address decoding', () => {
     expect(decodeAddress(ptr)).toBe(getAddress(hexlify(identity)));
     expect(ptr.index).toBe(20);
     expect(decodeUint256(ptr)).toBe(5n);
-    expect(decodeUint16(ptr)).toBe(120);
+    expect(decodeUint32(ptr)).toBe(120);
     expect(decodeString(ptr)).toBe('digital');
   });
 
-  it('uses the declared token width when a 20-byte identity resembles a native lock', () => {
-    const token = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(18).fill(0x23)]);
+  it('reads a created event whose address fields are packed identities', () => {
+    const token = new Uint8Array(20).fill(0x23);
     const amount = new Uint8Array(32);
-    amount[14] = 0x87;
     amount[31] = 5;
     const payload = Uint8Array.from([
       0, // empty title
@@ -50,7 +42,7 @@ describe('Marketplace packed-address decoding', () => {
 
     const event = decodeJobCreatedEvent(payload);
     expect(event.token).toBe(getAddress(hexlify(token)));
-    expect(event.amount).toBe(BigInt(hexlify(amount)));
+    expect(event.amount).toBe(5n);
     expect(event.maxTime).toBe(120);
     expect(event.deliveryMethod).toBe('digital');
   });

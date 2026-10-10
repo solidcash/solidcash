@@ -11,7 +11,7 @@ describe('Marketplace encrypted payloads', () => {
     expect(decryptBinaryData(encrypted, undefined)).toEqual(data);
   });
 
-  it('uses fresh 24-byte WebCrypto nonces and roundtrips encrypted payloads', () => {
+  it('uses fresh 24-byte nonces and roundtrips encrypted payloads', () => {
     const data = new TextEncoder().encode('private message');
     const key = hexlify(new Uint8Array(32).fill(0x42));
     const first = encryptBinaryData(data, key);

@@ -4,5 +4,6 @@ artifacts-real/
 
 cache/
 
-# The sibling project's marketplace test, linked in by vitest.config.ts
+# The sibling project's sources and marketplace test, linked in by vitest.config.ts
+/src/
 test/marketplace.test.ts

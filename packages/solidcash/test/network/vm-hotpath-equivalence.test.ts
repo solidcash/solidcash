@@ -16,11 +16,12 @@ import { createVirtualMachineBch2026ForProvider } from '../../src/network/create
 import { readComputedDeclaration } from '../../src/framed/deploy/declaration.js';
 
 /**
- * The large-input machine (`maximumInputBytes` above 10,000: the framed path) replaces some of libauth's operations
- * and its per-operation limit check with cheaper equivalents: OP_ACTIVEBYTECODE and OP_INPUTBYTECODE push without
- * copying, OP_SPLIT reads its index without a string round trip, and the limit check reads its limits once. Each
- * program here runs on that machine and on libauth's own instruction set under the same consensus, and every outcome
- * a caller reads must agree: the verdict, the error, the stacks, the counters and the metrics.
+ * The large-input machine (`maximumInputBytes` above 10,000: the framed path) replaces libauth's per-operation limit
+ * check with a cheaper equivalent that reads its limits once, and traces OP_PICK and OP_SPLIT; the zero-copy stack
+ * operations, the cached OP_ACTIVEBYTECODE encoding and the OP_INPUTBYTECODE push without a copy now come from
+ * libauth itself. Each program here runs on that machine and on libauth's own instruction set under the same
+ * consensus, and
+ * every outcome a caller reads must agree: the verdict, the error, the stacks, the counters and the metrics.
  */
 
 type Machine = ReturnType<typeof createVirtualMachineBch2026ForProvider>;

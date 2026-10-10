@@ -109,7 +109,35 @@ export function normaliseSourceMapLocationData(locationData: FullLocationData): 
   return normalised;
 }
 
+/**
+ * The parsed location data of a source map, keyed by the map itself.
+ *
+ * The parse is a pure function of the string and is not cheap: a framed master's map is 40,000-104,000 entries, and
+ * a derivation that names a refused frame reads the same map once per attempt. The cache is bounded, so a long run
+ * over many artifacts keeps a few maps rather than all of them. The result is shared between callers, so callers
+ * read it and do not write to it.
+ */
+const locationDataCache = new Map<string, FullLocationData>();
+const LOCATION_DATA_CACHE_LIMIT = 8;
+
 export const sourceMapToLocationData = (sourceMap: string): FullLocationData => {
+  const cached = locationDataCache.get(sourceMap);
+  if (cached !== undefined) {
+    // Reinsert on a hit so the limit evicts the map a run has stopped reading.
+    locationDataCache.delete(sourceMap);
+    locationDataCache.set(sourceMap, cached);
+    return cached;
+  }
+  const parsed = parseSourceMapToLocationData(sourceMap);
+  if (locationDataCache.size >= LOCATION_DATA_CACHE_LIMIT) {
+    const oldest = locationDataCache.keys().next();
+    if (oldest.done !== true) locationDataCache.delete(oldest.value);
+  }
+  locationDataCache.set(sourceMap, parsed);
+  return parsed;
+};
+
+const parseSourceMapToLocationData = (sourceMap: string): FullLocationData => {
   if (!sourceMap) return [];
   let prevStartLine = 0;
   let prevStartColumn = 0;

@@ -14,10 +14,17 @@ import { createVirtualMachineBch2026ForProvider } from '../../../src/network/cre
 import { readComputedDeclaration } from '../../../src/framed/deploy/declaration.js';
 
 /**
- * The framed machine keeps the operands of the failed OP_EQUALVERIFY an evaluation stops on, so reading the
- * declaration of a program it has just evaluated needs no second run. Each reading here is compared with the one a
- * fresh machine takes from its bounded re-run and with the one libauth's full trace gives, and the re-runs are
- * counted: a program evaluated to a close is read without one, and every other stop is read from a run as before.
+ * The framed machine answers a declaration reading three ways, and each reading here is compared with libauth's own
+ * full trace and with the walk the composer used to pay:
+ *
+ *   - a program the machine has just evaluated to a close keeps that close's two operands, so the reading needs no
+ *     further run;
+ *   - any other program is run once, plainly, and the close its stop failed on is read back from the same recorder
+ *     (the plain run walks nothing: `boundedDebug` steps every instruction to recover operands the recorder already
+ *     holds);
+ *   - a stop that is not a close, and a machine without the extension, are read from the bounded walk.
+ *
+ * The walks and the plain runs are counted, so a change that quietly puts a reading back on the walk trips here.
  */
 
 type Machine = ReturnType<typeof createVirtualMachineBch2026ForProvider>;
@@ -52,17 +59,28 @@ const reference = createVirtualMachine(createInstructionSetBch2026(true, {
   ripemd160, secp256k1, sha1, sha256,
 } as never)) as unknown as Machine;
 
-/** A provider machine of its own (machines are cached per provider), with its bounded re-runs counted. */
-function countedMachine(): { readonly vm: Machine; readonly reruns: () => number } {
+/** A provider machine of its own (machines are cached per provider), with its walks and its plain runs counted. */
+function countedMachine(): {
+  readonly vm: Machine; readonly walks: () => number; readonly plainRuns: () => number;
+} {
   const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: LIMITS } as unknown as NetworkProvider);
-  const bounded = vm as unknown as { boundedDebug: (program: Program) => unknown };
-  const run = bounded.boundedDebug;
-  let count = 0;
-  bounded.boundedDebug = (program) => {
-    count += 1;
-    return run(program);
+  const bounded = vm as unknown as {
+    boundedDebug: (program: Program) => unknown;
+    evaluateClose: (program: Program) => unknown;
   };
-  return { vm, reruns: () => count };
+  const walk = bounded.boundedDebug;
+  const plain = bounded.evaluateClose;
+  let walks = 0;
+  let plainRuns = 0;
+  bounded.boundedDebug = (program) => {
+    walks += 1;
+    return walk(program);
+  };
+  bounded.evaluateClose = (program) => {
+    plainRuns += 1;
+    return plain(program);
+  };
+  return { vm, walks: () => walks, plainRuns: () => plainRuns };
 }
 
 const read = (vm: Machine, program: Program): ReturnType<typeof readComputedDeclaration> =>
@@ -150,31 +168,37 @@ const closes: Array<{ name: string; program: Program; expected: Record<string, u
 ];
 
 describe('the declaration an evaluation stopped on', () => {
-  it.each(closes)('is read without a re-run for $name', ({ program, expected }) => {
-    const { vm, reruns } = countedMachine();
+  it.each(closes)('is read without a run of its own for $name', ({ program, expected }) => {
+    const { vm, walks, plainRuns } = countedMachine();
     expect(vm.stateSuccess(vm.evaluate(program))).not.toBe(true);
     const captured = read(vm, rebuilt(program));
-    expect(reruns()).toBe(0);
+    expect(walks()).toBe(0);
+    // The close the evaluation kept, not a run: neither the walk nor a plain run was needed.
+    expect(plainRuns()).toBe(0);
     const fresh = countedMachine();
-    const rerun = read(fresh.vm, program);
-    expect(fresh.reruns()).toBe(1);
-    expect(captured).toEqual(rerun);
+    const unanswered = read(fresh.vm, program);
+    // One plain run, and no walk: the recorder holds what the walk would recover.
+    expect(fresh.walks()).toBe(0);
+    expect(fresh.plainRuns()).toBe(1);
+    expect(captured).toEqual(unanswered);
     expect(captured).toEqual(read(reference, program));
     expect(captured).toEqual(expected);
   });
 
   it('is read again for a later reading of the same content, after other evaluations', () => {
-    const { vm, reruns } = countedMachine();
+    const { vm, walks, plainRuns } = countedMachine();
     const { program } = closes[1]!;
     vm.evaluate(program);
     vm.evaluate(programFor(script(Op.OP_DROP, Op.OP_1), [placeholder]));
     expect(read(vm, rebuilt(program))).toEqual(read(reference, program));
     expect(read(vm, program)).toEqual(read(reference, program));
-    expect(reruns()).toBe(0);
+    // The close the first evaluation kept still answers for both readings, by content, and neither walks.
+    expect(walks()).toBe(0);
+    expect(plainRuns()).toBe(0);
   });
 });
 
-describe('a reading the evaluation cannot answer is re-run', () => {
+describe('a reading no close can answer is walked', () => {
   const close = closes[0]!.program;
 
   it.each([
@@ -194,33 +218,37 @@ describe('a reading the evaluation cannot answer is re-run', () => {
       reason: 'no-trace',
     },
   ])('for $name', ({ program, reason }) => {
-    const { vm, reruns } = countedMachine();
+    const { vm, walks, plainRuns } = countedMachine();
     vm.evaluate(program);
     const reading = read(vm, program);
-    expect(reruns()).toBe(1);
+    // One plain run to find the stop, then the walk it cannot answer.
+    expect(plainRuns()).toBe(1);
+    expect(walks()).toBe(1);
     expect(reading).toEqual(read(reference, program));
     expect(reading).toMatchObject({ ok: false, reason });
   });
 
   it('for a program other than the one evaluated', () => {
-    const { vm, reruns } = countedMachine();
+    const { vm, walks, plainRuns } = countedMachine();
     vm.evaluate(close);
     const other = programFor(script(record, Op.OP_SHA256, Op.OP_SWAP, Op.OP_EQUALVERIFY, Op.OP_1), [bytes(32, 0xdd)]);
     const reading = read(vm, other);
-    expect(reruns()).toBe(1);
+    expect(walks()).toBe(0);
+    expect(plainRuns()).toBe(1);
     expect(reading).toEqual(read(reference, other));
     expect(reading).toMatchObject({ ok: true, declared: bytes(32, 0xdd) });
   });
 
   it('for the evaluated program changed in place after its run', () => {
-    const { vm, reruns } = countedMachine();
+    const { vm, walks, plainRuns } = countedMachine();
     const program = rebuilt(close);
     vm.evaluate(program);
     // The placeholder's first byte, just past its push opcode, written over in the program the machine ran.
     const { unlockingBytecode } = program.transaction.inputs[0]!;
     unlockingBytecode[1] = 0xdd;
     const reading = read(vm, program);
-    expect(reruns()).toBe(1);
+    expect(walks()).toBe(0);
+    expect(plainRuns()).toBe(1);
     expect(reading).toEqual(read(reference, program));
     expect(reading).toMatchObject({ ok: true, declared: Uint8Array.from([0xdd, ...bytes(31, 0xee)]) });
   });
@@ -229,9 +257,11 @@ describe('a reading the evaluation cannot answer is re-run', () => {
     const overridden = countedMachine();
     overridden.vm.evaluate(close, { stateOverride: {} } as never);
     expect(read(overridden.vm, close)).toEqual(read(reference, close));
-    expect(overridden.reruns()).toBe(1);
+    expect(overridden.walks()).toBe(0);
+    expect(overridden.plainRuns()).toBe(1);
     const idle = countedMachine();
     expect(read(idle.vm, close)).toEqual(read(reference, close));
-    expect(idle.reruns()).toBe(1);
+    expect(idle.walks()).toBe(0);
+    expect(idle.plainRuns()).toBe(1);
   });
 });

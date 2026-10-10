@@ -13,6 +13,7 @@
 
 import { bytesEqual, Op } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
+import { bumpFramedCounter } from '../composer/counters.js';
 
 /** Why a run's stop could not be read as a declaration close. */
 export type DeclarationReadingFailure =
@@ -42,6 +43,8 @@ type VirtualMachineProgram = Parameters<VirtualMachine['evaluate']>[0];
 type BoundedDebugVirtualMachine = VirtualMachine & {
   boundedDebug?: (program: VirtualMachineProgram) => readonly ProgramStateTrace[];
   recordedClose?: (program: VirtualMachineProgram) => ReadDeclaration | undefined;
+  /** One plain run of a program, with the close its stop failed on read back from the recorder. */
+  evaluateClose?: (program: VirtualMachineProgram) => ReadDeclaration | undefined;
 };
 
 /** The program state facts a stop's declaration is read from. */
@@ -69,12 +72,24 @@ export function readComputedDeclaration(options: {
   /** The largest value the caller will accept as a commitment. */
   readonly maximumCommitmentBytes: number;
 }): DeclarationReading {
+  bumpFramedCounter('declarationReads');
   const machine = options.vm as BoundedDebugVirtualMachine;
   // The machine's own evaluation of a program with this content stopped on a failed close and kept its operands:
   // they are the two items the trace below would read before that OP_EQUALVERIFY, so the program is not run again.
   // Any other stop, or a program of other content, is read from a run as before.
   const recorded = machine.recordedClose?.(options.program);
-  if (recorded !== undefined) return closeReading(recorded, options.maximumCommitmentBytes);
+  if (recorded !== undefined) {
+    bumpFramedCounter('recordedCloses');
+    return closeReading(recorded, options.maximumCommitmentBytes);
+  }
+  // One plain run of the program, which is cheaper than the walk below and yields the same two operands. A machine
+  // without the extension (a stock libauth VM, or a test's own) falls through to the walk.
+  const evaluated = machine.evaluateClose?.(options.program);
+  if (evaluated !== undefined) {
+    bumpFramedCounter('evaluatedCloses');
+    return closeReading(evaluated, options.maximumCommitmentBytes);
+  }
+  bumpFramedCounter('tracedCloses');
   const trace = (machine.boundedDebug?.(options.program)
     ?? options.vm.debug(options.program)) as unknown as readonly ProgramStateTrace[];
   const failed = trace.findIndex((state) => state.error !== undefined);

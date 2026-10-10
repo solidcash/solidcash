@@ -13,6 +13,7 @@ import { AuthenticationErrorBch2026 } from '@bitauth/libauth/build/lib/vm/instru
 import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import type NetworkProvider from './NetworkProvider.js';
+import { bumpFramedCounter } from '../framed/composer/counters.js';
 
 type DecodedInstructions = ReturnType<typeof decodeAuthenticationInstructions>;
 
@@ -1221,6 +1222,7 @@ function buildVirtualMachineBch2026ForProvider(
     // table included, at every instruction, which made this reader most of a hop's derivation time.
     type MachineState = Parameters<typeof machine.stateStep>[0];
     const boundedDebug = (program: Parameters<typeof machine.evaluate>[0]): readonly MachineState[] => {
+      bumpFramedCounter('steppedRuns');
       const states: MachineState[] = [];
       const collect = (initial: MachineState): MachineState => {
         let current = machine.stateClone(initial);
@@ -1248,6 +1250,8 @@ function buildVirtualMachineBch2026ForProvider(
         states.push(previous, current);
         return current;
       };
+      // A note the recorder left from an earlier run would otherwise be read as this program's own close.
+      if (closes !== undefined) closes.last = undefined;
       runPhases(program, {
         stateEvaluate: collect, stateInitialize: machine.stateInitialize, stateOverride: undefined,
       } as never);
@@ -1266,6 +1270,7 @@ function buildVirtualMachineBch2026ForProvider(
     | undefined;
     const evaluate = machine.evaluate;
     machine.evaluate = (program, options) => {
+      bumpFramedCounter('evaluations');
       recorder.last = undefined;
       const state = evaluate(program, options);
       const close = recorder.last as FailedClose | undefined;
@@ -1296,6 +1301,26 @@ function buildVirtualMachineBch2026ForProvider(
         ? { declared: Uint8Array.from(recorded.declared), computed: Uint8Array.from(recorded.computed) }
         : undefined);
     (machine as { recordedClose?: typeof recordedClose }).recordedClose = recordedClose;
+    // The close of a program this machine has not evaluated: one plain run of it, with the recorder's note read
+    // back. `boundedDebug` reads the same two operands by walking every instruction through `stateStepMutate`; this
+    // takes them from the run the machine would make anyway, so a caller that already holds the program pays one run
+    // instead of a walk. The guard is the wrapper's above: the run must have stopped on that close, and the note is
+    // cleared before the run so a note an earlier run left cannot be read as this program's.
+    const evaluateClose = (program: Program): { declared: Uint8Array; computed: Uint8Array } | undefined => {
+      recorder.last = undefined;
+      const state = runPhases(program, {
+        stateEvaluate: machine.stateEvaluate, stateInitialize: machine.stateInitialize,
+        stateOverride: undefined,
+      } as never) as unknown as
+        { readonly error?: unknown; readonly instructions: unknown; readonly ip: number };
+      const close = recorder.last as FailedClose | undefined;
+      recorder.last = undefined;
+      return close !== undefined && state.error !== undefined
+        && state.instructions === close.instructions && state.ip === close.ip + 1
+        ? { declared: Uint8Array.from(close.declared), computed: Uint8Array.from(close.computed) }
+        : undefined;
+    };
+    (machine as { evaluateClose?: typeof evaluateClose }).evaluateClose = evaluateClose;
   }
   return machine;
 }

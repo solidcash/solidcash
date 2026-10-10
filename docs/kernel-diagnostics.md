@@ -95,3 +95,13 @@ it reports each item's size plus bounded head/tail bytes, enough to distinguish 
 pending update without dumping full commitments. Avoid `SOLIDC_DEBUG_FAILURE_TRACE=1` on large invoked routes:
 its full VM replay can exhaust a worker's memory. `SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT=<index>` is a diagnostic
 isolation switch, not a passing-test gate: it deliberately skips the other inputs.
+
+`SOLIDC_DEBUG_FRAMED_COUNTS=1` counts the framed composer's own work — the plain call path's learning attempts,
+the derivation hosts it builds, the whole-composition and scoped derivations it runs, the hop's per-frame attempts,
+and each declaration read split by which of the three answers took it (a close the machine already recorded, one
+plain run, or the bounded walk). It is observational: no plan, program or verdict changes, and with the switch unset
+every bump is one `false` test. The running totals are logged as `framed-composer-counts {...}` every 128 plain-path
+attempts, which is what a lane log can read (a worker's exit-time output is dropped by the test runner); a test can
+read them directly through `framedComposerCounts()` in `packages/solidcash/src/framed/composer/counters.ts`.
+Use it to size a title's cost before changing the loop, and compare the same title before and after a change.
+`docs/framed/NOPROXY_LANE_COST.md` is the reading that motivated it.

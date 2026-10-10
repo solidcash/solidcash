@@ -131,6 +131,7 @@ import {
   NO_CALLEE_VALUES, FramedCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, deriveThroughFrame,
   learnCalleeValue, planEntryCallees, scopedCalleeFrame, type CalleeValues, type PlannedCallees,
 } from './callees.js';
+import { bumpFramedCounter } from '../composer/counters.js';
 import { deploymentStateValues } from '../proxy/external-calls.js';
 import { FramedReadError, decodeReturnValues } from '../read/index.js';
 import {
@@ -1751,6 +1752,7 @@ async function callInShape(
   // commitment keeps a record past the composer's default of 128 bytes, and a view the composer would not learn leaves
   // the record's close comparing the body's commitment with a placeholder.
   const composeCandidate = (plan: CompositionDraftPlan): ReturnType<typeof createComposedDerivationHost> => {
+    bumpFramedCounter('hosts');
     const composed = createComposedDerivationHost({
       vm: machine, artifacts: frameArtifacts, plan, maximumCommitmentBytes,
     });
@@ -1780,6 +1782,7 @@ async function callInShape(
     let answered: CalleeValues | undefined;
     try {
       const { host, draft: scoped } = composeCandidate(plan);
+      bumpFramedCounter('scopedDerivations');
       if (deriveThroughFrame([...payeeRequests, root], host, frameMaster, { onCalleeStall: () => undefined })) {
         answered = learnCalleeValue({
           planned: calleePlan, draft: scoped, host, vm: machine, maximumCommitmentBytes, values: calleeValues,
@@ -1794,6 +1797,7 @@ async function callInShape(
     return answered;
   };
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    bumpFramedCounter('attempts');
     const plan = buildPlan(
       learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
       learnedTypedValues,
@@ -1815,6 +1819,7 @@ async function callInShape(
       // callees and keeps going past one that refuses (`settleCallees`): a frame the plan states past the entry's own
       // revert closes nothing, and the entry still runs to that revert, binding the calls it makes before it, so the
       // machine's verdict below names its reason rather than the first record the stall left unbound.
+      bumpFramedCounter('derivations');
       completed = deriveComposition([...payeeRequests, root], host, {
         onCalleeStall: () => undefined,
       }).completed;

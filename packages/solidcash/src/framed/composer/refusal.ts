@@ -130,11 +130,30 @@ export function describeInnermost(frame: RefusedFrame | undefined): string {
 function debugSkew(artifact: Artifact, program: Uint8Array): number {
   const sourceMap = artifact.debug?.sourceMap;
   if (sourceMap === undefined || sourceMap.length === 0) return 0;
-  const entries = sourceMap.split(';').length;
+  const entries = sourceMapEntryCount(sourceMap);
   const instructions = decodeAuthenticationInstructions(program).length;
   // Only a shorter program is a head the debug metadata does not carry; a program with as many instructions as
   // the map has entries is already described one-to-one.
   return Math.max(0, entries - instructions);
+}
+
+/**
+ * The entry count of a source map: the map's own length as text, which never changes for one map.
+ *
+ * A framed master's map is 40,000-104,000 entries, so splitting it allocates that many strings; the refusal of a
+ * frame reads the skew once, and the learning loop refuses on most of its iterations.
+ */
+const sourceMapEntryCounts = new Map<string, number>();
+function sourceMapEntryCount(sourceMap: string): number {
+  const cached = sourceMapEntryCounts.get(sourceMap);
+  if (cached !== undefined) return cached;
+  const count = sourceMap.split(';').length;
+  if (sourceMapEntryCounts.size >= 8) {
+    const oldest = sourceMapEntryCounts.keys().next();
+    if (oldest.done !== true) sourceMapEntryCounts.delete(oldest.value);
+  }
+  sourceMapEntryCounts.set(sourceMap, count);
+  return count;
 }
 
 /** The custom error a `revert <Error>(...)` message names, resolved against the artifact's error ABI. */

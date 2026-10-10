@@ -62,6 +62,7 @@ import {
   type DraftMaster, type DraftRecordEntry, type DraftSourceOutput, type FrameRequest, type RecoverySideCars,
   type ShippedVmProgram,
 } from '../composer/index.js';
+import { bumpFramedCounter } from '../composer/counters.js';
 import { eventCloseOf, readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
 import {
   adjacentRecordOrder, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices, orderLoopKeyArgs,
@@ -1610,6 +1611,7 @@ async function settleCallees(options: {
       + (calleeEvents.get(callee.master)?.length ?? 0)
       + enclosingCandidateCount(options.callees, calleeIndex);
     for (let attempt = 0; attempt < attempts; attempt += 1) {
+      bumpFramedCounter('hopAttempts');
       const plan = options.planFor(learned, writeViews, writeValues, calleeEvents);
       const candidate = createComposedDerivationHost({ vm: options.vm, artifacts: options.artifacts, plan });
       if (trace) {
@@ -1645,6 +1647,7 @@ async function settleCallees(options: {
           contract: callee.contract, functionName: callee.functionName, kind: callee.kind, master: callee.master,
         };
         try {
+          bumpFramedCounter('hopDerivations');
           deriveComposition([frame], candidate.host);
           if (trace) {
             hopTrace(`stop callee=${callee.master} reason=derived `

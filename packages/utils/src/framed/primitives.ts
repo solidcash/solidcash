@@ -184,10 +184,28 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
 /**
  * The minimal push of `data`, byte-identical to libauth's `encodeDataPush`: an empty push is OP_0, a single byte 1..16
  * is OP_N and 0x81 is OP_1NEGATE, up to 75 bytes is a direct push, then PUSHDATA1/2/4 with a little-endian length.
- * Copies `data` once: libauth spreads every byte into an array, and the framed derivation pushes whole redeem
- * scripts for every program it evaluates.
+ * The framed derivation pushes whole redeem scripts for every program it evaluates, so a push of a buffer it already
+ * pushed is returned as it was built; see `minimalPushCache`.
  */
 export function encodeMinimalDataPush(data: Uint8Array): Uint8Array {
+  const cached = minimalPushCache.get(data);
+  if (cached !== undefined) return cached;
+  const push = minimalDataPush(data);
+  minimalPushCache.set(data, push);
+  return push;
+}
+
+/**
+ * The encoded push last built for a buffer. The framed composer pushes the same redeem script (thousands of bytes)
+ * and the same argument buffers on every attempt, and each push is a fresh copy; remembering it removes that copy.
+ * Keyed on the buffer itself, so a rewritten or freshly built array misses instead of reusing an old push.
+ *
+ * The push is handed out as it is stored, so both the input and the result are treated as immutable. The framed code
+ * builds unlocking bytecode by concatenation, never by writing into a push it was given.
+ */
+const minimalPushCache = new WeakMap<Uint8Array, Uint8Array>();
+
+function minimalDataPush(data: Uint8Array): Uint8Array {
   const { length } = data;
   if (length === 0) return Uint8Array.of(0x00);
   if (length === 1 && data[0] !== 0 && data[0] <= 16) return Uint8Array.of(data[0] + 0x50);

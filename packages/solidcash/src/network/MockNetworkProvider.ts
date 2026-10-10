@@ -297,7 +297,14 @@ export default class MockNetworkProvider implements NetworkProvider {
   private snapshotNonce = 0;
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
   /** The live UTXO set as of one store write count; see `liveUtxoEntries`. */
-  private liveUtxoView?: { storage: object; generation: number; entries: readonly LiveUtxoEntry[] };
+  private liveUtxoView?: {
+    storage: object;
+    generation: number;
+    entries: readonly LiveUtxoEntry[];
+    /** Positions in `entries` by category hex, and by its 64-character prefix when a capability byte follows. */
+    byCategory: ReadonlyMap<string, readonly number[]>;
+  };
+
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
   private preparedTransaction?: PreparedTransaction;
@@ -397,10 +404,16 @@ export default class MockNetworkProvider implements NetworkProvider {
       const reversed = binToHex(hexToBin(categoryId).reverse());
       wanted.add(reversed.toLowerCase());
     } catch { /* not hex */ }
+    const entries = this.liveUtxoEntries();
+    const byCategory = this.liveUtxoView?.byCategory;
+    const positions = new Set<number>();
+    for (const key of wanted) {
+      for (const at of byCategory?.get(key) ?? []) positions.add(at);
+    }
     const found: Utxo[] = [];
-    for (const entry of this.liveUtxoEntries()) {
-      const category = entry.tokenData?.category?.toLowerCase() ?? '';
-      if (!wanted.has(category) && !wanted.has(category.slice(0, 64))) continue;
+    // The answer keeps the set's own order, so the matches are walked by their position rather than by category.
+    for (const at of [...positions].sort((left, right) => left - right)) {
+      const entry = entries[at]!;
       // Every read shares the view until the next write, so each match is a fresh copy.
       found.push({
         txid: entry.outpoint.txid,
@@ -430,7 +443,21 @@ export default class MockNetworkProvider implements NetworkProvider {
     const live: typeof snap.utxos = new Map(snap.utxos);
     for (const key of snap.mempoolSpends.keys()) live.delete(key);
     for (const [key, entry] of snap.mempoolUtxos) live.set(key, entry);
-    this.liveUtxoView = { storage, generation, entries: [...live.values()] };
+    const entries = [...live.values()];
+    // A read by category walks the whole set otherwise, and a composed transaction carries tens of thousands of
+    // entries. One pass here indexes each entry under its category, and under its 64-character prefix as well when
+    // a capability byte follows it, which is what the read matches on.
+    const byCategory = new Map<string, number[]>();
+    entries.forEach((entry, at) => {
+      const category = entry.tokenData?.category?.toLowerCase() ?? '';
+      if (category === '') return;
+      for (const key of category.length > 64 ? [category, category.slice(0, 64)] : [category]) {
+        const list = byCategory.get(key);
+        if (list === undefined) byCategory.set(key, [at]);
+        else list.push(at);
+      }
+    });
+    this.liveUtxoView = { storage, generation, entries, byCategory };
     return this.liveUtxoView.entries;
   }
 

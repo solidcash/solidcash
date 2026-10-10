@@ -107,6 +107,49 @@ After the sweep `yarn spellcheck` exits 0 with zero issues. The public `website/
 own right (79 files, 0 issues): its one incident word was reworded and `hdsigner` was recorded, since it names a
 published `solidcash` subpath.
 
+## 6. The unmerged worktrees: the ideas taken, measured
+
+Measured 2026-10-10 on `feat/per-call`. Eight unmerged worktrees were reviewed and the ideas in two of them were
+re-implemented by hand rather than merged; one idea was rejected on measurement. The per-operation numbers are
+`npx tsx` micro-benchmarks of this branch's own code (10,000-20,000 warm iterations); a "per title" figure scales
+them by the counts the composer instrument already records for `take job` (128 attempts, 127 hosts, 2,362
+evaluations).
+
+| change | where | before | after | scale |
+|---|---|---|---|---|
+| the minimal push of a repeated 9.4 KB redeem script | `utils/framed/primitives.ts` | 8,477 ns | 74 ns | the script is pushed once per master, and every attempt repeated it |
+| the argument + redeem tail of a master's unlocking bytecode | `utils/framed/witness-block.ts` | 24,575 ns | 8,292 ns | about 16 us saved per attempt, so about 2 ms per title |
+| the P2SH argument stack: `structuredClone` becomes a slice that shares items | `network/createVirtualMachine.ts` | 6.5 us (196 B block), 8.2 us (2 KB), 76.8 us (100 KB) | 66 ns, 51 ns, 49 ns | 2,362 evaluations: about 15 ms at 196 B, about 190 ms at 100 KB |
+| the host's stop stack: a hex fingerprint becomes a byte comparison | `framed/composer/shipped-host.ts` | 51,831 ns | 1,559 ns | about 50 us saved per host run, so about 6 ms per title |
+| the composer's placeholder rewrite: a full walk becomes an index | `framed/composer/draft.ts` | 25.9 ms at 20k entries x 60 learned; 193.5 ms at 20k x 600 | 16.6 ms; 16.7 ms | one pass per learned value removed: 177 ms at (20k, 600) |
+| a filled master, remembered per (artifact, category, program) | `framed/deploy/material.ts` | 80.8 us | 0.18 us | once per repeated deployment |
+| the live UTXO read by token category: a scan becomes an index | `network/MockNetworkProvider.ts` | 2.87 ms at 20k entries | 5.5 us | once per read |
+| the last `it()` of `IterableMappingSet.test.ts` takes 300 s | `test/e2e/IterableMappingSet.test.ts` | the case runs in 1 s | - | a CI guard, not a win |
+
+Qualification:
+
+- Every entry removes work proportional to a property of the composition - witness-block size, live-set size,
+  placeholders times records, repeated deployments - so none is a fixed per-title delta. The bundle sits below the
+  resolution of one title comparison: the recorded day-to-day swing on `take job` is 20-50 s, and the wins above sum
+  to tens of milliseconds for the shapes measured. They matter as removed work per operation, not as a title time.
+- One idea was rejected on measurement. The incremental `operationCost` accumulator from `.worktrees/framed-vm-wins`
+  (a running total per metrics object in place of the five-term product) costs 31.7 ns per opcode against the landed
+  5.0 ns - **6.33x** - and was not ported.
+- The P2SH clone removal is the one semantics-carrying change: the redeem phase shares the stack items instead of
+  deep copies of them. libauth's instruction sets assign no stack slot and call no mutating method on an item, and the
+  operations this SDK installs only read them, so an item cannot change under the phase that produced it. The array
+  itself is still isolated by the slice.
+- Two rules the port had to respect, both asserted by the suite: a cache keyed on an artifact must re-check
+  `artifact.bytecode` (`test/framed/deploy/program-format.test.ts`), and the host's stop comparison must compare stack
+  bytes rather than array identity, or a fill that changed nothing would read as progress.
+
+Not taken, with the reason: the `rescue/main-checkout` lane (its content was rescued onto this branch under new
+hashes), the kernel-row-loop lanes (`grok/message-bus-kernel`, `kernel-return-helper-isolated`, `eacc-batch1-gate`,
+`codex/eacc-noproxy` - superseded, and 0-70 of their files were rewritten here), the outline worktree's fifth commit
+(measured to break five Unicrow e2e tests, and its only safe guard is a no-op), the `PERF_HANDOFF_KERNEL_BETA.md` note,
+the EACC local-model harness (`codex/solidhat-marketplace-mock` - it mocks what the release gate exists to execute),
+and the scratch configs of the measurement worktrees.
+
 ## 5. Root-level working notes (repository cleanliness, not packaging)
 
 40 tracked `*.md` files sit at the repository root, 34,496 lines in total. 26 of them are agent working notes,

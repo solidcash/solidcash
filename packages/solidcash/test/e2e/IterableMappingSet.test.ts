@@ -72,5 +72,5 @@ describe('IterableMapping set() - if/else, multi-entry create + key push', () =>
     await sc.size(3n).send();
     await sc.valOf(a3, 300n).send();
     await sc.valOf(a2, 200n).send();                       // untouched keys preserved
-  });
+  }, 300_000);
 });

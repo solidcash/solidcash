@@ -322,14 +322,41 @@ export function readOwnWitnessBlock(
 }
 
 /** Unlocking bytecode for a master: the witness block push, the argument pushes, then the redeem script. */
+/**
+ * The argument pushes and the redeem-script push of one master, already concatenated.
+ *
+ * The witness block in front of them is rebuilt on every attempt, because it states the calls and the records that
+ * the attempt is about; the tail behind it is the same bytes every time for a given master, and a redeem script is
+ * up to ten kilobytes. Keyed on the argument array and the program buffer, so a rebuilt program or a changed
+ * argument list misses rather than reusing an old push.
+ */
+const masterTails = new WeakMap<Uint8Array, WeakMap<readonly Uint8Array[], Uint8Array>>();
+
+function masterTail(argumentPushes: readonly Uint8Array[], redeemScript: Uint8Array): Uint8Array {
+  let byArguments = masterTails.get(redeemScript);
+  if (byArguments === undefined) {
+    byArguments = new WeakMap();
+    masterTails.set(redeemScript, byArguments);
+  }
+  const cached = byArguments.get(argumentPushes);
+  if (cached !== undefined) return cached;
+  const tail = concatBytes([
+    ...argumentPushes.map((argument) => encodeMinimalDataPush(argument)),
+    encodeMinimalDataPush(redeemScript),
+  ]);
+  byArguments.set(argumentPushes, tail);
+  return tail;
+}
+
 export function buildMasterUnlockingBytecode(
   block: WitnessBlock,
   argumentPushes: readonly Uint8Array[],
   redeemScript: Uint8Array,
 ): Uint8Array {
-  return concatBytes([
-    encodeWitnessBlockPush(block),
-    ...argumentPushes.map((argument) => encodeMinimalDataPush(argument)),
-    encodeMinimalDataPush(redeemScript),
-  ]);
+  const witness = encodeWitnessBlockPush(block);
+  const tail = masterTail(argumentPushes, redeemScript);
+  const out = new Uint8Array(witness.length + tail.length);
+  out.set(witness, 0);
+  out.set(tail, witness.length);
+  return out;
 }

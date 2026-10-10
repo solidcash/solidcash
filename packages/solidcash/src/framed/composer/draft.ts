@@ -95,6 +95,12 @@ const MAXIMUM_STACK_ITEM_BYTES = 10_000;
 /** What a facet UTXO a composition supplies is worth. A facet holds no token and pays its own input's fee share. */
 export const FACET_SATOSHIS = 10_000n;
 
+/** The entries that carry one view, by the side of the record the view sits on. */
+interface ViewSites {
+  viewIn: RecordEntry[];
+  viewOut: RecordEntry[];
+}
+
 /**
  * One record entry as a plan states it.
  *
@@ -727,6 +733,40 @@ export function composeDraft(
   });
 
   /**
+   * The composition's entries by the view they currently carry, built when the first value is learned.
+   *
+   * Learning a placeholder rewrites every entry that carries it, and the walk that finds those entries is a pass over
+   * every record of every master; the composer learns one value per iteration, so the walk was paid per learned value
+   * over a composition that does not change shape. The index turns each rewrite into a lookup, and an entry the
+   * rewrite moved is re-keyed under the value it now carries, which is what a later placeholder equal to those bytes
+   * would have matched by comparison.
+   */
+  let viewSites: Map<string, ViewSites> | undefined;
+  const sitesByView = (): Map<string, ViewSites> => {
+    if (viewSites !== undefined) return viewSites;
+    const index = new Map<string, ViewSites>();
+    const note = (bytes: Uint8Array, entry: RecordEntry, side: 'viewIn' | 'viewOut'): void => {
+      const key = bytesToHex(bytes);
+      let sites = index.get(key);
+      if (sites === undefined) {
+        sites = { viewIn: [], viewOut: [] };
+        index.set(key, sites);
+      }
+      sites[side].push(entry);
+    };
+    for (const block of blocks.values()) {
+      for (const segment of block.segments) {
+        for (const entry of segment) {
+          note(entry.viewIn, entry, 'viewIn');
+          note(entry.viewOut, entry, 'viewOut');
+        }
+      }
+    }
+    viewSites = index;
+    return index;
+  };
+
+  /**
    * Replaces every unstated written view and every side-car witness the running program binds with the value it
    * computed.
    *
@@ -769,12 +809,22 @@ export function composeDraft(
         // A later declaration of the same record that starts where this one ended names this placeholder as its
         // start view — and a declaration that holds the record names it on both sides — so each carries the learned
         // value on rather than the placeholder the plan could not resolve.
-        for (const block of blocks.values()) {
-          for (const segment of block.segments) {
-            for (const other of segment) {
-              if (bytesEqual(other.viewIn, placeholder)) other.viewIn = learned;
-              if (bytesEqual(other.viewOut, placeholder)) other.viewOut = learned;
+        const placeholderKey = bytesToHex(placeholder);
+        const sites = sitesByView().get(placeholderKey);
+        if (sites !== undefined) {
+          for (const other of sites.viewIn) other.viewIn = learned;
+          for (const other of sites.viewOut) other.viewOut = learned;
+          const learnedKey = bytesToHex(learned);
+          if (learnedKey !== placeholderKey) {
+            const index = sitesByView();
+            index.delete(placeholderKey);
+            let next = index.get(learnedKey);
+            if (next === undefined) {
+              next = { viewIn: [], viewOut: [] };
+              index.set(learnedKey, next);
             }
+            next.viewIn.push(...sites.viewIn);
+            next.viewOut.push(...sites.viewOut);
           }
         }
         views.delete(key);

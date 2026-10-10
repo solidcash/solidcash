@@ -257,12 +257,14 @@ function installCachedP2shEvaluator(
         `Top stack item: "${binToHex(top)}".`,
       );
     }
-    // Exclude the authenticated redeem script before deep-cloning the argument stack. Cloning it only to pop it
-    // immediately is particularly expensive for generated contracts, while cloning the evaluated arguments keeps
-    // libauth's isolation semantics for the P2SH execution.
-    const unlockingStack = [...unlockingResult.stack];
+    // Isolate the redeem phase's stack from the locking phase's and share the items themselves. No operation writes
+    // into a stack item: libauth's instruction sets assign no slot and call no mutating method on one, and the
+    // operations this module installs only read them, so nothing can change an item under the phase that produced
+    // it. Deep-copying those items was the largest single cost of evaluating a generated contract, whose argument
+    // stack is the unlocked program's own pushes.
+    const unlockingStack = unlockingResult.stack.slice();
     const p2shScript = unlockingStack.pop() ?? Uint8Array.of();
-    const p2shStack = structuredClone(unlockingStack);
+    const p2shStack = unlockingStack;
     if (p2sh20 && p2shStack.length === 0 && isWitnessProgram(p2shScript)) return lockingResult;
     const p2shInstructions = decodeCachedP2sh(provider, lockingBytecode, p2shScript);
     const p2shResult = authenticationInstructionsAreMalformed(p2shInstructions)

@@ -110,11 +110,33 @@ function programBytes(artifact: Artifact): Uint8Array {
   return program;
 }
 
+/**
+ * Filled masters, by the artifact's published bytecode, the category buffer and the validator program buffer.
+ *
+ * Filling walks the program's declared slots, copies the whole program and hashes it for the master lock: about
+ * 85 us for a six-kilobyte program, most of it the hash. A deployment fills the same master again for every runtime
+ * instance it creates, so the answer is remembered. The entry is only used while the artifact publishes the bytecode
+ * it was filled from, the rule this file's program cache already follows.
+ *
+ * Keyed on the two buffers the caller passes, which a deployment reuses, so the lookup does no work of its own: a
+ * caller that builds an equal category or program afresh misses and pays the fill again.
+ */
+interface FilledMasters {
+  bytecode: string;
+  byCategory: WeakMap<Uint8Array, WeakMap<Uint8Array, DeployedMaster>>;
+}
+const filledMasters = new WeakMap<Artifact, FilledMasters>();
+
 export function deployMaster(
   artifact: Artifact,
   category: Uint8Array,
   validatorProgram: Uint8Array,
 ): DeployedMaster {
+  const filled = filledMasters.get(artifact);
+  const cached = filled?.bytecode === artifact.bytecode
+    ? filled.byCategory.get(category)?.get(validatorProgram)
+    : undefined;
+  if (cached !== undefined) return cached;
   const placeholders = requirePlaceholders(artifact);
   const address = validatorAddress(category, validatorProgram);
   const original = programBytes(artifact);
@@ -130,7 +152,19 @@ export function deployMaster(
     contractAddress: address,
     ...(templateHash === undefined ? {} : { templateHash }),
   });
-  return { script, address, lockingBytecode: masterLock(script) };
+  const deployed = { script, address, lockingBytecode: masterLock(script) };
+  let remembered = filledMasters.get(artifact);
+  if (remembered === undefined || remembered.bytecode !== artifact.bytecode) {
+    remembered = { bytecode: artifact.bytecode, byCategory: new WeakMap() };
+    filledMasters.set(artifact, remembered);
+  }
+  let byProgram = remembered.byCategory.get(category);
+  if (byProgram === undefined) {
+    byProgram = new WeakMap();
+    remembered.byCategory.set(category, byProgram);
+  }
+  byProgram.set(validatorProgram, deployed);
+  return deployed;
 }
 
 /**

@@ -447,7 +447,7 @@ unsafe_bool(intValue);   // type bool, content 25 / 0x19
 | `type(int8).min` / `.max` | integer | Range bounds of a bounded integer |
 | `type(fixed128x18).min` / `.max` | fixed | Range bounds of a fixed-point type |
 | `type(Status).min` / `.max` | integer | First and last enum value |
-| `type(IToken).interfaceId` | `bytes4` | EIP-165-style interface id (sha256-based, differs from EVM) |
+| `type(IToken).interfaceId` | `bytes4` | EIP-165-style interface id (sha256-based by default; real keccak256 under `evmCompat`) |
 | `type(MyContract).name` | `string` | Contract name |
 | `type(MyContract).creationCode` | `bytes` | Compiled redeem script of the contract |
 | `type(MyContract).runtimeCode` | `bytes` | Alias of `creationCode` (BCH has no creation/runtime split) |

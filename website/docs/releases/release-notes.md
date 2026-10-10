@@ -26,6 +26,20 @@ title: Release Notes
   payload that carries locks is longer (23/25/35 bytes per address), which matters at the 128-byte NFT commitment
   limit and for offset arithmetic over the payload. An explicitly chosen form is published on the artifact
   (`compiler.options.addressForm`), so the SDK reproduces the body's own packing when it derives a call.
+- :sparkles: Under `evmCompat`, a selector is derived from Solidity's **canonical** signature spelling: `uint256`
+  for `uint`, `int256` for `int`, `uint8` for an enum, the underlying type for a user-defined value type, a
+  parenthesized tuple for a struct, and `address` for a contract type or `address payable`. Entry dispatch, the
+  artifact ABI selectors, `type(I).interfaceId`, `fn.selector` / `error.selector` / `E.selector`, `msg.sig`,
+  `abi.encodeCall` and the argument matching of `abi.encodeWithSignature` now derive from that one spelling, so each
+  matches solc. Native compiles keep the platform spelling with address payability erased.
+- :sparkles: Under `evmCompat`, `abi.encodeWithSignature` accepts a signature built at runtime. A non-literal
+  signature lowers to `abi.encodeWithSelector(bytes4(keccak256(bytes(sig))), ...)`, so the keccak256 computation
+  side-car supplies the digest; a literal signature still folds to its selector at compile time.
+- :sparkles: Under `evmCompat`, an event argument of statically known scalar width is written in **standard EVM
+  notation** - exactly the bytes `abi.encodePacked` produces at the type's natural width (a number as big-endian
+  two's-complement, `bool` one byte, `bytesN` its N bytes, an enum its one-byte ordinal) with no length byte or
+  padding - and the artifact marks that parameter `notation: 'evm'`. A variable-width byte value, an `address`, a
+  struct, an array, a UDVT and a function pointer keep the platform pushdata frame. Native compiles are unchanged.
 
 #### SolidCash SDK
 - :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.
@@ -33,6 +47,9 @@ title: Release Notes
   artifact was compiled with, including the mode-derived default. A decoded address is presented by that form, and
   the SDK's own derivation of a call's arguments packs an `address` the same way the compiled body does: under
   `'bytecode'` a bare address argument is packed whole, so the caller's digest and the record's agree.
+- :sparkles: The event decoders (`parseEventCommitment` / `tryParseEventCommitment`) and the event builders
+  dispatch per argument on the artifact's `notation` field, so a parameter the compiler marked `notation: 'evm'`
+  reads back as the standard EVM notation and an unmarked one on the platform frame.
 
 ## v0.13.0
 

@@ -72,7 +72,9 @@ These compile, but do not mean quite what they mean on the EVM. Each one warns w
 | `msg.value` | Net satoshi change in the contract's satoshi container, not an EVM call value. |
 | `try` / `catch` | The `try` block runs, but a failed BCH opcode aborts the script and cannot be resumed, so `catch` bodies are dead code. Compiler-warned. |
 | `keccak256` | Real keccak256, computed by a co-spent side-car input rather than a native opcode. Values match Ethereum. |
-| Function selectors | Derived with sha256 by default, so calldata is not cross-VM compatible. The `evmCompat` option switches to real keccak256. |
+| Function selectors | Derived with sha256 by default, so calldata is not cross-VM compatible. The `evmCompat` option switches to real keccak256 over Solidity's canonical signature spelling, so a selector matches what solc derives. |
+| `event.selector`, `error.selector`, `type(I).interfaceId` | Compile-time constants: sha256-based by default, real keccak256 under `evmCompat`. The event's covenant address salt stays sha256. |
+| Event storage | An event is an NFT output, not an EVM log or receipt entry; there is no bloom filter or topic channel. |
 | `ecrecover` | Real secp256k1 recovery, implemented as a co-spent recovery side-car pair. Exposed as `ecrecoverPubKey`, `ecrecoverP2pkh` and `ecrecoverEvm`. |
 | `block.*` | Oracle-backed reads rather than native VM state. See [Global Variables](/docs/language/globals). |
 | `block.prevrandao` | A transaction-local shim, grindable by the transaction builder. Not secure randomness; compiler-warned. |
@@ -94,7 +96,6 @@ These are EVM-execution-model features with no UTXO analogue. Each has a BCH sub
 | Persistent contract accounts | A contract is a set of UTXOs, not an account | Category-branded contract identity |
 | Synchronous message calls | No cross-input call stack | Co-spent inputs/outputs pinned by the covenant |
 | Gas metering | No gas economy | Bytecode size, stack size and per-input operation cost limits |
-| `event.selector` / `error.selector`, EIP-165 semantics | Events are NFT outputs addressed by sha256; a revert fails the script unconditionally | Event NFTs and typed SDK event inference |
 | EIP-55 checksummed address literals | Addresses are locking bytecode | CashAddr encoding in the SDK |
 | EIP-4844 blobs (`blobhash`, `block.blobbasefee`) | No BCH blobs | Porting shims that return zero / alias `block.basefee`, compiler-warned |
 

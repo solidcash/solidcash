@@ -179,14 +179,17 @@ controls `pk`. Recovery is only necessary when you must match a foreign, EVM-pro
 | Yul `keccak256(p, l)` | real keccak | Yes |
 | `erc7201(id)` namespaced slot | real keccak, full EIP-7201 formula | Yes |
 | Function selector, default | sha256 | No |
-| Function selector under `evmCompat` | real keccak256 | Yes |
+| Function selector / `interfaceId` under `evmCompat` | real keccak256 over the canonical signature | Yes |
+| `event.selector` (`E.selector`) under `evmCompat` | real keccak256 | Yes |
 | Mapping / array physical storage slot | sha256 | No (internal to BCH) |
-| Event `.selector` / topic0 | sha256 | No |
+| Event covenant name hash (event-address salt) | sha256 | No (BCH-native) |
 
 :::caution
 `abi.encodeWithSignature` and `abi.encodeCall` derive their 4-byte selector with **sha256** by default, so
 encoded calldata is not cross-VM compatible. Use them for SolidCash-to-SolidCash calls, or enable `evmCompat`
-for real keccak256 selectors.
+for real keccak256 selectors over Solidity's canonical signature spelling. `abi.encodeWithSignature` hashes the
+signature string it is handed, so under `evmCompat` a signature built at runtime is accepted and lowers through
+the keccak256 side-car.
 :::
 
 ## See also

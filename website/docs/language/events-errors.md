@@ -89,9 +89,11 @@ The covenant also pins where own-category immutable NFTs may occur in the transa
 conditional event slots to empty commitments. A transaction builder therefore cannot append a forged event beside a
 genuine state transition and have the SDK accept it as another log.
 
-Named event addresses use the complete signature, such as `Transfer(address,address,uint256)`, so overloaded event
-names remain distinct. Anonymous events deliberately omit that signature hash and must be disambiguated by decoding
-against the contract's anonymous event definitions.
+Named event addresses use the complete signature - the event name followed by its declared parameter types in the
+artifact's own ABI spelling, such as `Transfer(bytes20,bytes20,int256)` for the declaration above - so overloaded
+event names remain distinct. Under `evmCompat` those types are the Solidity ones (`address`, `uint256`), and the
+`E.selector` a source reads is the real keccak256 topic hash. Anonymous events deliberately omit that signature hash
+and must be disambiguated by decoding against the contract's anonymous event definitions.
 
 ### Commitment encoding
 
@@ -102,6 +104,19 @@ Arguments are concatenated in declaration order with the Script-native state cod
 - byte strings, addresses, public keys, and signatures carry their exact bytes;
 - structs encode fields in declaration order; and
 - arrays encode their element count followed by their elements, packing fixed-width elements tightly.
+
+Under `evmCompat`, a **scalar** argument of statically known width is written in standard EVM notation instead:
+exactly the bytes `abi.encodePacked` produces at the type's natural width, with no length byte and no padding -
+big-endian two's-complement for a number (`intN`/`uintN` at `N/8` bytes, `bigint` at 32 bytes, `fixedMxN` at `M/8`),
+one byte for a `bool`, `N` bytes for a `bytesN`, and one byte for an `enum`'s ordinal. The compiler marks that
+parameter `notation: 'evm'` on the artifact's event ABI, and the SDK's decoders dispatch on it per argument, so the
+two frames cannot be mixed within one parameter. Natively every argument uses the platform codec above.
+
+Three kinds of argument keep the platform frame under `evmCompat` as well: a variable-width byte value
+(`bytes`/`string`/`pubkey`/`sig`/`datasig`), which is already raw and self-delimiting; an `address`, which on BCH
+is a locking bytecode and whose value form is the separate [`addressForm`](/docs/compiler/solidity-import-compat)
+axis; and a struct, array, user-defined value type or function pointer, for which `abi.encodePacked` has no scalar
+form. See [Platform Differences](/docs/basics/platform-differences) for the policy behind this.
 
 A reached zero-parameter event uses an internal non-empty marker so it cannot be confused with a reserved but
 untaken conditional slot. The marker does not appear as an argument in decoded results.

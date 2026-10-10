@@ -76,6 +76,36 @@ errors, and `solidc` failed first.
 All fixed on `feat/per-call` (see `docs/framed/DECISIONS.md` D28); `yarn lint` now reports 0. The
 `solidc` failures are older than the SDK work: `039cefe85` reports the same 918 in the same two files.
 
+## 4b. `yarn spellcheck` (measured 2026-10-10, failing)
+
+`yarn spellcheck` is the release-gate command that follows `yarn lint` in `github-actions.yml`, and on
+`feat/per-call` it exits 123: 922 unknown-word occurrences across 243 distinct files. The 2026-08-05 PASS recorded
+in `RELEASE_READINESS.md` was measured on the findings-fix branch against an 890-term project dictionary; the
+framed work has since added vocabulary that dictionary does not carry. Where the occurrences sit:
+
+| where | occurrences | notes |
+|---|---|---|
+| `packages/**` | 601 | mostly source and tests, not Markdown |
+| `docs/**` | 165 | essentially all `docs/framed/**` |
+| root-level working notes | 148 | `PLAN_*`, `HANDOFF_*`, `NEXT_SESSION_*`, `KERNEL_*` |
+| `scripts/**` | 4 | |
+| `website/docs/**` | 4 | fixed (below) |
+
+The flagged words are of two kinds, and they need different treatment:
+
+- released-surface identifiers and jargon the dictionary should record, such as `hdsigner` (a published
+  `solidcash` subpath) and the composition vocabulary this branch introduced; and
+- plain misspellings in comments, which should be fixed rather than accepted. cspell already proposes a
+  correction for several of them, so the fix pass must not simply add every flagged word to the dictionary.
+
+Section 5's root working notes account for 148 occurrences; moving them out of the root as that section proposes
+shrinks the dictionary work.
+
+The public `website/docs/**` surface is clean as of 2026-10-10: `git ls-files -z website/docs | xargs -0 npx cspell
+lint --no-progress --no-gitignore` reports zero issues across 79 files. The single incident word in
+`guides/message-bus.md` was reworded, and `hdsigner` was added to `.cspell-project-terms.txt` because it names a
+published subpath.
+
 ## 5. Root-level working notes (repository cleanliness, not packaging)
 
 40 tracked `*.md` files sit at the repository root, 34,496 lines in total. 26 of them are agent working notes,

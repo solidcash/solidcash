@@ -231,7 +231,8 @@ contract Probe() {
 ```
 
 :::note
-SolidCash selectors are sha256-based, not keccak256, so the value differs from an EVM contract's.
+SolidCash selectors are sha256-based by default, so the value differs from an EVM contract's; under the
+`evmCompat` compiler option they are real keccak256 over Solidity's canonical signature spelling.
 :::
 
 ### External State Reads

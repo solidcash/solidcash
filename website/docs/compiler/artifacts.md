@@ -112,13 +112,18 @@ See [State Storage & Encoding](/docs/language/storage-model) and
 
 Top-level arrays describe definitions separately from functions:
 
-- `events`: signature, parameters, `indexed` flags, and `anonymous` status;
+- `events`: signature, parameters, `indexed` flags, and `anonymous` status. A parameter carries an ABI `type` and,
+  when compiled with `evmCompat` and the type has a scalar packed form, a `notation: 'evm'` flag;
 - `errors`: custom-error signature and parameters;
 - `structs`: field order and nested type information used for ABI/state decoding; and
 - `enums`: member names and ordinal values.
 
 The event ABI is used both to plan event-NFT outputs and to decode `receipt.events`, `queryEvents()`, and
 `queryFilter()`. Event persistence semantics are described in [Events & Errors](/docs/language/events-errors).
+
+A parameter's `notation: 'evm'` flag tells a decoder that the argument is written in the standard EVM notation -
+the bytes `abi.encodePacked` produces at the type's natural width - so the reader takes the width from the ABI
+`type`. A parameter without the flag is written in the platform pushdata frame.
 
 ## Debug information and source maps
 

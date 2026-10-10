@@ -212,7 +212,9 @@ contract Probe() {
 ```
 
 :::note
-`interfaceId` is `bytes4` and is derived with sha256, so it differs from an EVM contract's EIP-165 id.
+`interfaceId` is `bytes4`, the XOR of the interface's function selectors. Selectors are sha256-based by default,
+so it differs from an EVM contract's EIP-165 id; under the `evmCompat` option the selectors and the id are real
+keccak256 over Solidity's canonical signatures.
 :::
 
 ## Abstract contracts

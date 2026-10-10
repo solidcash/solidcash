@@ -96,13 +96,17 @@ Ethereum 20-byte address. For byte-identical EVM data, carry an Ethereum-shaped 
 
 `bigint`, BCH public/signature types, fixed-point types, and other BCH-only values do not have general Ethereum ABI
 equivalents. Compile the exact schema: an unsupported `evmCompat` combination fails rather than silently choosing a
-native encoding. In `evmCompat` mode, `abi.encodeWithSignature` also requires a literal signature because a runtime
-signature would require runtime selector hashing.
+native encoding. In `evmCompat` mode, `abi.encodeWithSignature` accepts a signature built at runtime: a
+non-literal signature lowers to `abi.encodeWithSelector(bytes4(keccak256(bytes(sig))), ...)`, so the keccak256
+computation side-car that serves a runtime `keccak256` supplies the digest. A literal signature still folds to its
+selector at compile time.
 
 ## Selectors and canonical signatures
 
-A function selector excludes return types and parameter names. Canonical Solidity spellings include `uint256`
-for `uint`, `int256` for `int`, an underlying type for a user-defined value type, and tuple syntax for structs.
+A function selector excludes return types, parameter names and data locations. Under `evmCompat` the canonical
+Solidity spellings are used: `uint256` for `uint`, `int256` for `int`, `uint8` for an enum, the underlying type for
+a user-defined value type, parenthesized tuple syntax for a struct, and `address` for a contract type or
+`address payable`. Native compiles keep the platform spelling, with address payability erased.
 
 Prefer `abi.encodeCall` when the target function is known:
 

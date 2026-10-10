@@ -19,7 +19,7 @@ would.
 | Word / byte order | big-endian | **little-endian** |
 | Integer encoding | 256-bit two's complement | **LE sign-magnitude**; `int`/`uint` are `int256`/`uint256`, `bigint` is arbitrary precision |
 | Overflow | checked reverts, `unchecked` wraps | **same** for `int`/`uint`; `bigint` grows (never wraps) |
-| Structural hash | keccak256 | **sha256** for physical slots and event topic0; **real keccak256** for values |
+| Structural hash | keccak256 | **sha256** for physical storage slots and the event covenant salt; **real keccak256** for source-visible values and selectors |
 | Storage | account key-value (`SSTORE`) | **NFT-commitment state**; mappings use authenticated vmaps; one spend = one execution |
 | Address | 20-byte | **variable-length locking bytecode**; `payable` is a no-op |
 | Memory | big-endian heap | **little-endian on-stack buffer** |
@@ -94,9 +94,9 @@ SolidCash splits the difference:
 | Constant `keccak256("literal")` | folded to real keccak256 at compile time | **Yes** |
 | Yul `keccak256(ptr, len)` | real keccak | **Yes** |
 | `erc7201(id)` namespaced slot | real keccak256, full EIP-7201 formula | **Yes** |
-| Function selector under `evmCompat` | real keccak256 | **Yes** |
+| Function selector, `type(I).interfaceId` and `event.selector` under `evmCompat` | real keccak256 over Solidity's canonical signature | **Yes** |
 | Mapping / array physical storage-slot space | sha256 (BCH-native) | No |
-| Event `.selector` / topic0 | sha256 (BCH-native) | No |
+| Event covenant name hash (the 20-byte event-address salt) | sha256 (BCH-native) | No |
 
 So **keccak256 values match Ethereum**: role ids like `keccak256("ADMIN_ROLE")`, EIP-712 domain separators and
 `erc7201` slot numbers all equal what an Ethereum contract derives. What is BCH-native is the *physical*
@@ -107,6 +107,18 @@ By default, function selectors are derived with sha256, so encoded calldata is n
 the `evmCompat` compiler option selectors use real keccak256 and match Ethereum. See
 [Cryptography](/docs/language/cryptography).
 :::
+
+### Event arguments under `evmCompat`
+
+An event's payload is one NFT commitment (128-byte cap) with no topic channel, so it cannot be a standard ABI
+tuple. Under `evmCompat` a scalar argument of statically known width is written in the **standard EVM notation** -
+the bytes `abi.encodePacked` produces at the type's natural width, big-endian two's-complement for a number - and
+the artifact marks that parameter `notation: 'evm'`, so a standard decoder reads it without the platform's
+little-endian sign-magnitude frame. Every other argument keeps the platform frame: a variable-width byte value
+(`bytes`/`string`/`pubkey`/`sig`/`datasig`) is already raw and self-delimiting, an `address` on BCH is a locking
+bytecode whose value form the `addressForm` option decides, and solc has no packed form for a struct, an array, a
+UDVT or a function pointer. Native compiles keep the platform frame for every argument. See
+[Events & Errors](/docs/language/events-errors).
 
 ## 4. Execution model: UTXO covenant, not accounts {#execution-model}
 

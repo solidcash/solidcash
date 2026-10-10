@@ -240,7 +240,7 @@ admitted handler's plan digest into the route bytecode, which
 `messageBus.assertReadableKernelExecutionPlans()` checks before a reader trusts the plan.
 
 This convention is experimental in 0.13.1. Compose only `eligible` handlers from an `available` artifact, and check
-the deployability certificate before treating a compiled route as broadcastable. The frozen proof inventory is
+the deployability certificate before treating a compiled route as safe to broadcast. The frozen proof inventory is
 `scripts/kernel-beta-manifest.json`.
 
 For local state semantics, see [How the State Journal Works](./state-journal.md).

@@ -314,6 +314,7 @@ grindable
 halvings
 hasnt't
 Hbind
+hdsigner
 hdwallet
 hexlify
 Hexp

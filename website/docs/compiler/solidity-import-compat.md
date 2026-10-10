@@ -174,6 +174,25 @@ keeps its previous shape and the mode decides it.
 A packed payload that carries locks is longer than one that carries identities, which matters at the 128-byte
 NFT commitment limit and for any offset arithmetic over the payload.
 
+### Selectors, runtime signatures, and event arguments
+
+A selector under `evmCompat` is `keccak256(canonicalSignature)[0:4]` over Solidity's canonical spelling: `uint256`
+for `uint`, `int256` for `int`, `uint8` for an enum, the underlying type for a UDVT, a parenthesized tuple for a
+struct, and `address` for a contract type or `address payable`. Entry dispatch, the artifact ABI selectors,
+`type(I).interfaceId`, `fn.selector` / `error.selector` / `E.selector`, `msg.sig`, `abi.encodeCall` and the argument
+matching of `abi.encodeWithSignature` all derive from that one spelling, so each matches solc. A native compile
+keeps the platform spelling, with address payability erased.
+
+`abi.encodeWithSignature` hashes the signature string it is handed, so a signature built at runtime is legal. Under
+`evmCompat` it lowers to `abi.encodeWithSelector(bytes4(keccak256(bytes(sig))), ...)`, and the
+[keccak256 side-car](/docs/language/computation-sidecars) supplies the digest.
+
+An event's payload is one NFT commitment with no topic channel, so it cannot be a standard ABI tuple. A scalar
+argument of statically known width is therefore written in the standard EVM notation - the bytes `abi.encodePacked`
+produces at its natural width - and the artifact marks that parameter `notation: 'evm'`. A variable-width value, an
+`address`, a struct, an array, a UDVT and a function pointer keep the platform frame. See
+[Events & Errors](/docs/language/events-errors).
+
 Compatibility mode defaults bare Solidity `ecrecover(hash, v, r, s)` to the `evm` address projection unless an
 explicit `ecrecover: 'p2pkh' | 'evm'` option overrides it. Recovery still executes through BCH computation
 sidecars.

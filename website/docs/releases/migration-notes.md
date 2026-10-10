@@ -52,6 +52,12 @@ tested native upgrade path preserves the published append-only layout.
   Solidity-source compatibility mode) also switches the `abi.*` family to EVM-compatible head/tail bytes and
   Keccak selectors; use `uint160` for an Ethereum-shaped address, since a SolidCash `address` is full BCH locking
   bytecode.
+- Under `evmCompat`, selector signatures follow Solidity's canonical spelling, so a selector, `interfaceId` or
+  event topic hash equals what solc derives for the same declaration; `abi.encodeWithSignature` also accepts a
+  signature built at runtime and hashes it through the keccak256 side-car.
+- Under `evmCompat`, an event argument of statically known scalar width is written in standard EVM notation and the
+  artifact marks the parameter `notation: 'evm'`. A consumer decoding an event commitment by hand must dispatch on
+  that field; the SDK's decoders and builders already do, and a receipt read through the SDK is unaffected.
 - Compile imported Solidity with `evmCompat: true`. Canonical EVM storage assembly, `StorageSlot`, and
   ERC-7201 patterns use the [documented storage bridge](/docs/language/evm-storage-compat); shapes outside that
   bridge, or outside the supported memory/call/delegate/Yul subset, fail with diagnostics and may require a

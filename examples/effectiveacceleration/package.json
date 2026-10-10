@@ -11,6 +11,7 @@
   "dependencies": {
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist",
     "@noble/ciphers": "^1.0.0",
+    "@solidcash/solidhat": "^0.13.0",
     "@solidcash/testing": "^0.13.0",
     "ethers": "^6.17.0",
     "solidc": "^0.13.0",

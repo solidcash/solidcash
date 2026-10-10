@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, symlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
-import { solidcashHardhatPreset } from '@solidcash/testing/vitest-preset';
+import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,18 +32,33 @@ if (!existsSync(marketplaceTest)) {
   symlinkSync(path.join(effectiveAccelerationRoot(), 'contract', 'test', 'marketplace.test.ts'), marketplaceTest);
 }
 
-// The drop-in: the reusable @solidcash/testing preset supplies all the Hardhat/ethers/chai aliases + setup.
-// This project only aliases the older @noble/ciphers subpaths to the installed v2 build.
-export default defineConfig(solidcashHardhatPreset({
-  test: {
-    include: ['test/marketplace.test.ts', 'test/decodeData.test.ts', 'test/encryption.test.ts', 'test/wagmiAbi.test.ts'],
-    testTimeout: 120000,
-  },
-  resolve: {
-    preserveSymlinks: true,
-    alias: {
-      '@noble/ciphers/chacha': '@noble/ciphers/chacha.js',
-      '@noble/ciphers/utils': '@noble/ciphers/utils.js',
+// The lane harness this project mirrors (`/Code/cashscript/vitest.marketplace.config.ts`): the SolidHat
+// compatibility preset plus its hermetic offline runtime (the suite publishes through an IPFS service), the same
+// worker heap, serialized files and 30-minute ceiling the largest titles need.
+export default defineConfig(solidhatPreset(
+  { hardhat: 2, ethers: 6 },
+  {
+    root: here,
+    cacheDir: 'cache/vite',
+    test: {
+      include: [
+        'test/marketplace.test.ts', 'test/decodeData.test.ts', 'test/encryption.test.ts', 'test/wagmiAbi.test.ts',
+      ],
+      testTimeout: 1_800_000,
+      hookTimeout: 1_800_000,
+      fileParallelism: false,
+      execArgv: ['--max-old-space-size=8192'],
+      reporters: ['verbose'],
+    },
+    resolve: {
+      preserveSymlinks: true,
+      // This project only aliases the older @noble/ciphers subpaths to the installed v2 build; the preset supplies
+      // the Hardhat/ethers/chai drop-in aliases.
+      alias: {
+        '@noble/ciphers/chacha': '@noble/ciphers/chacha.js',
+        '@noble/ciphers/utils': '@noble/ciphers/utils.js',
+      },
     },
   },
-}));
+  { offline: true },
+));

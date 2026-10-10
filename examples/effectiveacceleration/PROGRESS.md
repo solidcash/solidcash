@@ -4,15 +4,26 @@ Goal: run EA's `test/marketplace.test.ts` (a real Hardhat/ethers/TypeChain/OZ-up
 66 tests) under `@solidcash/testing` with **zero edits to the project's test files** - only aliasing +
 config + portbacks. This is the Hardhat-config-compatibility stress test.
 
-## STRUCTURE (2026-10-10): this project keeps no copy of the application
+## STRUCTURE (2026-10-10): the lane harness, and no copy of the application
 
-The project holds only its run configuration (`solidcash.config.ts`, `vitest.config.ts`, `package.json`,
-`tsconfig.json`) plus the BCH-aware `src/`, the authored `test/`, `typechain-types/`, `wagmi/` and `contracts-scash/`.
-The application's own Solidity tree, deploy scripts, Hardhat configs and the `marketplace.test.ts` this project
-exists to run are the sibling `effectiveacceleration.ai` checkout's files, referenced in place: `paths.contracts`
-and `typegen.sourceDir` are its `contract/contracts`, and `vitest.config.ts` links its `test/marketplace.test.ts`
-into `test/` (gitignored, with `preserveSymlinks` so the link's relative imports still read this project's `src/`
-and bindings). `scripts/config*.json` stay because `src/utils/config.ts` imports them by a relative path.
+This project holds its run configuration (`solidcash.config.ts`, `vitest.config.ts`, `package.json`,
+`tsconfig.json`) plus the BCH-aware `src/`, the authored `test/`, `typechain-types/`, `wagmi/` and
+`tasks/compile-real.mjs`. The application's own Solidity tree, deploy scripts, Hardhat configs and the
+`marketplace.test.ts` this project exists to run are the sibling `effectiveacceleration.ai` checkout's files,
+referenced in place: `paths.contracts` and `typegen.sourceDir` are its `contract/contracts`, and
+`vitest.config.ts` links its `test/marketplace.test.ts` into `test/` (gitignored, with `preserveSymlinks` so the
+link's relative imports still read this project's `src/` and bindings). `scripts/config*.json` stay because
+`src/utils/config.ts` imports them by a relative path.
+
+`vitest.config.ts` now runs the lane harness (`/Code/cashscript/vitest.marketplace.config.ts`): the SolidHat
+compatibility preset with its hermetic offline runtime, the same 8 GB worker heap, serialized files and 30-minute
+ceiling. `solidcash.config.ts` compiles with the lane's options. Both matter: the July drop-in compiled without
+`messageBusKernel`/`messageBusGraphContext` and pinned `commitmentLimit: 128`, which produced different contracts
+and failed the fixture at `setMarketplaceDataAddress` instead of running the suite.
+
+Result: `node ../../node_modules/vitest/vitest.mjs run` is green - `marketplace.test.ts` 66/66 in about 33
+minutes, plus `decodeData` 3, `encryption` 2, `wagmiAbi` 2. `test/utils.test.ts` stays out of the selection: it
+reads IPFS content the suite does not publish (it needs a live gateway).
 
 ## STATUS (2026-07-19): drop-in LOADS + all 66 tests RUN under our harness; failing at the CONTRACT layer.
 

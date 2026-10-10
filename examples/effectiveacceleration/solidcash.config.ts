@@ -37,24 +37,20 @@ const eaContracts = path.join(eaRoot, 'contract', 'contracts');
 export const eaMarketplaceTest = path.join(eaRoot, 'contract', 'test', 'marketplace.test.ts');
 
 export default defineConfig({
-  // The EA Solidity tree is the compile root. `contracts-scash` is retained only as historical fixture material;
-  // it is not part of the canonical compile or test path.
   paths: { contracts: eaContracts, artifacts: 'artifacts', tests: 'test' },
-  solc: {
+  // The options the marketplace lane compiles with (the repo root's `solidcash.config.ts`). This project runs the
+  // same fixture, so a divergence here compiles different contracts: the stale July set had no message-bus kernel
+  // or graph context and pinned commitmentLimit 128, and its fixture failed at the proxy deploy the lane passes.
+  compiler: {
     evmCompat: true,
-    // Keep the production state-partitioning layout while the mock VM relaxes execution ceilings.
-    commitmentLimit: 128,
-    maximumInputBytes: 10_000_000,
-    // This compatibility run exercises authenticated multi-contract call DAGs. Graph-free leaf contracts (the
-    // ERC-20 in particular) still need their route emitted because a routed parent can reach them repeatedly.
     messageBus: true,
+    messageBusKernel: true,
+    messageBusGraphContext: true,
+    // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
+    // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
+    ecrecover: 'p2pkh',
     optimizeForCompilationSpeed: true,
     suppressWarnings: true,
-    ecrecover: 'p2pkh',
-    // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.
-    // Mocknet's relaxed limits remove the former need to selectively switch
-    // large mappings to the vmap trailing-output protocol.
-    sortedMappingsAll: false,
   },
   // Compile the framed composition convention: every entry point is a master program, so a transaction that
   // reaches one contract several times settles its state exactly once.
@@ -65,24 +61,23 @@ export default defineConfig({
       target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: eaContracts,
     }],
   },
-  // The largest Marketplace entry is still an indivisible ~75KB call closure,
-  // so the strict splitter cannot produce a 10KB bundle. Keep the compatibility
-  // network permissive while exercising the unmodified application contracts.
+  // The EA hardhat.config mnemonic + Ethereum derivation path, so getSigners() matches the project.
+  mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',
+  accounts: { path: "m/44'/60'/0'/0", count: 20, initialIndex: 0 },
+  // The lane's mock limits. Proxy __forward inspects the implementation's INPUTBYTECODE (the full p2sh32 redeem,
+  // ~3.8 MB for MarketplaceV1) and that OP_SPLIT is charged to the 781-byte proxy input, so the per-byte budget
+  // has to cover the introspection without tightening the input or transaction caps.
   networks: {
     mock: {
       type: 'mock',
       consensus: {
+        operationCostBudgetPerByte: 1_000_000,
         maximumInputBytes: 10_000_000,
+        maximumTransactionBytes: 100_000_000,
         maximumStackItemBytes: 10_000_000,
-        maximumTransactionBytes: 10_000_000,
-        maximumNftCommitmentBytes: 1_000_000,
-        operationCostBudgetPerByte: 10_000_000,
-        hashDigestIterationsPerByte: 10_000_000,
+        maximumNftCommitmentBytes: 10_000_000,
       },
     },
   },
   defaultNetwork: 'mock',
-  // The EA hardhat.config mnemonic + Ethereum derivation path, so getSigners() matches the project.
-  mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',
-  accounts: { path: "m/44'/60'/0'/0", count: 20, initialIndex: 0 },
 });

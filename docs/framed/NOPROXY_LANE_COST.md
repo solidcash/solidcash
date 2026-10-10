@@ -425,17 +425,35 @@ plain-path attempts, from inside the run - a test runner drops what a worker wri
 exit-time report would never reach a lane log. A test reads the same totals through `framedComposerCounts()` in
 `packages/solidcash/src/framed/composer/counters.ts`.
 
-One reading, on two small framed call files (9 tests, one worker): 13 plain-path attempts, 13 hosts, **5
-whole-composition derivations against 8 scoped ones**, 16 hop attempts, 83 declaration reads (38 answered from a
-close the machine had recorded, 27 from one plain run, 18 from the bounded walk), 392 program evaluations and 31
-walks. Two things follow.
+### The reading on the lane itself (2026-10-10)
 
-- The plain path already scopes most of its attempts, so the cost that remains is the *attempt count* times the
-  per-attempt derivation: a title pays one plan, one host and one derivation per value it learns. That is what the
-  structural port (§4 H1) has to move, and the counter to move it against is `attempts`.
-- A declaration read no longer costs a stepped walk: the SDK machine answers one from a single plain run
-  (`evaluateClose`, `packages/solidcash/src/network/createVirtualMachine.ts`), and 27 of 83 reads here took that
-  path. `packages/utils/src/source-map.ts`'s parse and this module's entry count are memoized for the same reason.
+`take job > take job`, no-proxy lane, one title, same fixture, matched load (~5.0):
 
-Use it before and after any change to the loop, on one title, with `-t '<title>$'`; a full ladder is only worth
-taking once a single title has moved.
+| revision | tests |
+|---|---:|
+| `40965a138` (before the instrument) | 323.9 s, 302.6 s, 303.0 s |
+| instrument + `evaluateClose` + memos | 430.0 s, 424.0 s, 418.0 s |
+| instrument + memos (no `evaluateClose`) | 304.4 s |
+
+The counters for one `take job` (they are deterministic - three runs gave identical totals): **128 plain-path
+attempts**, 127 hosts, **60 whole-composition derivations against 67 scoped ones**, 0 hop attempts (this lane
+calls the implementation directly), **2120 declaration reads** - 664 answered from a close the machine had already
+recorded and **1456 that walked the program** - 2362 program evaluations and 1457 walks.
+
+Two findings follow, and the second is why `evaluateClose` is not in the tree.
+
+- One `take job` makes ~3800 full program runs (2362 evaluations + 1456 walks), and the declaration walks are
+  ~38% of them. The composer reads a declaration ~17 times per attempt, and only a third of those reads find a
+  close; the rest are the composer being told there is nothing to learn **at the cost of a whole program run**.
+  That is the largest single lever the instrument has found, and it is independent of the loop's shape.
+- Reading a close by running the program plainly *first* and falling back to the walk (a middle answer,
+  `evaluateClose`) **costs more than it saves**: 869 of the 2120 reads are not closes, so they paid a wasted run
+  and then the walk. It moved `take job` from ~305 s to ~420 s, a 38% regression, and it was reverted. Note what
+  that implies: `boundedDebug`'s manual `stateStepMutate` walk is *not* meaningfully slower per program than the
+  compiled loop, so swapping one for the other buys nothing.
+
+A diagnostic switch with a before/after on one title is what caught it; a "faster-looking" change here is worth
+nothing until it is measured.
+
+Use the counters before and after any change to the loop, on one title, with `-t '<title>$'`; a full ladder is only
+worth taking once a single title has moved.

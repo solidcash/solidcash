@@ -98,8 +98,8 @@ isolation switch, not a passing-test gate: it deliberately skips the other input
 
 `SOLIDC_DEBUG_FRAMED_COUNTS=1` counts the framed composer's own work — the plain call path's learning attempts,
 the derivation hosts it builds, the whole-composition and scoped derivations it runs, the hop's per-frame attempts,
-and each declaration read split by which of the three answers took it (a close the machine already recorded, one
-plain run, or the bounded walk). It is observational: no plan, program or verdict changes, and with the switch unset
+and each declaration read split by which answer took it (a close the machine already recorded, or the bounded
+walk). It is observational: no plan, program or verdict changes, and with the switch unset
 every bump is one `false` test. The running totals are logged as `framed-composer-counts {...}` every 128 plain-path
 attempts, which is what a lane log can read (a worker's exit-time output is dropped by the test runner); a test can
 read them directly through `framedComposerCounts()` in `packages/solidcash/src/framed/composer/counters.ts`.

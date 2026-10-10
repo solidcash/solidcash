@@ -17,9 +17,9 @@
  *
  * `attempts` counts the plain path's global learning loop, `hosts`/`derivations` what one iteration of it costs, and
  * `scopedDerivations` the iterations that stop at the frame under judgement. `hopAttempts` and
- * `hopDerivations` are the same pair for the hop's per-frame loop. The `...Closes` triple splits the learning
- * walk's declaration reads into the ones answered from a close the machine already recorded, the ones answered from
- * a plain run, and the ones that had to step the program again.
+ * `hopDerivations` are the same pair for the hop's per-frame loop. The `...Closes` pair splits the learning walk's
+ * declaration reads into the ones answered from a close the machine already recorded and the ones that had to step
+ * the program.
  */
 export interface FramedComposerCounts {
   readonly attempts: number;
@@ -30,7 +30,6 @@ export interface FramedComposerCounts {
   readonly hopDerivations: number;
   readonly declarationReads: number;
   readonly recordedCloses: number;
-  readonly evaluatedCloses: number;
   readonly tracedCloses: number;
   readonly evaluations: number;
   readonly steppedRuns: number;
@@ -48,7 +47,6 @@ const zeroes = (): Record<CounterName, number> => ({
   hopDerivations: 0,
   declarationReads: 0,
   recordedCloses: 0,
-  evaluatedCloses: 0,
   tracedCloses: 0,
   evaluations: 0,
   steppedRuns: 0,

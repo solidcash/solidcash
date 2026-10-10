@@ -43,8 +43,6 @@ type VirtualMachineProgram = Parameters<VirtualMachine['evaluate']>[0];
 type BoundedDebugVirtualMachine = VirtualMachine & {
   boundedDebug?: (program: VirtualMachineProgram) => readonly ProgramStateTrace[];
   recordedClose?: (program: VirtualMachineProgram) => ReadDeclaration | undefined;
-  /** One plain run of a program, with the close its stop failed on read back from the recorder. */
-  evaluateClose?: (program: VirtualMachineProgram) => ReadDeclaration | undefined;
 };
 
 /** The program state facts a stop's declaration is read from. */
@@ -82,13 +80,10 @@ export function readComputedDeclaration(options: {
     bumpFramedCounter('recordedCloses');
     return closeReading(recorded, options.maximumCommitmentBytes);
   }
-  // One plain run of the program, which is cheaper than the walk below and yields the same two operands. A machine
-  // without the extension (a stock libauth VM, or a test's own) falls through to the walk.
-  const evaluated = machine.evaluateClose?.(options.program);
-  if (evaluated !== undefined) {
-    bumpFramedCounter('evaluatedCloses');
-    return closeReading(evaluated, options.maximumCommitmentBytes);
-  }
+  // Measured 2026-10-10: reading a close by running the program plainly first (`evaluateClose`) costs more than it
+  // saves. Most reads here are not closes at all - the composer asks and is told so - so the plain run was a wasted
+  // full run ahead of the walk that answers them, and `take job` in the no-proxy lane went from 303-324 s to
+  // 418-430 s. The walk below is the primary answer; a middle path has to replace it, not precede it.
   bumpFramedCounter('tracedCloses');
   const trace = (machine.boundedDebug?.(options.program)
     ?? options.vm.debug(options.program)) as unknown as readonly ProgramStateTrace[];

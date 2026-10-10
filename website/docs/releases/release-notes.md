@@ -14,9 +14,21 @@ title: Release Notes
 - :sparkles: Message-bus artifacts publish an admission stamp (`admittedHandlerIds`/`refusedHandlerIds`/
   `admissionSource`), per-axis `resourceBudgets`, a `deployability` certificate for the 10,000-byte P2SH limit, and
   a `capabilitySchema` that gives every optional field an explicit status.
+- :sparkles: New `addressForm: 'hash' | 'bytecode'` option decides the form an `address` **value** takes where the
+  compiler turns it into bytes: `'hash'` is the 20-byte Solidity identity (the embedded payload of a standard
+  P2PKH/P2SH20 lock, or `HASH160` of the lock), `'bytecode'` is the whole locking bytecode. It governs
+  `abi.encodePacked(<address>)` and a decoded address leaf; omitting it follows the mode (`'hash'` under
+  `evmCompat`, `'bytecode'` otherwise), so existing builds are unchanged. The narrowing casts are deliberately not
+  part of it - `uint160(a)` and `bytes20(a)` truncate and `address(x)` stays a no-op in either form - and a
+  fixed-width ABI word (`abi.encode(<address>)`, an address argument, a word-encoded result) still carries the
+  identity, because a 32-byte word cannot hold a variable-length lock. A packed payload that carries locks is
+  longer (23/25/35 bytes per address), which matters at the 128-byte NFT commitment limit and for offset
+  arithmetic over the payload.
 
 #### SolidCash SDK
 - :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.
+- :sparkles: `solidcash/stateful` exports `artifactAddressForm()`, so a consumer can assert which address form an
+  artifact was compiled with, including the mode-derived default. A decoded address is presented by that form.
 
 ## v0.13.0
 

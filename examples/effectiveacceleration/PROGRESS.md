@@ -4,6 +4,16 @@ Goal: run EA's `test/marketplace.test.ts` (a real Hardhat/ethers/TypeChain/OZ-up
 66 tests) under `@solidcash/testing` with **zero edits to the project's test files** - only aliasing +
 config + portbacks. This is the Hardhat-config-compatibility stress test.
 
+## STRUCTURE (2026-10-10): this project keeps no copy of the application
+
+The project holds only its run configuration (`solidcash.config.ts`, `vitest.config.ts`, `package.json`,
+`tsconfig.json`) plus the BCH-aware `src/`, the authored `test/`, `typechain-types/`, `wagmi/` and `contracts-scash/`.
+The application's own Solidity tree, deploy scripts, Hardhat configs and the `marketplace.test.ts` this project
+exists to run are the sibling `effectiveacceleration.ai` checkout's files, referenced in place: `paths.contracts`
+and `typegen.sourceDir` are its `contract/contracts`, and `vitest.config.ts` links its `test/marketplace.test.ts`
+into `test/` (gitignored, with `preserveSymlinks` so the link's relative imports still read this project's `src/`
+and bindings). `scripts/config*.json` stay because `src/utils/config.ts` imports them by a relative path.
+
 ## STATUS (2026-07-19): drop-in LOADS + all 66 tests RUN under our harness; failing at the CONTRACT layer.
 
 `npx vitest run` -> `marketplace.test.ts (66 tests | 66 failed)`. Every failure is now the SAME contract-level

@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import {
   buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue,
@@ -19,6 +20,7 @@ import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.
 import { alicePub } from '../fixture/vars.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
+import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
 
 const OPTIONS = {
   evmCompat: true,
@@ -30,15 +32,22 @@ const OPTIONS = {
 } as const;
 
 const sources = ['UnicrowArbitrator', 'UnicrowClaim', 'Unicrow'] as const;
-const artifacts = Object.fromEntries(sources.map((name) => [
-  name,
-  compileFile(`../../examples/effectiveacceleration/contracts/unicrow/${name}.sol`, OPTIONS),
-])) as Record<(typeof sources)[number], ReturnType<typeof compileFile>>;
+// The real Unicrow sources are the sibling checkout's own (see `effectiveacceleration-corpus.ts`), so the cases
+// skip without it; compile lazily so a skipped run never touches the corpus.
+const contractsRoot = effectiveAccelerationContractsRoot();
+const compiled = new Map<(typeof sources)[number], ReturnType<typeof compileFile>>();
+const artifactOf = (name: (typeof sources)[number]): ReturnType<typeof compileFile> => {
+  const cached = compiled.get(name);
+  if (cached !== undefined) return cached;
+  const artifact = compileFile(path.join(contractsRoot!, 'unicrow', `${name}.sol`), OPTIONS);
+  compiled.set(name, artifact);
+  return artifact;
+};
 
 // Direct compiled artifacts isolate the source-level callback semantics; this is not a proxy-carrier proof.
-describe('real Unicrow kernel arbitration callback', () => {
+describe.skipIf(contractsRoot === undefined)('real Unicrow kernel arbitration callback', () => {
   it('publishes the real arbitration, claim, and post-write getter edges', () => {
-    const calls = (name: (typeof sources)[number], functionName: string): string[] | undefined => artifacts[name].abi
+    const calls = (name: (typeof sources)[number], functionName: string): string[] | undefined => artifactOf(name).abi
       .find((entry) => entry.name === functionName)?.externalCalls?.map((call) => call.functionName);
     expect(calls('UnicrowArbitrator', 'arbitrate')).toEqual(['getEscrow', 'settle', 'claim']);
     expect(calls('UnicrowClaim', 'claim')).toContain('getArbitratorData');
@@ -66,11 +75,11 @@ describe('real Unicrow kernel arbitration callback', () => {
       Unicrow: 'c3'.repeat(32),
     };
     const bases = Object.fromEntries(sources.map((name) => [
-      name, new Contract(artifacts[name], [], { provider }).withCategory(hexToBin(ids[name])),
+      name, new Contract(artifactOf(name), [], { provider }).withCategory(hexToBin(ids[name])),
     ])) as Record<(typeof sources)[number], Contract>;
 
     const seedEntry = async (name: 'UnicrowArbitrator' | 'Unicrow', value: Record<string, StateValue>): Promise<void> => {
-      const artifact = artifacts[name];
+      const artifact = artifactOf(name);
       const contract = bases[name];
       const categoryId = ids[name];
       const collection = artifact.stateLayout!.collections![0];
@@ -111,7 +120,7 @@ describe('real Unicrow kernel arbitration callback', () => {
             unicrowClaim: hexToBin(bases.UnicrowClaim.lockingBytecode) };
       try {
         await setupStatefulUtxos(provider, bases[name], {
-          ...artifacts[name].stateLayout!, collections: [],
+          ...artifactOf(name).stateLayout!, collections: [],
         }, initialState, { categoryOverride: ids[name] });
       } catch (error) {
         throw new Error(`Cannot seed ${name}: ${String(error)}`);
@@ -141,7 +150,7 @@ describe('real Unicrow kernel arbitration callback', () => {
     unicrow._registerResolvedExternal('IUnicrowClaim', claim);
 
     const callsite = (name: (typeof sources)[number], fn: string, target: string): number => {
-      const id = artifacts[name].abi.find((entry) => entry.name === fn)?.externalCalls
+      const id = artifactOf(name).abi.find((entry) => entry.name === fn)?.externalCalls
         ?.find((edge) => edge.functionName === target)?.callsiteId;
       if (id === undefined) throw new Error(`${name}.${fn} has no ${target} callsite`);
       return id;

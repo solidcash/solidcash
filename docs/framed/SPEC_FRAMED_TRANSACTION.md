@@ -1602,7 +1602,7 @@ These surfaced from code surveys before any implementation. Each would otherwise
 
 Sections 16-23 settle the open points on the 66 critical path. Section 22 lists every cross-contract edge the tests
 exercise, and section 23 every edge case, each with the rule that covers it. Sources:
-- the contracts in `examples/effectiveacceleration/contracts`;
+- the contracts in the sibling `effectiveacceleration.ai/contract/contracts` (referenced, not copied);
 - `marketplace.test.ts`;
 - a code survey of today's record formats.
 

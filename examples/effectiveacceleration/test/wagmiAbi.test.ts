@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { effectiveAccelerationRoot } from '../solidcash.config.ts';
 import { MARKETPLACE_DATA_V1_ABI } from '../wagmi/MarketplaceDataV1.ts';
 
 describe('MarketplaceDataV1 source-level ABI', () => {
@@ -14,7 +16,10 @@ describe('MarketplaceDataV1 source-level ABI', () => {
   });
 
   it('tracks the Solidity source pinned by the generated ABI', () => {
-    const source = readFileSync(new URL('../contracts/MarketplaceDataV1.sol', import.meta.url));
+    // The Solidity tree is the sibling project's own and is referenced, not mirrored into this repo.
+    const source = readFileSync(
+      path.join(effectiveAccelerationRoot(), 'contract', 'contracts', 'MarketplaceDataV1.sol'),
+    );
     const sourceHash = createHash('sha256').update(source).digest('hex');
     const generated = readFileSync(new URL('../wagmi/MarketplaceDataV1.ts', import.meta.url), 'utf8');
     const abiLine = generated.trimEnd().split('\n').at(-1) ?? '';

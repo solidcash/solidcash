@@ -143,6 +143,16 @@ Qualification:
   `artifact.bytecode` (`test/framed/deploy/program-format.test.ts`), and the host's stop comparison must compare stack
   bytes rather than array identity, or a fill that changed nothing would read as progress.
 
+Cleanup performed 2026-10-10, after that port: 27 worktrees removed (26 under `.worktrees/` plus
+`/Code/per-call-libauth`), about 26.5 GB freed. Every branch those worktrees had checked out survives at the same
+tip, and each one's uncommitted content was archived to `/Code/worktree-archive-2026-10-10/` (`tracked.patch`,
+`status.txt`, `HEAD.txt`, and the untracked files that are not build output). Held back: `eacc-noproxy` and
+`eacc-noproxy-kernel-beta` (a live VS Code server has a terminal cwd inside each) and the three Grok CLI worktrees.
+What the archive holds that is not on a branch: the ecrecover side-car workstream from
+`effectiveacceleration-marketplace` (`ecrecoverRecovery.ts`, `ecrecover-compute-library.ts`, `research/ecrecover-poc/`),
+the ungate plan document, `InheritedPrivatePostfixRoute.test.ts` with `autoderive-bench.mjs`, and the rejected
+`operationCost` accumulator with its `FastBch2026Every` case.
+
 Not taken, with the reason: the `rescue/main-checkout` lane (its content was rescued onto this branch under new
 hashes), the kernel-row-loop lanes (`grok/message-bus-kernel`, `kernel-return-helper-isolated`, `eacc-batch1-gate`,
 `codex/eacc-noproxy` - superseded, and 0-70 of their files were rewritten here), the outline worktree's fifth commit

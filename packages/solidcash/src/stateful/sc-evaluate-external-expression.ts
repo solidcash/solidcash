@@ -17,7 +17,7 @@ import type { FunctionArgument } from '../Argument.js';
 import { addressToLockScript, tryCashAddressToLockScript } from '../utils.js';
 import { decodeAuthenticatedProducerResultVector, encodeExternalReturnValues } from './external-return-encoding.js';
 import { p2pkhLockingBytecode } from './legacy-job-event-wire.js';
-import { artifactUsesSolidityAbi } from './solidityAbi.js';
+import { artifactAddressForm, artifactUsesSolidityAbi } from './solidityAbi.js';
 
 export interface EvaluateExternalExpressionHost {
   resolveExternalArgs(
@@ -127,9 +127,12 @@ export function evaluateExternalExpression(
     return '';
   };
   const evmCompat = artifactUsesSolidityAbi(artifact);
-  // An address *argument* is transported as a fixed-width ABI word, so its form is decided by that wire and
-  // not by `addressForm`: a 32-byte word can only carry the 20-byte identity. The flag governs the value
-  // surfaces instead - the narrowing casts, `abi.encodePacked`, and decoded-result presentation.
+  // The form an `address` value takes is the artifact's own `addressForm` (DECISIONS D24, D29): `'hash'` is the
+  // 20-byte Solidity identity, `'bytecode'` the exact locking bytecode the contract's code holds. It governs the
+  // packing the compiler emits, so a value surface reproduced here has to follow it or the emulation would state
+  // a digest the body does not compute. An explicit narrowing cast is not governed by it - the cast *is* the
+  // narrowing - so the `uint160` branches below stay on the artifact's ABI dialect.
+  const addressForm = artifactAddressForm(artifact);
   // The type the artifact's own declarations give a read: a struct field through its struct, a state variable
   // through the state layout, an element through its array's type, an array literal through its first element.
   const declaredType = (candidate: ExternalCallExpression): string => {
@@ -208,7 +211,10 @@ export function evaluateExternalExpression(
     }
     if (typeof value === 'bigint' || typeof value === 'number') {
       if (evmCompat && (typeHint === 'address' || typeHint === 'address payable')) {
-        return numberBe(BigInt(value), 20);
+        // A number names the 20-byte identity; the bytecode form packs the lock such a payload names, exactly as
+        // the argument encoder reads a 20-byte address value.
+        const identity = numberBe(BigInt(value), 20);
+        return addressForm === 'hash' ? identity : p2pkhLockingBytecode(identity);
       }
       const widthMatch = typeHint.match(/^u?int(\d+)$/);
       // Solidity abi.encodePacked uses the declared natural width, big-endian (and two's-complement for signed
@@ -251,10 +257,9 @@ export function evaluateExternalExpression(
           : locking.length === 23 ? locking.slice(2, 22) : locking.slice(3, 23);
         return concat([narrowed, new Uint8Array([0])]);
       }
-      // Packed `address` on BCH is locking bytecode (p2sh20=23, p2pkh=25, p2sh32=35), never a
-      // 20-byte account id. Solidity compatibility is the exception: the compiler applies its documented
-      // lossy address -> bytes20 conversion before EVM packed encoding. Match that conversion here while
-      // retaining full BCH locking bytecode for native SolidCash artifacts.
+      // A bare `address` packs by the artifact's own form: its 20-byte identity under `'hash'`, and otherwise the
+      // locking bytecode (p2sh20=23, p2pkh=25, p2sh32=35) a 20-byte value names. This is the packing
+      // `emitEvmPackedValue` emits, so the two have to agree byte for byte.
       if (typeHint === 'address' || typeHint === 'address payable') {
         let locking: Uint8Array | undefined;
         if (canonicalHex && (value.length === 42 || value.length === 48
@@ -264,7 +269,7 @@ export function evaluateExternalExpression(
           locking = addressToLockScript(value);
         }
         if (locking) {
-          if (evmCompat) return narrowAddress(locking);
+          if (addressForm === 'hash') return narrowAddress(locking);
           return locking.length === 20 ? p2pkhLockingBytecode(locking) : locking;
         }
         return utf8ToBin(value);
@@ -291,7 +296,7 @@ export function evaluateExternalExpression(
         return concat([narrowed, new Uint8Array([0])]);
       }
       if (typeHint === 'address' || typeHint === 'address payable') {
-        if (evmCompat) return narrowAddress(value);
+        if (addressForm === 'hash') return narrowAddress(value);
         if (isStandardLockingBytecode(value)) return value;
         if (value.length === 20) return p2pkhLockingBytecode(value);
         return value;

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
-import { bytecodeToAsm } from '@solidcash/utils';
+import { bytecodeToAsm, resolveAddressForm } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
 // What `addressForm` does - and does not - reach. The option changes the form of an address *value* at the one
@@ -56,5 +56,28 @@ describe('addressForm and the address introspection values', () => {
       evmCompat: true, messageBus: false, addressForm: 'bytecode',
     }).debug.bytecode));
     expect(hash).toBe(bytecode);
+  });
+});
+
+// The artifact is where a consumer reads the choice back from: the option is published only when the source named
+// it, so an artifact that names none keeps the shape it always had and `resolveAddressForm` re-derives the form its
+// mode implies. Without the published field the SDK fell back to 'hash' under `evmCompat` and reproduced a packing
+// the body does not emit (DECISIONS D29: the framed wire's address-value emulation).
+describe('the resolved address form on the artifact', () => {
+  const source = 'contract C() { function f() returns (bytes) { return abi.encodePacked(msg.sender); } }';
+
+  it('publishes the form the source chose', () => {
+    for (const addressForm of ['hash', 'bytecode'] as const) {
+      expect(compileString(source, { evmCompat: true, addressForm }).compiler.options.addressForm).toBe(addressForm);
+      expect(compileString(source, { addressForm }).compiler.options.addressForm).toBe(addressForm);
+    }
+  });
+
+  it('omits the field when the source names none, so the mode still decides it', () => {
+    for (const evmCompat of [true, false]) {
+      const options = compileString(source, { evmCompat }).compiler.options;
+      expect('addressForm' in options).toBe(false);
+      expect(resolveAddressForm(options)).toBe(evmCompat ? 'hash' : 'bytecode');
+    }
   });
 });

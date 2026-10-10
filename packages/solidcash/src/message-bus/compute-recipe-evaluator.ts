@@ -9,6 +9,7 @@ import { decodeIntFixedWidth, encodeInt, encodeIntAsFixedBytes, parseArrayTypeSt
   type Artifact, type ExternalCallExpression, type StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
+import { artifactAddressForm } from '../stateful/solidityAbi.js';
 import { encodeEvmInvocationResult } from '../stateful/evm-abi-result.js';
 
 export class PendingComputeProducerResult extends Error {
@@ -104,7 +105,9 @@ const solidityAddressPayload = (value: FunctionArgument): Uint8Array => {
   return payload;
 };
 
-const solidityPacked = (value: FunctionArgument, type: string, ctx: ComputeRecipeContext): Uint8Array => {
+const solidityPacked = (
+  value: FunctionArgument, type: string, ctx: ComputeRecipeContext, hashAddresses: boolean,
+): Uint8Array => {
   if (type === 'bool') {
     if (value !== true && value !== false && value !== 0n && value !== 1n) {
       throw new Error('messageBus: compute recipe bool is non-canonical');
@@ -123,7 +126,12 @@ const solidityPacked = (value: FunctionArgument, type: string, ctx: ComputeRecip
     }
     return result;
   }
-  if (type === 'address' || type === 'address payable') return solidityAddressPayload(value);
+  // A bare `address` packs by the artifact's own `addressForm`, not by the ABI dialect alone: 'hash' is the
+  // 20-byte identity, 'bytecode' the locking bytecode the body holds. The integer and bytes widths above stay on
+  // the dialect, which is what the compiler emits for them.
+  if (type === 'address' || type === 'address payable') {
+    return hashAddresses ? solidityAddressPayload(value) : addressBytes(value);
+  }
   if (fixedBytesType.test(type)) {
     const bytes = bytesOf(value, type);
     const width = Number(fixedBytesType.exec(type)![1]);
@@ -153,7 +161,7 @@ const solidityPacked = (value: FunctionArgument, type: string, ctx: ComputeRecip
   throw new Error(`messageBus: compute recipe unsupported packed type ${type}`);
 };
 
-const nativePacked = (value: FunctionArgument, type: string): Uint8Array => {
+const nativePacked = (value: FunctionArgument, type: string, hashAddresses: boolean): Uint8Array => {
   if (type === 'bool') {
     if (value !== true && value !== false && value !== 0n && value !== 1n) {
       throw new Error('messageBus: compute recipe bool is non-canonical');
@@ -172,7 +180,9 @@ const nativePacked = (value: FunctionArgument, type: string): Uint8Array => {
     return bytes;
   }
   if (type === 'bytes' || type === 'string') return bytesOf(value, type);
-  if (type === 'address' || type === 'address payable') return addressBytes(value);
+  if (type === 'address' || type === 'address payable') {
+    return hashAddresses ? solidityAddressPayload(value) : addressBytes(value);
+  }
   throw new Error(`messageBus: compute recipe unsupported native packed type ${type}`);
 };
 
@@ -297,9 +307,10 @@ export function evaluateComputeRecipeExpression(
       throw new Error('messageBus: compute recipe abi.encodePacked has an untyped operand');
     }
     const solidity = ctx.artifact.compiler?.options?.evmCompat === true;
+    const hashAddresses = artifactAddressForm(ctx.artifact) === 'hash';
     return concat(children.map((child, index) => solidity
-      ? solidityPacked(evaluate(child), types[index], ctx)
-      : nativePacked(evaluate(child), types[index])));
+      ? solidityPacked(evaluate(child), types[index], ctx, hashAddresses)
+      : nativePacked(evaluate(child), types[index], hashAddresses)));
   }
   if (expression.kind === 'bytesConcat') {
     const children = expression.args ?? [];

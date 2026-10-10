@@ -20,15 +20,19 @@ title: Release Notes
   `abi.encodePacked(<address>)` and a decoded address leaf; omitting it follows the mode (`'hash'` under
   `evmCompat`, `'bytecode'` otherwise), so existing builds are unchanged. The narrowing casts are deliberately not
   part of it - `uint160(a)` and `bytes20(a)` truncate and `address(x)` stays a no-op in either form - and a
-  fixed-width ABI word (`abi.encode(<address>)`, an address argument, a word-encoded result) still carries the
-  identity, because a 32-byte word cannot hold a variable-length lock. A packed payload that carries locks is
-  longer (23/25/35 bytes per address), which matters at the 128-byte NFT commitment limit and for offset
-  arithmetic over the payload.
+  fixed-width ABI word (`abi.encode(<address>)`, a word lane, a word-encoded result) still carries the identity,
+  because a 32-byte word cannot hold a variable-length lock. An `address` *argument* on the framed wire is not a
+  word: it rides as its whole locking bytecode, and the option decides the packing a body does with it. A packed
+  payload that carries locks is longer (23/25/35 bytes per address), which matters at the 128-byte NFT commitment
+  limit and for offset arithmetic over the payload. An explicitly chosen form is published on the artifact
+  (`compiler.options.addressForm`), so the SDK reproduces the body's own packing when it derives a call.
 
 #### SolidCash SDK
 - :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.
 - :sparkles: `solidcash/stateful` exports `artifactAddressForm()`, so a consumer can assert which address form an
-  artifact was compiled with, including the mode-derived default. A decoded address is presented by that form.
+  artifact was compiled with, including the mode-derived default. A decoded address is presented by that form, and
+  the SDK's own derivation of a call's arguments packs an `address` the same way the compiled body does: under
+  `'bytecode'` a bare address argument is packed whole, so the caller's digest and the record's agree.
 
 ## v0.13.0
 

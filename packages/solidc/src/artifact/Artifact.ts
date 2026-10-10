@@ -4252,6 +4252,7 @@ export function generateDeclarationArtifact(
       name: 'solidc', version,
       options: {
         evmCompat: compilerOptions.evmCompat,
+        ...(compilerOptions.addressForm !== undefined && { addressForm: compilerOptions.addressForm }),
       },
     },
     updatedAt: new Date().toISOString(),
@@ -4612,6 +4613,11 @@ export function generateArtifact(
         allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
         messageBus: compilerOptions.messageBus,
+        // Published only when the source chose it: omitting it follows the mode, which `resolveAddressForm`
+        // re-derives on the artifact, so an artifact that names no form reads back the one its compile used
+        // without every artifact gaining a field. The SDK's value emulation reads it back through
+        // `artifactAddressForm`, so an explicit 'bytecode' compile is not mistaken for the 'hash' default.
+        ...(compilerOptions.addressForm !== undefined && { addressForm: compilerOptions.addressForm }),
         ...(compilerOptions.messageBus && compilerOptions.messageBusKernel !== undefined
           && { messageBusKernel: compilerOptions.messageBusKernel }),
         ...(compilerOptions.messageBusEntryPoolCapacity !== undefined

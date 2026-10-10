@@ -52,7 +52,9 @@ import {
   keyToSlotMulti,
   SortedList,
 } from './SortedList.js';
-import { artifactUsesSolidityAbi, sortAddressPair, sortedAddressPairPacked } from './solidityAbi.js';
+import {
+  artifactAddressForm, artifactUsesSolidityAbi, sortAddressPair, sortedAddressPairPacked,
+} from './solidityAbi.js';
 import { encodeExternalReturnValues } from './external-return-encoding.js';
 import type {
   DeployFromOptions, DeployFromResult,
@@ -170,9 +172,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
         const b = toLockingBytecode(deployFunctionArgs[addressArgIndices[1]]);
         if (a && b) {
           // The source-level address comparison sorts the original BCH values by the covenant's rules
-          // (`sortAddressPair`). Solidity-compatible abi.encodePacked then narrows each address to its canonical
-          // 20-byte payload; native SolidCash packs the full locking bytecode. Keep the CREATE2 prediction identical.
-          const packed = sortedAddressPairPacked(a, b, artifactUsesSolidityAbi(factory.inner.artifact));
+          // (`sortAddressPair`). abi.encodePacked then packs each address the way the source's own
+          // `addressForm` decides: its 20-byte identity under 'hash', its full locking bytecode under
+          // 'bytecode'. Keep the CREATE2 prediction identical to the covenant's own hash.
+          const packed = sortedAddressPairPacked(
+            a, b, artifactAddressForm(factory.inner.artifact) === 'hash',
+          );
           if (!packed) {
             throw new Error('Computed CREATE2 salt needs canonical address arguments for Solidity ABI packing.');
           }

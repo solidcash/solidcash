@@ -32,15 +32,16 @@ export function sortAddressPair(a: Uint8Array, b: Uint8Array): [Uint8Array, Uint
 
 /**
  * `abi.encodePacked(token0, token1)` after `(token0, token1) = a < b ? (a, b) : (b, a)`: the pair a Uniswap-style
- * factory hashes, by the covenant's own rules. The comparison is `sortAddressPair`, and a Solidity-compat source
- * (`artifactUsesSolidityAbi`) packs each address as its 20-byte identity, not its locking bytecode. Undefined when
- * a Solidity-compat address has no such identity.
+ * factory hashes, by the covenant's own rules. The comparison is `sortAddressPair`, and the pack is the artifact's
+ * own `addressForm` (`'hash'` packs each address as its 20-byte identity, `'bytecode'` as its locking bytecode).
+ * The caller passes `artifactAddressForm(artifact) === 'hash'`, which follows the mode when the option is unset.
+ * Undefined when a `'hash'` address has no such identity.
  */
 export function sortedAddressPairPacked(
-  a: Uint8Array, b: Uint8Array, solidityAddresses: boolean,
+  a: Uint8Array, b: Uint8Array, hashAddresses: boolean,
 ): Uint8Array | undefined {
   const [token0, token1] = sortAddressPair(a, b);
-  const fields = solidityAddresses
+  const fields = hashAddresses
     ? [lockingBytecodeToSolidityAddressPayload(token0), lockingBytecodeToSolidityAddressPayload(token1)]
     : [token0, token1];
   if (!fields[0] || !fields[1]) return undefined;

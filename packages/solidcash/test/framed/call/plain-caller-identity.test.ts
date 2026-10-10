@@ -28,9 +28,12 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * guarded entry directly is still refused by the guard.
  *
  * Every surface that hands the address back names that same lock: the record's read answers its identity, and an
- * event carries the whole lock, both the caller's `msg.sender` in the callee's event and an address argument packed
- * into a long payload past 128 bytes (`abi.encodePacked(uint160(a))`), each read from the composition's receipt and
- * from the chain's event outputs.
+ * event carries the whole lock, both the caller's `msg.sender` in the callee's event and a bare address argument
+ * packed into a long payload past 128 bytes (`abi.encodePacked(a)`), each read from the composition's receipt and
+ * from the chain's event outputs. The artifact compiles with `addressForm: 'bytecode'` (DECISIONS D29), so the bare
+ * address packs whole - 35 bytes for the caller's P2SH32 lock - where the identity form packs 20. The value rides
+ * the framed wire as its lock either way; what the option decides is the packing at the surface, which the SDK's
+ * own derivation of the call's argument has to reproduce or the caller's digest and the record's would differ.
  */
 
 const SOURCE = [
@@ -43,7 +46,7 @@ const SOURCE = [
   '  uint256 public pokes;',
   '  function poke(IGuarded g, uint256 v) external { pokes = pokes + 1; g.hit(v); }',
   '  function relay(IGuarded g, uint256 id, bytes memory head, address who, uint256 v) external {',
-  '    g.note(id, bytes.concat(head, abi.encodePacked(uint160(who)), abi.encodePacked(v)));',
+  '    g.note(id, bytes.concat(head, abi.encodePacked(who), abi.encodePacked(v)));',
   '  }',
   '}',
   'contract Guarded {',
@@ -64,7 +67,9 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { evmCompat: true, composition: 'framed' } as never);
+const artifacts = compileStringMulti(
+  SOURCE, { evmCompat: true, addressForm: 'bytecode', composition: 'framed' } as never,
+);
 const CALLER: Artifact = artifacts.Caller!;
 const GUARDED: Artifact = artifacts.Guarded!;
 
@@ -196,7 +201,7 @@ describe('a plain contract guards an entry with the address of the plain contrac
     const world = await chain();
     const callerLock = addressToLockScript(world.callerAddress);
     const guardedLock = addressToLockScript(await world.guarded.getAddress());
-    // The address is packed 70 bytes in, and the payload runs past 128 bytes, as a long event record does.
+    // The address is packed 70 bytes in as its whole 35-byte lock, so the payload runs past 128 bytes.
     const head = new Uint8Array(70).fill(0x11);
     const result = await enter(world, CALLER, world.caller, 'relay', [guardedLock, 4n, head, world.callerAddress, 5n]);
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);

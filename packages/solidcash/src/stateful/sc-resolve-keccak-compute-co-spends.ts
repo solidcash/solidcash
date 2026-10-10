@@ -18,7 +18,7 @@ import {
   computeSideCarStandIn,
   hasOutpoint,
 } from './stateful-abi-resolve.js';
-import { artifactUsesSolidityAbi, sortedAddressPairPacked } from './solidityAbi.js';
+import { artifactAddressForm, sortedAddressPairPacked } from './solidityAbi.js';
 
 export interface ResolveKeccakComputeCoSpendsHost {
   readonly categoryId: string;
@@ -152,10 +152,12 @@ export async function resolveKeccakComputeCoSpends(
     if (addressIndices.length >= 2) {
       const a = toLbc(args[addressIndices[0]]);
       const b = toLbc(args[addressIndices[1]]);
-      // The covenant's own ordering and packing rules; a Solidity-compat source packs 20-byte identities.
+      // The covenant's own ordering and packing rules; the source's `addressForm` decides whether each address
+      // packs as its 20-byte identity ('hash') or as its locking bytecode ('bytecode').
       if (a && b) {
-        const solidityAddresses = host.inner.artifact !== undefined && artifactUsesSolidityAbi(host.inner.artifact);
-        const packed = sortedAddressPairPacked(a, b, solidityAddresses);
+        const hashAddresses = host.inner.artifact !== undefined
+          && artifactAddressForm(host.inner.artifact) === 'hash';
+        const packed = sortedAddressPairPacked(a, b, hashAddresses);
         if (!packed) throw new Error('Solidity ABI keccak preimage needs canonical address arguments.');
         preimages[0] = packed;
       }

@@ -20,7 +20,7 @@ import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.
 import { alicePub } from '../fixture/vars.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
-import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
+import { effectiveAccelerationContractsRoot } from '../effectiveacceleration-corpus.js';
 
 const OPTIONS = {
   evmCompat: true,

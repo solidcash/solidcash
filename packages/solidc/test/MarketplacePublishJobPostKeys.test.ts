@@ -1,15 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import {
   decodeAuthenticationInstructions, hexToBin, OpcodesBCH, vmNumberToBigInt,
 } from '@bitauth/libauth';
 import { compileFile, compileFileMulti } from '../src/compileFile.js';
+import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
 
-const marketplaceV1 = path.resolve(
-  fileURLToPath(new URL('.', import.meta.url)),
-  '../../../bench/effectiveacceleration/contracts/MarketplaceV1.sol',
-);
+const contractsRoot = effectiveAccelerationContractsRoot();
+const marketplaceV1 = (): string => path.join(contractsRoot!, 'MarketplaceV1.sol');
 
 const JOBS_LENGTH_MINUS_ONE = 'binop:-(unop:.length(state:jobs),lit:1)';
 
@@ -36,16 +34,16 @@ const eaOpts = {
   ecrecover: 'p2pkh' as const,
 };
 
-describe('MarketplaceV1 publishJobPost upsert keys', () => {
+describe.skipIf(contractsRoot === undefined)('MarketplaceV1 publishJobPost upsert keys', () => {
   it('publishes jobs.length-1 as fixedKeySources on publishJobPost', () => {
-    expectPublishJobPostKeys(compileFile(marketplaceV1, {
+    expectPublishJobPostKeys(compileFile(marketplaceV1(), {
       evmCompat: true,
       optimizeForCompilationSpeed: true,
     }));
   });
 
   it('keeps jobs.length-1 on compileFileMulti and the delegate-capable artifact', () => {
-    const art = compileFileMulti(marketplaceV1, eaOpts).MarketplaceV1;
+    const art = compileFileMulti(marketplaceV1(), eaOpts).MarketplaceV1;
     expect(art).toBeDefined();
     expectPublishJobPostKeys(art!);
     // Initializer inference can make the primary artifact itself the delegate implementation. Only standalone
@@ -54,7 +52,7 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
   });
 
   it('classifies empty-commitment immutables from output j, not the zeroAmount boolean', () => {
-    const art = compileFileMulti(marketplaceV1, eaOpts).MarketplaceV1;
+    const art = compileFileMulti(marketplaceV1(), eaOpts).MarketplaceV1;
     // `publishJobPost(string,bytes32,bool,string[],address,uint256,uint32,string,address,address[])`; the
     // source compiles evmCompat, so the body is keyed by the keccak256 selector (D27).
     const hex = (art?.delegateArtifact ?? art)?.functionBodies?.['3a080839'];
@@ -84,7 +82,7 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
   });
 
   it('adds ceil(jobsLen/120) before the whitelist upsert predecessor check', () => {
-    const art = compileFile(marketplaceV1, eaOpts);
+    const art = compileFile(marketplaceV1(), eaOpts);
     const target = art.delegateArtifact ?? art;
     // `updateJobWhitelist(uint256,address[],address[])`, keyed by its evmCompat keccak256 selector (D27).
     const hex = target.functionBodies?.bdb10816;

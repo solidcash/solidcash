@@ -8,7 +8,7 @@ import {
 } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
-import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
+import { effectiveAccelerationContractsRoot } from '../effectiveacceleration-corpus.js';
 
 // Guards the present-key overwrite NEW-lane pin (418b605cd). Neutral replicas with the same block layout did not
 // reach the probe order that duplicated the row, so this compiles the real data contract that did. That contract

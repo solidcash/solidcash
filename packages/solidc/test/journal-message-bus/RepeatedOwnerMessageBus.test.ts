@@ -1,5 +1,7 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { compileFile } from '../../src/compileFile.js';
+import { effectiveAccelerationContractsRoot } from '../effectiveacceleration-corpus.js';
 import {
   compileString,
   compileStringMulti,
@@ -163,8 +165,10 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(calls?.[0].sourceEffectOrdinal).toBeLessThan(calls?.[1].sourceEffectOrdinal!);
   });
 
-  it('keeps an inlined nested payout after the repeated producer calls', () => {
-    const artifact = compileFile('../../bench/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol', {
+  const contractsRoot = effectiveAccelerationContractsRoot();
+
+  it.skipIf(contractsRoot === undefined)('keeps an inlined nested payout after the repeated producer calls', () => {
+    const artifact = compileFile(path.join(contractsRoot!, 'unicrow', 'UnicrowClaim.sol'), {
       evmCompat: true, suppressWarnings: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
     });

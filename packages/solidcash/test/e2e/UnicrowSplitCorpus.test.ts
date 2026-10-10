@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { compileFile, compileFileSplit } from 'solidc';
 import { Signer } from '../../src/index.js';
@@ -8,6 +9,7 @@ import {
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
+import { effectiveAccelerationContractsRoot } from '../effectiveacceleration-corpus.js';
 
 describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', () => {
   it('rejects the unsplit corpus at the BCH unlocking-script limit', async () => {
@@ -17,7 +19,7 @@ describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', 
       txid: 'df'.repeat(32), vout: 0, satoshis: 1_000_000n,
     });
     const artifact = compileFile(
-      '../../bench/effectiveacceleration/contracts/unicrow/Unicrow.sol',
+      path.join(effectiveAccelerationContractsRoot()!, 'unicrow', 'Unicrow.sol'),
       { evmCompat: true },
     );
     const address = signer.getAddress();
@@ -43,7 +45,7 @@ describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', 
     }
 
     const compiled = compileFileSplit(
-      '../../bench/effectiveacceleration/contracts/unicrow/Unicrow.sol',
+      path.join(effectiveAccelerationContractsRoot()!, 'unicrow', 'Unicrow.sol'),
       { evmCompat: true },
     );
     const address = signer.getAddress();

@@ -412,3 +412,30 @@ Do not re-run the full ladders to answer this question; items 1-3 each fit one t
 | refuse arbitration > job not taken | 10452 | 9670 | 11904 |
 | refuse arbitration > job taken | 80049 | 72973 | 82654 |
 | integration test > integration test | 167065 | 164335 | 174336 |
+
+---
+
+## 6. The instrument (added 2026-10-10)
+
+§5 asked for loop-iteration counts as the direct test of H1. They now exist:
+`SOLIDC_DEBUG_FRAMED_COUNTS=1` (documented in `docs/kernel-diagnostics.md`) counts the plain path's attempts, the
+hosts it builds, its whole-composition and scoped derivations, the hop's per-frame attempts, and each declaration
+read split by which answer took it. The totals are logged as one `framed-composer-counts {...}` line every 128
+plain-path attempts, from inside the run - a test runner drops what a worker writes while it tears down, so an
+exit-time report would never reach a lane log. A test reads the same totals through `framedComposerCounts()` in
+`packages/solidcash/src/framed/composer/counters.ts`.
+
+One reading, on two small framed call files (9 tests, one worker): 13 plain-path attempts, 13 hosts, **5
+whole-composition derivations against 8 scoped ones**, 16 hop attempts, 83 declaration reads (38 answered from a
+close the machine had recorded, 27 from one plain run, 18 from the bounded walk), 392 program evaluations and 31
+walks. Two things follow.
+
+- The plain path already scopes most of its attempts, so the cost that remains is the *attempt count* times the
+  per-attempt derivation: a title pays one plan, one host and one derivation per value it learns. That is what the
+  structural port (§4 H1) has to move, and the counter to move it against is `attempts`.
+- A declaration read no longer costs a stepped walk: the SDK machine answers one from a single plain run
+  (`evaluateClose`, `packages/solidcash/src/network/createVirtualMachine.ts`), and 27 of 83 reads here took that
+  path. `packages/utils/src/source-map.ts`'s parse and this module's entry count are memoized for the same reason.
+
+Use it before and after any change to the loop, on one title, with `-t '<title>$'`; a full ladder is only worth
+taking once a single title has moved.

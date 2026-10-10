@@ -1,3 +1,20 @@
+/**
+ * The EffectiveAcceleration marketplace bench.
+ *
+ * It runs the application's own `test/marketplace.test.ts`, where it lives in
+ * `../effectiveacceleration.ai/contract`, against the contracts this bench compiles, together with this bench's
+ * own cases. Nothing of the application is copied, linked or shadowed here: the compile root is the application's
+ * `contract/contracts` (`solidcash.config.ts`), the test is included by absolute path, and its `../src/**` and
+ * `../typechain-types/**` resolve through the aliases below. The carried files are this config,
+ * `solidcash.config.ts` and `test/`.
+ *
+ * Run it from this directory (there are no npm scripts):
+ *   node ../../packages/testing/dist/cli.js compile   // writes artifacts/ and typechain-types/
+ *   node ../../node_modules/vitest/vitest.mjs run     // the suite plus this bench's cases
+ *
+ * `artifacts/`, `cache/` and `typechain-types/` are build products of that compile, ignored by the repository's
+ * root `.gitignore`.
+ */
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';

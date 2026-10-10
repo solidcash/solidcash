@@ -8,7 +8,7 @@ const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program
 // End-to-end (mocknet) validation that the solidity-by-example porting features execute correctly on the
 // VM, not just that they compile. Each contract's spend only succeeds if the emitted bytecode computes the
 // asserted result. Compiled with { forceStateful: true } so each test can deploy + call directly
-// (`await sc.<fn>(args)`). See bench/solidity-by-example/INTERVENTIONS.md.
+// (`await sc.<fn>(args)`). See bench/solidity-by-example/SBE_SOURCE.md.
 
 describe('Porting features (runtime)', () => {
   // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_greater_size.sol

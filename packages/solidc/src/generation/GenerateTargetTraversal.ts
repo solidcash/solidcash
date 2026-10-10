@@ -7349,7 +7349,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // so sharing a span is transparent whenever its control flow is balanced, no span boundary splits an
     // invoke from the operand push that feeds it, and no require/log anchor falls inside it - the same three
     // conditions the first pass already demands. Excluding them left repeated sequences that merely *contain* an
-    // outline inline: on the framed MarketplaceV1 artifact the slot-keyed scan tail repeats 306 times as a
+    // outline inline: on a large framed mapping-heavy contract the slot-keyed scan tail repeats 306 times as a
     // byte-identical 25-byte span, and admitting it takes the program from 119,375 to 85,454 bytes.
     const nestedCompilerHelperIds = new Set(
       this.definedBodyRecords.flatMap((record) =>

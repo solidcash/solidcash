@@ -242,7 +242,7 @@ describe('a constructor that writes a member set in a loop', () => {
     expect(await settles(deployed, 'confirm', [OTHER])).toMatch(REQUIRE_FAILED);
   });
 
-  it('mints one node for a member given twice, as the EVM\'s loop leaves it', async () => {
+  it("mints one node for a member given twice, as the EVM's loop leaves it", async () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const categoryId = await deploy(provider, COMMITTEE, [[lockOf(1), lockOf(1)], 1n]);
     expect(await nodeValues(provider, COMMITTEE, categoryId, 'members'))

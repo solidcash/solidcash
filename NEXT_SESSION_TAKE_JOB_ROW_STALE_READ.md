@@ -1,3 +1,4 @@
+<!-- cspell:ignore inpu ntify ompute ddbb -->
 # >>> START HERE (added round 195) <<<
 #
 # Full analysis: jump to the `SESSION CLOSE-OUT (rounds 159-191)` section further down (search for it).

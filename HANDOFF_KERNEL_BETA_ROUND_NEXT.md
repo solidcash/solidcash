@@ -1,3 +1,4 @@
+<!-- cspell:ignore eate cabb -->
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
 > **Latest state (ROUND 154: the outlined keccak fragment is NOT the failing read - measured twice: with `SOLIDC_DEBUG_OWNER_SENTINEL=1` the failure is unchanged and the fragment does not even run, and in one evaluation BOTH of its invocations (coordinate 66 and coordinate 3) read an EMPTY commitment, so no base fix can be the whole story. A composer change that materialised already-resolved deferred blocks was tried, measured to change nothing, and REVERTED. Next: enumerate the shipped program's `OP_OUTPUTTOKENCOMMITMENT` + `push 32; SPLIT` reads, then trace the failing body's caller frame instead of assuming the fragment.** See "ROUND 154" at the end.
@@ -4721,7 +4722,7 @@ Why: the SDK's descriptor-driven plan (`ValueChunkWriteDescriptor`, `describeVal
 i.e. the compiler never emits that field, for any contract, so the SDK's descriptor-driven chunk planning is dead
 code in practice. Chunks can only ever be staged by the TRACE-LEARNING path (nothing appears in the
 `composedTrailing`), and that path needs a probe run to reach the chunk pin - which is exactly what the empty pad
-at `chunkBase + 3` (66) prevents: the covenant's positional chunk read aborts on the unpublised slot before any
+at `chunkBase + 3` (66) prevents: the covenant's positional chunk read aborts on the unpublished slot before any
 trace can expose the chunk commitment. The class is a DEADLOCK:
 
     covenant needs published chunks to run -> SDK publishes chunks only from a trace -> the trace aborts on the
@@ -5134,7 +5135,7 @@ Read the P5b machinery in `StatefulContract` and found the split that matters:
 
 so a DIRECT value param produces the pinned continuations deterministically, while a handler-COMPUTED value
 (publishJobEvent's array value) registers a computed run that the SDK resolves by trace discovery - and that
-discovery is exactly what the unpublised chunk slot deadlocks (the probe halts before it reaches the pin).
+discovery is exactly what the unpublished chunk slot deadlocks (the probe halts before it reaches the pin).
 
 Attempted fix (reverted): in the computed branch, when the route carries `messageBusRowArguments`, encode the value
 from the row arguments - the code immediately above already builds exactly that encoding

@@ -1,3 +1,4 @@
+<!-- cspell:ignore Δowner Δdepth incomplet faile inpu ntify ompute ddbb eate cabb unpublised materalized rebuit Strasse Deltaowner Deltadepth -->
 # Release hygiene: measured state of the section-3 readiness items
 
 Measured at `feat/framed` = `48e4c4f62` (2026-10-06), all read-only. "Changed src" below means the 579 files
@@ -76,35 +77,35 @@ errors, and `solidc` failed first.
 All fixed on `feat/per-call` (see `docs/framed/DECISIONS.md` D28); `yarn lint` now reports 0. The
 `solidc` failures are older than the SDK work: `039cefe85` reports the same 918 in the same two files.
 
-## 4b. `yarn spellcheck` (measured 2026-10-10, failing)
+## 4b. `yarn spellcheck` (measured 2026-10-10, fixed)
 
-`yarn spellcheck` is the release-gate command that follows `yarn lint` in `github-actions.yml`, and on
-`feat/per-call` it exits 123: 922 unknown-word occurrences across 243 distinct files. The 2026-08-05 PASS recorded
-in `RELEASE_READINESS.md` was measured on the findings-fix branch against an 890-term project dictionary; the
-framed work has since added vocabulary that dictionary does not carry. Where the occurrences sit:
+`yarn spellcheck` is the release-gate command that follows `yarn lint` in `github-actions.yml`. On `feat/per-call`
+it failed with 913 unknown-word occurrences across 235 distinct files: 601 in `packages/**` (mostly source and
+tests), 165 in `docs/**` (nearly all `docs/framed/**`), 148 in the root-level working notes, 4 in `scripts/**` and
+4 in `website/docs/**`. The 2026-08-05 PASS recorded in `RELEASE_READINESS.md` was measured on the findings-fix
+branch against an 890-term dictionary; the framed work had since added vocabulary that dictionary did not carry.
 
-| where | occurrences | notes |
-|---|---|---|
-| `packages/**` | 601 | mostly source and tests, not Markdown |
-| `docs/**` | 165 | essentially all `docs/framed/**` |
-| root-level working notes | 148 | `PLAN_*`, `HANDOFF_*`, `NEXT_SESSION_*`, `KERNEL_*` |
-| `scripts/**` | 4 | |
-| `website/docs/**` | 4 | fixed (below) |
+The sweep classified every token and treated three kinds differently:
 
-The flagged words are of two kinds, and they need different treatment:
+- **Vocabulary**, merged into `.cspell-project-terms.txt` (953 -> 1,257 entries, inserted in place, deduplicated
+  case-insensitively). These are the branch's identifiers, refusals and diagnostics (`UNPLANNABLE`, `PREDOUT`,
+  `JOBEVENT`, `SCKP`, `HOPTRACE`, `dests`, `nondecrease`, `reauthenticated`, `rematerialization`, `poolable`,
+  `inblock`, the `*OP` opcode-check names), together with the fixture strings, alphabet fragments and worktree
+  suffixes the code and notes already carry (`ddee`, `abcdcafe`, the base58 charset fragments, `Uwjd`, `Xmjzl`,
+  a German-name fixture, a Greek-letter fixture). Recording fixtures matches the dictionary's earlier entries
+  (`abcdefgi`, `aaaabbbbcccc`).
+- **Misspellings**, fixed in place rather than recorded: `unpublised` -> `unpublished` (3 occurrences),
+  `materalized` -> `materialized`, `rebuit` -> `rebuilt`, and three test titles re-quoted from single-quoted
+  strings with an escaped apostrophe to double-quoted ones, so the token reads as an apostrophe.
+- **Scoped `cspell:ignore`** in the five files whose flagged tokens are not vocabulary: the mid-word elisions
+  inside quoted tool output (`incomplet`, `faile`, `inpu`, `ntify`, `ompute`, `eate`) and the hex or random
+  fragments inside pasted dumps (`cabb`, `ddbb`), plus this file and `HANDOFF_MAPPING_WRITE_ADMISSION.md` for the
+  Greek-letter deltas of one algebra (`Deltaowner`, `Deltadepth`). That text is quoted evidence, so the tokens are
+  declared locally instead of being rewritten or added to the project dictionary.
 
-- released-surface identifiers and jargon the dictionary should record, such as `hdsigner` (a published
-  `solidcash` subpath) and the composition vocabulary this branch introduced; and
-- plain misspellings in comments, which should be fixed rather than accepted. cspell already proposes a
-  correction for several of them, so the fix pass must not simply add every flagged word to the dictionary.
-
-Section 5's root working notes account for 148 occurrences; moving them out of the root as that section proposes
-shrinks the dictionary work.
-
-The public `website/docs/**` surface is clean as of 2026-10-10: `git ls-files -z website/docs | xargs -0 npx cspell
-lint --no-progress --no-gitignore` reports zero issues across 79 files. The single incident word in
-`guides/message-bus.md` was reworded, and `hdsigner` was added to `.cspell-project-terms.txt` because it names a
-published subpath.
+After the sweep `yarn spellcheck` exits 0 with zero issues. The public `website/docs/**` surface is clean in its
+own right (79 files, 0 issues): its one incident word was reworded and `hdsigner` was recorded, since it names a
+published `solidcash` subpath.
 
 ## 5. Root-level working notes (repository cleanliness, not packaging)
 

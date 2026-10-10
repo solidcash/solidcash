@@ -8165,7 +8165,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A write whose OLD value is unavailable still has a reproducible NEW value when the route carries
               // row arguments: an INSERT starts from the empty array and a push appends to it. Requiring the
               // authenticated old value here was what kept the deterministic derivation inert for those rows (the
-              // trace-discovery alternative deadlocks on the unpublised chunk slot).
+              // trace-discovery alternative deadlocks on the unpublished chunk slot).
               if (selectedRows && (authenticatedChunkableValue || !list.has(slot))) {
                 if (structuredValue) {
                   const writes = selectedRows.flatMap((row) => (

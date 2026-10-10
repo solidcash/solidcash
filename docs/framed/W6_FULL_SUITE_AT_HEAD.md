@@ -1,3 +1,4 @@
+<!-- cspell:ignore incomplet faile -->
 # W6: the full non-marketplace suites at HEAD
 
 ## Scope and revision

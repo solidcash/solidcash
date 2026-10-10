@@ -236,7 +236,7 @@ describe('value into a payable entry behind a proxy', () => {
     expect(await held(proxied, proxied.proxyCategoryId)).toBe(25_000n);
   }, 300_000);
 
-  it('refuses by name value for an entry that is not payable, as the EVM\'s call-value check reverts it', async () => {
+  it("refuses by name value for an entry that is not payable, as the EVM's call-value check reverts it", async () => {
     await expect(enter(proxied, 'withdraw', [1n], 1_000n)).rejects.toThrow(
       'the implementation\'s "withdraw" entry is not payable, so a call to it carries no value',
     );

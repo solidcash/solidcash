@@ -1,3 +1,4 @@
+<!-- cspell:ignore Δowner Δdepth -->
 # Handoff: mapping-entry write admission (rounds 203-204)
 
 Worktree `/Code/cashscript/.worktrees/kernel-beta-candidate`, branch `grok/message-bus-kernel-beta`.
@@ -946,7 +947,7 @@ Why does this participant build have no published value-chunk output band for th
 Look at `compose.ts:2213` (`participant.routeInputs.some(... '__internal__valueChunkOutputBase')`), `:2791` (where
 the base is bound), `:3319` (where the ABI input is looked up), and the builder side
 `StatefulTransactionBuilder.ts:6448-6463`, `13886-13889`, `14396-14454`, `14617-14620`, `14822-14830`, `14942`
-(absolute/materalized base chain). This is the same "one exact compiler-published resource lane" gap that also
+(absolute/materialized base chain). This is the same "one exact compiler-published resource lane" gap that also
 produces `refuse arbitration > job not taken`, so fixing the lane publication should move both.
 
 ### Round 229b: the two collection hashes for `jobEvents` (do not confuse them)

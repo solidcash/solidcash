@@ -121,7 +121,7 @@ contract Locked {
 }`;
 
 describe('a return inside a modifier\'s placeholder or a modifier (direct convention)', () => {
-  it('runs the statements after `_` of every modifier around the return, in the EVM\'s order', async () => {
+  it("runs the statements after `_` of every modifier around the return, in the EVM's order", async () => {
     const ordered = compileString(ORDERED, { evmCompat: true });
     const run = async (g: boolean, a: boolean): Promise<{ x: bigint; result: unknown }> => {
       const sc: any = await getContractFactory(ordered, await fundedSigner()).deploy();

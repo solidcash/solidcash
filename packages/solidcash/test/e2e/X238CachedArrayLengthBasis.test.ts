@@ -9,7 +9,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  *
  * `CacheDynamicArrayInLoop` desugars "dynamic state array written in a loop (or under a branch)" into
  * read-once / mutate-local / write-once: `T[] __dlcache_v = v;` at function top, every write converted to the
- * local, `v = __dlcache_v` flushed before every exit. The conversion rebuit INDEXED reads (`v[i]`, parsed as a
+ * local, `v = __dlcache_v` flushed before every exit. The conversion rebuilt INDEXED reads (`v[i]`, parsed as a
  * `MappingAccessNode`) as local `ArrayAccessNode`s, but every BARE read was left spelled against the state
  * array. `v.length` reads the bare array (`StateAccessNode`), so it kept resolving to the PERSISTED collection
  * that the cache had not been flushed to yet:

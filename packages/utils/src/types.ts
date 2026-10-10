@@ -172,6 +172,48 @@ export function abiTypeString(type: Type | undefined): string {
   return type.toString().replace(/address payable/g, 'address');
 }
 
+/**
+ * Whether a value of this type is written in the standard EVM notation (`evmCompat` event arguments): a scalar
+ * of statically known width, written as exactly the bytes `abi.encodePacked` produces at that width - bool one
+ * byte (0/1), uintN N/8, intN N/8 two's-complement, fixed M/8, bigint 32 bytes, an enum its one `uint8` ordinal,
+ * bytesN its N bytes.
+ *
+ * The notation replaces the platform's own NUMERIC encoding, and only that: every other argument keeps the
+ * platform pushdata frame. A variable-width byte value (`bytes`/`string`/`pubkey`/`sig`/`datasig`) is already
+ * raw in that frame, which delimits it, so it carries no byte-order question and no length byte is needed; an
+ * `address` on BCH IS a locking bytecode, not a 20-byte EVM account, so `addressForm` stays the one axis that
+ * decides how an address VALUE is presented; solc has no packed form for a struct, its array rule pads every
+ * element to a 32-byte word, and a UDVT's notation is its underlying type's.
+ */
+export function isEvmNotationScalarType(type: Type): boolean {
+  if (type instanceof AddressType || type instanceof ArrayType || type instanceof StructType
+    || type instanceof ValueType || type instanceof FunctionType || type instanceof MappingType
+    || type instanceof TokenContainerType) return false;
+  if (type instanceof BytesType && type.bound === undefined) return false;
+  return type !== PrimitiveType.STRING && type !== PrimitiveType.PUBKEY && type !== PrimitiveType.SIG
+    && type !== PrimitiveType.DATASIG;
+}
+
+/**
+ * Solidity's canonical ABI type name for a selector signature: the spelling solc hashes into
+ * `keccak256(sig)[:4]` (and into an event's topic hash). It erases address payability and contract/interface
+ * identity to `address`, maps an enum to `uint8`, a struct to its parenthesized field tuple (recursively), a
+ * user-defined value type to its underlying type, and an external function type to `function`; arrays recurse.
+ * A type with no EVM ABI analogue (`bigint`, `pubkey`/`sig`/`datasig`, `mapping`, a token container) keeps its
+ * platform spelling here - the ABI encoder rejects those shapes separately.
+ */
+export function canonicalSelectorType(type: Type | undefined): string {
+  if (type === undefined) return 'address';
+  if (type instanceof ValueType) return canonicalSelectorType(type.underlyingType);
+  if (type instanceof EnumType) return 'uint8';
+  if (type instanceof StructType) return `(${type.fields.map((field) => canonicalSelectorType(field.type)).join(',')})`;
+  if (type instanceof TupleType) return `(${type.elements.map((element) => canonicalSelectorType(element)).join(',')})`;
+  if (type instanceof ArrayType) return `${canonicalSelectorType(type.elementType)}[${type.bound ?? ''}]`;
+  if (type instanceof AddressType) return 'address';
+  if (type instanceof FunctionType) return 'function';
+  return type.toString();
+}
+
 export class TupleType {
   constructor(
     public elements: Type[],

@@ -5,6 +5,7 @@ import { bytecodeToAsm, Op, type Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
   ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
+  canonicalSelectorType, type Type,
 } from './types.js';
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -641,20 +642,104 @@ export function concatPushdataParts(parts: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
+/** An event parameter as the artifact's ABI spells it: its type, and the frame `notation` marks. */
+export interface EventParameterNotation {
+  readonly type: string;
+  readonly notation?: 'evm';
+}
+
+/**
+ * Encode one event argument the way the compiler's `emitEventArgument` does: in the standard EVM notation when
+ * the artifact marks the parameter `notation: 'evm'` (`isEvmNotationScalarType`), and in the platform pushdata
+ * frame otherwise.
+ */
+export function encodeEventParameter(
+  value: StateValue,
+  parameter: EventParameterNotation,
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  return parameter.notation === 'evm'
+    ? encodeEvmNotationEventValue(value, parameter.type)
+    : encodePushdataValue(value, parameter.type, structs);
+}
+
+/**
+ * Encode one event argument in the `evmCompat` standard notation: exactly the bytes `abi.encodePacked` produces
+ * for the type - big-endian two's-complement at the type's natural width for a number, one byte for a bool, the
+ * N raw bytes for a bytesN. No length or padding is added, and the reader takes the width from the type, so the
+ * inverse is `decodeEvmNotationEventValue` and the output is byte-identical to the compiler's
+ * `emitEvmNotationEventValue`.
+ */
+export function encodeEvmNotationEventValue(value: StateValue, type: string): Uint8Array {
+  if (type === 'bool') return new Uint8Array([value ? 1 : 0]);
+  const width = evmNotationByteWidth(type);
+  if (/^bytes\d+$/.test(type)) {
+    if (!(value instanceof Uint8Array) || value.length !== width) {
+      throw new Error(`encodeEvmNotationEventValue: bytes${width} must be exactly ${width} bytes`);
+    }
+    return value;
+  }
+  // int/uint/fixed/bigint and an enum's ordinal: the type's natural width, big-endian two's-complement.
+  const valueNumber = typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : value;
+  if (typeof valueNumber !== 'bigint') {
+    throw new Error(`encodeEvmNotationEventValue: expected bigint for type '${type}', got ${typeof value}`);
+  }
+  const bounds = parseBoundedIntRange(type);
+  if (bounds && (valueNumber < bounds.min || valueNumber > bounds.max)) {
+    throw new Error(
+      `encodeEvmNotationEventValue: value ${valueNumber} out of range for type '${type}' `
+      + `(${bounds.min} to ${bounds.max})`,
+    );
+  }
+  const modulus = 1n << BigInt(8 * width);
+  let remainder = valueNumber % modulus;
+  if (remainder < 0n) remainder += modulus;
+  const payload = new Uint8Array(width);
+  for (let i = width - 1; i >= 0; i -= 1) {
+    payload[i] = Number(remainder & 0xffn);
+    remainder >>= 8n;
+  }
+  return payload;
+}
+
+/**
+ * The natural byte width of a marked scalar: the width `abi.encodePacked` writes for the type. An enum name is
+ * the one marked type whose width is not in its spelling, and its ABI width is `uint8`.
+ */
+function evmNotationByteWidth(type: string): number {
+  // Solidity-parity aliases: `int`/`uint` are int256/uint256, `fixed`/`ufixed` are fixed128x18.
+  if (type === 'int' || type === 'uint' || type === 'bigint') return 32;
+  if (type === 'fixed' || type === 'ufixed') return 16;
+  if (type === 'bool') return 1;
+  const intMatch = /^u?int(\d+)$/.exec(type);
+  if (intMatch) return Number(intMatch[1]) / 8;
+  const fixedMatch = /^u?fixed(\d+)x\d+$/.exec(type);
+  if (fixedMatch) return Number(fixedMatch[1]) / 8;
+  const bytesMatch = /^bytes(\d+)$/.exec(type);
+  if (bytesMatch) return Number(bytesMatch[1]);
+  return 1;
+}
+
+/** Whether a marked scalar's natural width is a two's-complement value (`int`/`fixed`/`bigint`), not a magnitude. */
+function evmNotationSigned(type: string): boolean {
+  return type === 'int' || type === 'bigint' || type === 'fixed'
+    || /^int\d+$/.test(type) || /^fixed\d+x\d+$/.test(type);
+}
+
 /**
  * Encode an event NFT commitment the way `visitEmitStatement` does: each parameter is
- * pushdata-encoded, then the parts are concatenated. `emit Update(0, record)` is therefore
+ * encoded in its artifact-marked frame, then the parts are concatenated. `emit Update(0, record)` is therefore
  * `encode(0) || encode(record)` (`00` + struct), not the struct alone.
  */
 export function encodeEventCommitment(
-  parameters: readonly { type: string }[],
+  parameters: readonly EventParameterNotation[],
   args: readonly StateValue[],
   structs?: readonly StructDefinitionInfo[],
 ): Uint8Array {
   return concatPushdataParts(
-    parameters.map((parameter, i) => encodePushdataValue(
+    parameters.map((parameter, i) => encodeEventParameter(
       args[i] ?? getDefaultStateValue(parameter.type, structs),
-      parameter.type,
+      parameter,
       structs,
     )),
   );
@@ -667,14 +752,14 @@ export function encodeEventCommitment(
  */
 export function completeEventCommitment(
   derived: Uint8Array,
-  parameters: readonly { type: string }[],
+  parameters: readonly EventParameterNotation[],
   args: readonly StateValue[],
   structs?: readonly StructDefinitionInfo[],
 ): Uint8Array {
   if (parameters.length < 2 || derived.length === 0) return derived;
   const last = parameters[parameters.length - 1];
   const lastArg = args[parameters.length - 1] ?? getDefaultStateValue(last.type, structs);
-  const lastEncoded = encodePushdataValue(lastArg, last.type, structs);
+  const lastEncoded = encodeEventParameter(lastArg, last, structs);
   if (lastEncoded.length !== derived.length) return derived;
   for (let i = 0; i < derived.length; i += 1) {
     if (lastEncoded[i] !== derived[i]) return derived;
@@ -1046,6 +1131,34 @@ export function decodePushdataValue(
   }
 
   return genericResult;
+}
+
+/**
+ * Decode one event argument written in the `evmCompat` standard notation: exactly the bytes `abi.encodePacked`
+ * produces for the type - big-endian two's-complement at the type's natural width for a number (an unsigned
+ * width keeps its magnitude), one byte for a bool, the N raw bytes for a bytesN. No length byte is read: the
+ * width comes from the type, so the reader needs the event ABI's `notation: 'evm'`, which marks exactly the
+ * `isEvmNotationScalarType` parameters; the platform `decodePushdataValue` reads every other argument.
+ */
+export function decodeEvmNotationEventValue(
+  data: Uint8Array,
+  offset: number,
+  type: string,
+): { value: StateValue; bytesConsumed: number } {
+  const width = evmNotationByteWidth(type);
+  if (offset < 0 || offset + width > data.length) {
+    throw new Error(
+      `decodeEvmNotationEventValue: a ${width}-byte '${type}' at offset ${offset} runs past the buffer `
+      + `(length ${data.length})`,
+    );
+  }
+  const payload = data.slice(offset, offset + width);
+  if (type === 'bool') return { value: payload[0] !== 0, bytesConsumed: width };
+  if (/^bytes\d+$/.test(type)) return { value: payload, bytesConsumed: width };
+  let value = 0n;
+  for (const byte of payload) value = (value << 8n) | BigInt(byte);
+  if (evmNotationSigned(type) && (payload[0] & 0x80) !== 0) value -= 1n << BigInt(width * 8);
+  return { value, bytesConsumed: width };
 }
 
 /**
@@ -1892,6 +2005,17 @@ export function computeFunctionSignature(funcName: string, paramTypes: string[])
 }
 
 /**
+ * Build the `name(type1,type2,...)` string solc hashes into a selector (or an event topic hash) under evmCompat:
+ * every parameter is spelled with `canonicalSelectorType` (struct -> parenthesized tuple, enum -> `uint8`,
+ * payability and contract identity erased to `address`, UDVT -> underlying). Use it wherever a selector is
+ * derived from declared types so dispatch, the artifact ABI, `abi.encodeCall`, `.selector` and the call-site
+ * selectors all agree.
+ */
+export function canonicalSelectorSignature(funcName: string, paramTypes: readonly (Type | undefined)[]): string {
+  return computeFunctionSignature(funcName, paramTypes.map((type) => canonicalSelectorType(type)));
+}
+
+/**
  * Compute 4-byte function selector: SHA-256 of the UTF-8 function signature, truncated to 4 bytes.
  * The signature format is "funcName(type1,type2,...)", e.g. "transfer(pubkey,sig,int)".
  * Used as OP_DEFINE/OP_INVOKE identifier for entry-point functions. Under evmCompat the selector follows the
@@ -1955,12 +2079,21 @@ export function computeEventNameHash(eventSignature: string): Uint8Array {
 }
 
 /**
- * Compute the 32-byte event selector (`E.selector`, bytes32): the full SHA-256 of the UTF-8 event
- * signature - the platform's analog of Solidity's keccak-based topic hash (signature-injective, so
- * equal signatures give equal selectors and distinct signatures distinct ones).
+ * Compute the 32-byte event selector (`E.selector`, bytes32). Native BCH uses the full SHA-256 of the UTF-8 event
+ * signature - the platform's analog of Solidity's keccak-based topic hash (signature-injective, so equal
+ * signatures give equal selectors and distinct signatures distinct ones). Under evmCompat it follows Solidity and
+ * is `keccak256(signature)`, like the function and error selector scheme, so a ported source reads the same event
+ * topic hash it would on the EVM.
  */
-export function computeEventSelector(eventSignature: string): Uint8Array {
-  return sha256(utf8ToBin(eventSignature));
+export function computeEventSelector(eventSignature: string, evmCompat = false): Uint8Array {
+  return evmCompat
+    ? computeEvmEventSelector(eventSignature)
+    : sha256(utf8ToBin(eventSignature));
+}
+
+/** EVM/Solidity 32-byte event topic hash: `keccak256(signature)`. Used under evmCompat (see computeEventSelector). */
+export function computeEvmEventSelector(eventSignature: string): Uint8Array {
+  return keccak_256(utf8ToBin(eventSignature));
 }
 
 /**

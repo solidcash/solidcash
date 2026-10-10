@@ -234,8 +234,20 @@ spaces, return types excluded. Normalization (`signatureInExternalFunction` / `i
 - struct -> tuple `(T1,T2,...)`, recursive.
 - external `function` -> `function`.
 
-SolidCash's `computeFunctionSignature` (utils/state.ts:1401) builds the string from `type.toString()`; under
-`evmCompat` it must emit these exact canonical names (audit `toString` for `uint`->`uint256` etc.).
+SolidCash's `canonicalSelectorSignature` (utils/state.ts) + `canonicalSelectorType` (utils/types.ts) emit these
+exact canonical names under `evmCompat`; every selector derivation that has the declared types (entry dispatch,
+the artifact ABI, `fn.selector`/`error.selector`/`E.selector`, `type(I).interfaceId`, `abi.encodeCall`, the
+message-bus and framed call-site selectors, `abi.encodeWithSignature`'s argument matching) routes through them, so
+all of them agree. Native compiles keep the platform `type.toString()` spelling with address payability erased.
+
+Residual: a selector folded for a **library-declared** member (`L.f.selector`, `L.E.selector`,
+`L.Err.selector`) or matched for a library error still uses the parse-time signature strings collected in
+`libraryFunctionSignatures`/`libraryEventSignatures`/`libraryErrorSignatures`, whose event-map keys are shared
+with the event covenant salt. Those keep the platform spelling in both modes; a library member with a struct,
+enum or UDVT parameter therefore folds its selector as it does natively. `abi.encodeWithSignature(<string>, ...)`
+still hashes the caller's string verbatim (solc does not normalize it), and a non-literal signature lowers to
+`encodeWithSelector(bytes4(keccak256(bytes(sig))), args)` so the keccak256 side-car supplies the digest
+(`LowerRuntimeSignatureSelectors`); the literal form folds at compile time.
 
 ### 6.3 Builders
 

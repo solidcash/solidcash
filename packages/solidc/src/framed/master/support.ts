@@ -25,6 +25,7 @@ import {
   ValueType,
   computeFunctionSelector,
   computeFunctionSignature,
+  canonicalSelectorSignature,
   encodeIntegerValue,
   isDynamicStorageType,
   isOutputOnlyBlockSlot,
@@ -3819,7 +3820,9 @@ function resolveInterfaceSelector(
   const fn = iface?.functions.find((candidate) => candidate.name === functionName);
   if (!fn) return undefined;
   return computeFunctionSelector(
-    computeFunctionSignature(functionName, fn.parameters.map((parameter) => parameter.type.toString())),
+    evmCompat
+      ? canonicalSelectorSignature(functionName, fn.parameters.map((parameter) => parameter.type))
+      : computeFunctionSignature(functionName, fn.parameters.map((parameter) => parameter.type.toString())),
     evmCompat,
   );
 }

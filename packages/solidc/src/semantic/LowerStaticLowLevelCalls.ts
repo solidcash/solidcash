@@ -32,7 +32,8 @@ import {
   VariableDefinitionNode,
 } from '../ast/AST.js';
 import {
-  AddressType, BytesType, computeEvmFunctionSelector, computeFunctionSelector, computeFunctionSignature, type Type,
+  AddressType, BytesType, computeEvmFunctionSelector, computeFunctionSelector, computeFunctionSignature,
+  canonicalSelectorSignature, type Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -508,8 +509,9 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     const interfaceName = this.targetInterface(target);
     if (interfaceName === undefined) return undefined;
     const functions = this.interfaceFunctions(interfaceName);
-    const canonical = (fn: InterfaceFunctionNode): string =>
-      computeFunctionSignature(fn.name, fn.parameters.map((parameter) => parameter.type.toString()));
+    const canonical = (fn: InterfaceFunctionNode): string => (this.evmCompat
+      ? canonicalSelectorSignature(fn.name, fn.parameters.map((parameter) => parameter.type))
+      : computeFunctionSignature(fn.name, fn.parameters.map((parameter) => parameter.type.toString())));
     const named = functions.find((fn) => canonical(fn) === signature);
     if (named !== undefined) {
       // The typed call resolves its method by name, so an overloaded name is not one it can pick.

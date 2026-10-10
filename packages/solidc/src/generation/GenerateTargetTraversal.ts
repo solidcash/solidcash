@@ -88,6 +88,7 @@ import {
   FrameKind,
   computeFunctionSelector,
   computeFunctionSignature,
+  isEvmNotationScalarType,
   resolveAddressForm,
   type AbiFunction,
   type AddressForm,
@@ -18480,7 +18481,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       // Encode each argument value to pushdata format
-      this.emitPushdataEncode(eventDef.parameters[i].type, locationData);
+      this.emitEventArgument(eventDef.parameters[i].type, locationData);
 
       // CAT with previous if not the first
       if (i > 0) {
@@ -21348,6 +21349,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData); // [remaining, acc]
       this.emit(Op.OP_NIP, locationData); // [acc]
     }
+  }
+
+  /**
+   * Encode one event argument. Natively this is the platform pushdata frame (a minimal script push of the VM
+   * number, or the raw bytes). Under `evmCompat` a scalar of statically known width is written in standard EVM
+   * notation instead - big-endian two's-complement at the type's natural width, exactly the bytes
+   * `abi.encodePacked` produces - so a standard decoder reads it without knowing the platform's little-endian
+   * sign-magnitude number encoding. Every other argument keeps the platform frame: a variable-width byte value
+   * (bytes/string/pubkey/sig/datasig) is already raw in that frame, an array, struct or user-defined value type
+   * has no `abi.encodePacked` form (its array rule pads each element to 32 bytes, and a UDVT's notation is its
+   * underlying type's), and an address IS a lock on BCH (`addressForm` decides how its VALUE is presented).
+   */
+  private emitEventArgument(type: Type, locationData: SingleLocationData): void {
+    if (!this.compilerOptions.evmCompat || !isEvmNotationScalarType(type)) {
+      this.emitPushdataEncode(type, locationData);
+      return;
+    }
+    this.emitEvmNotationEventValue(type, locationData);
+  }
+
+  /** The payload of `emitEventArgument` in standard EVM notation (see `isEvmNotationScalarType`). */
+  private emitEvmNotationEventValue(type: Type, locationData: SingleLocationData): void {
+    if (type instanceof EnumType) { this.emitEvmPackedValue(new IntType(false, 8), locationData); return; }
+    if (type instanceof FixedType) {
+      this.emitEvmPackedValue(new IntType(type.signed, type.bits), locationData);
+      return;
+    }
+    if (type === PrimitiveType.BIGINT) { this.emitEvmPackedValue(new IntType(true, 256), locationData); return; }
+    this.emitEvmPackedValue(type, locationData); // bool, intN/uintN, bytesN(1..32)
   }
 
   /**

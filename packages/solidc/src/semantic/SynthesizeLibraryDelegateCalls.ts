@@ -1,5 +1,5 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { AddressType, computeFunctionSignature, computeFunctionSelector, type LibraryCallArg } from '@solidcash/utils';
+import { AddressType, computeFunctionSignature, computeFunctionSelector, canonicalSelectorSignature, type LibraryCallArg } from '@solidcash/utils';
 import {
   SourceFileNode, ContractNode, Node, FunctionCallStatementNode, LowLevelCallStatementNode,
   IdentifierNode, HexLiteralNode, ParameterNode, FunctionModifier, StateVariableNode,
@@ -45,7 +45,9 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
       const libName = fn.name.slice(0, dot);
       const fnName = fn.name.slice(dot + 1);
       const paramTypes = fn.parameters.map((p) => p.type.toString());
-      const sig = computeFunctionSignature(fnName, paramTypes);
+      const sig = this.evmCompat
+        ? canonicalSelectorSignature(fnName, fn.parameters.map((p) => p.type))
+        : computeFunctionSignature(fnName, paramTypes);
       this.delegateLibFns.set(fn.name, {
         libName, fnName, selector: computeFunctionSelector(sig, this.evmCompat), paramTypes,
       });

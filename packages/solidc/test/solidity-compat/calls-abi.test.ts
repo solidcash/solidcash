@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import {
+  AddressType, canonicalSelectorSignature, computeFunctionSelectorHex, EnumType,
+} from '@solidcash/utils';
 import { compileString, compileStringMulti } from './helpers.js';
 
 // Focused regression guards derived from the Solidity compiler corpus.
@@ -729,6 +732,106 @@ describe('declaration selectors in constant initializers', () => {
       { evmCompat: true })).toThrow('reserved selector 0x00000000');
     expect(() => compileString('error test266151307(); contract C {}',
       { evmCompat: true })).toThrow('reserved selector 0xffffffff');
+  });
+
+  it('reserves them only under evmCompat; a native compile uses the platform selector and accepts', () => {
+    expect(compileString('error buyAndFree22457070633(uint256); contract C {}', {}).contractName).toBe('C');
+    expect(compileString('error test266151307(); contract C {}', {}).contractName).toBe('C');
+  });
+});
+
+describe('event selector follows the compile mode', () => {
+  const withConstant = (init: string, opts: object): string => compileString(
+    'contract C { event E(uint256 x); bytes32 constant S = ' + init + ';'
+    + ' function f() external pure returns (bytes32) { return S; } }',
+    opts,
+  ).bytecode;
+
+  it('is keccak256(signature) under evmCompat and sha256(signature) natively', () => {
+    expect(withConstant('E.selector', { evmCompat: true }))
+      .toBe(withConstant('keccak256("E(uint256)")', { evmCompat: true }));
+    expect(withConstant('E.selector', {}))
+      .toBe(withConstant('sha256("E(uint256)")', {}));
+    expect(withConstant('E.selector', { evmCompat: true }))
+      .not.toBe(withConstant('E.selector', {}));
+  });
+});
+
+describe('selector signatures follow Solidity canonicalization under evmCompat', () => {
+  const withSelector = (selExpr: string, opts: object): string => compileString(
+    'contract C { enum Color { Red, Green }'
+    + ' function f(Color c, address payable p) external pure { require(c == Color.Red || p != address(0)); }'
+    + ' function g() external pure returns (bytes4) { return ' + selExpr + '; } }',
+    opts,
+  ).bytecode;
+
+  it('spells an enum as uint8 and erases address payability', () => {
+    const canonical = computeFunctionSelectorHex(
+      canonicalSelectorSignature('f', [new EnumType('Color', []), new AddressType(true)]), true,
+    );
+    expect(withSelector('f.selector', { evmCompat: true }))
+      .toBe(withSelector(`0x${canonical}`, { evmCompat: true }));
+    expect(withSelector('f.selector', { evmCompat: true })).not.toBe(withSelector('f.selector', {}));
+  });
+
+  it('keeps the platform spelling natively', () => {
+    expect(withSelector('f.selector', {}))
+      .toBe(withSelector(`0x${computeFunctionSelectorHex('f(Color,address)', false)}`, {}));
+  });
+});
+
+describe('event arguments use the standard EVM notation under evmCompat', () => {
+  const eventsOf = (opts: object): any[] => compileString(
+    'contract C { struct S { uint256 x; }'
+    + ' event E(uint256 n, address payable p, S s, bytes b, string t, bytes4 h);'
+    + ' function f(uint256 n, address payable p) external { require(true); } }',
+    opts,
+  ).events;
+
+  it('marks a width-known scalar and leaves a byte string, an address and a struct on the platform frame', () => {
+    const marked = eventsOf({ evmCompat: true }).find((event) => event.name === 'E');
+    expect(marked.parameters.map((parameter: any) => parameter.notation))
+      .toEqual(['evm', undefined, undefined, undefined, undefined, 'evm']);
+  });
+
+  it('leaves every parameter on the platform frame natively', () => {
+    const native = eventsOf({}).find((event) => event.name === 'E');
+    expect(native.parameters.every((parameter: any) => parameter.notation === undefined)).toBe(true);
+  });
+});
+
+describe('runtime-signature encodeWithSignature under evmCompat', () => {
+  it('lowers to bytes4(keccak256(bytes(sig))) + the standard encoder', () => {
+    const lowered = compileString(
+      'contract C { function f(string memory s) external pure returns (bytes) {'
+      + ' return abi.encodeWithSignature(s, uint256(1)); } }',
+      { evmCompat: true },
+    ).bytecode;
+    const explicit = compileString(
+      'contract C { function f(string memory s) external pure returns (bytes) {'
+      + ' return abi.encodeWithSelector(bytes4(keccak256(bytes(s))), uint256(1)); } }',
+      { evmCompat: true },
+    ).bytecode;
+    expect(lowered).toBe(explicit);
+  });
+
+  it('is refused under evmCompat only when the signature is not an expression it can hash', () => {
+    // A literal keeps the compile-time fold, so both modes still accept the ordinary ported shape.
+    expect(compileString('contract C { function f(uint256 x) external pure returns (bytes) {'
+      + ' return abi.encodeWithSignature("f(uint256)", x); } }', { evmCompat: true }).contractName).toBe('C');
+    expect(compileString('contract C { function f(uint256 x) external pure returns (bytes) {'
+      + ' return abi.encodeWithSignature("f(uint256)", x); } }', {}).contractName).toBe('C');
+  });
+
+  it('publishes the keccak side-car requirement so the SDK can fund the runtime digest', () => {
+    const artifact = compileString(
+      'contract C { function f(string memory s) external pure returns (bytes) {'
+      + ' return abi.encodeWithSignature(s, uint256(1)); } }',
+      { evmCompat: true },
+    );
+    const entry = artifact.abi.find((fn) => fn.name === 'f');
+    expect(entry?.keccakCompute).toBe(true);
+    expect(entry?.keccakPreimageParams).toHaveLength(1);
   });
 });
 

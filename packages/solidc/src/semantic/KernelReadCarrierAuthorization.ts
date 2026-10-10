@@ -10,7 +10,7 @@ import {
 import { BinaryOperator } from '../ast/Operator.js';
 import {
   type AbiFunction, abiTypeString, ArrayType, computeCollectionHash, computeCollectionSignature,
-  computeFunctionSelectorHex, computeFunctionSignature, EnumType,
+  computeFunctionSelectorHex, computeFunctionSignature, canonicalSelectorSignature, EnumType,
   type ExternalCallExpression, FixedType, FunctionType,
   IntType, isFixedWidthType, PrimitiveType, type SortedUpsertLoopAbi, StructType, TupleType, ValueType,
 } from '@solidcash/utils';
@@ -739,9 +739,12 @@ const canonicalSourceAbi = (
 ): { selector: string; inputTypes: readonly string[] } | undefined => {
   const count = fn.messageBusKernelReadCarrierSourceParameterCount;
   if (!Number.isSafeInteger(count) || count! < 0 || count! > fn.parameters.length) return undefined;
-  const inputTypes = fn.parameters.slice(0, count).map((parameter) => abiTypeString(parameter.type));
+  const carrierParams = fn.parameters.slice(0, count);
+  const inputTypes = carrierParams.map((parameter) => abiTypeString(parameter.type));
   const selector = selectorOverride
-    ?? computeFunctionSelectorHex(computeFunctionSignature(fn.name, inputTypes), evmCompat);
+    ?? computeFunctionSelectorHex(evmCompat
+      ? canonicalSelectorSignature(fn.name, carrierParams.map((parameter) => parameter.type))
+      : computeFunctionSignature(fn.name, inputTypes), evmCompat);
   if (!/^[0-9a-f]{8}$/.test(selector)) return undefined;
   return { selector, inputTypes };
 };

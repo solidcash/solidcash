@@ -94,9 +94,10 @@ grows to the stack-element limit.
 | Constant `keccak256("literal")` | folded to real keccak256 | **Yes** |
 | Yul `keccak256(ptr, len)` | real keccak (folded / side-car) | **Yes** |
 | `erc7201(id)` namespaced slot (EIP-7201) | real keccak256, full spec formula | **Yes** |
-| Function selector under `evmCompat` | real keccak256 | **Yes** |
+| Selector scheme (function/error selectors, `type(I).interfaceId`, `msg.sig`) | real keccak256 over Solidity's canonical signature under `evmCompat`; sha256 (BCH-native) otherwise | **Yes under `evmCompat`** |
+| `E.selector` (bytes32 event topic-hash value) | real keccak256 under `evmCompat`; sha256 (BCH-native) otherwise | **Yes under `evmCompat`** |
 | Mapping/array physical STORAGE-SLOT space | sha256 (BCH-native) | **No** |
-| Event `.selector` / topic0 | sha256 (BCH-native) | **No** |
+| Event covenant name hash (the 20-byte event address salt) | sha256 (BCH-native) | **No** |
 | `sha256(x)` | sha256 | Yes (it is sha256) |
 
 ### What this affects
@@ -106,10 +107,50 @@ grows to the stack-element limit.
   the Yul builtin), so they equal what an Ethereum contract derives for the same input. `erc7201("...")` folds to
   the EIP-7201 slot `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff))`, verified
   byte-identical to the spec's reference values.
-- **The physical STORAGE-SLOT SPACE is BCH-native (sha256).** A mapping/array's on-chain slot (and an event's
-  topic0) is derived with sha256 - BCH has its own UTXO/covenant storage model, not the EVM trie. So although
-  `erc7201("x")` yields Ethereum's slot *number*, the data physically lives in BCH's `__evm_storage` space. This
-  is internal and never cross-chain-compared, so on-chain correctness within BCH is unaffected.
+- **A source-visible identifier follows the compile's mode.** The selector scheme (function/error selectors,
+  `type(I).interfaceId`, `msg.sig`, and the `E.selector` bytes32 event topic-hash value) is real keccak256 under
+  `evmCompat` and sha256 (BCH-native) otherwise, so a ported source reads the same selectors and topic hashes it
+  would on the EVM. `abi.encodeWithSignature` / `abi.encodeCall` do the same; a literal signature folds at compile
+  time and a runtime signature hashes through the keccak256 side-car.
+- **The physical STORAGE-SLOT SPACE is BCH-native (sha256).** A mapping/array's on-chain slot, and the 20-byte
+  sha256 salt that addresses an event's covenant output, are derived with sha256 - BCH has its own UTXO/covenant
+  storage model, not the EVM trie. So although `erc7201("x")` yields Ethereum's slot *number*, the data physically
+  lives in BCH's `__evm_storage` space. This is internal and never cross-chain-compared, so on-chain correctness
+  within BCH is unaffected. The selector/`E.selector` values above are observed by source and do follow the mode;
+  the physical slot ids and the event covenant salt are not.
+
+### Event arguments under `evmCompat`
+
+An event's payload is one NFT commitment (128-byte cap), so it cannot be a standard ABI tuple: `abi.encode` of
+six static arguments is already 192 bytes, and there is no topic channel on BCH. Under `evmCompat` a SCALAR of
+statically known width is therefore written in **standard EVM notation** - the bytes `abi.encodePacked` produces
+at the type's natural width, big-endian two's-complement for a number - and the artifact marks that parameter
+`notation: 'evm'`, so a standard decoder reads it without the platform's little-endian sign-magnitude encoding.
+Natively every argument keeps the platform pushdata frame.
+
+| Argument type | `evmCompat` payload | Native frame |
+|---|---|---|
+| `bool` | 1 byte, `0x00`/`0x01` | 1 byte, `0x00`/`0x51` |
+| `uintN`/`intN` | `N/8` bytes, BE two's-complement | script push of the LE sign-magnitude number |
+| `fixedMxN` | `M/8` bytes, BE two's-complement | script push of the LE scaled integer |
+| `enum` | 1 byte ordinal (`uint8`, the ABI type) | script push of the ordinal |
+| `bigint` | 32 bytes, BE two's-complement | script push of the LE number |
+| `bytesN` (1..32) | `N` bytes verbatim | `N` bytes (int-like for `bytes1`) |
+| `bytes`/`string` | pushdata frame, unchanged | pushdata frame |
+| `pubkey`/`sig`/`datasig` | pushdata frame, unchanged | pushdata frame |
+| `address` | pushdata frame, unchanged | pushdata frame |
+| struct / array / UDVT / function pointer | pushdata frame, unchanged | pushdata frame |
+
+No length byte is added: the reader takes each marked argument's width from its type, so the frame carries
+nothing but the packed value. Every other argument is deliberate, not an omission. A
+variable-width byte value (`bytes`/`string`/`pubkey`/`sig`/`datasig`) is already raw in the platform frame, which
+delimits it, so it carries no byte-order question. An `address` on BCH **is** a locking bytecode, not a 20-byte
+EVM account, and `addressForm` stays the one axis that decides whether an address *value* is presented as the
+identity - an event receipt carries the lock either way. A struct has no packed form in solc
+(`abi.encodePacked` rejects it), solc's array rule pads every element to a 32-byte word, and a UDVT's notation is
+its underlying type's. An array of dynamic elements is already length-prefixed per element, so its leaves stay
+readable. The decoder dispatches per argument on the artifact's `notation` field, so the two frames never mix
+within one parameter.
 - The `contract C layout at <expr>` storage-layout-offset clause is not supported (ignored, warned) - BCH storage
   is not a linear slot array to offset.
 

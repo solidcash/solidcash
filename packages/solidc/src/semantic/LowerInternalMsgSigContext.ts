@@ -1,4 +1,4 @@
-import { BytesType, computeFunctionSelector, computeFunctionSignature } from '@solidcash/utils';
+import { BytesType, computeFunctionSelector, computeFunctionSignature, canonicalSelectorSignature } from '@solidcash/utils';
 import {
   ContractNode,
   FunctionCallNode,
@@ -75,11 +75,15 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
   }
 
   private selector(fn: FunctionDefinitionNode, src: Node): HexLiteralNode {
-    const types = fn.parameters
-      .filter((p) => !p.name.startsWith('__internal__') && p.name !== CONTEXT)
-      .map((p) => p.type.toString().replace(/address payable/g, 'address'));
+    const sourceParameters = fn.parameters.filter((p) => !p.name.startsWith('__internal__') && p.name !== CONTEXT);
     const value = new HexLiteralNode(
-      computeFunctionSelector(computeFunctionSignature(fn.name, types), this.evmCompat),
+      computeFunctionSelector(
+        this.evmCompat
+          ? canonicalSelectorSignature(fn.name, sourceParameters.map((p) => p.type))
+          : computeFunctionSignature(fn.name,
+            sourceParameters.map((p) => p.type.toString().replace(/address payable/g, 'address'))),
+        this.evmCompat,
+      ),
     );
     value.type = new BytesType(4);
     value.location = src.location;

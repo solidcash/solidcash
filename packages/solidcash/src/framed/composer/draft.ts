@@ -745,9 +745,9 @@ export function composeDraft(
     const attempts = views.size + [...unlearnedWitnesses.values()].filter((witness) => witness.master === master).length;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       // A preimage may outgrow any commitment: the reading takes the larger bound and a view is held to its own.
-      // The reading costs a stepped re-run of the master, because the machine's failed-close record does not
-      // answer a composer program (measured: `recorded-close-declined` reports no captured close for every
-      // evaluation here, so the walk pays one trace per value learned). Batching the walk is the W4 lever.
+      // The reading costs a re-run of the master, because the machine's failed-close record rarely answers a
+      // composer program (measured on `take job`: 664 of 2120 readings). Storing the reading under the program's
+      // content was measured too: 190 of 2120 reads repeat, which is not enough to move a title's time.
       const reading = readComputedDeclaration({
         vm: learningMachine(), program: programOf(master, current),
         maximumCommitmentBytes: Math.max(maximumCommitmentBytes, MAXIMUM_STACK_ITEM_BYTES),

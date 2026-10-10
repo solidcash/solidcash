@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, symlinkSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,8 +7,8 @@ import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-// The installed @noble/ciphers is v2, whose subpaths are the `*.js` files: the app's `@noble/ciphers/crypto`
-// (randomBytes) and `/utils` both live in utils.js, as the lane harness also maps them.
+// The installed @noble/ciphers is v2, whose subpaths are the `*.js` files: the application's
+// `@noble/ciphers/crypto` (randomBytes) and `/utils` both live in utils.js, as the lane harness also maps them.
 const cipher = (entry: string): string => require.resolve(`@noble/ciphers/${entry}.js`);
 
 /** The sibling `effectiveacceleration.ai` checkout; `solidcash.config.ts` carries the same lookup and its reason. */
@@ -27,28 +27,7 @@ function effectiveAccelerationRoot(): string {
   }
 }
 
-/**
- * Mirror `source` under `target` as symlinks, creating directories as needed and leaving existing links alone.
- */
-function linkTree(target: string, source: string): void {
-  mkdirSync(target, { recursive: true });
-  for (const entry of readdirSync(source, { withFileTypes: true })) {
-    const from = path.join(source, entry.name);
-    const to = path.join(target, entry.name);
-    if (entry.isDirectory()) linkTree(to, from);
-    else if (!existsSync(to)) symlinkSync(from, to);
-  }
-}
-
-// The application's sources and its marketplace test are the sibling project's own files and are referenced, not
-// copied: link them under `src/` and `test/` so the test's relative imports (../src/**) read the application's
-// sources while (../typechain-types/**) read this project's generated bindings. Both links are gitignored, and
-// `preserveSymlinks` below is what keeps those relative imports resolving here rather than at the sibling.
-const sibling = path.join(effectiveAccelerationRoot(), 'contract');
-linkTree(path.join(here, 'src'), path.join(sibling, 'src'));
-// Only the one test the selection runs is linked; the application's other tests are not part of this project.
-const marketplaceTest = path.join(here, 'test', 'marketplace.test.ts');
-if (!existsSync(marketplaceTest)) symlinkSync(path.join(sibling, 'test', 'marketplace.test.ts'), marketplaceTest);
+const application = path.join(effectiveAccelerationRoot(), 'contract');
 
 // The lane harness this project mirrors (`/Code/cashscript/vitest.marketplace.config.ts`): the SolidHat
 // compatibility preset plus its hermetic offline runtime (the suite publishes through an IPFS service), the same
@@ -59,9 +38,9 @@ export default defineConfig(solidhatPreset(
     root: here,
     cacheDir: 'cache/vite',
     test: {
-      include: [
-        'test/marketplace.test.ts', 'test/decodeData.test.ts', 'test/encryption.test.ts', 'test/wagmiAbi.test.ts',
-      ],
+      // The application's own marketplace test, run from where it lives, plus this project's own cases. Nothing
+      // of the application's tree is copied or linked into this project.
+      include: [path.join(application, 'test', 'marketplace.test.ts'), 'test/*.test.ts'],
       testTimeout: 1_800_000,
       hookTimeout: 1_800_000,
       fileParallelism: false,
@@ -69,15 +48,17 @@ export default defineConfig(solidhatPreset(
       reporters: ['verbose'],
     },
     resolve: {
-      preserveSymlinks: true,
-      // The preset supplies the Hardhat/ethers/chai drop-in aliases; this is the app's v1-era @noble/ciphers
-      // subpath map onto the installed v2 build.
-      alias: {
-        '@noble/ciphers/chacha': cipher('chacha'),
-        '@noble/ciphers/crypto': cipher('utils'),
-        '@noble/ciphers/utils': cipher('utils'),
-        '@noble/ciphers/webcrypto': cipher('utils'),
-      },
+      // The application's test resolves its sources beside itself, but its bindings are this project's generated
+      // ones: `../typechain-types/**` points here while `../src/**` keeps reading the application's own sources,
+      // which a case of ours also imports from this project.
+      alias: [
+        { find: /^\.\.\/typechain-types\//, replacement: `${path.join(here, 'typechain-types')}/` },
+        { find: /^\.\.\/src\//, replacement: `${path.join(application, 'src')}/` },
+        { find: '@noble/ciphers/chacha', replacement: cipher('chacha') },
+        { find: '@noble/ciphers/crypto', replacement: cipher('utils') },
+        { find: '@noble/ciphers/utils', replacement: cipher('utils') },
+        { find: '@noble/ciphers/webcrypto', replacement: cipher('utils') },
+      ],
     },
   },
   { offline: true },

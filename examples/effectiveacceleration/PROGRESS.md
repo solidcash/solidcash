@@ -6,15 +6,13 @@ config + portbacks. This is the Hardhat-config-compatibility stress test.
 
 ## STRUCTURE (2026-10-10): the lane harness, and no copy of the application
 
-This project holds its run configuration (`solidcash.config.ts`, `vitest.config.ts`, `package.json`,
-`tsconfig.json`) plus the authored `test/`, `typechain-types/`, `wagmi/`, `tasks/compile-real.mjs` and the notes.
-The application's own Solidity tree, sources, deploy scripts, Hardhat configs and the `marketplace.test.ts` this
-project exists to run are the sibling `effectiveacceleration.ai` checkout's files, referenced in place:
-`paths.contracts` and `typegen.sourceDir` are its `contract/contracts`, and `vitest.config.ts` links its `src/**`
-and its `test/marketplace.test.ts` under this project (gitignored) so the test's relative imports read the
-application's sources while its `../typechain-types/**` reads this project's generated bindings. `preserveSymlinks`
-is what keeps that split. `scripts/config*.json` stay because the application's `src/utils/config.ts` imports them
-by a relative path.
+This project is configuration plus this project's own cases. The application's Solidity tree, sources, tests,
+deploy scripts and configs are the sibling `effectiveacceleration.ai` checkout's files, used where they live:
+`solidcash.config.ts` points `paths.contracts` and `typegen.sourceDir` at its `contract/contracts`, and
+`vitest.config.ts` runs its `test/marketplace.test.ts` by absolute path with the test's `../typechain-types/**`
+aliased to this project's generated bindings, so its `../src/**` reads the application's own sources. Nothing of
+the application is copied, linked or shadowed here, and `scripts/config*.json` are not carried because the
+application's `src/utils/config.ts` imports them from its own tree.
 
 `addressForm: 'hash'` in `solidcash.config.ts` states that a packed address value is its 20-byte identity, which is
 what the application's `decodeAddress` reads. Nothing of the application is forked any more: the July port had

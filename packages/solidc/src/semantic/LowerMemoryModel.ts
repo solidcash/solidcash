@@ -49,6 +49,7 @@ import {
   ArrayPushNode,
   ArrayPopNode,
   EmitStatementNode,
+  FunctionModifier,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
@@ -141,6 +142,18 @@ export default class LowerMemoryModel extends AstTraversal {
   // with `{ T[] memory __inl_x = a; <g body> }`, so the param aliases the caller's array. Pass-by-ref then falls
   // out of the alias convert/fallback decision - no new gate logic. Populated per-contract. See visitContract.
   private inlinable = new Map<string, FunctionDefinitionNode>();
+  // Free and library helpers eligible the same way, keyed by call name (`L.f`). Each is a snapshot of the
+  // unlowered function (free functions are visited before the contract) with same-library names qualified.
+  private freeInlinable = new Map<string, FunctionDefinitionNode>();
+  // Per snapshot: the unqualified outer names its body references, which a caller-scope name would capture.
+  private freeRefs = new Map<FunctionDefinitionNode, Set<string>>();
+  // Names in scope at the call site being inlined into (contract members, params, locals).
+  private scopeNames = new Set<string>();
+  private callerNames = new Set<string>();
+  // Nested-array locals of the current caller: a pass-by-ref trigger for free snapshots only.
+  private nestedRefLocals = new Set<string>();
+  // Isolated param bindings of inlined free snapshots -> param name: user aliases for the refusal check.
+  private observableBindings = new Map<string, string>();
   private usesMemory = false;
   // SAFETY GATE: names the analysis proved safe to convert this function (every use - and every alias-group
   // member's use - is a lowering we support). A candidate not in this set falls through to the value-copy path,
@@ -172,13 +185,29 @@ export default class LowerMemoryModel extends AstTraversal {
         this.byteConstantValues.set(constant.name.slice(dot + 1), constant.expression);
       }
     }
+    this.collectFreeInlinable(node);
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
-    node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
+    const freeNames = node.freeFunctions.map((fn) => fn.name);
+    const outerNames = [...freeNames, ...node.constantDefinitions.map((c) => c.name)];
+    node.freeFunctions = node.freeFunctions.map((fn) => {
+      this.inlinable = this.freeScope(fn.name, freeNames);
+      // A library body sees its members unqualified: they would capture a spliced body's outer names.
+      const prefix = fn.name.includes('.') ? `${fn.name.split('.')[0]}.` : undefined;
+      this.scopeNames = new Set(prefix === undefined ? []
+        : outerNames.filter((n) => n.startsWith(prefix)).map((n) => n.slice(prefix.length)));
+      return this.visit(fn) as FunctionDefinitionNode;
+    });
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
   visitContract(node: ContractNode): Node {
+    this.scopeNames = new Set<string>([
+      ...node.functions.map((fn) => fn.name),
+      ...node.stateVariables.map((v) => v.name),
+      ...node.collections.map((c) => c.name),
+      ...node.constantDefinitions.map((c) => c.name),
+    ]);
     this.collectInlinable(node);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
@@ -208,6 +237,10 @@ export default class LowerMemoryModel extends AstTraversal {
     const calldataBuffers = node.body && !this.inlinable.has(node.name) ? this.materializeParams(node) : [];
     // P4: inline pass-by-reference helper calls BEFORE the gate, so the substituted alias decls are analyzed and
     // lowered like any other alias. Pass-by-ref (convert) vs pass-by-value (fallback) then falls out of the gate.
+    if (node.body && this.freeInlinable.size > 0) {
+      this.callerNames = new Set([...this.scopeNames, ...node.parameters.map((p) => p.name)]);
+      this.eachDescendant(node.body, (n) => { if (n instanceof VariableDefinitionNode) this.callerNames.add(n.name); });
+    }
     if (node.body) this.inlinePassByRef(node.body);
     if (node.body) this.restoreReadOnlyCalldataParams(node.body, calldataBuffers);
     if (node.body) this.materializeInlineStructReferenceArgs(node.body);
@@ -419,11 +452,74 @@ export default class LowerMemoryModel extends AstTraversal {
     for (const fn of node.functions) {
       if (this.isPassByRefInlinable(fn)) this.inlinable.set(fn.name, fn);
     }
+    // A contract member shadows a free function of the same name.
+    for (const [name, fn] of this.freeInlinable) if (!this.scopeNames.has(name)) this.inlinable.set(name, fn);
   }
 
-  private isPassByRefInlinable(fn: FunctionDefinitionNode): boolean {
+  // Snapshot the eligible free and library helpers before any body is lowered. An overloaded name is skipped: a
+  // call site is matched by name and arity only.
+  private collectFreeInlinable(node: SourceFileNode): void {
+    this.freeInlinable = new Map();
+    this.freeRefs = new Map();
+    const counts = new Map<string, number>();
+    for (const fn of node.freeFunctions) counts.set(fn.name, (counts.get(fn.name) ?? 0) + 1);
+    const outer = new Set([...counts.keys(), ...node.constantDefinitions.map((c) => c.name)]);
+    for (const fn of node.freeFunctions) {
+      if (counts.get(fn.name) !== 1 || !fn.body || !fn.parameters.some((p) => this.isPassByRefType(p.type, true))) {
+        continue;
+      }
+      const snapshot = Object.assign(Object.create(Object.getPrototypeOf(fn)) as FunctionDefinitionNode, fn);
+      snapshot.body = cloneNode(fn.body);
+      const refs = this.qualifySiblingNames(snapshot, outer);
+      if (!this.isPassByRefInlinable(snapshot, true)) continue;
+      this.freeInlinable.set(fn.name, snapshot);
+      this.freeRefs.set(snapshot, refs);
+    }
+  }
+
+  // A library body names its siblings unqualified (`g(..)`, a constant `K`), which resolve against the library
+  // only while analysing that body. Qualify them in the snapshot so the spliced body still resolves them. Returns
+  // the outer names left unqualified (free functions, file constants, builtins).
+  private qualifySiblingNames(fn: FunctionDefinitionNode, outer: ReadonlySet<string>): Set<string> {
+    const prefix = fn.name.includes('.') ? `${fn.name.split('.')[0]}.` : undefined;
+    const declared = new Set(fn.parameters.map((p) => p.name));
+    this.eachDescendant(fn.body, (n) => { if (n instanceof VariableDefinitionNode) declared.add(n.name); });
+    const refs = new Set<string>();
+    this.eachDescendant(fn.body, (n) => {
+      if (!(n instanceof IdentifierNode) || n.name.includes('.') || declared.has(n.name)) return;
+      if (prefix && outer.has(prefix + n.name)) n.name = prefix + n.name;
+      else refs.add(n.name);
+    });
+    return refs;
+  }
+
+  // The helpers a free function body may inline: every free snapshot, plus its own library's members under their
+  // unqualified names (a library member shadows a file-level function of the same name, inlinable or not).
+  private freeScope(name: string, freeNames: readonly string[]): Map<string, FunctionDefinitionNode> {
+    const scope = new Map(this.freeInlinable);
+    if (!name.includes('.')) return scope;
+    const prefix = `${name.split('.')[0]}.`;
+    for (const member of freeNames) {
+      if (!member.startsWith(prefix)) continue;
+      const fn = this.freeInlinable.get(member);
+      if (fn) scope.set(member.slice(prefix.length), fn);
+      else scope.delete(member.slice(prefix.length));
+    }
+    return scope;
+  }
+
+  // A memory type passed by reference: a handled array or struct, and for a free snapshot a nested int array.
+  private isPassByRefType(t: Type, free: boolean): boolean {
+    return this.isRefType(t) || (free && this.isHandledMemNestedArray(t));
+  }
+
+  private isPassByRefInlinable(fn: FunctionDefinitionNode, free = false): boolean {
     const vis = fn.visibility;
-    if (vis !== 'internal' && vis !== 'private') return false;
+    // A free function is internal by definition. A library member must be internal or private: an external one
+    // runs under DELEGATECALL, which copies its memory arguments.
+    const freeInternal = free && !fn.isLibraryFunction && !fn.modifiers.includes(FunctionModifier.PUBLIC)
+      && !fn.modifiers.includes(FunctionModifier.EXTERNAL);
+    if (vis !== 'internal' && vis !== 'private' && !freeInternal) return false;
     // A graph handler's external-call manifest is authenticated at its OP_INVOKE boundary. Inlining that
     // compiler-owned body into the message-bus row loop changes the current codegen function to the route,
     // whose layout intentionally owns no per-handler external-return slots. Besides making returning calls
@@ -435,12 +531,12 @@ export default class LowerMemoryModel extends AstTraversal {
     // would reopen persisted entries beside the route cache and lose sequential read/write semantics.
     if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler || fn.forceCollectionJournalPool) return false;
     if (fn.customModifiers.length !== 0 || !fn.body) return false;
-    if (!fn.parameters.some((p) => this.isRefType(p.type))) return false;
+    if (!fn.parameters.some((p) => this.isPassByRefType(p.type, free))) return false;
     if (this.bodyHas(fn.body, (n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;
     const returns = this.countReturns(fn.body);
     if (fn.returnTypes.length === 0) return returns === 0; // void: no return may splice mid-caller
     // value: one non-ref return type, exactly one return, and it is the terminal statement.
-    if (fn.returnTypes.length !== 1 || this.isRefType(fn.returnTypes[0]) || returns !== 1) return false;
+    if (fn.returnTypes.length !== 1 || this.isPassByRefType(fn.returnTypes[0], free) || returns !== 1) return false;
     const stmts = fn.body.statements ?? [];
     const last = stmts[stmts.length - 1];
     return last instanceof ReturnNode && (last.expressions?.length ?? 0) === 1;
@@ -471,10 +567,14 @@ export default class LowerMemoryModel extends AstTraversal {
     if (this.inlinable.size === 0) return;
     for (let depth = 0; depth < 8; depth++) {
       const refLocals = new Set<string>();
+      this.nestedRefLocals = new Set();
       this.eachDescendant(body, (n) => {
         if (n instanceof VariableDefinitionNode && n.type && this.isRefType(n.type)) refLocals.add(n.name);
+        else if (n instanceof VariableDefinitionNode && this.isHandledMemNestedArray(n.type)) {
+          this.nestedRefLocals.add(n.name);
+        }
       });
-      if (refLocals.size === 0) return;
+      if (refLocals.size === 0 && this.nestedRefLocals.size === 0) return;
       if (!this.rewriteInlineCalls(body, refLocals)) return; // no inline happened -> fixpoint
     }
   }
@@ -541,7 +641,11 @@ export default class LowerMemoryModel extends AstTraversal {
     const fn = this.inlinable.get(call.identifier.name);
     if (!fn || fn.parameters.length !== call.parameters.length) return undefined;
     if (wantVoid !== (fn.returnTypes.length === 0)) return undefined;
-    if (!call.parameters.some((a) => a instanceof IdentifierNode && refLocals.has(a.name))) return undefined;
+    const refs = this.freeRefs.get(fn);
+    if (!call.parameters.some((a) => a instanceof IdentifierNode
+      && (refLocals.has(a.name) || (refs !== undefined && this.nestedRefLocals.has(a.name))))) return undefined;
+    // A free body spliced here must not have an outer name it references captured by a caller-scope name.
+    if (refs && [...refs].some((name) => this.callerNames.has(name))) return undefined;
     return fn;
   }
 
@@ -570,14 +674,18 @@ export default class LowerMemoryModel extends AstTraversal {
     // changes the alias alone. When the helper never rebinds its parameter, substitute the caller's reference
     // local directly and omit that alias declaration. Whole-parameter assignment/delete and assembly retain the
     // isolated binding because those operations change the helper-local pointer rather than the caller variable.
+    // A free snapshot also binds a nested-array argument directly, and its field writes (lowered to a whole-struct
+    // rebuild of the parameter) write through the reference rather than rebinding it.
+    const free = this.freeRefs.has(fn);
     const directlyBound = new Set<number>();
     fn.parameters.forEach((parameter, index) => {
       const argument = call.parameters[index];
-      if (!this.isRefType(parameter.type) || !(argument instanceof IdentifierNode)
-        || !refLocals.has(argument.name)) return;
+      if (!(argument instanceof IdentifierNode)) return;
+      const nested = free && this.isHandledMemNestedArray(parameter.type) && this.nestedRefLocals.has(argument.name);
+      if (!nested && (!this.isRefType(parameter.type) || !refLocals.has(argument.name))) return;
       const rebinds = this.bodyHas(fn.body!, (candidate) => (
         candidate instanceof AssignNode && candidate.identifier instanceof IdentifierNode
-          && candidate.identifier.name === parameter.name
+          && candidate.identifier.name === parameter.name && !(free && candidate.isReferenceDataWrite)
       ) || (candidate instanceof DeleteLocalNode && candidate.identifier.name === parameter.name)
         || candidate instanceof AssemblyStatementNode);
       if (rebinds) return;
@@ -594,9 +702,52 @@ export default class LowerMemoryModel extends AstTraversal {
     const bindings = fn.parameters.flatMap((p, i) => directlyBound.has(i) ? [] : [this.at(
       new VariableDefinitionNode(p.type, p.modifier, rename.get(p.name)!, this.clone(call.parameters[i])), src,
     )]);
+    // An isolated reference binding of a free snapshot the helper writes through is a user alias: falling its
+    // group back to a copy would lose that write, so the alias-group check must refuse it.
+    fn.parameters.forEach((p, i) => {
+      if (free && !directlyBound.has(i) && this.isPassByRefType(p.type, true)
+        && this.writesThroughParam(fn.body!, p.name)) {
+        this.observableBindings.set(rename.get(p.name)!, p.name);
+      }
+    });
     const block = new BlockNode([...bindings, ...(bodyClone.statements ?? [])]);
     block.scoped = true;
     return this.at(block, src);
+  }
+
+  // Whether a helper may write through reference param `name` while it still aliases the argument: a write
+  // through it or a local alias of it, a call taking either, or assembly, before an unconditional top-level rebind.
+  private writesThroughParam(body: BlockNode, name: string): boolean {
+    const aliases = new Set([name]);
+    const rooted = (e: ExpressionNode | undefined): boolean => {
+      let base = e;
+      while (base instanceof FieldAccessNode || base instanceof ArrayAccessNode) {
+        base = base instanceof FieldAccessNode ? base.expression : base.array;
+      }
+      return base instanceof IdentifierNode && aliases.has(base.name);
+    };
+    const writes = (n: Node): boolean => {
+      const target = (n as unknown as { name?: unknown }).name;
+      return n instanceof AssemblyStatementNode
+        || ((n instanceof ArrayAssignNode || n instanceof MappingAssignNode || n instanceof MappingFieldAssignNode
+          || n instanceof MappingDeleteNode || n instanceof ArrayPushNode || n instanceof ArrayPopNode)
+          && typeof target === 'string' && aliases.has(target))
+        || (n instanceof AssignNode && n.isReferenceDataWrite && n.identifier instanceof IdentifierNode
+          && aliases.has(n.identifier.name))
+        || (n instanceof FunctionCallNode && n.parameters.some(rooted))
+        || (n instanceof MethodCallNode && (rooted(n.object) || n.parameters.some(rooted)));
+    };
+    for (const stmt of body.statements ?? []) {
+      let found = false;
+      this.eachDescendant(stmt, (n) => {
+        if (n instanceof VariableDefinitionNode && rooted(n.expression)) aliases.add(n.name);
+        if (writes(n)) found = true;
+      });
+      if (found) return true;
+      if ((stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode && stmt.identifier.name === name)
+        || (stmt instanceof DeleteLocalNode && stmt.identifier.name === name)) return false;
+    }
+    return false;
   }
 
   // Rename every local/param reference found in the map. A state variable (StateAccess/StateAssign) name and a
@@ -1209,10 +1360,11 @@ export default class LowerMemoryModel extends AstTraversal {
       const names = groups.get(root) ?? [];
       // Compiler-generated __nlv temporaries implement an explicit read/modify/write sequence; they are not
       // source-level aliases whose identity is observable. Require at least two user bindings in the group.
-      const observableNames = names.filter((name) => !name.startsWith('__'));
+      const observableNames = names.filter((name) => !name.startsWith('__') || this.observableBindings.has(name));
       const nested = names.some((name) => nestedCands.has(name));
       const culprits = nested ? this.observableRowAliases(body, names, nestedCands, candType, baseVar)
-        : observableNames.length > 1 ? observableNames : undefined;
+        : observableNames.length > 1 ? observableNames.map((name) => this.observableBindings.get(name) ?? name)
+          : undefined;
       if (culprits) {
         const definition = definitions.get(observableNames[0]);
         if (definition) throw new UnsupportedMemoryAliasingError(definition, culprits);

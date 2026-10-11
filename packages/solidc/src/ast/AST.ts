@@ -3380,6 +3380,9 @@ export class TypeIntrospectionNode extends ExpressionNode {
   resolvedType?: Type;
   interfaceNode?: InterfaceNode;
   contractName?: string;
+  // Set when the introspected name is a `library`: an inlined library has no deployed artifact, so its creation
+  // code is the empty blob rather than a missing-bytecode error.
+  libraryName?: string;
   precomputedBytes?: Uint8Array;
 
   constructor(

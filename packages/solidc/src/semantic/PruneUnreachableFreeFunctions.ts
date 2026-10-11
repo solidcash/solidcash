@@ -3,6 +3,7 @@ import {
   FunctionCallNode,
   FunctionDefinitionNode,
   IdentifierNode,
+  InstantiationNode,
   MethodCallNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
@@ -26,8 +27,9 @@ export function reachableFreeFunctionsInSource(node: SourceFileNode): Set<Functi
  *    reached only via a never-called path) uses EVM memory primitives that do not type-check on BCH.
  * Both surface as errors on code that never runs.
  *
- * Scoped to the low-level-call / inline-assembly subgraph so nothing benign is ever removed: math helpers and
- * ordinary library functions with neither are always kept (no reachability false-negative can drop them). A
+ * Scoped to the low-level-call / inline-assembly subgraph (plus a helper that deploys the primary contract, which
+ * cannot be emitted at all) so nothing benign is ever removed: math helpers and ordinary library functions with
+ * neither are always kept (no reachability false-negative can drop them). A
  * REACHABLE function is always kept regardless. Reachability is conservative by NAME - a member call `x.m(..)` keeps
  * every free fn named `*.m`, a bare identifier `f` every `*.f`, every using-for-bound function name is a root - so a
  * live helper is never cut. Runs pre-semantic, after all synthesis passes; a library-only compilation is untouched.
@@ -53,7 +55,7 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
     // catches any residual block (defensive; runs on the post-lowering AST).
     for (const fn of freeFns) {
       if (this.hasDirectLowLevelCall(fn) || this.hasInlineAssembly(fn) || fn.hadInlineAssembly
-        || this.hasStoragePointerParam(fn)) tainted.add(fn);
+        || this.hasStoragePointerParam(fn) || this.deploysContract(fn, node.contract.name)) tainted.add(fn);
     }
     for (let changed = true; changed;) {
       changed = false;
@@ -142,6 +144,19 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
   // `_contains` but not its `_add` caller's call). Pruning the whole unreachable subgraph removes the dangle.
   private hasStoragePointerParam(fn: FunctionDefinitionNode): boolean {
     return (fn.parameters ?? []).some((p) => p.modifier?.includes(Modifier.STORAGE));
+  }
+
+  // A body instantiates `name`. A helper that deploys the PRIMARY contract itself (`new A()` inside a library
+  // helper of A) can never be emitted inside that contract - the child would have to embed the parent's own redeem
+  // script, a fixed point with no solution - so when the helper is dead it is dropped rather than emitted (a live
+  // one is still refused by the deploy path, which is the honest diagnostic for a linking model we do not have).
+  private deploysContract(fn: FunctionDefinitionNode, name: string): boolean {
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found) return;
+      if (n instanceof InstantiationNode && n.identifier.name === name) found = true;
+    });
+    return found;
   }
 
   private referencedNames(body: Node | undefined): string[] {

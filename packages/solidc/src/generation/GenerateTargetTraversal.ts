@@ -19333,10 +19333,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (node.property === 'creationCode' || node.property === 'runtimeCode') {
       // The child's compiled redeem script (BCH has no separate creation vs runtime code).
       const bytecode = this.compiledBytecodes.get(node.contractName!);
-      if (!bytecode) {
+      if (bytecode) {
+        this.emit(bytecode, locationData);
+      } else if (node.libraryName !== undefined) {
+        // A library is inlined at its call sites; with no artifact of its own it deploys nothing, so its
+        // creation code is the empty blob.
+        this.emit(new Uint8Array(0), locationData);
+      } else {
         throw new Error(`Compiled bytecode for contract '${node.contractName}' not available`);
       }
-      this.emit(bytecode, locationData);
     }
 
     this.pushToStack('(value)');

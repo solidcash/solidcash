@@ -15680,6 +15680,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       return node;
     }
 
+    // A library: `.name` is the library's own name, and `.creationCode`/`.runtimeCode` the bytecode of its
+    // lowered stateless contract when the compilation produced one. A library whose functions are all internal is
+    // inlined at every call site and has no deployed artifact, so its creation code is the empty blob (codegen).
+    if (this.knownLibraryNames.has(typeText)) {
+      if (node.property !== 'name' && node.property !== 'creationCode' && node.property !== 'runtimeCode') {
+        throw new InvalidTypeIntrospectionPropertyError(
+          node, typeText, node.property, ['name', 'creationCode', 'runtimeCode'],
+        );
+      }
+      node.contractName = typeText;
+      node.libraryName = typeText;
+      return node;
+    }
+
     // Try resolving as a built-in numeric type (IntType, FixedType)
     const resolved = this.resolveNumericType(typeText);
     if (resolved) {

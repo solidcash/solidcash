@@ -159,3 +159,61 @@ contract C {
   }
 }`, 'uint256 a', 'uint256', [4n]));
 });
+
+describe('contracts: public functions called internally', () => {
+  it('a public function writes a memory array its internal caller passed', () => run('public-memory-array', `
+contract C {
+  function g(uint256[] memory xs, uint256 d) public pure returns (uint256) {
+    xs[1] = xs[1] + d;
+    return xs.length;
+  }
+  function f(uint256 k) public pure returns (uint256) {
+    uint256[] memory a = new uint256[](3);
+    a[1] = 5;
+    uint256 n = g(a, k);
+    return a[1] * 10 + n;
+  }
+}`, 'uint256 k', 'uint256', [2n]));
+
+  // The struct entry parameter runs in evmCompat, where that ABI shape is covered; a void entry ends in a require.
+  it('a public function writes a memory struct its internal caller passed', () => assertConformant(contractCase({
+    label: 'public-memory-struct',
+    source: `
+contract C {
+  struct P { uint256 a; uint256 b; }
+  function h(P memory q, uint256 w) public pure { q.a = w; q.b = q.b + w * 2; require(q.b > q.a); }
+  function f(uint256 v) public pure returns (uint256) {
+    P memory p = P(1, 2);
+    h(p, v);
+    return p.a * 100 + p.b;
+  }
+}`,
+    params: 'uint256 v',
+    retType: 'uint256',
+    args: [3n],
+    evmCompat: true,
+  })));
+
+  // `this.g` reaches g's own entry body and copies the array; the internal call shares it.
+  it('a public function called internally and through its own entry', () => assertConformant(contractCase({
+    label: 'public-memory-entry',
+    source: `
+contract C {
+  function g(uint256[] memory xs, uint256 d) public pure returns (uint256) {
+    xs[0] = xs[0] + d;
+    return xs[0] * 10 + xs.length;
+  }
+  function f(uint256 k) public view returns (uint256) {
+    uint256[] memory a = new uint256[](2);
+    a[0] = 7;
+    uint256 r = g(a, k);
+    uint256 e = this.g(a, k);
+    return r * 1000000 + e * 1000 + a[0];
+  }
+}`,
+    params: 'uint256 k',
+    retType: 'uint256',
+    args: [2n],
+    view: true,
+  })));
+});

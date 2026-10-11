@@ -121,8 +121,13 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     }
     return [];
   }
-  // IntType -> BytesType: same as int -> bytes
+  // IntType -> BytesType: same as int -> bytes. Under Solidity compatibility a same-width unsigned value may set the
+  // top bit (bytes32(type(uint256).max)), which needs a sign byte: encode N+1 bytes and drop that byte.
   if (from instanceof IntType && to instanceof BytesType && to.bound !== undefined) {
+    if (solidityCompat && !from.signed && from.bits === to.bound * 8) {
+      const n = BigInt(to.bound);
+      return [encodeInt(n + 1n), Op.OP_NUM2BIN, encodeInt(n), Op.OP_SPLIT, Op.OP_DROP, Op.OP_REVERSEBYTES];
+    }
     return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN, ...(solidityCompat ? [Op.OP_REVERSEBYTES] : [])];
   }
   // BytesType -> IntType: bytes are read as a script number. For an UNSIGNED target, sign-pad a 0x00 high byte

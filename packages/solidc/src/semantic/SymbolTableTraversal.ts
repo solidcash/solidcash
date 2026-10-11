@@ -14367,10 +14367,31 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  /**
+   * Solidity lexical lookup of a bare event name: the enclosing library (in a library function) or contract, then
+   * file-level events (library events share that list, marked by declaringLibraryName). Falls back to the contract,
+   * then to every registered event (imported, interface or compiler-synthesized declarations).
+   */
+  private bareEventCandidates(name: string, contract: ContractNode | undefined): EventDefinitionNode[] {
+    const fn = this.currentFunction;
+    const library = fn?.isLibraryFunction && fn.name.includes('.')
+      ? fn.name.slice(0, fn.name.indexOf('.'))
+      : undefined;
+    const fileEvents = this.sourceFile?.eventDefinitions.filter((event) => event.name === name) ?? [];
+    const contractEvents = contract?.eventDefinitions.filter((event) => event.name === name) ?? [];
+    // One file-level candidate per signature: imports can repeat a declaration.
+    const fileLevel = fileEvents.filter((event) => event.declaringLibraryName === undefined);
+    const scopes = [
+      library !== undefined ? fileEvents.filter((event) => event.declaringLibraryName === library) : contractEvents,
+      fileLevel.filter((event, index) => fileLevel.findIndex((other) => other.signature === event.signature) === index),
+      contractEvents,
+    ];
+    return scopes.find((scope) => scope.length > 0)
+      ?? [...this.eventMap.values()].filter((event) => event.name === name);
+  }
+
   visitEmitStatement(node: EmitStatementNode): Node {
-    // Solidity lexical lookup: any event with this name in the effective contract namespace shadows file-level
-    // and library events of the same name. Only fall back to the global event map when the contract has no such
-    // declaration; otherwise `event E(uint)` incorrectly remained overloaded with file-level `event E()`.
+    // Bare names follow Solidity's lexical scope (bareEventCandidates).
     const qualifiedHolder = node.eventQualifier
       ? this.contractMap.get(node.eventQualifier) ?? this.interfaceMap.get(node.eventQualifier)
       : undefined;
@@ -14383,14 +14404,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     const lexicalContract = !node.eventQualifier && this.currentFunction?.inheritedFrom
       ? this.contractMap.get(this.currentFunction.inheritedFrom)
       : this.currentContract;
-    const contractCandidates = lexicalContract?.eventDefinitions
-      .filter((event) => event.name === node.eventName) ?? [];
     const candidates = node.eventQualifier
       ? qualifiedHolder?.eventDefinitions.filter((event) => event.name === node.eventName)
         ?? (qualifiedLibraryEvent ? [qualifiedLibraryEvent] : [])
-      : contractCandidates.length > 0
-        ? contractCandidates
-        : [...this.eventMap.values()].filter((event) => event.name === node.eventName);
+      : this.bareEventCandidates(node.eventName, lexicalContract);
     if (candidates.length === 0) {
       throw new UndefinedEventError(node);
     }
@@ -15654,10 +15671,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       if ((node.expression instanceof IdentifierNode || node.expression instanceof StateAccessNode)
         && !this.functionDefinitions.has(node.expression.name)) {
         // Own + inherited events live merged on the contract node (available even during state-var
-        // initializers, before eventMap - which is keyed by signature - fills).
-        const bareName = node.expression.name;
-        const ev = this.currentContract?.eventDefinitions?.find((e) => e.name === bareName)
-          ?? [...this.eventMap.values()].find((e) => e.name === bareName);
+        // initializers, before eventMap - which is keyed by signature - fills). A library function sees its
+        // library's events, then file-level ones, not the calling contract's.
+        const ev = this.bareEventCandidates(node.expression.name, this.currentContract)[0];
         if (ev) {
           if (ev.isAnonymous) throw new AnonymousEventSelectorError(node, ev.name);
           const fromEvent = eventSelectorLit(ev.name, ev.parameters.map((p) => p.type.toString()));

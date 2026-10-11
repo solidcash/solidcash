@@ -252,6 +252,7 @@ import {
   compileUnaryOp,
   isFixedWidthType,
   isDynamicallyEncodedElementType,
+  isSignReinterpretCast,
   getFixedWidth,
 } from './utils.js';
 
@@ -13493,19 +13494,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    const evmCompat = this.compilerOptions.evmCompat || false;
     this.emit(
-      compileCast(
-        node.expression.type as Type,
-        node.type,
-        node.isUnsafe,
-        this.compilerOptions.evmCompat || false,
-      ),
+      compileCast(node.expression.type as Type, node.type, node.isUnsafe, evmCompat),
       { location: node.location, positionHint: PositionHint.END },
     );
     this.popFromStack();
     this.pushToStack('(value)');
-    // Emit bounds check for casts to bounded int types; an assembly word written to an int variable truncates
-    if (node.type instanceof IntType && !node.isUnsafe) {
+    // Emit bounds check for casts to bounded int types; an assembly word written to an int variable truncates. A
+    // sign reinterpretation is in range by construction.
+    if (node.type instanceof IntType && !node.isUnsafe
+      && !isSignReinterpretCast(node.expression.type as Type, node.type, evmCompat)) {
       const locationData = { location: node.location, positionHint: PositionHint.END };
       if (node.evmWord) this.emitTwosComplementTruncation(node.type, locationData);
       else this.emitIntBoundsCheck(node.type, locationData);

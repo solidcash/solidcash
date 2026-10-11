@@ -1,6 +1,6 @@
 // Cast conformance: integer width/sign. NOTE: native SolidCash INTENTIONALLY range-checks narrowing casts and
 // REVERTS on data loss (a safety divergence from Solidity, with an unsafe() escape hatch); evmCompat truncates like
-// the EVM. Same-width sign reinterpretation reverts in both modes, pending an evmCompat decision.
+// the EVM. Same-width int <-> uint keeps the two's-complement bits in evmCompat, as on the EVM; native reverts.
 import { describe, it } from 'vitest';
 import { assertConformant, exprCase } from './harness.js';
 
@@ -29,9 +29,23 @@ describe('casts: narrowing and byte order, per compile mode', () => {
   // on data loss (unsafe casts truncate): a deliberate safety divergence.
   it('evmCompat: uint256 -> uint8 truncates (0x1234 -> 0x34)', () => compat('uint8(a)', 'uint a', 'uint8', [0x1234n]));
   it.fails('native: uint256 -> uint8 truncation reverts', () => native('uint8(a)', 'uint a', 'uint8', [0x1234n]));
-  // Same-width sign reinterpretation reverts in both modes, pending an evmCompat decision.
-  it.fails('evmCompat: int -> uint reinterpret (-1 -> 2^256-1) reverts', () => compat('uint256(a)', 'int a', 'uint', [-1n]));
+  // Same-width sign reinterpretation keeps the two's-complement bits on the EVM and in evmCompat; native SolidCash
+  // range-checks the cast and reverts.
+  it('evmCompat: int -> uint reinterpret (-1 -> 2^256-1)', () => compat('uint256(a)', 'int a', 'uint', [-1n]));
   it.fails('native: int -> uint reinterpret (-1 -> 2^256-1) reverts', () => native('uint256(a)', 'int a', 'uint', [-1n]));
+  // The signed min, -1 and max, and the unsigned values that reinterpret to them.
+  for (const bits of [8, 32, 256]) {
+    const s = `int${bits}`;
+    const u = `uint${bits}`;
+    const half = 1n << BigInt(bits - 1);
+    const extremes: readonly (readonly [string, bigint, bigint])[] = [
+      ['min', -half, half], ['-1', -1n, 2n * half - 1n], ['max', half - 1n, half - 1n],
+    ];
+    for (const [name, signed, unsigned] of extremes) {
+      it(`evmCompat: ${u}(${s} ${name})`, () => compat(`${u}(a)`, `${s} a`, u, [signed]));
+      it(`evmCompat: ${s}(${u}) == ${s} ${name}`, () => compat(`${s}(a)`, `${u} a`, s, [unsigned]));
+    }
+  }
   // bytesN <-> uint byte order: big-endian on the EVM and under evmCompat, little-endian in native SolidCash.
   it('evmCompat: uint256(bytes32(0x00..ff)) == 255 (big-endian)', () => compat('uint256(a)', 'bytes32 a', 'uint', [BE_255]));
   // A same-width unsigned value with its top bit set converts too (its VM number needs a sign byte).

@@ -73,6 +73,13 @@ export function compileTimeOp(op: TimeOp): Script {
   return mapping[op];
 }
 
+// Under Solidity compatibility a same-width int <-> uint cast reinterprets the two's-complement bits, as the EVM
+// does; its result is in the target range by construction.
+export function isSignReinterpretCast(from: Type, to: Type, solidityCompat: boolean): boolean {
+  return solidityCompat && from instanceof IntType && to instanceof IntType
+    && from.signed !== to.signed && from.bits === to.bits;
+}
+
 export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCompat = false): Script {
   // INT (integer literal/generic) shares the unbounded VM representation of BIGINT.
   if (from === PrimitiveType.INT) from = PrimitiveType.BIGINT;
@@ -118,6 +125,14 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   if (from instanceof IntType && to instanceof IntType) {
     if (solidityCompat && !from.signed && !to.signed && to.bits < from.bits) {
       return [encodeInt(1n << BigInt(to.bits)), Op.OP_MOD];
+    }
+    // Same-width sign change keeps the two's-complement bits: a negative value gains 2^N; a value with its top bit
+    // (v >> N-1) set loses 2^N. The power of two is built at runtime.
+    if (isSignReinterpretCast(from, to, solidityCompat)) {
+      const n = encodeInt(BigInt(to.bits));
+      return from.signed
+        ? [Op.OP_DUP, Op.OP_0, Op.OP_LESSTHAN, n, Op.OP_LSHIFTNUM, Op.OP_ADD]
+        : [Op.OP_DUP, encodeInt(BigInt(to.bits - 1)), Op.OP_RSHIFTNUM, n, Op.OP_LSHIFTNUM, Op.OP_SUB];
     }
     return [];
   }

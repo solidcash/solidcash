@@ -1003,6 +1003,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private constantMap: Map<string, ConstantDefinitionNode> = new Map();
   private contractMap: Map<string, ContractNode> = new Map();
   private interfaceMap: Map<string, InterfaceNode> = new Map();
+  // Contract/interface declaration NAMES, collected before the file-level constant pass (the interfaceMap
+  // itself is filled later), so an interface-typed constant's cast is recognised as compile-time.
+  private earlyContractTypeNames: Set<string> = new Set();
   // using-for: type string (or "*") -> [{methodName, fullFunctionName}]
   private usingForBindings: Map<string, Array<{ methodName: string; fullFunctionName: string }>> = new Map();
   // operator overloads: typeStr -> operatorKey -> fullFunctionName
@@ -1152,6 +1155,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     // ... but not for a declaration-only source: there `node.contract` is the placeholder AstBuilder named
     // after the file's interface, which must not shadow that interface while the helper bodies are visited.
     if (node.contract && !node.isLibrary) this.contractMap.set(node.contract.name, node.contract);
+    // A file-level constant may hold an interface/contract-typed value (`IAdder constant ADDER = IAdder(0);`),
+    // and the compile-time gate below tests that cast against the declared contract/interface NAMES - but
+    // interfaceMap is filled only later in this pass, so collect the declaration names up front.
+    this.earlyContractTypeNames = new Set<string>([
+      ...node.interfaceDefinitions.map((iface) => iface.name),
+      ...node.importedContracts.map((imported) => imported.name),
+      ...(node.libraryContract ? [node.libraryContract.name] : []),
+      ...(node.contract ? [node.contract.name] : []),
+    ]);
     // Register built-in NftCapability enum (none=0, mutable=1, minting=2)
     const nftCapType = new EnumType('NftCapability', [
       { name: 'none', value: 0n },
@@ -2411,7 +2423,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.expression = this.foldConstantDeclarationSelector(node.expression);
 
     // Validate that the expression is a compile-time constant
-    const contractTypeNames = new Set([...this.interfaceMap.keys(), ...this.contractMap.keys()]);
+    const contractTypeNames = new Set([
+      ...this.interfaceMap.keys(), ...this.contractMap.keys(), ...this.earlyContractTypeNames,
+    ]);
     if (!isCompileTimeExpression(
       node.expression, this.constantMap, this.enumMap, contractTypeNames, new Set([node]),
     )) {
@@ -2583,12 +2597,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       expr.type = expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod'
         ? PrimitiveType.BIGINT : new BytesType(32);
     } else if (expr instanceof FunctionCallNode && expr.parameters.length === 1
-      && (this.contractMap.has(expr.identifier.name) || this.interfaceMap.has(expr.identifier.name))) {
+      && (this.contractMap.has(expr.identifier.name) || this.interfaceMap.has(expr.identifier.name)
+        || this.earlyContractTypeNames.has(expr.identifier.name))) {
       // Interface/contract cast in a const (e.g. `IERC20(0)`): the parser emits a FunctionCall; convert to the same
       // address CastNode the normal path produces (visitFunctionCall), tagged with the interface so type-checking
-      // sees an address value, not an unresolved call of undefined type.
+      // sees an address value, not an unresolved call of undefined type. The declarations are read from
+      // earlyContractTypeNames too: a file-level constant is resolved before the interfaceMap is filled, so an
+      // interface declared anywhere in the file must still be recognised as a cast target here.
       const arg = this.resolveConstantExpressionIdentifiers(expr.parameters[0] as ExpressionNode);
-      const ifaceTag = this.interfaceMap.has(expr.identifier.name) ? expr.identifier.name : undefined;
+      const ifaceTag = this.interfaceMap.has(expr.identifier.name)
+        || this.earlyContractTypeNames.has(expr.identifier.name) ? expr.identifier.name : undefined;
       const castNode = new CastNode(new AddressType(false, ifaceTag), arg, false);
       castNode.location = expr.location;
       return castNode;

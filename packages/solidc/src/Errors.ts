@@ -224,6 +224,13 @@ export class CompilerRecursionLimitError extends Error {
   }
 }
 
+/** A struct contains itself by value (directly, or through fixed-size arrays and other structs), as solc refuses. */
+export class RecursiveStructDefinitionError extends SolidCashError {
+  constructor(node: StructDefinitionNode) {
+    super(node, 'Recursive struct definition');
+  }
+}
+
 export class RecursiveStructUnsupportedError extends SolidCashError {
   constructor(node: FunctionDefinitionNode) {
     super(node, 'Recursive struct types are unsupported because BCH requires a finite inline encoding');

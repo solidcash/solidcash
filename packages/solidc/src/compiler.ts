@@ -269,7 +269,7 @@ import {
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
-  UnboundReturnCallError, UnpublishableLoopGuardError,
+  UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -3254,6 +3254,7 @@ function parseAndResolve(
   // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
   // definitions are merged (and the primary is chosen), re-resolve those placeholders to the real StructType.
   if (hadImports) reresolveImportedStructTypes(ast);
+  assertNoRecursiveStructDefinitions(ast);
   profileLog('parseAndResolve', parseResolveStarted, {
     files: parseProfileTotals.files - filesBefore,
     sllFails: parseProfileTotals.sllFails - sllBefore,
@@ -20836,6 +20837,37 @@ export function parseCode(
 // merged at parse time) to the real StructType, now that imports are merged. Scoped to the main contract's
 // state variables + collections (the array-bearing declarations); a non-struct placeholder (interface array
 // or a typo) is left untouched and validated downstream as before.
+/**
+ * solc refuses a struct that contains itself by value: directly, or through fixed-size arrays and other structs held
+ * by value. A dynamic array or mapping ends that chain. Struct names shared by two definitions are not followed, so
+ * same-named structs of different contracts cannot be mistaken for one another.
+ */
+function assertNoRecursiveStructDefinitions(ast: Ast): void {
+  const definitions = [
+    ...(ast.structDefinitions ?? []),
+    ...(ast.contract?.structDefinitions ?? []),
+    ...(ast.importedContracts ?? []).flatMap((contract) => contract.structDefinitions ?? []),
+  ];
+  const counts = new Map<string, number>();
+  for (const definition of definitions) counts.set(definition.name, (counts.get(definition.name) ?? 0) + 1);
+  const byName = new Map(definitions.filter((definition) => counts.get(definition.name) === 1)
+    .map((definition) => [definition.name, definition]));
+  const reaches = (type: Type, target: string, seen: Set<string>): boolean => {
+    if (type instanceof ArrayType) return type.bound !== undefined && reaches(type.elementType, target, seen);
+    const name = type instanceof StructType || type instanceof AddressType ? (type as { name?: string }).name : undefined;
+    if (name === undefined || !byName.has(name)) return false;
+    if (name === target) return true;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    return byName.get(name)!.fields.some((field) => reaches(field.type, target, seen));
+  };
+  for (const definition of byName.values()) {
+    if (definition.fields.some((field) => reaches(field.type, definition.name, new Set()))) {
+      throw new RecursiveStructDefinitionError(definition);
+    }
+  }
+}
+
 function reresolveImportedStructTypes(ast: Ast): void {
   const contract = ast.contract;
   if (!contract) return;

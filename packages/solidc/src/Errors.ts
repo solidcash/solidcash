@@ -723,6 +723,20 @@ export class StateVariableNameCollisionError extends ParseError {
   }
 }
 
+/**
+ * A Solidity storage-layout specifier (`contract C layout at <expr>`) that solc rejects. A valid specifier is still
+ * ignored with a warning (state lives in NFT commitments); `rule` is the solc diagnostic the message reproduces.
+ */
+export class StorageLayoutSpecifierError extends ParseError {
+  constructor(
+    public rule: string,
+    message: string,
+    location?: Location,
+  ) {
+    super(`${message} (solc ${rule})`, location);
+  }
+}
+
 export class UndefinedStateVariableError extends SolidCashError {
   constructor(
     public node: StateAccessNode | StateAssignNode,

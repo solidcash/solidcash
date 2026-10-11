@@ -262,6 +262,7 @@ import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
 import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
+import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayoutSpecifiers.js';
 import { ImportResolver } from './ImportResolver.js';
 import { createMapResolver } from './createMapResolver.js';
 import {
@@ -20711,8 +20712,9 @@ export function parseCode(
   // clause; skip the two regex walks unless the source actually contains one.
   // Current Solidity grammar places the clause BEFORE inheritance (`contract C layout at 42 is A`); preserve the
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
-  // spelling below for compatibility with sources SolidCash already accepted.
+  // spelling below for compatibility with sources SolidCash already accepted. solc's checks on the clause run first.
   if (code.includes('layout at')) {
+    withSourceFile(importedFileId, () => validateStorageLayoutSpecifiers(code));
     code = code.replace(
       // eslint-disable-next-line max-len
       /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,

@@ -283,6 +283,7 @@ import {
   NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
+  UnsupportedEvmAbiEncodingError, UnpinnedExternalCallTargetError, LogicalSenderUnavailableError,
   DirectStaleReadError, ConstructorStaleReadError, UnpublishableLoopGuardError, importedFileCaveat,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
@@ -19940,7 +19941,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_CAT, loc);
       }
     } else {
-      throw new Error(`evmCompat abi.encode: unsupported type '${type.toString()}' (Phase 1 = value types)`);
+      throw new UnsupportedEvmAbiEncodingError('abi.encode', type.toString(), ' (Phase 1 = value types)');
     }
     this.popFromStack();
     this.pushToStack('(value)');
@@ -21143,7 +21144,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEvmArrayTail(type.elementType, loc, true);
       return;
     } else {
-      throw new Error(`evmCompat abi.encodePacked: unsupported type '${type.toString()}'`);
+      throw new UnsupportedEvmAbiEncodingError('abi.encodePacked', type.toString());
     }
     this.popFromStack();
     this.pushToStack('(value)');
@@ -42021,10 +42022,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (slot.addressLiteral !== undefined) {
         this.emit(hexToBin(slot.addressLiteral), locationData); // [idx, B_master_bytecode, expected_addr]
       } else {
-        throw new Error(
-          'external call target address must be a constructor/function parameter or self-pinned state value '
-          + `(target '${slot.interfaceName}.${slot.functionName}' in function '${node.name}')`,
-        );
+        throw new UnpinnedExternalCallTargetError(`${slot.interfaceName}.${slot.functionName}`, node.name);
       }
       if (anchorParamIdx < 0 && tightenRawIdentity) {
         // A 20-byte identity target must name a canonical lock of it; a full-lock target keeps the exact compare.
@@ -46695,9 +46693,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Pick _msgSenderCategory from the stack
     if (!this.stack.includes('__internal__msgSenderCategory')) {
-      throw new Error(
-        `Logical msg.sender context is unavailable while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
-      );
+      throw new LogicalSenderUnavailableError(this.currentFunction?.name ?? 'unknown');
     }
     const catIdx = this.getStackIndex('__internal__msgSenderCategory');
     this.emit(encodeInt(BigInt(catIdx)), locationData);

@@ -183,6 +183,31 @@ export class BlockLayoutUnavailableError extends Error {
   }
 }
 
+/** evmCompat ABI encoding has no word layout for a value of this type yet. */
+export class UnsupportedEvmAbiEncodingError extends Error {
+  constructor(operation: 'abi.encode' | 'abi.encodePacked', type: string, detail = '') {
+    super(`evmCompat ${operation}: unsupported type '${type}'${detail}`);
+    this.name = this.constructor.name;
+  }
+}
+
+/** An external call names a target whose address the covenant cannot pin. */
+export class UnpinnedExternalCallTargetError extends Error {
+  constructor(target: string, functionName: string) {
+    super('external call target address must be a constructor/function parameter or self-pinned state value '
+      + `(target '${target}' in function '${functionName}')`);
+    this.name = this.constructor.name;
+  }
+}
+
+/** A read of logical msg.sender in a function the compiler gave no msg.sender context. */
+export class LogicalSenderUnavailableError extends Error {
+  constructor(functionName: string) {
+    super(`Logical msg.sender context is unavailable while compiling '${functionName}'`);
+    this.name = this.constructor.name;
+  }
+}
+
 /** Code generation lost a compiler-tracked value before a path that still requires it. */
 export class StackVariableUnavailableError extends Error {
   constructor(variable: string, detail = '') {

@@ -2012,9 +2012,15 @@ export class SliceNode extends ExpressionNode {
   }
 }
 
+// Yul builtins that codegen evaluates with EVM semantics over 256-bit words (GenerateTargetTraversal.emitYulWordOp).
+export type YulWordBuiltin = 'add' | 'sub' | 'mul' | 'div' | 'sdiv' | 'mod' | 'smod' | 'slt' | 'sgt' | 'sar' | 'signextend';
+
 export class BinaryOpNode extends ExpressionNode {
   // Written in source or desugared from it: an integer literal operand takes the bounded operand's type.
   sourceArithmetic?: boolean;
+  // Lowered from this Yul builtin: codegen gives it EVM word semantics. The operator is the plain fallback the type
+  // check keeps for a signed operand.
+  yulBuiltin?: YulWordBuiltin;
 
   constructor(
     public left: ExpressionNode,

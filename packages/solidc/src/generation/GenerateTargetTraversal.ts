@@ -235,6 +235,7 @@ import {
   StateArrayAssignNode,
   StateArrayDeleteNode,
   type KeySourceInfo,
+  type YulWordBuiltin,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { GlobalFunction, Class } from '../ast/Globals.js';
@@ -16307,6 +16308,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitBinaryOp(node: BinaryOpNode): Node {
+    if (node.yulBuiltin) return this.emitYulWordOp(node, node.yulBuiltin);
     // Short-circuit && / || (Solidity semantics): the right operand is only evaluated when needed.
     if (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR) {
       return this.emitShortCircuitBoolean(node);
@@ -17015,6 +17017,64 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ops(Op.OP_OVER, Op.OP_DUP, Op.OP_ADD); // [H, x, 2H]
     ops(Op.OP_TUCK, Op.OP_MOD, Op.OP_OVER, Op.OP_ADD, Op.OP_SWAP, Op.OP_MOD); // [H, x mod 2H in [0, 2H)]
     ops(Op.OP_SWAP, Op.OP_SUB);
+  }
+
+  // A Yul builtin over 256-bit words in [0, 2^256), with EVM semantics: add/sub/mul wrap, div/mod by zero give 0,
+  // and the signed builtins read their words as two's complement. Powers of two are built at runtime.
+  private emitYulWordOp(node: BinaryOpNode, builtin: YulWordBuiltin): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const ops = (...script: Script): void => script.forEach((op) => this.emit(op, loc));
+    const n255 = encodeInt(255n);
+    const n256 = encodeInt(256n);
+    // [w] -> [w - 2^256 if w >= 2^255]
+    const toSigned = (): void => ops(Op.OP_DUP, n255, Op.OP_RSHIFTNUM, n256, Op.OP_LSHIFTNUM, Op.OP_SUB);
+    // [v in (-2^256, 2^256)] -> [v mod 2^256]
+    const toWord = (): void => ops(Op.OP_DUP, Op.OP_0, Op.OP_LESSTHAN, n256, Op.OP_LSHIFTNUM, Op.OP_ADD);
+    // [a, b] -> [b == 0 ? 0 : a op b]
+    const orZero = (op: Op): void => ops(Op.OP_DUP, Op.OP_IF, op, Op.OP_ELSE, Op.OP_NIP, Op.OP_ENDIF);
+    const signedOperands = builtin === 'sdiv' || builtin === 'smod';
+    node.left = this.visit(node.left);
+    if (signedOperands || builtin === 'sar') toSigned();
+    if (builtin === 'signextend' && node.right instanceof IntLiteralNode) {
+      // h = 2^(8i+7), the sign bit of the low i+1 bytes
+      const i = node.right.value < 31n ? node.right.value : 31n;
+      ops(Op.OP_1, encodeInt(8n * i + 7n), Op.OP_LSHIFTNUM);
+      this.pushToStack('(value)');
+    } else {
+      node.right = this.visit(node.right);
+    }
+    if (signedOperands) toSigned();
+    switch (builtin) {
+      case 'add': ops(Op.OP_ADD, Op.OP_1, n256, Op.OP_LSHIFTNUM, Op.OP_MOD); break;
+      case 'mul': ops(Op.OP_MUL, Op.OP_1, n256, Op.OP_LSHIFTNUM, Op.OP_MOD); break;
+      case 'sub': ops(Op.OP_SUB); toWord(); break;
+      case 'div': orZero(Op.OP_DIV); break;
+      case 'mod': orZero(Op.OP_MOD); break;
+      case 'sdiv': orZero(Op.OP_DIV); toWord(); break; // -2^255 / -1 = 2^255, the word of -2^255
+      case 'smod': orZero(Op.OP_MOD); toWord(); break; // OP_MOD takes the dividend's sign, as smod
+      case 'sar': ops(Op.OP_RSHIFTNUM); toWord(); break; // OP_RSHIFTNUM floors: an arithmetic shift
+      case 'slt':
+      case 'sgt':
+        // Opposite sign bits invert the unsigned order: (a cmp b) xor (a >> 255) xor (b >> 255).
+        ops(Op.OP_2DUP, builtin === 'slt' ? Op.OP_LESSTHAN : Op.OP_GREATERTHAN, Op.OP_ROT, n255, Op.OP_RSHIFTNUM);
+        ops(Op.OP_NUMNOTEQUAL, Op.OP_SWAP, n255, Op.OP_RSHIFTNUM, Op.OP_NUMNOTEQUAL);
+        break;
+      case 'signextend':
+        // [v, i] -> [v, h = 2^(8 min(i, 31) + 7)] unless h was pushed above; then ((v + h) mod 2h) - h, as a word.
+        if (!(node.right instanceof IntLiteralNode)) {
+          ops(encodeInt(31n), Op.OP_MIN, Op.OP_8, Op.OP_MUL, Op.OP_7, Op.OP_ADD, Op.OP_1, Op.OP_SWAP, Op.OP_LSHIFTNUM);
+        }
+        ops(Op.OP_TUCK, Op.OP_ADD, Op.OP_OVER, Op.OP_DUP, Op.OP_ADD, Op.OP_MOD, Op.OP_SWAP, Op.OP_SUB);
+        toWord();
+        break;
+      default: {
+        const unhandled: never = builtin;
+        throw new Error(`unhandled Yul word builtin '${String(unhandled)}'`);
+      }
+    }
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    return node;
   }
 
   // Emit modular wrapping for bounded integer types (unchecked mode).
@@ -32509,7 +32569,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const right = keyOf(expression.right, names);
         if (left === undefined || right === undefined) return undefined;
         return expression.operator === BinaryOperator.NE
-          ? negate(`(${left} == ${right})`) : `(${left} ${expression.operator} ${right})`;
+          ? negate(`(${left} == ${right})`) : `(${left} ${expression.yulBuiltin ?? expression.operator} ${right})`;
       }
       return undefined;
     };

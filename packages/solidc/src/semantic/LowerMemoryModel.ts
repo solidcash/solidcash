@@ -147,12 +147,15 @@ export default class LowerMemoryModel extends AstTraversal {
   private freeInlinable = new Map<string, FunctionDefinitionNode>();
   // Per snapshot: the unqualified outer names its body references, which a caller-scope name would capture.
   private freeRefs = new Map<FunctionDefinitionNode, Set<string>>();
+  // Snapshots of public functions, in `inlinable` under their names: an internal call splices the unlowered body
+  // on the free-snapshot terms, while the entry point keeps its own body on the normal path.
+  private entrySnapshots = new Set<FunctionDefinitionNode>();
   // Names in scope at the call site being inlined into (contract members, params, locals).
   private scopeNames = new Set<string>();
   private callerNames = new Set<string>();
-  // Nested-array locals of the current caller: a pass-by-ref trigger for free snapshots only.
+  // Nested-array locals of the current caller: a pass-by-ref trigger for snapshots only.
   private nestedRefLocals = new Set<string>();
-  // Isolated param bindings of inlined free snapshots -> param name: user aliases for the refusal check.
+  // Isolated param bindings of inlined snapshots -> param name: user aliases for the refusal check.
   private observableBindings = new Map<string, string>();
   private usesMemory = false;
   // SAFETY GATE: names the analysis proved safe to convert this function (every use - and every alias-group
@@ -233,8 +236,11 @@ export default class LowerMemoryModel extends AstTraversal {
     if (node.body) this.materializeDecodedArrays(node.body);
     // P4 v2 (c): materialize a memory-array PARAM into the buffer (deserialize the ABI value-copy at entry) so it
     // is a pointer that a helper can mutate by reference. Only for NON-inlinable functions (an inlinable one is
-    // spliced from its ORIGINAL body, so mutating it here would corrupt the inline source). Runs before the inline.
-    const calldataBuffers = node.body && !this.inlinable.has(node.name) ? this.materializeParams(node) : [];
+    // spliced from its ORIGINAL body, so mutating it here would corrupt the inline source) and public functions
+    // (spliced from a snapshot). Runs before the inline.
+    const inlineSource = this.inlinable.get(node.name);
+    const calldataBuffers = node.body && (!inlineSource || this.entrySnapshots.has(inlineSource))
+      ? this.materializeParams(node) : [];
     // P4: inline pass-by-reference helper calls BEFORE the gate, so the substituted alias decls are analyzed and
     // lowered like any other alias. Pass-by-ref (convert) vs pass-by-value (fallback) then falls out of the gate.
     if (node.body && this.freeInlinable.size > 0) {
@@ -449,11 +455,32 @@ export default class LowerMemoryModel extends AstTraversal {
   // memory-ref param. The gate still decides convert vs fallback per call, so this only bounds WHAT may inline.
   private collectInlinable(node: ContractNode): void {
     this.inlinable = new Map();
+    this.entrySnapshots = new Set();
+    const counts = new Map<string, number>();
+    for (const fn of node.functions) counts.set(fn.name, (counts.get(fn.name) ?? 0) + 1);
     for (const fn of node.functions) {
       if (this.isPassByRefInlinable(fn)) this.inlinable.set(fn.name, fn);
+      else if (counts.get(fn.name) === 1) this.collectEntrySnapshot(fn);
     }
     // A contract member shadows a free function of the same name.
     for (const [name, fn] of this.freeInlinable) if (!this.scopeNames.has(name)) this.inlinable.set(name, fn);
+  }
+
+  // An internal call to a public function passes memory by reference, but that function is also an entry point
+  // whose own body materializes its parameters. Snapshot its unlowered body for the internal call sites. A
+  // compiler-owned entry, or one carrying compiler-owned parameters a call site does not pass, is skipped, and so
+  // is one that never writes through a reference parameter: its subroutine call already observes the same values.
+  private collectEntrySnapshot(fn: FunctionDefinitionNode): void {
+    if (fn.visibility !== 'public' || !fn.isEntryPoint || fn.name.startsWith('__') || !fn.body
+      || fn.parameters.some((p) => p.name.startsWith('__internal__')) || !this.isPassByRefInlinable(fn, true, true)
+      || !fn.parameters.some((p) => this.isPassByRefType(p.type, true) && this.writesThroughParam(fn.body, p.name))) {
+      return;
+    }
+    const snapshot = Object.assign(Object.create(Object.getPrototypeOf(fn)) as FunctionDefinitionNode, fn);
+    snapshot.parameters = [...fn.parameters];
+    snapshot.body = cloneNode(fn.body);
+    this.inlinable.set(fn.name, snapshot);
+    this.entrySnapshots.add(snapshot);
   }
 
   // Snapshot the eligible free and library helpers before any body is lowered. An overloaded name is skipped: a
@@ -513,13 +540,13 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.isRefType(t) || (free && this.isHandledMemNestedArray(t));
   }
 
-  private isPassByRefInlinable(fn: FunctionDefinitionNode, free = false): boolean {
+  private isPassByRefInlinable(fn: FunctionDefinitionNode, free = false, entry = false): boolean {
     const vis = fn.visibility;
     // A free function is internal by definition. A library member must be internal or private: an external one
-    // runs under DELEGATECALL, which copies its memory arguments.
+    // runs under DELEGATECALL, which copies its memory arguments. An entry snapshot is a public function.
     const freeInternal = free && !fn.isLibraryFunction && !fn.modifiers.includes(FunctionModifier.PUBLIC)
       && !fn.modifiers.includes(FunctionModifier.EXTERNAL);
-    if (vis !== 'internal' && vis !== 'private' && !freeInternal) return false;
+    if (vis !== 'internal' && vis !== 'private' && !freeInternal && !(entry && vis === 'public')) return false;
     // A graph handler's external-call manifest is authenticated at its OP_INVOKE boundary. Inlining that
     // compiler-owned body into the message-bus row loop changes the current codegen function to the route,
     // whose layout intentionally owns no per-handler external-return slots. Besides making returning calls
@@ -637,16 +664,29 @@ export default class LowerMemoryModel extends AstTraversal {
   // local (the pass-by-ref trigger). Undefined otherwise.
   private inlinableCallee(call: FunctionCallNode, refLocals: Set<string>, wantVoid: boolean):
   FunctionDefinitionNode | undefined {
-    if (!(call.identifier instanceof IdentifierNode)) return undefined;
-    const fn = this.inlinable.get(call.identifier.name);
+    const fn = this.inlineSource(call);
     if (!fn || fn.parameters.length !== call.parameters.length) return undefined;
     if (wantVoid !== (fn.returnTypes.length === 0)) return undefined;
     const refs = this.freeRefs.get(fn);
+    const snapshot = this.isSnapshot(fn);
     if (!call.parameters.some((a) => a instanceof IdentifierNode
-      && (refLocals.has(a.name) || (refs !== undefined && this.nestedRefLocals.has(a.name))))) return undefined;
+      && (refLocals.has(a.name) || (snapshot && this.nestedRefLocals.has(a.name))))) return undefined;
     // A free body spliced here must not have an outer name it references captured by a caller-scope name.
     if (refs && [...refs].some((name) => this.callerNames.has(name))) return undefined;
     return fn;
+  }
+
+  // The inlinable helper a call names. An external self-call (`this.g(a)`) copies its memory arguments, so it never
+  // reaches a public function's snapshot.
+  private inlineSource(call: FunctionCallNode): FunctionDefinitionNode | undefined {
+    if (!(call.identifier instanceof IdentifierNode)) return undefined;
+    const fn = this.inlinable.get(call.identifier.name);
+    return fn && call.fromThisCall && this.entrySnapshots.has(fn) ? undefined : fn;
+  }
+
+  // A free, library or public function snapshot: spliced on the by-reference terms of the unlowered source.
+  private isSnapshot(fn: FunctionDefinitionNode): boolean {
+    return this.freeRefs.has(fn) || this.entrySnapshots.has(fn);
   }
 
   // Build `{ <paramBindings>; <renamed g body> }`. Params + g's locals are renamed to fresh unique names so the
@@ -674,9 +714,9 @@ export default class LowerMemoryModel extends AstTraversal {
     // changes the alias alone. When the helper never rebinds its parameter, substitute the caller's reference
     // local directly and omit that alias declaration. Whole-parameter assignment/delete and assembly retain the
     // isolated binding because those operations change the helper-local pointer rather than the caller variable.
-    // A free snapshot also binds a nested-array argument directly, and its field writes (lowered to a whole-struct
+    // A snapshot also binds a nested-array argument directly, and its field writes (lowered to a whole-struct
     // rebuild of the parameter) write through the reference rather than rebinding it.
-    const free = this.freeRefs.has(fn);
+    const free = this.isSnapshot(fn);
     const directlyBound = new Set<number>();
     fn.parameters.forEach((parameter, index) => {
       const argument = call.parameters[index];
@@ -702,8 +742,8 @@ export default class LowerMemoryModel extends AstTraversal {
     const bindings = fn.parameters.flatMap((p, i) => directlyBound.has(i) ? [] : [this.at(
       new VariableDefinitionNode(p.type, p.modifier, rename.get(p.name)!, this.clone(call.parameters[i])), src,
     )]);
-    // An isolated reference binding of a free snapshot the helper writes through is a user alias: falling its
-    // group back to a copy would lose that write, so the alias-group check must refuse it.
+    // An isolated reference binding of a snapshot the helper writes through is a user alias: falling its group
+    // back to a copy would lose that write, so the alias-group check must refuse it.
     fn.parameters.forEach((p, i) => {
       if (free && !directlyBound.has(i) && this.isPassByRefType(p.type, true)
         && this.writesThroughParam(fn.body!, p.name)) {
@@ -776,7 +816,7 @@ export default class LowerMemoryModel extends AstTraversal {
     if (!node.body) return calldataBuffers;
     for (const p of node.parameters) {
       if (this.inlinable.size > 0 && this.isHandledMemArray(p.type)
-        && this.paramPassedToInlinable(node.body, p.name)) {
+        && this.paramPassedToInlinable(node.body, p)) {
         const memName = `__mem_${p.name}_${this.counter++}`;
         this.remapNames(node.body, new Map([[p.name, memName]]));
         const copy = this.deserializeParam(p, memName, node.body);
@@ -934,12 +974,15 @@ export default class LowerMemoryModel extends AstTraversal {
     return [valueDecl, decl, idxDecl, loop];
   }
 
-  private paramPassedToInlinable(body: BlockNode, paramName: string): boolean {
+  // A calldata parameter reaches a public function's memory parameter as a copy, so it is not materialized for one.
+  private paramPassedToInlinable(body: BlockNode, param: ParameterNode): boolean {
+    const calldata = param.modifier.includes('calldata');
     let found = false;
     this.eachDescendant(body, (n) => {
-      if (n instanceof FunctionCallNode && n.identifier instanceof IdentifierNode
-        && this.inlinable.has(n.identifier.name)
-        && n.parameters.some((a) => a instanceof IdentifierNode && a.name === paramName)) found = true;
+      if (!(n instanceof FunctionCallNode)) return;
+      const fn = this.inlineSource(n);
+      if (fn && !(calldata && this.entrySnapshots.has(fn))
+        && n.parameters.some((a) => a instanceof IdentifierNode && a.name === param.name)) found = true;
     });
     return found;
   }

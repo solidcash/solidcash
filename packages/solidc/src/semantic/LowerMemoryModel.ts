@@ -1320,7 +1320,12 @@ export default class LowerMemoryModel extends AstTraversal {
         && n.value.identifier.name === structArrayCands.get(n.name)!.elementType.toString()) {
         walk(n.index); walk(n.value); return;
       }
-      if (n instanceof MappingDeleteNode && candidates.has(n.name) && n.keys.length === 1) { walk(n.keys[0]); return; }
+      // `delete a[i]`, and `delete g[i][j]` on a nested array (lowered as `g[i][j] = 0`): an in-place default store.
+      if (n instanceof MappingDeleteNode && candidates.has(n.name)
+        && (n.keys.length === 1 || (n.keys.length === 2 && nestedCands.has(n.name)))) {
+        n.keys.forEach(walk);
+        return;
+      }
       // A tuple assignment `(x, y) = g()` reassigns each named element - a candidate assigned this way is not a
       // handled write, so taint it. Still walk the RHS (it may use other candidates).
       if (n instanceof TupleAssignmentNode) {
@@ -1599,17 +1604,20 @@ export default class LowerMemoryModel extends AstTraversal {
         out.push(this.at(this.mstoreAt(access, row, this.uint()), stmt));
         continue;
       }
-      // `g[i][j] = v` on a nested array -> one in-place store into the row `g[i]` points at.
-      if (stmt instanceof MappingAssignNode && this.memNestedArrays.has(stmt.name) && stmt.keys.length === 2) {
+      // `g[i][j] = v` on a nested array -> one in-place store into the row `g[i]` points at; `delete g[i][j]` is
+      // the same store of the element default (0), matching the gate.
+      if ((stmt instanceof MappingAssignNode || stmt instanceof MappingDeleteNode)
+        && this.memNestedArrays.has(stmt.name) && stmt.keys.length === 2) {
         const nestedT = this.memNestedArrays.get(stmt.name)!;
         const rowT = nestedT.elementType as ArrayType;
-        const bindIndex = this.hasEffects(stmt.expression)
-          && (this.readsBeyondLocals(stmt.keys[1]) || this.writesVariables(stmt.expression));
+        const value = stmt instanceof MappingAssignNode ? stmt.expression : this.intLit(0n);
+        const bindIndex = this.hasEffects(value)
+          && (this.readsBeyondLocals(stmt.keys[1]) || this.writesVariables(value));
         const row = this.mloadAt(this.indexed(
           nestedT, new IdentifierNode(stmt.name), this.visit(stmt.keys[0]) as ExpressionNode, 1,
         ), this.uint());
         const access = this.indexed(rowT, row, this.visit(stmt.keys[1]) as ExpressionNode, 2, { bindIndex });
-        out.push(this.at(this.mstoreAt(access, this.visit(stmt.expression) as ExpressionNode, rowT.elementType), stmt));
+        out.push(this.at(this.mstoreAt(access, this.visit(value) as ExpressionNode, rowT.elementType), stmt));
         continue;
       }
       // `return g;` on a nested array -> serialize every row into a fresh value-copy nested array and return that.

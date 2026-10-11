@@ -175,7 +175,9 @@ import {
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
 import { Class, GlobalFunction, Modifier } from '../ast/Globals.js';
-import { getCompileTimeByteLength, isNumericType, literalTypeBesideBounded, resultingTypeForBinaryOp } from '../utils.js';
+import {
+  getCompileTimeByteLength, isNumericType, literalMobileType, literalTypeBesideBounded, resultingTypeForBinaryOp,
+} from '../utils.js';
 import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
@@ -2294,7 +2296,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitTupleIndexOp(node: TupleIndexOpNode): Node {
-    node.tuple = this.visit(node.tuple);
+    node.tuple = this.visitIndexedBase(node.tuple);
 
     // bytes[k] with a literal index parses as a tuple-index op: a single byte (Solidity bytes1).
     if (node.tuple.type instanceof BytesType) {
@@ -3394,6 +3396,37 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
+  // An inline array literal indexed in place (`[1, 2, 3][i]`) is a `T[n] memory` value: one count-prefixed blob,
+  // the form both index reads split. All-constant integer elements take Solidity's element type, their common
+  // mobile type (`uint8` for `[1, 2, 3]`), and pack at its width.
+  private visitIndexedBase(base: ExpressionNode): ExpressionNode {
+    if (!(base instanceof ArrayNode)) return this.visit(base) as ExpressionNode;
+    base.blobEncoded = true;
+    const array = this.visit(base) as ExpressionNode;
+    if (array instanceof ArrayNode && array.type instanceof ArrayType) {
+      const element = array.type.elementType === PrimitiveType.INT ? this.inlineArrayMobileType(array) : undefined;
+      array.type = new ArrayType(element ?? array.type.elementType, array.elements.length);
+    }
+    return array;
+  }
+
+  // The first element's mobile type, widened to a later element's mobile type when that element does not fit and
+  // the current type converts to it implicitly (Solidity's inline-array common type). Undefined: none applies.
+  private inlineArrayMobileType(array: ArrayNode): IntType | undefined {
+    let common: IntType | undefined;
+    for (const element of array.elements) {
+      const rational = this.evalLiteralRational(element);
+      if (!rational || rational.numerator % rational.denominator !== 0n) return undefined;
+      const value = rational.numerator / rational.denominator;
+      const mobile = literalMobileType(value);
+      if (!mobile) return undefined;
+      if (common && value >= common.minValue && value <= common.maxValue) continue;
+      if (common && !implicitlyCastable(common, mobile)) return undefined;
+      common = mobile;
+    }
+    return common;
+  }
+
   visitNewArray(node: NewArrayNode): Node {
     node.size = this.visit(node.size);
     node.type = node.rawBytes ? new BytesType() : new ArrayType(node.elementType);
@@ -3401,7 +3434,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitArrayAccess(node: ArrayAccessNode): Node {
-    node.array = this.visit(node.array);
+    node.array = this.visitIndexedBase(node.array);
     node.index = this.visit(node.index);
     const rationalIndex = this.evmCompat ? this.evalLiteralRational(node.index) : undefined;
     const constantIndex = rationalIndex?.denominator === 1n ? rationalIndex.numerator : undefined;

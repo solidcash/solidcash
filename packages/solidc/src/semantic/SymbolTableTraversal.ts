@@ -2729,6 +2729,25 @@ export default class SymbolTableTraversal extends AstTraversal {
     return null;
   }
 
+  /**
+   * The function a deploy-time call targets. A name declared by the contract being folded (the child whose
+   * constructor or callee is being replayed) or supplied by the caller, or - for a call through a function-typed
+   * parameter - the function the caller bound to that parameter: `new D(this.sixteen)` against the child's
+   * `x = g()` inlines `sixteen`'s body, which is the call the deploy would have made.
+   */
+  private resolveGenesisHelperCallee(
+    call: FunctionCallNode, callerSubs: Map<string, ExpressionNode>,
+  ): FunctionDefinitionNode | undefined {
+    const bound = callerSubs.get(call.identifier.name);
+    if (bound instanceof IdentifierNode && bound.functionReference) return bound.functionReference;
+    const availableHelpers = [
+      ...(this.genesisHelperContract?.functions ?? []), ...this.genesisAdditionalHelperFunctions,
+    ];
+    const candidates = availableHelpers.filter((candidate) =>
+      candidate.name === call.identifier.name && candidate.parameters.length === call.parameters.length);
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
   private foldPureGenesisHelperCall(
     call: FunctionCallNode,
     callerSubs: Map<string, ExpressionNode>,
@@ -2736,22 +2755,31 @@ export default class SymbolTableTraversal extends AstTraversal {
     callerFieldType: (name: string) => Type | undefined,
     expectedType?: Type,
   ): ExpressionNode | null {
-    const availableHelpers = [
-      ...(this.genesisHelperContract?.functions ?? []), ...this.genesisAdditionalHelperFunctions,
-    ];
-    const candidates = availableHelpers.filter((candidate) =>
-      candidate.name === call.identifier.name && candidate.parameters.length === call.parameters.length);
-    if (candidates.length !== 1) return null;
-    const helper = candidates[0];
+    const helper = this.resolveGenesisHelperCallee(call, callerSubs);
+    if (!helper) return null;
+    // The callee is an INTERNAL call target: an internal/private helper of the contract being folded, a
+    // caller-supplied helper, or a function value the caller bound to one of its own functions. `public` is
+    // included because a bare `f(..)` is an internal call in Solidity - the selector dispatch applies only to
+    // `this.f(..)` - so the callee's own body is what runs. An `external` function is never reached this way.
+    // A `pure` modifier is NOT required for a body replayed against the contract being folded: the replay is
+    // the real guard (locals plus one trailing return, with state reads, `msg.*` and `tx.*` still refused by
+    // `insideGenesisPureHelper`), so a body that could not be replayed fails closed rather than folding a
+    // default. A deployment-site helper (`allowGenesisHelperInputs`) keeps the narrower rule: its inputs are
+    // materialized as recipes elsewhere, so the source modifier stays the authority there.
+    const replayedAsValue = !this.allowGenesisHelperInputs;
     if ((call.resolvedFunction && call.resolvedFunction !== helper)
-      || !helper.modifiers.includes(FunctionModifier.PURE)
-      || !(helper.modifiers.includes(FunctionModifier.INTERNAL)
-        || helper.modifiers.includes(FunctionModifier.PRIVATE))
+      || (!replayedAsValue && !helper.modifiers.includes(FunctionModifier.PURE))
+      || helper.modifiers.includes(FunctionModifier.EXTERNAL)
       || helper.returnTypes.length !== 1 || this.genesisHelperStack.has(helper)) return null;
     const fixedHelperResult = (type: Type, stack = new Set<StructType>()): boolean => {
+      // A dynamic array is replayable like a bounded one when the body is replayed against the contract being
+      // folded and not as a deployment-site recipe: its length travels with the value the helper returns
+      // (`return s;` folds to the caller's own array), so the element type is all that has to be a scalar.
       if (type instanceof ArrayType) {
-        return type.bound !== undefined && Number.isSafeInteger(type.bound) && type.bound >= 0
-          && fixedHelperResult(type.elementType, stack);
+        const boundReplayable = type.bound !== undefined
+          ? Number.isSafeInteger(type.bound) && type.bound >= 0
+          : !this.allowGenesisHelperInputs;
+        return boundReplayable && fixedHelperResult(type.elementType, stack);
       }
       if (type instanceof MappingType) return false;
       if (type instanceof StructType) {

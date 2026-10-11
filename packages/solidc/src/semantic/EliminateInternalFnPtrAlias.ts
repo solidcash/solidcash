@@ -11,15 +11,18 @@ import {
   FunctionCallNode,
   IdentifierNode,
   ExpressionNode,
+  TupleAssignmentNode,
+  DeleteStateNode,
 } from '../ast/AST.js';
 import { FunctionType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
  * A gratuitous INTERNAL function-pointer state-var alias: `function(..) internal .. ev; ev = f; ... ev(args)` where
- * ev is assigned exactly ONE contract function `f` and every other use is a call. Eliminate it - rewrite `ev(args)`
- * to `f(args)`, drop the `ev = f` writes, and remove the ev state var. `ev(args)` and `f(args)` are the same
- * internal call (ev holds f's functionId), so this is a semantics-preserving cleanup.
+ * ev is assigned exactly ONE contract function `f`, every other use is a call, and an `ev = f` reaches every call.
+ * Eliminate it - rewrite `ev(args)` to `f(args)`, drop the `ev = f` writes, and remove the ev state var. `ev(args)`
+ * and `f(args)` are then the same internal call (ev holds f's functionId), so this is a semantics-preserving cleanup.
+ * A call that can run before the assignment reads the stored pointer instead (unset: it reverts), so ev stays.
  *
  * Motivating case: store_function.sol's `ev = eval; return ev(x);`. A higher-order internal fn-ptr type
  * (`function(function(..) external ..) internal ..`) whose external-fn-ptr parameter would otherwise mismatch
@@ -59,12 +62,13 @@ export default class EliminateInternalFnPtrAlias extends AstTraversal {
     return node;
   }
 
-  // ev is aliasable iff EVERY assignment is `ev = <a contract function>` (all the same function f) and every other
-  // use of ev is a call `ev(args)`. Returns f, or undefined.
+  // ev is aliasable iff EVERY assignment is `ev = <a contract function>` (all the same function f), every other
+  // use of ev is a call `ev(args)`, and every call follows a definite assignment. Returns f, or undefined.
   private classify(name: string, bodies: FunctionDefinitionNode[]): string | undefined {
     let target: string | undefined;
     let ok = true;
     const refFns = new Set<string>(); // functions that reference ev (assign or call)
+    const refBodies: FunctionDefinitionNode[] = [];
     for (const fn of bodies) {
       let refsHere = false;
       // The callback is invoked synchronously before this loop advances.
@@ -87,20 +91,53 @@ export default class EliminateInternalFnPtrAlias extends AstTraversal {
           return;
         }
         if (n instanceof IdentifierNode && n.name === name) { refsHere = true; ok = false; return; } // ev escapes
-        for (const key of Object.keys(n)) {
-          if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
-          const v = (n as unknown as Record<string, unknown>)[key];
-          if (v instanceof Node) walk(v);
-          else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) walk(it);
+        // `delete C.ev` and a tuple write `(ev, ..) = ..` name ev by string: other writes, not a plain alias.
+        if ((n instanceof DeleteStateNode && n.name === name)
+          || (n instanceof TupleAssignmentNode && n.elements.some((e) => e.name === name))) {
+          refsHere = true; ok = false; return;
         }
+        for (const child of this.childNodes(n)) walk(child);
       };
       walk(fn.body!);
-      if (refsHere) refFns.add(fn.name);
+      if (refsHere) { refFns.add(fn.name); refBodies.push(fn); }
     }
     // Eliminate only a GRATUITOUS same-function alias (assigned + called in ONE function): a var referenced in
     // 2+ functions is a genuine persistent internal fn-ptr (set in one tx, called in another) - leave it.
-    if (refFns.size > 1) return undefined;
-    return ok && target ? target : undefined;
+    if (refFns.size > 1 || !ok || !target) return undefined;
+    return refBodies.every((fn) => this.assignedAfter(name, fn.body!, false) !== undefined) ? target : undefined;
+  }
+
+  // Whether `ev = f` definitely ran once `node` completes, given `assigned` before it; undefined when an `ev(..)`
+  // call in it can run first. Only an earlier statement of the call's block or an enclosing block is definite: a
+  // write under a branch or loop body does not reach past that statement.
+  private assignedAfter(name: string, node: Node, assigned: boolean): boolean | undefined {
+    if (this.aliasWriteName(node) === name) return true;
+    if (node instanceof BlockNode) {
+      let set = assigned;
+      for (const stmt of node.statements ?? []) {
+        const after = this.assignedAfter(name, stmt, set);
+        if (after === undefined) return undefined;
+        set = after;
+      }
+      return set;
+    }
+    if (!assigned && node instanceof FunctionCallNode && node.identifier instanceof IdentifierNode
+      && this.callName(node.identifier.name) === name) return undefined;
+    for (const child of this.childNodes(node)) {
+      if (this.assignedAfter(name, child, assigned) === undefined) return undefined;
+    }
+    return assigned;
+  }
+
+  private childNodes(n: Node): Node[] {
+    const out: Node[] = [];
+    for (const key of Object.keys(n)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      const v = (n as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node) out.push(v);
+      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) out.push(it);
+    }
+    return out;
   }
 
   // The LHS var name of an `ev = ...` write (AssignNode `.identifier.name` or StateAssignNode `.name`), else undefined.

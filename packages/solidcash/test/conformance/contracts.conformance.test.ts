@@ -63,6 +63,33 @@ function twice(uint256 x) pure returns (uint256) { return 2 * x; }
 contract C { function f(uint256 x) public pure returns (uint256) { return twice(x) + K; } }`,
   'uint256 x', 'uint256', [5n]));
 
+  it('a library function writes a memory array its caller passed', () => run('library-memory-array', `
+library L { function bump(uint256[] memory xs, uint256 d) internal pure { xs[1] = xs[1] + d; } }
+contract C {
+  using L for uint256[];
+  function f(uint256 k) public pure returns (uint256) {
+    uint256[] memory a = new uint256[](3);
+    a[1] = 5;
+    L.bump(a, k);
+    a.bump(k * 10);
+    return a[1] * 10 + a.length;
+  }
+}`, 'uint256 k', 'uint256', [2n]));
+
+  it('a library function writes a memory struct its caller passed', () => run('library-memory-struct', `
+struct P { uint256 a; uint256[] data; }
+library L { function fill(P memory q, uint256 w) internal pure { q.a = w; q.data[1] = w * 2; } }
+contract C {
+  using L for P;
+  function f(uint256 v) public pure returns (uint256) {
+    P memory p = P(1, new uint256[](2));
+    L.fill(p, v);
+    uint256 first = p.a * 100 + p.data[1];
+    p.fill(v + 1);
+    return first * 10000 + p.a * 100 + p.data[1];
+  }
+}`, 'uint256 v', 'uint256', [3n]));
+
   it('overloads by arity', () => run('overload', `
 contract C {
   function g(uint256 a) internal pure returns (uint256) { return a + 1; }

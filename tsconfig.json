@@ -6,6 +6,7 @@
     "baseUrl": "./packages",
     "paths": {
       "solidc": ["solidc/src"],
+      "solidc/*": ["solidc/src/*"],
       "solidcash": ["solidcash/src"],
       "@solidcash/utils": ["utils/src"],
     },

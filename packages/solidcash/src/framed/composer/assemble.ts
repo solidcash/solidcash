@@ -23,7 +23,7 @@ import {
   type RecordEntry,
   type Transcript,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from 'solidc/runtime';
 import { assertValidatorCoverage, type EntryFacts } from './need-test.js';
 import {
   allocateOutputRegions,

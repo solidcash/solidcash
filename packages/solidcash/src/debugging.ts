@@ -13,7 +13,7 @@ import type { WalletTemplate, WalletTemplateScriptUnlocking } from '@bitauth/lib
 import { type Artifact, type FunctionDebugInformation, type LogData, type LogEntry, Op, PrimitiveType, type RequireStatement, type StackItem, asmToBytecode, bytecodeToAsm, decodeBool, decodeInt, decodeString } from '@solidcash/utils';
 import { findLastIndex, toRegExp } from './utils.js';
 import { FailedRequireError, FailedTransactionError, FailedTransactionEvaluationError } from './Errors.js';
-import { getBitauthUri } from './libauth-template/LibauthTemplate.js';
+import { getBitauthUri } from './libauth-template/bitauth-uri.js';
 import { createVirtualMachineBch2026ForProvider } from './network/createVirtualMachine.js';
 import { VmTarget } from './interfaces.js';
 import type NetworkProvider from './network/NetworkProvider.js';
@@ -36,7 +36,7 @@ type VM = AuthenticationVirtualMachine<
  * accept/reject gate for `.build()` on a `recursiveStateHandler` function, and `TransactionBuilder.send()`
  * propagates it for a standard non-covenant transaction.
  *
- * At `@mem-cash/validation` 0.0.8 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
+ * At `@mem-cash/validation` 0.0.10 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
  * `consensusLimits` reach the decider, so a bare VM here was wrong in BOTH directions. Measured:
  *
  * - FAIL-OPEN: `decrement(3).build()` was ADMITTED under `operationCostBudgetPerByte: 150` while the decider

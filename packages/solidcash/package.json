@@ -72,8 +72,8 @@
   "dependencies": {
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist",
     "@electrum-cash/network": "^4.1.3",
-    "@mem-cash/electrum": "^0.0.7",
-    "@mem-cash/validation": "^0.0.8",
+    "@mem-cash/electrum": "^0.0.10",
+    "@mem-cash/validation": "^0.0.10",
     "@mr-zwets/bchn-api-wrapper": "^1.0.1",
     "@solidcash/utils": "^0.13.1",
     "fflate": "^0.8.2",
@@ -95,5 +95,8 @@
     "typescript": "^5.9.2",
     "vitest": "^4.0.15"
   },
-  "gitHead": "bf02a4b641d5d03c035d052247a545109c17b708"
+  "gitHead": "bf02a4b641d5d03c035d052247a545109c17b708",
+  "browser": {
+    "./dist/framed/proxy/generate.js": "./dist/framed/proxy/generate.browser.js"
+  }
 }

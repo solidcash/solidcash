@@ -12,20 +12,21 @@ import MockNetworkProvider, {
  * X129 - the SDK must fail CLOSED when the installed `@mem-cash/validation` ignores published consensus limits.
  *
  * THE HOLE THIS CLOSES. `_strictRecursiveVmPreflight` reads `provider.consensusLimits`, which is correct at
- * `@mem-cash/validation` 0.0.8 and FAIL-OPEN at 0.0.7. At 0.0.7 `TxVerifierConfig` has no `consensus` field and
+ * `@mem-cash/validation` 0.0.8 and later, and FAIL-OPEN at 0.0.7. At 0.0.7 `TxVerifierConfig` has no `consensus` field and
  * `createVmFacade(version, standard)` takes no third argument, so MockNetworkProvider's overrides are silently
  * dropped: the decider runs libauth's stock 800-per-byte budget and refuses `decrement(24)`/`(40)` while the
  * repaired preflight reads the published 10,000,000 and admits them. A build-time refusal becomes a
- * broadcast-time one. `packages/solidcash/package.json` declares `^0.0.8` (exactly 0.0.8 on a 0.0.x range) and
- * `yarn.lock` resolves it, so only a stale `node_modules` reaches 0.0.7 - and X121 row 0 is a TEST, which is not
+ * broadcast-time one. `packages/solidcash/package.json` declares `^0.0.10` (exactly 0.0.10 on a 0.0.x range)
+ * and `yarn.lock` resolves it, so only a stale `node_modules` reaches 0.0.7 - and X121 row 0 is a TEST, which is not
  * a runtime guard. This is the runtime guard.
  *
  * WHY BEHAVIOURAL AND NOT A VERSION STRING. A version string is a claim about a name, not about the build on
- * disk: a patched tarball, a `yarn link`ed working copy or a renamed channel all read "0.0.8" while behaving
- * otherwise, and a future 0.0.9 that honours overrides perfectly would fail `=== '0.0.8'`. The probe hands the
+ * disk: a patched tarball, a `yarn link`ed working copy or a renamed channel all read the right version while
+ * behaving otherwise, and a version string can fail a `===` check against a build that honours overrides
+ * perfectly. The probe hands the
  * real `createTxVerifier` a limit and watches whether the verdict moves. Nothing else is decisive.
  *
- * MEASURED, both directions, on this box (2026-07-30):
+ * MEASURED, both directions, on this box (2026-07-30, and re-measured at 0.0.10 on 2026-10-11):
  *
  *   installed 0.0.8  -> relaxed ACCEPT, `operationCostBudgetPerByte: 1` REFUSED
  *                       "Maximum operation cost: 44 (density control length: 44)"  [1 x 44 = 44]
@@ -162,7 +163,7 @@ describe('X129 - MockNetworkProvider fails closed when the installed decider ign
       expect(verdict).toMatch(/the decider answered "ACCEPT"/);
       // ...and the remedy, including why the version matters.
       expect(verdict).toMatch(/Run `yarn install`/);
-      expect(verdict).toMatch(/requires exactly 0\.0\.8/);
+      expect(verdict).toMatch(/requires exactly 0\.0\.10/);
       expect(verdict).toMatch(/0\.0\.7 silently ignores published consensus limits/);
       // The INCONCLUSIVE branch must not be what fired: the control accepted, so this is evidence about the
       // decider and not about the probe.

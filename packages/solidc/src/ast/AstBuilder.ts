@@ -239,7 +239,7 @@ import {
   TimeOp,
 } from './Globals.js';
 import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
-import { version } from '../index.js';
+import { version } from '../version.js';
 import {
   InvalidArrayBoundError, InvalidDataLocationError, ParseError, StateVariableNameCollisionError,
   TernaryTypeMismatchError, NestedSelfdestructError,

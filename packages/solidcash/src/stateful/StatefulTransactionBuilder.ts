@@ -6915,9 +6915,9 @@ export class StatefulTransactionBuilder {
     // X121: read the provider's limits. Unlike the tracer above this THROWS, so it decides ACCEPT/REJECT, and
     // a bare VM here decides against a configuration the provider may not be running.
     //
-    // VERSION-DEPENDENT, and the pin is `@mem-cash/validation` 0.0.8 - the version
-    // `packages/solidcash/package.json` declares (`^0.0.8`, which for a 0.0.x range means exactly 0.0.8) and
-    // `yarn.lock` resolves. At 0.0.8 `TxVerifierConfig.consensus` exists and MockNetworkProvider's overrides
+    // VERSION-DEPENDENT, and the pin is `@mem-cash/validation` 0.0.10 - the version
+    // `packages/solidcash/package.json` declares (`^0.0.10`, which for a 0.0.x range means exactly 0.0.10)
+    // and `yarn.lock` resolves. At 0.0.8 and later `TxVerifierConfig.consensus` exists and the overrides
     // reach the decider, so this factory AGREES with it on every shape measured, while a bare VM diverges in
     // BOTH directions: it accepts what the provider refuses under a strict profile (P2PKH and recursion at
     // `operationCostBudgetPerByte: 150`) and refuses what the provider accepts under the relaxed default

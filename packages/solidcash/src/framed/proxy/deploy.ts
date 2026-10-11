@@ -42,7 +42,7 @@ import {
   validatorRedeemScript,
   type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from 'solidc/runtime';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
 } from '../../Argument.js';

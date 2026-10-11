@@ -11,7 +11,7 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-import { framedLifecycle, framedValidator } from 'solidc';
+import { framedLifecycle, framedValidator } from 'solidc/runtime';
 import type { Artifact } from '@solidcash/utils';
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';

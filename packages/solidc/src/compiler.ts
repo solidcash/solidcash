@@ -4296,6 +4296,23 @@ function narrowGraphFreeAutoMessageBus(ast: Ast, options: CompilerOptions): void
   internal.__messageBusAutoNarrowed = true;
 }
 
+/** The root's transitive contract bases by name through `implements`; interfaces and expanded roots yield none. */
+function inheritedSourceContracts(ast: Ast): ContractNode[] {
+  const byName = new Map(ast.importedContracts.map((imported) => [imported.name, imported]));
+  const bases: ContractNode[] = [];
+  const seen = new Set([ast.contract.name]);
+  const pending = [...ast.contract.implements];
+  while (pending.length > 0) {
+    const name = pending.shift()!;
+    const base = byName.get(name);
+    if (!base || seen.has(name)) continue;
+    seen.add(name);
+    bases.push(base);
+    pending.push(...base.implements);
+  }
+  return bases;
+}
+
 /**
  * Source-level signal that a contract participates in an atomic call graph.
  *
@@ -4303,19 +4320,30 @@ function narrowGraphFreeAutoMessageBus(ast: Ast, options: CompilerOptions): void
  * semantics and do not justify speculative route synthesis. Typed external calls and non-delegate low-level
  * calls do: their caller needs call-manifest planning, repeated-owner batching, or an atomic graph route.
  * A graph-free contract can still be compiled as a leaf participant by explicitly requesting `messageBus: true`.
+ * Before inheritance expansion, the root's transitive bases contribute their members to the same walk.
  */
 function hasMessageBusGraphEdge(ast: Ast): boolean {
   const { contract } = ast;
-  const contractFunctions = [
-    ...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
-  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  // Overridden base members join conservatively: they stay reachable through `super.f` / `Base.f`.
+  const bases = inheritedSourceContracts(ast);
+  const hierarchy = [contract, ...bases];
+  const baseNames = new Set(bases.map((base) => base.name));
+  const inheritedMemberName = (name: string): string => {
+    const dot = name.indexOf('.');
+    const qualifier = name.slice(0, Math.max(dot, 0));
+    return dot > 0 && (baseNames.has(qualifier) || (qualifier === 'super' && bases.length > 0))
+      ? name.slice(dot + 1) : name;
+  };
+  const contractFunctions = hierarchy.flatMap((owner) => [
+    ...owner.functions, owner.constructorDef, owner.fallbackDef, owner.receiveDef,
+  ]).filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
   const functions = [...contractFunctions,
     ...visibleFreeFunctionsForContract(contractFunctions, ast.freeFunctions)];
   const byName = new Map<string, FunctionDefinitionNode[]>();
   for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
   const reachableFunctions = new Set<FunctionDefinitionNode>();
   const candidatesFor = (call: FunctionCallNode): FunctionDefinitionNode[] =>
-    (byName.get(call.identifier.name) ?? []).filter((candidate) =>
+    (byName.get(inheritedMemberName(call.identifier.name)) ?? []).filter((candidate) =>
       candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length
         === call.parameters.length);
   const walkReachable = (value: unknown, visit: (node: Node) => void): void => {
@@ -4335,14 +4363,16 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   // Public/external entries, constructor, fallback, and receive can execute. An internal helper only justifies an
   // automatic route when one of those roots can call it. Before semantic resolution, arity distinguishes
   // overloads with different signatures; ambiguous same-arity calls retain every candidate.
+  const specialFunctions = new Set(hierarchy.flatMap((owner) => [
+    owner.constructorDef, owner.fallbackDef, owner.receiveDef,
+  ]));
   for (const fn of contractFunctions) {
-    if (fn.isEntryPoint || fn === contract.constructorDef
-      || fn === contract.fallbackDef || fn === contract.receiveDef) addClosure(fn);
+    if (fn.isEntryPoint || specialFunctions.has(fn)) addClosure(fn);
   }
   // Preserve graph edges in constructor initializers and other executable members. Modifier definitions are
   // handled separately below: an unused modifier has no execution path and must not enable a graph route.
   const otherMembers: Node[] = [];
-  for (const [key, member] of Object.entries(contract)) {
+  for (const [key, member] of hierarchy.flatMap((owner) => Object.entries(owner))) {
     if (key === 'functions' || key === 'constructorDef' || key === 'fallbackDef' || key === 'receiveDef'
       || key === 'modifierDefinitions') continue;
     if (member instanceof Node) otherMembers.push(member);
@@ -4360,9 +4390,12 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   // Modifier bodies and their invocation arguments are executable only when attached to a reachable function.
   // A modifier can call an internal helper whose own modifier adds another edge, so close this graph to a fixed
   // point rather than admitting every declaration or looking only at source entry points.
-  const modifierByName = new Map([
+  const modifiersByName = new Map([
     ...ast.libraryModifierDefinitions, ...contract.modifierDefinitions,
-  ].map((modifier) => [modifier.name, modifier]));
+  ].map((modifier) => [modifier.name, [modifier]]));
+  for (const modifier of bases.flatMap((base) => base.modifierDefinitions)) {
+    (modifiersByName.get(modifier.name) ?? modifiersByName.set(modifier.name, []).get(modifier.name)!).push(modifier);
+  }
   const activeModifiers = new Set<ModifierDefinitionNode>();
   const activeModifierArgs = new Set<Node>();
   let changed = true;
@@ -4378,10 +4411,11 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
           activeModifierArgs.add(arg);
           addMemberCalls(arg);
         }
-        const modifier = modifierByName.get(invocation.name);
-        if (!modifier || activeModifiers.has(modifier)) continue;
-        activeModifiers.add(modifier);
-        addMemberCalls(modifier);
+        for (const modifier of modifiersByName.get(inheritedMemberName(invocation.name)) ?? []) {
+          if (activeModifiers.has(modifier)) continue;
+          activeModifiers.add(modifier);
+          addMemberCalls(modifier);
+        }
       }
     }
     changed = priorReachableCount !== reachableFunctions.size
@@ -4389,12 +4423,13 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   }
   otherMembers.push(...activeModifiers, ...activeModifierArgs);
   const reachableFunctionList = functions.filter((fn) => reachableFunctions.has(fn));
+  // Root declarations come last so they win a name collision with a base.
+  const declarationOwners = [...bases].reverse().concat(contract);
+  const stateDeclarations = declarationOwners.flatMap((owner) => [...owner.parameters, ...owner.stateVariables]);
   // A function-pointer DECLARATION is not a call. Broaden the closure only for an invocation whose local target
   // may be any same-contract helper; otherwise an unused pointer makes unrelated dormant foreign-call helpers
   // turn an ordinary leaf into a speculative graph route. Track named bindings by lexical scope/source order.
-  const statePointerBindings = new Map<string, FunctionType | undefined>([
-    ...contract.parameters, ...contract.stateVariables,
-  ].map((declaration) => [
+  const statePointerBindings = new Map<string, FunctionType | undefined>(stateDeclarations.map((declaration) => [
     declaration.name, declaration.type instanceof FunctionType ? declaration.type : undefined,
   ]));
   let opaqueLocalDispatch = false;
@@ -4470,17 +4505,14 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   // A call through an interface-typed variable parses as a namespaced FunctionCallNode (`sink.note`), not a
   // MethodCallNode. Detect it from declared receiver types before semantic lowering, while allowing a parameter
   // or local declaration to shadow a same-named contract state variable with an ordinary type.
-  const typedStateReceivers = new Map([
-    ...contract.parameters, ...contract.stateVariables,
-  ].map((declaration) => [
+  const typedStateReceivers = new Map(stateDeclarations.map((declaration) => [
     declaration.name,
     declaration.type instanceof AddressType && declaration.type.interfaceName !== undefined,
   ]));
-  const addressStateReceivers = new Set([
-    ...contract.parameters, ...contract.stateVariables,
-  ].filter((declaration) => declaration.type instanceof AddressType).map((declaration) => declaration.name));
+  const addressStateReceivers = new Set(stateDeclarations
+    .filter((declaration) => declaration.type instanceof AddressType).map((declaration) => declaration.name));
   const stateReceiverTypes = new Map<string, Type>([
-    ...contract.parameters, ...contract.stateVariables, ...contract.collections,
+    ...stateDeclarations, ...declarationOwners.flatMap((owner) => owner.collections),
   ].map((declaration): [string, Type] => [declaration.name, declaration.type]));
   const indexedElementType = (type: Type | undefined): Type | undefined => {
     if (type instanceof MappingType) return type.valueType;
@@ -4560,7 +4592,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     const matchesType = (target: string | undefined): boolean => target === typeName
       || (target === 'uint' && typeName === 'uint256')
       || (target === 'int' && typeName === 'int256');
-    const directives = [...ast.usingForDirectives, ...contract.usingForDirectives];
+    const directives = [...ast.usingForDirectives, ...hierarchy.flatMap((owner) => owner.usingForDirectives)];
     const candidates = directives.filter((directive) => matchesType(directive.targetTypeName))
       .flatMap((directive) => directive.libraryName
         ? [`${directive.libraryName}.${method}`]

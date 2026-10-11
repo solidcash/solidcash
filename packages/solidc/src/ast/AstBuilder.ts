@@ -3,6 +3,8 @@ import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { parameterTypeToken } from '../semantic/parameterTypeToken.js';
 import { byteElementValue } from '../semantic/byteElementValue.js';
+import { getMaxPushdataEncodedSizeForType } from '../semantic/maxEncodedSize.js';
+import { getFixedWidth, isFixedWidthType } from '../generation/utils.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
@@ -374,6 +376,10 @@ function declaredInEnclosingCallable(ctx: ParserRuleContext, name: string): bool
 
 /** The exact length of an array type whose bound is past Number.MAX_SAFE_INTEGER (`ArrayType.bound` rounds it). */
 export const exactArrayBounds = new WeakMap<ArrayType, bigint>();
+
+// BCH 2026 consensus sizes that decide whether a bounded state array is packed or chunk-packed.
+const BOUNDED_ARRAY_COMMITMENT_LIMIT = 128;
+const BOUNDED_ARRAY_STACK_ITEM_LIMIT = 10_000;
 
 export default class AstBuilder
   extends ParseTreeVisitor<Node>
@@ -5870,14 +5876,19 @@ export default class AstBuilder
       // field - this backs `arr.length`, whole-array copy/reads, and array-element external calls IFoo(arr[i]).m()
       // over a fixed token set (StableSwap). Native (non-compat) keeps the collection model, which has no bare
       // array reference / `.length`; kept gated because switching to it REMOVES those features. See docs/arrays.md.
+      // A blob too large for one data-NFT commitment chunk-packs instead (same element codegen); it is zero-filled
+      // at genesis so it always holds N elements.
       if (this.evmCompat && arrayT.bound !== undefined && isChunkPackableElementType(arrayT.elementType)) {
         const node = new StateVariableNode(arrayT, name);
-        node.isPacked = true;
+        const chunked = this.chunkedArrays && this.boundedArrayExceedsCommitment(arrayT);
+        if (chunked) node.isDynamic = true;
+        else node.isPacked = true;
         node.visibility = visibility;
         node.visibilityExplicit = visibilityExplicit;
         node.immutable = isImmutable;
         this.readStateVariableInitializer(ctx, node);
         node.location = Location.fromCtx(ctx);
+        if (chunked && !node.initializer) node.initializer = createDefaultValueExpression(arrayT, node.location);
         return markOverride(node);
       }
 
@@ -5962,6 +5973,22 @@ export default class AstBuilder
     this.readStateVariableInitializer(ctx, node);
     node.location = Location.fromCtx(ctx);
     return markOverride(node);
+  }
+
+  // True when a bounded array's packed blob cannot fit one data-NFT commitment (the 128-byte consensus limit) but
+  // its largest value can be reassembled on the stack by a chunk read (10,000-byte stack items). Fixed-width blobs
+  // have an exact size (count push + N * width); others use the layout's estimate. An unresolved element name (an
+  // import placeholder) has no reliable size, so it keeps the packed form.
+  private boundedArrayExceedsCommitment(type: ArrayType): boolean {
+    const unresolved = (t: Type): boolean => (t instanceof ArrayType ? unresolved(t.elementType)
+      : t instanceof AddressType && t.interfaceName !== undefined && !this.contractInterfaceNames.has(t.interfaceName));
+    if (type.bound === undefined || unresolved(type)) return false;
+    const element = type.elementType;
+    const countBytes = type.bound <= 16 ? 1 : 1 + Math.ceil((type.bound.toString(2).length + 1) / 8);
+    const maxBytes = isFixedWidthType(element)
+      ? countBytes + type.bound * getFixedWidth(element)
+      : getMaxPushdataEncodedSizeForType(type);
+    return maxBytes > BOUNDED_ARRAY_COMMITMENT_LIMIT && maxBytes <= BOUNDED_ARRAY_STACK_ITEM_LIMIT;
   }
 
   // `T x = expr;` (or a chain `T x = a = expr;`): record the initializer and the chain's prelude on the node.

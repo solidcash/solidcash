@@ -16562,6 +16562,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // A bounded chunk-packed array always holds its N elements: `.length` is the constant bound.
+    if (node.operator === UnaryOperator.SIZE && node.expression instanceof StateAccessNode
+      && node.expression.stateVariable?.isDynamic && node.expression.stateVariable.type instanceof ArrayType
+      && node.expression.stateVariable.type.bound !== undefined) {
+      this.emit(encodeInt(BigInt(node.expression.stateVariable.type.bound)), locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // Chunk-packed FIXED-WIDTH array `.length`: count = A$len / elementWidth - cheap (no chunk reads).
     // Special-cased BEFORE visiting the expression so we don't reassemble the whole array just to read its
     // length. A variable-width array has no fixed width, so it falls through to the normal array `.length`

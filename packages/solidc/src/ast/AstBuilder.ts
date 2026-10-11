@@ -5762,6 +5762,8 @@ export default class AstBuilder
           block.location = loc;
           return block;
         }
+        const valueCopied = this.decomposeStructValueToStateWrites(rawName, t, valueCtx, loc);
+        if (valueCopied) return valueCopied;
         const decomposed = this.decomposeStructCtorToStateWrites(rawName, t, valueCtx, loc);
         if (decomposed) return decomposed;
       }
@@ -9060,6 +9062,88 @@ export default class AstBuilder
     const block = new BlockNode(stmts);
     block.location = loc;
     return block;
+  }
+
+  /**
+   * Whole assign of a struct VALUE - a calldata/memory/local struct of the SAME type (`s = src`) - to a flattened
+   * struct state var. The var has no single-value slot, so this is the value-source mirror of the state-to-state
+   * copy above: the same per-field writes over the flattened leaves, each value read off the source. Fails closed
+   * (returns undefined, so the previous path reports) when the source type differs or a field has no copy form.
+   */
+  private decomposeStructValueToStateWrites(
+    varName: string, t: StructType, valueCtx: ExpressionContext, loc: Location,
+  ): Node | undefined {
+    const rhs = this.extractLvalue(valueCtx);
+    if (rhs === null || rhs.isThis || rhs.segs.length !== 0 || this.mappingStructStateVars.has(rhs.rawName)) {
+      return undefined;
+    }
+    if (this.localStructTypes.get(rhs.rawName) !== t) return undefined;
+    const readBase = (): ExpressionNode => {
+      const id = new IdentifierNode(rhs.rawName);
+      id.location = loc;
+      return id;
+    };
+    const statements = this.flattenedStructCopyWrites(varName, t, readBase, loc);
+    if (!statements) return undefined;
+    const block = new BlockNode(statements);
+    block.location = loc;
+    return block;
+  }
+
+  /** The per-field writes of a flattened struct copy from a source read through `readBase()`. */
+  private flattenedStructCopyWrites(
+    flatPrefix: string, t: StructType, readBase: () => ExpressionNode, loc: Location,
+  ): StatementNode[] | undefined {
+    const statements: StatementNode[] = [];
+    for (const field of t.fields) {
+      if (field.type instanceof MappingType) continue; // a mapping field has no copy form
+      const fieldRead = (): ExpressionNode => {
+        const access = new FieldAccessNode(readBase(), field.name);
+        access.location = loc;
+        return access;
+      };
+      if (field.type instanceof StructType) {
+        if (!this.structNeedsFieldFlattening(field.type)) {
+          const write = new StateAssignNode(`${flatPrefix}__${field.name}`, fieldRead());
+          write.location = loc;
+          statements.push(write);
+          continue;
+        }
+        const nested = this.flattenedStructCopyWrites(`${flatPrefix}__${field.name}`, field.type, fieldRead, loc);
+        if (!nested) return undefined;
+        statements.push(...nested);
+        continue;
+      }
+      if (field.type instanceof ArrayType) {
+        const bound = field.type.bound;
+        const dynamicChunked = bound === undefined && this.chunkedArrays
+          && isChunkPackableElementType(field.type.elementType);
+        if (bound === undefined) {
+          if (!dynamicChunked) return undefined; // an entry-backed dynamic array has no whole-copy form
+          const write = new StateAssignNode(`${flatPrefix}__${field.name}`, fieldRead());
+          write.location = loc;
+          statements.push(write);
+          continue;
+        }
+        for (let index = 0; index < bound; index += 1) {
+          const key = (): IntLiteralNode => {
+            const literal = new IntLiteralNode(BigInt(index));
+            literal.location = loc;
+            return literal;
+          };
+          const read = new ArrayAccessNode(fieldRead(), key());
+          read.location = loc;
+          const write = new MappingAssignNode(`${flatPrefix}__${field.name}`, [key()], read);
+          write.location = loc;
+          statements.push(write);
+        }
+        continue;
+      }
+      const write = new StateAssignNode(`${flatPrefix}__${field.name}`, fieldRead());
+      write.location = loc;
+      statements.push(write);
+    }
+    return statements;
   }
 
   // All `.push` statement forms. Single pushes keep their original construction; chained forms desugar via

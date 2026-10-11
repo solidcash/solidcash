@@ -3226,7 +3226,7 @@ function parseAndResolve(
     : code;
   // Lexing + parsing
   let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.evmCompat,
-    mergedCompilerOptions.chunkedArrays);
+    mergedCompilerOptions.chunkedArrays, undefined, mergedCompilerOptions.rootFileId);
   // Hardhat's console library is a compiler/runtime debugging hook, not a source dependency that SolidCash
   // should parse or link. Its calls are represented by ConsoleStatementNode and already emit no BCH bytecode,
   // while retaining artifact log metadata for the SDK debugger. Accept both Solidity import spellings without
@@ -20647,6 +20647,7 @@ export function parseCode(
   evmCompat = false,
   chunkedArrays = true,
   importedFileId?: string,
+  rootFileId?: string,
 ): Ast {
   // Solidity corpus files append diagnostic expectations after `// ----`; that trailer is test metadata, not
   // source text, and often repeats the SPDX spelling inside warning prose.
@@ -20809,7 +20810,7 @@ export function parseCode(
     // AST building
     const astStarted = compilerProfileEnabled() ? Date.now() : 0;
     const built = new AstBuilder(
-      parseTree, evmCompat, chunkedArrays, code, importedFileId,
+      parseTree, evmCompat, chunkedArrays, code, importedFileId, rootFileId,
     ).build() as Ast;
     if (compilerProfileEnabled()) {
       profileLog('parseCode:file', parseStarted, {

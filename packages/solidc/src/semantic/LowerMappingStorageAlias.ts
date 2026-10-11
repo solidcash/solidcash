@@ -11,6 +11,8 @@ import {
   StateAssignNode,
   ArrayAssignNode,
   ArrayAccessNode,
+  MappingAccessNode,
+  MappingAssignNode,
   IdentifierNode,
   TernaryOpNode,
   BranchNode,
@@ -20,24 +22,27 @@ import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
-// A mapping-storage-pointer local aliased to a mapping (or a conditional choice of two). `a`/`b` are the
-// underlying mapping names; `cond` (a captured bool local) selects between them when present.
-interface MapAlias { cond?: ExpressionNode; a: string; b?: string; }
+// A mapping-storage-pointer local aliased to a mapping, a SUB-mapping reached by fixed keys (`m[k]`), or a
+// conditional choice of two. `a`/`b` are the underlying mapping names and `keysA`/`keysB` the fixed key prefix
+// that reaches the aliased sub-mapping; `cond` (a captured bool local) selects between them when present.
+interface MapAlias { cond?: ExpressionNode; a: string; b?: string; keysA?: ExpressionNode[]; keysB?: ExpressionNode[]; }
 
 /**
  * Lowers a raw `mapping(..) storage` local bound to another mapping - the `returns (mapping storage)` idiom,
  * after InlineStoragePointerCalls has inlined the returning function into a bare mapping or a ternary of two:
  *
  *   mapping(K=>V) storage m = x;         // m aliases x
+ *   mapping(K=>V) storage m = x[i];      // m aliases the sub-mapping x[i] (fixed key prefix)
  *   mapping(K=>V) storage m = c ? a : b; // m conditionally aliases a or b
  *
  * A storage pointer has no runtime value, so every indexed use of `m` is rewritten to the underlying mapping and
  * the declaration dropped (a `bool` temp captures the condition once):
  *   m[k]      (read, ArrayAccess)  -> x[k]        |  c ? a[k] : b[k]
  *   m[k] = v  (write, ArrayAssign) -> x[k] = v    |  if (c) { a[k] = v; } else { b[k] = v; }
- * Only a bare-mapping or ternary-of-bare-mappings initializer is handled; any other shape (a reassigned pointer,
- * a whole-mapping use) is left untouched for a later pass to reject. Runs after InlineStoragePointerCalls and
- * before the symbol table.
+ * With a key prefix the reads/writes become the multi-key mapping forms (`x[i][k]` / `x[i][k] = v`).
+ * Only a bare-mapping, a fixed-key sub-mapping, or a ternary of those initializers is handled; any other shape (a
+ * reassigned pointer, a whole-mapping use) is left untouched for a later pass to reject. Runs after
+ * InlineStoragePointerCalls and before the symbol table.
  */
 export default class LowerMappingStorageAlias extends AstTraversal {
   private aliases = new Map<string, MapAlias>();
@@ -123,8 +128,12 @@ export default class LowerMappingStorageAlias extends AstTraversal {
   private aliasFromRhs(
     rhs: ExpressionNode, out: StatementNode[], decl: VariableDefinitionNode | AssignNode | StateAssignNode,
   ): MapAlias | undefined {
-    if (rhs instanceof IdentifierNode) return { a: rhs.name };
-    if (rhs instanceof TernaryOpNode && rhs.ifTrue instanceof IdentifierNode && rhs.ifFalse instanceof IdentifierNode) {
+    const direct = this.pathOf(rhs);
+    if (direct) return { a: direct.name, keysA: direct.keys };
+    if (rhs instanceof TernaryOpNode) {
+      const ifTrue = this.pathOf(rhs.ifTrue);
+      const ifFalse = this.pathOf(rhs.ifFalse);
+      if (!ifTrue || !ifFalse) return undefined;
       // Capture the condition once into a bool local, evaluated in declaration order (before any m use).
       const condName = `__mapcond_${this.counter++}`;
       const condDef = new VariableDefinitionNode(
@@ -133,33 +142,65 @@ export default class LowerMappingStorageAlias extends AstTraversal {
       condDef.location = decl.location;
       out.push(condDef);
       const condId = new IdentifierNode(condName); condId.location = decl.location;
-      return { cond: condId, a: rhs.ifTrue.name, b: rhs.ifFalse.name };
+      return { cond: condId, a: ifTrue.name, keysA: ifTrue.keys, b: ifFalse.name, keysB: ifFalse.keys };
     }
     return undefined;
+  }
+
+  // The underlying mapping name and the fixed key prefix of a storage path: a bare identifier `x` (no keys) or a
+  // chain of fixed-key accesses `x[i][j]` (keys `[i, j]`). Anything else (a call, a computed base) is undefined.
+  private pathOf(expr: ExpressionNode): { name: string; keys: ExpressionNode[] } | undefined {
+    const keys: ExpressionNode[] = [];
+    let current: ExpressionNode = expr;
+    while (current instanceof ArrayAccessNode) {
+      keys.unshift(current.index);
+      current = current.array;
+    }
+    return current instanceof IdentifierNode ? { name: current.name, keys } : undefined;
   }
 
   private rewriteWrite(node: ArrayAssignNode, alias: MapAlias): StatementNode {
     const idx = this.visit(node.index) as ExpressionNode;
     const val = this.visit(node.value) as ExpressionNode;
-    if (!alias.cond) return this.stamp(new ArrayAssignNode(alias.a, idx, val), node.location);
+    if (!alias.cond) return this.writePath(alias, 'a', idx, val, node.location);
     this.loweredConditionalAlias = true;
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     const ifB = this.stamp(new BlockNode([
-      this.stamp(new ArrayAssignNode(alias.a, clone(idx), clone(val)), node.location),
+      this.writePath(alias, 'a', clone(idx), clone(val), node.location),
     ]), node.location);
     const elseB = this.stamp(new BlockNode([
-      this.stamp(new ArrayAssignNode(alias.b!, clone(idx), clone(val)), node.location),
+      this.writePath(alias, 'b', clone(idx), clone(val), node.location),
     ]), node.location);
     return this.stamp(new BranchNode(clone(alias.cond), ifB, elseB), node.location);
   }
 
+  // The underlying write for one side of an alias: `x[idx] = val` (no key prefix) or `x[..keys][idx] = val`.
+  private writePath(
+    alias: MapAlias, side: 'a' | 'b', idx: ExpressionNode, val: ExpressionNode, loc: Node['location'],
+  ): StatementNode {
+    const name = side === 'a' ? alias.a : alias.b!;
+    const keys = (side === 'a' ? alias.keysA : alias.keysB) ?? [];
+    if (keys.length === 0) return this.stamp(new ArrayAssignNode(name, idx, val), loc);
+    return this.stamp(new MappingAssignNode(name, [...keys.map((key) => cloneNode(key) as ExpressionNode), idx], val), loc);
+  }
+
   private rewriteRead(alias: MapAlias, index: ExpressionNode, loc: Node['location']): ExpressionNode {
-    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
-    const read = (name: string, idx: ExpressionNode): ArrayAccessNode =>
-      this.stamp(new ArrayAccessNode(this.stamp(new IdentifierNode(name), loc), idx), loc);
-    if (!alias.cond) return read(alias.a, index);
+    if (!alias.cond) return this.readPath(alias, 'a', index, loc);
     this.loweredConditionalAlias = true;
-    return this.stamp(new TernaryOpNode(clone(alias.cond), read(alias.a, clone(index)), read(alias.b!, clone(index))), loc);
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
+    return this.stamp(new TernaryOpNode(
+      clone(alias.cond), this.readPath(alias, 'a', clone(index), loc), this.readPath(alias, 'b', clone(index), loc),
+    ), loc);
+  }
+
+  // The underlying read for one side of an alias: `x[index]` (no key prefix) or `x[..keys][index]`.
+  private readPath(alias: MapAlias, side: 'a' | 'b', index: ExpressionNode, loc: Node['location']): ExpressionNode {
+    const name = side === 'a' ? alias.a : alias.b!;
+    const keys = (side === 'a' ? alias.keysA : alias.keysB) ?? [];
+    if (keys.length === 0) {
+      return this.stamp(new ArrayAccessNode(this.stamp(new IdentifierNode(name), loc), index), loc);
+    }
+    return this.stamp(new MappingAccessNode(name, [...keys.map((key) => cloneNode(key) as ExpressionNode), index]), loc);
   }
 
   private stamp<T extends { location?: Node['location'] }>(n: T, loc: Node['location']): T {

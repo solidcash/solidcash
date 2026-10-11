@@ -751,10 +751,29 @@ export default class TypeCheckTraversal extends AstTraversal {
         const arrType = node.collection.innermostValueType as ArrayType;
         node.type = arrType.elementType;
       } else {
-        node.type = node.collection.innermostValueType;
+        // A mapping read consumes ONE level of value type per key used, not the innermost value: `m[k]` on
+        // `mapping(K => mapping(K2 => V))` is the storage pointer `mapping(K2 => V)`, which is what a
+        // storage-alias initializer (`mapping(..) storage r = m[k]`) or a helper's `return m[k]` needs. Using
+        // `innermostValueType` here typed it `V` and rejected exactly those (AssignTypeError). Only a read whose
+        // keys reach the leaf (keys.length == depth) still lands on the innermost value; that length-equality
+        // case is unchanged, so single-level mappings are untouched.
+        node.type = this.mappingValueTypeAfterKeys(node.collection, node.keys.length)
+          ?? node.collection.innermostValueType;
       }
     }
     return node;
+  }
+
+  // The value type after consuming `keyCount` MAPPING levels of `collection`, or undefined when a level is not a
+  // mapping (an array dimension, whose indices the collection model folds into the key space) before the count is
+  // reached - the caller then falls back to the innermost value.
+  private mappingValueTypeAfterKeys(collection: CollectionNode, keyCount: number): Type | undefined {
+    let current: Type = collection.type;
+    for (let i = 0; i < keyCount; i += 1) {
+      if (!(current instanceof MappingType)) return undefined;
+      current = current.valueType;
+    }
+    return current;
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {

@@ -86,6 +86,10 @@ describe('statements: integer edges', () => {
     'a <<= 9; return a;', [0x1234n]));
   it('int8 left shift wraps into the sign bit', () => run('shift-signed', 'int8 a', 'int8',
     'return a << 1;', [64n]));
+  it('negative int8 left shift truncates', () => run('shift-signed-negative', 'int8 a', 'int8',
+    'return a << 1;', [-100n]));
+  it('uint256 left shift drops bits past 255', () => run('shift-uint256', 'uint a', 'uint',
+    'return a << 255;', [3n]));
   it('bitwise not of uint8', () => run('not-uint8', 'uint8 a', 'uint8', 'return ~a;', [200n]));
   it('signed right shift rounds toward negative infinity', () => run('sar', 'int a', 'int', 'return a >> 1;', [-7n]));
 });

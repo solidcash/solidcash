@@ -17001,17 +17001,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
   }
 
-  // A left shift truncates to its type rather than failing, as in Solidity. An unsigned operand shifts to a
-  // non-negative value, so one modulo by a runtime-built 2^bits suffices; a signed one wraps in full.
+  // A left shift truncates to its type rather than failing, as in Solidity. The moduli are built at runtime, a few
+  // bytes at any width. An unsigned operand shifts to a non-negative value, so one modulo by 2^bits suffices; a
+  // signed one is biased by H = 2^(bits-1), reduced into [0, 2H) and unbiased (two's-complement truncation).
   private emitShiftTruncation(type: IntType, locationData: SingleLocationData): void {
-    if (type.signed) {
-      this.emitIntWrap(type, locationData);
+    const ops = (...script: Script): void => script.forEach((op) => this.emit(op, locationData));
+    if (!type.signed) {
+      ops(Op.OP_1, encodeInt(BigInt(type.bits)), Op.OP_LSHIFTNUM, Op.OP_MOD);
       return;
     }
-    this.emit(Op.OP_1, locationData);
-    this.emit(encodeInt(BigInt(type.bits)), locationData);
-    this.emit(Op.OP_LSHIFTNUM, locationData);
-    this.emit(Op.OP_MOD, locationData);
+    ops(Op.OP_1, encodeInt(BigInt(type.bits - 1)), Op.OP_LSHIFTNUM); // [v, H]
+    ops(Op.OP_TUCK, Op.OP_ADD); // [H, v+H]
+    ops(Op.OP_OVER, Op.OP_DUP, Op.OP_ADD); // [H, x, 2H]
+    ops(Op.OP_TUCK, Op.OP_MOD, Op.OP_OVER, Op.OP_ADD, Op.OP_SWAP, Op.OP_MOD); // [H, x mod 2H in [0, 2H)]
+    ops(Op.OP_SWAP, Op.OP_SUB);
   }
 
   // Emit modular wrapping for bounded integer types (unchecked mode).

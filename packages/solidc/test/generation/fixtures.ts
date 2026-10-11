@@ -1614,11 +1614,11 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE 1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_RSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_LSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_16 OP_NUMEQUAL',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE 1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_RSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_LSHIFTNUM OP_1 ff00 OP_LSHIFTNUM OP_TUCK OP_ADD OP_OVER OP_DUP OP_ADD OP_TUCK OP_MOD OP_OVER OP_ADD OP_SWAP OP_MOD OP_SWAP OP_SUB OP_16 OP_NUMEQUAL',
       'source': 'contract Bitshift() {\n    function spend() {\n        bytes8 x = 0x1122334455667788;\n        bytes8 y = x << 4 >> 4;\n\n        require(y == 0x0000000055667788);\n\n        int a = 8;\n        int b = a >> 2 << 1;\n\n        require (b == 16);\n    }\n}\n',
       'debug': {
-        'bytecode': '0c765102ff008d9301218001205189081122334455667788549854990800000000556677888858518a7f77010088528e518a7f77010088518d518a7f77010088609c',
-        'sourceMap': '1::13:1;;;3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;:8::18:1;;;;;;9:21:9:22:0;:16:::1;;;;;;;:26::27:0;:16:::1;;;;;;;11:22:11:24:0;:8::26:1',
+        'bytecode': '0c765102ff008d9301218001205189081122334455667788549854990800000000556677888858518a7f77010088528e518a7f77010088518d5102ff008d7d937876937d9778937c977c94609c',
+        'sourceMap': '1::13:1;;;3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;:8::18:1;;;;;;9:21:9:22:0;:16:::1;;;;;;;:26::27:0;:16:::1;;;;;;;;;;;;;;;;;11:22:11:24:0;:8::26:1',
         'logs': [],
         'requires': [
           {
@@ -1626,7 +1626,7 @@ export const fixtures: Fixture[] = [
             'line': 6,
           },
           {
-            'ip': 35,
+            'ip': 45,
             'line': 11,
           },
         ],

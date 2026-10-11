@@ -32,9 +32,10 @@ import {
   ExpressionNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
+import { Modifier } from '../ast/Globals.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError, UnsupportedReturnError } from '../Errors.js';
-import { AddressType, type Type } from '@solidcash/utils';
+import { AddressType, StructType, type Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { holdsAssemblyReturn, normalizeVoidInlineReturns } from './EarlyReturnTransformation.js';
@@ -117,7 +118,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       // consumer and bypassing the intended split boundary.
       if (!fn.modifiers.includes(FunctionModifier.DELEGATE)
         && !fn.graphEmissionHandler && !fn.name.startsWith('__message_bus_')
-        && fn.body && this.canDiscardCallResult(fn)
+        && fn.body && this.canDiscardCallResult(fn) && !this.takesFlattenedStructPointer(fn)
         && (this.makesExternalCall(fn) || this.hasConditionalCollectionAccess(fn))) {
         if (fn.isEntryPoint) this.entryPointHelpers.add(fn.name);
         else this.voidExternalCallHelpers.add(fn.name);
@@ -175,6 +176,21 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       }
     });
     return safeReturns;
+  }
+
+  // A `storage` struct pointer whose fields are flattened (`p__field`) has no value: a bound copy would name a
+  // flattened root that does not exist. InlineStoragePointerCalls binds such a pointer onto the caller's fields.
+  private takesFlattenedStructPointer(fn: FunctionDefinitionNode): boolean {
+    const prefixes = fn.parameters
+      .filter((p) => p.modifier.includes(Modifier.STORAGE) && p.type instanceof StructType)
+      .map((p) => `${p.name}__`);
+    if (prefixes.length === 0) return false;
+    let found = false;
+    this.walk(fn.body, (n) => {
+      const name = (n as unknown as { name?: unknown }).name;
+      if (typeof name === 'string' && prefixes.some((prefix) => name.startsWith(prefix))) found = true;
+    });
+    return found;
   }
 
   private static isLowLevel(m: string): boolean {

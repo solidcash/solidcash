@@ -328,8 +328,8 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
 });
 
 describe('EVM storage-layout specifier tolerated (contract C layout at expr)', () => {
-  // `contract C [is ..] layout at <slot>` sets an EVM storage base slot - meaningless on the UTXO model, so the
-  // clause is dropped under evmCompat and the contract compiles as if it were absent.
+  // `contract C [is ..] layout at <slot>` sets an EVM storage base slot. The clause is dropped; its base only shifts
+  // EVM-visible slot numbers (assembly `.slot`, literal sload/sstore), so without those it compiles as if absent.
   it('drops the layout clause (with and without inheritance)', () => {
     expect(compileString('contract C layout at 42 { function f(uint256 e) { require(e == e); } }',
       { evmCompat: true }).contractName).toBe('C');

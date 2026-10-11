@@ -159,6 +159,9 @@ export class ContractNode extends Node implements Named {
   // `transient` state vars (EIP-1153). Kept off `stateVariables` (no persisted UTXO slot) but here so inheritance
   // can merge them; LowerTransientStateVars injects a per-function zero-init local for each after flattening.
   transientStateVars: StateVariableNode[] = [];
+  // Evaluated `layout at <base>` slot (solc 0.8.29 custom storage layout). Shifts the EVM-visible slot of every
+  // persistent state var (inherited ones included), not transient ones. Absent = slot 0.
+  storageLayoutBase?: bigint;
   isAbstract: boolean = false;
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.

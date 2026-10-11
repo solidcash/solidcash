@@ -1751,6 +1751,7 @@ export default class AstBuilder
     this.collectionMappingValueArrays.clear();
     for (const collection of [...collections]) {
       if (!(collection.type instanceof ArrayType) || collection.type.bound !== undefined) continue;
+      if (this.isExternalFnPtrTable(collection.type)) continue;
       const depth = this.arrayDimensions(collection.type);
       if (depth < 1) continue;
       this.collectionLengthDepths.set(collection.name, depth);
@@ -8964,6 +8965,15 @@ export default class AstBuilder
     return current instanceof MappingType;
   }
 
+  /**
+   * An external function-pointer table (`function(..) external[]`) has no collection length authority: the fn-ptr
+   * lowering moves it to chunk-backed `address[]` (+ `bytes[]` selector) state arrays whose own length headers
+   * count it, so its push (value kept), pop, delete and `.length` take the ordinary array forms.
+   */
+  private isExternalFnPtrTable(type: ArrayType): boolean {
+    return type.elementType instanceof FunctionType && type.elementType.isExternal;
+  }
+
   /** True when dimension `level` of an unbounded collection array is itself an unbounded array dimension. */
   private collectionDimensionIsUnbounded(name: string, level: number): boolean {
     const type = this.stateCollectionArrayTypes.get(name);
@@ -8991,7 +9001,7 @@ export default class AstBuilder
       return read;
     }
     const type = this.stateCollectionArrayTypes.get(name);
-    if (!type) return undefined;
+    if (!type || this.isExternalFnPtrTable(type)) return undefined;
     const level = indexKeys.length;
     const dimension = this.arrayTypeAtLevel(type, level);
     if (!dimension || dimension.bound !== undefined) return undefined;

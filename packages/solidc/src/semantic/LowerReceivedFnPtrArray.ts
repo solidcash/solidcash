@@ -35,15 +35,15 @@ import {
   WhileNode,
   DoWhileNode,
   AssignNode,
-  BinaryOpNode,
   AssignmentExpressionNode,
   StateAssignNode,
   StateAccessNode,
+  DeleteLocalNode,
+  DeleteStateNode,
 } from '../ast/AST.js';
 import { ArrayType, FunctionType, AddressType, BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
-import { BinaryOperator } from '../ast/Operator.js';
 import { FnPtrArrayLoweringError } from '../Errors.js';
 
 const SELECTOR_ARRAY_PREFIX = '__fnsel_';
@@ -54,9 +54,7 @@ const UNSUPPORTED_VALUE = 'an unsupported value is written to it; each pushed/as
   + 'or a function-pointer param / state variable carrying its selector';
 const UNSUPPORTED_COPY = 'a whole-array value assigned to it carries no element selectors; only a copy of another '
   + 'storage function-pointer array of the same function type and length is supported';
-const LENGTH_ONLY = 'a push, pop or whole delete of it is kept only as a length change, so its copied elements '
-  + 'would not follow';
-const DROPPED_PUSH = 'a push onto it is kept only as a length change and its pushed value would be dropped';
+const ZERO_PUSH = 'a no-arg push appends a zero function pointer, whose selector cannot be established';
 
 /**
  * FOREIGN external function-pointer ARRAYS holding RECEIVED values (`fns.push(p)` where `p` is a fn-ptr param
@@ -75,10 +73,11 @@ const DROPPED_PUSH = 'a push onto it is kept only as a length change and its pus
  * - `fns[i](args)` INSIDE a loop is the notify-all idiom -> the BROADCAST covenant (selectorArrayVar + the
  *   `__internal__extcallIdxList` witness); the source loop is harmless iteration and a broadcast cannot return
  *   a value (rejected).
- * Mutations (element assign / pop / delete) rewrite to lockstep two-statement blocks on both arrays.
- * A whole copy `b = a` between tables of this pass copies the selector array (and an unbounded table's `$len`
- * length authority) with it, so `b` holds exactly `a`'s targets. A table with no write at all holds none: it
- * lowers as an empty table whose element reads, and so calls, revert.
+ * Mutations (element assign / pop / element or whole delete) rewrite to lockstep two-statement blocks on both
+ * arrays; each array's own length header is the table's length (the parser gives the table no `$len`).
+ * A whole copy `b = a` between tables of this pass copies the selector array with it, so `b` holds exactly `a`'s
+ * targets. A table with no write at all holds none: it lowers as an empty table whose element reads, and so
+ * calls, revert.
  * Runs AFTER the param + storage lowerings (so received values already expose `__fnsel_<name>` companions).
  */
 export default class LowerReceivedFnPtrArray extends AstTraversal {
@@ -145,15 +144,9 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
         continue;
       }
       const sources = this.collectCopies(coll.name, bodies);
-      // The parser keeps only the `<name>$len` bump of a push onto an unbounded collection array, not its value,
-      // so a table written only by pushes looks unwritten here: refuse it rather than drop those elements.
-      if (writes.length === 0 && this.writesLengthAuthority(coll.name, bodies)) {
-        refusals.set(coll.name, sources.length === 0 ? NEVER_WRITTEN : LENGTH_ONLY);
-        continue;
-      }
-      // The same holds beside element writes: a push's value is never stored, only its length bump.
-      if (this.incrementsLengthAuthority(coll.name, bodies)) {
-        refusals.set(coll.name, DROPPED_PUSH);
+      // A no-arg push grows the table by an element no write gives a selector.
+      if (this.pushesWithoutValue(coll.name, bodies)) {
+        refusals.set(coll.name, writes.length === 0 && sources.length === 0 ? NEVER_WRITTEN : ZERO_PUSH);
         continue;
       }
       if (sources.some((s) => s === undefined)) {
@@ -292,7 +285,7 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
     return this.twoStatementBlock(addrAssign, selAssign, at);
   }
 
-  // `b = a` -> `{ b = a; __fnsel_b = __fnsel_a; b$len = a$len; }` (the length authority only when unbounded).
+  // `b = a` -> `{ b = a; __fnsel_b = __fnsel_a; }`.
   visitAssign(node: AssignNode): Node {
     return this.rewriteCopy(node.identifier.name, node.expression, node, true) ?? super.visitAssign(node);
   }
@@ -309,17 +302,22 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
     if (src === undefined) throw new FnPtrArrayLoweringError(at, name, UNSUPPORTED_COPY);
     const flags = { fromModifier: at.fromModifier, qualifiedBaseAccess: at.qualifiedBaseAccess };
     const selRead = this.copyLoc(new IdentifierNode(this.selArrayName(src)), at);
-    const statements: StatementNode[] = [
-      at,
-      Object.assign(this.copyLoc(new StateAssignNode(this.selArrayName(name), selRead), at), flags),
-    ];
-    if (this.tables.get(name)!.bound === undefined) {
-      const lenRead = this.copyLoc(new StateAccessNode(`${src}$len`), at);
-      statements.push(Object.assign(this.copyLoc(new StateAssignNode(`${name}$len`, lenRead), at), flags));
-    }
-    const block = new BlockNode(statements);
-    block.location = at.location;
-    return block;
+    const selCopy = Object.assign(this.copyLoc(new StateAssignNode(this.selArrayName(name), selRead), at), flags);
+    return this.twoStatementBlock(at, selCopy, at);
+  }
+
+  // `delete fns` -> `{ delete fns; delete __fnsel_fns; }`.
+  visitDeleteLocal(node: DeleteLocalNode): Node {
+    const name = node.identifier.name;
+    if (!this.lowered.has(name) || this.isLocal(name)) return super.visitDeleteLocal(node);
+    return this.twoStatementBlock(node, this.copyLoc(new DeleteStateNode(this.selArrayName(name)), node), node);
+  }
+
+  visitDeleteState(node: DeleteStateNode): Node {
+    if (!this.lowered.has(node.name)) return super.visitDeleteState(node);
+    const selDelete = this.copyLoc(new DeleteStateNode(this.selArrayName(node.name)), node);
+    selDelete.fromModifier = node.fromModifier;
+    return this.twoStatementBlock(node, selDelete, node);
   }
 
   // `this.fns[i] = v` / `delete fns[i]` parse MAPPING-flavored while the array is still a collection;
@@ -537,30 +535,11 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
     return names.has(name);
   }
 
-  // Any statement writing the `<name>$len` length authority (or an inner `<name>$len$<level>`): a push, pop or
-  // whole delete of the unbounded collection array.
-  private writesLengthAuthority(name: string, bodies: FunctionDefinitionNode[]): boolean {
-    const authority = `${name}$len`;
-    const writes: string[] = [];
-    const visit = (n: Node): void => {
-      if (!(n instanceof StatementNode) || n instanceof VariableDefinitionNode) return;
-      const target = n instanceof AssignNode ? n.identifier.name : (n as { name?: unknown }).name;
-      if (typeof target === 'string') writes.push(target);
-    };
-    for (const fn of bodies) this.walk(fn.body!, visit);
-    return writes.some((t) => t === authority || t.startsWith(`${authority}$`));
-  }
-
-  // `<name>$len = <length> + n`: the bump the parser keeps of a push whose value it dropped (a pop subtracts and a
-  // whole delete assigns zero, so an addition into the length authority is a push).
-  private incrementsLengthAuthority(name: string, bodies: FunctionDefinitionNode[]): boolean {
-    const authority = `${name}$len`;
+  // A no-arg `name.push()` (either flavor).
+  private pushesWithoutValue(name: string, bodies: FunctionDefinitionNode[]): boolean {
     let found = false;
     const visit = (n: Node): void => {
-      const target = n instanceof AssignNode ? n.identifier.name : n instanceof StateAssignNode ? n.name : undefined;
-      if (target !== authority) return;
-      const e = (n as AssignNode | StateAssignNode).expression;
-      if (e instanceof BinaryOpNode && e.operator === BinaryOperator.PLUS) found = true;
+      if ((n instanceof StateArrayPushNode || n instanceof ArrayPushNode) && n.name === name && n.noArg) found = true;
     };
     for (const fn of bodies) this.walk(fn.body!, visit);
     return found;

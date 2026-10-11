@@ -3,8 +3,9 @@ import { compileString } from './direct-compile.js';
 
 // An external function-pointer array with no element write holds only Solidity's zero function (a call through
 // it reverts), so it lowers as an empty `address[]` + `bytes[]` selector table. A whole copy `b = a` gives `b`
-// exactly `a`'s targets: the selector array (and the unbounded length authority) is copied with the addresses.
-describe('function-pointer arrays without element writes', () => {
+// exactly `a`'s targets: the selector array is copied with the addresses. The table has no `$len` length
+// authority: a push keeps its value, and push / pop / delete / `.length` act on both arrays' own lengths.
+describe('external function-pointer array tables: empty, copied and pushed', () => {
   const variables = (source: string): string[] => compileString(source, { evmCompat: true }).stateLayout!.variables
     .map((v) => `${v.name}:${v.type}`);
 
@@ -32,11 +33,11 @@ describe('function-pointer arrays without element writes', () => {
     expect(snapshot.dynamicWrites).toEqual(expect.arrayContaining(['backup', '__fnsel_backup']));
   });
 
-  it('still refuses a table whose pushes keep no element, and a copy from a memory array', () => {
+  it('still refuses a table grown only by no-arg pushes, and a copy from a memory array', () => {
     expect(() => compileString(`pragma solidity ^0.8.0;
       contract Relay {
         function(uint256) external[] handlers;
-        function add(function(uint256) external cb) public { handlers.push(cb); }
+        function add() public { handlers.push(); }
       }`, { evmCompat: true })).toThrow(/Function-pointer array 'handlers': it is never written in contract code/);
     expect(() => compileString(`pragma solidity ^0.8.0;
       contract Relay {
@@ -45,12 +46,32 @@ describe('function-pointer arrays without element writes', () => {
       }`, { evmCompat: true })).toThrow(/Function-pointer array 'handlers'/);
   });
 
-  it('refuses a written table whose pushes would be dropped', () => {
-    expect(() => compileString(`pragma solidity ^0.8.0;
+  it('keeps pushed values: push, element write, pop and delete move both arrays in lockstep', () => {
+    const art = compileString(`pragma solidity ^0.8.0;
       contract Relay {
         function(uint256) external[] handlers;
         function set(uint256 i, function(uint256) external cb) public { handlers[i] = cb; }
         function add(function(uint256) external cb) public { handlers.push(cb); }
-      }`, { evmCompat: true })).toThrow(/'handlers': a push onto it is kept only as a length change/);
+        function drop() public { handlers.pop(); }
+        function clear() public { delete handlers; }
+        function size() public view returns (uint256) { return handlers.length; }
+      }`, { evmCompat: true });
+    const vars = art.stateLayout!.variables.map((v) => `${v.name}:${v.type}`);
+    expect(vars).toEqual(expect.arrayContaining(['handlers:address[]', '__fnsel_handlers:bytes[]']));
+    expect(vars.some((v) => v.startsWith('handlers$len'))).toBe(false);
+    for (const name of ['set', 'add', 'drop', 'clear']) {
+      expect(art.abi.find((f) => f.name === name)!.dynamicWrites).toEqual(
+        expect.arrayContaining(['handlers', '__fnsel_handlers']),
+      );
+    }
+  });
+
+  it('refuses a no-arg push beside element writes (a zero element has no selector)', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0;
+      contract Relay {
+        function(uint256) external[] handlers;
+        function add(function(uint256) external cb) public { handlers.push(cb); }
+        function grow() public { handlers.push(); }
+      }`, { evmCompat: true })).toThrow(/'handlers': a no-arg push appends a zero function pointer/);
   });
 });

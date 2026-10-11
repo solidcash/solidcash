@@ -5888,7 +5888,10 @@ export default class AstBuilder
         node.immutable = isImmutable;
         this.readStateVariableInitializer(ctx, node);
         node.location = Location.fromCtx(ctx);
-        if (chunked && !node.initializer) node.initializer = createDefaultValueExpression(arrayT, node.location);
+        // `__gap` reservations are dropped from evmCompat BCH state (compiler.ts), so they get no zero-fill.
+        if (chunked && !node.initializer && name !== '__gap') {
+          node.initializer = createDefaultValueExpression(arrayT, node.location);
+        }
         return markOverride(node);
       }
 

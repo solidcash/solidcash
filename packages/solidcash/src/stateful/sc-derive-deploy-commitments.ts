@@ -82,6 +82,16 @@ export async function deriveDeployCommitments<T extends Artifact>(
   const unplannedCause = loopWrite === undefined ? ''
     : ` The constructor writes verified mapping '${loopWrite.collection}' in a runtime loop, whose nodes a deployment `
       + 'cannot plan.';
+  // A stateful `new` in the constructor mints its child inside the genesis transaction, which carries no child
+  // genesis input or outputs: the probe would read a missing input, so refuse with the cause instead.
+  const constructorChildren = [...new Set((constructorAbi?.deployTargets ?? []).map((target) => target.contractName))];
+  if (constructorChildren.length > 0) {
+    throw new Error(
+      `Constructor of '${artifact.contractName}' creates stateful contract `
+      + `${constructorChildren.map((name) => `'${name}'`).join(', ')} with 'new'; a deployment does not create child `
+      + 'contracts in its genesis transaction. Create them from a function after deployment.',
+    );
+  }
 
   // Explicit initial state seeds fields the constructor does not write (for example compiler-injected immutable
   // block-oracle ownership). Constructor execution still derives and authenticates its writes over this pre-state.

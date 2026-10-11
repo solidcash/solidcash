@@ -5473,3 +5473,15 @@ shift amounts and literal arithmetic past 4096 bits in `.sol` units (TypeError 2
 outside storage and internal function types in public library functions (4061/4103, 6); contracts whose storage
 reaches 2^256 slots (7676, 5); invalid implicit conversions in `.sol` units (9574/7407/9553, 10). Contract/address
 conversions stay accepted while the address representation decision is deferred.
+
+## 2026-10-11: runtime parity measured on the BCH VM (semantic-runner.mjs)
+
+`semantic-runner.mjs` executes the corpus's own `// ----` expectation lines on the BCH VM through a derived (or, for
+`layout at` and lifecycle targets, in-target) check function: pure slice 1482/1613 = 91.88%, stateful slice (deploy
+once, lines in order) 599/675 = 88.74%. Positives 2719/2805 and negatives 2009/2158 (93.10%) unchanged; differential
+592/595. Silent divergences it found and fixed: a struct returned from a helper lost fields 2+; library, free and
+public helpers copied memory arguments instead of sharing them; Yul memory written in one assembly block was lost
+in a later one; evmCompat same-width int <-> uint casts reverted instead of reinterpreting; base constructors lost
+their own `super` scope and modifiers; library code picked a contract's same-named event; the SDK decoded
+function pointers in state as bytes. 30 remaining mismatches are tryCatch (a failed call cannot be caught; see
+packages/solidc/docs/platform-differences.md).

@@ -120,6 +120,7 @@ import {
   StateArrayDeleteNode,
   SelfdestructStatementNode,
   UncheckedNode,
+  type CallOptions,
   type GraphEffectFrame,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -313,7 +314,7 @@ class SourceEffectOrderTraversal extends AstTraversal {
       .reverse();
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
-    if (node.callInfo && !node.foldedIntoDeploy && !node.rawValueTransferOnly) {
+    if (node.callInfo && !node.foldedIntoDeploy && !node.rawValueTransferOnly && !node.noCodeTarget) {
       if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
         node.sourceEffectOrdinal = this.next++;
       } else if (node.sourceEffectOrdinal !== undefined) {
@@ -7982,7 +7983,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const gather = (n: Node | undefined, seen: Set<Node>): void => {
       if (!n || seen.has(n)) return;
       seen.add(n);
-      if (n instanceof ExternalFunctionCallNode) {
+      if (n instanceof ExternalFunctionCallNode && !n.noCodeTarget) {
         if (!n.foldedIntoDeploy) allCalls.add(n);
         const nm = this.externalReceiverLocal(n.addressExpression);
         if (nm) {
@@ -8650,6 +8651,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const parameter of node.parameters) {
         this.collectExternalCalls(parameter, slots, enclosingConditions);
       }
+      // A call to a target that holds no code co-spends no callee, so it owns no slot.
+      if (node.noCodeTarget) return;
       // A concrete contract cast exposes only real ABI-visible functions (including synthesized PUBLIC state
       // getters). Do not let `C(addr).privateState()` become an arbitrary external-call selector merely because
       // the call node was formed before the secondary contract's members were validated.
@@ -13524,6 +13527,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               callMode: methodName === 'staticcall'
                 ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
             };
+            this.markNoCodeRawCall(callNode, node.callOptions);
             callNode.location = node.location;
             return callNode;
           }
@@ -17063,6 +17067,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             returnEventSignature: '_Return___raw__(bytes)',
             callMode: mode,
           };
+          this.markNoCodeRawCall(callNode, node.callOptions);
           callNode.location = node.location;
           return callNode;
         }
@@ -17394,6 +17399,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       returnEventSignature: '_Return___raw__(bytes)',
       callMode: node.callMode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
     };
+    this.markNoCodeRawCall(callNode, node.callOptions);
     callNode.location = node.location;
     const surface = new MethodCallNode(receiver, node.callMode, [node.data]);
     surface.location = node.location;
@@ -17448,8 +17454,30 @@ export default class SymbolTableTraversal extends AstTraversal {
     call.valueTransferIndex = node.valueTransferIndex;
     call.rawValueTransferOnly = valueCall && hasEffectiveCallValue(call.callOptions?.value)
       && node.data instanceof StringLiteralNode && node.data.value.length === 0;
+    this.markNoCodeRawCall(call, node.callOptions);
     call.location = node.location;
     return call;
+  }
+
+  /**
+   * Mark an option-free empty-calldata raw call to a constant target that cannot be a P2SH lock (`noCodeTarget`).
+   * solc's call to an account without code succeeds with empty data and runs nothing, so no callee is co-spent. A
+   * runtime target may hold a contract (its fallback runs), so it keeps the co-spend, as does a P2SH-sized literal.
+   */
+  private markNoCodeRawCall(call: ExternalFunctionCallNode, options: CallOptions | undefined): void {
+    if (this.compilerOptions.composition === 'framed' || options !== undefined) return;
+    const payload = call.parameters[0];
+    const emptyPayload = (payload instanceof StringLiteralNode && payload.value.length === 0
+        && (payload.solidityBytes === undefined || payload.solidityBytes.length === 0))
+      || (payload instanceof HexLiteralNode && payload.value.length === 0 && payload.codegenError === undefined);
+    if (!emptyPayload) return;
+    let target = call.addressExpression;
+    while (target instanceof CastNode && target.type instanceof AddressType) target = target.expression;
+    if (target instanceof HexLiteralNode || target instanceof IntLiteralNode) {
+      if (target instanceof HexLiteralNode && target.codegenError !== undefined) return;
+      const size = target instanceof HexLiteralNode ? target.value.length : encodeInt(target.value).length;
+      if (size !== 23 && size !== 35) call.noCodeTarget = true;
+    }
   }
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {

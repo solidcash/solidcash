@@ -23258,6 +23258,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
+    // solc's call to an account without code: no callee runs and the result is `(true, bytes(""))`.
+    if (node.noCodeTarget) {
+      if (node.discardedOpaqueReturn) return node;
+      this.emit(Op.OP_1, locationData);
+      this.emit(encodeInt(0n), locationData);
+      this.pushToStack('(success)');
+      this.pushToStack('(returnData)');
+      return node;
+    }
+
     if (node.rawValueTransferOnly) {
       const value = node.callOptions?.value;
       const address = this.getAddressParamFromTarget(node.addressExpression);

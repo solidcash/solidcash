@@ -5,7 +5,7 @@ import { bytecodeToAsm, Op, type Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
   ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
-  canonicalSelectorType, type Type,
+  canonicalSelectorType, INVALID_FUNCTION_POINTER_ID, type Type,
 } from './types.js';
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -397,6 +397,8 @@ export function getDefaultStateValue(
     }
     return arr;
   }
+  // An unset function pointer holds the compiler's invalid functionId (emitDefaultValue), not the valid id 0.
+  if (type.startsWith('function(')) return INVALID_FUNCTION_POINTER_ID;
   if (isIntLikeType(type)) return 0n;
   if (type === 'bool') return false;
   const match = type.match(/^bytes(\d+)$/);

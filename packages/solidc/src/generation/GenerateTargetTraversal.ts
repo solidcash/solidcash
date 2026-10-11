@@ -90,6 +90,7 @@ import {
   computeFunctionSignature,
   isEvmNotationScalarType,
   resolveAddressForm,
+  INVALID_FUNCTION_POINTER_ID,
   type AbiFunction,
   type AddressForm,
 } from '@solidcash/utils';
@@ -362,10 +363,6 @@ const EXTERNAL_CALL_LOOP_WALK_EXCLUDED_KEYS = new Set([
 ]);
 
 const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
-// The "invalid" internal function-pointer value (Solidity's zero fn-ptr). functionIds are small sequential ints
-// (from 0), so this large sentinel is never a defined id and OP_INVOKE hard-fails on it -> calling a deleted or
-// uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
-const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
 /**
  * How one EVM head word of a Solidity-compat call's payload maps to the callee's argument push; `dynamic` is a
@@ -31644,12 +31641,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUM2BIN, locationData);
       return;
     }
-    // An INTERNAL function pointer's default/zero value is the "invalid" pointer: Solidity panics when a
-    // deleted or uninitialized internal fn-ptr is CALLED. functionIds are small sequential ints (assigned from
-    // 0), so a large sentinel is always an unknown id and OP_INVOKE hard-fails on it - reverting the call, which
-    // matches Solidity. (0 would be a VALID functionId - the first defined function - so a deleted pointer would
-    // silently dispatch to it instead of reverting.) External fn-ptrs use the (address,selector) model, unchanged.
-    if (type instanceof FunctionType && !type.isExternal) {
+    // A function pointer's default/zero value is the "invalid" pointer: Solidity panics when a deleted or
+    // uninitialized fn-ptr is CALLED. functionIds are small sequential ints (assigned from 0), so a large sentinel
+    // is always an unknown id and OP_INVOKE hard-fails on it. (0 would be a VALID functionId - the first defined
+    // function - so a deleted pointer would silently dispatch to it instead of reverting.) This holds for an
+    // external fn-ptr too: one that reaches codegen is a self `this.f` functionId (foreign ones are lowered to
+    // address + selector), so a 0 default would equal `this.f` of function 0.
+    if (type instanceof FunctionType) {
       this.emit(encodeInt(INVALID_FUNCTION_POINTER_ID), locationData);
       return;
     }

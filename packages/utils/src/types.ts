@@ -247,6 +247,12 @@ export class FunctionType {
   }
 }
 
+/**
+ * The zero value of a functionId-backed pointer (internal, or external `this.f`): what an unset or deleted pointer
+ * holds. functionIds are small sequential ints from 0, so this is never a defined id and OP_INVOKE on it fails.
+ */
+export const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
+
 export enum PrimitiveType {
   // INT: integer-literal / generic-integer type (`5`); implicitly converts to any bounded IntType and to
   // BIGINT, and is normalized to BIGINT in the type-helper functions. BIGINT: explicit arbitrary-precision

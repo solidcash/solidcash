@@ -141,7 +141,6 @@ import type {
   LiteralExpressionContext,
   RequireStatementContext,
   PragmaDirectiveContext,
-  InstantiationContext,
   NullaryOpContext,
   UnaryIntrospectionOpContext,
   ConsoleStatementContext,
@@ -228,6 +227,7 @@ import {
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
   FunctionTypeContext, StructDefinitionContext, GroupedExpressionContext,
   ConstructedExpressionContext, BinaryOpContext, SliceContext, UnaryOpContext,
+  InstantiationContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, withSourceFile } from './Location.js';
@@ -365,6 +365,10 @@ export default class AstBuilder
   // Contract + interface names, so a contract/interface-namespaced TYPE access `C.T.unwrap` / `I.Enum.Member`
   // strips the `C.`/`I.` to the bare (globally-registered) type, like the library case.
   private contractInterfaceNames: Set<string> = new Set();
+  // Declared member names per contract in this source unit (own functions plus same-file bases). A receiver known
+  // to be contract-typed decides whether a built-in member name (`transfer`, `send`, `split`, ...) is the
+  // receiver type's own member or the built-in, so `(new C()).transfer(x)` must see C's `transfer`.
+  private contractMemberNames: Map<string, Set<string>> = new Map();
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
@@ -819,11 +823,38 @@ export default class AstBuilder
     );
     this.fileErrorNames = new Set(errorDefinitions.map((definition) => definition.name));
 
+    // Direct base contract names per contract, for the member-name inheritance closure below.
+    const contractBases = new Map<string, string[]>();
     // Collect contract + interface names before visiting library bodies. A library may use a qualified type from
     // an interface or contract declared elsewhere in the same source unit (`returns (I.Direction)` and
     // `I.Direction.Right`), and reachable library helpers must resolve that qualifier just like contract bodies.
-    for (const cc of ctx.contractDefinition_list()) this.contractInterfaceNames.add(cc.anyIdentifier().getText());
+    for (const cc of ctx.contractDefinition_list()) {
+      const contractName = cc.anyIdentifier().getText();
+      this.contractInterfaceNames.add(contractName);
+      this.contractMemberNames.set(contractName, new Set(
+        cc.functionDefinition_list().map((fn) => fn.functionName().getText()),
+      ));
+      contractBases.set(contractName, cc.inheritanceSpecifier_list()
+        .map((specifier) => specifier.Identifier().getText()));
+    }
     for (const ic of ctx.interfaceDefinition_list()) this.contractInterfaceNames.add(ic.Identifier(0).getText());
+    // A base contract's members are inherited members of the derived contract, so a receiver of the derived
+    // type resolves them the same way.
+    for (const contractName of this.contractMemberNames.keys()) {
+      for (const inherited of [...(contractBases.get(contractName) ?? [])]) {
+        const seen = new Set<string>([contractName]);
+        let pending = [inherited];
+        while (pending.length > 0) {
+          const base = pending.pop()!;
+          if (seen.has(base)) continue;
+          seen.add(base);
+          for (const member of this.contractMemberNames.get(base) ?? []) {
+            this.contractMemberNames.get(contractName)!.add(member);
+          }
+          pending = pending.concat(contractBases.get(base) ?? []);
+        }
+      }
+    }
 
     const interfaceDefinitions = ctx.interfaceDefinition_list().map(
       (i) => this.visitInterfaceDefinition(i),
@@ -4844,6 +4875,12 @@ export default class AstBuilder
       const callee = call.Identifier_list();
       return receiver.expressionList_list().length === 0 && callee.length === 1 && !call.callOptions()
         && call.expressionList()?.callArgument_list().length === 1 && this.contractInterfaceNames.has(callee[0].getText());
+    }
+    if (receiver instanceof InstantiationContext) {
+      // `(new C()).m(..)`: the receiver is a fresh C, a contract-typed value, so `m` is C's own member when C
+      // declares one (`(new C()).transfer(5)` calls C.transfer, not the address built-in). A name C does not
+      // declare keeps the built-in, exactly as an address-typed receiver would.
+      return this.contractMemberNames.get(receiver.Identifier().getText())?.has(name) === true;
     }
     return receiver instanceof IdentifierContext && this.isContractTypedName(receiver.anyIdentifier().getText());
   }

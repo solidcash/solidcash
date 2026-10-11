@@ -78,6 +78,19 @@ compilation is untouched; TypeCheck types them (see `visitInstantiation`).
   `{value: 3}` with constructor args 7, 8, 9), pinned by `solidc/test/DeployFoldGenesisBalance.test.ts` and
   evaluated on the VM by `solidcash/test/e2e/DeployFoldGenesisBalance.e2e.test.ts` (the folded genesis is read
   back out of the covenant's own commitment).
+- Also foldable, and deliberately DISCARDED rather than replayed: a bare expression statement with no effect
+  (`this.balance;`, the Solidity idiom for suppressing a pureness warning), a transfer the callee makes to its
+  OWN address (the child's container is both source and destination, so nothing moves), and a guard
+  (`require`) - which the call replay never reproduced in the first place, since the deploy covenant verifies
+  the state transition, not the callee's guards. A callee whose statements are ALL discarded therefore folds as
+  a no-op call (the deploy still mints the child), exactly like an empty body. A CALL to a fresh instantiation
+  whose receiver type declares the member resolves to that member (`(new C()).transfer(5)` calls
+  `C.transfer`, not the address `transfer` built-in), which is what makes the discard-only shape reachable:
+  `test/libsolidity/syntaxTests/nameAndTypeResolution/535_address_overload_resolution.sol` is exactly it
+  (`payable(this).transfer(amount);` inside the folded callee), pinned by
+  `solidc/test/DeployFoldOwnMemberCall.test.ts` and evaluated on the VM by
+  `solidcash/test/e2e/DeployFoldVoidNoOpCall.e2e.test.ts` (the covenant's own genesis carries the folded write
+  and drops the inert statements).
 - Not yet foldable (-> `DeployThenCallError`): **control flow** (if/loops), function calls, contract
   constants; and the always-forbidden `tx.*`, `msg.sender`/`msg.value`, external calls, `emit`,
   `blockhash`/block.*, `new`/`deploy`, `selfdestruct`. Control flow needs the state-transition subroutine

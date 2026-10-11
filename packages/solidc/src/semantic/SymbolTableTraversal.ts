@@ -12,6 +12,7 @@ import {
   FunctionCallNode,
   InstantiationNode,
   AssignNode,
+  AssignmentExpressionNode,
   TupleAssignmentNode,
   ConsoleStatementNode,
   type ConsoleParameterNode,
@@ -457,6 +458,40 @@ const ADDRESS_MAX_ENCODED_BYTES = 36;
  * It also cannot be computed on chain at this size: a Uniswap pair's creation code is 12,509 bytes = 92 keccak
  * blocks, and one side-car input funds three.
  */
+/**
+ * True when an expression statement is observationally inert, so a fold replay may skip it: no call, no
+ * assignment, no emit/transfer/selfdestruct, and no indexed read (an out-of-range index fails, and a failure is
+ * not part of the transition the fold reproduces). This admits Solidity's `this.balance;` - the idiom for
+ * suppressing a pureness warning - along with a bare local, a literal, and pure operators over those.
+ *
+ * Codegen likewise computes a bare expression statement's value only to drop it, so a statement this admits
+ * has no on-chain effect to reproduce.
+ */
+function isInertExpressionStatement(expression: ExpressionNode): boolean {
+  let effectful = false;
+  const walk = (node: Node): void => {
+    if (effectful) return;
+    if (node instanceof FunctionCallNode || node instanceof MethodCallNode
+      || node instanceof IndirectCallNode || node instanceof InstantiationNode
+      || node instanceof ExternalFunctionCallNode || node instanceof ExternalStateAccessNode
+      || node instanceof ExternalMappingAccessNode || node instanceof AssignmentExpressionNode
+      || node instanceof ArrayAccessNode || node instanceof MappingAccessNode
+      || node instanceof TupleIndexOpNode || node instanceof AddressSendExpressionNode) {
+      effectful = true;
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'location' || key === 'type' || key === 'symbolTable' || key === 'definition'
+        || key === 'referencedContract' || key === 'resolvedFunction' || key === 'collection') continue;
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+    }
+  };
+  walk(expression);
+  return !effectful;
+}
+
 function isFoldableCreationCodeHash(node: FunctionCallNode): boolean {
   if (node.identifier.name !== GlobalFunction.KECCAK256 || node.parameters.length !== 1) return false;
   const arg = node.parameters[0];
@@ -3028,7 +3063,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     fieldExprs: Map<string, ExpressionNode>, fieldType: (name: string) => Type | undefined,
     writableFieldType: (name: string) => Type | undefined = fieldType,
     constructorPredicates?: ExpressionNode[],
-  ): false | { returnValue?: ExpressionNode, wrote: boolean } {
+  ): false | { returnValue?: ExpressionNode, wrote: boolean, discarded: number } {
     type PredicateTrackedExpression = ExpressionNode & { constructorPredicateUnsafe?: boolean };
     const predicateSourceUnsafe = (value: unknown, seen = new WeakSet<object>()): boolean => {
       if (Array.isArray(value)) return value.some((item) => predicateSourceUnsafe(item, seen));
@@ -3050,6 +3085,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     let returnValue: ExpressionNode | undefined;
     let wrote = false;
+    // Statements the replay drops on purpose: a guard it does not reproduce, an inert expression statement, and
+    // a transfer the callee makes to its own address. A body of only those has no observable transition, which
+    // the caller treats like an empty body (a no-op call) instead of refusing it.
+    let discarded = 0;
     for (let i = 0; i < statements.length; i += 1) {
       const stmt = statements[i];
       const isLast = i === statements.length - 1;
@@ -3126,7 +3165,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const falseResult = stmt.elseBlock ? this.foldStatementList(
           stmt.elseBlock.statements ?? [], falseSubs, falseFields, fieldType, writableFieldType,
           constructorPredicates,
-        ) : { wrote: false };
+        ) : { wrote: false, discarded: 0 };
         if (!falseResult || falseResult.returnValue) return false;
         const joined = (
           whenTrue: ExpressionNode, whenFalse: ExpressionNode, type: Type,
@@ -3207,7 +3246,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           return false;
         }
       } else if (stmt instanceof RequireNode) {
-        if (!constructorPredicates) continue;
+        if (!constructorPredicates) {
+          discarded += 1;
+          continue;
+        }
         const priorInsidePredicate = this.insideGenesisPredicate;
         this.insideGenesisPredicate = true;
         try {
@@ -3239,6 +3281,19 @@ export default class SymbolTableTraversal extends AstTraversal {
         // declaration: indexes the source never wrote stay the type default, so a consumer must not read it as a
         // complete source vector.
         current.coalescedPartial = true;
+      } else if (stmt instanceof AddressTransferStatementNode
+        && isOwnAddressExpression(stmt.addressExpression)) {
+        discarded += 1;
+        // A transfer the folded callee makes to its OWN address moves nothing: the child's container is both the
+        // source and the destination, so the state transition is the identity. The call replay already does not
+        // reproduce the callee's guards (a folded call's `require` is skipped), and this transfer's only
+        // requirement is that same kind of guard - the amount must be affordable rather than a state change.
+        continue;
+      } else if (stmt instanceof ExpressionStatementNode && isInertExpressionStatement(stmt.expression)) {
+        // A bare expression statement has no effect, so the replay skips it rather than refusing the whole
+        // transition for it: `this.balance;` (a pureness-warning suppressor) must not block the fold.
+        discarded += 1;
+        continue;
       } else if (isLast && stmt instanceof ReturnNode && stmt.expressions.length === 1) {
         const folded = this.foldGenesisExpr(cloneNode(stmt.expressions[0]), subs, fieldExprs, fieldType);
         if (!folded) return false;
@@ -3247,7 +3302,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         return false; // only straight-line local/field assignments (+ trailing require/return) fold
       }
     }
-    return { returnValue, wrote };
+    return { returnValue, wrote, discarded };
   }
 
   // Folded genesis/return expressions embed CLONES of parent-context identifiers that the roll analysis
@@ -3494,7 +3549,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       zero.location = deployNode.location;
       this.genesisChildBalance = zero;
     }
-    let res: false | { returnValue?: ExpressionNode, wrote: boolean };
+    let res: false | { returnValue?: ExpressionNode, wrote: boolean, discarded: number };
     try {
       foo.returnNames.forEach((name, index) => {
         if (subs.has(name) || index >= foo.returnTypes.length) return;
@@ -3518,7 +3573,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       const named = subs.get(foo.returnNames[0]);
       if (named) res.returnValue = cloneNode(named);
     }
-    if (!res.wrote && !res.returnValue) return false; // neither a state transition nor a value
+    // Neither a state transition nor a value: the folded call is the identity, so accept it only when the
+    // replay discarded every statement on purpose (a guard, an inert expression, an own-address transfer). A
+    // body that produced nothing for any other reason stays refused.
+    if (!res.wrote && !res.returnValue && res.discarded === 0) return false;
     if (res.wrote) {
       const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
       for (const [k, v] of fieldExprs) init.set(k, v); // a later folded call overrides an earlier one
@@ -13759,7 +13817,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (methodName === 'transfer' && node.call.parameters.length === 1) {
         // Look up the variable as a potential address
         const symbol = this.symbolTables[0]?.get(varName);
-        if (symbol) {
+        // A contract/interface-typed receiver takes its OWN `transfer` when the type declares one
+        // (`(new C()).transfer(5)` is hoisted to `__newcall_N.transfer(5)` and folds into C's body); the address
+        // built-in applies only to a receiver whose type has no such member.
+        const receiverInterfaceName = symbol?.type instanceof AddressType ? symbol.type.interfaceName : undefined;
+        const declaresTransfer = receiverInterfaceName !== undefined
+          && (this.getCalleeFunctions(receiverInterfaceName) ?? []).some((fn) => fn.name === 'transfer');
+        if (symbol && !declaresTransfer) {
           const addrIdentifier = new IdentifierNode(varName);
           addrIdentifier.location = node.call.identifier.location;
           const visitedAddr = this.visit(addrIdentifier);
@@ -13790,7 +13854,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (callName.includes('.') && !this.functionDefinitions.has(callName)) {
       const [varName] = callName.split('.');
       const varType = this.symbolTables[0]?.get(varName)?.type ?? this.stateVariableMap.get(varName)?.type;
-      if (varType instanceof AddressType && varType.interfaceName && this.interfaceMap.has(varType.interfaceName)) {
+      // A contract-typed receiver resolves here exactly like an interface-typed one: both name a callee type
+      // whose member the expression-form visitor turns into an external call (or, for a same-transaction
+      // deploy, into the deploy-then-call fold).
+      if (varType instanceof AddressType && varType.interfaceName
+        && (this.interfaceMap.has(varType.interfaceName) || this.contractMap.has(varType.interfaceName))) {
         const resolved = this.visit(node.call);
         const foldedRevert = this.foldedCallRevertStatement(resolved);
         if (foldedRevert) return this.visit(foldedRevert);
@@ -16930,8 +16998,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       const ifaceFunc = calleeFns?.find((f) => f.name === node.methodName) ?? routedFallbackFunction(node);
       if (calleeName && ifaceFunc) {
         if (this.deployResultLocals.has(varName)) {
-          // The `{value:}` call-option form is not folded in v1 (always a separate tx). Resolve the real
-          // body from the referenced contract for an accurate foldability hint.
+          // A contract-typed local arrives here as a METHOD call: the parse namespaces only the receivers it
+          // already knows are interface-typed (a using-for-driven set), and a same-transaction deploy has no
+          // such binding. Without call options this is the ordinary `var.method(..)` deploy-then-call, so hand
+          // it to the namespaced form visitFunctionCall folds. The `{value:}` call-option form is not folded in
+          // v1 (always a separate transaction).
+          if (!node.callOptions) {
+            const identifier = new IdentifierNode(`${varName}.${node.methodName}`);
+            identifier.location = node.location;
+            const call = new FunctionCallNode(identifier, node.parameters as ExpressionNode[]);
+            call.fieldNames = node.fieldNames;
+            call.location = node.location;
+            return this.visit(call) as ExpressionNode;
+          }
+          // Resolve the real body from the referenced contract for an accurate foldability hint.
           const realFoo = this.deployResultLocals.get(varName)!.referencedContract?.functions
             .find((f) => f.name === node.methodName);
           if (realFoo && this.calleeCannotComplete(realFoo)) {

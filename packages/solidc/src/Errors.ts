@@ -62,6 +62,8 @@ export type SolidcDiagnosticCode =
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
   // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
   | 'SIGNATURE_CHECK_IN_SUBROUTINE'
+  // A contract's own code deploys that same contract, so its creation code would have to contain itself.
+  | 'CIRCULAR_CONTRACT_REFERENCE'
   | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'

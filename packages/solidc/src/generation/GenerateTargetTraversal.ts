@@ -2360,6 +2360,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private constantExpressions: Map<string, ExpressionNode> = new Map();
 
   compiledBytecodes: Map<string, Uint8Array> = new Map();
+  /**
+   * The contract this traversal emits. Unset in a traversal that compiles a captured subroutine on its own, and
+   * inherited by every sub-traversal that compiles a body OF THE SAME CONTRACT, so the one shape whose child body
+   * cannot be embedded - a deploy of this very contract - is recognised wherever in the program it appears.
+   */
+  private sourcePrimaryContract?: ContractNode;
   entryPointDebugInfo: Map<string, FunctionDebugInformation> = new Map();  // selector hex -> debug info
   entryPointBytecodes: Map<string, Uint8Array> = new Map(); // selector hex -> raw function body bytecode
   invokedFunctionBytecodes: Map<number, Uint8Array> = new Map(); // function id -> internal OP_INVOKE body
@@ -3425,6 +3431,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    // The contract this traversal compiles, by identity: a contract definition is one object, and a self-reference
+    // is that same object, so the deploy path needs no name to recognise it.
+    this.sourcePrimaryContract = node.contract;
+
     // Register file-level constants for inline substitution
     for (const cd of node.constantDefinitions) {
       this.constantExpressions.set(cd.name, cd.expression);
@@ -6073,6 +6083,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): { start: number; end: number } {
     const sub = new GenerateTargetTraversalWithLocation(this.compilerOptions);
     sub.compiledBytecodes = this.compiledBytecodes;
+    sub.sourcePrimaryContract = this.sourcePrimaryContract;
     // Definitions are emitted in dependency order. Let a captured helper reuse any earlier definition rather than
     // embedding that helper's body again, and record the dependency for dead-DEFINE reachability below.
     sub.subroutineDefined = new Map(this.subroutineDefined);
@@ -6159,6 +6170,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (uses < 2) return false;
     const sub = new GenerateTargetTraversalWithLocation(this.compilerOptions);
     sub.compiledBytecodes = this.compiledBytecodes;
+    sub.sourcePrimaryContract = this.sourcePrimaryContract;
     sub.subroutineDefined = new Map(this.subroutineDefined);
     sub.structSkipIds = this.structSkipIds;
     sub.structSkipTypes = this.structSkipTypes;
@@ -6294,6 +6306,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.contractUsesMsgValue = this.contractUsesMsgValue;
       probe.constructorParameterCount = this.constructorParameterCount;
       probe.compiledBytecodes = this.compiledBytecodes;
+      probe.sourcePrimaryContract = this.sourcePrimaryContract;
       probe.compactHelperIds = this.compactHelperIds;
       // The usage probe compiles the same OP_DEFINE call ABI as the shipping pass. Preserve the recovery-context
       // widening or it can count a body with the old arity and silently select a different extraction plan.
@@ -6599,6 +6612,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     // Compiled child bytecodes (for `type(C).creationCode` / `new C()` inside an extracted function body).
     subTraversal.compiledBytecodes = this.compiledBytecodes;
+    subTraversal.sourcePrimaryContract = this.sourcePrimaryContract;
     subTraversal.subroutineDefined = new Map(this.subroutineDefined);
     // Dynamic structural helper registries are contract-wide. Sharing the maps lets independently compiled
     // function bodies allocate collision-free IDs and lets the dry-run retain the key behind every use count.
@@ -6983,6 +6997,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.runtimeLoopEventContextFunctionIds = this.runtimeLoopEventContextFunctionIds;
       subTraversal.constantExpressions = new Map(this.constantExpressions);
       subTraversal.compiledBytecodes = this.compiledBytecodes;
+      subTraversal.sourcePrimaryContract = this.sourcePrimaryContract;
       subTraversal.subroutineDefined = new Map(this.subroutineDefined);
       subTraversal.structSkipIds = this.structSkipIds;
       subTraversal.structSkipTypes = this.structSkipTypes;
@@ -19393,15 +19408,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  /** Whether the body being emitted is one of the primary contract's own members (its creation code's source). */
+  private currentFunctionIsPrimaryOwnCode(): boolean {
+    const primary = this.sourcePrimaryContract;
+    if (!primary || !this.currentFunction) return false;
+    return primary.functions.includes(this.currentFunction)
+      || primary.constructorDef === this.currentFunction
+      || primary.fallbackDef === this.currentFunction
+      || primary.receiveDef === this.currentFunction;
+  }
+
   private emitContractDeployment(node: InstantiationNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     const contract = node.referencedContract!;
     const bodyBytecode = this.compiledBytecodes.get(contract.name);
+    // Deploying the contract currently being compiled (`new A()` inside A). The child is this same contract
+    // class, so its locking bytecode is exactly the one THIS INPUT spends, and `emitSelfLockingBytecode` produces
+    // it from anywhere in the program. Embedding the body is unsatisfiable - the emitted script would have to
+    // contain a copy of itself, a fixed point with no solution - and `OP_ACTIVEBYTECODE` cannot stand in: inside
+    // an `OP_INVOKE`d body (every function body is one) the invoked body becomes the active bytecode, and after an
+    // executed `OP_CODESEPARATOR` only the suffix following it is.
+    // A salt or the stateful genesis covenant derives the child's locking bytecode FROM this one rather than
+    // making it equal, so those shapes stay refused.
+    const selfDeploy = bodyBytecode === undefined
+      && contract === this.sourcePrimaryContract
+      && !node.isStatefulDeploy
+      && !node.callOptions?.salt
+      && !this.framedMaster
+      && !this.currentContractIsSplitFacet;
 
-    if (!bodyBytecode) {
+    // A contract whose OWN code references its own bytecode is the circular reference solc refuses: its creation
+    // code would have to contain itself. A library unit is the separate deployment solc reaches by address, which
+    // is why a library body that names the calling contract is not circular - so only the primary's own code is
+    // refused here, and the library unit is compiled with the input's locking bytecode as its child.
+    if (selfDeploy && this.currentFunctionIsPrimaryOwnCode()) {
+      throw new SolidcDiagnosticError(
+        'CIRCULAR_CONTRACT_REFERENCE',
+        `'${contract.name}' deploys itself: a contract's creation code cannot reference the contract's own `
+          + 'bytecode. Deploy it from a library (a separately deployed unit) or from another contract.',
+        { contractName: contract.name, functionName: this.currentFunction.name },
+      );
+    }
+
+    if (!bodyBytecode && !selfDeploy) {
       throw new Error(`Compiled bytecode for contract '${contract.name}' not available`);
     }
-    node.creationBytecode = binToHex(bodyBytecode);
+    // A self-deploy has no embeddable body; its child locking bytecode is read from the input at run time.
+    node.creationBytecode = bodyBytecode ? binToHex(bodyBytecode) : '';
     if (node.isStatefulDeploy) this.emitGraphStaticDirty(node);
 
     // Replay constructor preconditions before creating any redeem-script/category temporaries. Folded
@@ -19420,8 +19473,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // child's constructor(args) do not enter the address - the SDK instantiates it with no constructor
     // inputs, and the ctor's effect reaches the genesis via the constructor fold (foldedStateInit).
     const bakesCtorArgs = contract.parameters.length > 0;
-    if (node.parameters.length === 0 || !bakesCtorArgs) {
-      this.emit(bodyBytecode, locationData);
+    if (selfDeploy) {
+      // The child is this contract class, so its locking bytecode is the one the active input already carries;
+      // no redeem script is built and nothing is hashed.
+      this.emitSelfLockingBytecode(locationData);
+      this.pushToStack('(value)');
+    } else if (node.parameters.length === 0 || !bakesCtorArgs) {
+      this.emit(bodyBytecode!, locationData);
       this.pushToStack('(redeemScript)');
     } else {
       // Evaluate constructor args
@@ -19438,7 +19496,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_CAT, locationData);
       }
       // CAT with body bytecode
-      this.emit(bodyBytecode, locationData);
+      this.emit(bodyBytecode!, locationData);
       this.emit(Op.OP_CAT, locationData);
       // Stack management
       for (let i = 0; i < node.parameters.length; i++) this.popFromStack();
@@ -19518,21 +19576,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Step 3: Compute P2SH32 locking bytecode: OP_HASH256 -> 0xaa20 || hash || 0x87
-    // (matches existing P2SH32 pattern in emitContainerLbc/emitExternalCallVerification)
-    this.emit(Op.OP_HASH256, locationData);
-    // OP_HASH256 replaces top of stack in-place (1 in, 1 out), no tracking change needed
-    this.emit(P2SH32_LBC_PREFIX, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData);
-    this.popFromStack(2);
-    this.pushToStack('(value)');
-    this.emit(P2SH32_LBC_SUFFIX, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_CAT, locationData);
-    this.popFromStack(2);
-    this.pushToStack('(value)');
-    // Stack: [..., p2sh32_lbc]
+    // (matches existing P2SH32 pattern in emitContainerLbc/emitExternalCallVerification). A self-deploy already
+    // carries the child's locking bytecode and has no redeem script to hash.
+    if (!selfDeploy) {
+      this.emit(Op.OP_HASH256, locationData);
+      // OP_HASH256 replaces top of stack in-place (1 in, 1 out), no tracking change needed
+      this.emit(P2SH32_LBC_PREFIX, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emit(P2SH32_LBC_SUFFIX, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+    }
+    // Stack: [..., child_locking_bytecode]
 
     // Step 4: If stateful deploy, verify the child's genesis outputs.
     if (node.isStatefulDeploy) {
@@ -19598,7 +19659,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(salt && { salt }),
         // Body Instantiation just embedded for address computation — pin it for the SDK so
         // deployFrom builds the child with the same redeem script (not a divergent standalone artifact).
-        creationBytecode: binToHex(bodyBytecode),
+        // A stateful deploy is never a self-deploy, so the body is always embedded here.
+        creationBytecode: binToHex(bodyBytecode!),
         ...(node.hasFoldedChildCall && { hasFoldedChildCall: true }),
         childLayoutDigest: childStateLayoutDigest({
           variables: liveVars.map((state) => ({

@@ -610,6 +610,44 @@ function assignedNames(body: Node): ReadonlySet<string> {
   return names;
 }
 
+/**
+ * True when a `{value:}` deploy of a stateless child provably executes AT MOST ONCE per run of the single loop
+ * enclosing it, so one fixed `transfer` slot still represents it exactly.
+ *
+ * The shape is the repeat loop the tail-recursion lowering builds: the loop condition is a local flag, the body's
+ * last statement is a branch, the path to that branch passes through a `flag = false` write with no later write,
+ * and the arm holding the deploy never re-arms the flag. Nothing after the branch exists to re-arm it, so once
+ * that arm runs the loop exits and the deploy cannot run again.
+ *
+ * Every other loop keeps the conservative answer: a `for`/`while` with a computed condition, a do-while, a
+ * collection iteration, a nested loop, or a body that writes the flag later can mint a runtime-variable number of
+ * children, which no fixed transfer region expresses. `test/libsolidity/semanticTests/functionCall/failed_create.sol`
+ * is the shape this admits - `stack(depth)` recurses through one arm and deploys a stateless `D` in the other.
+ */
+function deployRunsAtMostOnceInLoop(deploy: Node, loops: readonly Node[]): boolean {
+  if (loops.length !== 1 || !(loops[0] instanceof WhileNode)) return false;
+  const loop = loops[0];
+  const flag = loop.condition instanceof IdentifierNode ? loop.condition.name : undefined;
+  if (flag === undefined) return false;
+  const statements = loop.block?.statements ?? [];
+  const hostIndex = statements.findIndex((statement) => bodyHolds(statement, (node) => node === deploy));
+  // Only a branch that ends the loop body qualifies: a deploy reached through deeper statements, or one a later
+  // statement runs after, cannot be bounded this way.
+  if (hostIndex < 0) return false;
+  const host = statements[hostIndex];
+  if (!(host instanceof BranchNode) || hostIndex !== statements.length - 1) return false;
+  const arm = bodyHolds(host.ifBlock, (node) => node === deploy) ? host.ifBlock
+    : host.elseBlock !== undefined && bodyHolds(host.elseBlock, (node) => node === deploy) ? host.elseBlock
+      : undefined;
+  if (arm === undefined || assignedNames(arm).has(flag)) return false;
+  // Walk back to the flag clear the loop body performs before the branch. Any earlier write leaves the flag set.
+  for (let at = hostIndex - 1; at >= 0; at -= 1) {
+    if (writesFlag(statements[at], flag, false)) return true;
+    if (assignedNames(statements[at]).has(flag)) return false;
+  }
+  return false;
+}
+
 /** True when an expression reads one of `names`, itself or through the initializer of a local it reads. */
 function readsName(expression: Node, names: ReadonlySet<string>, seen = new Set<Node>()): boolean {
   return bodyHolds(expression, (node) => {
@@ -18059,32 +18097,34 @@ export default class SymbolTableTraversal extends AstTraversal {
     return counts;
   }
 
-  // True if the body contains a `new C{value:}()` deploy INSIDE a loop (while/do-while; for is already
-  // desugared to while here). Such a deploy mints a runtime-variable count of value transfers, so its transfer
-  // is interleaved into each child's deploy group rather than getting a fixed block-layout transfer slot.
+  // True if the body contains a `new C{value:}()` deploy whose transfer count a fixed block-layout region cannot
+  // express, so no `transfer` slot is reserved for it: a loop deploy mints a runtime-variable number of value
+  // transfers, which codegen interleaves into each child's deploy group (a stateful child's genesis) instead.
   private hasLoopValueDeploySite(body: Node | undefined): boolean {
     if (!body) return false;
     let found = false;
     const seen = new WeakSet<object>();
-    const walk = (n: unknown, inLoop: boolean): void => {
+    const walk = (n: unknown, loops: Node[]): void => {
       if (found) return;
-      if (Array.isArray(n)) { for (const it of n) walk(it, inLoop); return; }
+      if (Array.isArray(n)) { for (const it of n) walk(it, loops); return; }
       if (!(n instanceof Node) || seen.has(n)) return;
       seen.add(n);
-      if (inLoop && n instanceof InstantiationNode && n.referencedContract && n.callOptions?.value) {
+      if (loops.length > 0 && n instanceof InstantiationNode && n.referencedContract && n.callOptions?.value
+        && (n.isStatefulDeploy || !deployRunsAtMostOnceInLoop(n, loops))) {
         found = true; return;
       }
-      const childInLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
+      const childLoops = n instanceof WhileNode || n instanceof DoWhileNode
+        || n instanceof CollectionIterationNode ? [...loops, n] : loops;
       for (const [key, value] of Object.entries(n)) {
         // Only walk the structural function body. Semantic back-references can lead into an unrelated callee or
         // declaration that happens to contain a loop deploy, falsely classifying this function's straight-line
         // deploy as dynamic and suppressing its fixed transfer block slot.
         if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
           || key === 'symbolTable' || key === 'type' || key === 'location') continue;
-        walk(value, childInLoop);
+        walk(value, childLoops);
       }
     };
-    walk(body, false);
+    walk(body, []);
     return found;
   }
 }

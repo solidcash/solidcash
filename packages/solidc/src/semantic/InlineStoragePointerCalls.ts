@@ -365,7 +365,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
     // Inline calls in every function body AND the constructor/fallback/receive - a constructor calling an
     // inherited `_mint`-style entry-reading helper is the common ERC20 pattern, and the helper is dropped below.
-    for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
+    // Free functions take the same substitution: one helper calling another (`post()` calling a helper with a
+    // child deployment) leaves a dangling name when the callee is dropped as inlined but only contract bodies
+    // were rewritten.
+    for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns]) {
       if (fn?.body) {
         fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [inlineKey(fn.name, fn.parameters.length)]);
       }
@@ -374,7 +377,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // the two function sets are disjoint - void vs value-returning). Traverse via the visitor so a call in any
     // expression slot (`return f(..)`, `x = f(..)`, `f(..)[k]`) is replaced.
     if (this.exprInlinableFns.size > 0) {
-      for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
+      for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns]) {
         if (fn?.body) { this.exprStack = []; fn.body = this.visit(fn.body) as BlockNode; }
       }
       for (const name of this.exprInlinableFns.keys()) this.inlinedFns.add(name);

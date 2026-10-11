@@ -14400,6 +14400,10 @@ function compileResolvedAst(
     if (!ast.libraryContract) {
       // A standalone interface, a file-level enum/struct, or an inline-only library has no executable contract;
       // emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
+      // The file's free functions are still semantically validated below, so give them the return desugarings the
+      // executable path applies: an unmodified `b = expr;` on a named return reads a symbol this branch would
+      // otherwise never declare. Run before validation, exactly as the executable lane does.
+      ast = ast.accept(new NamedReturnTransformation()) as Ast;
       // Inline-only library functions still require source-level parameter/return location validation before
       // this early declaration-artifact return.
       ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.evmCompat ?? false)) as Ast;

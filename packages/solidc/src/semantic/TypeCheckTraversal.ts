@@ -1783,11 +1783,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (matches.length === 1) {
         [selected] = matches;
       } else {
-        const exactMatches = matches.filter((f) => {
-          const argTypes = argsFor(f).map((arg) => arg.type!);
-          const paramTypes = declaredParamTypes(f);
-          return argTypes.every((argType, i) => argType.toString() === paramTypes[i]?.toString());
-        });
+        const exactMatches = narrowExactOverloads(
+          matches, argsFor(matches[0]).map((arg) => arg.type!), (f) => declaredParamTypes(f),
+        );
         if (exactMatches.length === 1) [selected] = exactMatches;
         else throw new AmbiguousOverloadError(node);
       }
@@ -1832,11 +1830,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.resolvedFunction = matches[0];
       } else {
         // Try exact match (no implicit casting needed)
-        const exactMatches = matches.filter((f) => {
-          const funcParamTypes = declaredParamTypes(f);
-          return argTypes.length === funcParamTypes.length
-            && argTypes.every((argType, i) => argType?.toString() === funcParamTypes[i]?.toString());
-        });
+        const exactMatches = narrowExactOverloads(matches, argTypes, declaredParamTypes);
         if (exactMatches.length === 1) {
           node.resolvedFunction = exactMatches[0];
         } else {
@@ -2084,11 +2078,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       } else if (matches.length === 1) {
         node.call.resolvedFunction = matches[0];
       } else {
-        const exactMatches = matches.filter((f) => {
-          const funcParamTypes = declaredParamTypes(f);
-          return argTypes.length === funcParamTypes.length
-            && argTypes.every((argType, i) => argType?.toString() === funcParamTypes[i]?.toString());
-        });
+        const exactMatches = narrowExactOverloads(matches, argTypes, declaredParamTypes);
         if (exactMatches.length === 1) {
           node.call.resolvedFunction = exactMatches[0];
         } else {
@@ -3525,6 +3515,31 @@ function stripGeneratedLogicalSenderArgument(
 // are threaded in afterwards via forwardInternalReturnOutputIdx.
 function declaredParamTypes(f: FunctionDefinitionNode): Type[] {
   return f.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type!);
+}
+
+// The overload candidates whose declared parameter types are spelled exactly like the argument types (the
+// no-implicit-cast tie-break). Two scopes may declare the same struct/enum/value-type NAME, so their spelled
+// signatures are identical while the types remain distinct Solidity types; where that happens, keep only the
+// candidates whose nominal parameter type is the SAME declared type instance as the argument, so a call selects
+// the overload declared in the argument's own scope. Falls back to the spelled set when no candidate is nominal.
+function narrowExactOverloads(
+  matches: FunctionDefinitionNode[], argTypes: (Type | undefined)[],
+  paramTypesOf: (f: FunctionDefinitionNode) => (Type | undefined)[],
+): FunctionDefinitionNode[] {
+  const spelled = matches.filter((f) => {
+    const paramTypes = paramTypesOf(f);
+    return argTypes.length === paramTypes.length
+      && argTypes.every((argType, i) => argType?.toString() === paramTypes[i]?.toString());
+  });
+  if (spelled.length <= 1) return spelled;
+  const nominal = (type: Type | undefined): boolean => type instanceof StructType
+    || type instanceof EnumType || type instanceof ValueType;
+  const byIdentity = spelled.filter((f) => {
+    const paramTypes = paramTypesOf(f);
+    return argTypes.every((argType, i) => (!nominal(argType) || !nominal(paramTypes[i]))
+      ? true : argType === paramTypes[i]);
+  });
+  return byIdentity.length > 0 ? byIdentity : spelled;
 }
 
 // Declared parameter signature (types only) - used to detect a contract function shadowing a same-signature

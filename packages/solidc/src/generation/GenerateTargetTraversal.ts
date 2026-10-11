@@ -8314,10 +8314,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           n.switchOps.mappingDeleteSlots.forEach((s) => conditionalEntrySlots.add(s));
         }
         for (const key of Object.keys(n)) {
-          // Skip type/symbol metadata and the resolvedFunction back-reference: the latter points at the callee's
-          // definition, so following it would cross function boundaries (mis-attributing its conditional entries)
-          // and recurse forever on a recursive/cyclic call. Each function's body is walked on its own.
-          if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'resolvedFunction') continue;
+          // Skip type/location metadata and every semantic back-reference (the shared walk-excluded set): a
+          // reference node's `definition` points at the referenced function's own definition, so following it
+          // crosses function boundaries (mis-attributing its conditional entries) and, for a value that refers to
+          // its own enclosing function, recurses forever. Each function's body is walked on its own.
+          if (key === 'type' || key === 'location' || EXTERNAL_CALL_LOOP_WALK_EXCLUDED_KEYS.has(key)) continue;
           const v = (n as unknown as Record<string, unknown>)[key];
           if (v instanceof Node) collectCondEntries(v);
           else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) collectCondEntries(it);

@@ -218,6 +218,7 @@ import {
   GraphHandlerShapeError,
   SolidcDiagnosticError,
 } from '../Errors.js';
+import { parameterTypeSignature } from './parameterTypeToken.js';
 import {
   type CompilerOptions, PrimitiveType, BytesType, type Type, StructType, EnumType, AddressType, ValueType,
   computeEventSignature, computeEventSelector, computeErrorSignature, computeCollectionSignature,
@@ -1046,6 +1047,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
     }
+    // The compiled contract is itself a name a free or library helper may reference (`new A()` from a helper,
+    // `type(A).name`), and helper bodies are visited before `visitContract` registers it, so register the name
+    // here. `visitContract` re-registers it and sets `currentContract` when the contract itself is visited.
+    // ... but not for a declaration-only source: there `node.contract` is the placeholder AstBuilder named
+    // after the file's interface, which must not shadow that interface while the helper bodies are visited.
+    if (node.contract && !node.isLibrary) this.contractMap.set(node.contract.name, node.contract);
     // Register built-in NftCapability enum (none=0, mutable=1, minting=2)
     const nftCapType = new EnumType('NftCapability', [
       { name: 'none', value: 0n },
@@ -1256,7 +1263,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (this.compilerOptions.evmCompat && !func.isLibraryFunction && fileErrorNames.has(func.name)) {
         throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
       }
-      const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
+      // Identity-aware key: two same-named user-defined parameter types from different declaring scopes are
+      // distinct overloads, which a bare-name signature cannot express.
+      const sig = parameterTypeSignature(func.name, paramTypes);
       if (this.freeFunctionSignatures.has(sig)) {
         throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
       }
@@ -1451,8 +1460,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.reachableSourceContractFunctions = reachableContractFunctions(node);
     }
 
-    // Register current contract in contractMap so type(ContractName).name works
-    this.contractMap.set(node.name, node);
+    // Register current contract in contractMap so type(ContractName).name works. A declaration-only source
+    // (interface-only, type-only) compiles to a placeholder contract NAMED AFTER its interface and carrying no
+    // members; it must not shadow that interface here, or an interface-typed external call is resolved against
+    // an empty contract and refused (`Undefined reference to symbol IFace.f`).
+    const shadowedInterface = this.interfaceMap.has(node.name)
+      && node.functions.length === 0 && node.stateVariables.length === 0;
+    if (!shadowedInterface) this.contractMap.set(node.name, node);
     this.currentContract = node;
 
     // Types declared by an inherited interface are members of the contract scope. A file-level/library enum with
@@ -1548,6 +1562,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.structMap.set(sd.name, structType);
       // Register as a function symbol so Identifier(Score) in FunctionCallExpression resolves
       this.symbolTables[0].set(Symbol.function(sd.name, structType, sd.fields.map((f) => f.type)));
+      // Also under the declaring contract's own spelling: a synthesized constructor for a field
+      // read-modify-write names the type it means (`C.S(...)`) when two scopes declare the same struct name,
+      // and this is where that qualified form is resolved back to this declaration.
+      const qualified = `${node.name}.${sd.name}`;
+      if (!this.structMap.has(qualified)) {
+        this.structMap.set(qualified, structType);
+        this.symbolTables[0].set(Symbol.function(qualified, structType, sd.fields.map((f) => f.type)));
+      }
     }
 
     // Register user-defined value type definitions. A contract-scoped type may shadow a file-level
@@ -1833,7 +1855,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       const paramTypes = func.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type);
-      const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
+      const sig = parameterTypeSignature(func.name, paramTypes);
       // A contract function may shadow a same-signature FREE function under Solidity-compat (legal Solidity);
       // native solidcash keeps the strict check (the free/contract collision is an error there).
       const collidesFree = !this.compilerOptions.evmCompat && this.freeFunctionSignatures.has(sig);

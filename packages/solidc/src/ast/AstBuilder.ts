@@ -1,6 +1,7 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { parameterTypeToken } from '../semantic/parameterTypeToken.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
@@ -345,6 +346,16 @@ export default class AstBuilder
   private enumMap: Map<string, EnumType> = new Map();
   // Keep interface/library enum identities qualified when another scope declares the same short enum name.
   private qualifiedEnumMap: Map<string, EnumType> = new Map();
+  // Same-named structs declared in different scopes (`library L { struct S; }` beside
+  // `interface I { struct S; }`) are distinct Solidity types. The bare-name map is last-registration-wins, so
+  // a bare-only lookup rebinds `I.S` to whichever `S` was registered last; the qualified entry keeps each
+  // declaration's own instance reachable.
+  private qualifiedStructMap: Map<string, StructType> = new Map();
+  // Reverse of the qualified struct map: the declaring scope's spelling for a struct type instance, so a
+  // synthesized struct constructor (the read-modify-write rebuild of `s.field = v`) can name the type it
+  // actually means. A bare `S(...)` for a scope-qualified type resolves against the bare-name slot, which may
+  // hold a different scope's same-named struct.
+  private structQualifiedName: Map<StructType, string> = new Map();
   // Library names, so a library-namespaced enum access `L.E.Member` can strip the `L.` to the bare enum.
   private libraryNames: Set<string> = new Set();
   private sourceHasImports = false;
@@ -862,7 +873,7 @@ export default class AstBuilder
       }
 
       // Library struct definitions
-      this.registerStructDefinitions(libCtx.structDefinition_list(), structDefinitions);
+      this.registerStructDefinitions(libCtx.structDefinition_list(), structDefinitions, libName);
 
       // Library type definitions
       for (const tdCtx of libCtx.typeDefinition_list()) {
@@ -992,10 +1003,12 @@ export default class AstBuilder
         const dot = name.indexOf('.');
         return dot > 0 && namespaceAliases.has(name.slice(0, dot));
       };
+      // A struct/enum/UDVT parameter is identified by its declaration, not by the bare name its toString()
+      // prints: `a(I.S memory)` and `a(L.S memory)` are distinct overloads even though both render as `S`.
       for (const fn of freeFunctions) {
         functionCounts.set(fn.name, (functionCounts.get(fn.name) ?? 0) + 1);
         const parameterTypes = fn.parameters
-          .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'))
+          .map((parameter) => parameterTypeToken(parameter.type, true))
           .join(',');
         const signature = `${fn.name}(${parameterTypes})`;
         if (functionSignatures.has(signature)) {
@@ -1548,7 +1561,7 @@ export default class AstBuilder
 
     // Collect struct definitions after enums/typedefs (all field types must already be resolvable).
     const structDefinitions: StructDefinitionNode[] = [];
-    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions);
+    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions, name);
 
     // Contract-level constructor parameters are built AFTER enums/structs/typedefs register so a struct/enum/
     // UDVT-typed parameter (`contract C(Point p)`) resolves to its real type - Solidity parity, a struct is a
@@ -5930,11 +5943,16 @@ export default class AstBuilder
     // Local struct ARRAY-field element write `s.arr[i] op= v` / nested `s.arr[i][j] op= v` (member then index/es):
     // struct fields have no in-place element write, so read-modify-rebuild via buildLocalStructArrayFieldWrite.
     // A multi-index write lowers the temp element write to a MappingAssign (DesugarNestedArrayWrite handles it).
-    if (!isThis && fieldName && members.length === 1 && keyFns.length >= 1
-      && segs.length === keyFns.length + 1 && segs[0].member !== undefined && this.localStructTypes.has(rawName)) {
-      const field = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
+    if (!isThis && fieldName && members.length >= 1 && keyFns.length >= 1
+      && segs.length === members.length + keyFns.length && segs[0].member !== undefined
+      && segs[members.length]?.key !== undefined && this.localStructTypes.has(rawName)) {
+      // The array field may be a direct field or sit behind a nested field chain (`s.d.y[i]`); chainStructTypes
+      // lists one struct per member, base first, so its last entry declares the array field.
+      const chainTypes = this.chainStructTypes(this.localStructTypes.get(rawName)!, members);
+      const field = chainTypes?.[chainTypes.length - 1]?.fields
+        .find((f) => f.name === members[members.length - 1]);
       if (field && field.type instanceof ArrayType) {
-        return this.buildLocalStructArrayFieldWrite(rawName, fieldName, field.type,
+        return this.buildLocalStructArrayFieldWrite(rawName, members, field.type,
           keyFns, op, valueCtx, loc, valueNode);
       }
     }
@@ -5942,11 +5960,14 @@ export default class AstBuilder
     // STATE-struct ARRAY-field element write `m_x.a[i] op= v`: a whole-value struct state var has no in-place
     // element write - read the struct into a temp, write the element on the temp, write the struct back:
     // `X __t = m_x; __t.a[i] = v; m_x = __t;` (mirrors the mapping-entry roundtrip below).
-    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 1
-      && segs.length === 2 && segs[0].member !== undefined
+    if (!isThis && !isIncDec && fieldName && members.length >= 1 && keyFns.length >= 1
+      && segs.length === members.length + keyFns.length && segs[0].member !== undefined
+      && segs[members.length]?.key !== undefined
       && !this.localStructTypes.has(rawName) && this.stateStructVars.has(rawName)) {
       const structT = this.stateStructVars.get(rawName)!;
-      const field = structT.fields.find((f) => f.name === fieldName);
+      const chainTypes = this.chainStructTypes(structT, members);
+      const field = chainTypes?.[chainTypes.length - 1]?.fields
+        .find((f) => f.name === members[members.length - 1]);
       if (field && field.type instanceof ArrayType) {
         const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
         const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
@@ -5955,8 +5976,8 @@ export default class AstBuilder
         const decl = new VariableDefinitionNode(structT, [], tmpName, stateRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
-        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          [() => keyFns[0]()], op, valueCtx, loc, valueNode);
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, members, field.type,
+          keyFns.map((fn) => fn), op, valueCtx, loc, valueNode);
         const back = new StateAssignNode(rawName, idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -5964,6 +5985,7 @@ export default class AstBuilder
         return block;
       }
     }
+
 
     // State mapping -> struct -> array-field element write `m[i].arr[j] op= v` (index, member, index): the mapping
     // value struct has no in-place element write, so read the entry struct into a temp, write the array element
@@ -5982,7 +6004,7 @@ export default class AstBuilder
         const decl = new VariableDefinitionNode(structT, [], tmpName, mapRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
-        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, [fieldName], field.type,
           [() => keyFns[1]()], op, valueCtx, loc, valueNode);
         const back = new MappingAssignNode(rawName, [mapKey()], idAt(tmpName));
         back.location = loc;
@@ -6009,7 +6031,7 @@ export default class AstBuilder
         const decl = new VariableDefinitionNode(structT, [], tmpName, elemRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
-        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, [fieldName], field.type,
           [() => keyFns[1]()], op, valueCtx, loc, valueNode);
         const back = new ArrayAssignNode(rawName, keyFns[0](), idAt(tmpName));
         back.location = loc;
@@ -6057,7 +6079,7 @@ export default class AstBuilder
         const decl = new VariableDefinitionNode(structT, [], tmpName, mapRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
-        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, [fieldName], field.type,
           [() => keyFns[0]()], op, valueCtx, loc, valueNode);
         const back = new MappingAssignNode(alias.container, [mapKey()], idAt(tmpName));
         back.location = loc;
@@ -6185,7 +6207,7 @@ export default class AstBuilder
         decl.location = loc;
         this.localStructTypes.set(tmpName, mappingArrayStruct);
         const inner = this.buildLocalStructArrayFieldWrite(
-          tmpName, fieldName!, field.type, [fieldIndex], op, valueCtx, loc, valueNode,
+          tmpName, [fieldName!], field.type, [fieldIndex], op, valueCtx, loc, valueNode,
         );
         const back = new MappingAssignNode(name, mapKeys(), idAt(tmpName));
         back.arrayIndex = outerIndex();
@@ -6503,7 +6525,13 @@ export default class AstBuilder
         fieldAccess(cloneNode(structExpr) as ExpressionNode, head), this.resolveFieldStruct(t, head)!,
         rest, finalValue, nameLoc, loc,
       );
-    const ctorId = new IdentifierNode(t.name);
+    // Name the type with its declaring scope only when the bare spelling would resolve to a DIFFERENT
+    // declaration (two scopes declaring the same struct name). Otherwise keep the bare name, so the emitted
+    // constructor is spelled exactly as before and no unrelated resolution changes.
+    const qualifiedName = this.structQualifiedName.get(t);
+    const ctorId = new IdentifierNode(
+      qualifiedName !== undefined && this.structMap.get(t.name) !== t ? qualifiedName : t.name,
+    );
     ctorId.location = nameLoc;
     const ctor = new FunctionCallNode(
       ctorId,
@@ -6560,13 +6588,18 @@ export default class AstBuilder
   // block: `T tmp = sv.field; tmp[idx] = value; sv.field = tmp;`. `structVarName` must be registered in
   // localStructTypes. Returned as a block so flattenStatements splices the three statements at the call scope.
   private buildLocalStructArrayFieldWrite(
-    structVarName: string, fieldName: string, arrayFieldType: Type, indexVisits: Array<() => ExpressionNode>,
+    structVarName: string, memberChain: string[], arrayFieldType: Type, indexVisits: Array<() => ExpressionNode>,
     op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
   ): BlockNode {
     const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
     const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
-    const sField = new FieldAccessNode(idAt(structVarName), fieldName);
-    sField.location = loc;
+    // The array field may sit behind a nested field chain (`s.d.y[i]`), so read the chain, not just one member.
+    let sField: ExpressionNode = idAt(structVarName);
+    for (const member of memberChain) {
+      const fa = new FieldAccessNode(sField, member);
+      fa.location = loc;
+      sField = fa;
+    }
     const decl = new VariableDefinitionNode(arrayFieldType, [], tmpName, sField);
     decl.location = loc;
     // Nested element access `tmp[k0]..[kn]` (one level per key), for both the compound-op read and the write.
@@ -6584,7 +6617,7 @@ export default class AstBuilder
       ? new ArrayAssignNode(tmpName, indexVisits[0](), value)
       : new MappingAssignNode(tmpName, indexVisits.map((iv) => iv()), value);
     elemAssign.location = loc;
-    const rebuild = this.buildStructFieldRebuild(structVarName, loc, [fieldName], false, loc, () => idAt(tmpName))!;
+    const rebuild = this.buildStructFieldRebuild(structVarName, loc, memberChain, false, loc, () => idAt(tmpName))!;
     const block = new BlockNode([decl, elemAssign, rebuild]);
     block.location = loc;
     return block;
@@ -6897,26 +6930,36 @@ export default class AstBuilder
   // resolution can see forward and self / mutually recursive references (`struct S{T[] x;} struct T{...}`,
   // `struct R{R[] c;}`), then resolve each struct's fields into the pre-registered type in place (same object,
   // so references already handed out observe the filled fields).
-  private registerStructDefinitions(ctxList: StructDefinitionContext[], out: StructDefinitionNode[]): void {
-    this.registerStructNames(ctxList);
-    this.buildStructFields(ctxList, out);
+  private registerStructDefinitions(
+    ctxList: StructDefinitionContext[], out: StructDefinitionNode[], scope?: string,
+  ): void {
+    this.registerStructNames(ctxList, scope);
+    this.buildStructFields(ctxList, out, scope);
   }
 
   // Register struct NAMES (empty placeholders) so a struct's fields can forward-reference a struct declared
   // later. Split from buildStructFields so a caller can register UDVT names in between, letting a field type
   // resolve a user-defined value type declared after the struct (`struct S { U u; } type U is address;`).
-  private registerStructNames(ctxList: StructDefinitionContext[]): void {
+  private registerStructNames(ctxList: StructDefinitionContext[], scope?: string): void {
     for (const sdCtx of ctxList) {
       const name = sdCtx.anyIdentifier().getText();
-      this.structMap.set(name, new StructType(name, []));
+      const type = new StructType(name, []);
+      this.structMap.set(name, type);
+      if (scope !== undefined) {
+        this.qualifiedStructMap.set(`${scope}.${name}`, type);
+        this.structQualifiedName.set(type, `${scope}.${name}`);
+      }
     }
   }
 
-  private buildStructFields(ctxList: StructDefinitionContext[], out: StructDefinitionNode[]): void {
+  private buildStructFields(
+    ctxList: StructDefinitionContext[], out: StructDefinitionNode[], scope?: string,
+  ): void {
     for (const sdCtx of ctxList) {
       const sd = this.visitStructDefinition(sdCtx);
       out.push(sd);
-      this.structMap.get(sd.name)!.fields = sd.fields;
+      const declared = scope !== undefined ? this.qualifiedStructMap.get(`${scope}.${sd.name}`) : undefined;
+      (declared ?? this.structMap.get(sd.name)!).fields = sd.fields;
     }
   }
 
@@ -7101,7 +7144,7 @@ export default class AstBuilder
 
     // Interface-level struct definitions (must be registered before collection type resolution)
     const structDefs: StructDefinitionNode[] = [];
-    this.registerStructDefinitions(ctx.structDefinition_list(), structDefs);
+    this.registerStructDefinitions(ctx.structDefinition_list(), structDefs, ctx.Identifier(0).getText());
 
     // Interface-level type definitions
     const typeDefs: TypeDefinitionNode[] = [];
@@ -7532,9 +7575,27 @@ export default class AstBuilder
     if (typeText === 'address') return new AddressType(false);
     // Library-qualified type (Solidity `Library.Type`): library types are registered bare, so resolve post-dot.
     if (typeText.includes('.')) {
+      // A qualified name denotes the type declared in THAT scope first: two scopes may declare the same struct
+      // or enum name with different members, and the bare map holds only the last one registered.
+      const scoped = this.qualifiedStructMap.get(typeText) ?? this.qualifiedEnumMap.get(typeText);
+      if (scoped) return scoped;
       const bare = typeText.slice(typeText.lastIndexOf('.') + 1);
       const qualified = this.structMap.get(bare) ?? this.enumMap.get(bare) ?? this.typeDefMap.get(bare);
       if (qualified) return qualified;
+    }
+    // A bare struct name inside a contract that inherits a base declaring the same struct name denotes the
+    // INHERITED declaration: Solidity resolves a name through the contract's own scope and then its bases
+    // before file scope. The bare map is last-registration-wins across all scopes, so consulting it first can
+    // bind `S` inside `contract C is I` to an unrelated library's `S`.
+    // A bare struct name inside a contract that inherits a base declaring the same struct name denotes the
+    // INHERITED declaration: Solidity resolves a name through the contract's own scope and then its bases
+    // before file scope. The bare map is last-registration-wins across all scopes, so consulting it first can
+    // bind `S` inside `contract C is I` to an unrelated library's `S`.
+    if (this.evmCompat && this.currentContractName !== undefined) {
+      for (const scope of [this.currentContractName, ...(this.currentContractBaseNames ?? [])]) {
+        const scoped = this.qualifiedStructMap.get(`${scope}.${typeText}`);
+        if (scoped) return scoped;
+      }
     }
     const structType = this.structMap.get(typeText);
     if (structType) return structType;

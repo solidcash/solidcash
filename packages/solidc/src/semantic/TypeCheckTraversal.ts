@@ -18,10 +18,10 @@ import {
   AddressType,
   FunctionType,
   MappingType,
-  isFixedWidthType,
   Op,
   asmToScript,
 } from '@solidcash/utils';
+import { isDynamicallyEncodedElementType } from '../generation/utils.js';
 import {
   AssignNode,
   AssignmentExpressionNode,
@@ -2219,13 +2219,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.start = this.visit(node.start);
     node.end = this.visit(node.end);
 
-    // An array `T[start:end]` slices a fixed-width-ELEMENT array (uint256[], int8[], bytes32[], uint256[N][], ..)
-    // into a sub-array. Struct-element arrays use pushdata (not packed offsets) so they are not sliceable this way;
-    // bytes/string keep their existing byte-level slice.
+    // An array `T[start:end]` slices an array into a sub-array: a fixed-stride element (uint256[], bytes32[],
+    // uint256[3][], ..) is a scaled byte-range of the row blob, and a statically encoded framed element (a struct
+    // whose fields are all statically encoded, plain `int`) is a scan of the element frames. A DYNAMICALLY
+    // encoded element (`string`, unbounded `bytes`, an unbounded array - or a composite holding one) has no such
+    // access in Solidity (TypeError 2148) and is refused here; bytes/string keep their byte-level slice.
     const et = node.element.type;
     this.expectNoContractReceiver(node, et, 'slice');
-    const sliceableArray = et instanceof ArrayType
-      && isFixedWidthType(et.elementType) && !(et.elementType instanceof StructType);
+    const sliceableArray = et instanceof ArrayType && !isDynamicallyEncodedElementType(et.elementType);
     if (!sliceableArray) {
       expectAnyOfTypes(node, et, [new BytesType(), PrimitiveType.STRING]);
     }

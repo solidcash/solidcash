@@ -737,10 +737,19 @@ describe('fixed-width-element array slice arr[start:end] (VM-verified in solidca
     expect(cc('contract C { function f(uint256[] calldata b) external pure returns (bytes memory) {'
       + ' return abi.encode(b[1:3], b[:], b[2:]); } }')).toBe('C');
   });
-  it('still rejects a slice of a struct-element array (pushdata, not packed offsets)', () => {
-    expect(() => cc('contract C { struct S { uint256 a; }'
-      + ' function f(S[] calldata b) external pure returns (S[] memory) { return b[1:2]; } }'))
-      .toThrow(/slice/);
+  it('slices a framed struct-element array as a scan of its rows', () => {
+    // A struct row is pushdata-encoded field by field, so it has no fixed stride and is addressed by scanning the
+    // element frames - the same primitive the variable-width element read/write paths use for that element. The
+    // frame range it keeps is covered by solidc/test/CalldataArraySlice.test.ts and, value-exactly, by
+    // solidcash/test/e2e/CalldataStructArraySlice.test.ts.
+    expect(cc('contract C { struct S { uint256 a; }'
+      + ' function f(S[] calldata b, uint256 s, uint256 e) external pure returns (S[] memory) { return b[s:e]; } }'))
+      .toBe('C');
+  });
+  it('still rejects a slice whose source is not a dynamic calldata array', () => {
+    expect(() => cc('contract C { struct S { uint256 a; } function f(S[] calldata b) external {'
+      + ' S[] memory m = b; S[] memory n = m[0:1]; require(n.length == 1); } }'))
+      .toThrow(/Index range access is only supported for dynamic calldata arrays/);
   });
 });
 

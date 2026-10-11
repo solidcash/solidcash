@@ -249,6 +249,7 @@ import {
   compileTimeOp,
   compileUnaryOp,
   isFixedWidthType,
+  isDynamicallyEncodedElementType,
   getFixedWidth,
 } from './utils.js';
 
@@ -16091,10 +16092,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
-    // Fixed-width-element array slice `arr[start:end]`: the value is `pushdata(count) ++ packed elements` (each
-    // element W bytes). Strip the count prefix, byte-slice the element blob at the SCALED offsets
-    // [start*W, end*W), then re-frame with the new count via emitPrependArrayCount. Sound by reduction to the
-    // verified pushdata-decode / bytes-slice / prepend-count primitives.
+    // Fixed-stride array slice `arr[start:end]`: the value is `pushdata(count) ++ rows` (each row W bytes). Strip
+    // the count prefix, byte-slice the row blob at the SCALED offsets [start*W, end*W), then re-frame with the new
+    // count via emitPrependArrayCount. Sound by reduction to the verified pushdata-decode / bytes-slice /
+    // prepend-count primitives.
     if (elemType instanceof ArrayType && isFixedWidthType(elemType.elementType)) {
       const width = getFixedWidth(elemType.elementType);
       // 1. strip the count prefix -> [elements_blob]
@@ -16127,6 +16128,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       // 4. re-frame with the new count (= slicedSize / W = end - start)
       this.emitPrependArrayCount(width, locationData);
+      return node;
+    }
+
+    // Framed-element array slice `arr[start:end]`: an element that has no fixed stride but is still statically
+    // encoded - a struct whose fields are all statically encoded (each field is pushdata-encoded, so a row's width
+    // depends on the values in it), or plain `int` - is itself a framed value, so its rows cannot be addressed at
+    // a scaled byte offset. Scan off the frames before `start`, then re-frame the first `end - start` frames of
+    // the remainder: emitVariableArraySplit / emitVariableArrayTruncate are the same verified scan primitives the
+    // variable-width element read and write paths use, so the result is exactly the frame range [start, end) under
+    // a fresh count. Sound by reduction to those primitives. A DYNAMICALLY encoded element (string, unbounded
+    // bytes, an unbounded array, or a composite holding one) is refused by the type check (Solidity TypeError
+    // 2148), so this branch never sees one.
+    if (elemType instanceof ArrayType && !isDynamicallyEncodedElementType(elemType.elementType)) {
+      const elementType = elemType.elementType;
+      node.end = this.visit(node.end);
+      node.start = this.visit(node.start); // [blob, end, start]
+      // Derive both operands the scan needs from one visit of each bound: `start` for the head scan and
+      // `end - start` for the new count.
+      this.emit(Op.OP_DUP, locationData); // [blob, end, start, start]
+      this.pushToStack('(value)');
+      this.emit(Op.OP_ROT, locationData); // [blob, start, start, end]
+      this.emit(Op.OP_SWAP, locationData); // [blob, start, end, start]
+      this.emit(Op.OP_SUB, locationData); // [blob, start, end - start]
+      this.popFromStack();
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_ROLL, locationData); // [start, end - start, blob]
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData); // [start, end - start, count, elements]
+      this.popFromStack();
+      this.pushToStack('(count)');
+      this.pushToStack('(elements)');
+      this.emit(Op.OP_NIP, locationData); // [start, end - start, elements]
+      this.removeFromStack(1); // the count of the source is not needed; the result count is end - start
+      this.emit(Op.OP_ROT, locationData); // [end - start, elements, start]
+      this.emitVariableArraySplit(elementType, locationData); // [end - start, prefix, rest]
+      this.popFromStack(2);
+      this.pushToStack('(prefix)');
+      this.pushToStack('(rest)');
+      this.emit(Op.OP_NIP, locationData); // [end - start, rest]
+      this.removeFromStack(1); // drop the skipped prefix
+      this.emit(Op.OP_SWAP, locationData); // [rest, end - start]
+      this.emitVariableArrayTruncate(elementType, locationData); // [pushdata(end - start) ++ frames[start:end)]
+      this.popFromStack(2);
+      this.pushToStack('(value)');
       return node;
     }
 

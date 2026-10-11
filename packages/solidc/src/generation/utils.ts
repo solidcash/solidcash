@@ -365,6 +365,27 @@ export function isFixedWidthType(type: Type): boolean {
   return false; // int, bytes (unbounded), string, struct
 }
 
+/**
+ * Whether an array element type is DYNAMICALLY ENCODED: `string`, unbounded `bytes`, an unbounded array, or a
+ * composite (struct / bounded array) holding one of those anywhere.
+ *
+ * Solidity refuses index-range access (`x[start:end]`) on an array with a dynamically encoded base type
+ * (TypeError 2148), so there is no source access to lower and the compiler must refuse it too - for a fixed-stride
+ * element because there is no stride, and for a framed one because a dynamically encoded element has no frame
+ * boundary the scan can stop at.
+ */
+export function isDynamicallyEncodedElementType(type: Type): boolean {
+  if (type === PrimitiveType.STRING) return true;
+  if (type instanceof BytesType) return type.bound === undefined;
+  if (type instanceof ArrayType) {
+    return type.bound === undefined || isDynamicallyEncodedElementType(type.elementType);
+  }
+  if (type instanceof StructType) {
+    return type.fields.some((field) => isDynamicallyEncodedElementType(field.type));
+  }
+  return false;
+}
+
 // Returns the fixed byte width for bounded types. Only valid when isFixedWidthType is true.
 export function getFixedWidth(type: Type): number {
   if (type === PrimitiveType.BOOL) return 1;

@@ -190,6 +190,7 @@ export async function deployStatefulContract<T extends Artifact>(
   let trailingEntryCommitments: string[] = [];
   let eventCommitments: string[] = [];
   let derivedChunkCommitments: Record<string, string[]> = {};
+  let valueChunkOutputs: Array<{ lockingBytecode: Uint8Array; commitment: string }> = [];
   let transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
 
   // Check if constructor has sig params - probe won't work for those
@@ -211,6 +212,7 @@ export async function deployStatefulContract<T extends Artifact>(
     trailingEntryCommitments = derived.trailingEntryCommitments;
     eventCommitments = derived.eventCommitments;
     derivedChunkCommitments = derived.dynamicChunkCommitments;
+    valueChunkOutputs = derived.valueChunkOutputs;
     transferOutputs = derived.transferOutputs;
   } else if (constructorAbi && hasSigParams) {
     // Sig params: probe can't create valid signatures. Require explicit initialState.
@@ -380,6 +382,15 @@ export async function deployStatefulContract<T extends Artifact>(
         category: categoryId, amount: 0n,
         nft: { capability: 'mutable', commitment: chunk.commitment },
       },
+    });
+  }
+
+  // Constructor vmap values over 60 bytes: the value-chunk runs the converged probe's pins asked for.
+  for (const { lockingBytecode, commitment } of valueChunkOutputs) {
+    addFunded({
+      to: lockingBytecode,
+      amount: dataNftAmount,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment } },
     });
   }
 

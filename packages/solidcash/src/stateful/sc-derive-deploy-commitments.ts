@@ -12,16 +12,20 @@ import {
   buildEntryNftCovenantScript,
   buildEventNftCovenantScript,
   buildInitialStateCommitments,
+  buildValueChunkCommitment,
   chunkCountForLength,
   computeCollectionHash,
   computeEventNameHash,
   dynamicLenKey,
   Op,
   parsePushdataCommitment,
+  sha256,
   type Artifact,
   type StateLayout,
   type StateVariableInfo,
   splitValueIntoChunks,
+  splitValueIntoValueChunks,
+  VALUE_INLINE_LIMIT,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
@@ -36,6 +40,7 @@ import {
   createEntryNftUnlocker,
   getDynamicChunkAddress,
   getEntryNftAddress,
+  getValueChunkLockingBytecode,
 } from './covenant-helpers.js';
 import { reduceProbeTrace } from './faithful-probe-trace.js';
 import { evalComputedKey } from './route-expression-key.js';
@@ -56,6 +61,41 @@ import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.j
 
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
 
+type ValueChunkRun = { lockingBytecode: Uint8Array; commitments: string[] };
+
+/**
+ * The value-chunk runs a constructor probe's sorted-mapping pins ask for. A value over 60 bytes keeps its continuation
+ * NFTs at the address of (category, collection, slot, sha256(value)), which the pin finds by scanning every output;
+ * its frame at each OP_OUTPUTBYTECODE is [value, address, expectedCount, matches, i, i]. An address counts only when it
+ * is a constructor target's address for that value. Keyed by locking bytecode.
+ */
+function observeValueChunkRuns(
+  trace: readonly AuthenticationProgramStateCommon[],
+  categoryId: string,
+  targets: ReadonlyArray<{ collection: string; slot: Uint8Array }>,
+): Map<string, ValueChunkRun> {
+  const runs = new Map<string, ValueChunkRun>();
+  if (targets.length === 0) return runs;
+  for (const state of trace) {
+    if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTBYTECODE || state.stack.length < 6) continue;
+    const [value, lockingBytecode, expectedCount] = state.stack.slice(-6, -3);
+    if (value.length <= VALUE_INLINE_LIMIT || lockingBytecode.length !== 35) continue;
+    const lockHex = binToHex(lockingBytecode);
+    if (runs.has(lockHex)) continue;
+    const chunks = splitValueIntoValueChunks(value);
+    if (decodeScriptNumber(expectedCount) !== BigInt(chunks.length)) continue;
+    const root = sha256(value);
+    if (!targets.some(({ collection, slot }) => binsAreEqual(
+      getValueChunkLockingBytecode(categoryId, collection, slot, root), lockingBytecode,
+    ))) continue;
+    runs.set(lockHex, {
+      lockingBytecode: lockingBytecode.slice(),
+      commitments: chunks.map((chunk, index) => buildValueChunkCommitment(index, chunk)),
+    });
+  }
+  return runs;
+}
+
 export async function deriveDeployCommitments<T extends Artifact>(
   contract: Contract<T>,
   artifact: T,
@@ -71,6 +111,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
     trailingEntryCommitments: string[];
     eventCommitments: string[];
     dynamicChunkCommitments: Record<string, string[]>;
+    valueChunkOutputs: Array<{ lockingBytecode: Uint8Array; commitment: string }>;
     transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
   }> {
   const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
@@ -194,6 +235,10 @@ export async function deriveDeployCommitments<T extends Artifact>(
       rows: Uint8Array.from(linearRows.flatMap((row) => [...row.slot, ...row.next])),
     });
   }
+  // Every (collection, slot) a constructor vmap write targets; a value over 60 bytes there pins a value-chunk run.
+  const valueChunkTargets = [...constructorTargetSlots].map(([index, slot]) => ({
+    collection: entryAccesses[index].collection, slot,
+  }));
   const internalInitArgs: FunctionArgument[] = [];
   for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
     if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
@@ -335,11 +380,16 @@ export async function deriveDeployCommitments<T extends Artifact>(
     }
   };
   let extraChunkProbes = 0;
+  // A long vmap value's chunk run is learned whole from its pin (keyed by lock). Each probe that learns one is
+  // budgeted on top, at most the base budget again; the runs the converged probe's pins ask for are the live ones.
+  const valueChunkRuns = new Map<string, ValueChunkRun>();
+  let liveValueChunkRuns = new Map<string, ValueChunkRun>();
+  let valueChunkProbes = 0;
   let transferOuts: Array<{
     lockingBytecode: Uint8Array; amount: bigint;
   }> = [];
 
-  for (let iter = 0; iter < maxDeployIterations + extraChunkProbes; iter++) {
+  for (let iter = 0; iter < maxDeployIterations + extraChunkProbes + valueChunkProbes; iter++) {
     // Rebuild synthetic data NFTs with current commitments
     const iterDataNfts: Utxo[] = Array.from(
       { length: stateLayout.dataNftCount }, (_, i) => ({
@@ -598,6 +648,17 @@ export async function deriveDeployCommitments<T extends Artifact>(
       }
     }
 
+    // Value-chunk runs trail the positional layout: their pins find them by address.
+    for (const run of valueChunkRuns.values()) {
+      for (const commitment of run.commitments) {
+        probeBuilder.addOutput({
+          to: run.lockingBytecode,
+          amount: dataNftAmount,
+          token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment } },
+        });
+      }
+    }
+
     // Run VM debug and extract commitments
     const transaction = probeBuilder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(
@@ -668,6 +729,15 @@ export async function deriveDeployCommitments<T extends Artifact>(
           throw error;
         }
       }
+    }
+
+    // A long value's chunk pin runs before its entry pin, and its frame holds the whole value: learn the runs first.
+    liveValueChunkRuns = observeValueChunkRuns(fullTrace, categoryId, valueChunkTargets);
+    const newValueChunkRuns = [...liveValueChunkRuns].filter(([lockHex]) => !valueChunkRuns.has(lockHex));
+    if (newValueChunkRuns.length > 0 && valueChunkProbes < maxDeployIterations) {
+      for (const [lockHex, run] of newValueChunkRuns) valueChunkRuns.set(lockHex, run);
+      valueChunkProbes += 1;
+      continue;
     }
 
     // Keep the faithful trace above for computed keccak preimages and diagnostics, but give all output-pin
@@ -864,7 +934,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
     // the derivation is cycling without converging.
     const deployKey = stateCommitments.join('|') + '||' + entryCommits.join('|')
       + '||' + trailingEntryCommits.join('|') + '||' + eventCommits.join('|')
-      + '||' + reservedChunkSlots.map(({ name, chunkIndex }) => dynamicChunkCommits[name]?.[chunkIndex] ?? '').join('|');
+      + '||' + reservedChunkSlots.map(({ name, chunkIndex }) => dynamicChunkCommits[name]?.[chunkIndex] ?? '').join('|')
+      + '||' + [...valueChunkRuns.keys()].join('|');
     if (seenDeployKeys.has(deployKey)) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DEPLOY === '1') {
@@ -883,10 +954,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
   }
 
   if (!deployConverged) {
-    throw new Error(
-      `Constructor commitment derivation did not converge after ${maxDeployIterations + extraChunkProbes} probes.`
-      + unplannedCause,
-    );
+    const probes = maxDeployIterations + extraChunkProbes + valueChunkProbes;
+    throw new Error(`Constructor commitment derivation did not converge after ${probes} probes.${unplannedCause}`);
   }
 
   // Conditional constructor writes reserve fixed entry outputs even when their branch is not taken. The batch
@@ -926,6 +995,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
       (runs[name] ??= []).push(dynamicChunkCommits[name]?.[chunkIndex] ?? '');
       return runs;
     }, {}),
+    valueChunkOutputs: [...valueChunkRuns].filter(([lockHex]) => liveValueChunkRuns.has(lockHex))
+      .flatMap(([, run]) => run.commitments.map((commitment) => ({ lockingBytecode: run.lockingBytecode, commitment }))),
     transferOutputs: transferOuts,
   };
 }

@@ -93,25 +93,30 @@ for (const name of ['hover', 'definition', 'link', 'symbol', 'workspaceSymbol'])
   assert.ok(providers.get(name), `${name} provider was not registered`);
 }
 
+const makeDocument = (filePath) => {
+  const source = fs.readFileSync(filePath, 'utf8');
+  const fileLines = source.split('\n');
+  return {
+    uri: stub.Uri.file(filePath),
+    version: 1,
+    getText: () => source,
+    offsetAt: (position) => fileLines
+      .slice(0, position.line)
+      .reduce((sum, line) => sum + line.length + 1, 0) + position.character,
+    positionAt: (offset) => {
+      let remaining = offset;
+      for (let line = 0; line < fileLines.length; line += 1) {
+        if (remaining <= fileLines[line].length) return new Position(line, remaining);
+        remaining -= fileLines[line].length + 1;
+      }
+      return new Position(fileLines.length - 1, 0);
+    },
+  };
+};
+
 const file = resolve(root, 'test/fixtures/token.scash');
 const text = fs.readFileSync(file, 'utf8');
-const lines = text.split('\n');
-const document = {
-  uri: stub.Uri.file(file),
-  version: 1,
-  getText: () => text,
-  offsetAt: (position) => lines
-    .slice(0, position.line)
-    .reduce((sum, line) => sum + line.length + 1, 0) + position.character,
-  positionAt: (offset) => {
-    let remaining = offset;
-    for (let line = 0; line < lines.length; line += 1) {
-      if (remaining <= lines[line].length) return new Position(line, remaining);
-      remaining -= lines[line].length + 1;
-    }
-    return new Position(lines.length - 1, 0);
-  },
-};
+const document = makeDocument(file);
 
 const positionOf = (snippet, word) => {
   const base = text.indexOf(snippet);
@@ -195,6 +200,133 @@ const holder = symbols[0].children.find((child) => child.name === 'Holder');
 assert.deepEqual(holder.children.map((child) => child.name), ['account', 'weight']);
 assert.equal(symbols[0].children.find((child) => child.name === 'balances').detail,
   'mapping(address holder => int amount)');
+
+// --- the constructs the coverage check added -----------------------------------------------------------
+
+// `test/fixtures/coverage.scash` compiles with the shipped compiler and exercises the tokens the coverage
+// check added: the newly recognized Yul builtins, mapping iteration in all three spellings, the modifier
+// placeholder, the `type(T)` expression, units, casts and member operations.
+const coverageFile = resolve(root, 'test/fixtures/coverage.scash');
+const coverageDocument = makeDocument(coverageFile);
+const coverageText = fs.readFileSync(coverageFile, 'utf8');
+const coveragePosition = (snippet, word) => {
+  const base = coverageText.indexOf(snippet);
+  assert.notEqual(base, -1, `Coverage fixture is missing: ${snippet}`);
+  assert.notEqual(snippet.indexOf(word), -1, `Coverage snippet does not contain: ${word}`);
+  return coverageDocument.positionAt(base + snippet.indexOf(word) + 1);
+};
+const coverageHover = (snippet, word) => providers.get('hover')
+  .provideHover(coverageDocument, coveragePosition(snippet, word));
+const coverageDefinition = (snippet, word) => providers.get('definition')
+  .provideDefinition(coverageDocument, coveragePosition(snippet, word));
+
+const newTokens = [
+  ['let cursor := msize()', 'msize', /msize\(\)/],
+  ['mcopy(cursor, 0, 32)', 'mcopy', /mcopy\(dst, src, l\)/],
+  ['codecopy(0, 0, 8)', 'codecopy', /codecopy\(dst, p, l\)/],
+  ['pop(mload(cursor))', 'pop', /pop\(x\)/],
+  ['signextend(0, 0xff)', 'signextend', /signextend\(b, x\)/],
+  ['clz(8)', 'clz', /clz\(x\)/],
+  ['erc7201("solidcash.registry")', 'erc7201', /erc7201\(namespace\)/],
+  ['first := byte(0, word)', 'byte', /byte\(n, x\)/],
+  ['{ invalid() }', 'invalid', /invalid\(\)/],
+  ['leave first := 9', 'leave', /Returns early from a local Yul function/],
+  ['for (int balance of this.balances)', 'of', /for \(int v of this.values\)/],
+  ['for (address holder in this.balances)', 'in', /for \(address key in this.balances\)/],
+  ['this.balances.entries', 'entries', /this\.balances\.entries/],
+  ['require(checkSig(signature, admin));', 'signature', undefined],
+  ['int(type(int16).max)', 'type', /type\(IToken\)\.interfaceId/],
+  ['= 2 bits;', 'bits', /_unit_/],
+  ['= 1 wei;', 'wei', /_unit_/],
+  ['int ages = int(4 weeks);', 'weeks', /_unit_/],
+  ['unsafe_bytes20(0x00)', 'unsafe_bytes20', /unsafe_bytes20\(x\)/],
+  ['new LockingBytecodeP2PKH(hashOfZero)', 'LockingBytecodeP2PKH', /LockingBytecodeP2PKH\(bytes20 pkh\)/],
+  // Members the compiler resolves through the generic `'.' Identifier` path.
+  ['this.tokens[category].nftCount', 'nftCount', /this\.tokens\[category\]\.nftCount/],
+  ['int spent = int(address(this).balance)', 'balance', /address\.balance/],
+  ['int lo = type(int16).min', 'min', /type\(T\)\.min/],
+  ['int hi = type(uint16).max', 'max', /type\(T\)\.max/],
+  ['type(Registry).name', 'name', /type\(C\)\.name/],
+  ['sum + int(this.category.length)', 'category', /bytes32 this\.category/],
+];
+for (const [snippet, word, expected] of newTokens) {
+  const hover = coverageHover(snippet, word);
+  assert.ok(hover, `${word} has no hover in the coverage fixture`);
+  assert.ok(hover.contents.value.includes(word), `${word} hover does not name the token`);
+  if (expected) assert.match(hover.contents.value, expected, `${word} hover is missing its signature`);
+  assert.match(hover.contents.value, /_[^_]+_/, `${word} hover does not say what it is`);
+}
+assert.equal(coverageHover('{ invalid() }', 'invalid').contents.value.split('_')[1], 'assembly builtin');
+assert.equal(coverageHover('for (int balance of this.balances)', 'of').contents.value.split('_')[1], 'statement');
+// The modifier placeholder is documented, and the `deploy` / `delegate` lifecycle modifiers are scoped.
+assert.match(coverageHover('        _;', '_').contents.value, /Placeholder inside a modifier body/);
+assert.match(coverageHover('modifier checked(sig signature, pubkey admin)', 'modifier').contents.value,
+  /A reusable guard inlined into every function that lists it/);
+
+// The UDVT declaration form and its member operations.
+assert.match(coverageHover('type Price is int;', 'Price').contents.value, /Price/);
+const priceUse = coverageDefinition('Price price = Price.wrap(5)', 'Price');
+const priceTarget = Array.isArray(priceUse) ? priceUse[0] : priceUse;
+assert.equal(path.basename(priceTarget.uri.fsPath), 'coverage.scash');
+assert.match(coverageText.split('\n')[priceTarget.range.start.line], /type Price is int/);
+
+// Go to definition across the import, and the import link, work from the new fixture too.
+const addTarget = coverageDefinition('add(this.total, amount)', 'add');
+assert.equal(path.basename(addTarget[0].uri.fsPath), 'math.scash');
+// An import path yields a single location; a symbol yields the candidate list.
+const importPath = coverageDefinition('./math.scash', 'math');
+assert.equal(path.basename((Array.isArray(importPath) ? importPath[0] : importPath).uri.fsPath), 'math.scash');
+const coverageLinks = providers.get('link').provideDocumentLinks(coverageDocument);
+assert.deepEqual(coverageLinks.map((link) => path.basename(link.target.fsPath)), ['math.scash']);
+assert.equal(coverageText.split('\n')[coverageLinks[0].range.start.line]
+  .slice(coverageLinks[0].range.start.character, coverageLinks[0].range.end.character), './math.scash');
+
+// The outline nests the new members under their container, including the assembly `let` binding.
+const coverageSymbols = providers.get('symbol').provideDocumentSymbols(coverageDocument);
+assert.deepEqual(coverageSymbols.map((symbol) => symbol.name), ['Price', 'Registry']);
+const registryNames = coverageSymbols.find((symbol) => symbol.name === 'Registry').children
+  .map((child) => child.name);
+for (const name of ['balances', 'total', 'namespace', 'Recorded', 'checked', 'record', 'summarize', 'hash', 'constants']) {
+  assert.ok(registryNames.includes(name), `the outline is missing ${name}`);
+}
+
+// --- activation and manifest integrity ----------------------------------------------------------------
+
+// Every path the manifest contributes must exist, and activation must register each provider exactly once.
+const manifestJson = JSON.parse(fs.readFileSync(resolve(root, 'package.json'), 'utf8'));
+for (const manifestPath of [
+  manifestJson.main,
+  manifestJson.contributes.languages[0].configuration,
+  manifestJson.contributes.grammars[0].path,
+  ...manifestJson.contributes.snippets.map((snippet) => snippet.path),
+]) {
+  assert.ok(fs.existsSync(resolve(root, manifestPath)),
+    `the manifest references a missing path: ${manifestPath}`);
+}
+assert.deepEqual([...providers.keys()].sort(),
+  ['definition', 'hover', 'link', 'symbol', 'workspaceSymbol'],
+  'activation must register every contributed provider');
+
+// --- evidence dump ------------------------------------------------------------------------------------
+
+if (process.env.SOLIDCASH_PROVIDER_DUMP) {
+  const dump = [];
+  const record = (label, value) => dump.push(`${label}\n${value}\n`);
+  for (const [snippet, word] of newTokens) {
+    const hover = coverageHover(snippet, word);
+    record(`hover ${word}`, hover ? hover.contents.value.trim() : '(none)');
+  }
+  for (const [snippet, word] of [['add(this.total, amount)', 'add'], ['this.balances[holder] = amount', 'balances']]) {
+    const target = coverageDefinition(snippet, word);
+    record(`definition ${word}`, target
+      ? target.map((entry) => `${path.basename(entry.uri.fsPath)}:${entry.range.start.line}`).join(', ')
+      : '(none)');
+  }
+  record('links', coverageLinks.map((link) => path.basename(link.target.fsPath)).join(', '));
+  record('symbols', coverageSymbols.map((symbol) => `${symbol.name}(${symbol.children.map((child) => child.name).join(' ')})`).join(', '));
+  fs.writeFileSync(process.env.SOLIDCASH_PROVIDER_DUMP, dump.join('\n'));
+  console.log(`Provider dump written to ${process.env.SOLIDCASH_PROVIDER_DUMP}`);
+}
 
 extension.deactivate();
 console.log('SolidCash VS Code extension providers render hovers, definitions, links and symbols.');

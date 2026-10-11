@@ -12,13 +12,35 @@ const readJson = async (path) => JSON.parse(await readFile(resolve(root, path), 
 const manifest = await readJson('package.json');
 const grammar = await readJson('syntaxes/solidcash.tmLanguage.json');
 const configuration = await readJson('language-configuration.json');
-await readJson('snippets/solidcash.json');
+const snippets = await readJson('snippets/solidcash.json');
 
 assert.equal(manifest.contributes.languages[0].id, 'solidcash');
 assert.deepEqual(manifest.contributes.languages[0].extensions, ['.scash']);
 assert.equal(manifest.contributes.grammars[0].scopeName, 'source.scash');
 assert.equal(grammar.scopeName, 'source.scash');
 assert.ok(configuration.comments.lineComment);
+// The contributed editor wiring: every bracket is a pair, and every snippet has a prefix, a body of strings,
+// and only well-formed tab-stop placeholders (a malformed one is silently ignored by the editor).
+for (const bracket of [...configuration.brackets, ...configuration.surroundingPairs]) {
+  assert.equal(bracket.length, 2, `bracket ${JSON.stringify(bracket)} is not a pair`);
+}
+for (const pair of configuration.autoClosingPairs) {
+  assert.ok(pair.open && pair.close, `auto-closing pair ${JSON.stringify(pair)} is incomplete`);
+}
+assert.ok(Object.keys(snippets).length > 0, 'the snippet file contributes nothing');
+for (const [name, snippet] of Object.entries(snippets)) {
+  assert.ok(typeof snippet.prefix === 'string' && /^[A-Za-z_$]/.test(snippet.prefix),
+    `snippet ${name} has no usable prefix`);
+  assert.ok(Array.isArray(snippet.body) && snippet.body.length > 0
+    && snippet.body.every((line) => typeof line === 'string'),
+  `snippet ${name} has no body`);
+  for (const line of snippet.body) {
+    assert.doesNotMatch(line, /\$(?!\{|\d)/, `snippet ${name} has a bare '$'`);
+    for (const placeholder of line.matchAll(/\$\{([^}]*)\}/g)) {
+      assert.match(placeholder[1], /^\d+(?::[\s\S]*|\|[-\w,\s|]*)?$/, `snippet ${name} has a malformed placeholder`);
+    }
+  }
+}
 assert.ok(fsSync.existsSync(resolve(root, manifest.main)), `Missing extension entry point ${manifest.main}`);
 assert.ok(manifest.activationEvents.includes('onLanguage:solidcash'));
 
@@ -477,7 +499,11 @@ assert.equal(docs.lookup('asm:revert').signature, 'revert(p, l)');
 assert.equal(docs.lookup('revert').kind, 'statement');
 assert.equal(docs.lookup('asm:create2').kind, 'unsupported in assembly');
 assert.match(docs.lookup('asm:create2').doc, /Not supported/);
-assert.match(docs.lookup('asm:leave').doc, /Not supported yet/);
+// `leave` and `byte` are lowered by the compiler (a top-level leave returns early; byte yields a Yul word),
+// so they are supported builtins, not rejections - the caveat lives in the entry text.
+assert.equal(docs.lookup('asm:leave').kind, 'assembly builtin');
+assert.match(docs.lookup('asm:leave').doc, /Returns early from a local Yul function/);
+assert.equal(docs.lookup('asm:byte').kind, 'assembly builtin');
 assert.equal(docs.lookup('byte').kind, 'type', 'byte keeps its Solidity meaning outside assembly');
 
 // The index is reused while the file is unchanged.

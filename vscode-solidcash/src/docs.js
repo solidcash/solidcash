@@ -508,7 +508,7 @@ const GROUPS = [
         + '35 for P2SH32, arbitrary for a covenant. That makes it variable-length and directly comparable '
         + 'against `lockingBytecode` introspection. `address payable` behaves identically, since every BCH '
         + 'address can receive value. Members: `.transfer`, `.send`, `.call`, `.staticcall`, `.delegatecall`, '
-        + '`.code`, `.codehash`.',
+        + '`.balance`, `.code`, `.codehash`.',
         `${TYPES}#bytes-types-with-semantic-meaning`,
       ],
       pubkey: [
@@ -548,7 +548,8 @@ const GROUPS = [
       this: [
         'this.stateVar\nthis.transfer(lockingBytecode, amount)\nthis.tokens[category]',
         'The contract itself: its state fields, its satoshi and token containers, and the introspection '
-        + 'globals `this.activeInputIndex`, `this.activeBytecode`, `this.age` and `this.categoryId`.',
+        + 'globals `this.activeInputIndex`, `this.activeBytecode`, `this.age`, `this.categoryId` and '
+        + '`this.category`.',
         STATEFUL,
       ],
       super: [
@@ -815,14 +816,22 @@ const GROUPS = [
       'this.tokens': [
         'this.tokens[bytes32 category].tokenAmount\nthis.tokens[category].transfer(lockingBytecode, amount)',
         'Token containers held by the contract, keyed by CashToken category. Exposes `.tokenAmount`, '
-        + '`.tokenCategory` and `.nftCommitment`, plus `.transfer()` and `.transferNft()`. The key must be '
-        + 'a function parameter so the covenant can pin the category.',
+        + '`.tokenCategory`, `.nftCommitment` and `.nftCount`, plus `.transfer()` and `.transferNft()`. The key '
+        + 'must be a function parameter so the covenant can pin the category.',
         `${STATEFUL}#token-containers`,
       ],
       'this.categoryId': [
         'bytes this.categoryId',
-        'Token category identifying this contract instance, used to pin its own state NFTs.',
+        'Token category identifying this contract instance, used to pin its own state NFTs. Consensus byte '
+        + 'order, including the trailing capability byte.',
         STATEFUL,
+      ],
+      'this.category': [
+        'bytes32 this.category',
+        'The contract\'s own category in display order: `this.categoryId` with the capability byte stripped '
+        + 'and the 32 category bytes reversed, so it compares against SDK category strings and indexes '
+        + '`this.tokens[...]`.',
+        `${GLOBALS}#thiscategoryid-and-thiscategory`,
       ],
       'tx.version': [
         'bigint tx.version',
@@ -969,6 +978,12 @@ const GROUPS = [
         'Block time as a uint32, read from a co-spent block oracle.',
         `${GLOBALS}#block-properties`,
       ],
+      now: [
+        'now',
+        'Deprecated alias of `block.timestamp`. The compiler rejects it with `"now" has been deprecated. Use '
+        + '"block.timestamp" instead`, so the token is highlighted to make that diagnostic easy to act on.',
+        `${GLOBALS}#block-properties`,
+      ],
       'block.chainid': [
         'uint256 block.chainid',
         'Network identifier, typed `uint256` for Solidity parity and baked into the bytecode as a constant '
@@ -1056,6 +1071,18 @@ const GROUPS = [
         'bigint .sequenceNumber',
         'The `nSequence` field of an input.',
         `${GLOBALS}#txinputsisequencenumber`,
+      ],
+      '.nftCount': [
+        'bigint this.tokens[category].nftCount',
+        'Number of NFTs in the token container\'s matching inputs. The aggregate over the transaction\'s '
+        + 'outputs is `this.outState.tokens[category].nftCount`.',
+        `${STATEFUL}#token-container-properties`,
+      ],
+      '.balance': [
+        'bigint address.balance\nbigint this.balance',
+        'Satoshi balance of an address, or of this contract, summed over the matching satoshi container. '
+        + '`this.outState.balance` reads the post-execution outputs instead.',
+        `${TYPES}#address`,
       ],
       '.tokenCategory': [
         'bytes .tokenCategory',
@@ -1161,6 +1188,21 @@ const GROUPS = [
         + 'compiled with `evmCompat`.',
         `${ADVANCED}#abi-encoding--decoding`,
       ],
+      '.min': [
+        'type(T).min',
+        'Smallest value of a bounded integer, fixed-point type or enum.',
+        `${TYPES}#type-introspection`,
+      ],
+      '.max': [
+        'type(T).max',
+        'Largest value of a bounded integer, fixed-point type or enum.',
+        `${TYPES}#type-introspection`,
+      ],
+      '.name': [
+        'string type(C).name',
+        'Name of a contract or interface type, read at compile time.',
+        `${TYPES}#type-introspection`,
+      ],
       '.interfaceId': [
         'bytes4 type(IToken).interfaceId',
         'EIP-165 style identifier of an interface.',
@@ -1228,14 +1270,21 @@ const GROUPS = [
 
 // Bitcoin Cash script opcodes, usable inside `assembly { ... }` blocks.
 const OPCODE_DOCS = {
-  OP_0: 'Pushes an empty byte string (numeric zero / false).',
-  OP_FALSE: 'Alias of OP_0: pushes an empty byte string.',
+  OP_0: 'Pushes an empty byte string (numeric zero / false). Disassemblers may print this as OP_FALSE, '
+    + 'but the opcode token an assembly block accepts is OP_0.',
   OP_1NEGATE: 'Pushes the number -1.',
-  OP_TRUE: 'Alias of OP_1: pushes the number 1.',
   OP_PUSHDATA_1: 'Pushes the next 1-byte-length-prefixed data.',
   OP_PUSHDATA_2: 'Pushes the next 2-byte-length-prefixed data.',
   OP_PUSHDATA_4: 'Pushes the next 4-byte-length-prefixed data.',
   OP_NOP: 'Does nothing.',
+  OP_NOP1: 'Does nothing (reserved for soft-fork upgrades).',
+  OP_NOP4: 'Does nothing (reserved for soft-fork upgrades).',
+  OP_NOP5: 'Does nothing (reserved for soft-fork upgrades).',
+  OP_NOP6: 'Does nothing (reserved for soft-fork upgrades).',
+  OP_NOP7: 'Does nothing (reserved for soft-fork upgrades).',
+  OP_NOP8: 'Does nothing (reserved for soft-fork upgrades).',
+  OP_NOP9: 'Does nothing (reserved for soft-fork upgrades).',
+  OP_NOP10: 'Does nothing (reserved for soft-fork upgrades).',
   OP_IF: 'Pops a value; runs the following block when it is true.',
   OP_NOTIF: 'Pops a value; runs the following block when it is false.',
   OP_ELSE: 'Alternative branch of the enclosing OP_IF / OP_NOTIF.',
@@ -1374,7 +1423,8 @@ for (let n = 1; n <= 16; n += 1) {
     name: `OP_${n}`,
     kind: 'opcode',
     signature: `OP_${n}`,
-    doc: `Pushes the number ${n}.`,
+    doc: `Pushes the number ${n}.`
+      + (n === 1 ? ' Disassemblers may print this as OP_TRUE, but the opcode token an assembly block accepts is OP_1.' : ''),
     link: OPCODE_LINK,
   });
 }
@@ -1411,9 +1461,23 @@ const YUL_BUILTINS = {
   mstore: ['mstore(p, v)', 'Writes a word at offset p of the `__yulmem` buffer.'],
   mstore8: ['mstore8(p, v)', 'Writes one byte at offset p of the `__yulmem` buffer.'],
   mload: ['mload(p)', 'Reads a word at offset p of the `__yulmem` buffer.'],
+  mcopy: ['mcopy(dst, src, l)', 'Copies l bytes of the `__yulmem` buffer to dst.'],
+  msize: ['msize()', 'Current high-water mark of the `__yulmem` buffer.'],
   keccak256: ['keccak256(p, l)', 'Keccak-256 over l bytes of memory at p.'],
+  erc7201: ['erc7201(namespace)', 'The ERC-7201 storage slot for a namespace string.'],
+  byte: ['byte(n, x)', 'The n-th byte (big-endian, 0 is most significant) of the 32-byte word x, as a word.'],
+  signextend: ['signextend(b, x)', 'Sign-extends x from byte b (0 = least significant) to a full word.'],
+  pop: ['pop(x)', 'Discards a value.'],
+  stop: ['stop()', 'Halts the path successfully with no return data (an empty-data return). Everything after '
+    + 'it in the same block is unreachable, so the function\'s verification - a `require`/`assert` or a state '
+    + 'change - has to come BEFORE the `stop()`; a `require` written after it is dead code and the compiler '
+    + 'reports the path as unverified.'],
+  invalid: ['invalid()', 'Aborts unconditionally: it lowers to `require(false)`, so it needs no `require` of '
+    + 'its own. Inside an untaken branch it never runs.'],
+  clz: ['clz(x)', 'Number of leading zero bits in x (May 2026 upgrade).'],
   return: ['return(p, l)', 'Returns l bytes of memory at p from the current call.'],
-  revert: ['revert(p, l)', 'Aborts, returning l bytes of memory at p as the error data.'],
+  revert: ['revert(p, l)', 'Aborts the spend: it lowers to an unconditional `require(false)`. The runtime blob '
+    + 'at (p, l) is not carried into the diagnostic, so a reason string needs the high-level `revert("...")`.'],
   sstore: ['sstore(slot, v)', 'Writes a state variable through the virtual-slot table (value types).'],
   sload: ['sload(slot)', 'Reads a state variable through the virtual-slot table (value types).'],
   tstore: ['tstore(slot, v)', 'Transient write. Lowered to a function-scoped local, zero-initialised per spend.'],
@@ -1437,6 +1501,8 @@ const YUL_BUILTINS = {
   extcodesize: ['extcodesize(addr)', 'Byte length of the locking bytecode at addr.'],
   extcodehash: ['extcodehash(addr)', 'Hash of the locking bytecode at addr.'],
   codesize: ['codesize()', 'Byte length of this contract, i.e. `this.activeBytecode.length`.'],
+  codecopy: ['codecopy(dst, p, l)', 'Copies l bytes of this contract into memory at dst.'],
+  extcodecopy: ['extcodecopy(addr, dst, p, l)', 'Copies l bytes of the locking bytecode at addr into memory.'],
   address: ['address()', 'This contract\'s address.'],
   calldataload: ['calldataload(p)', 'Reads a word of call data, synthesized from the selector plus ABI arguments.'],
   calldatasize: ['calldatasize()', 'Byte length of the call data.'],
@@ -1444,6 +1510,7 @@ const YUL_BUILTINS = {
   returndatasize: ['returndatasize()', 'Byte length of the last low-level call\'s return data.'],
   returndatacopy: ['returndatacopy(dst, p, l)', 'Copies the last call\'s return data into memory at dst.'],
   blockhash: ['blockhash(n)', 'Hash of block n, read from the block oracle.'],
+  blobhash: ['blobhash(i)', 'Always zero: Bitcoin Cash has no EIP-4844 blobs.'],
   log0: ['log0(p, l)', 'Emits an event with no topics; routed to event emission.'],
   log1: ['log1(p, l, t1)', 'Emits an event with one topic; routed to event emission.'],
   log2: ['log2(p, l, t1, t2)', 'Emits an event with two topics; routed to event emission.'],
@@ -1452,7 +1519,9 @@ const YUL_BUILTINS = {
   call: ['call(g, addr, v, inP, inL, outP, outL)', 'Low-level call, routed to the call codegen.'],
   staticcall: ['staticcall(g, addr, inP, inL, outP, outL)', 'Low-level call that may not mutate the target.'],
   delegatecall: ['delegatecall(g, addr, inP, inL, outP, outL)', 'Runs the target\'s code against this state.'],
-  selfdestruct: ['selfdestruct(addr)', 'Destroys the contract, forwarding its balance to addr.'],
+  leave: ['leave', 'Returns early from a local Yul function; statements after an unconditional `leave` are '
+    + 'dropped as dead code. A `leave` outside a Yul function body, or nested in a way that cannot be '
+    + 'truncated, is not lowerable.'],
 };
 
 // Rejected with an explicit diagnostic naming the builtin.
@@ -1464,8 +1533,11 @@ const YUL_UNSUPPORTED = {
   dataoffset: ['dataoffset(name)', 'Not supported: an EVM bytecode-object builtin.'],
   datacopy: ['datacopy(dst, p, l)', 'Not supported: an EVM bytecode-object builtin.'],
   linkersymbol: ['linkersymbol(name)', 'Not supported: an EVM bytecode-object builtin.'],
-  leave: ['leave', 'Not supported yet: early return from a Yul function.'],
-  byte: ['byte(n, x)', 'Parses, but yields `bytes1`, which cannot be assigned to a Yul word variable.'],
+  callcode: ['callcode(g, addr, v, inP, inL, outP, outL)', 'Not supported: callcode has no Bitcoin Cash analogue.'],
+  selfdestruct: ['selfdestruct(addr)', 'Not supported in assembly: the compiler names it as not yet lowerable. '
+    + 'Use the `selfdestruct` lifecycle modifier on the function and the `selfdestruct(addr)` statement '
+    + 'outside the assembly block.'],
+  verbatim: ['verbatim_<n>_<m>(...)', 'Not supported: raw EVM bytecode injection cannot be translated to Bitcoin Cash script.'],
 };
 
 for (const [name, item] of Object.entries(YUL_BUILTINS)) {

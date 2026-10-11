@@ -15375,6 +15375,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__returned_context_${targetFunc.functionId}_${i})`);
     }
     if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
+      // The handler epilogue canonicalizes the retained bank with its runtime-emission cursor first, so the
+      // returned cursor sits above every returned journal context. The cursor is not a declared context of this
+      // caller, but it is one physical member of the bank, so model it to keep the tracked depth equal to the
+      // runtime depth; otherwise the exhausted-cursor check consumes a returned-context marker and the
+      // replacement loop below then eats a caller frame slot (its `popFromStack` has no marker left to take).
+      this.pushToStack(`(__returned_emission_${targetFunc.functionId})`);
       this.emit(Op.OP_0, locationData);
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack();

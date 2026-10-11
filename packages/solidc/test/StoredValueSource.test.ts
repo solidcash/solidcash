@@ -149,4 +149,11 @@ describe('computed whole-value mutation recipes', () => {
       right: { kind: 'literal', value: '1' },
     });
   });
+
+  it('publishes no recipe for a value a Yul word builtin computes', () => {
+    // Yul add wraps mod 2^256, which a recipe's `+` does not state.
+    const handler = compileWriter('uint256 r; assembly { r := add(amount, 1) } records[key].amount = r;');
+    expect(handler.entryAccesses?.[0]).toBeDefined();
+    expect(handler.entryAccesses?.[0].storedValueSource).toBeUndefined();
+  });
 });

@@ -31,12 +31,22 @@ describe('assembly: matches EVM (in-range)', () => {
   it('byte(31, 0xab) == 0xab (big-endian byte index)', () => asm('r := byte(n, x)', 'uint n, uint x', [31n, 0xabn]));
 });
 
-describe('assembly: unchecked word arithmetic (wraps mod 2^256, div/mod by zero give 0)', () => {
+describe('assembly: unchecked word arithmetic (wraps mod 2^256, a zero divisor or modulus gives 0)', () => {
   it('add wraps (MAX + 1 == 0)', () => asm('r := add(a, b)', 'uint a, uint b', [MAX, 1n]));
   it('sub wraps (0 - 1 == MAX)', () => asm('r := sub(a, b)', 'uint a, uint b', [0n, 1n]));
   it('mul wraps (MAX * 2 == MAX - 1)', () => asm('r := mul(a, b)', 'uint a, uint b', [MAX, 2n]));
   it('div by zero is 0', () => asm('r := div(a, b)', 'uint a, uint b', [5n, 0n]));
   it('mod by zero is 0', () => asm('r := mod(a, b)', 'uint a, uint b', [5n, 0n]));
+  it('shl drops the high bits (shl(4, MAX) == MAX - 15)', () => asm('r := shl(sh, v)', 'uint sh, uint v', [4n, MAX]));
+  it('shl past the word is 0 (shl(300, 1))', () => asm('r := shl(sh, v)', 'uint sh, uint v', [300n, 1n]));
+  it('shl by 2^200 is 0', () => asm('r := shl(sh, v)', 'uint sh, uint v', [1n << 200n, MAX]));
+  it('addmod by a zero modulus is 0', () => asm('r := addmod(a, b, m)', 'uint a, uint b, uint m', [MAX, 5n, 0n]));
+  it('mulmod by a zero modulus is 0', () => asm('r := mulmod(a, b, m)', 'uint a, uint b, uint m', [MAX, 3n, 0n]));
+  it('exp wraps (3^200 mod 2^256)', () => asm('r := exp(b, e)', 'uint b, uint e', [3n, 200n]));
+  it('exp(2, 256) == 0', () => asm('r := exp(b, e)', 'uint b, uint e', [2n, 256n]));
+  it('exp(0, 0) == 1', () => asm('r := exp(b, e)', 'uint b, uint e', [0n, 0n]));
+  it('exp(2, e) past the word is 0 (literal base)', () => asm('r := exp(2, e)', 'uint e', [300n]));
+  it('literal exp folds to its word (3^200 mod 2^256)', () => asm('r := exp(3, 200)', '', []));
 });
 
 describe('assembly: signed builtins read words as two\'s complement', () => {

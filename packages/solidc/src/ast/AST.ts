@@ -1886,6 +1886,8 @@ export class FunctionCallNode extends ExpressionNode {
   /** Stable first recovery-effect ordinal contributed by this source call within its defining function.
    * A call to a helper contributes the helper's complete formal recovery sequence at this position. */
   recoveryEffectOrdinal?: number;
+  // Lowered from Yul addmod/mulmod: a zero modulus gives 0, as the EVM, instead of failing.
+  yulZeroModulus?: boolean;
 
   constructor(
     public identifier: IdentifierNode,
@@ -2013,7 +2015,8 @@ export class SliceNode extends ExpressionNode {
 }
 
 // Yul builtins that codegen evaluates with EVM semantics over 256-bit words (GenerateTargetTraversal.emitYulWordOp).
-export type YulWordBuiltin = 'add' | 'sub' | 'mul' | 'div' | 'sdiv' | 'mod' | 'smod' | 'slt' | 'sgt' | 'sar' | 'signextend';
+export type YulWordBuiltin =
+  | 'add' | 'sub' | 'mul' | 'div' | 'sdiv' | 'mod' | 'smod' | 'slt' | 'sgt' | 'sar' | 'signextend' | 'shl' | 'exp';
 
 export class BinaryOpNode extends ExpressionNode {
   // Written in source or desugared from it: an integer literal operand takes the bounded operand's type.

@@ -13548,6 +13548,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(value)');
     node.parameters[2] = this.visit(node.parameters[2]);
+    // A Yul modulus of 0 reads as 1, giving 0 as the EVM does.
+    const modulus = node.parameters[2];
+    if (node.yulZeroModulus && !(modulus instanceof IntLiteralNode && modulus.value !== 0n)) {
+      this.emit(Op.OP_1, loc);
+      this.emit(Op.OP_MAX, loc);
+    }
     this.emit(Op.OP_MOD, loc);
     this.popFromStack(2);
     this.pushToStack('(value)');
@@ -17039,8 +17045,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ops(Op.OP_SWAP, Op.OP_SUB);
   }
 
-  // A Yul builtin over 256-bit words in [0, 2^256), with EVM semantics: add/sub/mul wrap, div/mod by zero give 0,
-  // and the signed builtins read their words as two's complement. Powers of two are built at runtime.
+  // A Yul builtin over 256-bit words in [0, 2^256), with EVM semantics: add/sub/mul/shl/exp wrap, div/mod by zero
+  // give 0, and the signed builtins read their words as two's complement. Powers of two are built at runtime.
   private emitYulWordOp(node: BinaryOpNode, builtin: YulWordBuiltin): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const ops = (...script: Script): void => script.forEach((op) => this.emit(op, loc));
@@ -17050,6 +17056,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const toSigned = (): void => ops(Op.OP_DUP, n255, Op.OP_RSHIFTNUM, n256, Op.OP_LSHIFTNUM, Op.OP_SUB);
     // [v in (-2^256, 2^256)] -> [v mod 2^256]
     const toWord = (): void => ops(Op.OP_DUP, Op.OP_0, Op.OP_LESSTHAN, n256, Op.OP_LSHIFTNUM, Op.OP_ADD);
+    // [v >= 0] -> [v mod 2^256]
+    const wrap = (): void => ops(Op.OP_1, n256, Op.OP_LSHIFTNUM, Op.OP_MOD);
     // [a, b] -> [b == 0 ? 0 : a op b]
     const orZero = (op: Op): void => ops(Op.OP_DUP, Op.OP_IF, op, Op.OP_ELSE, Op.OP_NIP, Op.OP_ENDIF);
     const signedOperands = builtin === 'sdiv' || builtin === 'smod';
@@ -17065,8 +17073,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (signedOperands) toSigned();
     switch (builtin) {
-      case 'add': ops(Op.OP_ADD, Op.OP_1, n256, Op.OP_LSHIFTNUM, Op.OP_MOD); break;
-      case 'mul': ops(Op.OP_MUL, Op.OP_1, n256, Op.OP_LSHIFTNUM, Op.OP_MOD); break;
+      case 'add': ops(Op.OP_ADD); wrap(); break;
+      case 'mul': ops(Op.OP_MUL); wrap(); break;
+      case 'shl': ops(n256, Op.OP_MIN, Op.OP_LSHIFTNUM); wrap(); break; // a shift past the word gives 0
+      case 'exp':
+        // Square and multiply, one exponent bit a pass: [r = 1, b, e] -> [e odd ? r * b : r, b * b, e >> 1], mod 2^256.
+        ops(Op.OP_1, Op.OP_ROT, Op.OP_ROT, Op.OP_BEGIN, Op.OP_DUP, Op.OP_2, Op.OP_MOD, Op.OP_IF);
+        ops(Op.OP_ROT, Op.OP_2, Op.OP_PICK, Op.OP_MUL); wrap(); ops(Op.OP_ROT, Op.OP_ROT, Op.OP_ENDIF);
+        ops(Op.OP_SWAP, Op.OP_DUP, Op.OP_MUL); wrap(); ops(Op.OP_SWAP);
+        ops(Op.OP_1, Op.OP_RSHIFTNUM, Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_2DROP);
+        break;
       case 'sub': ops(Op.OP_SUB); toWord(); break;
       case 'div': orZero(Op.OP_DIV); break;
       case 'mod': orZero(Op.OP_MOD); break;

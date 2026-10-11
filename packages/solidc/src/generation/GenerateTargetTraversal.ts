@@ -1107,6 +1107,14 @@ interface GenesisReadPlan {
   readonly base?: Node;
   readonly compared: readonly Node[];
   readonly turn?: MappingAssignNode | MappingDeleteNode;
+  /** The direct loop whose log of its turns' writes the read scans. */
+  readonly log?: Node;
+}
+
+/** A direct constructor loop's log of one collection: a read it serves and the writes that must append to it. */
+interface GenesisTurnLogPlan {
+  readonly read: MappingAccessNode;
+  readonly writes: ReadonlySet<Node>;
 }
 
 /**
@@ -1919,6 +1927,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private genesisKeptNames: Map<Node, { hash?: string; value?: string }> = new Map();
   private genesisKeptCount = 0;
   private genesisReadPlans: WeakMap<Node, GenesisReadPlan> = new WeakMap();
+  // In a direct constructor, the loops that log their writes per collection, the logs on the stack and the writes
+  // that appended to one.
+  private genesisTurnLogPlans: Map<Node, Map<string, GenesisTurnLogPlan>> = new Map();
+  private genesisTurnLogNames: Map<string, { readonly loop: Node; readonly name: string }> = new Map();
+  private genesisLoggedWrites: WeakSet<Node> = new WeakSet();
   // Straight-line repeated RMWs of one chunkable vmap value are accumulated locally and covenant-pinned once at the
   // last write. Pinning each intermediate value to the same fixed output is unsatisfiable (and reads stale input).
   private sortedCompositeWritesRemaining: Map<number, number> = new Map();
@@ -12128,6 +12141,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitDoWhile(node: DoWhileNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    this.openGenesisTurnLogs(node, locationData);
     this.framedFieldsLostIn(node);
     this.framedFieldsCurrentThrough(node, node, locationData);
 
@@ -12294,12 +12308,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     this.scopeDepth -= 1;
+    this.closeGenesisTurnLogs(node, { location: node.location, positionHint: PositionHint.END });
 
     return node;
   }
 
   visitWhile(node: WhileNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    this.openGenesisTurnLogs(node, locationData);
     this.framedFieldsLostIn(node);
     this.framedFieldsCurrentThrough(node, node, locationData);
 
@@ -12481,6 +12497,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     this.scopeDepth -= 1;
+    this.closeGenesisTurnLogs(node, { location: node.location, positionHint: PositionHint.END });
 
     return node;
   }
@@ -27705,7 +27722,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * so a read it may reach is refused, and a loop's writes reach the reads of its later turns, before them in the
    * body as well; keys that are distinct literals never name one entry. On the framed convention a read the same
    * turn's write of its entry follows takes what the loop's earlier turns wrote from the node it holds instead
-   * (`genesisTurnWrites`).
+   * (`genesisTurnWrites`); on the direct convention a read inside a loop takes what the loop's turns wrote from the
+   * log they keep (`planGenesisTurnLog`).
    */
   private planGenesisReads(fn: FunctionDefinitionNode): void {
     this.genesisKeptWrites = new WeakSet();
@@ -27713,6 +27731,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.genesisKeptNames = new Map();
     this.genesisKeptCount = 0;
     this.genesisReadPlans = new WeakMap();
+    this.genesisTurnLogPlans = new Map();
+    this.genesisTurnLogNames = new Map();
+    this.genesisLoggedWrites = new WeakSet();
     if (fn.body === undefined) return;
     let genesisReads = false;
     walkInvocationAst(fn.body, (candidate) => {
@@ -27733,16 +27754,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const changed = this.namesChangedIn(fn);
     const chainLeft = new Map(this.sortedCompositeWritesRemaining);
     const turnWrites = this.genesisTurnWrites(fn);
+    // Each node inside a loop, with the outermost loop holding it.
+    const outerLoop = new Map<Node, Node>();
+    if (this.directConvention) {
+      walkInvocationAst(fn.body, (loop) => {
+        if (!(loop instanceof WhileNode || loop instanceof DoWhileNode || loop instanceof CollectionIterationNode)
+          || outerLoop.has(loop)) return;
+        walkInvocationAst(loop, (inner) => { if (!outerLoop.has(inner)) outerLoop.set(inner, loop); });
+      });
+    }
     const entryText = (node: Write | MappingAccessNode): string =>
       this.sortedEntryText(node.collection?.name ?? node.name, node.keys);
     const read = (node: MappingAccessNode, flow: Flow | undefined): void => {
       if (flow === undefined || node.isGenesisRead !== true || node.collection?.sorted !== true) return;
       const turn = turnWrites.get(node);
-      const reaching = (flow.get(node.collection.name) ?? [])
+      const pending = (flow.get(node.collection.name) ?? [])
         .filter((write) => !this.sortedKeysDistinct(write.node.keys, node.keys))
         .filter((write) => write.earlier !== true || write.node !== turn);
+      const log = this.planGenesisTurnLog(node, pending.map((write) => write.node), outerLoop);
+      const reaching = log === undefined ? pending : pending.filter((write) => outerLoop.get(write.node) !== log);
       if (reaching.length === 0) {
-        if (turn !== undefined) this.genesisReadPlans.set(node, { compared: [], turn });
+        if (turn !== undefined || log !== undefined) {
+          this.genesisReadPlans.set(node, { compared: [], ...(turn === undefined ? {} : { turn }),
+            ...(log === undefined ? {} : { log }) });
+        }
         return;
       }
       const same = reaching.map((write) => this.sortedKeysSame(write.node.keys, node.keys, changed)).lastIndexOf(true);
@@ -27759,7 +27794,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.genesisKeptWrites.add(write);
         this.genesisHashedWrites.add(write);
       }
-      this.genesisReadPlans.set(node, { base, compared, ...(turn === undefined ? {} : { turn }) });
+      this.genesisReadPlans.set(node, { base, compared, ...(turn === undefined ? {} : { turn }),
+        ...(log === undefined ? {} : { log }) });
     };
     const write = (node: Write, flow: Flow | undefined, scope: SortedFlowScope): Flow | undefined => {
       const arrayOp = isArrayOp(node);
@@ -27807,6 +27843,137 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return next;
       },
     });
+  }
+
+  /**
+   * The direct constructor loop whose turns keep a log of their writes for a read inside it, or undefined.
+   *
+   * Each write of the collection the loop runs appends its key hash and the value it stores to the log, and the read
+   * takes the last value logged under its own key hash over what it takes from the writes before the loop. So every
+   * write of the collection the loop may run is a whole scalar assignment of its own body, none in a called
+   * function; the loop's close refuses the read where one of them appended nothing (`closeGenesisTurnLogs`).
+   */
+  private planGenesisTurnLog(
+    read: MappingAccessNode, pending: readonly Node[], outerLoop: ReadonlyMap<Node, Node>,
+  ): Node | undefined {
+    const loop = outerLoop.get(read);
+    if (!(loop instanceof WhileNode || loop instanceof DoWhileNode) || read.arrayIndex !== undefined
+      || !pending.some((write) => outerLoop.get(write) === loop)) return undefined;
+    const collection = read.collection!;
+    const type = collection.innermostValueType;
+    const kind = this.sortedValueKind(type);
+    if (kind !== 'int' && (kind !== 'rawbytes' || this.isChunkableValue(type))) return undefined;
+    const writes = new Set<Node>();
+    let unlogged = false;
+    const seen = new Set<object>();
+    const scan = (root: Node, callee: boolean): void => walkInvocationAst(root, (candidate) => {
+      if ((candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
+        || candidate instanceof MappingFieldAssignNode) && candidate.collection?.name === collection.name) {
+        if (callee || !(candidate instanceof MappingAssignNode) || candidate.arrayIndex !== undefined
+          || candidate.arrayPush === true || candidate.arrayPop === true) unlogged = true;
+        else writes.add(candidate);
+      }
+      if (candidate instanceof FunctionCallNode && candidate.resolvedFunction?.body !== undefined) {
+        scan(candidate.resolvedFunction.body, true);
+      }
+    }, seen);
+    scan(loop, false);
+    if (unlogged) return undefined;
+    const logs = this.genesisTurnLogPlans.get(loop) ?? new Map<string, GenesisTurnLogPlan>();
+    logs.set(collection.name, { read: logs.get(collection.name)?.read ?? read, writes });
+    this.genesisTurnLogPlans.set(loop, logs);
+    return loop;
+  }
+
+  /** Pushes an empty log for each collection whose writes a direct constructor loop logs for the reads inside it. */
+  private openGenesisTurnLogs(loop: Node, loc: SingleLocationData): void {
+    const logs = this.genesisTurnLogPlans.get(loop);
+    if (logs === undefined || this.isDefineSubTraversal) return;
+    for (const collection of logs.keys()) {
+      const name = `(__genesis_log_${this.genesisKeptCount++})`;
+      this.emit(Op.OP_0, loc);
+      this.pushToStack(name);
+      this.genesisTurnLogNames.set(collection, { loop, name });
+    }
+  }
+
+  /** Drops a loop's logs, refusing a read whose loop ran a write of its collection that appended nothing. */
+  private closeGenesisTurnLogs(loop: Node, loc: SingleLocationData): void {
+    const logs = this.genesisTurnLogPlans.get(loop);
+    if (logs === undefined || this.isDefineSubTraversal) return;
+    for (const [collection, { read, writes }] of logs) {
+      const missed = [...writes].find((write) => !this.genesisLoggedWrites.has(write)) as MappingAssignNode | undefined;
+      if (missed !== undefined) {
+        throw new ConstructorStaleReadError(read, this.sortedEntryText(collection, read.keys),
+          this.sortedEntryText(collection, missed.keys), 'in an earlier turn of its loop');
+      }
+      const index = this.getStackIndex(this.genesisTurnLogNames.get(collection)!.name);
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(index);
+      this.genesisTurnLogNames.delete(collection);
+    }
+  }
+
+  /**
+   * Appends a direct constructor loop write to its collection's log: its key hash, the stored value's size in two
+   * bytes, then the value, an int one minimal.
+   */
+  private appendGenesisTurnLog(node: MappingAssignNode, hash: string, value: string, loc: SingleLocationData): void {
+    const log = this.genesisTurnLogNames.get(node.collection!.name);
+    if (log === undefined || this.isDefineSubTraversal || this.getStackIndex(log.name, true) < 0) return;
+    const pick = (name: string, above: number): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name) + above)), loc);
+      this.emit(Op.OP_PICK, loc);
+    };
+    pick(log.name, 0);
+    pick(hash, 1);
+    this.emit(Op.OP_CAT, loc);
+    pick(value, 1);
+    if (this.sortedValueKind(node.collection!.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emitReplace(this.getStackIndex(log.name) + 1, node);
+    this.genesisLoggedWrites.add(node);
+  }
+
+  /**
+   * Replaces the value a constructor read took with the last one its loop's log holds under the read's key hash, the
+   * hash tracked beneath the value.
+   */
+  private emitGenesisLogScan(node: MappingAccessNode, loop: Node, readHash: string, loc: SingleLocationData): void {
+    const log = this.genesisTurnLogNames.get(node.collection!.name);
+    if (log === undefined || log.loop !== loop || this.getStackIndex(log.name, true) < 0) {
+      const entry = this.sortedEntryText(node.collection?.name ?? node.name, node.keys);
+      throw new ConstructorStaleReadError(node, entry, entry, 'in an earlier turn of its loop');
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex(log.name))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    // [value, rest] -> [value, recordValue, rest', recordHash]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(readHash) + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc);
   }
 
   /** Why a constructor's write to a sorted entry keeps no value for the reads after it, or undefined when it does. */
@@ -27999,7 +28166,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
     };
     const readHash = '(__genesis_read_hash)';
-    const hashed = plan.compared.length > 0 || plan.turn !== undefined;
+    const hashed = plan.compared.length > 0 || plan.turn !== undefined || plan.log !== undefined;
     if (hashed) {
       this.emitGenesisKeyHash(node, loc);
       this.pushToStack(readHash);
@@ -28019,6 +28186,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     }
     if (plan.turn !== undefined) this.emitHeldTurnValue(node, plan.turn, readHash, loc);
+    if (plan.log !== undefined) this.emitGenesisLogScan(node, plan.log, readHash, loc);
     if (hashed) {
       this.emit(Op.OP_NIP, loc);
       this.removeFromStack(this.getStackIndex(readHash));
@@ -28064,6 +28232,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitGenesisKeyHash(node: MappingAccessNode, loc: SingleLocationData): void {
     for (let i = 0; i < node.keys.length; i++) {
       node.keys[i] = this.visit(node.keys[i]);
+      this.emitMappingKeyIdentity(node.collection?.allKeyTypes[i] ?? node.keys[i].type, loc);
       this.emit(Op.OP_SHA256, loc);
       if (i > 0) {
         this.emit(Op.OP_CAT, loc);
@@ -35182,6 +35351,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         this.emitChunkableValueTail(loc);
       }
+    }
+    if (op === 'set' && !isChunkableVal && node instanceof MappingAssignNode && node.arrayIndex === undefined
+      && node.arrayPush !== true && node.arrayPop !== true) {
+      this.appendGenesisTurnLog(node, '(credit_hk)', '(credit_amt)', loc);
     }
     this.emit(Op.OP_0, loc); this.pushToStack(physicalCommitment);
     const settleScalar = this.kernelJournalCanSettleScalar(node, isRawbytes, isChunkableVal);

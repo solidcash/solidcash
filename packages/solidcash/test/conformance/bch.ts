@@ -5,7 +5,7 @@
 import { compileString } from '../direct-compile.js';
 import { Contract, TransactionBuilder, FailedRequireError, FailedTransactionError, randomUtxo } from 'solidcash';
 import { MockNetworkProvider } from 'solidcash/network/mock';
-import { StatefulContract } from 'solidcash/stateful';
+import { StatefulContract, getContractFactory } from 'solidcash/stateful';
 import { setupStatefulUtxos } from '../test-util.js';
 import { binToHex } from '@bitauth/libauth';
 import { SHARED_LIBRARY_SALT, keccakComputeLockingBytecode } from '@solidcash/utils';
@@ -105,6 +105,23 @@ export async function evalBchStatefulCheck(
   } catch (e) {
     if (e instanceof FailedRequireError) return false;
     throw e;
+  }
+}
+
+// Deploy through ContractFactory (the constructor and state-variable initializers run), then send `fnName`. A
+// deployment failure throws; a rejected call returns its message, an accepted one undefined.
+export async function evalBchDeployedStateful(
+  artifact: BchArtifact, fnName: string, args: readonly unknown[],
+): Promise<string | undefined> {
+  const provider = new MockNetworkProvider();
+  const [signer] = await provider.getSigners(1, { fundingUtxos: 4 });
+  const deployed = await getContractFactory(artifact, signer).deploy() as unknown as
+    Record<string, (...a: unknown[]) => Promise<unknown>>;
+  try {
+    await deployed[fnName](...args);
+    return undefined;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
   }
 }
 

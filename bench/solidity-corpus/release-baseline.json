@@ -2,15 +2,15 @@
   "corpusRevision": "816d9b2aeef4c0d1c0f6d8af2d8aeed3eb7a0762",
   "fixtureCount": 7343,
   "positive": {
-    "compiledMinimum": 2717,
+    "compiledMinimum": 2719,
     "inScope": 2805,
-    "maximumFailures": 88
+    "maximumFailures": 86
   },
   "negative": {
     "fixtures": 2158,
-    "maximumAccepted": 151,
+    "maximumAccepted": 149,
     "unchecked": 0,
     "timeouts": 0
   },
-  "scorecardSha256": "e7902896bb3c95fc9ce47ee1a9b8ffc44bc52d4aa162f00d9597d50eb9ff04a9"
+  "scorecardSha256": "0ba3b311381f380d9d3e65534f3ced258af98bf77d4b4c4f7e3967000a57068d"
 }

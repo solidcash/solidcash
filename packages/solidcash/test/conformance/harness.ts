@@ -5,7 +5,7 @@ import {
   compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
 } from './evm.js';
 import {
-  compileBch, evalBchCheck, evalBchRejects, compileBchStateful, evalBchStatefulCheck,
+  compileBch, evalBchCheck, evalBchRejects, evalBchVmRejects, compileBchStateful, evalBchStatefulCheck,
 } from './bch.js';
 
 const SPDX = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n';
@@ -607,4 +607,45 @@ function argsByName(params: string, args: readonly unknown[]): Record<string, un
 
 function fmt(vals: readonly unknown[]): string {
   return vals.map((v) => (typeof v === 'bigint' ? v.toString() : JSON.stringify(v))).join(', ');
+}
+
+// abi.decode of one EVM word as `type`, used for the decoder's clean-encoding checks. The Solidity side returns the
+// decoded value; the SolidCash side decodes it and uses it. `decls` declares any type the case names (an enum).
+export function wordDecodeCase(o: { type: string; word: string; decls?: string; label?: string }): ConformanceCase {
+  const decls = o.decls ? `  ${o.decls}\n` : '';
+  return {
+    solidity: `${SPDX}contract C {\n${decls}  function f(bytes memory blob) public pure returns (${o.type}) {\n`
+      + `    return abi.decode(blob, (${o.type}));\n  }\n}\n`,
+    scash: `contract Conf() {\n${decls}  function f(bytes blob) {\n`
+      + `    ${o.type} x = abi.decode(blob, (${o.type}));\n    require(x == x);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'f',
+    args: [o.word],
+    evmCompat: true,
+    label: o.label ?? `decode<${o.type}>(${o.word})`,
+  };
+}
+
+// The clean encoding of a word decodes on both VMs.
+export async function assertWordDecodes(c: ConformanceCase): Promise<void> {
+  const tag = c.label ? ` [${c.label}]` : '';
+  await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
+  if (await evalBchVmRejects(compileBch(c.scash, true), c.bchFn, c.args)) {
+    throw new Error(`Decode MISMATCH${tag}: the EVM decoded a clean word that the BCH covenant rejected`);
+  }
+}
+
+// A word that is not the clean encoding of its type reverts on both VMs, and on BCH it is the VM that refuses it.
+export async function assertWordRejected(c: ConformanceCase): Promise<void> {
+  const tag = c.label ? ` [${c.label}]` : '';
+  let evmReverted = false;
+  try {
+    await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
+  } catch {
+    evmReverted = true;
+  }
+  if (!evmReverted) throw new Error(`Decode MISMATCH${tag}: expected the EVM to revert on a dirty word`);
+  if (!await evalBchVmRejects(compileBch(c.scash, true), c.bchFn, c.args)) {
+    throw new Error(`Decode MISMATCH${tag}: the BCH covenant accepted a word the EVM reverts on`);
+  }
 }

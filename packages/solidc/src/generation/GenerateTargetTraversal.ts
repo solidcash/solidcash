@@ -1474,6 +1474,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private constructorParameterCount: number;
   private contractParameters: ParameterNode[] = [];
   private contractFunctionKeys: Set<string> = new Set();
+  // Set while decoding data the compiler encoded itself, whose EVM words need no clean-encoding checks.
+  private evmDecodeTrusted = false;
   private contractUsesMsgData: boolean = false;
   private contractUsesMsgSig: boolean = false;
   private contractUsesMsgSender: boolean = false;
@@ -20868,8 +20870,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitEvmStaticResultTupleDecode(schema, loc, trackedName);
   }
 
-  // Decode one 32-byte big-endian EVM word (on top) into a SolidCash value. Inverse of emitEvmAbiWord.
+  // Decode one 32-byte big-endian EVM word (on top) into a SolidCash value. Inverse of emitEvmAbiWord. Unless the
+  // data comes from the compiler's own encoder, a word that is not the clean encoding of its type reverts, as solc's
+  // ABI decoder does: a bool is 0 or 1, padding bytes are zero, a number is within its type's range.
   private emitEvmWordToValue(type: Type, loc: SingleLocationData): void {
+    const validate = !this.evmDecodeTrusted;
     // A user-defined value type decodes to its underlying value, exactly as it encoded from one.
     if (type instanceof ValueType) {
       this.emitEvmWordToValue(type.underlyingType, loc);
@@ -20877,19 +20882,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (type === PrimitiveType.BOOL) {
       this.emit(Op.OP_REVERSEBYTES, loc);
+      if (validate) {
+        // a 0x00 sign byte keeps a set high bit from reading as a negative zero
+        this.emit(new Uint8Array([0]), loc);
+        this.emit(Op.OP_CAT, loc);
+      }
       this.emit(Op.OP_BIN2NUM, loc); // 0x01 or empty
+      if (validate) this.emitEvmDecodedBelow(2n, loc);
       return;
     }
     if (type instanceof AddressType) {
       this.emit(encodeInt(12n), loc);
       this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_NIP, loc);
+      if (validate) {
+        this.emit(Op.OP_SWAP, loc);
+        this.emitEvmZeroPaddingCheck(loc);
+      } else this.emit(Op.OP_NIP, loc);
       return;
     }
     if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
       this.emit(encodeInt(BigInt(type.bound)), loc);
       this.emit(Op.OP_SPLIT, loc); // right-padded: the N data bytes are the first N of the word
-      this.emit(Op.OP_DROP, loc);
+      if (validate && type.bound < 32) this.emitEvmZeroPaddingCheck(loc);
+      else this.emit(Op.OP_DROP, loc);
       return;
     }
     if (type instanceof IntType || type instanceof FixedType || type instanceof EnumType
@@ -20910,9 +20925,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SUB, loc);
         this.emit(Op.OP_ENDIF, loc);
       }
+      if (validate && type instanceof EnumType) this.emitEvmDecodedBelow(BigInt(type.members.length), loc);
+      if (validate && (type instanceof IntType || type instanceof FixedType) && type.bits < 256) {
+        if (!type.signed) this.emitEvmDecodedBelow(1n << BigInt(type.bits), loc);
+        else {
+          // a narrower signed word is the sign extension of its value
+          const half = 1n << BigInt(type.bits - 1);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(encodeInt(-half), loc);
+          this.emit(encodeInt(half), loc);
+          this.emit(Op.OP_WITHIN, loc);
+          this.emit(Op.OP_VERIFY, loc);
+        }
+      }
       return;
     }
     throw new Error(`evmCompat abi.decode: unsupported type '${type.toString()}' (value types only)`);
+  }
+
+  // Revert unless the non-negative decoded value on top is below `bound` (it stays on the stack).
+  private emitEvmDecodedBelow(bound: bigint, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(bound), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);
+  }
+
+  // Revert unless the padding bytes on top are all zero (they are consumed).
+  private emitEvmZeroPaddingCheck(loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
   }
 
   // evmCompat abi.decode for a schema containing dynamic (string/bytes) types. The head is N 32-byte words; a
@@ -21301,6 +21346,51 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  // evmCompat abi.decode of `node.schema` from the blob on top.
+  private emitEvmCompatAbiDecode(node: AbiDecodeNode, locationData: SingleLocationData): void {
+    const single = node.schema[0];
+    if (node.schema.length === 1 && single instanceof StructType) {
+      // a single struct: fixed-width -> inline field words; dynamic -> tuple head/tail re-framed to the struct blob
+      if (this.isDynamicAbiType(single)) this.emitEvmStructDecodeDynamic(single, locationData);
+      else this.emitEvmStructDecode(single, locationData);
+      return;
+    }
+    if (node.schema.length === 1 && single instanceof ArrayType && single.bound !== undefined
+      && !this.isDynamicAbiType(single)) {
+      // A fixed-size ABI array has no offset/length. Composite elements span multiple words and need
+      // their recursive runtime framing; scalar elements retain the compact word-loop decoder.
+      if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
+        this.emitEvmStaticArrayInlineDecode(single, locationData);
+      } else this.emitEvmWordsToArray(single.elementType, locationData);
+      return;
+    }
+    if (node.schema.length === 1 && single instanceof ArrayType && single.bound !== undefined) {
+      this.emitEvmFixedArrayDecodeDynamic(single, locationData);
+      return;
+    }
+    if (node.schema.length === 1 && single instanceof ArrayType && single.bound === undefined) {
+      // a single top-level array (offset is always 32); rebuild the SolidCash array blob
+      if (this.isDynamicAbiType(single.elementType)) this.emitEvmDynamicArrayDecode(single.elementType, locationData);
+      else if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
+        this.emitEvmStaticCompositeArrayDecode(single.elementType, locationData);
+      } else this.emitEvmArrayDecode(single.elementType, locationData);
+      return;
+    }
+    const hasDynamic = node.schema.some(
+      (t) => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined)
+        || (t instanceof ArrayType && t.bound === undefined),
+    );
+    if (hasDynamic) {
+      // random-access decode that follows head offsets (bytes/string/array); manages its own tracking.
+      this.emitEvmAbiDecodeDynamic(node.schema, locationData);
+    } else {
+      // all value types: N consecutive 32-byte words; net stack effect (pop blob, push N values) tracked here.
+      this.emitEvmAbiDecode(node.schema, locationData);
+      this.popFromStack();
+      for (let i = 0; i < node.schema.length; i++) this.pushToStack('(value)');
+    }
+  }
+
   visitAbiDecode(node: AbiDecodeNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -21308,46 +21398,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.data = this.visit(node.data);
 
     if (this.compilerOptions.evmCompat) {
-      const single = node.schema[0];
-      if (node.schema.length === 1 && single instanceof StructType) {
-        // a single struct: fixed-width -> inline field words; dynamic -> tuple head/tail re-framed to the struct blob
-        if (this.isDynamicAbiType(single)) this.emitEvmStructDecodeDynamic(single, locationData);
-        else this.emitEvmStructDecode(single, locationData);
-        return node;
-      }
-      if (node.schema.length === 1 && single instanceof ArrayType && single.bound !== undefined
-        && !this.isDynamicAbiType(single)) {
-        // A fixed-size ABI array has no offset/length. Composite elements span multiple words and need
-        // their recursive runtime framing; scalar elements retain the compact word-loop decoder.
-        if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
-          this.emitEvmStaticArrayInlineDecode(single, locationData);
-        } else this.emitEvmWordsToArray(single.elementType, locationData);
-        return node;
-      }
-      if (node.schema.length === 1 && single instanceof ArrayType && single.bound !== undefined) {
-        this.emitEvmFixedArrayDecodeDynamic(single, locationData);
-        return node;
-      }
-      if (node.schema.length === 1 && single instanceof ArrayType && single.bound === undefined) {
-        // a single top-level array (offset is always 32); rebuild the SolidCash array blob
-        if (this.isDynamicAbiType(single.elementType)) this.emitEvmDynamicArrayDecode(single.elementType, locationData);
-        else if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
-          this.emitEvmStaticCompositeArrayDecode(single.elementType, locationData);
-        } else this.emitEvmArrayDecode(single.elementType, locationData);
-        return node;
-      }
-      const hasDynamic = node.schema.some(
-        (t) => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined)
-          || (t instanceof ArrayType && t.bound === undefined),
-      );
-      if (hasDynamic) {
-        // random-access decode that follows head offsets (bytes/string/array); manages its own tracking.
-        this.emitEvmAbiDecodeDynamic(node.schema, locationData);
-      } else {
-        // all value types: N consecutive 32-byte words; net stack effect (pop blob, push N values) tracked here.
-        this.emitEvmAbiDecode(node.schema, locationData);
-        this.popFromStack();
-        for (let i = 0; i < node.schema.length; i++) this.pushToStack('(value)');
+      const trustedBefore = this.evmDecodeTrusted;
+      this.evmDecodeTrusted = node.trustedEncoding === true;
+      try {
+        this.emitEvmCompatAbiDecode(node, locationData);
+      } finally {
+        this.evmDecodeTrusted = trustedBefore;
       }
       return node;
     }

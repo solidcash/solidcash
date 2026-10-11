@@ -16,6 +16,7 @@ import {
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
+import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../framed/composer/dust.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import {
@@ -236,6 +237,12 @@ export async function deployStatefulContract<T extends Artifact>(
     ...(options.maxFee !== undefined && { maximumFeeSatoshis: options.maxFee }),
   });
   builder.addInput(options.fundingUtxo, options.funder);
+  // A record output carries at least its own dust threshold: the fixed amount covers outputs up to 252 bytes, and a
+  // provider with a relaxed commitment limit admits wider ones (a bounded array packed into one field).
+  const addFunded = (output: Parameters<typeof builder.addOutput>[0]): void => {
+    builder.addOutput(output.token === undefined
+      ? output : { ...output, amount: satoshisAtLeastDust(output.amount, output) });
+  };
 
   // Outputs 0..threadCount-1: minting NFT(s)
   for (let t = 0; t < threadCount; t++) {
@@ -246,11 +253,18 @@ export async function deployStatefulContract<T extends Artifact>(
     });
   }
 
-  // Outputs threadCount..threadCount+dataNftCount-1: data NFTs with initial state
+  // Outputs threadCount..threadCount+dataNftCount-1: data NFTs with initial state. The data-NFT covenant pins a
+  // record's value on every later spend, so each is funded for the widest commitment its variables pack to (a
+  // value with no bound: its genesis width).
   for (let i = 0; i < (delegateOnly ? 0 : stateLayout.dataNftCount); i++) {
+    const bound = widestRecordCommitmentBytes(stateLayout, i);
+    const widest = '00'.repeat(Math.max((commitments[i] ?? '').length / 2, bound ?? 0));
     builder.addOutput({
       to: dataNftAddress,
-      amount: dataNftAmount,
+      amount: satoshisAtLeastDust(dataNftAmount, {
+        to: dataNftAddress,
+        token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: widest } },
+      }),
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: commitments[i] } },
     });
   }
@@ -259,7 +273,7 @@ export async function deployStatefulContract<T extends Artifact>(
   let entryCommitmentIndex = 0;
   for (const access of entryAccesses) {
     const entryNftAddress = getEntryNftAddress(contract, categoryId, access.collection);
-    builder.addOutput({
+    addFunded({
       to: entryNftAddress,
       amount: dataNftAmount,
       token: {
@@ -276,7 +290,7 @@ export async function deployStatefulContract<T extends Artifact>(
   for (const col of (delegateOnly ? [] : (stateLayout.collections ?? []))) {
     if (!col.sorted) continue;
     if (entryAccesses.some((a) => a.collection === col.name)) continue; // constructor already created its entries
-    builder.addOutput({
+    addFunded({
       to: getEntryNftAddress(contract, categoryId, col.name),
       amount: dataNftAmount,
       token: {
@@ -311,7 +325,7 @@ export async function deployStatefulContract<T extends Artifact>(
         : isAnonymous
           ? getAnonymousEventNftAddress(contract, categoryId)
           : getEventNftAddress(contract, categoryId, emitInfo.eventSignature);
-      builder.addOutput({
+      addFunded({
         to: eventNftAddress,
         amount: dataNftAmount,
         token: {
@@ -328,7 +342,7 @@ export async function deployStatefulContract<T extends Artifact>(
   for (const collectionName of new Set(entryAccesses.filter((access) => (
     stateLayout.collections?.find((item) => item.name === access.collection)?.sorted
   )).map((access) => access.collection))) {
-    builder.addOutput({
+    addFunded({
       to: getEntryNftAddress(contract, categoryId, collectionName),
       amount: dataNftAmount,
       token: {
@@ -346,7 +360,7 @@ export async function deployStatefulContract<T extends Artifact>(
   for (const variable of stateLayout.variables ?? []) {
     if (!unresolvedDynamicWriteNames.includes(variable.name)) continue;
     for (const commitment of derivedChunkCommitments[variable.name] ?? []) {
-      builder.addOutput({
+      addFunded({
         to: getDynamicChunkAddress(contract, categoryId, variable.name, variable.type),
         amount: dataNftAmount,
         token: {
@@ -359,7 +373,7 @@ export async function deployStatefulContract<T extends Artifact>(
 
   // Dynamic constructor values are stored in per-variable chunk NFTs immediately after the fixed block.
   for (const chunk of dynamicInitialChunks) {
-    builder.addOutput({
+    addFunded({
       to: getDynamicChunkAddress(contract, categoryId, chunk.name, chunk.type),
       amount: dataNftAmount,
       token: {
@@ -437,8 +451,8 @@ export async function deployStatefulContract<T extends Artifact>(
   const finalChange = options.fundingUtxo.satoshis - nonChangeOutputTotal - fee;
   if (finalChange < 0n) {
     throw new Error(
-      'Insufficient funding: constructor transfers require '
-      + `${totalTransferAmount} satoshis and the transaction requires a ${fee}-satoshi fee. `
+      `Insufficient funding: the genesis outputs require ${nonChangeOutputTotal} satoshis (constructor transfers: `
+      + `${totalTransferAmount}) and the transaction requires a ${fee}-satoshi fee. `
       + 'Increase the funding UTXO amount.',
     );
   }

@@ -35,6 +35,7 @@ import {
   WhileNode,
   DoWhileNode,
   AssignNode,
+  BinaryOpNode,
   AssignmentExpressionNode,
   StateAssignNode,
   StateAccessNode,
@@ -42,6 +43,7 @@ import {
 import { ArrayType, FunctionType, AddressType, BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { BinaryOperator } from '../ast/Operator.js';
 import { FnPtrArrayLoweringError } from '../Errors.js';
 
 const SELECTOR_ARRAY_PREFIX = '__fnsel_';
@@ -54,6 +56,7 @@ const UNSUPPORTED_COPY = 'a whole-array value assigned to it carries no element 
   + 'storage function-pointer array of the same function type and length is supported';
 const LENGTH_ONLY = 'a push, pop or whole delete of it is kept only as a length change, so its copied elements '
   + 'would not follow';
+const DROPPED_PUSH = 'a push onto it is kept only as a length change and its pushed value would be dropped';
 
 /**
  * FOREIGN external function-pointer ARRAYS holding RECEIVED values (`fns.push(p)` where `p` is a fn-ptr param
@@ -146,6 +149,11 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
       // so a table written only by pushes looks unwritten here: refuse it rather than drop those elements.
       if (writes.length === 0 && this.writesLengthAuthority(coll.name, bodies)) {
         refusals.set(coll.name, sources.length === 0 ? NEVER_WRITTEN : LENGTH_ONLY);
+        continue;
+      }
+      // The same holds beside element writes: a push's value is never stored, only its length bump.
+      if (this.incrementsLengthAuthority(coll.name, bodies)) {
+        refusals.set(coll.name, DROPPED_PUSH);
         continue;
       }
       if (sources.some((s) => s === undefined)) {
@@ -541,6 +549,21 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
     };
     for (const fn of bodies) this.walk(fn.body!, visit);
     return writes.some((t) => t === authority || t.startsWith(`${authority}$`));
+  }
+
+  // `<name>$len = <length> + n`: the bump the parser keeps of a push whose value it dropped (a pop subtracts and a
+  // whole delete assigns zero, so an addition into the length authority is a push).
+  private incrementsLengthAuthority(name: string, bodies: FunctionDefinitionNode[]): boolean {
+    const authority = `${name}$len`;
+    let found = false;
+    const visit = (n: Node): void => {
+      const target = n instanceof AssignNode ? n.identifier.name : n instanceof StateAssignNode ? n.name : undefined;
+      if (target !== authority) return;
+      const e = (n as AssignNode | StateAssignNode).expression;
+      if (e instanceof BinaryOpNode && e.operator === BinaryOperator.PLUS) found = true;
+    };
+    for (const fn of bodies) this.walk(fn.body!, visit);
+    return found;
   }
 
   // A name has a selector companion if a param `__fnsel_<name>` is in scope (the param lowering's convention)

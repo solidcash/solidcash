@@ -44,4 +44,13 @@ describe('function-pointer arrays without element writes', () => {
         function load(function(uint256) external[] memory next) public { handlers = next; }
       }`, { evmCompat: true })).toThrow(/Function-pointer array 'handlers'/);
   });
+
+  it('refuses a written table whose pushes would be dropped', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0;
+      contract Relay {
+        function(uint256) external[] handlers;
+        function set(uint256 i, function(uint256) external cb) public { handlers[i] = cb; }
+        function add(function(uint256) external cb) public { handlers.push(cb); }
+      }`, { evmCompat: true })).toThrow(/'handlers': a push onto it is kept only as a length change/);
+  });
 });

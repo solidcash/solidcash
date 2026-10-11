@@ -427,6 +427,8 @@ const generateTemplateLockScript = (
     lockingType: contract.addressType === 'p2s' ? 'standard' : contract.addressType,
     name: contract.artifact.contractName,
     script: [
+      // A deployer's salt (a density reserve) opens the deployed script; debugSingleScenario strips it again.
+      ...(contract.salt ? ['// salt', `<0x${binToHex(contract.salt)}>`, 'OP_DROP', ''] : []),
       `// "${contract.artifact.contractName}" contract constructor parameters`,
       formatParametersForDebugging(contract.artifact.constructorInputs, constructorArguments),
       '',

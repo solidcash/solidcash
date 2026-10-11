@@ -12,11 +12,15 @@ import {
   buildEntryNftCovenantScript,
   buildEventNftCovenantScript,
   buildInitialStateCommitments,
+  chunkCountForLength,
   computeCollectionHash,
   computeEventNameHash,
+  dynamicLenKey,
   Op,
+  parsePushdataCommitment,
   type Artifact,
   type StateLayout,
+  type StateVariableInfo,
   splitValueIntoChunks,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -66,7 +70,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
     entryCommitments: string[];
     trailingEntryCommitments: string[];
     eventCommitments: string[];
-    dynamicChunkCommitments: Record<string, string>;
+    dynamicChunkCommitments: Record<string, string[]>;
     transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
   }> {
   const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
@@ -317,13 +321,25 @@ export async function deriveDeployCommitments<T extends Artifact>(
   // its equality check. An empty placeholder therefore aborts before the trace can reveal the expected value.
   // Seed a structurally valid prefix; the first trace replaces it with the authenticated full commitment.
   const eventCommits: string[] = Array.from({ length: emitCount }, () => '00'.repeat(32));
-  const dynamicChunkCommits: Record<string, string> = {};
-  let reservedChunkNames: string[] = [];
+  // A value the SDK cannot replay is learned chunk by chunk: one probe reveals one chunk of its run.
+  const dynamicChunkCommits: Record<string, string[]> = {};
+  let reservedChunkSlots: Array<{ name: string; chunkIndex: number; outputIndex: number }> = [];
+  // The run's width is ceil(len/120) of the length header the constructor pins in the variable's data NFT, which the
+  // covenant verifies before the chunks. Until that header is learned, reserve a single chunk.
+  const unresolvedRunWidth = (variable: StateVariableInfo): number => {
+    try {
+      const header = parsePushdataCommitment(currentCommitments[variable.nftIndex], stateLayout, variable.nftIndex);
+      return chunkCountForLength(Number(header[dynamicLenKey(variable.name)] ?? 0n));
+    } catch {
+      return 1;
+    }
+  };
+  let extraChunkProbes = 0;
   let transferOuts: Array<{
     lockingBytecode: Uint8Array; amount: bigint;
   }> = [];
 
-  for (let iter = 0; iter < maxDeployIterations; iter++) {
+  for (let iter = 0; iter < maxDeployIterations + extraChunkProbes; iter++) {
     // Rebuild synthetic data NFTs with current commitments
     const iterDataNfts: Utxo[] = Array.from(
       { length: stateLayout.dataNftCount }, (_, i) => ({
@@ -530,7 +546,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
 
     // Dynamic constructor writes trail the fixed block. Direct parameter assignments (the Solidity-compatible
     // pattern used by ERC20(name, symbol)) are known exactly, so use their real commitments in every probe.
-    reservedChunkNames = [];
+    reservedChunkSlots = [];
+    extraChunkProbes = 0;
     for (const variable of stateLayout.variables ?? []) {
       if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) continue;
       const normalized = variable.name.replace(/^_+/, '');
@@ -541,20 +558,24 @@ export async function deriveDeployCommitments<T extends Artifact>(
         ?? (inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined);
       const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
       if (value === undefined) {
-        reservedChunkNames.push(variable.name);
-        probeBuilder.addOutput({
-          to: addressToLockScript(getDynamicChunkAddress(
-            contract, categoryId, variable.name, variable.type,
-          )),
-          amount: dataNftAmount,
-          token: {
-            category: categoryId, amount: 0n,
-            nft: {
-              capability: 'mutable' as const,
-              commitment: dynamicChunkCommits[variable.name] ?? '',
+        const width = unresolvedRunWidth(variable);
+        extraChunkProbes += Math.max(0, width - 1);
+        for (let chunkIndex = 0; chunkIndex < width; chunkIndex++) {
+          reservedChunkSlots.push({ name: variable.name, chunkIndex, outputIndex: probeBuilder.outputs.length });
+          probeBuilder.addOutput({
+            to: addressToLockScript(getDynamicChunkAddress(
+              contract, categoryId, variable.name, variable.type,
+            )),
+            amount: dataNftAmount,
+            token: {
+              category: categoryId, amount: 0n,
+              nft: {
+                capability: 'mutable' as const,
+                commitment: dynamicChunkCommits[variable.name]?.[chunkIndex] ?? '',
+              },
             },
-          },
-        });
+          });
+        }
         continue;
       }
       const lockingBytecode = addressToLockScript(getDynamicChunkAddress(
@@ -795,15 +816,15 @@ export async function deriveDeployCommitments<T extends Artifact>(
       }
     }
 
-    // Extract transfer outputs
-    if (reservedChunkNames.length > 0) {
-      const chunkBase = (constructorAbi?.blockLayout?.blockSize
-        ?? (1 + stateLayout.dataNftCount + entryOutputCount + transferCount + emitCount))
-        + sortedCollections.length;
-      const chunkRange = { min: chunkBase, max: chunkBase + reservedChunkNames.length };
-      for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(probeTrace, chunkRange, true)) {
-        const name = reservedChunkNames[outputIndex - chunkBase];
-        if (name !== undefined) dynamicChunkCommits[name] = commitment;
+    // Extract the reserved dynamic chunk commitments
+    if (reservedChunkSlots.length > 0) {
+      const chunkRange = {
+        min: reservedChunkSlots[0].outputIndex, max: reservedChunkSlots[reservedChunkSlots.length - 1].outputIndex + 1,
+      };
+      const learnedChunks = extractCommitmentMapFromTrace(probeTrace, chunkRange, true);
+      for (const { name, chunkIndex, outputIndex } of reservedChunkSlots) {
+        const commitment = learnedChunks.get(outputIndex);
+        if (commitment !== undefined) (dynamicChunkCommits[name] ??= [])[chunkIndex] = commitment;
       }
     }
 
@@ -843,7 +864,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
     // the derivation is cycling without converging.
     const deployKey = stateCommitments.join('|') + '||' + entryCommits.join('|')
       + '||' + trailingEntryCommits.join('|') + '||' + eventCommits.join('|')
-      + '||' + reservedChunkNames.map((name) => dynamicChunkCommits[name] ?? '').join('|');
+      + '||' + reservedChunkSlots.map(({ name, chunkIndex }) => dynamicChunkCommits[name]?.[chunkIndex] ?? '').join('|');
     if (seenDeployKeys.has(deployKey)) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DEPLOY === '1') {
@@ -863,7 +884,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
 
   if (!deployConverged) {
     throw new Error(
-      `Constructor commitment derivation did not converge after ${maxDeployIterations} probes.${unplannedCause}`,
+      `Constructor commitment derivation did not converge after ${maxDeployIterations + extraChunkProbes} probes.`
+      + unplannedCause,
     );
   }
 
@@ -899,7 +921,11 @@ export async function deriveDeployCommitments<T extends Artifact>(
     entryCommitments: entryCommits,
     trailingEntryCommitments: trailingEntryCommits,
     eventCommitments: eventCommits,
-    dynamicChunkCommitments: { ...dynamicChunkCommits },
+    // Each unresolved run as the converged probe laid it out.
+    dynamicChunkCommitments: reservedChunkSlots.reduce<Record<string, string[]>>((runs, { name, chunkIndex }) => {
+      (runs[name] ??= []).push(dynamicChunkCommits[name]?.[chunkIndex] ?? '');
+      return runs;
+    }, {}),
     transferOutputs: transferOuts,
   };
 }

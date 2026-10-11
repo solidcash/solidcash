@@ -1,0 +1,349 @@
+=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1332/1612 executed lines matched (82.63%) | 280 mismatched | 4 refused-at-compile | 154 skipped | 8 error | 489 fixtures run of 1541 compiled candidates | 139.8s ===
+
+--- FIXTURES SKIPPED (by reason) ---
+  620  state-variables
+  101  type:array
+   47  type:string-bytes
+   41  value:string-or-hex
+   28  ret-type:string-bytes
+   24  events
+   21  ret-type:user-defined
+   20  constructor-call
+   20  type:struct
+   18  call-options
+   18  library
+   17  no-matching-decl
+   16  no-calls
+   15  ret-type:address
+   11  type:address
+    7  target-is-library
+    5  ret-type:array
+    4  no-contract
+    4  ret-arity
+    3  fallback-call
+    2  arg-arity
+    2  ret-type:function
+    2  type:function
+    1  builtin:balance
+    1  builtin:isoltest_builtin_test
+    1  builtin:isoltest_side_effects_test
+    1  builtin:storageEmpty
+    1  constructor-params
+    1  unparsed
+
+--- LINES (selected fixtures) ---
+ 1778  selected
+ 1332  matched
+  280  mismatched
+    4  refused-at-compile
+  154  skipped
+    8  error (timeout/worker)
+
+--- LINES SKIPPED (by reason) ---
+  126  arg-out-of-range
+   28  stateful-artifact
+
+--- MISMATCH SHAPES ---
+   80  expected values, got revert: Program failed an OP_VERIFY operation.
+   54  expected values, got revert: Program called an OP_NUMNBIN operation with an insufficient byte length to re-encode the provided numb
+   42  expected values, got wrong value (unmapped final verify)
+   36  expected values, got revert: require@LN
+   24  expected values, got build-error: Error: keccakN preimage extraction needs N compute side-car UTXOs (one per batch of up to three c
+   13  expected values, got revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
+   10  expected FAILURE, got success (no revert)
+    6  expected values, got build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+    3  expected values, got revert: Program attempted a bitwise shift with an invalid bit count. Abandoned excessive OP_LSHIFTNUM. Provide
+    3  expected values, got revert: Program called an OP_SPLIT operation with an invalid index. stack item length: N; requested split inde
+    3  expected values, got wrong value
+    2  expected FAILURE, got build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+    2  expected values, got build-error: TypeError: Cannot read properties of undefined (reading 'length')
+    1  expected values, got build-error: Error: stateless dynamic keccakN loop needs >= N compute side-car UTXOs at the branded address; f
+    1  expected values, got revert: Program attempted to read from an invalid transaction input index. Transaction input count: N; request
+
+--- REFUSED-AT-COMPILE (by error head, per line) ---
+    1  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column N
+    1  MsgDataInSubroutineError: msg.data is only available at an entry point; reading it inside an internal subroutine or a se
+    1  StorageLayoutSpecifierError: Cannot inherit from a contract with a custom storage layout. (solc TypeError N) at Line N, 
+    1  UnsupportedStructFieldTypeError: Type '..' is not supported as a struct field type at Line N, Column N
+
+--- MISMATCHES (fixture:line  call  =>  outcome) ---
+test/libsolidity/semanticTests/abicoder/abi_encode_call_v2.sol:48  callExternal() -> true  =>  revert: Program attempted to read from an invalid transaction input index. Transaction input count: 1; requested index: -1.
+test/libsolidity/semanticTests/abicoder/abi_encode_calldata_slice.sol:61  test_bytes() ->  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1914400 (density control length: 2393); operation cost following operation: 1914503.
+test/libsolidity/semanticTests/abicoder/abi_encode_calldata_slice.sol:66  test_uint256() ->  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2011200 (density control length: 2514); operation cost following operation: 2011228.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:48  f1(bytes32): left(1) -> left(1)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 1.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:50  f1(bytes32): left(0xFE) -> left(0xFE)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 1.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:52  f1(bytes32): left(0xFF) -> left(0xFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 1.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:54  f1(bytes32): left(0x0001) -> left(0x00)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 31. Requested byte length: 1.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:56  f1(bytes32): left(0x0101) -> left(0x01)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 1.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:58  f1(bytes32): -1 -> left(0xFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 1.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:62  f2(bytes32): left(1) -> left(1)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 2.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:64  f2(bytes32): left(0xFFFE) -> left(0xFFFE)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 2.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:66  f2(bytes32): left(0xFFFF) -> left(0xFFFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 2.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:68  f2(bytes32): left(0x000001) -> left(0x00)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 30. Requested byte length: 2.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:70  f2(bytes32): left(0x010001) -> left(0x01)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 2.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:72  f2(bytes32): -1 -> left(0xFFFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 2.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:76  f4(bytes32): left(1) -> left(1)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 4.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:78  f4(bytes32): left(0xFFFFFFFE) -> left(0xFFFFFFFE)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 4.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:80  f4(bytes32): left(0xFFFFFFFF) -> left(0xFFFFFFFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 4.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:82  f4(bytes32): left(0x0000000001) -> left(0x00)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 28. Requested byte length: 4.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:84  f4(bytes32): left(0x0100000001) -> left(0x01)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 4.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:86  f4(bytes32): -1 -> left(0xFFFFFFFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 4.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:90  f8(bytes32): left(1) -> left(1)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 8.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:92  f8(bytes32): left(0xFFFFFFFFFFFFFFFE) -> left(0xFFFFFFFFFFFFFFFE)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 8.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:94  f8(bytes32): left(0xFFFFFFFFFFFFFFFF) -> left(0xFFFFFFFFFFFFFFFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 8.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:96  f8(bytes32): left(0x000000000000000001) -> left(0x00)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 24. Requested byte length: 8.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:98  f8(bytes32): left(0x010000000000000001) -> left(0x01)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 8.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:100  f8(bytes32): -1 -> left(0xFFFFFFFFFFFFFFFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 8.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:104  f16(bytes32): left(1) -> left(1)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 16.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:106  f16(bytes32): left(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE) -> left(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 16.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:108  f16(bytes32): left(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF) -> left(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 16.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:110  f16(bytes32): left(0x0000000000000000000000000000000001) -> left(0x00)  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:112  f16(bytes32): left(0x0100000000000000000000000000000001) -> left(0x01)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 16.
+test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:114  f16(bytes32): -1 -> left(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 16.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:50  f8(int256): -1 -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:54  f8(int256): 0x80 -> -128  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:56  f8(int256): 0xFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:58  f8(int256): 0xFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:60  f8(int256): 0x0100 -> 0x00  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:62  f8(int256): 0x0101 -> 0x01  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:64  f8(int256): 0x01FF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:66  f8(int256): 0x01FE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:72  f16(int256): -1 -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:76  f16(int256): 0x8000 -> -32768  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:78  f16(int256): 0xFFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:80  f16(int256): 0xFFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:82  f16(int256): 0x010000 -> 0x00  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:84  f16(int256): 0x010001 -> 0x01  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:86  f16(int256): 0x01FFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:88  f16(int256): 0x01FFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:94  f32(int256): -1 -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:98  f32(int256): 0x80000000 -> -2147483648  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:100  f32(int256): 0xFFFFFFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:102  f32(int256): 0xFFFFFFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:104  f32(int256): 0x0100000000 -> 0x00  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:106  f32(int256): 0x0100000001 -> 0x01  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:108  f32(int256): 0x01FFFFFFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:110  f32(int256): 0x01FFFFFFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:116  f64(int256): -1 -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:120  f64(int256): 0x8000000000000000 -> -9223372036854775808  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:122  f64(int256): 0xFFFFFFFFFFFFFFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:124  f64(int256): 0xFFFFFFFFFFFFFFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:126  f64(int256): 0x010000000000000000 -> 0x00  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:128  f64(int256): 0x010000000000000001 -> 0x01  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:130  f64(int256): 0x01FFFFFFFFFFFFFFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:132  f64(int256): 0x01FFFFFFFFFFFFFFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:138  f128(int256): -1 -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:142  f128(int256): 0x80000000000000000000000000000000 -> -170141183460469231731687303715884105728  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:144  f128(int256): 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:146  f128(int256): 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:148  f128(int256): 0x0100000000000000000000000000000000 -> 0x00  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:150  f128(int256): 0x0100000000000000000000000000000001 -> 0x01  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:152  f128(int256): 0x01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:154  f128(int256): 0x01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/abicoder/return_dynamic_types_cross_call_out_of_range_post_homestead.sol:17  f(uint256): 0x60 -> FAILURE  =>  success (no revert)
+test/libsolidity/semanticTests/array/array_3d_assignment.sol:17  f(uint256): 42 -> 42  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1422400 (density control length: 1778); operation cost following operation: 1422478.
+test/libsolidity/semanticTests/array/array_3d_new.sol:14  f(uint256): 42 -> 42  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1419200 (density control length: 1774); operation cost following operation: 1419669.
+test/libsolidity/semanticTests/array/array_memory_as_parameter.sol:22  test(uint256,uint256): 1, 0 -> 1  =>  revert: require@L8
+test/libsolidity/semanticTests/array/array_memory_as_parameter.sol:23  test(uint256,uint256): 10, 5 -> 6  =>  revert: require@L8
+test/libsolidity/semanticTests/array/array_memory_index_access.sol:28  index(uint256): 0xFF -> true  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 756000 (density control length: 945); operation cost following operation: 759207.
+test/libsolidity/semanticTests/array/create_multiple_dynamic_arrays.sol:33  f() -> 7  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2164000 (density control length: 2705); operation cost following operation: 2164067.
+test/libsolidity/semanticTests/array/indexAccess/inline_array_index_access_ints.sol:7  f() -> 3  =>  revert: Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 4.
+test/libsolidity/semanticTests/array/inline_array_singleton.sol:8  f() -> 4  =>  revert: Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 1.
+test/libsolidity/semanticTests/array/memory_arrays_of_various_sizes.sol:15  f(uint256,uint256): 3, 1 -> 1  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1541600 (density control length: 1927); operation cost following operation: 1541801.
+test/libsolidity/semanticTests/array/memory_arrays_of_various_sizes.sol:16  f(uint256,uint256): 9, 5 -> 70  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1542400 (density control length: 1928); operation cost following operation: 1542407.
+test/libsolidity/semanticTests/builtinFunctions/blobhash.sol:16  f() -> 0x0100000000000000000000000000000000000000000000000000000000000001  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/builtinFunctions/blobhash.sol:17  g() -> 0x0100000000000000000000000000000000000000000000000000000000000002  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/builtinFunctions/blobhash_shadow_resolution.sol:12  f() -> 0x03  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_abi_encode.sol:19  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_abi_encode.sol:20  builtinOutput() -> -14651554186193368082021334953908208762193027200365752719897746810709432803072  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_array_string_literal.sol:7  test() -> true  =>  build-error: Error: keccak256 preimage extraction needs 2 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_pure_function.sol:17  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_string_concat.sol:15  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_string_literal_with_escaped_chars.sol:18  builtinMatchesSolidityImplementation() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_ternary_operator.sol:17  simple() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_ternary_operator.sol:18  compounded(bool,bool): false, true -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_unicode_string_literal.sol:14  builtinMatchesSolidityImplementation() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_with_zero_last_byte_of_inner_hash.sol:26  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256.sol:7  f(int256): 4 -> 0x8a35acfbc15ff81a39ae7d344fd709f28e8600b4aa8c65c6b64bfe7fe36bd19b  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256.sol:8  f(int256): 5 -> 0x036b6384b5eca791c62761152d0c79bb0604c104a5fb6f4eb0703f3154bb3db0  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256.sol:9  f(int256): -1 -> 0xa9c584056064687e149968cbab758a3376d22aedc6a55823d1b3ecbee81b8fb9  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256_multiple_arguments.sol:7  foo(uint256,uint256,uint256): 0xa, 0xc, 0xd -> 0xbc740a98aae5923e8f04c9aa798c9ee82f69e319997699f2782c40828db9fd81  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256_multiple_arguments_with_numeric_literals.sol:7  foo(uint256,uint16): 0xa, 0xc -> 0x88acd45f75907e7c560318bc1a5249850a0999c4896717b1167d05d116e6dbad  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256_multiple_arguments_with_string_literals.sol:12  bar(uint256,uint16): 0xa, 0xc -> 0x6990f36476dc412b1c4baa48e2d9f4aa4bb313f61fda367c8fdbbb2232dc6146  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256_packed.sol:10  f(int256): 4 -> 0xd270285b9966fefc715561efcd09d5b6a8deb15596f7c53cb4a1bb73aa55ac3a  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256_packed.sol:11  f(int256): 5 -> 0xf2f92566c5653600c1e527a7073e5d881576d12bb51887c0b8f3e1f81865b03d  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/keccak256_packed.sol:12  f(int256): -1 -> 0xbc78b45e0db67af5af72e4ab62757c67aefa7388cdf0c4e74f8b5fe9dd5d9d13  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/msg_sig_after_internal_call_is_same.sol:11  foo(uint256): 0x0 -> 0x2fbebd3800000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/builtinFunctions/ripemd160.sol:9  f(int256): -1 -> 0x1cf4e77f5966e13e109703cd8a0df7ceda7f3dc3000000000000000000000000  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/builtinFunctions/ripemd160_packed.sol:12  f(int256): -1 -> 0xc0a2e4b1f3ff766a9a0089e7a410391730872495000000000000000000000000  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/builtinFunctions/sha256.sol:9  f(int256): -1 -> 0xaf9613760f72635fbdb44a5a0a63c39f12af30f950a6ee5c971be188e89c4051  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/builtinFunctions/sha256_packed.sol:12  f(int256): -1 -> 0xf14def4d07cd185ddd8b10a81b2238326196a38867e6e6adbcc956dc913488c7  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/cleanup/cleanup_bytes_types_shortening_OldCodeGen.sol:16  f() -> 0xffffffff00000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/cleanup/cleanup_bytes_types_shortening_newCodeGen.sol:13  f() -> 0xffff000000000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/cleanup/exp_cleanup_smaller_base.sol:13  f() -> 0x00  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 292800 (density control length: 366); operation cost following operation: 292889.
+test/libsolidity/semanticTests/cleanup/indexed_log_topic_during_explicit_downcast.sol:22  g() -> 0x3100000000000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/cleanup/indexed_log_topic_during_explicit_downcast.sol:23  h() -> 0xff00000000000000000000000000000000000000000000000000000000000000  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 1.
+test/libsolidity/semanticTests/constants/asm_address_constant_regression.sol:11  f() -> 0x00  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/deployedCodeExclusion/subassembly_deduplication.sol:42  test() -> true  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/events/event_shadowing_file_level.sol:37  main() -> 0x3e9992c940c54ea252d3a34557cc3d3014281525c43d694f89d5f3dfd820b07d, 0x3e9992c940c54ea252d3a34557cc3d3014281525c43d694f89d5f3dfd820b07d, 0x92bbf6e823a631f3c8e09b1c8df90f378fb56f7fbc9701827e1ff8aad7f6a028  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/events/event_shadowing_file_level.sol:38  k_main() -> 0x92bbf6e823a631f3c8e09b1c8df90f378fb56f7fbc9701827e1ff8aad7f6a028, 0x3e9992c940c54ea252d3a34557cc3d3014281525c43d694f89d5f3dfd820b07d, 0x92bbf6e823a631f3c8e09b1c8df90f378fb56f7fbc9701827e1ff8aad7f6a028  =>  revert: require@L14
+test/libsolidity/semanticTests/exponentiation/literal_base.sol:17  f(uint256): 1113 -> 0x00, 0  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 424800 (density control length: 531); operation cost following operation: 424828.
+test/libsolidity/semanticTests/exponentiation/literal_base.sol:18  f(uint256): 1114 -> 0x00, 0  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 424800 (density control length: 531); operation cost following operation: 424828.
+test/libsolidity/semanticTests/exponentiation/signed_base.sol:14  f() -> 9, -27  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/exponentiation/small_exp.sol:14  f() -> 4  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 6. Requested byte length: 5.
+test/libsolidity/semanticTests/functionCall/bare_call_no_returndatacopy.sol:9  f() -> true  =>  build-error: TypeError: Cannot read properties of undefined (reading 'length')
+test/libsolidity/semanticTests/functionCall/external_call_at_construction_time.sol:22  f(uint256): 0 -> FAILURE  =>  success (no revert)
+test/libsolidity/semanticTests/functionCall/external_call_at_construction_time.sol:23  f(uint256): 1 -> FAILURE  =>  success (no revert)
+test/libsolidity/semanticTests/functionCall/precompile_extcodesize_check.sol:31  testHighLevel() -> true  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+test/libsolidity/semanticTests/functionCall/precompile_extcodesize_check.sol:32  testLowLevel() -> 0xc76596d400000000000000000000000000000000000000000000000000000000  =>  build-error: TypeError: Cannot read properties of undefined (reading 'length')
+test/libsolidity/semanticTests/functionCall/precompile_extcodesize_check.sol:33  testHighLevel2() -> FAILURE  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+test/libsolidity/semanticTests/functionCall/return_size_bigger_than_expected.sol:30  test() -> 0x20  =>  wrong value
+test/libsolidity/semanticTests/functionCall/return_size_shorter_than_expected.sol:31  test() -> 0x0500  =>  wrong value
+test/libsolidity/semanticTests/functionCall/return_size_shorter_than_expected_evm_version_after_homestead.sol:33  test() -> FAILURE  =>  success (no revert)
+test/libsolidity/semanticTests/inheritance/inherited_function_calldata_calldata_interface.sol:24  g() -> 42  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+test/libsolidity/semanticTests/inheritance/inherited_function_calldata_memory_interface.sol:24  g() -> 42  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+test/libsolidity/semanticTests/inlineAssembly/blobhash.sol:11  f() -> 0x0100000000000000000000000000000000000000000000000000000000000001  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/chainid.sol:11  f() -> 1  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/external_function_pointer_selector.sol:20  testYul() -> 0xe16b4a9b  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 32.
+test/libsolidity/semanticTests/inlineAssembly/external_function_pointer_selector_assignment.sol:16  testYul(uint32): 0xABCDEF00 -> 0xABCDEF00  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 4.
+test/libsolidity/semanticTests/inlineAssembly/for_loop_break.sol:13  f() -> 6  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/for_loop_continue.sol:13  f() -> 5  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/for_loop_nested.sol:17  f(uint256): 0 -> 2  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/for_loop_nested.sol:19  f(uint256): 2 -> 10  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/keccak256_assembly.sol:9  f() -> 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/inlineAssembly/keccak256_optimization.sol:14  f() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/inlineAssembly/keccak256_optimizer_bug_different_memory_location.sol:14  f() -> false  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/inlineAssembly/keccak_yul_optimization.sol:26  f() -> 0xcdb56c384a9682c600315e3470157a4cf7638d0d33e9dae5c40ffd2644fc5a80  =>  build-error: Error: stateless dynamic keccak256 loop needs >= 1 compute side-car UTXOs at the branded address; found 0. Deploy more mutable-NFT side-cars.
+test/libsolidity/semanticTests/inlineAssembly/keccak_yul_optimization.sol:30  g() -> 0xcdb56c384a9682c600315e3470157a4cf7638d0d33e9dae5c40ffd2644fc5a80  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/inlineAssembly/optimize_memory_store_multi_block.sol:28  f() -> 0x42  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/optimize_memory_store_multi_block.sol:29  g() -> true  =>  revert: require@L23
+test/libsolidity/semanticTests/inlineAssembly/prevrandao.sol:11  f() -> 0xa86c2e601b6c44eb4848f7d23d9df3113fbcac42041c49cbed5000cb4f118777  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/transient_storage_multiple_calls_different_transactions.sol:23  test() ->  =>  revert: require@L15
+test/libsolidity/semanticTests/inlineAssembly/transient_storage_multiple_calls_different_transactions.sol:24  test() ->  =>  revert: require@L15
+test/libsolidity/semanticTests/inlineAssembly/transient_storage_multiple_transactions.sol:37  h() -> 0x63  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/inlineAssembly/transient_storage_simple_reentrancy_lock.sol:22  f(bool): true -> FAILURE  =>  success (no revert)
+test/libsolidity/semanticTests/inlineAssembly/tstore_hidden_staticcall.sol:20  test() -> FAILURE  =>  success (no revert)
+test/libsolidity/semanticTests/libraries/internal_call_attached_with_parentheses.sol:24  f() -> 0x0a  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/libraries/internal_library_function.sol:20  f() -> 2  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/libraries/internal_library_function_attached_to_struct.sol:25  f() -> 2  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/libraries/internal_library_function_calling_private.sol:25  f() -> 2  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/literals/ternary_operator_with_literal_types_overflow.sol:16  g() -> FAILURE, hex"4e487b71", 0x11  =>  success (no revert)
+test/libsolidity/semanticTests/literals/ternary_operator_with_literal_types_overflow.sol:17  h() -> FAILURE, hex"4e487b71", 0x11  =>  success (no revert)
+test/libsolidity/semanticTests/memoryManagement/return_variable.sol:28  f() -> 0x0500, 0x0500, 0x0a00  =>  wrong value
+test/libsolidity/semanticTests/memoryManagement/static_memory_array_allocation.sol:22  withoutValue() -> 0x0280  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/memoryManagement/struct_allocation.sol:22  withoutValue() -> 0x60  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/modifiers/function_modifier_loop_viair.sol:14  f() -> 1  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/modifiers/function_modifier_multi_invocation_viair.sol:15  f(bool): true -> 1  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople.sol:24  shl(uint256,uint256): 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, 0x01 -> 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople.sol:25  shl(uint256,uint256): 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, 0x100 -> 0x00  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 65. Requested byte length: 33.
+test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople_combined.sol:115  shl_combined_overflow(uint256): 0x02 -> 0x00  =>  revert: Program attempted a bitwise shift with an invalid bit count. Abandoned excessive OP_LSHIFTNUM. Provided bit count: 115792089237316195423570985008687907853269984665640564039457584007913129639935.
+test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople_combined.sol:118  shr_combined_overflow(uint256): 0x02 -> 0x00  =>  revert: Program attempted a bitwise shift with an invalid bit count. Abandoned excessive OP_LSHIFTNUM. Provided bit count: 115792089237316195423570985008687907853269984665640564039457584007913129639935.
+test/libsolidity/semanticTests/operators/shifts/shift_bytes_cleanup.sol:18  l(uint8): 64 -> 0x3930313233343536373839300000000000000000000000000000000000000000  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 20.
+test/libsolidity/semanticTests/operators/shifts/shift_bytes_cleanup.sol:19  r(uint8): 64 -> 0x313233343536373839303132000000000000000000000000  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 20.
+test/libsolidity/semanticTests/operators/shifts/shift_bytes_cleanup_viaYul.sol:18  l(uint8): 64 -> 0x3930313233343536373839300000000000000000000000000000000000000000  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 20.
+test/libsolidity/semanticTests/operators/shifts/shift_bytes_cleanup_viaYul.sol:19  r(uint8): 64 -> 0x313233343536373839303132000000000000000000000000  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 20.
+test/libsolidity/semanticTests/operators/shifts/shift_cleanup_garbled.sol:10  f() -> 0x0  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 3. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v1.sol:23  f(int8,uint8): 0x00, 0x03 -> 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v1.sol:24  f(int8,uint8): 0x00, 0x04 -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v1.sol:25  f(int8,uint8): 0x00, 0xff -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v1.sol:28  g(int8,uint8): 0x00, 0x03 -> 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v1.sol:29  g(int8,uint8): 0x00, 0x04 -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v1.sol:30  g(int8,uint8): 0x00, 0xff -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v2.sol:22  f(int8,uint8): 0x00, 0x03 -> 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v2.sol:23  f(int8,uint8): 0x00, 0x04 -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v2.sol:24  f(int8,uint8): 0x00, 0xff -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v2.sol:27  g(int8,uint8): 0x00, 0x03 -> 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v2.sol:28  g(int8,uint8): 0x00, 0x04 -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_signed_v2.sol:29  g(int8,uint8): 0x00, 0xff -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_v1.sol:15  f(uint8,uint8): 0x00, 0x04 -> 0x0f  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_right_garbled_v2.sol:14  f(uint8,uint8): 0x00, 0x04 -> 0x0f  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 5. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/shifts/shift_underflow_negative_rvalue.sol:11  f(int256,uint256): 1, -1 -> 0  =>  revert: Program attempted a bitwise shift with an invalid bit count. Abandoned excessive OP_LSHIFTNUM. Provided bit count: 115792089237316195423570985008687907853269984665640564039457584007913129639935.
+test/libsolidity/semanticTests/operators/userDefined/operator_return_parameter_cleanup.sol:57  testUnary() -> 0xffff, 0xffff  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 3. Requested byte length: 2.
+test/libsolidity/semanticTests/operators/userDefined/operator_return_parameter_cleanup.sol:58  testBinary() -> 0xffff, 0xffff  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 3. Requested byte length: 2.
+test/libsolidity/semanticTests/revertStrings/called_contract_has_code.sol:12  g() -> FAILURE, hex"08c379a0", 0x20, 37, "Target contract does not contain", " code"  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+test/libsolidity/semanticTests/revertStrings/invalid_abi_decoding_memory_v1.sol:21  f(uint256,uint256,uint256): 0, 0x200, 0x60 -> FAILURE, hex"08c379a0", 0x20, 39, "ABI memory decoding: invalid dat", "a start"  =>  success (no revert)
+test/libsolidity/semanticTests/revertStrings/invalid_abi_decoding_memory_v1.sol:22  f(uint256,uint256,uint256): 0, 0x20, 0x60 -> FAILURE, hex"08c379a0", 0x20, 40, "ABI memory decoding: invalid dat", "a length"  =>  success (no revert)
+test/libsolidity/semanticTests/reverts/revert_return_area.sol:18  f() -> 0x00, 0x08c379a000000000000000000000000000000000000000000000000000000000  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+test/libsolidity/semanticTests/saltedCreate/salted_create.sol:23  same_salt() -> true  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/specialFunctions/keccak256_optimized.sol:16  short() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/specialFunctions/keccak256_optimized.sol:17  long() -> true, true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/state/blobhash.sol:9  f(uint256): 0 -> 0x0100000000000000000000000000000000000000000000000000000000000001  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/blobhash.sol:10  f(uint256): 1 -> 0x0100000000000000000000000000000000000000000000000000000000000002  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/block_chainid.sol:9  f() -> 1  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/block_chainid.sol:10  f() -> 1  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/block_chainid.sol:11  f() -> 1  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/block_gaslimit.sol:7  f() -> 20000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/block_gaslimit.sol:8  f() -> 20000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/block_gaslimit.sol:9  f() -> 20000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/block_prevrandao.sol:9  f() -> 0xa86c2e601b6c44eb4848f7d23d9df3113fbcac42041c49cbed5000cb4f118777  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/block_prevrandao_pre_paris.sol:9  f() -> 200000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/tx_gasprice.sol:7  f() -> 3000000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/tx_gasprice.sol:8  f() -> 3000000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/tx_gasprice.sol:9  f() -> 3000000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/uncalled_blobhash.sol:12  f() -> 0x0100000000000000000000000000000000000000000000000000000000000001  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/tryCatch/assert.sol:17  f(bool): false -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/assert_pre_byzantium.sol:18  f(bool): false -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:153  f1() -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:154  f1a() -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:156  f1c() -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:157  f2() -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:158  f2a() -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:160  f2c() -> 1  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:161  f3() -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:162  f3a() -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:164  f3c() -> 1  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:165  f4() -> 1  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:166  f4a() -> 1  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:167  f4b() -> 1  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:168  f4c() -> 1  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/malformed_panic.sol:51  a() -> 0x00  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic.sol:52  b() -> 0x00  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic.sol:53  c() -> 0x43  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic.sol:54  d() -> 0x43  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic_2.sol:51  c() -> 0x43  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic_2.sol:52  d() -> 0x43  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic_3.sol:57  c() -> 0x43  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic_3.sol:58  d() -> 0x43  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic_4.sol:59  a() -> 0x00  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic_4.sol:60  b() -> 0x00  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/malformed_panic_4.sol:61  c() -> 0x43  =>  revert: require@L6
+test/libsolidity/semanticTests/tryCatch/require.sol:17  f(bool): false -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/require_pre_byzantium.sol:18  f(bool): false -> 2  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/simple.sol:18  f(bool): false -> 9, 10  =>  revert: require@L3
+test/libsolidity/semanticTests/tryCatch/simple_notuple.sol:18  f(bool): false -> 9  =>  revert: require@L3
+test/libsolidity/semanticTests/types/packing_signed_types.sol:8  run() -> 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/types/type_conversion_cleanup.sol:5  test() -> 0xffffffffffffffffffffffffffffffff  =>  revert: Program called an OP_SPLIT operation with an invalid index. stack item length: 14; requested split index: 20.
+test/libsolidity/semanticTests/using/library_on_interface.sol:16  x() -> 7  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+test/libsolidity/semanticTests/various/codehash.sol:17  f() -> 0x0  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/various/codehash.sol:18  g() -> 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/various/codehash_assembly.sol:21  f() -> 0  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/various/codehash_assembly.sol:22  g() -> 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/various/codehash_assembly.sol:23  h() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/various/crazy_elementary_typenames_on_stack.sol:12  f() -> -7  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/various/iszero_bnot_correct.sol:18  f() -> true  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 32.
+test/libsolidity/semanticTests/viaYul/cleanup/checked_arithmetic.sol:56  add() -> 1, 1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/checked_arithmetic.sol:57  sub() -> 0, 0  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/checked_arithmetic.sol:58  mul() -> 1, 1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/checked_arithmetic.sol:59  div() -> 1, 1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/checked_arithmetic.sol:60  mod() -> 1, 0  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/checked_arithmetic.sol:61  inc_pre() -> 1  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/checked_arithmetic.sol:62  inc_post() -> 0  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/comparison.sol:34  eq() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/comparison.sol:35  neq() -> false  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/comparison.sol:36  geq() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/comparison.sol:37  leq() -> false  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/comparison.sol:38  gt() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/cleanup/comparison.sol:39  lt() -> false  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/conversion/implicit_cast_assignment.sol:12  f() -> 0x78  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 4. Requested byte length: 2.
+test/libsolidity/semanticTests/viaYul/conversion/implicit_cast_function_call.sol:15  g() -> 0x78  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 4. Requested byte length: 2.
+test/libsolidity/semanticTests/viaYul/conversion/implicit_cast_local_assignment.sol:11  f() -> 0x78  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 4. Requested byte length: 2.
+test/libsolidity/semanticTests/viaYul/dirty_memory_dynamic_array.sol:18  f() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/dirty_memory_int32.sol:18  f() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/dirty_memory_static_array.sol:18  f() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/dirty_memory_struct.sol:22  f() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115792089237316195423570985008687907853269984665640564039457584007913129639935 -> -1  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 339200 (density control length: 424); operation cost following operation: 339233.
+test/libsolidity/semanticTests/viaYul/exp_neg.sol:27  f(int256,uint256): -2, 255 -> -57896044618658097711785492504343953926634992332820282019728792003956564819968  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 341600 (density control length: 427); operation cost following operation: 341665.
+test/libsolidity/semanticTests/viaYul/keccak.sol:12  keccak2() -> 0x64e604787cbf194841e7b68d7cd28786f6c9a0a3ab9f8b0a0e87cb4387ab0107  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/viaYul/msg_sender.sol:9  test() -> true  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
+test/libsolidity/semanticTests/viaYul/return_and_convert.sol:9  f() -> 255  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 3. Requested byte length: 2.
+test/libsolidity/semanticTests/viaYul/unary_operations.sol:125  bitnot_s8() -> 99  =>  revert: Program failed an OP_VERIFY operation.

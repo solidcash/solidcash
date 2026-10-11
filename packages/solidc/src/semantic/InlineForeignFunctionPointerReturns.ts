@@ -37,6 +37,7 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   >();
 
   private fnPtrStateVars = new Set<string>(); // foreign fn-ptr state vars - sound to beta-reduce as a helper arg
+  private valueReferenced = new Set<string>(); // candidates a bare identifier still uses as a fn-ptr VALUE
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visitContract(node.contract) as ContractNode;
@@ -86,8 +87,30 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
     node.functions = node.functions.map((f) => this.rewrite(f)!);
     node.fallbackDef = this.rewrite(node.fallbackDef);
     node.receiveDef = this.rewrite(node.receiveDef);
-    // Remove only internal/private candidates (fully inlined); a public candidate keeps its ABI entry.
-    node.functions = node.functions.filter((f) => !(this.candidates.get(f.name)?.isPublic === false));
+    // Remove an internal/private candidate only when every surviving use is an INLINED call. A bare identifier
+    // that still names the helper as a function-pointer VALUE (`function(...) internal p = m;`) is not an inlined
+    // call, so the helper's own declaration must stay for the pointer to resolve - dropping it here left the
+    // reference undefined. A name used as a call callee is not a value use.
+    this.valueReferenced = new Set<string>();
+    const scanValueReferences = (n: Node): void => {
+      if (n instanceof FunctionCallNode && n.identifier instanceof IdentifierNode) {
+        for (const arg of n.parameters) scanValueReferences(arg);
+        return;
+      }
+      if (n instanceof IdentifierNode && this.candidates.has(n.name)) { this.valueReferenced.add(n.name); return; }
+      for (const key of Object.keys(n)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const val = (n as unknown as Record<string, unknown>)[key];
+        if (val instanceof Node) scanValueReferences(val);
+        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) scanValueReferences(v);
+      }
+    };
+    for (const fn of [node.constructorDef, ...node.functions, node.fallbackDef, node.receiveDef]) {
+      if (fn?.body) scanValueReferences(fn.body);
+    }
+    node.functions = node.functions.filter(
+      (f) => !(this.candidates.get(f.name)?.isPublic === false && !this.valueReferenced.has(f.name)),
+    );
     return node;
   }
 

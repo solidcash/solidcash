@@ -8,16 +8,14 @@
   "workers": 6,
   "checkedNegativeFixtures": true,
   "primaryResult": {
-    "compiled": 2716,
-    "namedFailures": 89,
+    "compiled": 2717,
+    "namedFailures": 88,
     "timeouts": 0
   },
   "retryTimeoutMs": 120000,
   "retryWorkers": 2,
-  "retriedTimeoutFixtures": 1,
-  "retryErrorNames": [
-    "ContractStorageTooLargeError"
-  ],
+  "retriedTimeoutFixtures": 0,
+  "retryErrorNames": [],
   "retryPasses": [
     {
       "timeoutMs": 120000,
@@ -25,16 +23,6 @@
       "selectedFixtures": 0,
       "includeTimeouts": true,
       "errorNames": [],
-      "isolatedWorkers": true
-    },
-    {
-      "timeoutMs": 120000,
-      "workers": 2,
-      "selectedFixtures": 1,
-      "includeTimeouts": true,
-      "errorNames": [
-        "ContractStorageTooLargeError"
-      ],
       "isolatedWorkers": true
     }
   ],
@@ -44,14 +32,7 @@
       "timeoutMs": 120000,
       "workers": 4,
       "selectedFixtures": 1,
-      "accepted": 161,
-      "timeouts": 0
-    },
-    {
-      "timeoutMs": 120000,
-      "workers": 4,
-      "selectedFixtures": 0,
-      "accepted": 161,
+      "accepted": 151,
       "timeouts": 0
     }
   ],

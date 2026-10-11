@@ -188,7 +188,7 @@ export async function deployStatefulContract<T extends Artifact>(
   let entryCommitments: string[] = [];
   let trailingEntryCommitments: string[] = [];
   let eventCommitments: string[] = [];
-  let derivedChunkCommitments: Record<string, string> = {};
+  let derivedChunkCommitments: Record<string, string[]> = {};
   let transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
 
   // Check if constructor has sig params - probe won't work for those
@@ -342,19 +342,19 @@ export async function deployStatefulContract<T extends Artifact>(
   }
 
   // Literal base-constructor values have no visible ABI parameter. The probe reserves and learns their chunk
-  // commitment; materialize the same authenticated output in the real genesis transaction.
+  // commitments; materialize the same authenticated run in the real genesis transaction.
   for (const variable of stateLayout.variables ?? []) {
     if (!unresolvedDynamicWriteNames.includes(variable.name)) continue;
-    const commitment = derivedChunkCommitments[variable.name];
-    if (!commitment) continue;
-    builder.addOutput({
-      to: getDynamicChunkAddress(contract, categoryId, variable.name, variable.type),
-      amount: dataNftAmount,
-      token: {
-        category: categoryId, amount: 0n,
-        nft: { capability: 'mutable' as const, commitment },
-      },
-    });
+    for (const commitment of derivedChunkCommitments[variable.name] ?? []) {
+      builder.addOutput({
+        to: getDynamicChunkAddress(contract, categoryId, variable.name, variable.type),
+        amount: dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable' as const, commitment },
+        },
+      });
+    }
   }
 
   // Dynamic constructor values are stored in per-variable chunk NFTs immediately after the fixed block.

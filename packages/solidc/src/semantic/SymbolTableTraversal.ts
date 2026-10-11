@@ -2648,6 +2648,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private deployResultLocals = new Map<string, InstantiationNode>(); // locals = `new C(...)` in the current fn
 
+  /** The deploy a local is bound to: `new C(..)`, also behind address casts (`I(new C())`, `I(address(..))`). */
+  private deployBehindAddressCasts(expression: ExpressionNode | undefined): InstantiationNode | undefined {
+    let value = expression;
+    while (value instanceof CastNode && value.type instanceof AddressType) value = value.expression;
+    return value instanceof InstantiationNode && value.referencedContract ? value : undefined;
+  }
+
   // Survey the conditions which can make an otherwise stateless contract stateful. Stateful-child deployment is
   // the first condition in the historical short-circuit chain, so finding one stops immediately. If none exists,
   // that same necessary full traversal also answers the value-bearing-deploy and event-emission predicates.
@@ -12519,9 +12526,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // A local bound to `new C(...)` holds a contract this tx will CREATE as an output; it can never be
     // co-spent as an input in this same tx, so calling a method on it later is rejected (see the two
     // external-call sites below). Tracked per function body.
-    if (node.expression instanceof InstantiationNode && node.expression.referencedContract) {
-      this.deployResultLocals.set(node.name, node.expression);
-    }
+    const deploy = this.deployBehindAddressCasts(node.expression);
+    if (deploy) this.deployResultLocals.set(node.name, deploy);
 
     this.symbolTables[0].set(Symbol.variable(node));
     // A synthesized binding allowed to be unused (e.g. a desugared for..of loop var): self-reference it so
@@ -12662,10 +12668,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.expectedFunctionPointerType = savedExpectedFunctionPointerType;
     }
     // Reassignment of a deploy-result local (`d = new D();` again): later folded calls must bind to the
-    // NEW deploy node - earlier folds correctly stay on the old one.
-    if (node.expression instanceof InstantiationNode && node.expression.referencedContract) {
-      this.deployResultLocals.set(node.identifier.name, node.expression);
-    }
+    // NEW deploy node - earlier folds correctly stay on the old one. Any other value unbinds the deploy.
+    const deploy = this.deployBehindAddressCasts(node.expression);
+    if (deploy) this.deployResultLocals.set(node.identifier.name, deploy);
+    else this.deployResultLocals.delete(node.identifier.name);
     return node;
   }
 
@@ -13577,9 +13583,16 @@ export default class SymbolTableTraversal extends AstTraversal {
                   failed.location = node.location;
                   return failed;
                 }
+                // A local typed by another interface (`I i = I(new C())`) runs C's body through I's ABI: fold only
+                // when both declare the same results, as the inline `I(new C()).m()` form does.
+                if (realFoo && calleeName !== deployNode.referencedContract?.name
+                  && (realFoo.returnTypes.length !== ifaceFunc.returnTypes.length
+                    || realFoo.returnTypes.some((t, i) => t.toString() !== ifaceFunc.returnTypes[i].toString()))) {
+                  throw new DeployThenCallError(node, varName, methodName, deployNode.identifier.name, true);
+                }
                 const foldRes = realFoo ? this.tryFoldDeployCall(deployNode, realFoo, parameters) : false;
                 if (!foldRes) {
-                  throw new DeployThenCallError(node, varName, methodName, calleeName,
+                  throw new DeployThenCallError(node, varName, methodName, deployNode.identifier.name,
                     realFoo ? this.isDeployFoldable(realFoo) : false);
                 }
                 deployNode.hasFoldedChildCall = true;

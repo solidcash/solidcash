@@ -99,7 +99,7 @@ describe('assembly: for-loop break and continue', () => {
     + 'if eq(y, 4) { r := 90 } }';
   for (const x of [0n, 1n, 2n, 4n]) {
     it(`nested loops: each break/continue binds to its own loop (x = ${x})`, () => assertConformant({
-      ...asmCase({ params: 'uint x', retType: 'uint', yul: NESTED, args: [x] }), densityReserve: 1024,
+      ...asmCase({ params: 'uint x', retType: 'uint', yul: NESTED, args: [x] }), densityReserve: 512,
     }));
   }
   it('break skips a multi-statement post block', () => asm(

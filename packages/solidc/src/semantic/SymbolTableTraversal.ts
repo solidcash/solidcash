@@ -2743,6 +2743,23 @@ export default class SymbolTableTraversal extends AstTraversal {
       expr.left = l; expr.right = r;
       return expr;
     }
+    if (expr instanceof UnaryOpNode
+      && (expr.operator === UnaryOperator.PREFIX_INCREMENT || expr.operator === UnaryOperator.POSTFIX_INCREMENT)) {
+      // `++x` / `x++` used as a value: the fold yields the increment's result (the new value for the prefix
+      // form, the previous one for the postfix form) and records the write in the substitution map, so later
+      // reads observe it exactly as the statement form does. Only a local the replay already tracks increments:
+      // a runtime lvalue has no compile-time value to advance.
+      const operand = expr.expression;
+      if (!(operand instanceof IdentifierNode) || !subs.has(operand.name)) return null;
+      const prior = subs.get(operand.name)!;
+      const one = new IntLiteralNode(1n);
+      one.location = expr.location;
+      const next = new BinaryOpNode(cloneNode(prior), BinaryOperator.PLUS, one);
+      next.location = expr.location;
+      next.sourceArithmetic = true;
+      subs.set(operand.name, next);
+      return cloneNode(expr.operator === UnaryOperator.PREFIX_INCREMENT ? next : prior);
+    }
     if (expr instanceof UnaryOpNode) {
       const e = this.foldGenesisExpr(expr.expression, subs, fieldExprs, fieldType);
       if (!e) return null;
@@ -3169,6 +3186,25 @@ export default class SymbolTableTraversal extends AstTraversal {
         } finally {
           this.insideGenesisPredicate = priorInsidePredicate;
         }
+      } else if (stmt instanceof ArrayAssignNode) {
+        // `arr[i] = v` on a local the replay already holds as a materialized constant vector: fold `v` in the
+        // element's own type and replace that slot. The index must be a literal - a runtime index would need the
+        // value to stay a runtime array, which the fold has no representation for - and the array must already
+        // be a full ArrayNode (a named return seeded from its default, or an earlier folded literal).
+        const current = subs.get(stmt.name);
+        const index = stmt.index instanceof IntLiteralNode ? Number(stmt.index.value) : undefined;
+        if (!(current instanceof ArrayNode) || index === undefined
+          || !Number.isInteger(index) || index < 0 || index >= current.elements.length) return false;
+        const elementType = current.type instanceof ArrayType ? current.type.elementType : undefined;
+        const folded = this.foldGenesisExpr(
+          cloneNode(stmt.value), subs, fieldExprs, fieldType, elementType,
+        );
+        if (!folded) return false;
+        current.elements[index] = folded;
+        // A vector built by element writes carries the same meaning OptimizeFixedArrayValues gives a coalesced
+        // declaration: indexes the source never wrote stay the type default, so a consumer must not read it as a
+        // complete source vector.
+        current.coalescedPartial = true;
       } else if (isLast && stmt instanceof ReturnNode && stmt.expressions.length === 1) {
         const folded = this.foldGenesisExpr(cloneNode(stmt.expressions[0]), subs, fieldExprs, fieldType);
         if (!folded) return false;
@@ -3406,8 +3442,29 @@ export default class SymbolTableTraversal extends AstTraversal {
     const fieldExprs = new Map<string, ExpressionNode>(deployNode.foldedStateInit ?? []);
     const readableFieldType = (name: string): Type | undefined => (deployNode.ctorFoldFailed
       && !fieldExprs.has(name) ? undefined : stateFieldType(name));
+    // A NAMED return is a local the body builds and Solidity returns at fall-through, so seed it with its type
+    // default (`uint16[5] memory arr; arr[0] = v; ..` then `return arr` implied). The seed is only emitted if the
+    // body reads it, and a default that does not fold leaves the name unseeded, so the write that needs it still
+    // fails closed rather than folding a wrong value.
+    foo.returnNames.forEach((name, index) => {
+      if (subs.has(name) || index >= foo.returnTypes.length) return;
+      const declaration = ((foo.body as BlockNode | undefined)?.statements ?? []).find((statement) =>
+        statement instanceof VariableDefinitionNode && statement.name === name) as
+        VariableDefinitionNode | undefined;
+      const seed = this.foldGenesisExpr(
+        createDefaultValueExpression(declaration?.type ?? foo.returnTypes[index], foo.location!),
+        subs, fieldExprs, readableFieldType, declaration?.type ?? foo.returnTypes[index],
+      );
+      if (seed) subs.set(name, seed);
+    });
     const res = this.foldStatementList(statements, subs, fieldExprs, readableFieldType, stateFieldType);
     if (!res) return false;
+    // Solidity returns its named results when the body falls through without a `return`, so a body that only
+    // built its named result still folds to that value.
+    if (!res.returnValue && foo.returnNames.length === 1) {
+      const named = subs.get(foo.returnNames[0]);
+      if (named) res.returnValue = cloneNode(named);
+    }
     if (!res.wrote && !res.returnValue) return false; // neither a state transition nor a value
     if (res.wrote) {
       const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();

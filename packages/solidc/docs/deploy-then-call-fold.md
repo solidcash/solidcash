@@ -71,6 +71,16 @@ compilation is untouched; TypeCheck types them (see `visitInstantiation`).
   constants; and the always-forbidden `tx.*`, `msg.sender`/`msg.value`, external calls, `emit`,
   `blockhash`/block.*, `new`/`deploy`, `selfdestruct`. Control flow needs the state-transition subroutine
   below.
+- Also foldable: a callee that **builds a bounded memory vector and returns it** as its named result. A
+  `arr[i] = v` write on a local whose value the replay already holds as a materialized constant vector
+  replaces that element (the index must be a literal, and the element value folds in the element's own type);
+  `++x` / `x++` used as a value yields the increment's result while recording the write in the substitution
+  map; and a NAMED return is seeded with its type default and returned at fall-through, exactly as Solidity
+  returns it. `test/libsolidity/semanticTests/array/fixed_arrays_as_return_type.sol` is this shape
+  (`arr[0] = input; arr[1] = ++input; ..` returning `uint16[5] memory arr`), pinned by
+  `solidc/test/DeployFoldArrayResult.test.ts` and evaluated on the VM by
+  `solidcash/test/e2e/DeployFoldFixedArrayResult.e2e.test.ts`. A runtime index (no compile-time slot) and a
+  second local vector declared without an initializer still refuse.
 
 ### 2. Codegen - covenant verifies the post-`foo` genesis
 

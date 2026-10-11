@@ -20,11 +20,14 @@ import {
   DeleteLocalNode,
   MappingDeleteNode,
   MappingFieldAssignNode,
+  MappingAssignNode,
+  MappingAccessNode,
   FunctionCallNode,
   FunctionCallStatementNode,
   StateAccessNode,
   ReturnNode,
   WhileNode,
+  DoWhileNode,
   BinaryOpNode,
   UnaryOpNode,
   CastNode,
@@ -126,6 +129,9 @@ export default class LowerMemoryModel extends AstTraversal {
   // Locals that are memory-model arrays whose ELEMENTS are struct pointers (`T[] memory`, T a value-field
   // struct). Separate track from memArrays so value-element ops stay untouched. Name -> array type.
   private memStructArrays = new Map<string, ArrayType>();
+  // Locals that are memory-model arrays whose ELEMENTS are int-array (row) pointers (`T[][] memory`). A null (0)
+  // row reads the zero scratch word as its length: an empty row. Name -> the outer array type.
+  private memNestedArrays = new Map<string, ArrayType>();
   // Locals that are memory-model `bytes` pointers (a [length(32)][data] block, byte-packed data). Same pointer +
   // .length + alias + boundary machinery as a value array, but element access is BYTE-granular (stride 1, one
   // byte) instead of word-granular. The taint analysis treats a bytes candidate as a value array (b[i]/.length/
@@ -183,12 +189,14 @@ export default class LowerMemoryModel extends AstTraversal {
     const savedMem = this.memArrays;
     const savedStructs = this.memStructs;
     const savedStructArrays = this.memStructArrays;
+    const savedNested = this.memNestedArrays;
     const savedBytes = this.memBytes;
     const savedUses = this.usesMemory;
     const savedConv = this.convertible;
     this.memArrays = new Map();
     this.memStructs = new Map();
     this.memStructArrays = new Map();
+    this.memNestedArrays = new Map();
     this.memBytes = new Map();
     this.usesMemory = false;
     if (node.body) this.inlineByteConstantInitializers(node.body);
@@ -229,6 +237,7 @@ export default class LowerMemoryModel extends AstTraversal {
     this.memArrays = savedMem;
     this.memStructs = savedStructs;
     this.memStructArrays = savedStructArrays;
+    this.memNestedArrays = savedNested;
     this.memBytes = savedBytes;
     this.usesMemory = savedUses;
     this.convertible = savedConv;
@@ -872,7 +881,9 @@ export default class LowerMemoryModel extends AstTraversal {
     // fixed-array locals on the established value path avoids changing return/ABI behavior or materializing huge
     // compile-time bounds that never enter Yul.
     const yulReferenced = new Set<string>();
+    let hasAssembly = false;
     this.eachDescendant(body, (n) => {
+      if (n instanceof AssemblyStatementNode) hasAssembly = true;
       if (!(n instanceof AssemblyStatementNode) || !n.yulBlock) return;
       this.walkYul(n.yulBlock, (child) => {
         if (child instanceof YulPathNode) yulReferenced.add(child.base);
@@ -911,11 +922,13 @@ export default class LowerMemoryModel extends AstTraversal {
           // Compiler-generated named memory return retaining Solidity's default null pointer.
           || (n.name.startsWith('__memret_') && n.expression instanceof IntLiteralNode
             && n.expression.value === 0n);
-        if ((this.isHandledMemArray(ty) || this.isHandledMemStructArray(ty)) && fresh) candType.set(n.name, ty!);
+        // A null row reads the scratch word as its length, so a nested array converts only where no assembly runs.
+        const nested = !hasAssembly && this.isHandledMemNestedArray(ty);
+        if ((this.isHandledMemArray(ty) || this.isHandledMemStructArray(ty) || nested) && fresh) candType.set(n.name, ty!);
         else if ((this.isHandledMemBytes(ty) || this.isHandledMemString(ty)) && freshBytes) candType.set(n.name, ty!);
         else if (this.isHandledMemStruct(ty) && (n.expression === undefined || n.expression instanceof FunctionCallNode)) {
           candType.set(n.name, ty!);
-        } else if (ty && this.isRefType(ty) && n.expression && !(n.expression instanceof NewArrayNode)) {
+        } else if (ty && (this.isRefType(ty) || nested) && n.expression && !(n.expression instanceof NewArrayNode)) {
           derived.set(n.name, n.expression);
         }
       }
@@ -951,10 +964,26 @@ export default class LowerMemoryModel extends AstTraversal {
     if (candidates.size === 0) return new Set();
     const structCands = new Map<string, StructType>();
     const structArrayCands = new Map<string, ArrayType>();
+    const nestedCands = new Map<string, ArrayType>();
     for (const [name, ty] of candType) {
       if (ty instanceof StructType) structCands.set(name, ty);
       else if (this.isHandledMemStructArray(ty)) structArrayCands.set(name, ty as ArrayType);
+      else if (this.isHandledMemNestedArray(ty)) nestedCands.set(name, ty as ArrayType);
     }
+    // `g[i] = x` on a nested candidate stores a row pointer: x a candidate row of the element type, or a fresh row.
+    const storedRow = (n: ArrayAssignNode): 'alias' | 'fresh' | undefined => {
+      const row = nestedCands.get(n.name)?.elementType;
+      if (!(row instanceof ArrayType)) return undefined;
+      if (n.value instanceof IdentifierNode && candType.get(n.value.name)?.toString() === row.toString()) return 'alias';
+      return n.value instanceof NewArrayNode && !n.value.rawBytes
+        && n.value.elementType.toString() === row.elementType.toString() ? 'fresh' : undefined;
+    };
+    // `g[i]` on a nested candidate: the row an element access or `.length` dereferences.
+    const nestedRow = (e: unknown): ArrayAccessNode | TupleIndexOpNode | undefined => {
+      const base = e instanceof ArrayAccessNode ? e.array : e instanceof TupleIndexOpNode ? e.tuple : undefined;
+      return base instanceof IdentifierNode && nestedCands.has(base.name)
+        ? e as ArrayAccessNode | TupleIndexOpNode : undefined;
+    };
 
     // 2. Union-find alias groups: a derived candidate shares the group of its init's base variable (`tmp = s.a`
     //    joins s's group), so a taint anywhere in the group falls the whole group back together.
@@ -993,6 +1022,9 @@ export default class LowerMemoryModel extends AstTraversal {
       } else if (n instanceof AssignNode && n.identifier instanceof IdentifierNode
         && structCands.has(n.identifier.name) && n.expression instanceof FunctionCallNode) {
         unionCtorArgs(n.identifier.name, n.expression);
+      } else if (n instanceof ArrayAssignNode && storedRow(n) === 'alias') {
+        // A row stored into a nested array shares its fate: both pointers, or both value copies.
+        union(n.name, (n.value as IdentifierNode).name);
       }
       this.eachChild(n, scanUnions);
     };
@@ -1003,7 +1035,7 @@ export default class LowerMemoryModel extends AstTraversal {
     // A VALUE-element array candidate (index r/w yields a value): a candidate that is not a struct/struct-array.
     const isValueArr = (e: unknown): e is IdentifierNode =>
       e instanceof IdentifierNode && candidates.has(e.name)
-      && !structArrayCands.has(e.name) && !structCands.has(e.name);
+      && !structArrayCands.has(e.name) && !structCands.has(e.name) && !nestedCands.has(e.name);
     const isCallArrayArg = (e: unknown): e is IdentifierNode =>
       isValueArr(e) && candType.get(e.name) instanceof ArrayType;
     const isBytesPtr = (e: unknown): e is IdentifierNode =>
@@ -1038,6 +1070,9 @@ export default class LowerMemoryModel extends AstTraversal {
       // `return a;` on a value-element array is HANDLED: the boundary serializes the buffer to a value-copy array
       // (P3), so the pointer never leaks. Other return expressions walk normally.
       if (n instanceof ReturnNode) {
+        // `return g;` on a nested array serializes each row at the boundary too.
+        if (n.expressions?.length === 1 && n.expressions[0] instanceof IdentifierNode
+          && nestedCands.has(n.expressions[0].name)) return;
         if (n.expressions?.length === 1 && n.expressions[0] instanceof FunctionCallNode
           && n.expressions[0].parameters.some(isCallArrayArg)) {
           walk(n.expressions[0].identifier);
@@ -1062,6 +1097,26 @@ export default class LowerMemoryModel extends AstTraversal {
       if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && n.expression instanceof IdentifierNode
         && candidates.has(n.expression.name)) return; // .length (only arrays have it; value or struct element)
       if (n instanceof ArrayAssignNode && isValueArr(new IdentifierNode(n.name))) { walk(n.index); walk(n.value); return; }
+      // Nested array: `g[i][j]` read, `g[i].length`, a row store `g[i] = row` / `g[i] = new T[](m)`, and `g[i][j] = v`
+      // (a two-key MappingAssign before DesugarNestedArrayWrite; a compound write reads it as a two-key MappingAccess).
+      const row = nestedRow(n instanceof ArrayAccessNode ? n.array : n instanceof TupleIndexOpNode ? n.tuple
+        : n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE ? n.expression : undefined);
+      if (row) {
+        if (row instanceof ArrayAccessNode) walk(row.index);
+        if (n instanceof ArrayAccessNode) walk(n.index);
+        return;
+      }
+      if (n instanceof ArrayAssignNode && storedRow(n)) {
+        walk(n.index);
+        if (n.value instanceof NewArrayNode) walk(n.value.size);
+        return;
+      }
+      if ((n instanceof MappingAssignNode || n instanceof MappingAccessNode) && nestedCands.has(n.name)
+        && n.keys.length === 2 && n.arrayIndex === undefined) {
+        n.keys.forEach(walk);
+        if (n instanceof MappingAssignNode) walk(n.expression);
+        return;
+      }
       // `delete a` on a memory reference resets its pointer to zero; Yul may subsequently observe that null
       // pointer (e.g. mload(a) == mload(0) == 0).
       if (n instanceof DeleteLocalNode && candidates.has(n.identifier.name)) return;
@@ -1107,6 +1162,7 @@ export default class LowerMemoryModel extends AstTraversal {
         if (n.expression instanceof NewArrayNode) walk(n.expression.size); // fresh alloc: bound expr
         else if (n.expression instanceof ArrayNode) n.expression.elements.forEach(walk);
         else if (n.expression instanceof FunctionCallNode) walkCtor(n.name, n.expression); // struct ctor
+        else if (n.expression instanceof ArrayAccessNode && nestedRow(n.expression)) walk(n.expression.index);
         // else an ident/field/element alias init (`tmp = s.a`): the edge itself, do not taint the base
         return;
       }
@@ -1154,12 +1210,86 @@ export default class LowerMemoryModel extends AstTraversal {
       // Compiler-generated __nlv temporaries implement an explicit read/modify/write sequence; they are not
       // source-level aliases whose identity is observable. Require at least two user bindings in the group.
       const observableNames = names.filter((name) => !name.startsWith('__'));
-      if (observableNames.length > 1) {
+      const nested = names.some((name) => nestedCands.has(name));
+      const culprits = nested ? this.observableRowAliases(body, names, nestedCands, candType, baseVar)
+        : observableNames.length > 1 ? observableNames : undefined;
+      if (culprits) {
         const definition = definitions.get(observableNames[0]);
-        if (definition) throw new UnsupportedMemoryAliasingError(definition, observableNames);
+        if (definition) throw new UnsupportedMemoryAliasingError(definition, culprits);
       }
     }
     return new Set([...candidates].filter((c) => !taintedRoots.has(find(c))));
+  }
+
+  // A fallen-back group holding a nested array is value-copied, which differs from shared rows only where an array
+  // is written after an alias edge: an array local declared or assigned from a local-rooted pointer expression
+  // (`r = g[i]`, `h = g`, `y = row`), or a row stored from one (`g[i] = row`, `g[i] = g[j]`), closed over the arrays
+  // the group reaches. In a loop, a write anywhere in the turn counts unless the written array is declared inside
+  // that loop. A row pointer store matters only after an edge aliasing a whole outer array. Returns the names to
+  // report when such a write exists.
+  private observableRowAliases(
+    body: BlockNode, names: string[], nestedCands: Map<string, ArrayType>, candType: Map<string, Type>,
+    baseVar: (e: ExpressionNode) => string | undefined,
+  ): string[] | undefined {
+    if (names.some((name) => !nestedCands.has(name) && !this.isHandledMemArray(candType.get(name)))) {
+      return names.filter((name) => !name.startsWith('__'));
+    }
+    const position = new Map<Node, number>();
+    const declared = new Map<string, number[]>();
+    const types = new Map<string, Type>();
+    const loops: Array<[number, number]> = [];
+    let next = 0;
+    const number = (n: Node): void => {
+      const at = next++;
+      position.set(n, at);
+      if (n instanceof VariableDefinitionNode) {
+        declared.set(n.name, [...(declared.get(n.name) ?? []), at]);
+        types.set(n.name, n.type);
+      }
+      this.eachChild(n, number);
+      if (n instanceof WhileNode || n instanceof DoWhileNode) loops.push([at, next]);
+    };
+    number(body);
+    const outer = (name: string): boolean => this.isHandledMemNestedArray(types.get(name) ?? candType.get(name));
+    const array = (name: string): boolean => (types.get(name) ?? candType.get(name)) instanceof ArrayType;
+    // A statement binding or storing an array from another: [target, source, whether it stores a row].
+    const binding = (n: Node): [string, ExpressionNode | undefined, boolean] | undefined => {
+      if (n instanceof VariableDefinitionNode) return [n.name, n.expression, false];
+      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) return [n.identifier.name, n.expression, false];
+      return n instanceof ArrayAssignNode && outer(n.name) ? [n.name, n.value, true] : undefined;
+    };
+    const watched = new Set(names);
+    // Edge -> whether it aliases a whole outer array.
+    const edges = new Map<Node, boolean>();
+    for (let grown = true; grown;) {
+      grown = false;
+      this.eachDescendant(body, (n) => {
+        const bound = binding(n);
+        const from = bound?.[1] ? baseVar(bound[1]) : undefined;
+        if (!bound || from === undefined || !array(bound[0]) || !array(from)
+          || (!watched.has(bound[0]) && !watched.has(from))) return;
+        for (const name of [bound[0], from]) if (!watched.has(name)) { watched.add(name); grown = true; }
+        edges.set(n, !bound[2] && outer(bound[0]));
+      });
+    }
+    const after = (write: number, name: string, edge: number): boolean => {
+      if (write > edge) return true;
+      const decls = declared.get(name) ?? [];
+      return loops.some(([start, end]) => start <= write && write < end && start <= edge && edge < end
+        && !(decls.length === 1 && start <= decls[0] && decls[0] < end));
+    };
+    let observable = false;
+    this.eachDescendant(body, (n) => {
+      if (observable || !(n instanceof ArrayAssignNode || n instanceof MappingAssignNode
+        || n instanceof MappingDeleteNode) || !watched.has(n.name)) return;
+      const rowStore = outer(n.name)
+        && (n instanceof ArrayAssignNode || (n instanceof MappingDeleteNode && n.keys.length === 1));
+      const at = position.get(n)!;
+      for (const [edge, aliasesOuter] of edges) {
+        if ((!rowStore || aliasesOuter) && after(at, n.name, position.get(edge)!)) observable = true;
+      }
+    });
+    return observable ? [...watched].filter((name) => !name.startsWith('__')) : undefined;
   }
 
   private eachChild(node: Node, fn: (n: Node) => void): void {
@@ -1208,9 +1338,10 @@ export default class LowerMemoryModel extends AstTraversal {
           continue;
         }
       }
-      // `delete d[i]` on a memory array -> store the element default (0) in place.
-      if (stmt instanceof MappingDeleteNode && this.memArrays.has(stmt.name) && stmt.keys.length === 1) {
-        const arrT = this.memArrays.get(stmt.name)!;
+      // `delete d[i]` on a memory array -> store the element default (0) in place; on a nested array, a null row.
+      if (stmt instanceof MappingDeleteNode && stmt.keys.length === 1
+        && (this.memArrays.has(stmt.name) || this.memNestedArrays.has(stmt.name))) {
+        const arrT = this.memArrays.get(stmt.name) ?? this.memNestedArrays.get(stmt.name)!;
         const access = this.indexed(
           arrT, new IdentifierNode(stmt.name), this.visit(stmt.keys[0]) as ExpressionNode, 2,
           { proven: this.provenInRange.has(stmt) },
@@ -1254,6 +1385,44 @@ export default class LowerMemoryModel extends AstTraversal {
           out.push(this.at(this.mstore(addr, this.visit(stmt.expression) as ExpressionNode, structT.fields[fi].type), stmt));
           continue;
         }
+      }
+      // `g[i] = row` / `g[i] = new T[](m)` on a nested array -> store the row pointer (a fresh row allocated first).
+      if (stmt instanceof ArrayAssignNode && this.memNestedArrays.has(stmt.name)) {
+        const nestedT = this.memNestedArrays.get(stmt.name)!;
+        let row: ExpressionNode = stmt.value;
+        if (stmt.value instanceof NewArrayNode) {
+          const rowName = `__row_${this.counter++}`;
+          out.push(...this.allocArrayBlock(
+            rowName, this.visit(stmt.value.size) as ExpressionNode, (nestedT.elementType as ArrayType).elementType, stmt,
+          ));
+          row = new IdentifierNode(rowName);
+        }
+        const access = this.indexed(
+          nestedT, new IdentifierNode(stmt.name), this.visit(stmt.index) as ExpressionNode, 2,
+          { proven: this.provenInRange.has(stmt) },
+        );
+        out.push(this.at(this.mstoreAt(access, row, this.uint()), stmt));
+        continue;
+      }
+      // `g[i][j] = v` on a nested array -> one in-place store into the row `g[i]` points at.
+      if (stmt instanceof MappingAssignNode && this.memNestedArrays.has(stmt.name) && stmt.keys.length === 2) {
+        const nestedT = this.memNestedArrays.get(stmt.name)!;
+        const rowT = nestedT.elementType as ArrayType;
+        const bindIndex = this.hasEffects(stmt.expression)
+          && (this.readsBeyondLocals(stmt.keys[1]) || this.writesVariables(stmt.expression));
+        const row = this.mloadAt(this.indexed(
+          nestedT, new IdentifierNode(stmt.name), this.visit(stmt.keys[0]) as ExpressionNode, 1,
+        ), this.uint());
+        const access = this.indexed(rowT, row, this.visit(stmt.keys[1]) as ExpressionNode, 2, { bindIndex });
+        out.push(this.at(this.mstoreAt(access, this.visit(stmt.expression) as ExpressionNode, rowT.elementType), stmt));
+        continue;
+      }
+      // `return g;` on a nested array -> serialize every row into a fresh value-copy nested array and return that.
+      if (stmt instanceof ReturnNode && stmt.expressions?.length === 1
+        && stmt.expressions[0] instanceof IdentifierNode && this.memNestedArrays.has(stmt.expressions[0].name)) {
+        const { stmts, serName } = this.serializeNestedArray(stmt.expressions[0].name, stmt);
+        out.push(...stmts, this.at(new ReturnNode([new IdentifierNode(serName)]), stmt));
+        continue;
       }
       // `return b;` / `this.s = b;` on a memory bytes pointer -> serialize to the value-copy data slice
       // __yulmem[b+32 : b+32+b.length], so the pointer never crosses the export boundary.
@@ -1378,6 +1547,27 @@ export default class LowerMemoryModel extends AstTraversal {
     return { stmts: [serDecl, idxDecl, loop], serName };
   }
 
+  // Serialize a nested array pointer into a fresh value-copy `T[][]` local, each row copied as serializeArray copies
+  // a value array (a null row reads as empty).
+  private serializeNestedArray(name: string, src: Node): { stmts: StatementNode[]; serName: string } {
+    const nestedT = this.memNestedArrays.get(name)!;
+    const serName = `__ser_${this.counter++}`;
+    const idxName = `__seri_${this.counter++}`;
+    const rowName = `__serrow_${this.counter++}`;
+    const lenAt = (): ExpressionNode => this.mload(new IdentifierNode(name), this.uint());
+    const serDecl = this.at(new VariableDefinitionNode(nestedT, [], serName,
+      new NewArrayNode(nestedT.elementType, lenAt())), src);
+    const idxDecl = this.at(new VariableDefinitionNode(this.uint(), [], idxName, this.intLit(0n)), src);
+    const rowDecl = this.at(new VariableDefinitionNode(this.uint(), [], rowName,
+      this.mload(this.elemAddr(new IdentifierNode(name), new IdentifierNode(idxName)), this.uint())), src);
+    const row = this.serializeArray(rowName, nestedT.elementType as ArrayType, src);
+    const write = this.at(new ArrayAssignNode(serName, new IdentifierNode(idxName), new IdentifierNode(row.serName)), src);
+    const update = this.at(this.assign(idxName, this.add(new IdentifierNode(idxName), this.intLit(1n))), src);
+    const cond = this.at(new BinaryOpNode(new IdentifierNode(idxName), BinaryOperator.LT, lenAt()), src);
+    const loop = this.at(new WhileNode(cond, new BlockNode([rowDecl, ...row.stmts, write, update])), src);
+    return { stmts: [serDecl, idxDecl, loop], serName };
+  }
+
   // `return a;` on a memory value-array -> serialize the buffer then return the value-copy array.
   private serializeArrayReturn(arrName: string, arrT: ArrayType, src: Node): StatementNode[] {
     const { stmts, serName } = this.serializeArray(arrName, arrT, src);
@@ -1401,7 +1591,8 @@ export default class LowerMemoryModel extends AstTraversal {
     if (this.isHandledMemStruct(t)) return this.lowerStructDecl(node, t as StructType);
     if (this.isHandledMemBytes(t) || this.isHandledMemString(t)) return this.lowerBytesDecl(node, t);
     const isStructArr = this.isHandledMemStructArray(t);
-    if (!this.isHandledMemArray(t) && !isStructArr) return undefined;
+    const isNested = this.isHandledMemNestedArray(t);
+    if (!this.isHandledMemArray(t) && !isStructArr && !isNested) return undefined;
     const arrT = t as ArrayType;
 
     // Pointer-valued init: `T[] b = a` (alias), `T[] tmp = s.a` (ref-field read), `T[] tmp = s.ts[j]` etc. -> the
@@ -1412,6 +1603,7 @@ export default class LowerMemoryModel extends AstTraversal {
         this.usesMemory = true;
         if (this.isHandledMemStructArray(r.memType)) this.memStructArrays.set(node.name, r.memType as ArrayType);
         else if (this.isHandledMemStruct(r.memType)) this.memStructs.set(node.name, r.memType as StructType);
+        else if (this.isHandledMemNestedArray(r.memType)) this.memNestedArrays.set(node.name, r.memType as ArrayType);
         else this.memArrays.set(node.name, r.memType as ArrayType);
         return [this.at(new VariableDefinitionNode(this.uint(), [], node.name, r.ptr), node)];
       }
@@ -1422,20 +1614,9 @@ export default class LowerMemoryModel extends AstTraversal {
     if (node.expression instanceof NewArrayNode && !node.expression.rawBytes) {
       this.usesMemory = true;
       if (isStructArr) this.memStructArrays.set(node.name, arrT);
+      else if (isNested) this.memNestedArrays.set(node.name, arrT);
       else this.memArrays.set(node.name, arrT);
-      // The size is evaluated once, where the bump evaluates it first.
-      const n = this.once(this.clone(node.expression.size), true);
-      const ptr = new IdentifierNode(node.name);
-      // uint a = mload(0x40);   (read the free pointer)
-      const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
-      // mstore(0x40, a + 32 + n*32);   (bump the free pointer past this block)
-      const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.blockBytes(n.first))), node);
-      // __yulmem = bytes.concat(__yulmem, new bytes(32 + n*32));   (grow by the block size, zero-filled)
-      const grow = this.at(this.assign(YULMEM,
-        new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.blockBytes(n.again()))])), node);
-      // __yulmem = <store n at a>;   (the length word)
-      const setLen = this.at(this.mstore(this.at(this.clone(ptr), node), n.again(), arrT.elementType), node);
-      return [decl, bump, grow, setLen];
+      return this.allocArrayBlock(node.name, node.expression.size, arrT.elementType, node);
     }
 
     // `T[] memory a;` observed from assembly points at an allocated zero length word. In particular, its pointer
@@ -1472,6 +1653,23 @@ export default class LowerMemoryModel extends AstTraversal {
     }
 
     return undefined;
+  }
+
+  // Allocate a length-prefixed block of `size` words at a new pointer local `name` (rows of a nested array use it too).
+  private allocArrayBlock(name: string, size: ExpressionNode, elemType: Type, src: Node): StatementNode[] {
+    // The size is evaluated once, where the bump evaluates it first.
+    const n = this.once(this.clone(size), true);
+    const ptr = new IdentifierNode(name);
+    // uint a = mload(0x40);   (read the free pointer)
+    const decl = this.at(new VariableDefinitionNode(this.uint(), [], name, this.freePtr()), src);
+    // mstore(0x40, a + 32 + n*32);   (bump the free pointer past this block)
+    const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.blockBytes(n.first))), src);
+    // __yulmem = bytes.concat(__yulmem, new bytes(32 + n*32));   (grow by the block size, zero-filled)
+    const grow = this.at(this.assign(YULMEM,
+      new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.blockBytes(n.again()))])), src);
+    // __yulmem = <store n at a>;   (the length word)
+    const setLen = this.at(this.mstore(this.at(this.clone(ptr), src), n.again(), elemType), src);
+    return [decl, bump, grow, setLen];
   }
 
   // `S memory s = S(a0,..)` / `S memory s;` -> malloc(32*k) a zero-filled block, then store each constructor arg
@@ -1720,7 +1918,7 @@ export default class LowerMemoryModel extends AstTraversal {
 
   visitDeleteLocal(node: DeleteLocalNode): Node {
     const name = node.identifier.name;
-    if (this.memArrays.has(name) || this.memStructArrays.has(name)
+    if (this.memArrays.has(name) || this.memStructArrays.has(name) || this.memNestedArrays.has(name)
       || this.memBytes.has(name) || this.memStructs.has(name)) {
       return this.at(this.assign(name, this.intLit(0n)), node);
     }
@@ -1784,8 +1982,9 @@ export default class LowerMemoryModel extends AstTraversal {
   visitUnaryOp(node: UnaryOpNode): Node {
     if (node.operator === UnaryOperator.SIZE && node.expression instanceof IdentifierNode
       && (this.memArrays.has(node.expression.name) || this.memStructArrays.has(node.expression.name)
-        || this.memBytes.has(node.expression.name))) {
-      const arrT = this.memArrays.get(node.expression.name) ?? this.memStructArrays.get(node.expression.name);
+        || this.memNestedArrays.has(node.expression.name) || this.memBytes.has(node.expression.name))) {
+      const arrT = this.memArrays.get(node.expression.name) ?? this.memStructArrays.get(node.expression.name)
+        ?? this.memNestedArrays.get(node.expression.name);
       if (arrT?.bound !== undefined) return this.at(this.intLit(BigInt(arrT.bound)), node);
       const len = this.mload(new IdentifierNode(node.expression.name), this.uint());
       return this.at(new CastNode(PrimitiveType.BIGINT, len, false), node);
@@ -1828,6 +2027,15 @@ export default class LowerMemoryModel extends AstTraversal {
       }
     }
     return super.visitFieldAccess(node);
+  }
+
+  // `g[i][j]` read as a two-key MappingAccess (a compound write's value) on a nested memory array -> the element load.
+  visitMappingAccess(node: MappingAccessNode): Node {
+    if (!this.memNestedArrays.has(node.name) || node.keys.length !== 2 || node.arrayIndex) {
+      return super.visitMappingAccess(node);
+    }
+    const row = this.at(new ArrayAccessNode(new IdentifierNode(node.name), node.keys[0]), node);
+    return this.visit(this.at(new ArrayAccessNode(row, node.keys[1]), node));
   }
 
   // If `expr` is `arr[i]` on a struct-element array, return the element struct type + its pointer expression.
@@ -2098,6 +2306,12 @@ export default class LowerMemoryModel extends AstTraversal {
     return t instanceof ArrayType && t.bound === undefined && this.isHandledMemStruct(t.elementType, depth);
   }
 
+  // An unbounded array whose elements are unbounded handled int arrays (`T[][] memory`). Elements are row POINTERS.
+  private isHandledMemNestedArray(t: Type | undefined): boolean {
+    return t instanceof ArrayType && t.bound === undefined && t.elementType instanceof ArrayType
+      && t.elementType.bound === undefined && this.isHandledMemArray(t.elementType);
+  }
+
   // The struct-pointer stored at `arr[i]` = mload(arr + 32 + i*32).
   private structElemPtr(arrName: string, index: ExpressionNode, proven: boolean): ExpressionNode {
     const access = this.indexed(this.memStructArrays.get(arrName)!, new IdentifierNode(arrName), index, 1, { proven });
@@ -2292,7 +2506,7 @@ export default class LowerMemoryModel extends AstTraversal {
   private resolvePtr(expr: ExpressionNode): { ptr: ExpressionNode, memType: Type } | undefined {
     if (expr instanceof IdentifierNode) {
       const t = this.memArrays.get(expr.name) ?? this.memStructArrays.get(expr.name)
-        ?? this.memStructs.get(expr.name) ?? this.memBytes.get(expr.name);
+        ?? this.memStructs.get(expr.name) ?? this.memBytes.get(expr.name) ?? this.memNestedArrays.get(expr.name);
       return t ? { ptr: new IdentifierNode(expr.name), memType: t } : undefined;
     }
     if (expr instanceof FieldAccessNode) {

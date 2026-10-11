@@ -11,15 +11,22 @@ const run = (
 
 const ALIAS_ROWS = 'uint256[][] memory g = new uint256[][](2); uint256[] memory row = new uint256[](2); g[0] = row; '
   + 'g[1] = row; g[0][1] = v; return g[1][1];';
+const READ_ALIAS_ROW = 'uint256[][] memory g = new uint256[][](2); g[0] = new uint256[](2); uint256[] memory r = g[0]; '
+  + 'r[0] = v; return g[0][0];';
+const BUILD_ROWS = 'function build(uint256 v) internal pure returns (uint256[][] memory) { uint256[][] memory g = '
+  + 'new uint256[][](2); uint256[] memory row = new uint256[](2); g[0] = row; g[1] = row; g[0][1] = v; return g; }';
 
 describe('memory: nested arrays', () => {
   it('a 2-D array filled in loops', () => run('array-2d', 'uint256 n', 'uint256',
     'uint256[][] memory g = new uint256[][](n); for (uint256 i = 0; i < n; i++) { g[i] = new uint256[](i + 1); '
     + 'for (uint256 j = 0; j <= i; j++) { g[i][j] = i * 10 + j; } } return g[n - 1][n - 1] + g[1][0] + g.length;',
     [2n], { densityReserve: 512 }));
-  // KNOWN DIVERGENCE: arrays of arrays are value-copied, so a row stored twice is two rows (EVM: one, aliased).
-  it.fails.each([false, true])('an inner array aliased through an outer one (evmCompat %s)', (evmCompat) =>
+  it.each([false, true])('an inner array aliased through an outer one (evmCompat %s)', (evmCompat) =>
     run('array-2d-alias', 'uint256 v', 'uint256', ALIAS_ROWS, [7n], { evmCompat }));
+  it.each([false, true])('an inner array read out of an outer one and written (evmCompat %s)', (evmCompat) =>
+    run('array-2d-read-alias', 'uint256 v', 'uint256', READ_ALIAS_ROW, [5n], { evmCompat }));
+  it('a 2-D array with an aliased row returned by a helper', () => run('array-2d-return', 'uint256 v', 'uint256',
+    'uint256[][] memory h = build(v); return h[1][1] * 10 + h.length;', [7n], { decls: BUILD_ROWS, densityReserve: 512 }));
   it('a fixed 2-D array', () => run('array-fixed-2d', 'uint256 v', 'uint256',
     'uint256[2][3] memory m; m[2][1] = v; m[0][0] = 1; return m[2][1] * 10 + m[0][0] + m[1][1];', [4n]));
 });

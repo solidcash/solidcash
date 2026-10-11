@@ -23258,23 +23258,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
-    // solc's call to an account without code: no callee runs and the result is `(true, bytes(""))`. A runtime target
-    // must be no P2SH lock, the 23- and 35-byte shapes `code.length` counts as code, since no callee is co-spent.
+    // solc's call to an account without code: no callee runs and the result is `(true, bytes(""))`.
     if (node.noCodeTarget) {
-      if (node.noCodeTarget === 'checked') {
-        this.visit(node.addressExpression);
-        this.emit(Op.OP_SIZE, locationData);
-        this.emit(Op.OP_NIP, locationData);
-        this.emit(Op.OP_DUP, locationData);
-        this.emit(encodeInt(23n), locationData);
-        this.emit(Op.OP_NUMNOTEQUAL, locationData);
-        this.emit(Op.OP_SWAP, locationData);
-        this.emit(encodeInt(35n), locationData);
-        this.emit(Op.OP_NUMNOTEQUAL, locationData);
-        this.emit(Op.OP_BOOLAND, locationData);
-        this.emit(Op.OP_VERIFY, locationData);
-        this.popFromStack();
-      }
       if (node.discardedOpaqueReturn) return node;
       this.emit(Op.OP_1, locationData);
       this.emit(encodeInt(0n), locationData);

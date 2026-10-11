@@ -6,8 +6,8 @@ import { getContractFactory } from '../../src/stateful/index.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 
 // solc's low-level call to an account without code succeeds with empty return data and runs nothing, so a call to a
-// target that is no P2SH lock co-spends no callee: it returns `(true, "")`. A P2SH target is refused rather than
-// skipped, a value call pays its target, and a high-level call to an account without code still reverts.
+// constant target that cannot be a P2SH lock co-spends no callee: it returns `(true, "")`. An address-typed target
+// keeps its callee, a value call pays its target, and a high-level call to an account without code still reverts.
 const OPTIONS = { evmCompat: true, forceStateful: true, enforceFinalRequire: false } as const;
 
 const CALLER = `pragma solidity ^0.8.0;
@@ -58,25 +58,18 @@ describe('low-level call to an address without code', () => {
   const caller = compileString(CALLER, OPTIONS);
   const typed = compileString(TYPED, OPTIONS);
 
-  it('publishes no callee for a value-less empty call', () => {
-    for (const name of ['plain', 'literal']) {
-      const fn = caller.abi.find((entry) => entry.name === name)!;
-      expect(fn.externalCalls ?? []).toEqual([]);
-      expect(fn.inputs.some((input) => input.name.startsWith('__internal__externalReturnOutputIdx'))).toBe(false);
-    }
+  it('publishes no callee for a constant target and keeps it for an address-typed one', () => {
+    const fn = (name: string): (typeof caller.abi)[number] => caller.abi.find((entry) => entry.name === name)!;
+    expect(fn('literal').externalCalls ?? []).toEqual([]);
+    expect(fn('literal').inputs.some((input) => input.name.startsWith('__internal__externalReturnOutputIdx')))
+      .toBe(false);
+    expect((fn('plain').externalCalls ?? []).length).toBeGreaterThan(0);
   });
 
-  it('returns (true, empty) for a P2PKH target and for a constant one', async () => {
-    const { contract, payee } = await setup(caller);
-    await contract.plain(payee.getAddress()).send();
-    await contract.literal().send();
-    expect((await contract.getState()).calls).toBe(2n);
-  });
-
-  it('refuses a P2SH target instead of skipping its callee', async () => {
+  it('returns (true, empty) for a constant target', async () => {
     const { contract } = await setup(caller);
-    await expect(contract.plain(contract.address).send()).rejects.toThrow(/Program failed an OP_VERIFY operation/);
-    expect((await contract.getState()).calls).toBe(0n);
+    await contract.literal().send();
+    expect((await contract.getState()).calls).toBe(1n);
   });
 
   it('pays a P2PKH target from a value call, which returns (true, empty)', async () => {

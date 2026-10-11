@@ -17460,9 +17460,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * Mark an option-free empty-calldata raw call whose target is not statically a contract (`noCodeTarget`). solc's
-   * call to an account without code succeeds with empty data, and a target that is no P2SH lock holds no code, so
-   * no callee is co-spent. A contract-typed target, or a literal that may be a P2SH lock, keeps the co-spend.
+   * Mark an option-free empty-calldata raw call to a constant target that cannot be a P2SH lock (`noCodeTarget`).
+   * solc's call to an account without code succeeds with empty data and runs nothing, so no callee is co-spent. A
+   * runtime target may hold a contract (its fallback runs), so it keeps the co-spend, as does a P2SH-sized literal.
    */
   private markNoCodeRawCall(call: ExternalFunctionCallNode, options: CallOptions | undefined): void {
     if (this.compilerOptions.composition === 'framed' || options !== undefined) return;
@@ -17476,12 +17476,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (target instanceof HexLiteralNode || target instanceof IntLiteralNode) {
       if (target instanceof HexLiteralNode && target.codegenError !== undefined) return;
       const size = target instanceof HexLiteralNode ? target.value.length : encodeInt(target.value).length;
-      if (size !== 23 && size !== 35) call.noCodeTarget = 'literal';
-      return;
+      if (size !== 23 && size !== 35) call.noCodeTarget = true;
     }
-    const type = target.type ?? this.resolveLowLevelReceiverType(target);
-    if ((type instanceof AddressType && type.interfaceName === undefined)
-      || type instanceof IntType || type instanceof BytesType) call.noCodeTarget = 'checked';
   }
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {

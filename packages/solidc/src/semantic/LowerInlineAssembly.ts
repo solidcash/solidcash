@@ -1658,6 +1658,14 @@ function intLit(value: bigint, src: { location?: Node['location'] }): IntLiteral
   return loc(new IntLiteralNode(value), src);
 }
 
+// A cast to or from the raw word a Yul `:=` copies (CastNode.evmWord).
+function evmWordCast(type: Type, value: ExpressionNode, isUnsafe: boolean, src: { location?: Node['location'] },
+): CastNode {
+  const cast = loc(new CastNode(type, value, isUnsafe), src);
+  cast.evmWord = true;
+  return cast;
+}
+
 function isIntLiteral(e: YulExpressionNode): e is YulLiteralNode {
   return e instanceof YulLiteralNode && (e.kind === YulLiteralKind.NUMBER || e.kind === YulLiteralKind.HEX);
 }
@@ -2816,17 +2824,17 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       const vt = currentVars.get(stmt.value.base);
       const vIsWord = vt instanceof IntType && !vt.signed && vt.bits === 256;
       if (vt && !vIsWord && !(vt instanceof ValueType)) {
-        value = loc(new CastNode(UINT256, value, vt instanceof FunctionType), stmt);
+        value = evmWordCast(UINT256, value, vt instanceof FunctionType, stmt);
       }
     }
     // The assembled value is a uint256 word; a target of a different type reinterprets it (EVM `:=` writes the
     // raw word). Cast to the target so the lowered assignment type-checks - except when the target IS uint256.
     const isWord = t instanceof IntType && !t.signed && t.bits === 256;
     if (t instanceof ValueType) {
-      value = loc(new CastNode(t.underlyingType, value, false), stmt);
+      value = evmWordCast(t.underlyingType, value, false, stmt);
       value = loc(new CastNode(t, value, false), stmt);
     } else if (t && !isWord) {
-      value = loc(new CastNode(t, value, t instanceof FunctionType), stmt);
+      value = evmWordCast(t, value, t instanceof FunctionType, stmt);
     } else if (isWord && (isBytes32Call(stmt.value) || isByteCall(stmt.value))) {
       // Hashes and byte() yield bytes-shaped main-AST values, but every Yul assignment copies a uint256 word.
       // Reinterpret them for a uint256 target (a differently typed target is handled above).

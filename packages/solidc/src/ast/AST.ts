@@ -1834,6 +1834,9 @@ export class CastNode extends ExpressionNode implements Typed {
   // Set when this identity cast came from `T.unwrap(x)`: the runtime target is
   // T's underlying type, but source validation must still require x to be T.
   sourceUdvtUnwrap?: ValueType;
+  // Set by the Yul lowering on a cast to or from the raw 32-byte word a `:=` copies. Under evmCompat it follows
+  // the EVM word layout and cleanup instead of a checked conversion (compileEvmWordCast in generation/utils.ts).
+  evmWord?: boolean;
   constructor(
     public type: Type,
     public expression: ExpressionNode,

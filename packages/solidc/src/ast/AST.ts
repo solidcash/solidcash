@@ -2857,6 +2857,10 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing graph invocation. The
   // compiler still reconstructs its Solidity `(success, data)` result, but excludes it from callsite metadata.
   rawValueTransferOnly?: boolean;
+  // An option-free empty-calldata call to a target not statically a contract: solc's call to an account without code,
+  // so no callee is co-spent and the result is `(true, bytes(""))`. 'literal' is a constant target that cannot be a
+  // P2SH lock; 'checked' requires at runtime that the target is no P2SH lock (23 or 35 bytes).
+  noCodeTarget?: 'literal' | 'checked';
   // Set for a same-address varying-method function pointer `f = cond ? c.a : c.b; f(args)`: the RUNTIME selector
   // expression (`cond ? c.a.selector : c.b.selector`). Codegen stashes it into a temp and the covenant asserts
   // the co-spent callee's selector == it (instead of the compile-time witness), binding the co-spent method to

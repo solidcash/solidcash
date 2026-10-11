@@ -15,7 +15,7 @@ fail before broadcast when its required transaction shape cannot be constructed.
 | ABI encode/decode | Yes | Yes | Yes | Yes | EVM-vs-BCH differential: `packages/solidcash/test/conformance/abi.conformance.test.ts`, `decode.conformance.test.ts` (including dirty-word reverts); VM round-trip `SolidityCorpusBehavior.test.ts` | Supported subset; EVM selectors require `evmCompat`; `abi.decode` reverts on a non-clean word as solc does |
 | Statements and control flow (loops, break/continue, early returns, memory values) | Yes | Yes | Yes | Yes | EVM-vs-BCH differential of whole function bodies in both compile modes: `packages/solidcash/test/conformance/statements.conformance.test.ts` | Supported; a loop-heavy function needs a deploy-time density reserve (`salt`, `packages/solidcash/test/e2e/StatelessDensityReserve.test.ts`) when its script is too short to fund the loop's operation cost |
 | Structs and fixed arrays | Yes | Yes | Yes | Yes | VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/StructsMappings.test.ts`, `packages/solidc/test/solidity-compat/storage-collections.test.ts` | Supported |
-| Dynamic arrays | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/DynamicArrays.test.ts`, `packages/solidcash/test/e2e/ChunkedArrays.test.ts`; memory values `packages/solidcash/test/conformance/memory.conformance.test.ts` | Supported within documented commitment/chunk limits. KNOWN DIVERGENCE: a memory array of arrays is value-copied, so an inner array stored twice does not alias |
+| Dynamic arrays | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/DynamicArrays.test.ts`, `packages/solidcash/test/e2e/ChunkedArrays.test.ts`; memory values `packages/solidcash/test/conformance/memory.conformance.test.ts` | Supported within documented commitment/chunk limits; memory arrays of arrays keep reference semantics within a function (rows copy at function boundaries) |
 | Mappings | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts`; value and slot parity `packages/solidcash/test/conformance/{mapping,slot-layout}.conformance.test.ts` | Supported subset, including VM coverage for computed and last-use local keys; documented dynamic-loop/chunk limits apply |
 | Function pointers | Yes | Yes | Partial | Partial | `packages/solidcash/test/e2e/ForeignFunctionPointer.test.ts`, `FunctionPointerArrayCall.test.ts`, `FunctionPointerTernaryCall.test.ts` | Supported for internal pointers and single foreign pointers. KNOWN FAILURE: an `external` function-pointer array (`function(..) external[]` with push) fails to lower, see `packages/solidc/test/solidity-compat/README.md` and `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts` |
 | Inheritance and modifiers | Yes | Yes | Yes | N/A | EVM-vs-BCH differential of whole contracts (super chains, C3 diamonds, virtual dispatch, modifiers, using-for, overloads, recursion): `packages/solidcash/test/conformance/contracts.conformance.test.ts`; VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/solidity-compat/inheritance.test.ts`, `packages/solidc/test/Modifiers.test.ts` | Supported subset |
@@ -67,15 +67,18 @@ Measured 2026-10-11 on `feat/parity` (merged into `feat/per-call`) with `evmComp
 
 | Measure | Result |
 |---|---:|
-| solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2717/2805 = 96.86% |
-| solc corpus, fixtures solc rejects that SolidCash also rejects | 2007/2158 = 93.00% |
-| Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 137/141 = 97.16% |
-| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 511/517 = 98.84% |
+| solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2719/2805 = 96.93% |
+| solc corpus, fixtures solc rejects that SolidCash also rejects | 2009/2158 = 93.10% |
+| Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 138/141 = 97.87% |
+| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 565/569 = 99.30% |
+| solc corpus semantic expectations executed on the BCH VM, pure-function slice (`bench/solidity-corpus/semantic-runner.mjs`) | 1464/1612 = 90.82% |
 | Executable corpus fixtures traced to a VM test (`bench/solidity-corpus/BEHAVIORAL_COVERAGE.md`) | 155/1506 = 10.29% |
 
-The 6 differential divergences are documented `it.fails` cases: integer casts per compile mode (4) and aliasing of an
-inner array stored in a memory array of arrays (2; arrays of arrays are value-copied). Each conformance file was run
-after its last change; files untouched by a change were not re-run for it. Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
+The 4 differential divergences are documented `it.fails` cases: integer casts per compile mode (native narrowing and
+same-width sign reinterpretation revert by design). Each conformance file was run after its last change; files
+untouched by a change were not re-run for it. The semantic runner's mismatches are triaged in
+`bench/solidity-corpus/semantic-scorecard.txt`; most remaining ones are BCH platform differences (chain id, gas and
+blob fields) or runner-wrapper limits. Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
 selfdestruct, an untrusted delegatecall target).
 
 ## Release rule

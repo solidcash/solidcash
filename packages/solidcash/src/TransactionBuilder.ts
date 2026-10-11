@@ -36,7 +36,10 @@ import {
   pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
   OP_INPUTBYTECODE, leSmallNumber,
 } from './keccak/keccakComputeSidecar.js';
-import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from './ecrecover/ecrecoverComputeSidecar.js';
+import {
+  buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness,
+  extractEcrecoverArgBlobsFromTrace, probeEcrecoverSplit,
+} from './ecrecover/ecrecoverComputeSidecar.js';
 import type { EcrecoverWitness } from './ecrecover/ecrecoverRecovery.js';
 import {
   solidCashOutputToLibauthOutput,
@@ -355,7 +358,8 @@ export class TransactionBuilder {
    * Transparent recovery co-spend, auto-invoked by send(): for every contract input whose spent function uses
    * ecrecoverPubKey (`abiFunction.ecrecoverCompute`), resolve each call's (hash, v, r, s) direct params, compute the
    * GLV recovery witnesses, and co-spend the recovery side-car PAIR (A checkpoints, B commits the pubkey). The split
-   * point is a witnessed liveness parameter the SDK sizes deterministically; see docs/ecrecover.md.
+   * point is a witnessed liveness parameter the SDK sizes deterministically; see docs/ecrecover.md. Arguments the
+   * params cannot supply (a helper's recovery, a computed argument) are read off a VM probe.
    */
   async addRequiredEcrecoverComputeCoSpends(): Promise<this> {
     for (const input of [...this.inputs]) {
@@ -387,15 +391,21 @@ export class TransactionBuilder {
       };
       const calls = abiFn.ecrecoverArgParams ?? [];
       const evmFlags = abiFn.ecrecoverEvmFlags ?? [];
-      const evmPreimages: Uint8Array[] = [];   // uncompressed keys for the trailing keccak side-cars (one per evm call)
-      for (let c = 0; c < calls.length; c++) {
-        const [hp, vp, rp, sp] = calls[c];
+      const direct = calls.map(([hp, vp, rp, sp]) => {
         const hash = bytesAt(hp), r = bytesAt(rp), s = bytesAt(sp), vRaw = paramAt(vp);
         const v = typeof vRaw === 'bigint' ? Number(vRaw) : (vRaw instanceof Uint8Array ? vRaw[0] : NaN);
-        if (!hash || !r || !s || Number.isNaN(v)) {
-          throw new Error('ecrecoverPubKey requires direct (hash, v, r, s) parameters for the auto co-spend; '
-            + 'a computed argument needs an explicit recovery co-spend.');
-        }
+        return hash && r && s && !Number.isNaN(v) ? { hash, v, r, s } : undefined;
+      });
+      // evmFlags spans every recovery in the entry's closure; a recovery inside a helper or library publishes no
+      // arg params and a computed argument publishes null. Those read their arguments off a VM probe instead.
+      const recoveries = Math.max(calls.length, evmFlags.length);
+      if (direct.length < recoveries || direct.some((args) => args === undefined)) {
+        await this.addTracedEcrecoverComputeCoSpends(input, salt, recoveries, evmFlags);
+        continue;
+      }
+      const evmPreimages: Uint8Array[] = [];   // uncompressed keys for the trailing keccak side-cars (one per evm call)
+      for (let c = 0; c < direct.length; c++) {
+        const { hash, v, r, s } = direct[c]!;
         const wit = computeEcrecoverWitness(hash, v, r, s);
         await this.addEcrecoverComputeCoSpend(wit, salt);
         if (evmFlags[c]) evmPreimages.push(wit.uncompressedPubkey);
@@ -428,6 +438,87 @@ export class TransactionBuilder {
     const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, scA, scB);
     this.addInput(scA, unlockerA); this.addOutput(recreateA);   // A: checkpoint
     this.addInput(scB, unlockerB); this.addOutput(recreateB);   // B: recovered pubkey
+  }
+
+  /**
+   * Recovery co-spend for arguments `ecrecoverArgParams` cannot supply. Each probe lays out all n pairs, then one keccak
+   * side-car per evm recovery, at the stateless tail (the direct path's layout): real side-cars for the recoveries
+   * learned so far, placeholders for the rest. It evaluates the contract input and reads each reached recovery's
+   * argBlob at its A side-car read; pair k sits at base + 2k, the compiler's stable recovery ordinal. A learned pair
+   * lets the next probe run on to the following recovery. A recovery no probe reaches is never read, so its pair
+   * reuses a learned witness; when none is reached nothing is co-spent and send() reports the contract's own failure.
+   */
+  private async addTracedEcrecoverComputeCoSpends(
+    input: UnlockableUtxo, salt: Uint8Array, n: number, evmFlags: readonly boolean[],
+  ): Promise<void> {
+    const evmCount = evmFlags.slice(0, n).filter(Boolean).length;
+    const [utxosA, utxosB, utxosK] = await Promise.all([
+      this.provider.getUtxosForLockingBytecode(ecrecoverComputeLockingBytecode(salt, 'A')),
+      this.provider.getUtxosForLockingBytecode(ecrecoverComputeLockingBytecode(salt, 'B')),
+      evmCount > 0 ? this.provider.getUtxosForLockingBytecode(keccakComputeLockingBytecode(salt))
+        : Promise.resolve([] as Utxo[]),
+    ]);
+    const spent = (u: Utxo): boolean => this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout);
+    const freeA = utxosA.filter((u) => !spent(u)), freeB = utxosB.filter((u) => !spent(u));
+    const freeK = utxosK.filter((u) => !spent(u));
+    if (freeA.length < n || freeB.length < n || freeK.length < evmCount) {
+      throw new Error(`ecrecover needs ${n} A + ${n} B${evmCount > 0 ? ` + ${evmCount} keccak` : ''} side-car UTXOs; `
+        + `found ${freeA.length} A + ${freeB.length} B${evmCount > 0 ? ` + ${freeK.length} keccak` : ''}. Deploy a `
+        + 'recovery pair per recovery in the spent function (plus a keccak side-car per ecrecoverEvm).');
+    }
+    const contractIdx = this.inputs.indexOf(input);
+    const base = this.inputs.length;
+    const aInputs = new Map(Array.from({ length: n }, (_, k): [number, number] => [base + 2 * k, k]));
+    const witnesses: (EcrecoverWitness | undefined)[] = Array.from({ length: n }, () => undefined);
+    const pairs = new Map<number, ReturnType<typeof buildEcrecoverComputeSidecars>>();
+    const layOut = (): void => {
+      for (let k = 0; k < n; k++) {
+        const wit = witnesses[k];
+        if (wit && !pairs.has(k)) {
+          const chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
+          pairs.set(k, buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]));
+        }
+        const pair = pairs.get(k) ?? buildEcrecoverComputePlaceholders(salt, freeA[k], freeB[k]);
+        this.addInput(freeA[k], pair.unlockerA); this.addOutput(pair.recreateA);
+        this.addInput(freeB[k], pair.unlockerB); this.addOutput(pair.recreateB);
+      }
+      for (let k = 0, e = 0; k < n; k++) {
+        if (!evmFlags[k]) continue;
+        const preimage = witnesses[k]?.uncompressedPubkey ?? new Uint8Array(64);
+        const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, freeK[e]);
+        this.addInput(freeK[e], unlocker); this.addOutput(recreate);
+        e += 1;
+      }
+    };
+    keccakProbeVm ??= createVirtualMachineBch2026();
+    const savedInputs = [...this.inputs];
+    const savedOutputs = [...this.outputs];
+    try {
+      for (let round = 0; round < n && witnesses.some((wit) => wit === undefined); round++) {
+        this.inputs = [...savedInputs];
+        this.outputs = [...savedOutputs];
+        layOut();
+        const transaction = this.buildLibauthTransaction(true);
+        const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
+        const trace = keccakProbeVm.debug({ inputIndex: contractIdx, sourceOutputs, transaction }) as unknown[];
+        let learned = false;
+        for (const [k, argBlob] of extractEcrecoverArgBlobsFromTrace(trace, aInputs)) {
+          if (witnesses[k]) continue;
+          witnesses[k] = computeEcrecoverWitness(
+            argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
+          );
+          learned = true;
+        }
+        if (!learned) break;
+      }
+    } finally {
+      this.inputs = savedInputs;
+      this.outputs = savedOutputs;
+    }
+    const reached = witnesses.find((wit) => wit !== undefined);
+    if (!reached) return;
+    for (let k = 0; k < n; k++) witnesses[k] ??= reached;
+    layOut();
   }
 
   /**

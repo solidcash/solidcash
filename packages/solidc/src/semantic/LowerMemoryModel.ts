@@ -1488,8 +1488,17 @@ export default class LowerMemoryModel extends AstTraversal {
       }
     }
     this.memStructs.set(node.name, structT);
-    const ctor = node.expression instanceof FunctionCallNode ? node.expression : undefined;
-    return this.allocStructBlock(node.name, structT, ctor, node);
+    let ctor = node.expression instanceof FunctionCallNode ? node.expression : undefined;
+    // A call returning the struct by value (not its constructor) lands in a value temp and is copied in field by
+    // field; read as a constructor, its arguments would fill the fields and the returned value would be lost.
+    const copied: StatementNode[] = [];
+    if (ctor && ctor.identifier.name !== structT.name) {
+      const tmp = `__sv_${this.counter++}`;
+      copied.push(this.at(new VariableDefinitionNode(structT, [], tmp, ctor), node));
+      ctor = this.at(new FunctionCallNode(new IdentifierNode(structT.name), structT.fields.map((field) =>
+        this.at(new FieldAccessNode(this.at(new IdentifierNode(tmp), node), field.name), node))), node);
+    }
+    return [...copied, ...this.allocStructBlock(node.name, structT, ctor, node)];
   }
 
   // `bytes memory b = new bytes(n)` -> allocate a zero-filled [length(32)][data] block (data word-aligned so an

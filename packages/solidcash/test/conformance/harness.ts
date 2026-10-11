@@ -709,3 +709,22 @@ export function fnRevertCase(o: {
       + '    require(r == r);\n  }\n}\n',
   };
 }
+
+// Whole contracts (inheritance, modifiers, libraries, free functions) on both VMs. `source` must declare a contract
+// `C` with a public `f`; the EVM deploys C, and SolidCash compiles a derived `Check` that compares `f` with the EVM.
+export function contractCase(o: {
+  source: string; params: string; retType: string; args: readonly unknown[]; label: string; evmCompat?: boolean;
+}): ConformanceCase {
+  const names = o.params.length === 0 ? '' : o.params.split(',').map((p) => p.trim().split(/\s+/).pop()).join(', ');
+  const paramsSep = o.params.length > 0 ? `${o.params}, ` : '';
+  return {
+    solidity: `${SPDX}${o.source}\n`,
+    scash: `${o.source}\ncontract Check is C {\n  function check(${paramsSep}${o.retType} __expected) public pure {\n`
+      + `    require(f(${names}) == __expected);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'check',
+    args: o.args,
+    ...(o.evmCompat === undefined ? {} : { evmCompat: o.evmCompat }),
+    label: o.label,
+  };
+}

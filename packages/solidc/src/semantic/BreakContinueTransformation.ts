@@ -9,6 +9,7 @@ import {
   ContinueNode,
   TryCatchNode,
   VariableDefinitionNode,
+  TupleAssignmentNode,
   AssignNode,
   IdentifierNode,
   BoolLiteralNode,
@@ -25,6 +26,15 @@ import { Location } from '../ast/Location.js';
 
 let breakFlagCounter = 0;
 let continueFlagCounter = 0;
+// Flags of a lowered Yul `for` (expanded after expandBreakContinue ran) use a never-reset sequence of their own,
+// like LowerInlineAssembly's temporaries, so they cannot collide with that pass's per-compile numbering.
+let yulFlagCounter = 0;
+let yulFlags = false;
+
+const nextBreakFlag = (): string => (yulFlags ? `csYulBreak${yulFlagCounter++}` : `csBreak${breakFlagCounter++}`);
+const nextContinueFlag = (): string => (
+  yulFlags ? `csYulContinue${yulFlagCounter++}` : `csContinue${continueFlagCounter++}`
+);
 
 /**
  * Transforms break/continue statements into flag-based if-else structures.
@@ -62,6 +72,23 @@ export default function expandBreakContinue(ast: SourceFileNode): SourceFileNode
   if (ast.contract.receiveDef) transformFunctionBody(ast.contract.receiveDef);
 
   return ast;
+}
+
+/**
+ * Expand break/continue of one loop lowered from a Yul `for`. LowerInlineAssembly runs after expandBreakContinue,
+ * and a break/continue left in the AST emits nothing, so the rest of the iteration (and the post block) would run.
+ */
+export function expandYulLoopBreakContinue(loop: WhileNode): StatementNode[] {
+  const statements = loop.block.statements ?? [];
+  if (!containsBreakOrContinue(statements, 'break') && !containsBreakOrContinue(statements, 'continue')) {
+    return [loop];
+  }
+  yulFlags = true;
+  try {
+    return transformWhileLoop(loop);
+  } finally {
+    yulFlags = false;
+  }
 }
 
 function transformFunctionBody(func: FunctionDefinitionNode): void {
@@ -160,7 +187,7 @@ function transformDoWhileLoop(loop: DoWhileNode): StatementNode[] {
     return [loop];
   }
 
-  const breakFlagName = hasBreak ? `csBreak${breakFlagCounter++}` : undefined;
+  const breakFlagName = hasBreak ? nextBreakFlag() : undefined;
   const loc = loop.location;
 
   // Separate for-loop update statements from body
@@ -229,7 +256,7 @@ function transformWhileLoop(loop: WhileNode): StatementNode[] {
     return [loop];
   }
 
-  const breakFlagName = hasBreak ? `csBreak${breakFlagCounter++}` : undefined;
+  const breakFlagName = hasBreak ? nextBreakFlag() : undefined;
   const loc = loop.location;
 
   // Separate for-loop update statements from body so `continue` still runs the update
@@ -269,7 +296,8 @@ function transformWhileLoop(loop: WhileNode): StatementNode[] {
   }
 
   const newLoop = new WhileNode(newCondition, newBlock);
-  newLoop.forLoopUpdateCount = loop.forLoopUpdateCount;
+  // A break flag folds the update statements into one guarded branch.
+  newLoop.forLoopUpdateCount = breakFlagName && updateStmts.length > 0 ? 1 : loop.forLoopUpdateCount;
   newLoop.fixedUnrollForbidden = loop.fixedUnrollForbidden;
   newLoop.compilerAuthenticatedMaximumIterations = loop.compilerAuthenticatedMaximumIterations;
   newLoop.location = loop.location;
@@ -382,7 +410,7 @@ function nestBreakContinue(
     // A switch break is local to the switch, but a continue still targets the enclosing loop.
     // Use one iteration-local flag so every non-continuing case reaches the outer block tail.
     if (stmt instanceof SwitchNode && switchContainsContinue(stmt)) {
-      const continueFlagName = `csContinue${continueFlagCounter++}`;
+      const continueFlagName = nextContinueFlag();
       result.push(createBoolVarDef(continueFlagName, false, stmt.location));
       for (const candidate of stmt.cases) {
         candidate.body.statements = transformSwitchContinues(
@@ -417,6 +445,14 @@ function nestBreakContinue(
       }
       result.push(newBranch);
       continue;
+    }
+
+    // A block without top-level declarations (a lowered Yul switch) only groups: splice it so a continue inside
+    // also skips the statements after it (a continue left in the block would emit nothing).
+    if (stmt instanceof BlockNode && blockContainsBreakContinue(stmt, 'continue')
+      && !(stmt.statements ?? []).some(declaresVariables)) {
+      result.push(...nestBreakContinue([...(stmt.statements ?? []), ...remaining], breakFlagName));
+      break;
     }
 
     // Modifier expansion and return-in-loop lowering can leave a lexical block inside this loop with a
@@ -544,6 +580,11 @@ function containsBreakOrContinue(
     // Don't recurse into nested loops - their break/continue is scoped to them
   }
   return false;
+}
+
+function declaresVariables(statement: StatementNode): boolean {
+  return statement instanceof VariableDefinitionNode
+    || (statement instanceof TupleAssignmentNode && statement.elements.some((e) => !e.skip && !e.existing));
 }
 
 function switchContainsContinue(node: SwitchNode): boolean {

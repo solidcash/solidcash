@@ -38,6 +38,7 @@ import {
   memGrowTo,
 } from './YulMemPrimitives.js';
 import { isKernelSafeNativeAssembly } from './NativeAssemblyKernelSafety.js';
+import { expandYulLoopBreakContinue } from './BreakContinueTransformation.js';
 
 // Thrown when a Yul construct is outside the supported codegen subset; the block is then left as-is for the
 // inline-assembly diagnostic (GTT) to report. Internal to this pass.
@@ -3147,7 +3148,8 @@ function lowerForLoop(node: YulForLoopNode): StatementNode {
   const whileNode = loc(new WhileNode(lowerCond(node.condition), loopBlock), node);
   whileNode.forLoopUpdateCount = postStmts.length; // so `continue` still runs the post step
 
-  return loc(new BlockNode([...initStmts, whileNode]), node);
+  // This pass runs after expandBreakContinue, so the loop's own break/continue are expanded here.
+  return loc(new BlockNode([...initStmts, ...expandYulLoopBreakContinue(whileNode)]), node);
 }
 
 // Deep-clone a Yul node, renaming any identifier (path base, let-declared name) found in `rn`. Function-call

@@ -1846,6 +1846,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // method (never a local). rn() only maps renamed locals, so a literal `abi.encodeCall(IERC20.approve, ..)`
         // passes through unchanged. OZ SafeERC20.forceApprove is the trigger.
         n.interfaceName = rn(n.interfaceName);
+      } else if ((n instanceof StateAccessNode || n instanceof StateAssignNode) && this.stateVarNames.has(n.name)
+        && rn(n.name).startsWith(PREFIX)) {
+        // A state variable an inlined local shadows (`C.x` under a local `x`): it stays state, not the local.
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);

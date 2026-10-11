@@ -16039,11 +16039,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.property !== 'interfaceId') {
         throw new InvalidTypeIntrospectionPropertyError(node, typeText, node.property, ['interfaceId', 'name']);
       }
-      // Pre-compute interfaceId: XOR of all function selectors
-      const allFunctions = this.getAllInterfaceFunctions(iface);
+      // interfaceId (ERC-165): XOR of the selectors of the functions the interface itself declares,
+      // excluding inherited ones (solc interfaceFunctionList(false)); a redeclared override counts.
       const interfaceId = new Uint8Array(4);
-      for (const func of allFunctions) {
+      const seen = new Set<string>();
+      for (const func of iface.functions) {
         const sig = this.selectorSignatureFor(func.name, func.parameters.map((p) => p.type));
+        if (seen.has(sig)) continue;
+        seen.add(sig);
         const selector = this.computeAbiSelector(sig);
         for (let i = 0; i < 4; i++) {
           interfaceId[i] ^= selector[i];

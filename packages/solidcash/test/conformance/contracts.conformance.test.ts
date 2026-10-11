@@ -1,11 +1,19 @@
 // Contract-level semantics on both VMs: super chains, linearization, virtual dispatch, modifiers, libraries, free
 // functions, overloads, internal function pointers, enums and recursion. Each source declares `C` with `f`.
 import { describe, it } from 'vitest';
-import { assertConformant, contractCase } from './harness.js';
+import {
+  assertConformant, assertStatefulConformant, contractCase, type ConformanceCase,
+} from './harness.js';
 
 const run = (
   label: string, source: string, params: string, retType: string, args: readonly unknown[],
 ): Promise<void> => assertConformant(contractCase({ label, source, params, retType, args }));
+
+// A stateful `C` (data-NFT genesis); `check` is spent like a state write, so it carries no mutability.
+const runStateful = (label: string, source: string, params: string, args: readonly unknown[]): Promise<void> => {
+  const c: ConformanceCase = contractCase({ label, source, params, retType: 'uint256', args });
+  return assertStatefulConformant({ ...c, scash: c.scash.replace(' public pure {', ' public {') });
+};
 
 describe('contracts: inheritance', () => {
   it('super chain', () => run('super', `
@@ -216,4 +224,46 @@ contract C {
     args: [2n],
     view: true,
   })));
+});
+
+describe('contracts: interfaces and qualified state', () => {
+  // ERC-165: an interface id XORs only the selectors the interface declares itself, not inherited ones. evmCompat
+  // only: native selectors hash the platform signature, so a native interfaceId is not the EVM value by design.
+  it('type(I).interfaceId excludes inherited functions', () => assertConformant(contractCase({
+    label: 'interface-id-inherited',
+    source: `
+interface IBase { function supportsInterface(bytes4 id) external view returns (bool); }
+interface IDerived is IBase {
+  function balanceOf(uint256 owner) external view returns (uint256);
+  function approve(uint256 spender, uint256 amount) external returns (bool);
+}
+contract C {
+  function f() public pure returns (bytes4) { return type(IDerived).interfaceId; }
+}`,
+    params: '',
+    retType: 'bytes4',
+    args: [],
+    evmCompat: true,
+  })));
+
+  // `C.x` names the state variable even where a return variable `x` shadows it (state starts at zero).
+  it('a contract-qualified state read under a shadowing return variable', () => runStateful('qualified-state-read', `
+contract C {
+  uint256 x;
+  function f(uint256 v) public view returns (uint256 x) {
+    x = v;
+    x = x * 10 + C.x;
+  }
+}`, 'uint256 v', [5n]));
+
+  // `C.x = ...` and `C.x += ...` write the state variable, not the shadowing parameter `x`.
+  it('a contract-qualified state write under a shadowing parameter', () => runStateful('qualified-state-write', `
+contract C {
+  uint256 x;
+  function f(uint256 x) public returns (uint256) {
+    C.x = x + 1;
+    C.x += 2;
+    return C.x * 100 + x;
+  }
+}`, 'uint256 x', [5n]));
 });

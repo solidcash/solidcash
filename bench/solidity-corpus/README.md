@@ -90,6 +90,17 @@ fixtures; the pass and its resulting accepted count are appended to the same met
   is one spend on a fresh `MockNetworkProvider` (the `conformance/bch.ts` shape). `cmp=false` on FAILURE lines, so
   a call that returns normally is a mismatch; a FAILURE line needs a VM failure (`FailedTransactionError`), not a
   build error.
+- **keccak256 side-cars**: keccak256 runs in compute side-cars a deployer funds, so each spend places them first,
+  as `conformance/bch.ts` does: `max(1, minInstances)` mutable NFTs (category `ee..ee`) at
+  `keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, false)`, read from the artifact's `keccak256`
+  `externalLibraries` entry; when that entry is `unbounded` (a dynamic keccak loop), also 65 at the STATEFUL
+  covenant `keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, true)`, since the SDK probe co-spends N + 1 for N
+  iterations, capped at 64.
+- **Density reserve**: a spend stopped by the operation-cost density limit is retried once behind a 512-byte
+  reserve (`new Contract(artifact, [], { provider, salt })`: a dropped redeem-script push, max 520 bytes, that
+  raises the input's operation budget) and scored as `matched-with-density-reserve` or
+  `mismatched-with-density-reserve`, so op-cost limits stay visible instead of folding into plain results. FAILURE
+  lines are retried too: a revert that only the density limit causes never counts as a plain match.
 - **Limits of the wrapper**: the target is reached through an internal call, so `msg.sig`/`msg.data`, custom storage
   layouts and entry-point-only paths can refuse or differ for wrapper reasons; those show up as refusals or
   mismatches with their reason, not as silent passes.
@@ -102,10 +113,16 @@ SELECT_ONLY=true node bench/solidity-corpus/semantic-runner.mjs   # selection su
 RESCORE=true node bench/solidity-corpus/semantic-runner.mjs       # rebuild both reports from semantic-results.json
 ```
 
-Output: `semantic-results.json` (per fixture and line: matched / mismatched / refused-at-compile / skipped with
-reason / error for timeouts) and `semantic-scorecard.txt` (counts, mismatch shapes, then every mismatch). First
-run (2026-10-11, corpus 816d9b2a, 6 workers, 140 s): 489 fixtures / 1,778 lines selected; 1,332 of 1,612
-executed lines matched (82.6%), 280 mismatched, 4 refused at compile, 154 skipped, 8 timed out.
+Output: `semantic-results.json` (per fixture and line: matched / matched-with-density-reserve / mismatched /
+mismatched-with-density-reserve / refused-at-compile / skipped with reason / error for timeouts) and
+`semantic-scorecard.txt` (counts, mismatch shapes, the lines matched behind a reserve, then every mismatch, a
+reserve one tagged `(with density reserve)`). First run (2026-10-11, corpus 816d9b2a, 6 workers, 140 s): 489
+fixtures / 1,778 lines selected; 1,332 of 1,612 executed lines matched (82.6%), 280 mismatched, 4 refused at
+compile, 154 skipped, 8 timed out. With side-cars and the reserve (2026-10-11, 8 workers, 140 s): 1,344 of 1,612
+matched (83.4%), 8 matched with a reserve (5 of them FAILURE lines that still stop on the density limit), 250
+mismatched, 10 mismatched with a reserve (all still over the density limit). Of the 25 lines that lacked
+side-cars, 14 match; 11 stop at keccak probe errors (no side-car read in the probe trace, a 4-block batch, no
+convergence).
 
 ## Retained release scorecard (2026-08, 7,343 files)
 

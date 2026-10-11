@@ -1,7 +1,7 @@
-=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1332/1612 executed lines matched (82.63%) | 280 mismatched | 4 refused-at-compile | 154 skipped | 8 error | 489 fixtures run of 1541 compiled candidates | 139.8s ===
+=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1344/1612 executed lines matched (83.37%) | 8 matched-with-density-reserve | 250 mismatched | 10 mismatched-with-density-reserve | 4 refused-at-compile | 154 skipped | 8 error | 489 fixtures run of 1542 compiled candidates | 140.1s ===
 
 --- FIXTURES SKIPPED (by reason) ---
-  620  state-variables
+  621  state-variables
   101  type:array
    47  type:string-bytes
    41  value:string-or-hex
@@ -33,8 +33,10 @@
 
 --- LINES (selected fixtures) ---
  1778  selected
- 1332  matched
-  280  mismatched
+ 1344  matched
+    8  matched-with-density-reserve
+  250  mismatched
+   10  mismatched-with-density-reserve
     4  refused-at-compile
   154  skipped
     8  error (timeout/worker)
@@ -44,20 +46,21 @@
    28  stateful-artifact
 
 --- MISMATCH SHAPES ---
-   80  expected values, got revert: Program failed an OP_VERIFY operation.
-   54  expected values, got revert: Program called an OP_NUMNBIN operation with an insufficient byte length to re-encode the provided numb
+   79  expected values, got revert: Program failed an OP_VERIFY operation.
+   53  expected values, got revert: Program called an OP_NUMNBIN operation with an insufficient byte length to re-encode the provided numb
    42  expected values, got wrong value (unmapped final verify)
    36  expected values, got revert: require@LN
-   24  expected values, got build-error: Error: keccakN preimage extraction needs N compute side-car UTXOs (one per batch of up to three c
-   13  expected values, got revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
    10  expected FAILURE, got success (no revert)
+   10  expected values, got (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
+    9  expected values, got build-error: Error: keccakN preimage extraction: no side-car read found in the probe trace.
     6  expected values, got build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
-    3  expected values, got revert: Program attempted a bitwise shift with an invalid bit count. Abandoned excessive OP_LSHIFTNUM. Provide
     3  expected values, got revert: Program called an OP_SPLIT operation with an invalid index. stack item length: N; requested split inde
     3  expected values, got wrong value
     2  expected FAILURE, got build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
     2  expected values, got build-error: TypeError: Cannot read properties of undefined (reading 'length')
-    1  expected values, got build-error: Error: stateless dynamic keccakN loop needs >= N compute side-car UTXOs at the branded address; f
+    2  expected values, got revert: Program attempted a bitwise shift with an invalid bit count. Abandoned excessive OP_LSHIFTNUM. Provide
+    1  expected values, got build-error: Error: keccakN batch too large (N total blocks); a single side-car input funds at most N keccak b
+    1  expected values, got build-error: Error: keccakN preimage extraction did not converge.
     1  expected values, got revert: Program attempted to read from an invalid transaction input index. Transaction input count: N; request
 
 --- REFUSED-AT-COMPILE (by error head, per line) ---
@@ -66,10 +69,20 @@
     1  StorageLayoutSpecifierError: Cannot inherit from a contract with a custom storage layout. (solc TypeError N) at Line N, 
     1  UnsupportedStructFieldTypeError: Type '..' is not supported as a struct field type at Line N, Column N
 
+--- MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---
+test/libsolidity/semanticTests/array/array_function_pointers.sol:24  f(uint256,uint256): 1823621, 12323 -> FAILURE  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1632800 (density control length: 2041); operation cost following operation: 1632876.
+test/libsolidity/semanticTests/array/array_function_pointers.sol:25  f2(uint256,uint256,uint256,uint256): 18723921, 1823621, 123, 12323 -> FAILURE  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1956800 (density control length: 2446); operation cost following operation: 1957147.
+test/libsolidity/semanticTests/array/array_function_pointers.sol:26  g(uint256,uint256): 1823621, 12323 -> FAILURE  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1629600 (density control length: 2037); operation cost following operation: 1629691.
+test/libsolidity/semanticTests/array/array_function_pointers.sol:27  g2(uint256,uint256,uint256,uint256): 18723921, 1823621, 123, 12323 -> FAILURE  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1953600 (density control length: 2442); operation cost following operation: 1953614.
+test/libsolidity/semanticTests/array/memory_arrays_of_various_sizes.sol:15  f(uint256,uint256): 3, 1 -> 1  =>  success
+test/libsolidity/semanticTests/cleanup/exp_cleanup_smaller_base.sol:13  f() -> 0x00  =>  success
+test/libsolidity/semanticTests/freeFunctions/free_namesake_contract_function.sol:8  f() -> FAILURE  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 656000 (density control length: 820); operation cost following operation: 656006.
+test/libsolidity/semanticTests/viaYul/exp_neg.sol:27  f(int256,uint256): -2, 255 -> -57896044618658097711785492504343953926634992332820282019728792003956564819968  =>  success
+
 --- MISMATCHES (fixture:line  call  =>  outcome) ---
 test/libsolidity/semanticTests/abicoder/abi_encode_call_v2.sol:48  callExternal() -> true  =>  revert: Program attempted to read from an invalid transaction input index. Transaction input count: 1; requested index: -1.
-test/libsolidity/semanticTests/abicoder/abi_encode_calldata_slice.sol:61  test_bytes() ->  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1914400 (density control length: 2393); operation cost following operation: 1914503.
-test/libsolidity/semanticTests/abicoder/abi_encode_calldata_slice.sol:66  test_uint256() ->  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2011200 (density control length: 2514); operation cost following operation: 2011228.
+test/libsolidity/semanticTests/abicoder/abi_encode_calldata_slice.sol:61  test_bytes() ->  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2327200 (density control length: 2909); operation cost following operation: 2327242.
+test/libsolidity/semanticTests/abicoder/abi_encode_calldata_slice.sol:66  test_uint256() ->  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2424000 (density control length: 3030); operation cost following operation: 2424072.
 test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:48  f1(bytes32): left(1) -> left(1)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 1.
 test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:50  f1(bytes32): left(0xFE) -> left(0xFE)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 1.
 test/libsolidity/semanticTests/abicoder/cleanup/bytesx_v2.sol:52  f1(bytes32): left(0xFF) -> left(0xFF)  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 1.
@@ -141,38 +154,30 @@ test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:150  f128(int256): 0
 test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:152  f128(int256): 0x01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF -> -1  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/abicoder/cleanup/intx_v2.sol:154  f128(int256): 0x01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE -> -2  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/abicoder/return_dynamic_types_cross_call_out_of_range_post_homestead.sol:17  f(uint256): 0x60 -> FAILURE  =>  success (no revert)
-test/libsolidity/semanticTests/array/array_3d_assignment.sol:17  f(uint256): 42 -> 42  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1422400 (density control length: 1778); operation cost following operation: 1422478.
-test/libsolidity/semanticTests/array/array_3d_new.sol:14  f(uint256): 42 -> 42  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1419200 (density control length: 1774); operation cost following operation: 1419669.
+test/libsolidity/semanticTests/array/array_3d_assignment.sol:17  f(uint256): 42 -> 42  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1835200 (density control length: 2294); operation cost following operation: 1835249.
+test/libsolidity/semanticTests/array/array_3d_new.sol:14  f(uint256): 42 -> 42  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1832000 (density control length: 2290); operation cost following operation: 1832034.
 test/libsolidity/semanticTests/array/array_memory_as_parameter.sol:22  test(uint256,uint256): 1, 0 -> 1  =>  revert: require@L8
 test/libsolidity/semanticTests/array/array_memory_as_parameter.sol:23  test(uint256,uint256): 10, 5 -> 6  =>  revert: require@L8
-test/libsolidity/semanticTests/array/array_memory_index_access.sol:28  index(uint256): 0xFF -> true  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 756000 (density control length: 945); operation cost following operation: 759207.
-test/libsolidity/semanticTests/array/create_multiple_dynamic_arrays.sol:33  f() -> 7  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2164000 (density control length: 2705); operation cost following operation: 2164067.
+test/libsolidity/semanticTests/array/array_memory_index_access.sol:28  index(uint256): 0xFF -> true  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1168800 (density control length: 1461); operation cost following operation: 1170289.
+test/libsolidity/semanticTests/array/create_multiple_dynamic_arrays.sol:33  f() -> 7  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2576800 (density control length: 3221); operation cost following operation: 2576871.
 test/libsolidity/semanticTests/array/indexAccess/inline_array_index_access_ints.sol:7  f() -> 3  =>  revert: Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 4.
 test/libsolidity/semanticTests/array/inline_array_singleton.sol:8  f() -> 4  =>  revert: Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 1.
-test/libsolidity/semanticTests/array/memory_arrays_of_various_sizes.sol:15  f(uint256,uint256): 3, 1 -> 1  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1541600 (density control length: 1927); operation cost following operation: 1541801.
-test/libsolidity/semanticTests/array/memory_arrays_of_various_sizes.sol:16  f(uint256,uint256): 9, 5 -> 70  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1542400 (density control length: 1928); operation cost following operation: 1542407.
+test/libsolidity/semanticTests/array/memory_arrays_of_various_sizes.sol:16  f(uint256,uint256): 9, 5 -> 70  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1955200 (density control length: 2444); operation cost following operation: 1955288.
 test/libsolidity/semanticTests/builtinFunctions/blobhash.sol:16  f() -> 0x0100000000000000000000000000000000000000000000000000000000000001  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/builtinFunctions/blobhash.sol:17  g() -> 0x0100000000000000000000000000000000000000000000000000000000000002  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/builtinFunctions/blobhash_shadow_resolution.sol:12  f() -> 0x03  =>  wrong value (unmapped final verify)
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_abi_encode.sol:19  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_abi_encode.sol:20  builtinOutput() -> -14651554186193368082021334953908208762193027200365752719897746810709432803072  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_array_string_literal.sol:7  test() -> true  =>  build-error: Error: keccak256 preimage extraction needs 2 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_pure_function.sol:17  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_string_concat.sol:15  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_abi_encode.sol:19  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_abi_encode.sol:20  builtinOutput() -> -14651554186193368082021334953908208762193027200365752719897746810709432803072  =>  build-error: Error: keccak256 preimage extraction did not converge.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_array_string_literal.sol:7  test() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_pure_function.sol:17  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_string_concat.sol:15  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
 test/libsolidity/semanticTests/builtinFunctions/erc7201_param_string_literal_with_escaped_chars.sol:18  builtinMatchesSolidityImplementation() -> true  =>  revert: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_ternary_operator.sol:17  simple() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_ternary_operator.sol:18  compounded(bool,bool): false, true -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_ternary_operator.sol:17  simple() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_ternary_operator.sol:18  compounded(bool,bool): false, true -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
 test/libsolidity/semanticTests/builtinFunctions/erc7201_param_unicode_string_literal.sol:14  builtinMatchesSolidityImplementation() -> true  =>  revert: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_with_zero_last_byte_of_inner_hash.sol:26  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256.sol:7  f(int256): 4 -> 0x8a35acfbc15ff81a39ae7d344fd709f28e8600b4aa8c65c6b64bfe7fe36bd19b  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256.sol:8  f(int256): 5 -> 0x036b6384b5eca791c62761152d0c79bb0604c104a5fb6f4eb0703f3154bb3db0  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256.sol:9  f(int256): -1 -> 0xa9c584056064687e149968cbab758a3376d22aedc6a55823d1b3ecbee81b8fb9  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256_multiple_arguments.sol:7  foo(uint256,uint256,uint256): 0xa, 0xc, 0xd -> 0xbc740a98aae5923e8f04c9aa798c9ee82f69e319997699f2782c40828db9fd81  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256_multiple_arguments_with_numeric_literals.sol:7  foo(uint256,uint16): 0xa, 0xc -> 0x88acd45f75907e7c560318bc1a5249850a0999c4896717b1167d05d116e6dbad  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256_multiple_arguments_with_string_literals.sol:12  bar(uint256,uint16): 0xa, 0xc -> 0x6990f36476dc412b1c4baa48e2d9f4aa4bb313f61fda367c8fdbbb2232dc6146  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256_packed.sol:10  f(int256): 4 -> 0xd270285b9966fefc715561efcd09d5b6a8deb15596f7c53cb4a1bb73aa55ac3a  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256_packed.sol:11  f(int256): 5 -> 0xf2f92566c5653600c1e527a7073e5d881576d12bb51887c0b8f3e1f81865b03d  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/builtinFunctions/keccak256_packed.sol:12  f(int256): -1 -> 0xbc78b45e0db67af5af72e4ab62757c67aefa7388cdf0c4e74f8b5fe9dd5d9d13  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_with_zero_last_byte_of_inner_hash.sol:26  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
+test/libsolidity/semanticTests/builtinFunctions/keccak256.sol:9  f(int256): -1 -> 0xa9c584056064687e149968cbab758a3376d22aedc6a55823d1b3ecbee81b8fb9  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
+test/libsolidity/semanticTests/builtinFunctions/keccak256_packed.sol:12  f(int256): -1 -> 0xbc78b45e0db67af5af72e4ab62757c67aefa7388cdf0c4e74f8b5fe9dd5d9d13  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
 test/libsolidity/semanticTests/builtinFunctions/msg_sig_after_internal_call_is_same.sol:11  foo(uint256): 0x0 -> 0x2fbebd3800000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/builtinFunctions/ripemd160.sol:9  f(int256): -1 -> 0x1cf4e77f5966e13e109703cd8a0df7ceda7f3dc3000000000000000000000000  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/builtinFunctions/ripemd160_packed.sol:12  f(int256): -1 -> 0xc0a2e4b1f3ff766a9a0089e7a410391730872495000000000000000000000000  =>  revert: Program failed an OP_VERIFY operation.
@@ -180,15 +185,14 @@ test/libsolidity/semanticTests/builtinFunctions/sha256.sol:9  f(int256): -1 -> 0
 test/libsolidity/semanticTests/builtinFunctions/sha256_packed.sol:12  f(int256): -1 -> 0xf14def4d07cd185ddd8b10a81b2238326196a38867e6e6adbcc956dc913488c7  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/cleanup/cleanup_bytes_types_shortening_OldCodeGen.sol:16  f() -> 0xffffffff00000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/cleanup/cleanup_bytes_types_shortening_newCodeGen.sol:13  f() -> 0xffff000000000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
-test/libsolidity/semanticTests/cleanup/exp_cleanup_smaller_base.sol:13  f() -> 0x00  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 292800 (density control length: 366); operation cost following operation: 292889.
 test/libsolidity/semanticTests/cleanup/indexed_log_topic_during_explicit_downcast.sol:22  g() -> 0x3100000000000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/cleanup/indexed_log_topic_during_explicit_downcast.sol:23  h() -> 0xff00000000000000000000000000000000000000000000000000000000000000  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 33. Requested byte length: 1.
 test/libsolidity/semanticTests/constants/asm_address_constant_regression.sol:11  f() -> 0x00  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/deployedCodeExclusion/subassembly_deduplication.sol:42  test() -> true  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/events/event_shadowing_file_level.sol:37  main() -> 0x3e9992c940c54ea252d3a34557cc3d3014281525c43d694f89d5f3dfd820b07d, 0x3e9992c940c54ea252d3a34557cc3d3014281525c43d694f89d5f3dfd820b07d, 0x92bbf6e823a631f3c8e09b1c8df90f378fb56f7fbc9701827e1ff8aad7f6a028  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/events/event_shadowing_file_level.sol:38  k_main() -> 0x92bbf6e823a631f3c8e09b1c8df90f378fb56f7fbc9701827e1ff8aad7f6a028, 0x3e9992c940c54ea252d3a34557cc3d3014281525c43d694f89d5f3dfd820b07d, 0x92bbf6e823a631f3c8e09b1c8df90f378fb56f7fbc9701827e1ff8aad7f6a028  =>  revert: require@L14
-test/libsolidity/semanticTests/exponentiation/literal_base.sol:17  f(uint256): 1113 -> 0x00, 0  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 424800 (density control length: 531); operation cost following operation: 424828.
-test/libsolidity/semanticTests/exponentiation/literal_base.sol:18  f(uint256): 1114 -> 0x00, 0  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 424800 (density control length: 531); operation cost following operation: 424828.
+test/libsolidity/semanticTests/exponentiation/literal_base.sol:17  f(uint256): 1113 -> 0x00, 0  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 837600 (density control length: 1047); operation cost following operation: 837614.
+test/libsolidity/semanticTests/exponentiation/literal_base.sol:18  f(uint256): 1114 -> 0x00, 0  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 837600 (density control length: 1047); operation cost following operation: 837614.
 test/libsolidity/semanticTests/exponentiation/signed_base.sol:14  f() -> 9, -27  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/exponentiation/small_exp.sol:14  f() -> 4  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 6. Requested byte length: 5.
 test/libsolidity/semanticTests/functionCall/bare_call_no_returndatacopy.sol:9  f() -> true  =>  build-error: TypeError: Cannot read properties of undefined (reading 'length')
@@ -210,11 +214,6 @@ test/libsolidity/semanticTests/inlineAssembly/for_loop_break.sol:13  f() -> 6  =
 test/libsolidity/semanticTests/inlineAssembly/for_loop_continue.sol:13  f() -> 5  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/inlineAssembly/for_loop_nested.sol:17  f(uint256): 0 -> 2  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/inlineAssembly/for_loop_nested.sol:19  f(uint256): 2 -> 10  =>  wrong value (unmapped final verify)
-test/libsolidity/semanticTests/inlineAssembly/keccak256_assembly.sol:9  f() -> 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/inlineAssembly/keccak256_optimization.sol:14  f() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/inlineAssembly/keccak256_optimizer_bug_different_memory_location.sol:14  f() -> false  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/inlineAssembly/keccak_yul_optimization.sol:26  f() -> 0xcdb56c384a9682c600315e3470157a4cf7638d0d33e9dae5c40ffd2644fc5a80  =>  build-error: Error: stateless dynamic keccak256 loop needs >= 1 compute side-car UTXOs at the branded address; found 0. Deploy more mutable-NFT side-cars.
-test/libsolidity/semanticTests/inlineAssembly/keccak_yul_optimization.sol:30  g() -> 0xcdb56c384a9682c600315e3470157a4cf7638d0d33e9dae5c40ffd2644fc5a80  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
 test/libsolidity/semanticTests/inlineAssembly/optimize_memory_store_multi_block.sol:28  f() -> 0x42  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/inlineAssembly/optimize_memory_store_multi_block.sol:29  g() -> true  =>  revert: require@L23
 test/libsolidity/semanticTests/inlineAssembly/prevrandao.sol:11  f() -> 0xa86c2e601b6c44eb4848f7d23d9df3113fbcac42041c49cbed5000cb4f118777  =>  wrong value (unmapped final verify)
@@ -234,9 +233,6 @@ test/libsolidity/semanticTests/memoryManagement/static_memory_array_allocation.s
 test/libsolidity/semanticTests/memoryManagement/struct_allocation.sol:22  withoutValue() -> 0x60  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/modifiers/function_modifier_loop_viair.sol:14  f() -> 1  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/modifiers/function_modifier_multi_invocation_viair.sol:15  f(bool): true -> 1  =>  wrong value (unmapped final verify)
-test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople.sol:24  shl(uint256,uint256): 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, 0x01 -> 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe  =>  revert: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople.sol:25  shl(uint256,uint256): 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, 0x100 -> 0x00  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 65. Requested byte length: 33.
-test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople_combined.sol:115  shl_combined_overflow(uint256): 0x02 -> 0x00  =>  revert: Program attempted a bitwise shift with an invalid bit count. Abandoned excessive OP_LSHIFTNUM. Provided bit count: 115792089237316195423570985008687907853269984665640564039457584007913129639935.
 test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople_combined.sol:118  shr_combined_overflow(uint256): 0x02 -> 0x00  =>  revert: Program attempted a bitwise shift with an invalid bit count. Abandoned excessive OP_LSHIFTNUM. Provided bit count: 115792089237316195423570985008687907853269984665640564039457584007913129639935.
 test/libsolidity/semanticTests/operators/shifts/shift_bytes_cleanup.sol:18  l(uint8): 64 -> 0x3930313233343536373839300000000000000000000000000000000000000000  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 20.
 test/libsolidity/semanticTests/operators/shifts/shift_bytes_cleanup.sol:19  r(uint8): 64 -> 0x313233343536373839303132000000000000000000000000  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 32. Requested byte length: 20.
@@ -265,8 +261,7 @@ test/libsolidity/semanticTests/revertStrings/invalid_abi_decoding_memory_v1.sol:
 test/libsolidity/semanticTests/revertStrings/invalid_abi_decoding_memory_v1.sol:22  f(uint256,uint256,uint256): 0, 0x20, 0x60 -> FAILURE, hex"08c379a0", 0x20, 40, "ABI memory decoding: invalid dat", "a length"  =>  success (no revert)
 test/libsolidity/semanticTests/reverts/revert_return_area.sol:18  f() -> 0x00, 0x08c379a000000000000000000000000000000000000000000000000000000000  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
 test/libsolidity/semanticTests/saltedCreate/salted_create.sol:23  same_salt() -> true  =>  wrong value (unmapped final verify)
-test/libsolidity/semanticTests/specialFunctions/keccak256_optimized.sol:16  short() -> true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
-test/libsolidity/semanticTests/specialFunctions/keccak256_optimized.sol:17  long() -> true, true  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/specialFunctions/keccak256_optimized.sol:17  long() -> true, true  =>  build-error: Error: keccak256 batch too large (4 total blocks); a single side-car input funds at most 3 keccak blocks. Use a smaller batch or multiple side-cars.
 test/libsolidity/semanticTests/state/blobhash.sol:9  f(uint256): 0 -> 0x0100000000000000000000000000000000000000000000000000000000000001  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/state/blobhash.sol:10  f(uint256): 1 -> 0x0100000000000000000000000000000000000000000000000000000000000002  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/state/block_chainid.sol:9  f() -> 1  =>  wrong value (unmapped final verify)
@@ -341,9 +336,7 @@ test/libsolidity/semanticTests/viaYul/dirty_memory_dynamic_array.sol:18  f() -> 
 test/libsolidity/semanticTests/viaYul/dirty_memory_int32.sol:18  f() -> true  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/dirty_memory_static_array.sol:18  f() -> true  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/dirty_memory_struct.sol:22  f() -> true  =>  revert: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115792089237316195423570985008687907853269984665640564039457584007913129639935 -> -1  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 339200 (density control length: 424); operation cost following operation: 339233.
-test/libsolidity/semanticTests/viaYul/exp_neg.sol:27  f(int256,uint256): -2, 255 -> -57896044618658097711785492504343953926634992332820282019728792003956564819968  =>  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 341600 (density control length: 427); operation cost following operation: 341665.
-test/libsolidity/semanticTests/viaYul/keccak.sol:12  keccak2() -> 0x64e604787cbf194841e7b68d7cd28786f6c9a0a3ab9f8b0a0e87cb4387ab0107  =>  build-error: Error: keccak256 preimage extraction needs 1 compute side-car UTXOs (one per batch of up to three calls); found 0.
+test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115792089237316195423570985008687907853269984665640564039457584007913129639935 -> -1  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 752000 (density control length: 940); operation cost following operation: 752070.
 test/libsolidity/semanticTests/viaYul/msg_sender.sol:9  test() -> true  =>  build-error: TypeError: Cannot read properties of undefined (reading 'reduce')
 test/libsolidity/semanticTests/viaYul/return_and_convert.sol:9  f() -> 255  =>  revert: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 3. Requested byte length: 2.
 test/libsolidity/semanticTests/viaYul/unary_operations.sol:125  bitnot_s8() -> 99  =>  revert: Program failed an OP_VERIFY operation.

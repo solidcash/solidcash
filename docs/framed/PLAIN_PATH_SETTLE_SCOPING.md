@@ -4,6 +4,19 @@ Brief for whoever owns `call/call.ts`. Written 2026-10-04 at the request of the 
 `call.ts`'s loop and `proxy/deploy.ts`'s `settleCallees`. Nothing here is a decision: it is the shape to start from
 if the take-job profile says a loop port is warranted, exactly as that lane asked.
 
+**Status (2026-10-11): ported.** The plain path settles its callee frames through `settleCallees` itself, seeded
+from and read back into its callee values; no-proxy `take job` went from 383.1 s to 61.1 s. The measurements and
+the two defects found on the way are in `NOPROXY_LANE_COST.md` section 7. Two things this brief expected went
+otherwise:
+
+- The loops were not split by hand. `settleCallees` takes the plain path's own plan through opt-in hooks (its draft
+  builder, its root, its `retval` candidate, learning only the judged frame's views, handing back an exposed write
+  value, judging a frame whose subtree derived), so one loop serves both paths and the hop's work is unchanged.
+- "What NOT to port" did not bite. The hop's re-entry machinery (`deriveReentryWriters`) already chains a contract
+  that separate frames rewrite, a token's transfers through separate payers among them, so judging frame by frame
+  keeps what the continuous derivation learned. The continuous derivation still learns the entry's own values and
+  any callee value a settle leaves owed.
+
 ## The measurement that motivates it
 
 `take job` takes ~740 s on the plain path against ~100 s through the hop. The difference is not the machine; it is

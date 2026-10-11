@@ -75,7 +75,8 @@ fixtures; the pass and its resulting accepted count are appended to the same met
 ## Runtime parity: `semantic-runner.mjs`
 
 `bench.mjs` only asks "does it compile". `semantic-runner.mjs` executes the corpus's own semantic expectations
-(the `// ----` trailer of `test/libsolidity/semanticTests`) on the BCH VM, for a deliberately narrow first slice:
+(the `// ----` trailer of `test/libsolidity/semanticTests`) on the BCH VM, for two deliberately narrow slices: the
+pure first slice below, and the stateful slice after it.
 
 - **Fixtures**: `results.json` status `OK`, single source, the last definition is a plain `contract` (the target),
   no state variables in any contract, no constructor parameters.
@@ -105,24 +106,58 @@ fixtures; the pass and its resulting accepted count are appended to the same met
   layouts and entry-point-only paths can refuse or differ for wrapper reasons; those show up as refusals or
   mismatches with their reason, not as silent passes.
 
+**Stateful slice** (scored in its own section; the pure slice above is unchanged):
+
+- **Fixtures**: those WITH state variables, otherwise the same fixture and line restrictions (no constructor
+  parameters; a parameterless constructor runs at deploy). The getter of an elementary `public` state variable is
+  callable too: its mapping keys and array indices become parameters and the wrapper reads the variable directly
+  (`m[__a0]`), since a derived contract cannot call a getter internally; struct/enum/string getters skip.
+- **Execution**: one wrapper `contract __Check is <Target>` with a `__check_<k>(args, expected, bool cmp)` per
+  called signature, compiled with `forceStateful: true` added to the bench options, deployed ONCE per fixture with
+  `getContractFactory(artifact, signer).deploy()` on a fresh `MockNetworkProvider` (fresh funding txid, so a fresh
+  category; the mock reset hooks are fired). Every runnable line then runs in file order as its own `send()`, so
+  state carries from line to line as in solc's runner.
+- **FAILURE lines** must fail with a VM error (`FailedTransactionError`, or the SDK's
+  `preflight failed at input N:` message) and broadcast nothing (a send counter on the provider); a revert after a
+  partial broadcast is a mismatch (`state changed`). A value line that reverts is re-sent with `cmp=false`: success
+  there scores `wrong value`, and that send advances state the way solc's call did.
+- **Divergence**: a line executed after a mismatch, or after a skipped value line of a state-writing function,
+  carries `afterDivergence` and is counted apart; the headline percentage covers the lines before any divergence.
+- **Density reserve**: a density-limit stop replays the WHOLE fixture behind the 512-byte deploy salt
+  (`deploy({ salt })`), since state must replay too; lines from the first stopped one take the replay's results
+  with the `-with-density-reserve` suffix.
+- **Refusals**: a wrapper that does not compile refuses all the fixture's lines (`refused-at-compile`), a failed
+  deploy `refused-at-deploy`.
+
 ```bash
 CORPUS_RESULTS=/path/to/results.json node bench/solidity-corpus/semantic-runner.mjs  # default ./results.json
 LIMIT=20 node bench/solidity-corpus/semantic-runner.mjs           # first N selected fixtures
 FILTER=arithmetics/ node bench/solidity-corpus/semantic-runner.mjs # path substring
 SELECT_ONLY=true node bench/solidity-corpus/semantic-runner.mjs   # selection summary only (SELECT_ONLY=list: per file)
+SLICE=stateful node bench/solidity-corpus/semantic-runner.mjs     # one slice only (pure | stateful)
 RESCORE=true node bench/solidity-corpus/semantic-runner.mjs       # rebuild both reports from semantic-results.json
 ```
 
 Output: `semantic-results.json` (per fixture and line: matched / matched-with-density-reserve / mismatched /
 mismatched-with-density-reserve / refused-at-compile / skipped with reason / error for timeouts) and
 `semantic-scorecard.txt` (counts, mismatch shapes, the lines matched behind a reserve, then every mismatch, a
-reserve one tagged `(with density reserve)`). First run (2026-10-11, corpus 816d9b2a, 6 workers, 140 s): 489
+reserve one tagged `(with density reserve)`; the stateful header is its second line and the stateful section,
+with `refused-at-deploy`, the revert reasons that matched FAILURE lines and `(after divergence)` tags, follows the
+pure one). First run (2026-10-11, corpus 816d9b2a, 6 workers, 140 s): 489
 fixtures / 1,778 lines selected; 1,332 of 1,612 executed lines matched (82.6%), 280 mismatched, 4 refused at
 compile, 154 skipped, 8 timed out. With side-cars and the reserve (2026-10-11, 8 workers, 140 s): 1,344 of 1,612
 matched (83.4%), 8 matched with a reserve (5 of them FAILURE lines that still stop on the density limit), 250
 mismatched, 10 mismatched with a reserve (all still over the density limit). Of the 25 lines that lacked
 side-cars, 14 match; 11 stop at keccak probe errors (no side-car read in the probe trace, a 4-block batch, no
 convergence).
+
+Stateful slice, first run (2026-10-11, corpus 816d9b2a, 8 workers, 147 s for both slices): 333 of the 621 fixtures
+with state variables selected, 871 lines. Before any divergence 499 of 576 executed lines match (86.6%), 6 match
+behind a reserve, 63 mismatch (29 value lines that revert on an OP_VERIFY, 14 wrong values, 4 auto-derivation
+errors) and 8 mismatch behind a reserve (still over the density limit); after a divergence 36 of 88 match. 156
+lines are refused at compile (91 of them, 25 fixtures, because a derived wrapper cannot inherit a custom storage
+layout; 25 because the lifecycle policy flags a wrapper that reaches a child deploy) and 51 at deploy (byte rules,
+derivation oscillation, constructor vmap keys). The pure slice in the same run: 1,346 of 1,612 matched.
 
 ## Retained release scorecard (2026-08, 7,343 files)
 

@@ -7,6 +7,8 @@ import { Contract, TransactionBuilder, FailedRequireError, FailedTransactionErro
 import { MockNetworkProvider } from 'solidcash/network/mock';
 import { StatefulContract } from 'solidcash/stateful';
 import { setupStatefulUtxos } from '../test-util.js';
+import { binToHex } from '@bitauth/libauth';
+import { SHARED_LIBRARY_SALT, keccakComputeLockingBytecode } from '@solidcash/utils';
 
 export type BchArtifact = ReturnType<typeof compileString>;
 
@@ -42,6 +44,14 @@ async function buildAndSend(
 ): Promise<void> {
   const provider = new MockNetworkProvider();
   const contract = new Contract(artifact, [], { provider, ...(salt ? { salt } : {}) });
+  // keccak256 runs in compute side-cars the deployer funds (shared salt for a stateless contract).
+  const keccak = artifact.externalLibraries?.find((library) => library.name === 'keccak256' && library.resultNft);
+  for (let i = 0; keccak && i < Math.max(1, keccak.minInstances ?? 1); i++) {
+    await provider.addUtxo(binToHex(keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, false)), {
+      ...randomUtxo({ satoshis: 100_000n }),
+      token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+    });
+  }
   // Generous input + change so the fee headroom scales to large redeem scripts (deeply nested decoders can push a
   // small-fee tx past the relay minimum). The contracts under test never constrain output amounts.
   await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));

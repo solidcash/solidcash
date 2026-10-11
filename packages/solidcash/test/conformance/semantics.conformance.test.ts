@@ -64,6 +64,18 @@ describe('semantics: arithmetic shapes', () => {
     'return string(abi.encodePacked(s, "!"));', ['hi']));
 });
 
+// keccak256 runs in a compute side-car the SDK co-spends; encodePacked follows the EVM layout under evmCompat.
+describe('semantics: keccak256 (evmCompat)', () => {
+  it('of packed integers', () => run('keccak-packed', 'uint256 a, uint8 b', 'bytes32',
+    'return keccak256(abi.encodePacked(a, b));', [7n, 9n], { evmCompat: true }));
+  it('of an abi-encoded pair', () => run('keccak-encode', 'uint256 a, address b', 'bytes32',
+    'return keccak256(abi.encode(a, b));', [1n, '0x00000000000000000000000000000000000000aa'], { evmCompat: true }));
+  it('of a string', () => run('keccak-string', 'string memory s', 'bytes32',
+    'return keccak256(bytes(s));', ['hello'], { evmCompat: true }));
+  it('compared to a literal hash', () => run('keccak-compare', 'string memory s', 'bool',
+    'return keccak256(bytes(s)) == keccak256("abc");', ['abc'], { evmCompat: true }));
+});
+
 describe('semantics: reverts on both VMs', () => {
   it('uint8 addition overflow', () => reverts('uint8-add-overflow', 'uint8 a', 'uint8', 'return a + 1;', [255n]));
   it('int8 negation of the minimum', () => reverts('int8-neg-min', 'int8 a', 'int8', 'return -a;', [-128n]));

@@ -8,7 +8,10 @@ import { compileString } from './direct-compile.js';
 const stateVars = (artifact: ReturnType<typeof compileString>): string[] =>
   (artifact.stateLayout?.variables ?? []).map((v) => `${v.name}:${v.type}${v.dynamic ? '(dyn)' : ''}`);
 const collectionKeys = (artifact: ReturnType<typeof compileString>): string[] =>
-  (artifact.stateLayout?.collections ?? []).map((c) => `${c.name}:${c.kind}:${(c.keyTypes ?? []).join('|')}`);
+  (artifact.stateLayout?.collections ?? []).map((c) => {
+    const keys = (c.keyTypes ?? (c.keyType ? [c.keyType] : [])).join('|');
+    return `${c.name}:${c.kind}:${keys}`;
+  });
 
 const ONE_DIMENSION = 'contract C {\n'
   + '    mapping (uint => uint)[] a;\n'
@@ -89,6 +92,7 @@ describe('mapping-element state arrays', () => {
       { evmCompat: true },
     );
     expect(artifact.contractName).toBe('C');
-    expect(collectionKeys(artifact)).toEqual(['m:mapping:uint256|bigint|uint256']);
+    // The array under the mapping key counts per mapping key in its own companion mapping.
+    expect(collectionKeys(artifact)).toEqual(['m:mapping:uint256|bigint|uint256', 'm$len:mapping:uint256']);
   });
 });

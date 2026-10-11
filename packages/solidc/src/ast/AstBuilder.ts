@@ -390,6 +390,9 @@ export default class AstBuilder
   // `<name>$len`, and each inner dimension counts per index above it in the companion mapping
   // `<name>$len$<level>`. See collectionLengthRead / buildCollectionLengthPush.
   private collectionLengthDepths: Map<string, number> = new Map();
+  // Mappings whose value is an unbounded array whose element chain reaches a mapping: the array a pointer bound
+  // to `m[k]` addresses, whose count is the companion mapping `<name>$len` keyed by the mapping keys.
+  private collectionMappingValueArrays: Set<string> = new Set();
   // State mapping variables -> MappingType, so `using L for mapping(K=>V)` desugars `m.method(args)` to
   // `L.method(m, args)` (m becomes a mapping-storage param, inlined at the call site).
   private mappingStateVarTypes: Map<string, MappingType> = new Map();
@@ -1629,6 +1632,7 @@ export default class AstBuilder
     // `<name>$len$<level>`. Index and element access keep the flat collection, so the element key space and its
     // encoding are unchanged.
     this.collectionLengthDepths.clear();
+    this.collectionMappingValueArrays.clear();
     for (const collection of [...collections]) {
       if (!(collection.type instanceof ArrayType) || collection.type.bound !== undefined) continue;
       const depth = this.arrayDimensions(collection.type);
@@ -1651,6 +1655,28 @@ export default class AstBuilder
         authority.location = collection.location;
         stateVariables.push(authority);
       }
+    }
+    // A MAPPING whose value is an array of mappings has no entry value either, so an array reached through a
+    // storage pointer bound to `m[k]` counts per mapping key: the companion mapping `<name>$len`.
+    for (const collection of [...collections]) {
+      if (!(collection.type instanceof MappingType)) continue;
+      const keyTypes: Type[] = [];
+      let current: Type = collection.type;
+      while (current instanceof MappingType) { keyTypes.push(current.keyType); current = current.valueType; }
+      if (!(current instanceof ArrayType) || current.bound !== undefined) continue;
+      let element: Type = current.elementType;
+      while (element instanceof ArrayType) element = element.elementType;
+      if (!(element instanceof MappingType)) continue;
+      if (collections.some((other) => other.name === `${collection.name}$len`)) continue;
+      let authorityType: Type = PrimitiveType.BIGINT;
+      for (let key = keyTypes.length - 1; key >= 0; key -= 1) {
+        authorityType = new MappingType(keyTypes[key], authorityType);
+      }
+      const companion = new CollectionNode(authorityType as MappingType, `${collection.name}$len`);
+      companion.visibility = StateVariableVisibility.PRIVATE;
+      companion.location = collection.location;
+      collections.push(companion);
+      this.collectionMappingValueArrays.add(collection.name);
     }
 
     // Flatten state vars of a struct with no single-value representation - a mapping field, or a dynamic
@@ -8469,6 +8495,7 @@ export default class AstBuilder
 
   /** True when the element type left after every array dimension of a collection array is a mapping. */
   private collectionElementContainsMapping(name: string): boolean {
+    if (this.collectionMappingValueArrays.has(name)) return true;
     const type = this.stateCollectionArrayTypes.get(name);
     if (!type) return false;
     let current: Type = type;
@@ -8496,6 +8523,12 @@ export default class AstBuilder
   private collectionLengthRead(
     name: string, indexKeys: Array<() => ExpressionNode>, loc: Location,
   ): ExpressionNode | undefined {
+    // An array stored under a mapping key counts per mapping key in the companion mapping `<name>$len`.
+    if (this.collectionMappingValueArrays.has(name)) {
+      const read = new MappingAccessNode(`${name}$len`, indexKeys.map((key) => key()));
+      read.location = loc;
+      return read;
+    }
     const type = this.stateCollectionArrayTypes.get(name);
     if (!type) return undefined;
     const level = indexKeys.length;
@@ -8546,10 +8579,19 @@ export default class AstBuilder
   ): { name: string; level: number; keys: Array<() => ExpressionNode> } | undefined {
     const alias = this.storageAliases.get(rawName);
     const aliased = alias !== undefined && this.stateCollectionArrayTypes.has(alias.container);
+    const mappingAliased = alias !== undefined && this.collectionMappingValueArrays.has(alias.container);
     const name = aliased ? alias!.container : rawName;
     const keys: Array<() => ExpressionNode> = aliased
       ? alias!.keys.map((key) => (): ExpressionNode => cloneNode(key) as ExpressionNode)
       : keyFns;
+    if (mappingAliased || this.collectionMappingValueArrays.has(name)) {
+      const mappingName = mappingAliased ? alias!.container : name;
+      const mappingKeys: Array<() => ExpressionNode> = mappingAliased
+        ? alias!.keys.map((key) => (): ExpressionNode => cloneNode(key) as ExpressionNode)
+        : keyFns;
+      if (mappingKeys.length === 0) return undefined;
+      return { name: mappingName, level: 0, keys: mappingKeys };
+    }
     const depth = this.collectionLengthDepths.get(name);
     if (depth === undefined) return undefined;
     const level = keys.length;
@@ -8560,6 +8602,7 @@ export default class AstBuilder
 
   /** `delete` of an unbounded collection array also drops every inner count it owns (`<name>$len$1`). */
   private collectionLengthInnerClear(name: string, loc: Location): StatementNode | undefined {
+    if (this.collectionMappingValueArrays.has(name)) return undefined;
     if (!this.collectionDimensionIsUnbounded(name, 1)) return undefined;
     const node = new DeleteStateNode(this.collectionLengthAuthorityName(name, 1));
     node.location = loc;
@@ -8570,6 +8613,21 @@ export default class AstBuilder
   private collectionLengthCell(
     target: { name: string; level: number; keys: Array<() => ExpressionNode> }, loc: Location,
   ): { read: () => ExpressionNode; write: (value: ExpressionNode) => StatementNode } {
+    if (this.collectionMappingValueArrays.has(target.name)) {
+      const authority = `${target.name}$len`;
+      return {
+        read: () => {
+          const node = new MappingAccessNode(authority, target.keys.map((key) => key()));
+          node.location = loc;
+          return node;
+        },
+        write: (value) => {
+          const node = new MappingAssignNode(authority, target.keys.map((key) => key()), value);
+          node.location = loc;
+          return node;
+        },
+      };
+    }
     const authority = this.collectionLengthAuthorityName(target.name, target.level);
     if (target.level === 0) {
       return {
@@ -8612,7 +8670,8 @@ export default class AstBuilder
     const bump = cell.write(new BinaryOpNode(idAt(countName), BinaryOperator.PLUS, one));
     const statements: StatementNode[] = [readCount, bump];
     const next = target.level + 1;
-    if (next === 1 && this.collectionDimensionIsUnbounded(target.name, next)) {
+    if (!this.collectionMappingValueArrays.has(target.name)
+      && next === 1 && this.collectionDimensionIsUnbounded(target.name, next)) {
       // The pushed element starts as a fresh empty inner array: reset its count at the index just created.
       const zero = new IntLiteralNode(0n);
       zero.location = loc;

@@ -15,14 +15,16 @@ after about 21300 moved by about +57 between the two commits.
   claim: four verifier passes that tried to find the check that blocks each attack, plus the coordinator's own
   checks against the code.
 - **Limits:** nothing was executed. No test, compile or VM run backs any finding; this follows the project's agent
-  test discipline. Every claim rests on reading the source and the opcodes it emits.
+  test discipline. Every claim rests on reading the source and the opcodes it emits. The one exception is DS-7,
+  added after the audit: the `feat/parity` work found it and proved it with a hostile test on the mock network.
 - **Status labels:**
   - CONFIRMED: traced by the domain auditor and re-traced independently (a verifier or the coordinator), with no
     blocking check found.
   - CODE-CONFIRMED: traced end to end by one auditor.
   - SUSPECTED: plausible; a VM test must decide.
-  - Nothing here is VM-proven. Each CRITICAL and HIGH row needs one hostile VM test, red before its fix and green
-    after it. The verifier files name the test each row needs.
+  - VM-PROVEN (mock): a hostile test on the mock network accepted the attack before the fix.
+  - Only DS-7 is VM-proven. Each other CRITICAL and HIGH row needs one hostile VM test, red before its fix and
+    green after it. The verifier files name the test each row needs.
 - **Threat model:** as in `SECURITY-AUDIT.md` (2026-07). On chain, the compiled Script is the only boundary: an
   attacker builds any transaction the BCH 2026 VM accepts and cannot sign for keys it does not hold. Since the May
   2026 upgrade (P2S), any locking bytecode up to 201 bytes is standard (`maximumStandardLockingBytecodeLength: 201`
@@ -51,9 +53,10 @@ after about 21300 moved by about +57 between the two commits.
 
 ## Verdict
 
-93 findings: 15 CRITICAL, 11 HIGH, 20 MEDIUM, 29 LOW, 18 INFO. Every CRITICAL row and all HIGH rows but two
+94 findings: 15 CRITICAL, 12 HIGH, 20 MEDIUM, 29 LOW, 18 INFO. Every CRITICAL row and all HIGH rows but two
 (SDKFRAMED-1, SDKFRAMED-2) were re-read by a second auditor or the coordinator. None was refuted outright: two HIGH
-rows were narrowed to MEDIUM (ARITH-2, SEM-2) and two rows rose to CRITICAL (DX-6, KB-2).
+rows were narrowed to MEDIUM (ARITH-2, SEM-2) and two rows rose to CRITICAL (DX-6, KB-2). DS-7 was added after
+the audit; its passes had missed it (see the Limits above).
 
 Both conventions have holes that an unprivileged attacker can use. Neither should hold value on a real chain until
 the CRITICAL rows are fixed and each is pinned by a hostile VM test.
@@ -61,6 +64,8 @@ the CRITICAL rows are fixed and each is pinned by a hostile VM test.
 - **`direct` (the default):**
   - Any public call drains a contract's satoshi and token containers (DX-1, DX-2).
   - A sorted-mapping write can be skipped or replaced by the spender; `approve` alone forges any allowance (DS-1).
+  - When a function writes a mapping and reads it in a branch the call skips, a stray own-category NFT stands in
+    for a node, so another node of that mapping can be rewritten (DS-7, VM-proven on the mock network).
   - One integer mapping key has many encodings, so a claim-once guard can be passed repeatedly (DS-4).
   - Un-accessed records can be destroyed or forged, and a forged data record passes as the real one, which gives an
     owner takeover (DS-2, DS-3, DS-5).
@@ -82,7 +87,7 @@ Most CRITICAL and HIGH rows fall into five classes. A fix should close the class
 
 | Class | Pattern | Rows |
 | --- | --- | --- |
-| A. Unbound co-spent input | A check reads another input's unlocking bytecode or token, or finds an output by search, without binding that input's locking bytecode or its own output index. A look-alike at a bare lock satisfies it. | FM-1, CRYPTO-1, CRYPTO-2, CRYPTO-3, DX-5, KB-1, DS-2 |
+| A. Unbound co-spent input | A check reads another input's unlocking bytecode or token, or finds an output by search, without binding that input's locking bytecode or its own output index. A look-alike at a bare lock satisfies it. | FM-1, CRYPTO-1, CRYPTO-2, CRYPTO-3, DX-5, KB-1, DS-2, DS-7 |
 | B. Presence-only satellites | A container, record or oracle UTXO authorizes any spend when a minting NFT of the category is co-spent, and the master accounts only for the satellites its own function touches. | DX-1, DX-2, DS-3, DX-6, DX-8, DX-7, CRYPTO-4 |
 | C. Spender-chosen switches | A witness value the spender chooses (a sentinel, an index, an exemption) turns a check off, and nothing binds it on that path. | DS-1, DS-6, DX-4, FW-1, FW-2, KB-3, DX-3 |
 | D. Non-canonical bytes | Bytes that are hashed or compared admit several encodings of one value, or one encoding of several values. | DS-4, FV-1, FW-1 (zero-padded views), KB-2, ARITH-2, ARITH-3, ARITH-4, ARITH-6 |
@@ -110,11 +115,12 @@ Most CRITICAL and HIGH rows fall into five classes. A fix should close the class
 | CRYPTO-1 | CONFIRMED | keccak256 results can be forged. The side-car check reads the side-car's unlocking bytecode, extracts its redeem push and compares the hash of the covenant bytes with a constant, but never compares the input's locking bytecode with P2SH32 of that redeem; the digest is then read from an output commitment. A coin at a bare lock replaying the genuine unlocking layout, plus a freshly minted NFT carrying any digest, passes. Breaks hash locks, Merkle proofs, commit-reveal and keccak-derived mapping keys. Applies under `framed` too. | GTT:13665-13721 |
 | CRYPTO-2 | CONFIRMED | ecrecover returns an attacker-chosen signer on the non-loop path, for every variant: side-cars A, B and the keccak side-car are taken from their unlocking bytes without a lock binding, and the pubkey and address are read from outputs. `ecrecover(...) == owner` passes for any signature. Only the dynamic-loop path binds the locks; framed bodies refuse ecrecover loops, so framed compiles always get the unbound path. | GTT:13961-13999, 14017-14068 (bound loop path: 13948, 13957, 14057) |
 
-### HIGH (11)
+### HIGH (12)
 
 | Id | Status | Finding | Where |
 | --- | --- | --- | --- |
 | DS-6 | CONFIRMED | When every write of a function sits in branches and one is a delete inside an if/else (or a lone `if (c) delete m[k]`), a value the spender chooses switches off the whole sorted-batch transition check, so every collection the function batches can be minted into, destroyed or rewritten. | GTT:29044-29081; `emitConditionalDeleteVerification` |
+| DS-7 | VM-PROVEN (mock) | Added after the audit. When a function batch-writes a sorted mapping and reads the same mapping only in a branch the call skips, the batch census counts that read slot as a node whenever its fixed input carries a non-empty commitment. The skipped read never pins that input's lock, and the slot's category check asks only for an own-category mutable NFT, so a stray one at any other lock (DS-3 mints them) raises the expected input and output counts by one. One real node then rides outside every per-position check, and nothing but the count checks its output: the mock test rewrote `m[9]` from 60 to 61 in a call that wrote only `m[7]`. Fixed on `feat/parity` by `6e292ca1f` (merged as `4b8850496`, test `packages/solidcash/test/e2e/BatchCensusReadSlots.test.ts`): the slot counts only when its input's `OP_UTXOBYTECODE` is the entry address. Not yet on `feat/per-call`. | Lines at `25e887d0a`: GTT:30671-30680, 30720-30729 (`emitSlotExistsCheck` in the census), 30607-30612 (such functions skip `directSmallCensus`), 30745-30746 (the count is by lock), 31653 (`emitEntryCategoryVerification`), 45713 (`emitEntryPreservationBody`) |
 | DX-4 | CONFIRMED | Forged external-call return values (new variant of H2): the callee's `_returnOutputIdx` witness may be `-1`, the caller never binds it, so the callee pins no return carrier and an attacker-minted OP_TRUE carrier satisfies the caller's single-return uniqueness count. Slots without an address identity get no uniqueness check at all. | GTT:42985, 42994-43194; `SymbolTableTraversal.ts:4798` |
 | DX-5 | CONFIRMED | A non-`evmCompat` low-level `call`/`staticcall` never pins its target: it compares the calldata with the first push of the unlocking bytecode at a spender-chosen input and never reads that input's lock, and `success` is hard-coded true. A bare-lock coin satisfies it, so `token.call(payload); credit(...)` credits a call that never ran. Under `evmCompat` with an empty payload only a non-empty unlocking is required. | GTT:24777-24868 (`emitLowLevelCallVerification`), 25212-25235 |
 | DX-8 | CONFIRMED (impact conditional) | A delegatecall co-spends the implementation's master but conserves none of the implementation's own records: its data NFTs can be rewritten or destroyed and new ones minted. HIGH when the implementation exposes a standalone function gated on its own state (an owner-gated upgrade, selfdestruct or sweep): rewrite its owner, then destroy the implementation master, which bricks every proxy that pins it. MEDIUM otherwise (the SDK leaves the implementation's own state unused). | GTT:9519, 44186-44345, 44770-44771; `state.ts:133-180` |
@@ -229,6 +235,8 @@ Most CRITICAL and HIGH rows fall into five classes. A fix should close the class
    - DX-5: pin the low-level call's target lock.
    - KB-1: take the verifier output at the verifier's input index.
    - DS-2: pin the data record's lock on the direct path, as framed does.
+   - DS-7: count a batch census read slot only when its input's lock is the collection's entry address (done on
+     `feat/parity` by `6e292ca1f`).
 2. **Class B:** conserve every container lock in aggregate, and run the full own-category census, in every master
    entry (DX-1, DX-2, DS-3, DX-6, DX-8). Give block oracles their own keeper category (CRYPTO-4).
 3. **Class C:** bind every sentinel at its one legitimate use: DS-1 (`-2` only on bus routes, with the binding),

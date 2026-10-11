@@ -189,6 +189,31 @@ the collection address.
 
 ---
 
+## DS-7  HIGH  VM-PROVEN (mock), added after the audit
+### The batch census counts a pure-read slot by commitment presence, not by lock
+
+Found and proved by the `feat/parity` work, not by this audit. Lines at `25e887d0a`.
+
+Files: GTT:30671-30680 (output census) and 30720-30729 (input census): every slot of the batch's collection that is
+neither a target nor written or deleted adds `emitSlotExistsCheck` (commitment non-empty, GTT:3350-3362) to the
+expected count. GTT:30607-30612: such a function never takes `directSmallCensus`. GTT:30745-30746: the actual count is
+by lock (`emitVerifyChunkUtxoCount`). GTT:31653 (`emitEntryCategoryVerification`): a present slot needs only the
+master's category base and the mutable capability. GTT:45713 (`emitEntryPreservationBody`): output equals input.
+
+Root cause. A read that runs pins its input's lock to the collection entry address; a read in a branch the call
+skips pins nothing, yet the census still counts its slot. Any own-category mutable NFT at any lock counts as a node.
+
+Attack. A function writes `m[k]` and reads `m[j]` in a branch. Call it with the branch skipped and put a stray
+own-category mutable NFT at `m[j]`'s fixed input (DS-3 mints one to the attacker's lock); preservation passes because
+it is recreated unchanged. Both counts rise by one, so a real node `m[x]` can be spent at an unchecked index and
+recreated with any commitment. The mock test rewrote `m[9]` from 60 to 61 in a call that wrote only `m[7]`.
+
+Fix. Count the slot only when `OP_UTXOBYTECODE` of its fixed input equals the entry address, as
+`emitDirectCollectionCensus` does. Done on `feat/parity` by `6e292ca1f` (merged as `4b8850496`), with the test
+`packages/solidcash/test/e2e/BatchCensusReadSlots.test.ts`; not yet on `feat/per-call`.
+
+---
+
 ## Checked and sound
 - Absence bracket is strict on both sides, `next == 0` is the only +inf, operands BIN2NUM-compared (GTT:25507-25523, 37952-37965).
 - Present arm compares the full 32-byte slot bytes with H(k) (GTT:25483-25485, 25775-25777).

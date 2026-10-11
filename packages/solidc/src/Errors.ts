@@ -634,6 +634,14 @@ export class InvalidDataLocationError extends SolidCashError {
   }
 }
 
+// solc TypeError 3464.
+export class UninitializedPointerError extends SolidCashError {
+  constructor(node: Node, variable: string, location: string, use: 'accessed' | 'returned') {
+    super(node, `${variable} is of ${location} pointer type and can be ${use} without prior assignment, which would`
+      + ' lead to undefined behaviour');
+  }
+}
+
 export class ArrayElementError extends SolidCashError {
   constructor(
     node: ArrayNode,

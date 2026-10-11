@@ -508,7 +508,7 @@ const GROUPS = [
         + '35 for P2SH32, arbitrary for a covenant. That makes it variable-length and directly comparable '
         + 'against `lockingBytecode` introspection. `address payable` behaves identically, since every BCH '
         + 'address can receive value. Members: `.transfer`, `.send`, `.call`, `.staticcall`, `.delegatecall`, '
-        + '`.code`, `.codehash`.',
+        + '`.balance`, `.code`, `.codehash`.',
         `${TYPES}#bytes-types-with-semantic-meaning`,
       ],
       pubkey: [
@@ -548,7 +548,8 @@ const GROUPS = [
       this: [
         'this.stateVar\nthis.transfer(lockingBytecode, amount)\nthis.tokens[category]',
         'The contract itself: its state fields, its satoshi and token containers, and the introspection '
-        + 'globals `this.activeInputIndex`, `this.activeBytecode`, `this.age` and `this.categoryId`.',
+        + 'globals `this.activeInputIndex`, `this.activeBytecode`, `this.age`, `this.categoryId` and '
+        + '`this.category`.',
         STATEFUL,
       ],
       super: [
@@ -815,8 +816,8 @@ const GROUPS = [
       'this.tokens': [
         'this.tokens[bytes32 category].tokenAmount\nthis.tokens[category].transfer(lockingBytecode, amount)',
         'Token containers held by the contract, keyed by CashToken category. Exposes `.tokenAmount`, '
-        + '`.tokenCategory` and `.nftCommitment`, plus `.transfer()` and `.transferNft()`. The key must be '
-        + 'a function parameter so the covenant can pin the category.',
+        + '`.tokenCategory`, `.nftCommitment` and `.nftCount`, plus `.transfer()` and `.transferNft()`. The key '
+        + 'must be a function parameter so the covenant can pin the category.',
         `${STATEFUL}#token-containers`,
       ],
       'this.categoryId': [

@@ -203,3 +203,56 @@ export class OutputTokenChangeLockedError extends Error {
     super(`Tried to add a token input or output with category ${category} after a change output with the same category was already added`);
   }
 }
+
+export class OutputTokenCommitmentTooLongError extends Error {
+  constructor(commitment: string, maximumSize: number) {
+    super(`Provided token commitment ${commitment} is longer than the maximum size of ${maximumSize} bytes`);
+  }
+}
+
+export class TransactionInputsRequiredError extends Error {
+  constructor() {
+    super('Transaction must have at least one input');
+  }
+}
+
+export class TransactionOutputsRequiredError extends Error {
+  constructor() {
+    super('Transaction must have at least one output');
+  }
+}
+
+export class TransactionFeeTooHighError extends Error {
+  constructor(fee: bigint, maximumFee: bigint) {
+    super(`Transaction fee of ${fee} is higher than max fee of ${maximumFee}`);
+  }
+}
+
+export class TransactionFeePerByteTooHighError extends Error {
+  constructor(feePerByte: number, maximumFeePerByte: number) {
+    super(
+      `Transaction fee per byte of ${feePerByte} is higher than max fee per byte of ${maximumFeePerByte}. `
+      + 'This may indicate a missing change output. Set maximumFeeSatsPerByte to override.',
+    );
+  }
+}
+
+export class InputMissingLockingBytecodeError extends Error {
+  constructor() {
+    super('Input UTXO is missing its lockingBytecode. UTXOs fetched from a network provider include it automatically; '
+      + 'when constructing UTXOs manually, set lockingBytecode to the hex-encoded locking script of the output.');
+  }
+}
+
+export class UnlockerLockingBytecodeMismatchError extends Error {
+  constructor(
+    public inputIndex: number,
+    utxoLockScript: string,
+    unlockerLockScript: string,
+    unlockerDescription: string,
+  ) {
+    super(`Input #${inputIndex} is locked by ${utxoLockScript}, which does not match the provided unlocker `
+      + `(${unlockerDescription}, corresponding to ${unlockerLockScript}). This transaction would be rejected by the `
+      + 'network. Make sure to use an unlocker that matches the address/contract holding the UTXO.');
+  }
+}

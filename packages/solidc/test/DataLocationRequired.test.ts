@@ -3,7 +3,7 @@ import { compileString } from './direct-compile.js';
 import { MissingDataLocationError } from '../src/index.js';
 
 // Solidity 0.5+ requires an explicit data location on reference-type parameters, returns and locals (solc TypeError
-// 6651). Enforced for `.sol` source units under evmCompat; native SolidCash sources keep the implicit location.
+// 6651). Enforced for `.sol` source units in either mode; native SolidCash sources keep the implicit location.
 
 const SOL = { evmCompat: true, rootFileId: '/main.sol' };
 const compileSol = (source: string): string => compileString(source, SOL).contractName;
@@ -58,6 +58,11 @@ describe('required data locations in .sol source units', () => {
   it('rejects a reference-type local without a location', () => {
     rejects('contract C { uint[] m_y; function f() public view { uint[] y = m_y; require(y.length > 0); } }',
       '"storage", "memory" or "calldata" for variable');
+  });
+
+  it('rejects a .sol source unit compiled without evmCompat', () => {
+    expect(() => compileString('contract C { function f(uint[] x) public pure returns (uint) { return x.length; } }',
+      { rootFileId: '/main.sol' })).toThrow('Data location must be "memory" or "calldata" for parameter in function');
   });
 
   it('rejects a versioned 0.8 source unit as well', () => {

@@ -576,11 +576,11 @@ export default class AstBuilder
 
   private explicitDataLocationsRequired?: boolean;
 
-  // Data locations became mandatory in Solidity 0.5. Enforced for `.sol` source units under evmCompat unless a
-  // pre-0.5 pragma is selected; string and `.scash` sources (pragma or not) keep SolidCash's implicit location.
+  // Data locations became mandatory in Solidity 0.5. Enforced for `.sol` source units unless a pre-0.5 pragma is
+  // selected; string and `.scash` sources (pragma or not) keep SolidCash's implicit location.
   private requiresExplicitDataLocations(): boolean {
-    this.explicitDataLocationsRequired ??= this.evmCompat
-      && (this.importedFileId ?? this.rootFileId ?? '').endsWith('.sol') && !this.selectsPreSolidity05();
+    this.explicitDataLocationsRequired ??= (this.importedFileId ?? this.rootFileId ?? '').endsWith('.sol')
+      && !this.selectsPreSolidity05();
     return this.explicitDataLocationsRequired;
   }
 

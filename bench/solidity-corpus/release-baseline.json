@@ -8,9 +8,9 @@
   },
   "negative": {
     "fixtures": 2158,
-    "maximumAccepted": 172,
+    "maximumAccepted": 166,
     "unchecked": 0,
     "timeouts": 0
   },
-  "scorecardSha256": "f777c54c0d3751f779e62e48e4f656dc9e4446a47731ea86fc2bdd58f11888f0"
+  "scorecardSha256": "486edfdcc3133d29a026442fb5169454172c8a3451aac6c8420af6cbfa08741c"
 }

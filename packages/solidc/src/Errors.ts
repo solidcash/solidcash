@@ -619,6 +619,13 @@ export class FunctionTypeNotEncodableError extends SolidCashError {
   }
 }
 
+// solc TypeError 4103: an explicitly public/external library function cannot take or return an internal function.
+export class InternalTypeInPublicFunctionError extends ParseError {
+  constructor(location?: Location) {
+    super('Internal type is not allowed for public or external functions', location);
+  }
+}
+
 export class ConstantModificationError extends SolidCashError {
   constructor(
     node: VariableDefinitionNode | ConstantDefinitionNode,

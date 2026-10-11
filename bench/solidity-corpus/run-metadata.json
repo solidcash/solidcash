@@ -32,7 +32,7 @@
       "timeoutMs": 120000,
       "workers": 4,
       "selectedFixtures": 1,
-      "accepted": 172,
+      "accepted": 166,
       "timeouts": 0
     }
   ],

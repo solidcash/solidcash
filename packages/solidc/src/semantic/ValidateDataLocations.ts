@@ -535,9 +535,13 @@ export default class ValidateDataLocations extends AstTraversal {
       || (type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING;
   }
 
-  private containsMapping(type: Type): boolean {
-    return type instanceof MappingType
-      || (type instanceof ArrayType && this.containsMapping(type.elementType));
+  // A (nested) mapping, through arrays and struct fields: such a value can only live in storage (solc TypeError 4061).
+  private containsMapping(type: Type, seen = new Set<StructType>()): boolean {
+    if (type instanceof MappingType) return true;
+    if (type instanceof ArrayType) return this.containsMapping(type.elementType, seen);
+    if (!(type instanceof StructType) || seen.has(type)) return false;
+    seen.add(type);
+    return type.fields.some((field) => this.containsMapping(field.type, seen));
   }
 
   private locations(modifiers: string[]): string[] {

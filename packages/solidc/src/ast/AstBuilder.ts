@@ -242,7 +242,7 @@ import {
 import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../version.js';
 import {
-  InvalidArrayBoundError, InvalidDataLocationError, MissingDataLocationError, ParseError,
+  InternalTypeInPublicFunctionError, InvalidArrayBoundError, InvalidDataLocationError, MissingDataLocationError, ParseError,
   StateVariableNameCollisionError, TernaryTypeMismatchError, NestedSelfdestructError,
   UnsupportedTypeError, VersionError,
 } from '../Errors.js';
@@ -257,6 +257,15 @@ const COMPOUND_OPS: Record<string, BinaryOperator> = {
 };
 
 const ANY_DATA_LOCATION = '"storage", "memory" or "calldata"';
+
+// An internal function type anywhere inside `type`, through arrays and struct fields (mappings may be public).
+function containsInternalFunctionType(type: Type, seen = new Set<StructType>()): boolean {
+  if (type instanceof FunctionType) return !type.isExternal;
+  if (type instanceof ArrayType) return containsInternalFunctionType(type.elementType, seen);
+  if (!(type instanceof StructType) || seen.has(type)) return false;
+  seen.add(type);
+  return type.fields.some((field) => containsInternalFunctionType(field.type, seen));
+}
 
 // Arithmetic the source wrote, directly or as a compound/increment: its literal operands take the bounded type.
 function sourceBinaryOp(left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode {
@@ -2539,6 +2548,13 @@ export default class AstBuilder
     const modifierContexts = ctx.functionModifier_list();
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
+      if (this.parsingLibraryFunction && functionDefinition.modifiers.some((modifier) =>
+        modifier === FunctionModifier.PUBLIC || modifier === FunctionModifier.EXTERNAL)) {
+        const internal = functionDefinition.parameters.find((parameter) => containsInternalFunctionType(parameter.type));
+        if (internal || functionDefinition.returnTypes.some((type) => containsInternalFunctionType(type))) {
+          throw new InternalTypeInPublicFunctionError(internal?.location ?? functionDefinition.location);
+        }
+      }
       if (!this.parsingLibraryFunction) {
         const forbidden = functionDefinition.modifiers.find((m) => [
           FunctionModifier.PUBLIC, FunctionModifier.EXTERNAL, FunctionModifier.PRIVATE,

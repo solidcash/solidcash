@@ -30951,13 +30951,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // is one recreated non-target predecessor. Read-only accesses to this collection are preserved separately.
       // A direct singleton and a linear two-target batch have no inactive/alias (-2) rows; nonlinear batches keep the
       // general sentinel and duplicate accounting below.
+      const readSlots = this.entrySlots.flatMap((info, i) => (info.collection === batch.collection
+        && !targets.includes(i) && !info.operations.includes('write')
+        && !info.operations.includes('delete') ? [i] : []));
       const directSmallCensus = (targets.length === 1 || (targets.length === 2 && batch.linear === true))
         && aliasWrite === undefined && this.directConvention
         && !this.isCompilerMessageBusRoute(node)
         && !runtimeCollections.has(batch.collection)
-        && !this.entrySlots.some((info, i) => info.collection === batch.collection
-          && !targets.includes(i) && !info.operations.includes('write')
-          && !info.operations.includes('delete'));
+        && readSlots.length === 0;
+      const addr = `(__vmap_batch_addr_${batch.collection})`;
+      const pushAddr = (): void => {
+        this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
+        this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
+        this.pushToStack(addr);
+        this.emitSortedEntryAddress(collectionHash, loc);
+        this.stack[0] = addr;
+      };
+      // A read that did not run never pinned its input: a pure-read slot counts only at the collection's entry address.
+      const readSlotIsNode = (slot: number): void => {
+        this.emitFixedEntryInputIndex(slot, loc); bin(Op.OP_UTXOBYTECODE);
+        if (this.isCompilerMessageBusRoute()) {
+          this.emit(encodeInt(BigInt(this.getStackIndex(addr) + 1)), loc); bin(Op.OP_PICK);
+        } else this.emitPickTrackedFromBottom(addr, loc);
+        bin(Op.OP_EQUAL);
+      };
+      if (readSlots.length > 0) pushAddr();
       const expected = `(__vmap_batch_expected_${batch.collection})`;
       if (directSmallCensus) {
         // Every active write contributes one output and each nonnegative predOut one recreated predecessor.
@@ -31015,11 +31033,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           replaceNamed(expected);
         }
       }
-      for (let i = 0; i < this.entrySlots.length; i++) {
-        const info = this.entrySlots[i];
-        if (info.collection !== batch.collection || targets.includes(i)
-          || info.operations.includes('write') || info.operations.includes('delete')) continue;
-        this.emitSlotExistsCheck('entry', i, loc);
+      for (const slot of readSlots) {
+        readSlotIsNode(slot);
         if (linearRoute) addParked();
         else {
           arg(expected, 1); bin(Op.OP_ADD);
@@ -31064,11 +31079,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           replaceNamed(inputExpected);
         }
       }
-      for (let i = 0; i < this.entrySlots.length; i++) {
-        const info = this.entrySlots[i];
-        if (info.collection !== batch.collection || targets.includes(i)
-          || info.operations.includes('write') || info.operations.includes('delete')) continue;
-        this.emitSlotExistsCheck('entry', i, loc);
+      for (const slot of readSlots) {
+        readSlotIsNode(slot);
         if (linearRoute) addParked();
         else {
           arg(inputExpected, 1); bin(Op.OP_ADD);
@@ -31082,12 +31094,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         cardinalityScanned.add(batch.collection);
       }
 
-      const addr = `(__vmap_batch_addr_${batch.collection})`;
-      this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
-      this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
-      this.pushToStack(addr);
-      this.emitSortedEntryAddress(collectionHash, loc);
-      this.stack[0] = addr;
+      if (readSlots.length === 0) pushAddr();
       const countOpts = linearRoute ? { expectedOnAltstack: true } : undefined;
       this.emitVerifyChunkUtxoCount(inputExpected, false, loc, addr, countOpts);
       this.emitVerifyChunkUtxoCount(expected, true, loc, addr, countOpts);

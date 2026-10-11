@@ -123,3 +123,25 @@ describe('semantics: reverts on both VMs', () => {
     'return a - 1;', [-(1n << 255n)]));
   it('uint subtraction underflow', () => reverts('uint-sub', 'uint256 a', 'uint256', 'return a - 1;', [0n]));
 });
+
+// An inline array literal indexed in place is a `T[n] memory` value whose constant integer elements take their
+// common mobile type (`uint8` for `[1, 2, 3]`), so arithmetic on an element is checked at that width.
+const TWO_POW_200 = '1606938044258990275541962092341162602522202993782792835301376';
+const UINT256_MAX = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
+
+describe('semantics: inline array literals indexed in place', () => {
+  it('a constant index into small values', () => run('inline-const', '', 'uint256', 'return [1, 2, 3, 4][2];', []));
+  it('a singleton', () => run('inline-singleton', '', 'uint256', 'return [4][0];', []));
+  it('a runtime index into small values', () => run('inline-runtime', 'uint256 i', 'uint256',
+    'return [1, 2, 3, 4][i];', [3n]));
+  it('a constant index into large values', () => run('inline-const-large', '', 'uint256',
+    `return [1, ${TWO_POW_200}, 3][1];`, []));
+  it('a runtime index into large values', () => run('inline-runtime-large', 'uint256 i', 'uint256',
+    `return [7, ${UINT256_MAX}][i];`, [1n]));
+  it('a runtime index into signed values', () => run('inline-runtime-signed', 'uint256 i', 'int256',
+    'return [-1, 2, -300][i];', [2n]));
+  it('an out-of-range runtime index', () => reverts('inline-oob', 'uint256 i', 'uint256',
+    'return [1, 2, 3][i];', [3n]));
+  it('uint8 overflow on an element', () => reverts('inline-mobile-overflow', 'uint256 i', 'uint256',
+    'return [255, 1][i] + 1;', [0n]));
+});

@@ -188,11 +188,13 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
   });
 
   it('lowers addmod/mulmod to the solidc builtins and pop to a discard/effect', () => {
-    const asm = compileString('contract C() { function f(uint a, uint b, uint n) { uint r;'
-      + ' assembly { r := addmod(a, b, n) } require(r == r); } }', { evmCompat: true });
-    const hand = compileString('contract C() { function f(uint a, uint b, uint n) { uint r;'
-      + ' r = addmod(a, b, n); require(r == r); } }', { evmCompat: true });
-    expect(asm.bytecode).toBe(hand.bytecode);
+    const lowered = (modulus: string, body: (m: string) => string): string => compileString('contract C() {'
+      + ` function f(uint a, uint b, uint n) { uint r; ${body(modulus)} require(r == r); } }`, { evmCompat: true }).bytecode;
+    const asm = (m: string): string => `assembly { r := addmod(a, b, ${m}) }`;
+    const hand = (m: string): string => `r = addmod(a, b, ${m});`;
+    expect(lowered('7', asm)).toBe(lowered('7', hand));
+    // A runtime modulus also takes the EVM's zero-modulus rule (0, where Solidity's addmod reverts).
+    expect(lowered('n', asm)).not.toBe(lowered('n', hand));
     // pop(pure) discards; pop(low-level call) evaluates the call for its effect.
     expect(() => compileString('contract C() { function f(address a) { assembly { pop(add(1, 2))'
       + ' pop(staticcall(0, a, 0, 0, 0, 0)) } require(true); } }', { evmCompat: true })).not.toThrow();

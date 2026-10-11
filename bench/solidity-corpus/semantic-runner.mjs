@@ -17,14 +17,26 @@ import { isMainThread, parentPort, Worker, workerData } from 'worker_threads';
 // spend of `__check(args, expected, cmp)` on a fresh MockNetworkProvider, with the keccak256 compute side-cars a
 // deployer funds. `cmp=false` on FAILURE lines, so a call that returns normally shows as a mismatch instead of a
 // failed equality. A spend stopped by the op-cost density limit is retried once behind a deployer's density reserve
-// and scored apart (matched/mismatched-with-density-reserve). Output: semantic-results.json and
-// semantic-scorecard.txt. Env: CORPUS_RESULTS, SOLC_CORPUS, LIMIT (selected fixtures), FILTER (path substring),
+// and scored apart (matched/mismatched-with-density-reserve).
+// Stateful slice: a fixture WITH state variables (no constructor parameters, same line restrictions; elementary
+// public getters too) gets one wrapper with `__check_<k>` per signature, compiled with forceStateful, deployed ONCE
+// through getContractFactory(...).deploy(); its lines then run in file order, one transaction each, so state carries
+// over. A FAILURE line must revert without broadcasting; a reverted value line is re-sent with cmp=false (success =
+// wrong value, state advances as in solc). Lines after a mismatch, or after a skipped value line of a state-writing
+// function, are tagged afterDivergence. A density-limit stop replays the whole fixture behind the reserve.
+// Output: semantic-results.json and semantic-scorecard.txt (pure slice as before, then the stateful section).
+// Env: CORPUS_RESULTS, SOLC_CORPUS, LIMIT (selected fixtures), FILTER (path substring), SLICE=pure|stateful,
 // CORPUS_WORKERS, FIXTURE_TIMEOUT_MS, CORPUS_OUTPUT_DIR, SELECT_ONLY=true|list (selection only, no execution),
 // RESCORE=true (re-derive both reports from an existing semantic-results.json, no execution).
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
 const COMPILE_OPTIONS = { evmCompat: true, enforceFinalRequire: false }; // bench.mjs covenant-safety policy
 const SEMANTIC_PREFIX = 'test/libsolidity/semanticTests/';
 const DENSITY_RESERVE = '-with-density-reserve'; // status suffix of a line retried behind a density reserve
+// Stateful slice: forceStateful so a fixture whose state compiles away still deploys as a stateful contract.
+const STATEFUL_COMPILE_OPTIONS = { ...COMPILE_OPTIONS, forceStateful: true };
+const DENSITY_STOP = /operation cost density limit/;
+// A stateful send reports a VM failure either as FailedTransactionError or as the SDK's preflight/probe message.
+const VM_ERROR = /preflight failed at input \d+: |^Program |\bProgram (?:failed|attempted|completed|exceeded)\b/;
 const errHead = (cause) => `${cause?.name || 'Error'}: ${String(cause?.message).split('\n')[0]}`;
 // The script ending non-truthy is the wrapper's final require failing where the SDK could not map it to a line.
 const canonicalOutcome = (outcome) => (/^revert: .*completed with a non-truthy value on top of the stack/.test(outcome)
@@ -38,6 +50,7 @@ async function workerMain() {
     await import(workerData.sdkUrl);
   const { default: MockNetworkProvider } = await import(workerData.mockUrl);
   const { SHARED_LIBRARY_SALT, keccakComputeLockingBytecode } = await import(workerData.utilsUrl);
+  const { getContractFactory } = await import(workerData.statefulUrl);
   const noop = () => {};
   console.log = console.error = console.warn = console.info = noop;
 
@@ -119,8 +132,90 @@ async function workerMain() {
     return { compiled: true, lines };
   };
 
+  // Stateful slice: one deploy, then every runnable line in file order as its own transaction. Each run gets fresh
+  // funding txids (a deploy's category) and fires the mock reset hooks, so no process-global cache crosses fixtures.
+  // A send counter on the provider tells whether a reverted line broadcast anything (a partial state change).
+  let fundingNonce = 0;
+  const runSequence = async (artifact, sequence, salt) => {
+    const provider = new MockNetworkProvider();
+    provider.reset();
+    const counter = { sent: 0 };
+    const sendRaw = provider.sendRawTransaction.bind(provider);
+    provider.sendRawTransaction = async (hex) => { const txid = await sendRaw(hex); counter.sent += 1; return txid; };
+    const signer = provider.getCachedSigner(0);
+    const txid = `${(++fundingNonce).toString(16).padStart(8, '0')}${'5a'.repeat(28)}`;
+    for (let vout = 0; vout < 8; vout++) {
+      await provider.addUtxo(signer.getAddress(), { txid, vout, satoshis: 100_000_000n });
+    }
+    let contract;
+    try {
+      contract = await getContractFactory(artifact, signer).deploy(...(salt ? [{ salt }] : []));
+    } catch (cause) {
+      return { deployError: statefulOutcome(cause) };
+    }
+    const outcomes = [];
+    for (const step of sequence) {
+      outcomes.push(await statefulAttempt(contract.getFunction(`__check_${step.check}`), step, counter));
+    }
+    return { outcomes };
+  };
+
+  const statefulOutcome = (cause) => (cause instanceof FailedTransactionError || VM_ERROR.test(String(cause?.message))
+    ? `revert: ${vmReason(cause)}` : `build-error: ${errHead(cause)}`);
+
+  // A FAILURE line must revert without broadcasting. A value line that reverts is re-sent with cmp=false: success
+  // there means a wrong value, and the call then still changes state as solc's call did.
+  const statefulAttempt = async (fn, step, counter) => {
+    const before = counter.sent;
+    try {
+      await fn(...step.args).send();
+      return step.failure
+        ? { status: 'mismatched', outcome: 'success (no revert)' }
+        : { status: 'matched', outcome: 'success' };
+    } catch (cause) {
+      const outcome = statefulOutcome(cause);
+      const reverted = outcome.startsWith('revert: ');
+      if (step.failure) {
+        const sent = counter.sent - before;
+        if (!reverted || sent === 0) return { status: reverted ? 'matched' : 'mismatched', outcome };
+        return { status: 'mismatched', outcome: `${outcome} (after ${sent} broadcast tx: state changed)` };
+      }
+      if (step.cmp && reverted && !DENSITY_STOP.test(outcome)) {
+        try {
+          await fn(...step.args.slice(0, -1), false).send();
+          return { status: 'mismatched', outcome: 'wrong value' };
+        } catch { /* the revert is not the comparison */ }
+      }
+      return { status: 'mismatched', outcome };
+    }
+  };
+
+  // A line stopped by the density limit reruns the whole fixture behind the reserve (state must replay); lines from
+  // the first stopped one on take the reserve run's results, tagged like the pure slice's retries.
+  const runStatefulJob = async ({ source, sequence }) => {
+    let artifact;
+    try {
+      artifact = compileString(source, STATEFUL_COMPILE_OPTIONS);
+    } catch (cause) {
+      return { compiled: false, error: errHead(cause) };
+    }
+    if (artifact.constructorInputs?.length) return { compiled: true, skip: 'constructor-inputs' };
+    const plain = await runSequence(artifact, sequence);
+    const at = plain.deployError ? (DENSITY_STOP.test(plain.deployError) ? 0 : -1)
+      : plain.outcomes.findIndex((o) => DENSITY_STOP.test(o.outcome));
+    if (at < 0) return { compiled: true, ...plain };
+    const reserve = await runSequence(artifact, sequence, new Uint8Array(512).fill(0x5a));
+    if (reserve.deployError) return { compiled: true, deployError: `${reserve.deployError} (with density reserve)` };
+    const tagged = reserve.outcomes.map((o) => ({ ...o, status: `${o.status}${DENSITY_RESERVE}` }));
+    return { compiled: true, outcomes: plain.deployError ? tagged : [...plain.outcomes.slice(0, at), ...tagged.slice(at)] };
+  };
+
   parentPort.on('message', async ({ id, job }) => {
     try {
+      if (job.stateful) {
+        parentPort.postMessage({ id, stateful: await runStatefulJob(job.stateful) });
+        return;
+      }
       const checks = [];
       for (const check of job.checks) checks.push(await runCheck(check));
       parentPort.postMessage({ id, checks });
@@ -287,6 +382,36 @@ const NON_STATE_MEMBER =
   /^(?:function\s+[A-Za-z_$]|modifier\b|constructor\b|fallback\b|receive\b|struct\b|enum\b|event\b|error\b|using\b|type\b)/;
 const isStateVariable = (text) => !NON_STATE_MEMBER.test(text) && !/\bconstant\b/.test(text);
 
+// A public state variable's getter (stateful slice): mapping keys and array indices become parameters that index
+// the variable directly in the wrapper; the elementary leaf type is the one return.
+function parseGetter(text) {
+  if (NON_STATE_MEMBER.test(text) || !/\bpublic\b/.test(text)) return undefined;
+  const decl = text.split(/=(?!>)/)[0]
+    .replace(/\b(?:public|constant|immutable|transient|override(?:\s*\([^)]*\))?)\b/g, ' ').trim();
+  const m = /^([\s\S]*?)\s*\b([A-Za-z_$][\w$]*)$/.exec(decl);
+  if (!m) return undefined;
+  const name = m[2];
+  let type = m[1].trim();
+  const params = [];
+  for (;;) {
+    if (type.endsWith(']')) {
+      type = type.slice(0, type.lastIndexOf('[')).trim();
+      params.push({ src: 'uint256', abi: 'uint256' });
+    } else if (/^mapping\s*\(/.test(type) && matchClose(type, type.indexOf('(')) === type.length - 1) {
+      const inner = type.slice(type.indexOf('(') + 1, -1);
+      const arrow = inner.indexOf('=>');
+      const key = inner.slice(0, arrow).trim().split(/\s+/)[0];
+      if (!elementaryAbi(key)) return { name, kind: typeKind(key) ?? 'type:other' };
+      params.push({ src: key, abi: elementaryAbi(key) });
+      type = inner.slice(arrow + 2).trim().replace(/^(\S.*?)\s+[A-Za-z_$][\w$]*$/, '$1'); // named value
+    } else break;
+  }
+  const abi = elementaryAbi(type);
+  if (!abi) return { name, kind: typeKind(type) ?? 'type:other' };
+  const access = `${name}${params.map((_, k) => `[__a${k}]`).join('')}`;
+  return { name, fn: { name, params, rets: [{ src: type, abi }], visibility: 'public', mutability: 'view', access } };
+}
+
 // ------------------------------------------------------------------------------------- expectation parsing
 
 // `// ----` trailer -> [{ line, text }] call entries; continuation lines (`-> 5`, wrapped args) are joined.
@@ -383,7 +508,9 @@ function selectFixture(src) {
   if (target.kind !== 'contract') return { skip: `target-is-${target.kind}` };
   const stateVariable = contracts.filter((c) => c.kind !== 'interface')
     .flatMap((c) => c.members).find((mb) => isStateVariable(mb.text));
-  if (stateVariable) return { skip: 'state-variables', detail: stateVariable.text.slice(0, 80) };
+  // A fixture with state variables runs in the stateful slice; its later skips carry the tag.
+  const stateful = Boolean(stateVariable);
+  const skip = (reason) => ({ skip: reason, ...(stateful && { stateful: true }) });
   const byName = new Map(contracts.map((c) => [c.name, c]));
   const ancestry = [];
   for (const queue = [target]; queue.length > 0;) {
@@ -393,41 +520,48 @@ function selectFixture(src) {
     for (const base of [...c.bases].reverse()) if (byName.has(base)) queue.push(byName.get(base));
   }
   if (ancestry.some((c) => c.members.some((mb) => /^constructor\s*\(\s*[^)\s]/.test(mb.text)))) {
-    return { skip: 'constructor-params' };
+    return skip('constructor-params');
   }
   const entries = parseEntries(src);
-  if (entries.length === 0) return { skip: 'no-calls' };
+  if (entries.length === 0) return skip('no-calls');
 
   const checks = new Map();
   for (const entry of entries) {
     const call = parseCall(entry.text);
-    if (call.skip) return { skip: call.skip };
-    for (const t of call.types) { const kind = typeKind(t); if (kind) return { skip: kind }; }
+    if (call.skip) return skip(call.skip);
+    for (const t of call.types) { const kind = typeKind(t); if (kind) return skip(kind); }
     const sigTypes = call.types.map(elementaryAbi);
     const sig = `${call.name}(${sigTypes.join(',')})`;
-    if (/"/.test(call.argText) || (!call.failure && /"/.test(call.retText))) return { skip: 'value:string-or-hex' };
+    if (/"/.test(call.argText) || (!call.failure && /"/.test(call.retText))) return skip('value:string-or-hex');
     let check = checks.get(sig);
     if (!check) {
       const decls = ancestry.flatMap((c) => c.members
         .filter((mb) => mb.fn?.name === call.name && mb.fn.params.length === sigTypes.length
           && mb.fn.params.every((p, k) => p.abi === sigTypes[k]))
         .map((mb) => ({ contract: c, member: mb })));
-      if (decls.length === 0) return { skip: 'no-matching-decl' };
+      const found = decls.length > 0 || !stateful ? undefined : ancestry.flatMap((c) => c.members
+        .map((member) => ({ contract: c, member, getter: parseGetter(member.text) })))
+        .find((d) => d.getter?.name === call.name);
+      if (found?.getter.kind) return skip(`getter-${found.getter.kind}`);
+      if (found && found.getter.fn.params.map((p) => p.abi).join() === sigTypes.join()) {
+        decls.push({ contract: found.contract, member: { ...found.member, fn: found.getter.fn } });
+      }
+      if (decls.length === 0) return skip('no-matching-decl');
       const fn = decls[0].member.fn;
-      if (fn.visibility === 'internal' || fn.visibility === 'private') return { skip: 'not-external' };
+      if (fn.visibility === 'internal' || fn.visibility === 'private') return skip('not-external');
       const badRet = fn.rets.find((r) => !r.abi);
-      if (badRet) return { skip: `ret-${badRet.kind}` };
+      if (badRet) return skip(`ret-${badRet.kind}`);
       check = { sig, name: call.name, decls, fn, lines: [] };
       checks.set(sig, check);
     }
     const argTokens = splitTop(call.argText);
-    if (argTokens.length !== sigTypes.length) return { skip: 'arg-arity' };
+    if (argTokens.length !== sigTypes.length) return skip('arg-arity');
     const argWords = argTokens.map(parseWord);
-    if (argWords.some((w) => w === undefined)) return { skip: 'value:unparsed' };
+    if (argWords.some((w) => w === undefined)) return skip('value:unparsed');
     const retTokens = call.failure ? [] : splitTop(call.retText);
-    if (!call.failure && retTokens.length !== check.fn.rets.length) return { skip: 'ret-arity' };
+    if (!call.failure && retTokens.length !== check.fn.rets.length) return skip('ret-arity');
     const retWords = retTokens.map(parseWord);
-    if (retWords.some((w) => w === undefined)) return { skip: 'value:unparsed' };
+    if (retWords.some((w) => w === undefined)) return skip('value:unparsed');
     const line = { line: entry.line, call: entry.text, failure: call.failure };
     const args = argWords.map((w, k) => typedValue(w, sigTypes[k]));
     const rets = call.failure
@@ -438,15 +572,17 @@ function selectFixture(src) {
     else line.args = [...args, ...rets, ...(rets.length > 0 ? [!call.failure] : [])];
     check.lines.push(line);
   }
-  return { target: target.name, checks: [...checks.values()].map((check) => buildWrapper(src, code, target, check)) };
+  const list = [...checks.values()];
+  if (stateful) return { target: target.name, stateful: buildStatefulWrapper(src, code, target, list) };
+  return { target: target.name, checks: list.map((check) => buildWrapper(src, code, target, check)) };
 }
 
 const MUTABILITY_RANK = { pure: 0, view: 1, '': 2, payable: 2 };
+const mutabilityRank = (check) => Math.max(...check.decls.map((d) => MUTABILITY_RANK[d.member.fn.mutability]));
 
-// Wrapper source for one signature. An `external` declaration (contract, not interface) is respelled `public` so
-// the derived wrapper can call it internally; the respelling is recorded in the results.
-function buildWrapper(src, code, target, check) {
-  const { fn, decls } = check;
+// An `external` declaration (contract, not interface) is respelled `public` so the derived wrapper can call it
+// internally; same length, so later offsets stay valid. The respelling is recorded in the results.
+function respellExternal(src, code, decls) {
   let edited = src;
   let rewrote = false;
   for (const { contract, member } of decls) {
@@ -457,30 +593,48 @@ function buildWrapper(src, code, target, check) {
     edited = `${edited.slice(0, abs)}public  ${edited.slice(abs + 'external'.length)}`;
     rewrote = true;
   }
-  const rank = Math.max(...decls.map((d) => MUTABILITY_RANK[d.member.fn.mutability]));
-  const mutability = ['pure', 'view', ''][rank];
+  return { edited, rewrote };
+}
+
+// One wrapper function: call the target, then require equal returns unless `__cmp` is false.
+function checkFunction(check, name) {
+  const { fn } = check;
+  const mutability = ['pure', 'view', ''][mutabilityRank(check)];
   const params = [
     ...fn.params.map((p, k) => `${p.src} __a${k}`),
     ...fn.rets.map((r, k) => `${r.src} __e${k}`),
     ...(fn.rets.length > 0 ? ['bool __cmp'] : []),
   ];
-  const callExpr = `${check.name}(${fn.params.map((_, k) => `__a${k}`).join(', ')})`;
+  const callExpr = fn.access ?? `${check.name}(${fn.params.map((_, k) => `__a${k}`).join(', ')})`;
   const callStmt = fn.rets.length === 0 ? `${callExpr};`
     : fn.rets.length === 1 ? `${fn.rets[0].src} __r0 = ${callExpr};`
       : `(${fn.rets.map((r, k) => `${r.src} __r${k}`).join(', ')}) = ${callExpr};`;
   const cond = fn.rets.length === 0 ? 'true'
     : `!__cmp || (${fn.rets.map((_, k) => `__r${k} == __e${k}`).join(' && ')})`;
-  const source = `${edited.trimEnd()}
-
-contract __Check is ${target.name} {
-    function __check(${params.join(', ')}) public${mutability ? ` ${mutability}` : ''} {
+  return `    function ${name}(${params.join(', ')}) public${mutability ? ` ${mutability}` : ''} {
         ${callStmt}
         require(${cond});
-    }
+    }`;
 }
-`;
+
+// Wrapper source for one signature (pure slice).
+function buildWrapper(src, code, target, check) {
+  const { edited, rewrote } = respellExternal(src, code, check.decls);
+  const source = `${edited.trimEnd()}\n\ncontract __Check is ${target.name} {\n${checkFunction(check, '__check')}\n}\n`;
   const requireLine = source.slice(0, source.lastIndexOf('        require(')).split('\n').length;
   return { sig: check.sig, source, requireLine, lines: check.lines, ...(rewrote && { rewrote: 'external->public' }) };
+}
+
+// Stateful slice: one wrapper with `__check_<k>` per signature, deployed once; `lines` is every line in file order
+// with its check index, whether it carries `cmp`, and whether its function may write state.
+function buildStatefulWrapper(src, code, target, checks) {
+  const { edited, rewrote } = respellExternal(src, code, checks.flatMap((check) => check.decls));
+  const fns = checks.map((check, k) => checkFunction(check, `__check_${k}`));
+  const source = `${edited.trimEnd()}\n\ncontract __Check is ${target.name} {\n${fns.join('\n')}\n}\n`;
+  const lines = checks.flatMap((check, k) => check.lines.map((line) => ({
+    ...line, check: k, cmp: check.fn.rets.length > 0, writes: mutabilityRank(check) === 2,
+  }))).sort((a, b) => a.line - b.line);
+  return { sigs: checks.map((check) => check.sig), source, lines, ...(rewrote && { rewrote: 'external->public' }) };
 }
 
 // ------------------------------------------------------------------------------------------------ main side
@@ -490,7 +644,7 @@ async function main() {
   if (OUTPUT_DIR !== BENCH_DIR) mkdirSync(OUTPUT_DIR, { recursive: true });
   if (process.env.RESCORE === 'true') {
     const prior = JSON.parse(readFileSync(join(OUTPUT_DIR, 'semantic-results.json'), 'utf8'));
-    for (const line of prior.fixtures.flatMap((f) => f.lines ?? [])) {
+    for (const line of prior.fixtures.filter((f) => !f.stateful).flatMap((f) => f.lines ?? [])) {
       if (line.outcome) line.outcome = canonicalOutcome(line.outcome);
     }
     writeReports(OUTPUT_DIR, { ...prior.meta, rescored: true }, prior.summary.candidates, prior.fixtures);
@@ -500,6 +654,7 @@ async function main() {
   const RESULTS = process.env.CORPUS_RESULTS || join(BENCH_DIR, 'results.json');
   const LIMIT = process.env.LIMIT ? Number(process.env.LIMIT) : Infinity;
   const FILTER = process.env.FILTER || '';
+  const SLICE = process.env.SLICE || ''; // pure | stateful: run one slice only
   const FIXTURE_TIMEOUT_MS = process.env.FIXTURE_TIMEOUT_MS ? Number(process.env.FIXTURE_TIMEOUT_MS) : 120000;
   const WORKER_COUNT = process.env.CORPUS_WORKERS ? Number(process.env.CORPUS_WORKERS) : 8;
   const started = Date.now();
@@ -511,23 +666,29 @@ async function main() {
   const jobs = [];
   for (const rel of candidates) {
     const selected = selectFixture(readFileSync(join(ROOT, rel), 'utf8'));
+    const stateful = selected.stateful ? { stateful: true } : {};
+    if (SLICE && (SLICE === 'stateful') !== Boolean(selected.stateful)) continue;
     if (selected.skip || jobs.length >= LIMIT) {
       const { skip: reason, detail } = selected;
-      if (reason) fixtures.push({ rel, status: 'skipped', reason, ...(detail && { detail }) });
+      if (reason) fixtures.push({ rel, status: 'skipped', reason, ...(detail && { detail }), ...stateful });
       continue;
     }
-    const fixture = { rel, status: 'run', target: selected.target, checks: [], lines: [] };
+    const fixture = { rel, status: 'run', target: selected.target, checks: [], lines: [], ...stateful };
     fixtures.push(fixture);
-    jobs.push({ fixture, checks: selected.checks });
+    jobs.push({ fixture, checks: selected.checks, stateful: selected.stateful });
   }
-  const selectedLines = jobs.reduce((n, j) => n + j.checks.reduce((m, c) => m + c.lines.length, 0), 0);
-  process.stderr.write(`  ${candidates.length} candidates, ${jobs.length} fixtures / ${selectedLines} lines selected\n`);
+  const lineCount = (j) => (j.stateful ? j.stateful.lines.length : j.checks.reduce((m, c) => m + c.lines.length, 0));
+  const statefulJobs = jobs.filter((j) => j.stateful);
+  process.stderr.write(`  ${candidates.length} candidates, ${jobs.length} fixtures / `
+    + `${jobs.reduce((n, j) => n + lineCount(j), 0)} lines selected (stateful: ${statefulJobs.length} fixtures / `
+    + `${statefulJobs.reduce((n, j) => n + lineCount(j), 0)} lines)\n`);
+  const sliceReason = (f) => `${f.stateful ? 'stateful/' : ''}${f.reason ?? f.status}`;
   if (process.env.SELECT_ONLY === 'list') {
-    for (const f of fixtures) process.stdout.write(`${f.rel}  ${f.reason ?? f.status}  ${f.detail ?? ''}\n`);
+    for (const f of fixtures) process.stdout.write(`${f.rel}  ${sliceReason(f)}  ${f.detail ?? ''}\n`);
     return;
   }
   if (process.env.SELECT_ONLY === 'true') {
-    const reasons = tally(fixtures.filter((f) => f.status === 'skipped').map((f) => f.reason));
+    const reasons = tally(fixtures.filter((f) => f.status === 'skipped').map(sliceReason));
     for (const [reason, n] of reasons) process.stdout.write(`${String(n).padStart(5)}  ${reason}\n`);
     return;
   }
@@ -537,6 +698,7 @@ async function main() {
     sdkUrl: new URL('../../packages/solidcash/dist/index.js', import.meta.url).href,
     mockUrl: new URL('../../packages/solidcash/dist/network/MockNetworkProvider.js', import.meta.url).href,
     utilsUrl: new URL('../../packages/utils/dist/index.js', import.meta.url).href,
+    statefulUrl: new URL('../../packages/solidcash/dist/stateful/index.js', import.meta.url).href,
   };
   const createRunner = () => {
     let worker;
@@ -560,6 +722,12 @@ async function main() {
           }, FIXTURE_TIMEOUT_MS);
           active.on('message', onMessage);
           active.on('error', onError);
+          if (job.stateful) {
+            const sequence = job.stateful.lines.filter((l) => l.args)
+              .map(({ check, args, failure, cmp }) => ({ check, args, failure, cmp }));
+            active.postMessage({ id, job: { stateful: { source: job.stateful.source, sequence } } });
+            return;
+          }
           const runnable = job.checks.map((c) => ({
             source: c.source, requireLine: c.requireLine, lines: c.lines.filter((l) => l.args),
           }));
@@ -578,7 +746,8 @@ async function main() {
       const job = jobs[next++];
       const t0 = Date.now();
       const result = await runner.run(job);
-      recordFixture(job, result);
+      if (job.stateful) recordStatefulFixture(job, result);
+      else recordFixture(job, result);
       job.fixture.ms = Date.now() - t0;
       if (++done % 25 === 0 || done === jobs.length) process.stderr.write(`  ...${done}/${jobs.length} fixtures\n`);
     }
@@ -591,6 +760,8 @@ async function main() {
     corpusRevision: execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim(),
     resultsFile: RESULTS,
     compileOptions: COMPILE_OPTIONS,
+    statefulCompileOptions: STATEFUL_COMPILE_OPTIONS,
+    slice: SLICE || null,
     limit: LIMIT === Infinity ? null : LIMIT,
     filter: FILTER || null,
     workers: WORKER_COUNT,
@@ -628,6 +799,35 @@ function recordFixture(job, result) {
   fixture.lines.sort((a, b) => a.line - b.line);
 }
 
+// Stateful replies come in file order. After a mismatch, or a skipped value line of a state-writing function, the
+// fixture's state may already differ from solc's: later executed lines carry `afterDivergence`.
+function recordStatefulFixture(job, result) {
+  const { fixture, stateful } = job;
+  const reply = result.stateful;
+  if (result.error) fixture.status = 'error';
+  fixture.checks = stateful.sigs.map((sig) => ({ sig }));
+  Object.assign(fixture, {
+    ...(stateful.rewrote && { rewrote: stateful.rewrote }),
+    ...(reply && { compiled: reply.compiled }),
+    ...(reply?.skip && { skip: reply.skip }),
+  });
+  let diverged = false;
+  let k = 0;
+  for (const line of stateful.lines) {
+    const base = { line: line.line, call: line.call };
+    let record;
+    if (line.status) record = { ...base, status: line.status, reason: line.reason };
+    else if (result.error) record = { ...base, status: 'error', outcome: result.error };
+    else if (!reply.compiled) record = { ...base, status: 'refused-at-compile', outcome: reply.error };
+    else if (reply.skip) record = { ...base, status: 'skipped', reason: reply.skip };
+    else if (reply.deployError) record = { ...base, status: 'refused-at-deploy', outcome: reply.deployError };
+    else record = { ...base, ...reply.outcomes[k], ...(diverged && { afterDivergence: true }) };
+    if (!line.status) k++;
+    fixture.lines.push(record);
+    if (record.status.startsWith('mismatched') || (line.status && !line.failure && line.writes)) diverged = true;
+  }
+}
+
 function tally(values) {
   const counts = new Map();
   for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
@@ -635,18 +835,24 @@ function tally(values) {
 }
 
 const reserveTag = (line) => (line.status?.endsWith(DENSITY_RESERVE) ? '(with density reserve) ' : '');
+const divergenceTag = (line) => (line.afterDivergence ? '(after divergence) ' : '');
+const block = (title, entries) => [`--- ${title} ---`, ...entries.map(([k, n]) => `${String(n).padStart(5)}  ${k}`)];
+const errorShape = (text) => String(text).replace(/'[^']*'/g, "'..'").replace(/\d+/g, 'N').slice(0, 120);
 // Group key for an outcome: digits and quoted text folded so shapes aggregate.
 const shapeOf = (line) => `${/->\s*FAILURE\b/.test(line.call) ? 'expected FAILURE' : 'expected values'}, got `
-  + reserveTag(line) + String(line.outcome).replace(/"[^"]*"/g, '".."').replace(/\d+/g, 'N').slice(0, 110);
+  + divergenceTag(line) + reserveTag(line)
+  + String(line.outcome).replace(/"[^"]*"/g, '".."').replace(/\d+/g, 'N').slice(0, 110);
 
 function writeReports(outputDir, meta, candidateCount, fixtures) {
-  const run = fixtures.filter((f) => f.status !== 'skipped');
+  // The pure slice reports as before: a stateful fixture is one skipped for its state variables.
+  const pure = fixtures.map((f) => (f.stateful ? { rel: f.rel, status: 'skipped', reason: 'state-variables' } : f));
+  const run = pure.filter((f) => f.status !== 'skipped');
   const lines = run.flatMap((f) => f.lines.map((l) => ({ ...l, rel: f.rel })));
   const count = (status) => lines.filter((l) => l.status === status).length;
   const summary = {
     candidates: candidateCount,
     selectedFixtures: run.length,
-    skippedFixtures: Object.fromEntries(tally(fixtures.filter((f) => f.status === 'skipped').map((f) => f.reason))),
+    skippedFixtures: Object.fromEntries(tally(pure.filter((f) => f.status === 'skipped').map((f) => f.reason))),
     lines: {
       selected: lines.length,
       matched: count('matched'),
@@ -659,6 +865,8 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
     },
     lineSkipReasons: Object.fromEntries(tally(lines.filter((l) => l.status === 'skipped').map((l) => l.reason))),
   };
+  const stateful = statefulReport(fixtures.filter((f) => f.stateful));
+  summary.stateful = stateful.summary;
   writeFileSync(join(outputDir, 'semantic-results.json'), `${JSON.stringify({ meta, summary, fixtures }, null, 1)}\n`);
 
   const L = summary.lines;
@@ -669,10 +877,9 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
     + `| ${L.mismatchedWithDensityReserve} mismatched-with-density-reserve | ${L.refusedAtCompile} refused-at-compile `
     + `| ${L.skipped} skipped | ${L.error} error | ${run.length} fixtures run of ${candidateCount} compiled candidates `
     + `| ${meta.elapsedSeconds}s ===`;
-  const block = (title, entries) => [`--- ${title} ---`, ...entries.map(([k, n]) => `${String(n).padStart(5)}  ${k}`)];
   const mismatches = lines.filter((l) => l.status?.startsWith('mismatched'));
   const out = [
-    header, '',
+    header, stateful.header, '',
     ...block('FIXTURES SKIPPED (by reason)', Object.entries(summary.skippedFixtures)), '',
     ...block('LINES (selected fixtures)', [['selected', L.selected], ['matched', L.matched],
       [`matched${DENSITY_RESERVE}`, L.matchedWithDensityReserve], ['mismatched', L.mismatched],
@@ -681,16 +888,82 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
     ...block('LINES SKIPPED (by reason)', Object.entries(summary.lineSkipReasons)), '',
     ...block('MISMATCH SHAPES', tally(mismatches.map(shapeOf))), '',
     ...block('REFUSED-AT-COMPILE (by error head, per line)', tally(lines.filter((l) => l.status === 'refused-at-compile')
-      .map((l) => String(l.outcome).replace(/'[^']*'/g, "'..'").replace(/\d+/g, 'N').slice(0, 120)))), '',
+      .map((l) => errorShape(l.outcome)))), '',
     '--- MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
     ...lines.filter((l) => l.status === `matched${DENSITY_RESERVE}`)
       .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${l.outcome}`), '',
     '--- MISMATCHES (fixture:line  call  =>  outcome) ---',
-    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${reserveTag(l)}${l.outcome}`),
+    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${reserveTag(l)}${l.outcome}`), '',
+    ...stateful.blocks,
     '',
   ];
   writeFileSync(join(outputDir, 'semantic-scorecard.txt'), out.join('\n'));
-  process.stdout.write(`\n${header}\n`);
+  process.stdout.write(`\n${header}\n${stateful.header}\n`);
+}
+
+// Stateful slice section. Executed lines after a divergence are counted apart from the clean ones.
+function statefulReport(fixtures) {
+  const run = fixtures.filter((f) => f.status !== 'skipped');
+  const lines = run.flatMap((f) => f.lines.map((l) => ({ ...l, rel: f.rel })));
+  const count = (status, after = false) => lines
+    .filter((l) => l.status === status && Boolean(l.afterDivergence) === after).length;
+  const executed = (after) => ['matched', 'mismatched'].flatMap((s) => [s, `${s}${DENSITY_RESERVE}`])
+    .reduce((n, s) => n + count(s, after), 0);
+  const summary = {
+    fixturesWithState: fixtures.length,
+    selectedFixtures: run.length,
+    skippedFixtures: Object.fromEntries(tally(fixtures.filter((f) => f.status === 'skipped').map((f) => f.reason))),
+    lines: {
+      selected: lines.length,
+      matched: count('matched'),
+      matchedWithDensityReserve: count(`matched${DENSITY_RESERVE}`),
+      mismatched: count('mismatched'),
+      mismatchedWithDensityReserve: count(`mismatched${DENSITY_RESERVE}`),
+      afterDivergence: {
+        executed: executed(true),
+        matched: count('matched', true) + count(`matched${DENSITY_RESERVE}`, true),
+      },
+      refusedAtCompile: count('refused-at-compile'),
+      refusedAtDeploy: count('refused-at-deploy'),
+      skipped: count('skipped'),
+      error: count('error'),
+    },
+    lineSkipReasons: Object.fromEntries(tally(lines.filter((l) => l.status === 'skipped').map((l) => l.reason))),
+  };
+  const L = summary.lines;
+  const clean = executed(false);
+  const pct = clean ? ((100 * L.matched) / clean).toFixed(2) : '0.00';
+  const header = `=== STATEFUL SLICE (deploy once, lines in order): ${L.matched}/${clean} executed lines matched `
+    + `(${pct}%) | ${L.matchedWithDensityReserve} matched-with-density-reserve | ${L.mismatched} mismatched `
+    + `| ${L.mismatchedWithDensityReserve} mismatched-with-density-reserve | after divergence `
+    + `${L.afterDivergence.matched}/${L.afterDivergence.executed} matched | ${L.refusedAtCompile} refused-at-compile `
+    + `| ${L.refusedAtDeploy} refused-at-deploy | ${L.skipped} skipped | ${L.error} error | ${run.length} fixtures `
+    + `run of ${fixtures.length} with state variables ===`;
+  const mismatches = lines.filter((l) => l.status?.startsWith('mismatched'));
+  const blocks = [
+    header, '',
+    ...block('STATEFUL FIXTURES SKIPPED (by reason)', Object.entries(summary.skippedFixtures)), '',
+    ...block('STATEFUL LINES (selected fixtures; after-divergence lines counted apart)', [['selected', L.selected],
+      ['matched', L.matched], [`matched${DENSITY_RESERVE}`, L.matchedWithDensityReserve],
+      ['mismatched', L.mismatched], [`mismatched${DENSITY_RESERVE}`, L.mismatchedWithDensityReserve],
+      ['matched after-divergence', L.afterDivergence.matched],
+      ['mismatched after-divergence', L.afterDivergence.executed - L.afterDivergence.matched],
+      ['refused-at-compile', L.refusedAtCompile], ['refused-at-deploy', L.refusedAtDeploy],
+      ['skipped', L.skipped], ['error (timeout/worker)', L.error]]), '',
+    ...block('STATEFUL LINES SKIPPED (by reason)', Object.entries(summary.lineSkipReasons)), '',
+    ...block('STATEFUL MISMATCH SHAPES', tally(mismatches.map(shapeOf))), '',
+    ...block('STATEFUL FAILURE LINES MATCHED (by revert reason)', tally(lines
+      .filter((l) => l.status?.startsWith('matched') && /->\s*FAILURE\b/.test(l.call)).map((l) => errorShape(l.outcome)))),
+    '',
+    ...block('STATEFUL REFUSED (by status and error head, per line)', tally(lines
+      .filter((l) => l.status?.startsWith('refused')).map((l) => `${l.status}: ${errorShape(l.outcome)}`))), '',
+    '--- STATEFUL MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
+    ...lines.filter((l) => l.status?.startsWith(`matched${DENSITY_RESERVE}`))
+      .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${l.outcome}`), '',
+    '--- STATEFUL MISMATCHES (fixture:line  call  =>  outcome) ---',
+    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${reserveTag(l)}${l.outcome}`),
+  ];
+  return { summary, header, blocks };
 }
 
 if (isMainThread) await main();

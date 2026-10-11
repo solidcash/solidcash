@@ -36,11 +36,12 @@ export function compileBchStateful(source: string): BchArtifact {
 
 type UnlockFactory = (...args: unknown[]) => Parameters<TransactionBuilder['addInputs']>[1];
 
+// `salt` is a dropped redeem-script push: a deployer's density reserve, which raises the input's operation budget.
 async function buildAndSend(
-  artifact: BchArtifact, fnName: string, args: readonly unknown[],
+  artifact: BchArtifact, fnName: string, args: readonly unknown[], salt?: Uint8Array,
 ): Promise<void> {
   const provider = new MockNetworkProvider();
-  const contract = new Contract(artifact, [], { provider });
+  const contract = new Contract(artifact, [], { provider, ...(salt ? { salt } : {}) });
   // Generous input + change so the fee headroom scales to large redeem scripts (deeply nested decoders can push a
   // small-fee tx past the relay minimum). The contracts under test never constrain output amounts.
   await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
@@ -56,10 +57,10 @@ async function buildAndSend(
 
 // Equality oracle: true if every require() held, false on a require() failure; other errors propagate.
 export async function evalBchCheck(
-  artifact: BchArtifact, fnName: string, args: readonly unknown[],
+  artifact: BchArtifact, fnName: string, args: readonly unknown[], salt?: Uint8Array,
 ): Promise<boolean> {
   try {
-    await buildAndSend(artifact, fnName, args);
+    await buildAndSend(artifact, fnName, args, salt);
     return true;
   } catch (e) {
     if (e instanceof FailedRequireError) return false;
@@ -106,10 +107,10 @@ export async function evalBchRejects(
 // True only when the BCH VM refused the spend: a failed require, a failed evaluation, or a node rejection. An error
 // from building the transaction (an SDK argument check, a compile-time refusal) is not a revert and is rethrown.
 export async function evalBchVmRejects(
-  artifact: BchArtifact, fnName: string, args: readonly unknown[],
+  artifact: BchArtifact, fnName: string, args: readonly unknown[], salt?: Uint8Array,
 ): Promise<boolean> {
   try {
-    await buildAndSend(artifact, fnName, args);
+    await buildAndSend(artifact, fnName, args, salt);
     return false;
   } catch (e) {
     if (e instanceof FailedTransactionError) return true;

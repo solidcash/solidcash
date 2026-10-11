@@ -16420,6 +16420,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     node.right = this.visit(node.right);
 
+    // A variable left-shift amount is clamped to the width: OP_LSHIFTNUM aborts past 80,000 bits, and the truncation
+    // below gives Solidity's 0 for a full-width shift. Not needed when the amount's type stays below the width.
+    if (node.operator === BinaryOperator.SHIFT_LEFT && node.type instanceof IntType
+      && !(node.right instanceof IntLiteralNode)
+      && !(node.right.type instanceof IntType && node.right.type.maxValue < BigInt(node.type.bits))) {
+      this.emit(encodeInt(BigInt(node.type.bits)), locationData);
+      this.emit(Op.OP_MIN, locationData);
+    }
+
     // Exponentiation: no BCH opcode; compile-time eval for constant operands, loop for runtime
     if (node.operator === BinaryOperator.POW) {
       // Solidity: exponent must be unsigned (non-negative). Reject negative literal exponents.
@@ -17115,6 +17124,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       case 'sdiv': orZero(Op.OP_DIV); toWord(); break; // -2^255 / -1 = 2^255, the word of -2^255
       case 'smod': orZero(Op.OP_MOD); toWord(); break; // OP_MOD takes the dividend's sign, as smod
       case 'sar': ops(Op.OP_RSHIFTNUM); toWord(); break; // OP_RSHIFTNUM floors: an arithmetic shift
+      case 'shr': ops(Op.OP_RSHIFTNUM); break; // any amount: a shift past the word gives 0
       case 'slt':
       case 'sgt':
         // Opposite sign bits invert the unsigned order: (a cmp b) xor (a >> 255) xor (b >> 255).

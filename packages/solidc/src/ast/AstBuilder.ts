@@ -2,6 +2,7 @@ import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { parameterTypeToken } from '../semantic/parameterTypeToken.js';
+import { byteElementValue } from '../semantic/byteElementValue.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
@@ -10006,7 +10007,7 @@ export default class AstBuilder
     const suffix = stamp(new SliceNode(read(), iPlus1, len));
     // Compound `op=`: the new byte is the old byte `data[i]` combined with v under the base operator.
     const newByte = op === '='
-      ? value
+      ? byteElementValue(value)
       : stamp(sourceBinaryOp(stamp(new ArrayAccessNode(read(), indexFn())), COMPOUND_OPS[op], value));
     const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, newByte));
     const cat2 = stamp(new BinaryOpNode(cat1, BinaryOperator.PLUS, suffix));

@@ -128,6 +128,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
 import { evmResultMayNeedPreimage, externalResultEncoding } from './ExternalResultEncoding.js';
+import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
 import { computeExpressionSiteKey, generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import {
@@ -12884,7 +12885,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const length = at(new UnaryOpNode(UnaryOperator.SIZE, read()));
       const suffix = at(new SliceNode(read(), next, length));
       const rebuilt = at(new BinaryOpNode(
-        at(new BinaryOpNode(prefix, BinaryOperator.PLUS, node.value)), BinaryOperator.PLUS, suffix,
+        at(new BinaryOpNode(prefix, BinaryOperator.PLUS, byteElementValue(node.value))), BinaryOperator.PLUS, suffix,
       ));
       const assignment = at(new AssignNode(read(), rebuilt));
       assignment.isReferenceDataWrite = true;

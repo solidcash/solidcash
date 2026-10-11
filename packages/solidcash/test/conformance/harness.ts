@@ -2,10 +2,11 @@
 // evaluated on BOTH VMs, asserting value-identical results. The EVM side is the reference; the BCH
 // side proves it matches by a require(<computed> == <expected>) oracle fed the EVM result.
 import {
-  compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
+  compileEvm, evalEvm, evalEvmDeployed, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
 } from './evm.js';
 import {
   compileBch, evalBchCheck, evalBchVmRejects, compileBchStateful, evalBchStatefulCheck, evalBchStatefulVmRejects,
+  evalBchDeployedStateful,
 } from './bch.js';
 
 const SPDX = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n';
@@ -137,6 +138,18 @@ export async function assertStatefulConformant(c: ConformanceCase): Promise<void
     const tag = c.label ? ` [${c.label}]` : '';
     throw new Error(`Stateful conformance MISMATCH${tag}: EVM ${c.evmFn}(${fmt(c.args)}) = ${fmt(decoded)}, `
       + 'but the SolidCash covenant rejected that result');
+  }
+}
+
+// Stateful value conformance through a real deployment on both VMs: the constructor runs, so state-variable
+// initializers apply (assertStatefulConformant starts both sides from zero state).
+export async function assertDeployedStatefulConformant(c: ConformanceCase): Promise<void> {
+  const { decoded } = await evalEvmDeployed(compileEvm(c.solidity), c.evmFn, c.args);
+  const rejection = await evalBchDeployedStateful(compileBchStateful(c.scash), c.bchFn, [...c.args, ...decoded]);
+  if (rejection !== undefined) {
+    const tag = c.label ? ` [${c.label}]` : '';
+    throw new Error(`Deployed stateful conformance MISMATCH${tag}: EVM ${c.evmFn}(${fmt(c.args)}) = `
+      + `${fmt(decoded)}, but the deployed SolidCash covenant rejected that result: ${rejection}`);
   }
 }
 

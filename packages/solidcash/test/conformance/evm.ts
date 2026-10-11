@@ -15,6 +15,7 @@ const CALLER = createAddressFromString(`0x${'22'.repeat(20)}`);
 export interface EvmCompiled {
   abi: ReadonlyArray<Record<string, unknown>>;
   deployedBytecode: string;
+  bytecode: string; // creation code: runs the constructor and the state-variable initializers
 }
 
 // Compile a Solidity source string. The contract under test must be named `C`.
@@ -24,7 +25,7 @@ export function compileEvm(source: string): EvmCompiled {
     sources: { [SOURCE_KEY]: { content: source } },
     settings: {
       optimizer: { enabled: false },
-      outputSelection: { '*': { '*': ['abi', 'evm.deployedBytecode.object'] } },
+      outputSelection: { '*': { '*': ['abi', 'evm.deployedBytecode.object', 'evm.bytecode.object'] } },
     },
   };
   const out = JSON.parse(solc.compile(JSON.stringify(input)));
@@ -35,7 +36,11 @@ export function compileEvm(source: string): EvmCompiled {
   }
   const contract = out.contracts?.[SOURCE_KEY]?.[CONTRACT_NAME];
   if (!contract) throw new Error(`contract "${CONTRACT_NAME}" not found - name the test contract "contract C"`);
-  return { abi: contract.abi, deployedBytecode: contract.evm.deployedBytecode.object as string };
+  return {
+    abi: contract.abi,
+    deployedBytecode: contract.evm.deployedBytecode.object as string,
+    bytecode: contract.evm.bytecode.object as string,
+  };
 }
 
 // Independent EVM-canonical ABI encodings (ethers), used to bake expected constants into conformance covenants -
@@ -56,9 +61,11 @@ export interface EvmResult {
   rawReturn: string; // raw returndata, 0x-hex
 }
 
-// Execute a pure/view function and return its decoded outputs + raw returndata.
-export async function evalEvm(
-  compiled: EvmCompiled, fnName: string, args: readonly unknown[] = [],
+type Evm = Awaited<ReturnType<typeof createEVM>>;
+type EvmAddress = ReturnType<typeof createAddressFromString>;
+
+async function callEvm(
+  evm: Evm, to: EvmAddress, compiled: EvmCompiled, fnName: string, args: readonly unknown[],
 ): Promise<EvmResult> {
   const abiFn = compiled.abi.find((e) => e.type === 'function' && e.name === fnName);
   if (!abiFn) throw new Error(`function "${fnName}" not found in compiled ABI`);
@@ -66,11 +73,8 @@ export async function evalEvm(
   const inputTypes = frag.inputs.map((i) => i.type);
   const outputTypes = frag.outputs.map((o) => o.type);
   const calldata = frag.selector + coder.encode(inputTypes, args as unknown[]).slice(2);
-
-  const evm = await createEVM();
-  await evm.stateManager.putCode(TARGET, hexToBytes(`0x${compiled.deployedBytecode}`));
   const res = await evm.runCall({
-    to: TARGET, caller: CALLER, data: hexToBytes(calldata), gasLimit: 1_000_000_000n,
+    to, caller: CALLER, data: hexToBytes(calldata), gasLimit: 1_000_000_000n,
   });
   if (res.execResult.exceptionError) {
     throw new Error(`EVM reverted in ${fnName}(): ${JSON.stringify(res.execResult.exceptionError)}`);
@@ -78,4 +82,27 @@ export async function evalEvm(
   const rawReturn = bytesToHex(res.execResult.returnValue);
   const decoded = outputTypes.length > 0 ? Array.from(coder.decode(outputTypes, rawReturn)) : [];
   return { decoded, rawReturn };
+}
+
+// Execute a pure/view function and return its decoded outputs + raw returndata.
+export async function evalEvm(
+  compiled: EvmCompiled, fnName: string, args: readonly unknown[] = [],
+): Promise<EvmResult> {
+  const evm = await createEVM();
+  await evm.stateManager.putCode(TARGET, hexToBytes(`0x${compiled.deployedBytecode}`));
+  return callEvm(evm, TARGET, compiled, fnName, args);
+}
+
+// Deploy through the creation code (the constructor and state-variable initializers run), then call `fnName`.
+export async function evalEvmDeployed(
+  compiled: EvmCompiled, fnName: string, args: readonly unknown[] = [],
+): Promise<EvmResult> {
+  const evm = await createEVM();
+  const created = await evm.runCall({
+    caller: CALLER, data: hexToBytes(`0x${compiled.bytecode}`), gasLimit: 1_000_000_000n,
+  });
+  if (created.execResult.exceptionError || created.createdAddress === undefined) {
+    throw new Error(`EVM deployment reverted: ${JSON.stringify(created.execResult.exceptionError)}`);
+  }
+  return callEvm(evm, created.createdAddress, compiled, fnName, args);
 }

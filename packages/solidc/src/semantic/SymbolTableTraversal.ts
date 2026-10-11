@@ -13162,6 +13162,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       decl.location = node.location;
       stmts.push(decl);
     }
+    const writes: StatementNode[] = [];
     node.elements.forEach((e, i) => {
       if (e.skip) return;
       const target = new IdentifierNode(e.name!);
@@ -13170,8 +13171,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       value.location = node.location;
       const assign = new AssignNode(target, value);
       assign.location = node.location;
-      stmts.push(assign);
+      writes.push(assign);
     });
+    // solc stores right to left: a repeated target keeps its leftmost value.
+    if (new Set(node.elements.filter((e) => !e.skip).map((e) => e.name)).size < writes.length) writes.reverse();
+    stmts.push(...writes);
     const block = new BlockNode(stmts);
     block.location = node.location;
     return this.visit(block);

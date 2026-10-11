@@ -228,7 +228,7 @@ import {
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
   FunctionTypeContext, StructDefinitionContext, GroupedExpressionContext,
   ConstructedExpressionContext, BinaryOpContext, SliceContext, UnaryOpContext,
-  InstantiationContext,
+  InstantiationContext, IndexedFunctionCallContext, ParenthesizedFunctionCallContext, InstantiationWithOptionsContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, sourceFileOf, withSourceFile } from './Location.js';
@@ -3239,6 +3239,8 @@ export default class AstBuilder
       return bases.every((b) => !new RegExp(`\\b${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text));
     });
     if (!aliasSafe) return null;
+    const ordered = this.desugarComplexTupleInSolcOrder(slots, exprs, bases, loc);
+    if (ordered) return ordered;
     const stmts: StatementNode[] = [];
     slots.forEach((slot, i) => {
       const eCtx = exprs[i];
@@ -3259,6 +3261,201 @@ export default class AstBuilder
       const segs = this.buildTupleSlotSegs(slot);
       stmts.push(this.buildLvalueAssign(base.getText(), false, Location.fromCtx(base), segs, '=', eCtx, loc));
     });
+    const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
+  // solc's tuple-assignment order: RHS components left to right, then the targets' index keys left to right, then
+  // the stores right to left, so of two aliased targets the leftmost wins. Returns null where sequential
+  // `lv_i = e_i` writes cannot be told apart from that (no effects after the first component or in a key, no key
+  // reading a target, no aliased targets) or a target is not typable at parse time; the sequential form applies.
+  private desugarComplexTupleInSolcOrder(
+    slots: TupleSlotContext[], exprs: ExpressionContext[], bases: string[], loc: Location,
+  ): BlockNode | null {
+    const liveKeys = this.liveTupleKeys(slots);
+    const observable = exprs.some((e, j) => (j > 0 || liveKeys.length > 0) && this.tupleExprHasEffects(e))
+      || liveKeys.some((k) => this.tupleExprHasEffects(k) || this.tupleTextNames(k, bases))
+      || this.tupleSlotsMayAlias(slots);
+    if (!observable) return null;
+    type Store = { kind: 'store', type: Type, segs: LvSeg[], keys: (Type | undefined)[] };
+    type Plan = { kind: 'skip' | 'local' | 'drop' } | Store;
+    const locals = new Set<string>();
+    const plans = slots.map((slot): Plan | null => {
+      if (this.isEmptyTupleSlot(slot)) return { kind: 'skip' };
+      if (/\.push\(\)$/.test(slot.getText())) return null;
+      const name = slot.anyIdentifier(0)!.getText();
+      const segs = this.buildTupleSlotSegs(slot);
+      if (segs.length === 0 && !this.stateVarNames.has(name)) {
+        // A plain local is out of a call's reach: write it in place unless a key or another target reads it. Only
+        // its leftmost occurrence is written (solc stores it last).
+        if (this.storageAliases.has(name) || this.mappingStructStateVars.has(name)
+          || liveKeys.some((k) => this.tupleTextNames(k, [name]))
+          || slots.some((s) => this.isComplexTupleSlot(s) && s.anyIdentifier(0)?.getText() === name)) return null;
+        if (locals.has(name)) return { kind: 'drop' };
+        locals.add(name);
+        return { kind: 'local' };
+      }
+      const { value, keys } = this.tupleTargetTypes(slot, segs);
+      return value && this.tupleKeysTyped(slot, keys) ? { kind: 'store', type: value, segs, keys } : null;
+    });
+    if (plans.some((plan) => plan === null)) return null;
+    const stmts: StatementNode[] = [];
+    const values = slots.map((slot, i): ExpressionNode | undefined => {
+      const plan = plans[i]!;
+      const value = this.visit(exprs[i]) as ExpressionNode;
+      if (plan.kind === 'store') return this.tupleTemp(plan.type, value, stmts, loc);
+      if (plan.kind === 'local') stmts.push(this.plainTupleAssign(slot.anyIdentifier(0)!, value, loc));
+      else {
+        const es = new ExpressionStatementNode(value);
+        es.location = loc;
+        stmts.push(es);
+      }
+      return undefined;
+    });
+    const chains = slots.map((slot, i) => {
+      const plan = plans[i]!;
+      return plan.kind === 'store' ? this.hoistTupleKeys(slot, plan.segs, plan.keys, stmts, loc) : [];
+    });
+    for (let i = slots.length - 1; i >= 0; i -= 1) {
+      if (plans[i]!.kind !== 'store') continue;
+      const base = slots[i].anyIdentifier(0)!;
+      stmts.push(chains[i].length === 0 ? this.plainTupleAssign(base, values[i]!, loc)
+        : this.buildLvalueAssign(base.getText(), false, Location.fromCtx(base), chains[i], '=', undefined, loc, values[i]));
+    }
+    const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
+  // Whether evaluating a tuple component or index key may have an effect another one could observe: a call, `new`,
+  // `++`/`--` or an embedded assignment. Reads, literals, casts and operators have none.
+  private tupleExprHasEffects(tree: ParseTree): boolean {
+    if (tree instanceof FunctionCallExpressionContext || tree instanceof MethodCallContext
+      || tree instanceof MethodCallNamedContext || tree instanceof LegacyCallOptionCallContext
+      || tree instanceof IndexedFunctionCallContext || tree instanceof ParenthesizedFunctionCallContext
+      || tree instanceof ConstructedExpressionContext || tree instanceof InstantiationWithOptionsContext
+      || tree instanceof AssignmentExpressionContext || tree instanceof PostfixOpContext
+      || tree instanceof PrefixOpContext || (tree instanceof TernaryOpContext && (tree._tOp || tree._fOp))) {
+      return true;
+    }
+    return tree instanceof ParserRuleContext && (tree.children ?? []).some((c) => this.tupleExprHasEffects(c));
+  }
+
+  // Whether the source text of `tree` names any of `names` (whole words; conservative, members match too).
+  private tupleTextNames(tree: ParseTree, names: readonly string[]): boolean {
+    const text = tree.getText();
+    return names.some((n) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text));
+  }
+
+  private tupleKeyLiteral(key: ParseTree): bigint | undefined {
+    const text = key.getText().replace(/_/g, '');
+    return /^(0x[0-9a-fA-F]+|[0-9]+)$/.test(text) ? BigInt(text) : undefined;
+  }
+
+  // The index keys of the tuple's targets that are not number literals, left to right.
+  private liveTupleKeys(slots: TupleSlotContext[]): ExpressionContext[] {
+    return slots.flatMap((s) => (this.isEmptyTupleSlot(s) ? [] : s.expression_list()))
+      .filter((k) => this.tupleKeyLiteral(k) === undefined);
+  }
+
+  // Whether two tuple targets may name one location: the same base (or storage container) and no step telling them
+  // apart (two different members, or two different literal indices).
+  private tupleSlotsMayAlias(slots: TupleSlotContext[]): boolean {
+    const chains = slots.filter((s) => !this.isEmptyTupleSlot(s)).map((s) => {
+      const base = s.anyIdentifier(0)!.getText();
+      const steps = (s.children ?? []).filter((c) => c instanceof AnyIdentifierContext || c instanceof ExpressionContext)
+        .slice(1);
+      return { base, root: this.storageAliases.get(base)?.container ?? base, steps };
+    });
+    const distinct = (x: ParseTree, y: ParseTree): boolean => {
+      if (x instanceof AnyIdentifierContext && y instanceof AnyIdentifierContext) return x.getText() !== y.getText();
+      const [a, b] = [this.tupleKeyLiteral(x), this.tupleKeyLiteral(y)];
+      return x instanceof ExpressionContext && y instanceof ExpressionContext && a !== undefined && b !== undefined
+        && a !== b;
+    };
+    return chains.some((a, i) => chains.slice(i + 1).some((b) => a.root === b.root
+      && (a.base !== b.base || !a.steps.some((step, p) => p < b.steps.length && distinct(step, b.steps[p])))));
+  }
+
+  // Parse-time value type of a tuple target (`a[i]`, `m[k].f`, `s.x`, a plain state var) and the type of each index
+  // key on its chain; a step that cannot be resolved leaves the types after it undefined.
+  private tupleTargetTypes(slot: TupleSlotContext, segs: LvSeg[]): { value?: Type, keys: (Type | undefined)[] } {
+    const base = slot.anyIdentifier(0)!.getText();
+    const index = this.evmCompat ? new IntType(false, 256) : PrimitiveType.BIGINT;
+    let cur: Type | undefined = this.storageAliases.has(base) ? undefined
+      : this.localArrayVarTypes.get(base) ?? this.localStructTypes.get(base) ?? this.mappingStateVarTypes.get(base)
+        ?? this.stateCollectionArrayTypes.get(base) ?? this.stateVarTypes.get(base);
+    const keys: (Type | undefined)[] = [];
+    for (const seg of segs) {
+      if (seg.member !== undefined) {
+        cur = cur instanceof StructType ? cur.fields.find((f) => f.name === seg.member)?.type : undefined;
+        continue;
+      }
+      keys.push(cur instanceof ArrayType ? index : cur instanceof MappingType ? cur.keyType : undefined);
+      cur = cur instanceof ArrayType ? cur.elementType : cur instanceof MappingType ? cur.valueType : undefined;
+    }
+    const value = cur ?? this.resolveTupleSlotType(slot);
+    const plain = value !== undefined
+      && !(value instanceof StructType || value instanceof ArrayType || value instanceof MappingType);
+    return { value: plain ? value : undefined, keys };
+  }
+
+  private tupleKeysTyped(slot: TupleSlotContext, keys: (Type | undefined)[]): boolean {
+    return slot.expression_list().every((k, i) => this.tupleKeyLiteral(k) !== undefined || keys[i] !== undefined);
+  }
+
+  // Evaluate a target's non-literal index keys into temps now (solc evaluates them after the RHS, before any store)
+  // and return its chain reading them back.
+  private hoistTupleKeys(
+    slot: TupleSlotContext, segs: LvSeg[], keys: (Type | undefined)[], stmts: StatementNode[], loc: Location,
+  ): LvSeg[] {
+    const keyCtxs = slot.expression_list();
+    let k = -1;
+    return segs.map((seg) => {
+      if (seg.key === undefined) return seg;
+      k += 1;
+      if (this.tupleKeyLiteral(keyCtxs[k]) !== undefined) return seg;
+      const temp = this.tupleTemp(keys[k]!, this.visit(keyCtxs[k]) as ExpressionNode, stmts, loc);
+      return { key: () => cloneNode(temp) as ExpressionNode };
+    });
+  }
+
+  // Declare `type __ctup_N = value` and return a read of it.
+  private tupleTemp(type: Type, value: ExpressionNode, stmts: StatementNode[], loc: Location): IdentifierNode {
+    const name = `__ctup_${this.nestedLvalueCounter++}`;
+    const def = new VariableDefinitionNode(type, [], name, value);
+    def.location = loc;
+    stmts.push(def);
+    const read = new IdentifierNode(name);
+    read.location = loc;
+    return read;
+  }
+
+  private plainTupleAssign(base: AnyIdentifierContext, value: ExpressionNode, loc: Location): AssignNode {
+    const target = new IdentifierNode(base.getText());
+    target.location = Location.fromCtx(base);
+    const assign = new AssignNode(target, value);
+    assign.location = loc;
+    return assign;
+  }
+
+  // `(x, y, ..) = (a, b, ..)` over state vars in solc's order where sequential writes would differ from it (a
+  // repeated target, or a later component with effects or reading an earlier target): every component into a temp
+  // left to right, then the writes right to left. Null otherwise, or when a target type is not a plain value.
+  private desugarStateTupleInSolcOrder(names: string[], exprs: ExpressionContext[], loc: Location): BlockNode | null {
+    const observable = new Set(names).size < names.length
+      || exprs.some((e, j) => j > 0 && (this.tupleExprHasEffects(e) || this.tupleTextNames(e, names.slice(0, j))));
+    const types = names.map((name) => this.stateVarTypes.get(name));
+    if (!observable || types.some((t) => t === undefined
+      || t instanceof StructType || t instanceof ArrayType || t instanceof MappingType)) return null;
+    const stmts: StatementNode[] = [];
+    const temps = exprs.map((e, i) => this.tupleTemp(types[i]!, this.visit(e) as ExpressionNode, stmts, loc));
+    for (let i = names.length - 1; i >= 0; i -= 1) {
+      const assign = new StateAssignNode(names[i], temps[i]);
+      assign.location = loc;
+      stmts.push(assign);
+    }
     const block = new BlockNode(stmts);
     block.location = loc;
     return block;
@@ -3296,14 +3493,26 @@ export default class AstBuilder
     const tmpNames = slots.map(() => `__ctup_${this.nestedLvalueCounter++}`);
     const declElements = slots.map((s, i) => (this.isEmptyTupleSlot(s)
       ? { skip: true } : { name: tmpNames[i], type: slotTypes[i]! }));
+    // solc evaluates the index keys after the RHS, left to right, then stores right to left (of two aliased targets
+    // the leftmost wins). Keys are hoisted only where their timing is observable and can be typed.
+    const bases = slots.filter((s) => !this.isEmptyTupleSlot(s)).map((s) => s.anyIdentifier(0)!.getText());
+    const keyTypes = this.liveTupleKeys(slots).some((k) => this.tupleExprHasEffects(k) || this.tupleTextNames(k, bases))
+      ? slots.map((s) => (this.isEmptyTupleSlot(s) ? [] : this.tupleTargetTypes(s, this.buildTupleSlotSegs(s)).keys))
+      : undefined;
+    const hoist = keyTypes !== undefined && slots.every((s, i) => this.isEmptyTupleSlot(s)
+      || this.tupleKeysTyped(s, keyTypes[i]));
+    const ordered = hoist || (keyTypes === undefined && this.tupleSlotsMayAlias(slots));
     const decl = new TupleAssignmentNode(declElements, this.visit(exprs[0]) as ExpressionNode, true);
     decl.location = loc;
     const stmts: StatementNode[] = [decl];
+    const writes: StatementNode[] = [];
+    const chains = slots.map((slot, i) => (hoist && !this.isEmptyTupleSlot(slot)
+      ? this.hoistTupleKeys(slot, this.buildTupleSlotSegs(slot), keyTypes![i], stmts, loc) : undefined));
     slots.forEach((slot, i) => {
       if (this.isEmptyTupleSlot(slot)) return;
       const base = slot.anyIdentifier(0)!;
       let rawName = base.getText();
-      let segs = this.buildTupleSlotSegs(slot);
+      let segs = chains[i] ?? this.buildTupleSlotSegs(slot);
       // Expand an indexed storage-pointer base (`T storage t = coll[k]; t.f`): buildLvalueAssign only substitutes
       // whole-var (keys-0) aliases, so route through the container + prepend the alias index (`coll[k].f`).
       const alias = this.storageAliases.get(rawName);
@@ -3313,8 +3522,9 @@ export default class AstBuilder
       }
       const value = new IdentifierNode(tmpNames[i]);
       value.location = loc;
-      stmts.push(this.buildLvalueAssign(rawName, false, Location.fromCtx(base), segs, '=', undefined, loc, value));
+      writes.push(this.buildLvalueAssign(rawName, false, Location.fromCtx(base), segs, '=', undefined, loc, value));
     });
+    stmts.push(...(ordered ? writes.reverse() : writes));
     const block = new BlockNode(stmts);
     block.location = loc;
     return block;
@@ -3539,10 +3749,12 @@ export default class AstBuilder
       return block;
     }
     // `(x, y) = (a, b)` where every target is a state variable: the tuple codegen assigns into stack slots,
-    // which state vars do not have. Desugar to sequential state assigns - clobber-safe because a state read
-    // always reads the input commitment, so a swap `(x, y) = (y, x)` still exchanges correctly.
+    // which state vars do not have. Desugar to sequential state assigns, which match solc unless a target repeats
+    // or a later component has effects or reads an earlier target (a read after a write sees the new value).
     if (exprs.length > 1
       && elements.every((e) => e.existing && e.name !== undefined && this.stateVarNames.has(e.name))) {
+      const ordered = this.desugarStateTupleInSolcOrder(elements.map((e) => e.name!), exprs, Location.fromCtx(ctx));
+      if (ordered) return ordered;
       const stmts: StatementNode[] = elements.map((e, i) => {
         const sa = new StateAssignNode(e.name!, this.visit(exprs[i]) as ExpressionNode);
         sa.location = Location.fromCtx(ctx);
@@ -3574,6 +3786,8 @@ export default class AstBuilder
           assign.location = loc;
           return assign;
         });
+        // solc stores right to left: a repeated target keeps its leftmost value.
+        if (new Set(elements.map((e) => e.name)).size < elements.length) writes.reverse();
         const block = new BlockNode([capture, ...writes]);
         block.location = loc;
         return block;

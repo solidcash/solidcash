@@ -980,6 +980,7 @@ export default class AstBuilder
       // for `L.E.selector` folds (bare-name registration collides across libraries).
       for (const evCtx of libCtx.eventDefinition_list()) {
         const ev = this.visitEventDefinition(evCtx);
+        ev.declaringLibraryName = libName;
         libraryEventSignatures.set(`${libName}.${ev.name}`, ev.parameters.map((pm) => pm.type.toString()));
         if (ev.isAnonymous) libraryAnonymousEvents.add(`${libName}.${ev.name}`);
         allLibEventDefs.push(ev);

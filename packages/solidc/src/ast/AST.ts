@@ -3146,6 +3146,8 @@ export class MethodCallNode extends ExpressionNode {
 export class EventDefinitionNode extends Node implements Named {
   signature: string = '';
   inheritedFrom?: string;
+  // Set on a library event: it shares SourceFileNode.eventDefinitions with file-level events.
+  declaringLibraryName?: string;
   isAnonymous: boolean = false;
 
   constructor(

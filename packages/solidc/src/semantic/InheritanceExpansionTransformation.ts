@@ -2,6 +2,7 @@ import {
   Node,
   SourceFileNode,
   ContractNode,
+  type InterfaceNode,
   FunctionDefinitionNode,
   ParameterNode,
   FunctionModifier,
@@ -340,6 +341,9 @@ export default function expandInheritance(ast: SourceFileNode, evmCompat = false
   // ancestor into the primary. So compute the primary's linearization up front and skip those names.
   const primaryLinearization = ast.contract.implements.length > 0
     ? computeLinearization(ast.contract, contractMap, originalImplements) : [ast.contract.name];
+  if (ast.contract.implements.length > 0) {
+    assertLinearizableWithInterfaces(ast.contract, contractMap, interfaceMap, originalImplements);
+  }
   const primaryAncestors = new Set(primaryLinearization);
 
   // Flatten IMPORTED contracts that carry their own inheritance and are USED/instantiated independently (not a
@@ -435,6 +439,39 @@ function computeLinearization(
   };
 
   return linearize(contract.name);
+}
+
+// Solidity linearizes interfaces together with contracts. The expansion order above leaves interfaces out (they carry
+// no code), so check the whole hierarchy separately: solc refuses one with no C3 linearization.
+function assertLinearizableWithInterfaces(
+  contract: ContractNode,
+  contractMap: Map<string, ContractNode>,
+  interfaceMap: Map<string, InterfaceNode>,
+  originalImplements: Map<string, string[]>,
+): void {
+  const parentsOf = (name: string): string[] => {
+    const iface = interfaceMap.get(name);
+    if (iface) return iface.parents.filter((n) => interfaceMap.has(n));
+    const bases = originalImplements.get(name)
+      ?? (name === contract.name ? contract.implements : (contractMap.get(name)?.implements ?? []));
+    return bases.filter((n) => contractMap.has(n) || interfaceMap.has(n));
+  };
+  const memo = new Map<string, string[]>();
+  const linearize = (name: string, stack: Set<string>): string[] => {
+    const known = memo.get(name);
+    if (known) return known;
+    // A cycle is reported by computeLinearization or the interface-inheritance check; do not recurse into it.
+    if (stack.has(name)) return [name];
+    const parents = parentsOf(name);
+    const nextStack = new Set(stack).add(name);
+    const reversed = [...parents].reverse();
+    const result = parents.length === 0
+      ? [name]
+      : [name, ...c3Merge([...reversed.map((p) => linearize(p, nextStack)), [...reversed]], contract)];
+    memo.set(name, result);
+    return result;
+  };
+  linearize(contract.name, new Set());
 }
 
 // Merge step of C3: repeatedly take the head of some sequence that appears in no sequence's tail.

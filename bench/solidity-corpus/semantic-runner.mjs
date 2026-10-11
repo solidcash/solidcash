@@ -21,13 +21,17 @@ import { isMainThread, parentPort, Worker, workerData } from 'worker_threads';
 // which solc forbids inheriting from) gets the check functions inside a copy of its own body instead.
 // Stateful slice: a fixture WITH state variables (no constructor parameters, same line restrictions; elementary
 // public getters too; a getter wins over a base function it overrides) gets one wrapper with `__check_<k>` per
-// signature, compiled with forceStateful (a derived wrapper refused by the lifecycle policy is compiled again with the
-// checks inside the target), deployed ONCE through getContractFactory(...).deploy(); its lines then run in file
-// order, one transaction each, so state carries over. A FAILURE line must revert without broadcasting; a reverted
-// value line is re-sent with cmp=false (success = wrong value, state advances as in solc). Lines after a mismatch, or
-// after a skipped value line of a state-writing function, are tagged afterDivergence. A density-limit stop replays
-// the whole fixture behind the reserve.
-// Output: semantic-results.json and semantic-scorecard.txt (pure slice as before, then the stateful section).
+// signature, compiled with forceStateful (a derived wrapper refused by the lifecycle policy or MESSAGE_BUS_REQUIRED is
+// compiled again with the checks inside the target), deployed ONCE through getContractFactory(...).deploy(); its lines
+// then run in file order, one transaction each, so state carries over. A FAILURE line must revert without
+// broadcasting; a reverted value line is re-sent with cmp=false (success = wrong value, state advances as in solc).
+// Lines after a mismatch, or after a skipped value line of a state-writing function, are tagged afterDivergence. A
+// density-limit stop replays the whole fixture behind the reserve.
+// Routing: a pure fixture whose plain unlock leaves a compiler-owned external-call witness (`__internal__*`) unfilled
+// runs again as a stateful fixture (StatefulContract building fills it) and is scored in the stateful slice.
+// Pipeline-specific fixtures (`compileViaYul: true|false` settings: expectations of solc's via-IR or legacy pipeline
+// only, often shipped as disagreeing twins) run as usual but are scored apart, outside both slices' rates.
+// Output: semantic-results.json and semantic-scorecard.txt (pure slice, stateful section, pipeline section).
 // Env: CORPUS_RESULTS, SOLC_CORPUS, LIMIT (selected fixtures), FILTER (path substring), SLICE=pure|stateful,
 // CORPUS_WORKERS, FIXTURE_TIMEOUT_MS, CORPUS_OUTPUT_DIR, SELECT_ONLY=true|list (selection only, no execution),
 // RESCORE=true (re-derive both reports from an existing semantic-results.json, no execution).
@@ -38,10 +42,19 @@ const DENSITY_RESERVE = '-with-density-reserve'; // status suffix of a line retr
 // Stateful slice: forceStateful so a fixture whose state compiles away still deploys as a stateful contract.
 const STATEFUL_COMPILE_OPTIONS = { ...COMPILE_OPTIONS, forceStateful: true };
 const DENSITY_STOP = /operation cost density limit/;
-// Wrapper shapes with the checks inside the target (see wrapSource); a lifecycle refusal of the derived one retries.
+// Wrapper shapes with the checks inside the target (see wrapSource). A derived wrapper hides the target's call-graph
+// edges, so these refusals of it retry in the target, each recording its shape.
 const IN_TARGET_LAYOUT = 'in-target: layout at';
-const IN_TARGET_LIFECYCLE = 'in-target: lifecycle refusal';
-const LIFECYCLE_REFUSAL = /^UnauthorizedLifecycleError: /;
+const IN_TARGET_RETRIES = [
+  [/^UnauthorizedLifecycleError: /, 'in-target: lifecycle refusal'],
+  [/\[MESSAGE_BUS_REQUIRED\]/, 'in-target: message bus required'],
+];
+// A plain unlock cannot fill compiler-owned external-call witnesses; such a pure fixture routes to the stateful slice.
+const WITNESS_GAP = /^build-error: Error: No value for '__internal__/;
+const ROUTED = 'routed-to-stateful: external-call witnesses';
+// `// ====` setting pinning a fixture's expectations to one solc pipeline.
+const PIPELINE_SETTING = /^\/\/ ====\s*\n(?:\/\/.*\n)*?\/\/ compileViaYul:\s*(true|false)\s*$/m;
+const pipelineOf = (src) => ({ true: 'via-IR', false: 'legacy' })[PIPELINE_SETTING.exec(src)?.[1]];
 // A stateful send reports a VM failure either as FailedTransactionError or as the SDK's preflight/probe message.
 const VM_ERROR = /preflight failed at input \d+: |^Program |\bProgram (?:failed|attempted|completed|exceeded)\b/;
 const errHead = (cause) => `${cause?.name || 'Error'}: ${String(cause?.message).split('\n')[0]}`;
@@ -211,17 +224,19 @@ async function workerMain() {
     return { compiled: true, outcomes: plain.deployError ? tagged : [...plain.outcomes.slice(0, at), ...tagged.slice(at)] };
   };
 
-  // A derived wrapper the lifecycle policy refuses is compiled again with its checks inside the target.
+  // A derived wrapper refused for the target's hidden call-graph edges is compiled again with its checks inside it.
   const compileStateful = (source, fallback) => {
+    let shape;
     try {
       return { artifact: compileString(source, STATEFUL_COMPILE_OPTIONS) };
     } catch (cause) {
-      if (!fallback || !LIFECYCLE_REFUSAL.test(errHead(cause))) return { error: errHead(cause) };
+      shape = fallback && IN_TARGET_RETRIES.find(([refusal]) => refusal.test(errHead(cause)))?.[1];
+      if (!shape) return { error: errHead(cause) };
     }
     try {
-      return { artifact: compileString(fallback, STATEFUL_COMPILE_OPTIONS), shape: IN_TARGET_LIFECYCLE };
+      return { artifact: compileString(fallback, STATEFUL_COMPILE_OPTIONS), shape };
     } catch (cause) {
-      return { error: errHead(cause), shape: IN_TARGET_LIFECYCLE };
+      return { error: errHead(cause), shape };
     }
   };
 
@@ -239,6 +254,10 @@ async function workerMain() {
       }
       const checks = [];
       for (const check of job.checks) checks.push(await runCheck(check));
+      if (job.route && checks.some((check) => check.lines?.some((line) => WITNESS_GAP.test(line.outcome)))) {
+        parentPort.postMessage({ id, routed: await runStatefulJob(job.route) });
+        return;
+      }
       parentPort.postMessage({ id, checks });
     } catch (cause) {
       parentPort.postMessage({ id, error: `worker error: ${errHead(cause)}` });
@@ -596,8 +615,11 @@ function selectFixture(src) {
     check.lines.push(line);
   }
   const list = [...checks.values()];
-  if (stateful) return { target: target.name, stateful: buildStatefulWrapper(src, code, target, list) };
-  return { target: target.name, checks: list.map((check) => buildWrapper(src, code, target, check)) };
+  const statefulWrapper = buildStatefulWrapper(src, code, target, list);
+  if (stateful) return { target: target.name, stateful: statefulWrapper };
+  // A pure fixture keeps its stateful wrapper as the route for unfilled external-call witnesses.
+  const wrappers = list.map((check) => buildWrapper(src, code, target, check));
+  return { target: target.name, checks: wrappers, route: statefulWrapper };
 }
 
 const MUTABILITY_RANK = { pure: 0, view: 1, '': 2, payable: 2 };
@@ -680,6 +702,13 @@ function buildStatefulWrapper(src, code, target, checks) {
 
 // ------------------------------------------------------------------------------------------------ main side
 
+// Worker message for a stateful wrapper: its source, the in-target fallback and the runnable lines in file order.
+const statefulMessage = (wrapper) => ({
+  source: wrapper.source,
+  fallback: wrapper.inTargetSource,
+  sequence: wrapper.lines.filter((l) => l.args).map(({ check, args, failure, cmp }) => ({ check, args, failure, cmp })),
+});
+
 async function main() {
   const OUTPUT_DIR = process.env.CORPUS_OUTPUT_DIR || BENCH_DIR;
   if (OUTPUT_DIR !== BENCH_DIR) mkdirSync(OUTPUT_DIR, { recursive: true });
@@ -688,6 +717,9 @@ async function main() {
     for (const line of prior.fixtures.filter((f) => !f.stateful).flatMap((f) => f.lines ?? [])) {
       if (line.outcome) line.outcome = canonicalOutcome(line.outcome);
     }
+    // Results older than the pipeline tag take it from the corpus source.
+    const corpus = process.env.SOLC_CORPUS || prior.meta.corpusRoot;
+    for (const f of prior.fixtures) f.pipeline ??= pipelineOf(readFileSync(join(corpus, f.rel), 'utf8'));
     writeReports(OUTPUT_DIR, { ...prior.meta, rescored: true }, prior.summary.candidates, prior.fixtures);
     return;
   }
@@ -706,17 +738,19 @@ async function main() {
   const fixtures = [];
   const jobs = [];
   for (const rel of candidates) {
-    const selected = selectFixture(readFileSync(join(ROOT, rel), 'utf8'));
-    const stateful = selected.stateful ? { stateful: true } : {};
+    const src = readFileSync(join(ROOT, rel), 'utf8');
+    const selected = selectFixture(src);
+    const pipeline = pipelineOf(src);
+    const tags = { ...(selected.stateful && { stateful: true }), ...(pipeline && { pipeline }) };
     if (SLICE && (SLICE === 'stateful') !== Boolean(selected.stateful)) continue;
     if (selected.skip || jobs.length >= LIMIT) {
       const { skip: reason, detail } = selected;
-      if (reason) fixtures.push({ rel, status: 'skipped', reason, ...(detail && { detail }), ...stateful });
+      if (reason) fixtures.push({ rel, status: 'skipped', reason, ...(detail && { detail }), ...tags });
       continue;
     }
-    const fixture = { rel, status: 'run', target: selected.target, checks: [], lines: [], ...stateful };
+    const fixture = { rel, status: 'run', target: selected.target, checks: [], lines: [], ...tags };
     fixtures.push(fixture);
-    jobs.push({ fixture, checks: selected.checks, stateful: selected.stateful });
+    jobs.push({ fixture, checks: selected.checks, stateful: selected.stateful, route: selected.route });
   }
   const lineCount = (j) => (j.stateful ? j.stateful.lines.length : j.checks.reduce((m, c) => m + c.lines.length, 0));
   const statefulJobs = jobs.filter((j) => j.stateful);
@@ -764,16 +798,13 @@ async function main() {
           active.on('message', onMessage);
           active.on('error', onError);
           if (job.stateful) {
-            const sequence = job.stateful.lines.filter((l) => l.args)
-              .map(({ check, args, failure, cmp }) => ({ check, args, failure, cmp }));
-            const { source, inTargetSource: fallback } = job.stateful;
-            active.postMessage({ id, job: { stateful: { source, fallback, sequence } } });
+            active.postMessage({ id, job: { stateful: statefulMessage(job.stateful) } });
             return;
           }
           const runnable = job.checks.map((c) => ({
             source: c.source, requireLine: c.requireLine, lines: c.lines.filter((l) => l.args),
           }));
-          active.postMessage({ id, job: { checks: runnable } });
+          active.postMessage({ id, job: { checks: runnable, route: statefulMessage(job.route) } });
         });
       },
       terminate: async () => { if (worker) await worker.terminate(); },
@@ -788,7 +819,10 @@ async function main() {
       const job = jobs[next++];
       const t0 = Date.now();
       const result = await runner.run(job);
-      if (job.stateful) recordStatefulFixture(job, result);
+      if (result.routed) {
+        Object.assign(job.fixture, { stateful: true, routed: ROUTED });
+        recordStatefulFixture({ fixture: job.fixture, stateful: job.route }, { stateful: result.routed });
+      } else if (job.stateful) recordStatefulFixture(job, result);
       else recordFixture(job, result);
       job.fixture.ms = Date.now() - t0;
       if (++done % 25 === 0 || done === jobs.length) process.stderr.write(`  ...${done}/${jobs.length} fixtures\n`);
@@ -868,7 +902,9 @@ function recordStatefulFixture(job, result) {
     else record = { ...base, ...reply.outcomes[k], ...(diverged && { afterDivergence: true }) };
     if (!line.status) k++;
     fixture.lines.push(record);
-    if (record.status.startsWith('mismatched') || (line.status && !line.failure && line.writes)) diverged = true;
+    // A routed fixture has no state variables, so a miss leaves no state behind.
+    const diverges = record.status.startsWith('mismatched') || (line.status && !line.failure && line.writes);
+    if (diverges && !fixture.routed) diverged = true;
   }
 }
 
@@ -888,9 +924,11 @@ const shapeOf = (line) => `${/->\s*FAILURE\b/.test(line.call) ? 'expected FAILUR
   + String(line.outcome).replace(/"[^"]*"/g, '".."').replace(/\d+/g, 'N').slice(0, 110);
 
 function writeReports(outputDir, meta, candidateCount, fixtures) {
-  // The pure slice reports as before: a stateful fixture is one skipped for its state variables.
-  const pure = fixtures.map((f) => (f.stateful ? { rel: f.rel, status: 'skipped', reason: 'state-variables' } : f));
-  const run = pure.filter((f) => f.status !== 'skipped');
+  // The pure slice reports as before: a stateful fixture is one skipped for its state variables (or its routing).
+  // Pipeline-specific fixtures are left to pipelineReport, outside both slices' rates.
+  const pure = fixtures.map((f) => (f.stateful
+    ? { rel: f.rel, status: 'skipped', reason: f.routed ?? 'state-variables' } : f));
+  const run = pure.filter((f) => f.status !== 'skipped' && !f.pipeline);
   const lines = run.flatMap((f) => f.lines.map((l) => ({ ...l, rel: f.rel })));
   const count = (status) => lines.filter((l) => l.status === status).length;
   const summary = {
@@ -911,6 +949,8 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
   };
   const stateful = statefulReport(fixtures.filter((f) => f.stateful));
   summary.stateful = stateful.summary;
+  const pipelines = pipelineReport(fixtures);
+  summary.pipelines = pipelines.summary;
   writeFileSync(join(outputDir, 'semantic-results.json'), `${JSON.stringify({ meta, summary, fixtures }, null, 1)}\n`);
 
   const L = summary.lines;
@@ -923,7 +963,7 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
     + `| ${meta.elapsedSeconds}s ===`;
   const mismatches = lines.filter((l) => l.status?.startsWith('mismatched'));
   const out = [
-    header, stateful.header, '',
+    header, stateful.header, pipelines.header, '',
     ...block('FIXTURES SKIPPED (by reason)', Object.entries(summary.skippedFixtures)), '',
     ...block('LINES (selected fixtures)', [['selected', L.selected], ['matched', L.matched],
       [`matched${DENSITY_RESERVE}`, L.matchedWithDensityReserve], ['mismatched', L.mismatched],
@@ -940,23 +980,25 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
       .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${l.outcome}`), '',
     '--- MISMATCHES (fixture:line  call  =>  outcome) ---',
     ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${reserveTag(l)}${l.outcome}`), '',
-    ...stateful.blocks,
+    ...stateful.blocks, '',
+    ...pipelines.blocks,
     '',
   ];
   writeFileSync(join(outputDir, 'semantic-scorecard.txt'), out.join('\n'));
-  process.stdout.write(`\n${header}\n${stateful.header}\n`);
+  process.stdout.write(`\n${header}\n${stateful.header}\n${pipelines.header}\n`);
 }
 
 // Stateful slice section. Executed lines after a divergence are counted apart from the clean ones.
 function statefulReport(fixtures) {
-  const run = fixtures.filter((f) => f.status !== 'skipped');
+  const run = fixtures.filter((f) => f.status !== 'skipped' && !f.pipeline);
   const lines = run.flatMap((f) => f.lines.map((l) => ({ ...l, rel: f.rel })));
   const count = (status, after = false) => lines
     .filter((l) => l.status === status && Boolean(l.afterDivergence) === after).length;
   const executed = (after) => ['matched', 'mismatched'].flatMap((s) => [s, `${s}${DENSITY_RESERVE}`])
     .reduce((n, s) => n + count(s, after), 0);
   const summary = {
-    fixturesWithState: fixtures.length,
+    fixturesWithState: fixtures.filter((f) => !f.routed).length,
+    routedFixtures: fixtures.filter((f) => f.routed).length,
     selectedFixtures: run.length,
     skippedFixtures: Object.fromEntries(tally(fixtures.filter((f) => f.status === 'skipped').map((f) => f.reason))),
     lines: {
@@ -984,7 +1026,7 @@ function statefulReport(fixtures) {
     + `| ${L.mismatchedWithDensityReserve} mismatched-with-density-reserve | after divergence `
     + `${L.afterDivergence.matched}/${L.afterDivergence.executed} matched | ${L.refusedAtCompile} refused-at-compile `
     + `| ${L.refusedAtDeploy} refused-at-deploy | ${L.skipped} skipped | ${L.error} error | ${run.length} fixtures `
-    + `run of ${fixtures.length} with state variables ===`;
+    + `run of ${summary.fixturesWithState} with state variables + ${summary.routedFixtures} routed from the pure slice ===`;
   const mismatches = lines.filter((l) => l.status?.startsWith('mismatched'));
   const blocks = [
     header, '',
@@ -1005,11 +1047,69 @@ function statefulReport(fixtures) {
       .filter((l) => l.status?.startsWith('refused')).map((l) => `${l.status}: ${errorShape(l.outcome)}`))), '',
     ...block('STATEFUL WRAPPER INSIDE THE TARGET (fixtures, by reason)', tally(run.filter((f) => f.shape)
       .map((f) => f.shape))), '',
+    '--- STATEFUL LINES ROUTED FROM THE PURE SLICE (external-call witnesses; fixture:line  call  =>  status: outcome) ---',
+    ...run.filter((f) => f.routed).flatMap((f) => f.lines
+      .map((l) => `${f.rel}:${l.line}  ${l.call}  =>  ${l.status}: ${l.outcome ?? l.reason}`)), '',
     '--- STATEFUL MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
     ...lines.filter((l) => l.status?.startsWith(`matched${DENSITY_RESERVE}`))
       .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${l.outcome}`), '',
     '--- STATEFUL MISMATCHES (fixture:line  call  =>  outcome) ---',
     ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${reserveTag(l)}${l.outcome}`),
+  ];
+  return { summary, header, blocks };
+}
+
+// Pipeline-specific fixtures of both slices, outside both rates: per pipeline the clean executed lines matched (as in
+// the slice headers), then solc's twin pairs (same name once a pipeline suffix is stripped) with the pipeline whose
+// expectations SolidCash met on every executed line.
+const PIPELINES = ['legacy', 'via-IR'];
+const TWIN_SUFFIX = /_(?:via_?(?:ir|yul)|ir|legacy|(?:old|new)codegen)(?=\.sol$)/i;
+const isExecuted = (line) => /^(?:mis)?matched/.test(line.status);
+
+function pipelineReport(fixtures) {
+  const tagged = fixtures.filter((f) => f.pipeline);
+  const run = tagged.filter((f) => f.status !== 'skipped');
+  const lines = run.flatMap((f) => f.lines
+    .map((l) => ({ ...l, rel: f.rel, pipeline: f.pipeline, slice: f.stateful ? 'stateful' : 'pure' })));
+  const summary = Object.fromEntries(PIPELINES.map((p) => {
+    const own = lines.filter((l) => l.pipeline === p);
+    const clean = own.filter((l) => isExecuted(l) && !l.afterDivergence);
+    return [p, { fixtures: run.filter((f) => f.pipeline === p).length, selected: own.length, executed: clean.length,
+      matched: clean.filter((l) => l.status === 'matched').length }];
+  }));
+  const executedOf = (f) => (f.lines ?? []).filter(isExecuted);
+  const met = (f) => executedOf(f).length > 0 && executedOf(f).every((l) => l.status.startsWith('matched'));
+  const side = (f) => (f.status === 'skipped' ? `${f.pipeline} skipped: ${f.reason}` : `${f.pipeline} `
+    + `${executedOf(f).filter((l) => l.status.startsWith('matched')).length}/${executedOf(f).length} matched`
+    + ` of ${f.lines.length} lines`);
+  const twins = [...Map.groupBy(tagged, (f) => f.rel.replace(TWIN_SUFFIX, '')).values()]
+    .filter((pair) => pair.length === 2 && pair[0].pipeline !== pair[1].pipeline)
+    .map((pair) => {
+      const sides = PIPELINES.map((p) => pair.find((f) => f.pipeline === p));
+      const held = sides.filter(met).map((f) => f.pipeline);
+      const verdict = held.length === 2 ? 'both'
+        : held[0] ?? (sides.every((f) => executedOf(f).length > 0) ? 'neither' : 'unmeasured');
+      const text = `${verdict.padEnd(10)}  ${sides[0].rel.slice(SEMANTIC_PREFIX.length)} [${side(sides[0])}]  vs  `
+        + `${sides[1].rel.split('/').pop()} [${side(sides[1])}]`;
+      return { legacy: sides[0].rel, viaIR: sides[1].rel, verdict, text };
+    });
+  summary.twins = twins.map(({ text: _text, ...twin }) => twin);
+  const verdicts = tally(twins.map((t) => t.verdict)).map(([v, n]) => `${n} ${v}`).join(', ');
+  const header = '=== PIPELINE-SPECIFIC EXPECTATIONS (compileViaYul true/false, excluded from both rates): '
+    + `${PIPELINES.map((p) => `${p} ${summary[p].matched}/${summary[p].executed}`).join(' | ')} executed lines `
+    + `matched | ${run.length} fixtures run of ${tagged.length} | ${twins.length} twin pairs: `
+    + `${verdicts || 'none'} ===`;
+  const blocks = [
+    header, '',
+    ...block('PIPELINE-SPECIFIC LINES (pipeline, slice, status)', tally(lines
+      .map((l) => `${l.pipeline} ${l.slice} ${l.status}${l.afterDivergence ? ' (after divergence)' : ''}`))
+      .sort((a, b) => a[0].localeCompare(b[0]))), '',
+    '--- PIPELINE TWIN PAIRS (verdict: the pipeline whose expectations matched every executed line) ---',
+    ...twins.map((t) => t.text), '',
+    '--- PIPELINE-SPECIFIC LINES NOT MATCHED (fixture:line  call  =>  outcome) ---',
+    ...lines.filter((l) => !l.status.startsWith('matched') && l.status !== 'skipped')
+      .map((l) => `[${l.pipeline}] ${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}`
+        + `${l.status.startsWith('mismatched') ? reserveTag(l) : `${l.status}: `}${l.outcome}`),
   ];
   return { summary, header, blocks };
 }

@@ -126,11 +126,19 @@ pure first slice below, and the stateful slice after it.
   category; the mock reset hooks are fired). Every runnable line then runs in file order as its own `send()`, so
   state carries from line to line as in solc's runner. A `layout at` target gets the checks inside a copy of its
   own body, as in the pure slice. A derived wrapper the lifecycle policy refuses (`UnauthorizedLifecycleError`: a
-  `__check_<k>` reaches a child deploy and has no trusted-key signature check) is compiled again that way: the
+  `__check_<k>` reaches a child deploy and has no trusted-key signature check) or that hits `MESSAGE_BUS_REQUIRED`
+  (`various/write_storage_external`: repeated calls to the same state owner) is compiled again that way: the
   compiler's message-bus auto-selection reads only the root contract's own functions, before inheritance is
   expanded, so behind a derived wrapper the target's call-graph edges are invisible, the wrapper is narrowed to
   direct mode, and there the policy applies; inside the target the edges are seen as when the target compiles
-  alone. The fixture records `shape`, and the scorecard tallies both reasons.
+  alone. The fixture records `shape`, and the scorecard tallies the reasons.
+- **Routed fixtures**: a pure fixture with a line whose plain unlock stops at `No value for '__internal__...'` (a
+  compiler-owned witness of an external call or `msg.sender` that only StatefulContract transaction building
+  fills) runs again here, as a stateful fixture: one wrapper, deployed once, lines in order. It is scored in this
+  slice (pure skip reason `routed-to-stateful: external-call witnesses`), counted apart in the header
+  (`+ N routed from the pure slice`), and its lines are listed in their own block. With no state variables it
+  cannot diverge, so its lines are never tagged `afterDivergence`. Routing follows the pure run: `SLICE=stateful`
+  leaves routed fixtures out.
 - **FAILURE lines** must fail with a VM error (`FailedTransactionError`, or the SDK's
   `preflight failed at input N:` message) and broadcast nothing (a send counter on the provider); a revert after a
   partial broadcast is a mismatch (`state changed`). A value line that reverts is re-sent with `cmp=false`: success
@@ -142,6 +150,18 @@ pure first slice below, and the stateful slice after it.
   with the `-with-density-reserve` suffix.
 - **Refusals**: a wrapper that does not compile refuses all the fixture's lines (`refused-at-compile`), a failed
   deploy `refused-at-deploy`.
+
+**Pipeline-specific expectations** (scored in their own section, outside both rates): a fixture whose `// ====`
+settings carry `compileViaYul: true` (via-IR) or `false` (legacy) holds expectations of ONE solc pipeline, and solc
+ships twins whose expectations disagree (`modifiers/function_modifier_loop.sol` returns 10 on legacy,
+`function_modifier_loop_viair.sol` 1 on via-IR), so one side of a twin pair always mismatches. Such fixtures run
+in their slice as usual (`compileViaYul: also` is not pipeline-specific), but their lines leave both headers and
+all slice blocks. The third header line and the section after the stateful one give per pipeline the clean
+executed lines matched (as in the slice headers), the lines by pipeline, slice and status, and every line not
+matched. Twin pairs are the legacy/via-IR fixtures with the same name once a pipeline suffix (`_viair`, `_viaIR`,
+`_viaYul`, `_via_yul`, `_ir`, `_legacy`, `_OldCodeGen`/`_newCodeGen`) is stripped; each gets the verdict `legacy`,
+`via-IR`, `both` (every executed line of that side matched), `neither` or `unmeasured` (a side executed nothing).
+`RESCORE=true` re-derives the pipeline tag from the corpus source for results older than it.
 
 ```bash
 CORPUS_RESULTS=/path/to/results.json node bench/solidity-corpus/semantic-runner.mjs  # default ./results.json
@@ -155,15 +175,15 @@ RESCORE=true node bench/solidity-corpus/semantic-runner.mjs       # rebuild both
 Output: `semantic-results.json` (per fixture and line: matched / matched-with-density-reserve / mismatched /
 mismatched-with-density-reserve / refused-at-compile / skipped with reason / error for timeouts) and
 `semantic-scorecard.txt` (counts, mismatch shapes, the lines matched behind a reserve, then every mismatch, a
-reserve one tagged `(with density reserve)`; the stateful header is its second line and the stateful section,
-with `refused-at-deploy`, the revert reasons that matched FAILURE lines and `(after divergence)` tags, follows the
-pure one). First run (2026-10-11, corpus 816d9b2a, 6 workers, 140 s): 489
-fixtures / 1,778 lines selected; 1,332 of 1,612 executed lines matched (82.6%), 280 mismatched, 4 refused at
-compile, 154 skipped, 8 timed out. With side-cars and the reserve (2026-10-11, 8 workers, 140 s): 1,344 of 1,612
-matched (83.4%), 8 matched with a reserve (5 of them FAILURE lines that still stop on the density limit), 250
-mismatched, 10 mismatched with a reserve (all still over the density limit). Of the 25 lines that lacked
-side-cars, 14 match; 11 stop at keccak probe errors (no side-car read in the probe trace, a 4-block batch, no
-convergence).
+reserve one tagged `(with density reserve)`; the stateful header is its second line and the stateful section, with
+`refused-at-deploy`, the revert reasons that matched FAILURE lines, the routed lines and `(after divergence)` tags,
+follows the pure one; the pipeline header is the third line, its section comes last). First run (2026-10-11, corpus
+816d9b2a, 6 workers, 140 s): 489 fixtures / 1,778 lines selected; 1,332 of 1,612 executed lines matched (82.6%), 280
+mismatched, 4 refused at compile, 154 skipped, 8 timed out. With side-cars and the reserve (2026-10-11, 8 workers,
+140 s): 1,344 of 1,612 matched (83.4%), 8 matched with a reserve (5 of them FAILURE lines that still stop on the
+density limit), 250 mismatched, 10 mismatched with a reserve (all still over the density limit). Of the 25 lines
+that lacked side-cars, 14 match; 11 stop at keccak probe errors (no side-car read in the probe trace, a 4-block
+batch, no convergence).
 
 Stateful slice, first run (2026-10-11, corpus 816d9b2a, 8 workers, 147 s for both slices): 333 of the 621 fixtures
 with state variables selected, 871 lines. Before any divergence 499 of 576 executed lines match (86.6%), 6 match
@@ -186,6 +206,20 @@ causes: an internal call to a returning dynamic-array state helper (10 lines), t
 derived `__check_0` (`write_storage_external`, 3: the same hidden call-graph edges as the lifecycle refusal);
 6 more lines fail inside the target's own code (undefined `x`/`s`, an assign type) though the target compiles
 alone, so likely on the derived shape (not diagnosed).
+
+Pipeline split and witness routing (2026-10-11, 8 workers, 158 s for both slices): 84 compiled candidates are
+pipeline-specific and 43 run (17 legacy, 26 via-IR); legacy matches 26 of 30 clean executed lines, via-IR 93 of 103.
+Of the 8 twin pairs SolidCash meets legacy on 3 (`function_modifier_loop`, `function_modifier_multi_invocation`,
+`uninitialized_internal_storage_function`), via-IR on 1 (`cleanup_bytes_types_shortening`), both on 2, neither on
+1 (`dirty_memory_bytes_to_storage_copy`); 1 is unmeasured (constructor parameters). Pure: 1,369 of 1,479 (92.56%)
+without the 124 pipeline lines and the 10 routed ones. The 8 routed fixtures (10 lines) match 2 lines, both FAILURE
+lines on unrelated reverts; 8 mismatch: 4 read output index -1 (a call to an address without a contract, or to a
+`new` child), `testLowLevel` stops on an OP_VERIFY, `msg_sender` on an OP_SPLIT at 20 of an 18-byte item,
+`revert_return_area` returns a wrong value and `library_on_interface` (a self call through an interface) fails
+derivation on a duplicate stateful input. Stateful: 637 of 707 clean lines (90.10%), after divergence 28 of 65, 35
+refused at compile and 64 at deploy; `write_storage_external` now compiles in the target and stops at deploy
+(derivation oscillation). 12 more stateful fixtures match through this branch's newer compiler
+(`storageLayoutSpecifier` slots and offsets, `interfaceID/interfaces`, `base_base_overload`), not the runner.
 
 ## Retained release scorecard (2026-08, 7,343 files)
 

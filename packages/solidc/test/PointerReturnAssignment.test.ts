@@ -52,6 +52,9 @@ describe('pointer return assignment (solc TypeError 3464)', () => {
       'modifier always() { _; revert(); } function f(bool b) always internal view returns (S storage) { if (b) return s; }',
       'function f() internal view returns (uint[] storage r) { uint x = r[0]; revert(); x; }',
       'function f() internal pure returns (S memory c) {}',
+      // solc binds an assignment's left side first, so a self-assignment counts as the assignment.
+      'function f() internal pure returns (S storage c) { c = c; }',
+      'function f() internal pure returns (uint, S storage c) { (, c) = (1, c); }',
     ]) expect(compile(members), members).toBe('C');
   });
 });

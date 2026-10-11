@@ -316,25 +316,26 @@ class PointerFlow {
     return after;
   }
 
+  // solc records an assignment's left side before its right, so `b = b` binds `b` before reading it (accepted).
   private assignment(node: AssignNode, state: FlowState): FlowState {
-    const after = this.expression(node.expression, state);
     const target = node.identifier.name;
     const root = this.rootOf(target);
-    if (root === undefined) return after;
     // A field/element write through the pointer reads it; only a whole-variable assignment binds it.
-    if (node.isReferenceDataWrite || root !== target) this.use(target, node.identifier, after);
-    else after.unassigned.delete(root);
+    const binds = root !== undefined && !node.isReferenceDataWrite && root === target;
+    if (binds) state.unassigned.delete(root);
+    const after = this.expression(node.expression, state);
+    if (root !== undefined && !binds) this.use(target, node.identifier, after);
     return after;
   }
 
   private tupleAssignment(node: TupleAssignmentNode, state: FlowState): FlowState {
-    let after = state;
-    for (const value of node.tupleExpressions ?? [node.tuple]) after = this.expression(value, after);
     for (const element of node.elements) {
       const root = element.name && !element.skip ? this.rootOf(element.name) : undefined;
-      if (root !== undefined && root === element.name) after.unassigned.delete(root);
-      else if (root !== undefined) this.use(element.name!, node, after);
+      if (root !== undefined && root === element.name) state.unassigned.delete(root);
+      else if (root !== undefined) this.use(element.name!, node, state);
     }
+    let after = state;
+    for (const value of node.tupleExpressions ?? [node.tuple]) after = this.expression(value, after);
     return after;
   }
 

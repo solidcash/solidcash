@@ -2,7 +2,7 @@
 // helper on BCH, in both compile modes, and must produce the same value. Covers what single-expression cases cannot:
 // loops, branches and early returns, memory arrays and structs, and bytes/string values.
 import { describe, it } from 'vitest';
-import { assertConformant, fnCase } from './harness.js';
+import { assertConformant, assertStatefulConformant, fnCase } from './harness.js';
 
 // A loop body outruns the operation budget a small script's own length buys; its deployer adds a density reserve.
 const LOOP_RESERVE = 512;
@@ -11,6 +11,19 @@ const run = (
   label: string, params: string, retType: string, body: string, args: readonly unknown[],
   opts: { decls?: string; densityReserve?: number; evmCompat?: boolean } = {},
 ): Promise<void> => assertConformant(fnCase({ label, params, retType, body, args, ...opts }));
+
+// A state-writing body on both VMs: the EVM returns `result` from `f`, and the BCH covenant must compute the same.
+const stateful = (label: string, decls: string, body: string, result: string): Promise<void> =>
+  assertStatefulConformant({
+    solidity: '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n'
+      + `contract C {\n  ${decls}\n  function f() public returns (uint) {\n    ${body}\n    return ${result};\n  }\n}\n`,
+    scash: `contract Conf() {\n  ${decls}\n  function f(uint __expected) {\n    ${body}\n`
+      + `    require(${result} == __expected);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'f',
+    args: [],
+    label,
+  });
 
 describe('statements: control flow', () => {
   it('for loop accumulates', () => run('for', 'uint n', 'uint',
@@ -50,6 +63,30 @@ describe('statements: memory arrays', () => {
     'P[] memory ps = new P[](n); for (uint i = 0; i < n; i++) { ps[i] = P(i, i + 1); } uint s = 0; '
     + 'for (uint i = 0; i < n; i++) { s += ps[i].x * ps[i].y; } return s;', [3n],
     { decls: 'struct P { uint x; uint y; }' }));
+});
+
+// solc evaluates the RHS components left to right, then the targets' index keys left to right, then stores right
+// to left: of two targets naming one location the leftmost keeps its value.
+describe('statements: tuple assignment order', () => {
+  it('a repeated memory element target keeps the leftmost value', () => run('tuple-mem-repeat', 'uint x', 'uint',
+    'uint[3] memory m = [uint(0), 0, 0]; (m[0], m[1], , m[2], m[0]) = (1, x, 3, 4, 42); '
+    + 'return m[0] * 10000 + m[1] * 100 + m[2];', [42n]));
+  it('index keys with effects run after the RHS, left to right', () => run('tuple-key-effects', 'uint s', 'uint',
+    'uint[3] memory m = [uint(0), 0, 0]; uint i = s; (m[i], m[i++]) = (5, 7); return m[0] * 100 + m[1] * 10 + i;', [0n]));
+  it('a RHS effect is seen by the index keys', () => run('tuple-rhs-effects', 'uint s', 'uint',
+    'uint[3] memory m = [uint(0), 0, 0]; uint i = s; uint j = s + 1; (m[i], m[j]) = (i++ + 10, j++ + 20); '
+    + 'return m[0] + m[1] * 1000 + m[2] * 1000000;', [0n]));
+  it('a repeated local target keeps the leftmost value', () => run('tuple-local-repeat', 'uint x', 'uint',
+    'uint a; uint b; (a, b, a) = (x, 2, 3); return a * 10 + b;', [7n]));
+  it('a repeated state target keeps the leftmost value after every component ran', () => stateful('tuple-state-repeat',
+    'uint x; uint y; function set(uint v) private returns (uint) { x = v; return v; }',
+    '(y, y, y) = (set(1), set(2), set(3));', 'x * 10 + y'));
+  it('a state swap reads both values before writing', () => stateful('tuple-state-swap',
+    'uint x; uint y;', 'x = 1; y = 2; (x, y) = (y, x);', 'x * 10 + y'));
+  // Distinct keys: the SDK's vmap batch refuses two writes landing on one mapping key in a transaction.
+  it('mapping element keys see a RHS effect', () => stateful('tuple-mapping-keys',
+    'mapping(uint => uint) m; uint n; function k() private returns (uint) { n += 1; return n; }',
+    '(m[n], m[n + 5]) = (k(), 7);', 'm[1] * 10 + m[6] + n * 1000'));
 });
 
 describe('statements: memory structs', () => {

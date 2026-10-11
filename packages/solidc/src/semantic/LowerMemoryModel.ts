@@ -45,6 +45,7 @@ import {
   LowLevelCallNode,
   ArrayPushNode,
   ArrayPopNode,
+  EmitStatementNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
@@ -86,6 +87,13 @@ interface Once {
   first: ExpressionNode;
   again: () => ExpressionNode;
   single?: boolean;
+}
+
+/** A calldata array param's pass-by-reference buffer and the statements that copy the param into it. */
+interface CalldataBuffer {
+  param: string;
+  buffer: string;
+  copy: StatementNode[];
 }
 
 /** The length an allocated array keeps (see LowerMemoryModel.allocationSizes). */
@@ -189,10 +197,11 @@ export default class LowerMemoryModel extends AstTraversal {
     // P4 v2 (c): materialize a memory-array PARAM into the buffer (deserialize the ABI value-copy at entry) so it
     // is a pointer that a helper can mutate by reference. Only for NON-inlinable functions (an inlinable one is
     // spliced from its ORIGINAL body, so mutating it here would corrupt the inline source). Runs before the inline.
-    if (node.body && !this.inlinable.has(node.name)) this.materializeParams(node);
+    const calldataBuffers = node.body && !this.inlinable.has(node.name) ? this.materializeParams(node) : [];
     // P4: inline pass-by-reference helper calls BEFORE the gate, so the substituted alias decls are analyzed and
     // lowered like any other alias. Pass-by-ref (convert) vs pass-by-value (fallback) then falls out of the gate.
     if (node.body) this.inlinePassByRef(node.body);
+    if (node.body) this.restoreReadOnlyCalldataParams(node.body, calldataBuffers);
     if (node.body) this.materializeInlineStructReferenceArgs(node.body);
     this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
     const savedLocals = this.locals;
@@ -602,14 +611,17 @@ export default class LowerMemoryModel extends AstTraversal {
   // and prepend a deserialize loop copying the ABI value-copy into a buffer array, so the helper mutates it by
   // reference. The param itself is untouched (ABI-stable); only body uses are renamed. If the buffer array does not
   // convert, the deserialize is a harmless extra copy that behaves exactly like the value-copy param (non-regress).
-  private materializeParams(node: FunctionDefinitionNode): void {
-    if (!node.body) return;
+  private materializeParams(node: FunctionDefinitionNode): CalldataBuffer[] {
+    const calldataBuffers: CalldataBuffer[] = [];
+    if (!node.body) return calldataBuffers;
     for (const p of node.parameters) {
       if (this.inlinable.size > 0 && this.isHandledMemArray(p.type)
         && this.paramPassedToInlinable(node.body, p.name)) {
         const memName = `__mem_${p.name}_${this.counter++}`;
         this.remapNames(node.body, new Map([[p.name, memName]]));
-        node.body.statements = [...this.deserializeParam(p, memName, node.body), ...(node.body.statements ?? [])];
+        const copy = this.deserializeParam(p, memName, node.body);
+        node.body.statements = [...copy, ...(node.body.statements ?? [])];
+        if (p.modifier.includes('calldata')) calldataBuffers.push({ param: p.name, buffer: memName, copy });
         continue;
       }
       if ((this.isHandledMemBytes(p.type) || this.isHandledMemString(p.type))
@@ -638,6 +650,48 @@ export default class LowerMemoryModel extends AstTraversal {
         node.body.statements = [...this.deserializeBytesParam(p, memName, node.body), ...(node.body.statements ?? [])];
       }
     }
+    return calldataBuffers;
+  }
+
+  // A calldata array is read-only, so its buffer only serves to trigger the pass-by-reference inline. When the inlined
+  // body never writes, rebinds or aliases the buffer, read the param itself and drop the copy: a helper loop keyed by
+  // the array (`m[to][ids[i]] += values[i]`) then names the ABI arrays, as the same loop written in the caller does.
+  private restoreReadOnlyCalldataParams(body: BlockNode, buffers: readonly CalldataBuffer[]): void {
+    for (const { param, buffer, copy } of buffers) {
+      const statements = body.statements ?? [];
+      const rest = statements.filter((statement) => !copy.includes(statement));
+      if (statements.length - rest.length !== copy.length) continue;
+      if (!rest.every((statement) => this.onlyReadsBuffer(statement, buffer))) continue;
+      body.statements = rest;
+      this.remapNames(body, new Map([[buffer, param]]));
+    }
+  }
+
+  // Whether `node` uses `buffer` only as an element read, its length, or a call or event argument (a calldata value).
+  private onlyReadsBuffer(node: Node, buffer: string, parent?: Node, grand?: Node): boolean {
+    if (node instanceof AssemblyStatementNode && node.yulBlock) {
+      let referenced = false;
+      this.walkYul(node.yulBlock, (y) => { if (y instanceof YulPathNode && y.base === buffer) referenced = true; });
+      if (referenced) return false;
+    }
+    if (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name === buffer)) return false;
+    if ((node as unknown as { name?: unknown }).name === buffer
+      && !(node instanceof IdentifierNode && this.readsBufferAt(node, parent, grand))) return false;
+    let reads = true;
+    this.eachChild(node, (child) => {
+      if (reads && !this.onlyReadsBuffer(child, buffer, node, parent)) reads = false;
+    });
+    return reads;
+  }
+
+  private readsBufferAt(id: IdentifierNode, parent?: Node, grand?: Node): boolean {
+    if (parent instanceof ArrayAccessNode) {
+      return parent.array === id && !(grand instanceof UnaryOpNode && STEP_OPERATORS.has(grand.operator));
+    }
+    if (parent instanceof UnaryOpNode) return parent.operator === UnaryOperator.SIZE;
+    if (parent instanceof FunctionCallNode || parent instanceof ExternalFunctionCallNode
+      || parent instanceof MethodCallNode) return parent.parameters.includes(id);
+    return parent instanceof EmitStatementNode && parent.args.includes(id);
   }
 
   /** True when inline assembly assigns to `name`, making the lowered buffer the live memory object. */

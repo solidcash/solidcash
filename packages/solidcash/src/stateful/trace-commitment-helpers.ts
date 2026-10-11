@@ -29,17 +29,26 @@ import {
   valueChunkIndexFromCommitment,
 } from './value-chunk-persist.js';
 
+/**
+ * A program-phase start: unlocking, locking or redeem bytecode at ip 0, before any OP_DEFINE. An OP_INVOKE body's
+ * ip-0 step is not one: in sparse/reduced traces it is an observed opcode opening a helper (an outlined
+ * OP_EQUALVERIFY), and slicing there drops the caller's OP_OUTPUTTOKENCOMMITMENT.
+ */
+function isProgramPhaseStart(state: AuthenticationProgramStateCommon): boolean {
+  return state.ip === 0 && !(state.functionCount > 0);
+}
+
 export function findRedeemScriptStart(fullTrace: AuthenticationProgramStateCommon[]): number {
   let redeemInstructions: AuthenticationProgramStateCommon['instructions'] | undefined;
   let maxLen = -1;
   for (const state of fullTrace) {
-    if (state.ip === 0 && state.instructions.length > maxLen) {
+    if (isProgramPhaseStart(state) && state.instructions.length > maxLen) {
       maxLen = state.instructions.length;
       redeemInstructions = state.instructions;
     }
   }
-  if (!redeemInstructions) return findLastIndex(fullTrace, (state) => state.ip === 0);
-  return findLastIndex(fullTrace, (state) => state.ip === 0 && state.instructions === redeemInstructions);
+  if (!redeemInstructions) return -1;
+  return findLastIndex(fullTrace, (state) => isProgramPhaseStart(state) && state.instructions === redeemInstructions);
 }
 
 

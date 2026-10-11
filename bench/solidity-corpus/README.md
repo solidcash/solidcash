@@ -72,6 +72,41 @@ negative-audit pass alongside its worker and timeout budget.
 retained run accepted. Use it after semantic hardening to update the negative score without repeating all 2,158
 fixtures; the pass and its resulting accepted count are appended to the same metadata history.
 
+## Runtime parity: `semantic-runner.mjs`
+
+`bench.mjs` only asks "does it compile". `semantic-runner.mjs` executes the corpus's own semantic expectations
+(the `// ----` trailer of `test/libsolidity/semanticTests`) on the BCH VM, for a deliberately narrow first slice:
+
+- **Fixtures**: `results.json` status `OK`, single source, the last definition is a plain `contract` (the target),
+  no state variables in any contract, no constructor parameters.
+- **Lines**: `f(types): args -> rets`, `f() -> rets` and `... -> FAILURE` (any revert, payload ignored) over
+  `uintN`/`intN`/`bool`/`bytesN` values (decimal, negative, hex, `left()`/`right()`, `true`/`false`); `gas` lines
+  are ignored. Call options, events, builtins, `library:`/`constructor()` lines, strings/bytes/arrays/structs/
+  address, or anything unparsed skip the whole fixture (reason recorded). Arguments that are not clean values of
+  the declared type (ABI-decoder validation tests) and stateful artifacts skip the line.
+- **Execution**: per (fixture, signature) one wrapper `contract __Check is <Target>` with
+  `__check(args, expected, bool cmp)` is appended and compiled (`evmCompat: true`, `enforceFinalRequire: false`
+  as in `bench.mjs`); an `external` target function is respelled `public` so the wrapper can call it. Each line
+  is one spend on a fresh `MockNetworkProvider` (the `conformance/bch.ts` shape). `cmp=false` on FAILURE lines, so
+  a call that returns normally is a mismatch; a FAILURE line needs a VM failure (`FailedTransactionError`), not a
+  build error.
+- **Limits of the wrapper**: the target is reached through an internal call, so `msg.sig`/`msg.data`, custom storage
+  layouts and entry-point-only paths can refuse or differ for wrapper reasons; those show up as refusals or
+  mismatches with their reason, not as silent passes.
+
+```bash
+CORPUS_RESULTS=/path/to/results.json node bench/solidity-corpus/semantic-runner.mjs  # default ./results.json
+LIMIT=20 node bench/solidity-corpus/semantic-runner.mjs           # first N selected fixtures
+FILTER=arithmetics/ node bench/solidity-corpus/semantic-runner.mjs # path substring
+SELECT_ONLY=true node bench/solidity-corpus/semantic-runner.mjs   # selection summary only (SELECT_ONLY=list: per file)
+RESCORE=true node bench/solidity-corpus/semantic-runner.mjs       # rebuild both reports from semantic-results.json
+```
+
+Output: `semantic-results.json` (per fixture and line: matched / mismatched / refused-at-compile / skipped with
+reason / error for timeouts) and `semantic-scorecard.txt` (counts, mismatch shapes, then every mismatch). First
+run (2026-10-11, corpus 816d9b2a, 6 workers, 140 s): 489 fixtures / 1,778 lines selected; 1,332 of 1,612
+executed lines matched (82.6%), 280 mismatched, 4 refused at compile, 154 skipped, 8 timed out.
+
 ## Retained release scorecard (2026-08, 7,343 files)
 
 The retained baseline on Solidity corpus revision `816d9b2a` is 2,698/2,805 positive fixtures compiled, 107

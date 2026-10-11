@@ -660,10 +660,12 @@ export class BitshiftBitcountTooLargeError extends SolidCashError {
 
 export class VersionError extends Error {
   constructor(
-    actual: string,
-    constraint: string,
+    readonly actual: string,
+    readonly constraint: string,
+    readonly sourceFile?: string,
   ) {
-    const message = `solidc version ${actual} does not satisfy version constraint ${constraint}`;
+    const provenance = sourceFile ? ` (from pragma in imported file '${sourceFile}')` : '';
+    const message = `solidc version ${actual} does not satisfy version constraint ${constraint}${provenance}`;
     super(message);
 
     this.name = this.constructor.name;

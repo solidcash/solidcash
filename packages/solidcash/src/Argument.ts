@@ -1,4 +1,4 @@
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   type AbiFunction,
   AddressType,
@@ -271,11 +271,13 @@ export function encodeFunctionArgument(
 
   // Convert hex string to Uint8Array
   if (typeof argument === 'string') {
-    if (argument.startsWith('0x')) {
-      argument = argument.slice(2);
+    const hex = argument.startsWith('0x') ? argument.slice(2) : argument;
+
+    if (!isHex(hex)) {
+      throw Error(`Value for type ${type} should be a valid hex string with an even number of digits, found '${argument}'`);
     }
 
-    argument = hexToBin(argument);
+    argument = hexToBin(hex);
   }
 
   if (!(argument instanceof Uint8Array)) {
@@ -287,6 +289,14 @@ export function encodeFunctionArgument(
   // form of the same address equals (a mapping keyed by one reads under a different key than the body wrote).
   if (type instanceof AddressType && argument.byteLength === 20) {
     argument = addressPayloadToLockingBytecode(argument);
+  }
+
+  // Redefine PUBKEY as a bytes33 (compressed) or bytes65 (uncompressed)
+  if (type === PrimitiveType.PUBKEY) {
+    if (![33, 65].includes(argument.byteLength)) {
+      throw new TypeError(`bytes${argument.byteLength}`, type);
+    }
+    type = new BytesType(argument.byteLength);
   }
 
   // Redefine SIG as a bytes65 (Schnorr) or bytes71, bytes72, bytes73 (ECDSA) or bytes0 (for NULLFAIL)

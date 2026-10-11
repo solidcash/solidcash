@@ -24,6 +24,10 @@ interface CustomElectrumOptions extends OptionsBase {
 
 type Options = OptionsBase | CustomHostNameOptions | CustomElectrumOptions;
 
+// Electrum protocol 1.5.0 introduced both the `include_tokens` filter on blockchain.scripthash.listunspent
+// and blockchain.headers.get_tip, so this is the lowest version the provider's requests are defined for.
+const ELECTRUM_PROTOCOL_VERSION = '1.5.0';
+
 export default class ElectrumNetworkProvider implements NetworkProvider {
   private electrum: ElectrumClient<ElectrumClientEvents>;
   private concurrentRequests: number = 0;
@@ -37,7 +41,9 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   private instantiateElectrumClient(network: Network, options: Options): ElectrumClient<ElectrumClientEvents> {
     if ('electrum' in options) return options.electrum;
     const server = 'hostname' in options ? options.hostname : this.getServerForNetwork(network);
-    return new ElectrumClient('SolidCash Application', '1.4.1', server, { disableBrowserVisibilityHandling: true });
+    return new ElectrumClient(
+      'SolidCash Application', ELECTRUM_PROTOCOL_VERSION, server, { disableBrowserVisibilityHandling: true },
+    );
   }
 
   // Get Electrum server based on network
@@ -86,7 +92,7 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   }
 
   async getBlockHeight(): Promise<number> {
-    const { height } = await this.performRequest('blockchain.headers.subscribe') as BlockHeader;
+    const { height } = await this.performRequest('blockchain.headers.get_tip') as BlockHeader;
     return height;
   }
 

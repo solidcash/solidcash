@@ -5,7 +5,7 @@ import { bigIntToCompactUint, valueSatoshisToBin } from '@bitauth/libauth/build/
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { encodeTokenPrefix, encodeTransactionInputSequenceNumbersForSigning, encodeTransactionOutpoints, encodeTransactionOutputsForSigning, encodeTransactionOutput } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { NonFungibleTokenCapability } from '@bitauth/libauth/build/lib/message/transaction-types.js';
-import { encodeSigningSerializationBch } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/signing-serialization.js';
+import { encodeSigningSerializationBch, SigningSerializationFlag } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/signing-serialization.js';
 import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
@@ -27,6 +27,7 @@ import {
   type Unlocker,
   type UnlockableUtxo,
   type LibauthTokenDetails,
+  type SighashType,
 } from './interfaces.js';
 import { VERSION_SIZE, LOCKTIME_SIZE } from './constants.js';
 import {
@@ -36,6 +37,7 @@ import {
   UndefinedInputError,
   OutputBchChangeLockedError,
   OutputTokenChangeLockedError,
+  OutputTokenCommitmentTooLongError,
 } from './Errors.js';
 
 // ////////// PARAMETER VALIDATION ////////////////////////////////////////////
@@ -92,7 +94,7 @@ export function validateInput(utxo: Utxo): void {
   }
 }
 
-export function validateOutput(output: Output, enforceDust = true): void {
+export function validateOutput(output: Output, enforceDust = true, maximumNftCommitmentBytes = 128): void {
   // Universal validations (apply to both string addresses and bytecode outputs)
   if (output.amount < 0n) {
     throw new OutputSatoshisTooSmallError(output.amount, 0n);
@@ -113,6 +115,11 @@ export function validateOutput(output: Output, enforceDust = true): void {
     }
     // Same case normalization as validateInput so per-category grouping is consistent.
     output.token.category = output.token.category.toLowerCase();
+
+    const commitment = output.token.nft?.commitment;
+    if (typeof commitment === 'string' && commitment.length > maximumNftCommitmentBytes * 2) {
+      throw new OutputTokenCommitmentTooLongError(commitment, maximumNftCommitmentBytes);
+    }
   }
 
   // Dust check for all non-OP_RETURN outputs (both string addresses and raw bytecode)
@@ -358,14 +365,19 @@ const signingSerializationCache = new WeakMap<
 Transaction, WeakMap<LibauthOutput[], CommonSigningSerialization>
 >();
 
+// BCH consensus requires the fork id flag on every signing serialization
+export function toSigningSerializationType(sighashType: SighashType | number): number {
+  return sighashType | SigningSerializationFlag.forkId;
+}
+
 export function createSighashPreimage(
   transaction: Transaction,
   sourceOutputs: LibauthOutput[],
   inputIndex: number,
   coveredBytecode: Uint8Array,
-  hashtype: number,
+  sighashType: SighashType | number,
 ): Uint8Array {
-  const signingSerializationType = new Uint8Array([hashtype]);
+  const signingSerializationType = new Uint8Array([toSigningSerializationType(sighashType)]);
   let bySources = signingSerializationCache.get(transaction);
   if (!bySources) {
     bySources = new WeakMap();
@@ -677,4 +689,12 @@ export function wrapNumericForEthers(value: unknown): unknown {
     }
   }
   return value;
+}
+
+/** Name a locking bytecode for an error message: its address when it has one, the hex always. */
+export function formatLockingBytecode(lockingBytecode: Uint8Array, network: string): string {
+  const hex = binToHex(lockingBytecode);
+  const result = lockingBytecodeToCashAddress({ bytecode: lockingBytecode, prefix: getNetworkPrefix(network) });
+  if (typeof result === 'string') return `locking bytecode ${hex}`;
+  return `address ${result.address} (locking bytecode ${hex})`;
 }

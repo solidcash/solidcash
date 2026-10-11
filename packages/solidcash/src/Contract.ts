@@ -812,7 +812,7 @@ export class Contract<
           const coveredBytecode = signingBytecodeForArgument(argInputs[index].name);
           const sign = (template: SignatureTemplate): Uint8Array => template.generateSignature(hash256(
             createSighashPreimage(
-              transaction, sourceOutputs, inputIndex, coveredBytecode, template.getHashType(),
+              transaction, sourceOutputs, inputIndex, coveredBytecode, template.sighashType,
             ),
           ));
           const finalize = (value: unknown): ConstructorArgument => {

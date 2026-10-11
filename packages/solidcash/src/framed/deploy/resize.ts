@@ -61,7 +61,7 @@ function lifecycleUnlocker(
     generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }) => {
       const args = [encodeDataPush(Uint8Array.of(mode))];
       if (count !== undefined && admin !== undefined) {
-        const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, code, admin.getHashType());
+        const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, code, admin.sighashType);
         const signature = admin.generateSignature(hash256(preimage));
         args.push(encodeDataPush(bigIntToVmNumber(BigInt(count))), encodeDataPush(signature));
       }

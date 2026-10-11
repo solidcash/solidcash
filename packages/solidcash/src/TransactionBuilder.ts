@@ -18,7 +18,11 @@ import {
   type VmResourceUsage,
   isContractUnlocker,
   isCovenantUnlocker,
+  isP2PKHUnlocker,
+  isPlaceholderUnlocker,
+  isStandardUnlocker,
 } from './interfaces.js';
+import { PLACEHOLDER_P2PKH_UNLOCKING_SIZE } from './constants.js';
 import type { NetworkProvider } from './network/index.js';
 import { traceBroadcast } from './tx-trace.js';
 import {
@@ -44,8 +48,16 @@ import {
   validateChangeLocks,
   getOutputSize,
   calculateDust,
+  formatLockingBytecode,
 } from './utils.js';
-import { FailedTransactionError } from './Errors.js';
+import {
+  FailedTransactionError,
+  TransactionFeePerByteTooHighError,
+  TransactionFeeTooHighError,
+  TransactionInputsRequiredError,
+  TransactionOutputsRequiredError,
+  UnlockerLockingBytecodeMismatchError,
+} from './Errors.js';
 import type { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, type WcSourceOutput, type WcTransactionOptions } from './walletconnect-utils.js';
@@ -77,6 +89,15 @@ let keccakProbeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
  */
 /** Budget/standardness cap on runtime keccak side-cars per transaction (matches the pure dynamic-loop path). */
 const MAX_KECCAK_LOOP_ITERS = 64;
+
+function describeUnlocker(unlocker: Unlocker): string {
+  if (isContractUnlocker(unlocker)) {
+    return `unlocker for function "${unlocker.abiFunction.name}" of contract "${unlocker.contract.name}"`;
+  }
+  if (isP2PKHUnlocker(unlocker)) return `P2PKH unlocker for public key ${binToHex(unlocker.template.publicKey)}`;
+  if (isPlaceholderUnlocker(unlocker)) return 'placeholder P2PKH unlocker';
+  return 'custom unlocker';
+}
 
 function bytesEqual(a: Uint8Array | undefined, b: Uint8Array): boolean {
   return a !== undefined && a.length === b.length && a.every((byte, i) => byte === b[i]);
@@ -853,7 +874,9 @@ export class TransactionBuilder {
 
   addOutputs(outputs: Output[]): this {
     outputs.forEach((output) => {
-      validateOutput(output, this.provider.policy?.enforceDust ?? true);
+      validateOutput(
+        output, this.provider.policy?.enforceDust ?? true, this.provider.consensusLimits?.maximumNftCommitmentBytes,
+      );
       validateChangeLocks(this.changeLocks, output.token?.category);
     });
     this.outputs = this.outputs.concat(outputs);
@@ -923,9 +946,29 @@ export class TransactionBuilder {
     return this;
   }
 
+  /**
+   * Build the transaction (skipping fee and burn checks) and return its encoded byte length. Inputs with a
+   * placeholder unlocker are counted at the size they take up once the wallet signs them.
+   */
   getTransactionSize(): bigint {
     const transaction = this.buildLibauthTransaction(true);
-    return BigInt(encodeTransaction(transaction).byteLength);
+    return BigInt(this.getEncodedTransactionSize(transaction));
+  }
+
+  // Placeholder unlockers serialise as an empty unlocking script, so their eventual signed size is added here
+  private getEncodedTransactionSize(transaction: LibauthTransaction): number {
+    const placeholderInputCount = this.inputs.filter((input) => isPlaceholderUnlocker(input.unlocker)).length;
+    return encodeTransaction(transaction).byteLength + placeholderInputCount * PLACEHOLDER_P2PKH_UNLOCKING_SIZE;
+  }
+
+  /** The transaction fee in satoshis and per byte, at the size `getTransactionSize()` reports. */
+  calculateTransactionFee(): { feeSats: bigint, feeSatsPerByte: number } {
+    const transactionSize = this.getTransactionSize();
+    const totalInputAmount = this.inputs.reduce((total, input) => total + input.satoshis, 0n);
+    const totalOutputAmount = this.outputs.reduce((total, output) => total + output.amount, 0n);
+    const feeSats = totalInputAmount - totalOutputAmount;
+    const feeSatsPerByte = Number((Number(feeSats) / Number(transactionSize)).toFixed(2));
+    return { feeSats, feeSatsPerByte };
   }
 
   // TODO: allow uint8array for chunks
@@ -934,7 +977,15 @@ export class TransactionBuilder {
     return this;
   }
 
+  /**
+   * Set the `nLockTime` of the transaction (a block height or UNIX timestamp).
+   * @throws If the locktime is not an unsigned 32-bit integer.
+   */
   setLocktime(locktime: number): this {
+    if (!Number.isInteger(locktime) || locktime < 0 || locktime > 0xffffffff) {
+      throw new Error(`Locktime ${locktime} should be an integer between 0 and 4294967295`);
+    }
+
     this.locktime = locktime;
     return this;
   }
@@ -952,18 +1003,16 @@ export class TransactionBuilder {
     }
 
     if (this.options.maximumFeeSatoshis !== undefined && fee > this.options.maximumFeeSatoshis) {
-      throw new Error(`Transaction fee of ${fee} is higher than max fee of ${this.options.maximumFeeSatoshis}`);
+      throw new TransactionFeeTooHighError(fee, this.options.maximumFeeSatoshis);
     }
 
     const maxFeePerByte = this.options.maximumFeeSatsPerByte ?? DEFAULT_MAX_FEE_SATS_PER_BYTE;
-    const transactionSize = encodeTransaction(transaction).byteLength;
+    const transactionSize = this.getEncodedTransactionSize(transaction);
     const feePerByte = Number(fee) / transactionSize;
 
+    // The limit is checked against the exact fee per byte, which is only rounded (away from the limit) for display
     if (feePerByte > maxFeePerByte) {
-      throw new Error(
-        `Transaction fee per byte of ${feePerByte.toFixed(2)} is higher than max fee per byte of ${maxFeePerByte}. `
-        + 'This may indicate a missing change output. Set maximumFeeSatsPerByte to override.',
-      );
+      throw new TransactionFeePerByteTooHighError(Math.ceil(feePerByte * 100) / 100, maxFeePerByte);
     }
   }
 
@@ -1035,6 +1084,27 @@ export class TransactionBuilder {
     }
   }
 
+  // A UTXO that states its locking bytecode must be spent with an unlocker for that lock, or the network rejects the
+  // transaction. Checked against the source outputs being signed, after any rebinding of the unlockers.
+  private checkInputLockingBytecodes(sourceOutputs: LibauthTransaction['outputs']): void {
+    this.inputs.forEach((input, inputIndex) => {
+      const stated = input.lockingBytecode as Uint8Array | string | undefined;
+      if (stated === undefined) return;
+      if (!isStandardUnlocker(input.unlocker) && !isPlaceholderUnlocker(input.unlocker)) return;
+
+      const utxoLockingBytecode = typeof stated === 'string' ? hexToBin(stated) : stated;
+      const unlockerLockingBytecode = sourceOutputs[inputIndex].lockingBytecode;
+      if (binToHex(utxoLockingBytecode) === binToHex(unlockerLockingBytecode)) return;
+
+      throw new UnlockerLockingBytecodeMismatchError(
+        inputIndex,
+        formatLockingBytecode(utxoLockingBytecode, this.provider.network),
+        formatLockingBytecode(unlockerLockingBytecode, this.provider.network),
+        describeUnlocker(input.unlocker),
+      );
+    });
+  }
+
   /** Validate token conservation without regenerating unlocking bytecode. */
   validateTokenConservation(): void {
     this.checkFungibleTokenBurn();
@@ -1065,6 +1135,7 @@ export class TransactionBuilder {
     // Generate source outputs from inputs (for signing with SIGHASH_UTXOS)
     const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
     this.lastBuiltSourceOutputs = sourceOutputs;
+    if (!skipChecks) this.checkInputLockingBytecodes(sourceOutputs);
 
     const inputScripts = this.inputs.map((input, inputIndex) => (
       input.unlocker.generateUnlockingBytecode({ transaction, sourceOutputs, inputIndex })
@@ -1087,10 +1158,10 @@ export class TransactionBuilder {
 
   build(): string {
     if (this.inputs.length === 0) {
-      throw new Error('Transaction must have at least one input');
+      throw new TransactionInputsRequiredError();
     }
     if (this.outputs.length === 0) {
-      throw new Error('Transaction must have at least one output');
+      throw new TransactionOutputsRequiredError();
     }
 
     const transaction = this.buildLibauthTransaction();
@@ -1108,7 +1179,7 @@ export class TransactionBuilder {
       .map((input) => 'contract' in input.unlocker ? input.unlocker.contract.artifact.compiler.version : null)
       .filter((version) => version !== null);
 
-    if (!contractVersions.every((version) => semver.satisfies(version, '>=0.11.0'))) {
+    if (!contractVersions.every((version) => semver.satisfies(version, '>=0.11.0', { includePrerelease: true }))) {
       console.warn('For the best debugging experience, please recompile your contract with solidc version 0.11.0 or newer.');
     }
 
@@ -1273,14 +1344,8 @@ export class TransactionBuilder {
       );
     }
 
-    try {
-      return raw ? await this.getTxDetails(txid, raw) : await this.getTxDetails(txid);
-    } catch (e: any) {
-      const reason = e.error ?? e.message;
-      let bitauthUri: string;
-      try { bitauthUri = this.getSanitizedBitauthUri(); } catch { bitauthUri = ''; }
-      throw new FailedTransactionError(reason, bitauthUri);
-    }
+    // The transaction was broadcast, so failing to retrieve it afterwards is not a failed transaction
+    return raw ? this.getTxDetails(txid, raw) : this.getTxDetails(txid);
   }
 
   private async getTxDetails(txid: string): Promise<TransactionDetails>;
@@ -1313,8 +1378,7 @@ export class TransactionBuilder {
       }
     }
 
-    // Should not happen
-    throw new Error(`Could not retrieve transaction details for txid '${txid}' after 1200 retries (~10 minutes). The transaction may not have been accepted by the network.`);
+    throw new Error(`Transaction ${txid} was broadcast, but its details could not be retrieved for over 10 minutes`);
   }
 
   generateWcTransactionObject(options?: WcTransactionOptions): WcTransactionObject {

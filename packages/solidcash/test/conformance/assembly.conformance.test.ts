@@ -81,3 +81,37 @@ describe('assembly: mulDiv-style 512-bit product', () => {
     [1n << 128n, 1n << 128n, 1000003n],
   ));
 });
+
+// Yul break/continue (solc semanticTests inlineAssembly/for_loop_*). Yul lowers after the break/continue expansion
+// of source loops, and an unexpanded break or continue emitted nothing.
+describe('assembly: for-loop break and continue', () => {
+  it('break skips the rest of the body and the post block', () => asm(
+    'for {} lt(r, 10) { r := add(r, 1) } { if eq(r, 6) { break } r := add(r, 1) }', '', [],
+  ));
+  it('continue still runs the post block', () => asm(
+    'for { let i := 0 } lt(i, n) { i := add(i, 1) } { if eq(mod(i, 2), 0) { continue } r := add(r, 1) }',
+    'uint n', [10n],
+  ));
+  // The fixture's ten outer iterations (x = 2) outrun a small script's operation budget; four keep every path, and
+  // the deployer adds a density reserve.
+  const NESTED = 'let y := x for {} lt(r, 4) { r := add(r, 1) } { if eq(y, 0) { r := 2 break } '
+    + 'for {} lt(y, 3) { r := 17 y := 9 } { if eq(y, 1) { continue } if eq(y, 2) { break } } '
+    + 'if eq(y, 4) { r := 90 } }';
+  for (const x of [0n, 1n, 2n, 4n]) {
+    it(`nested loops: each break/continue binds to its own loop (x = ${x})`, () => assertConformant({
+      ...asmCase({ params: 'uint x', retType: 'uint', yul: NESTED, args: [x] }), densityReserve: 1024,
+    }));
+  }
+  it('break skips a multi-statement post block', () => asm(
+    'for { let i := 0 } lt(i, 10) { i := add(i, 1) r := add(r, 2) } { if eq(i, 3) { break } }', '', [],
+  ));
+  it('continue in a switch case skips the statements after the switch', () => asm(
+    'for { let i := 0 } lt(i, n) { i := add(i, 1) } { switch mod(i, 3) case 0 { continue } '
+      + 'case 1 { r := add(r, 10) } default { r := add(r, 100) continue } r := add(r, 1) }',
+    'uint n', [7n],
+  ));
+  it('break in a switch case leaves the loop', () => asm(
+    'for { let i := 0 } lt(i, 10) { i := add(i, 1) } { switch i case 4 { break } default { r := add(r, i) } '
+      + 'r := add(r, 1) }', '', [],
+  ));
+});

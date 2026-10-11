@@ -2794,6 +2794,31 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
     }
 
+    // A Yul word builtin yields a uint256 word (a bool for slt/sgt) from unsigned integer operands of any width. A
+    // signed operand holds its sign-magnitude value, not its word: sar/signextend read any other operand through a
+    // checked uint256 cast (a negative one fails closed), the rest keep their plain operator (a known divergence).
+    if (node.yulBuiltin) {
+      const isWord = (t?: Type): boolean => isNumericType(t) && !(t instanceof IntType && t.signed)
+        && t !== PrimitiveType.BIGINT;
+      const asWord = (e: ExpressionNode): ExpressionNode => {
+        if (isWord(e.type)) return e;
+        const cast = new CastNode(new IntType(false, 256), e, false);
+        cast.location = e.location;
+        return this.visit(cast) as ExpressionNode;
+      };
+      if (node.yulBuiltin === 'sar' || node.yulBuiltin === 'signextend') {
+        node.left = asWord(node.left);
+        node.right = asWord(node.right);
+      } else if (!isWord(node.left.type) || !isWord(node.right.type)) {
+        node.yulBuiltin = undefined;
+      }
+      if (node.yulBuiltin) {
+        node.type = node.operator === BinaryOperator.LT || node.operator === BinaryOperator.GT
+          ? PrimitiveType.BOOL : new IntType(false, 256);
+        return node;
+      }
+    }
+
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!, node.sourceArithmetic);
     if (!resType) {
       throw new UnequalTypeError(node);

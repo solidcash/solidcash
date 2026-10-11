@@ -1,10 +1,12 @@
-// Inline-assembly (Yul) conformance. EVM assembly is inherently UNCHECKED: arithmetic wraps mod 2^256
-// and div/mod by zero returns 0 (no revert). This file pins both what already matches and the known
-// divergences (via it.fails), which flip loudly when the Yul lowering is made EVM-faithful.
+// Inline-assembly (Yul) conformance. EVM assembly is UNCHECKED: arithmetic wraps mod 2^256, div/mod by zero return
+// 0 (no revert), and the signed builtins read their words as two's complement. Every case runs against the EVM
+// reference in both compile modes.
 import { describe, it } from 'vitest';
 import { assertConformant, asmCase } from './harness.js';
 
 const MAX = (1n << 256n) - 1n;
+// The two's-complement word of a (possibly negative) value.
+const word = (v: bigint): bigint => (v < 0n ? (1n << 256n) + v : v);
 
 const asm = (yul: string, params: string, args: readonly unknown[]): Promise<void> =>
   assertConformant(asmCase({ params, retType: 'uint', yul, args }));
@@ -26,25 +28,46 @@ describe('assembly: matches EVM (in-range)', () => {
   it('iszero', () => asm('r := iszero(a)', 'uint a', [0n]));
   it('addmod', () => asm('r := addmod(a, b, m)', 'uint a, uint b, uint m', [MAX, 5n, 7n]));
   it('mulmod', () => asm('r := mulmod(a, b, m)', 'uint a, uint b, uint m', [MAX, 3n, 11n]));
-});
-
-// KNOWN DIVERGENCE (SolidCash safety by design): EVM assembly is UNCHECKED - add/sub/mul wrap mod 2^256 and
-// div/mod-by-zero return 0. SolidCash intentionally keeps inline-assembly arithmetic CHECKED (byte-identical
-// to high-level, enforced by InlineAssemblyYul.test.ts), so overflow and div-by-zero REVERT. EVM-unchecked
-// assembly belongs behind the evmCompat gate (with the abi work), like cast truncation.
-describe('assembly KNOWN DIVERGENCE: arithmetic is checked (add/sub/mul overflow + div/mod-by-zero revert)', () => {
-  it.fails('add should wrap (MAX + 1 == 0) but reverts', () => asm('r := add(a, b)', 'uint a, uint b', [MAX, 1n]));
-  it.fails('sub should wrap (0 - 1 == MAX) but reverts', () => asm('r := sub(a, b)', 'uint a, uint b', [0n, 1n]));
-  it.fails('mul should wrap but reverts', () => asm('r := mul(a, b)', 'uint a, uint b', [MAX, 2n]));
-  it.fails('div by zero should be 0 but reverts', () => asm('r := div(a, b)', 'uint a, uint b', [5n, 0n]));
-  it.fails('mod by zero should be 0 but reverts', () => asm('r := mod(a, b)', 'uint a, uint b', [5n, 0n]));
-});
-
-// KNOWN DIVERGENCE: sign-magnitude / little-endian vs EVM two's-complement big-endian
-// (docs/platform-differences.md sections 1-2). sar/slt reinterpret the sign bit; byte indexes big-endian.
-describe('assembly KNOWN DIVERGENCE: sign / byte-order', () => {
-  it.fails('sar(1, -1) == -1 (arithmetic shift, twos-complement)', () => asm('r := sar(sh, v)', 'uint sh, uint v', [1n, MAX]));
-  it.fails('slt(-1, 1) == 1 (signed less-than, twos-complement)', () => asm('r := slt(a, b)', 'uint a, uint b', [MAX, 1n]));
   it('byte(31, 0xab) == 0xab (big-endian byte index)', () => asm('r := byte(n, x)', 'uint n, uint x', [31n, 0xabn]));
-  it.fails('signextend(0, 0xff) == -1 (unsupported / diverges)', () => asm('r := signextend(n, x)', 'uint n, uint x', [0n, 0xffn]));
+});
+
+describe('assembly: unchecked word arithmetic (wraps mod 2^256, div/mod by zero give 0)', () => {
+  it('add wraps (MAX + 1 == 0)', () => asm('r := add(a, b)', 'uint a, uint b', [MAX, 1n]));
+  it('sub wraps (0 - 1 == MAX)', () => asm('r := sub(a, b)', 'uint a, uint b', [0n, 1n]));
+  it('mul wraps (MAX * 2 == MAX - 1)', () => asm('r := mul(a, b)', 'uint a, uint b', [MAX, 2n]));
+  it('div by zero is 0', () => asm('r := div(a, b)', 'uint a, uint b', [5n, 0n]));
+  it('mod by zero is 0', () => asm('r := mod(a, b)', 'uint a, uint b', [5n, 0n]));
+});
+
+describe('assembly: signed builtins read words as two\'s complement', () => {
+  it('sar(1, -1) == -1 (arithmetic shift)', () => asm('r := sar(sh, v)', 'uint sh, uint v', [1n, MAX]));
+  it('sar(4, -256) == -16', () => asm('r := sar(sh, v)', 'uint sh, uint v', [4n, word(-256n)]));
+  it('sar(300, -5) == -1 (shift past the word)', () => asm('r := sar(sh, v)', 'uint sh, uint v', [300n, word(-5n)]));
+  it('slt(-1, 1) == 1', () => asm('r := slt(a, b)', 'uint a, uint b', [MAX, 1n]));
+  it('slt(1, -1) == 0', () => asm('r := slt(a, b)', 'uint a, uint b', [1n, MAX]));
+  it('sgt(-1, 1) == 0', () => asm('r := sgt(a, b)', 'uint a, uint b', [MAX, 1n]));
+  it('sgt(1, -2) == 1', () => asm('r := sgt(a, b)', 'uint a, uint b', [1n, word(-2n)]));
+  it('sdiv(-7, 2) == -3 (truncates toward zero)', () => asm('r := sdiv(a, b)', 'uint a, uint b', [word(-7n), 2n]));
+  it('sdiv(7, -2) == -3', () => asm('r := sdiv(a, b)', 'uint a, uint b', [7n, word(-2n)]));
+  it('sdiv(-2^255, -1) == -2^255 (overflow wraps)', () => asm('r := sdiv(a, b)', 'uint a, uint b', [1n << 255n, MAX]));
+  it('sdiv by zero is 0', () => asm('r := sdiv(a, b)', 'uint a, uint b', [word(-7n), 0n]));
+  it('smod(-7, 3) == -1 (sign of the dividend)', () => asm('r := smod(a, b)', 'uint a, uint b', [word(-7n), 3n]));
+  it('smod(7, -3) == 1', () => asm('r := smod(a, b)', 'uint a, uint b', [7n, word(-3n)]));
+  it('smod by zero is 0', () => asm('r := smod(a, b)', 'uint a, uint b', [word(-7n), 0n]));
+  it('signextend(0, 0xff) == -1', () => asm('r := signextend(n, x)', 'uint n, uint x', [0n, 0xffn]));
+  it('signextend(1, 0x127fff) == 0x7fff', () => asm('r := signextend(n, x)', 'uint n, uint x', [1n, 0x127fffn]));
+  it('signextend(40, 0x80) == 0x80 (index past 31)', () => asm('r := signextend(n, x)', 'uint n, uint x', [40n, 0x80n]));
+  it('signextend(2, 0x800000) == -2^23 (literal index)', () => asm('r := signextend(2, x)', 'uint x', [0x800000n]));
+});
+
+// OpenZeppelin Math.mul512 / mulDiv: the 512-bit product [hi lo] from wrapping mul, mulmod and sub.
+describe('assembly: mulDiv-style 512-bit product', () => {
+  const MUL512 = 'let mm := mulmod(a, b, not(0)) let lo := mul(a, b) let hi := sub(sub(mm, lo), lt(mm, lo))';
+  it('high word of MAX * MAX', () => asm(`${MUL512} r := hi`, 'uint a, uint b', [MAX, MAX]));
+  it('high word of a wide product', () => asm(`${MUL512} r := hi`, 'uint a, uint b', [MAX - 2n ** 77n, 2n ** 200n + 7n]));
+  it('subtracting the remainder borrows across the words', () => asm(
+    `${MUL512} let rem := mulmod(a, b, d) hi := sub(hi, gt(rem, lo)) lo := sub(lo, rem) r := add(hi, lo)`,
+    'uint a, uint b, uint d',
+    [1n << 128n, 1n << 128n, 1000003n],
+  ));
 });

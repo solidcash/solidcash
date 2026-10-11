@@ -2808,6 +2808,10 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // Set when this call on a freshly-deployed local was folded into the deploy genesis (no co-spend): the
   // node is inert - skipped by external-call collection and codegen.
   foldedIntoDeploy?: boolean;
+  // The deploy-then-call this node stands for folds to an unconditional failure: the callee's body cannot
+  // complete (it ends in a `revert` on every path), so the statement becomes that failure. Consumed by the
+  // statement visitors, which replace the whole statement with a `revert`.
+  foldedCallReverts?: boolean;
   // EVM-parity expression-form low-level call `(bool, bytes) = addr.call(payload)`: the callee's type/function
   // are unknown at compile time, the return is read as a single opaque bytes blob, identity-bound to addr.
   opaqueReturn?: boolean;

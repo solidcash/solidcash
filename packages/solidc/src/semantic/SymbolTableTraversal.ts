@@ -2739,6 +2739,49 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * Whether a callee cannot complete on any path: its body's last statement is a `revert` (SolidCash has no
+   * revert payload - it is an unconditional script failure) and no earlier statement can leave the body. A
+   * deploy-then-call whose callee cannot complete has no genesis to fold, and in EVM the reverted call leaves
+   * nothing on chain either, so the statement lowers to that same failure. Loops are ignored deliberately: a
+   * body that never reaches its trailing revert still fails (out of gas / operation budget), which is the same
+   * outcome.
+   */
+  private calleeCannotComplete(fn: FunctionDefinitionNode): boolean {
+    if (fn.returnTypes.length > 0) return false;
+    const statements = (fn.body as BlockNode | undefined)?.statements ?? [];
+    const last = statements[statements.length - 1];
+    if (!last) return false;
+    const isUnconditionalFail = (statement: StatementNode): boolean => statement instanceof RevertNode
+      || (statement instanceof RequireNode && statement.expression instanceof BoolLiteralNode
+        && statement.expression.value === false);
+    if (!isUnconditionalFail(last)) return false;
+    let earlierExit = false;
+    const walk = (node: Node | undefined): void => {
+      if (earlierExit || !node) return;
+      // A `return` before the trailing revert means the callee CAN complete, so it is not this shape at all.
+      // Any nested unconditional fail is conservatively treated the same way (the trailing revert may be
+      // unreachable, or the body may fail earlier for another reason).
+      if (node instanceof ReturnNode || isUnconditionalFail(node)) { earlierExit = true; return; }
+      for (const key of Object.keys(node)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'definition') continue;
+        const value = (node as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    for (const statement of statements.slice(0, -1)) walk(statement);
+    return !earlierExit;
+  }
+
+  /** The unconditional failure a discarded deploy-then-call stands for, or undefined when it is not that shape. */
+  private foldedCallRevertStatement(visited: Node): RevertNode | undefined {
+    if (!(visited instanceof ExternalFunctionCallNode) || visited.foldedCallReverts !== true) return undefined;
+    const revert = new RevertNode();
+    revert.location = visited.location;
+    return revert;
+  }
+
+  /**
    * The function a deploy-time call targets. A name declared by the contract being folded (the child whose
    * constructor or callee is being replayed) or supplied by the caller, or - for a call through a function-typed
    * parameter - the function the caller bound to that parameter: `new D(this.sixteen)` against the child's
@@ -13250,6 +13293,16 @@ export default class SymbolTableTraversal extends AstTraversal {
                 const deployNode = this.deployResultLocals.get(varName)!;
                 // ifaceFunc is a signature-only view; the real body lives on the referenced contract.
                 const realFoo = deployNode.referencedContract?.functions.find((f) => f.name === methodName);
+                if (realFoo && this.calleeCannotComplete(realFoo)) {
+                  // The callee cannot complete: the deploy-then-call is that failure, nothing to fold.
+                  const failed = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
+                  failed.sourceEffectOrdinal = node.sourceEffectOrdinal;
+                  failed.callInfo = { interfaceName: calleeName, functionName: methodName, externalCallSlotIndex: -1 };
+                  failed.foldedIntoDeploy = true;
+                  failed.foldedCallReverts = true;
+                  failed.location = node.location;
+                  return failed;
+                }
                 const foldRes = realFoo ? this.tryFoldDeployCall(deployNode, realFoo, parameters) : false;
                 if (!foldRes) {
                   throw new DeployThenCallError(node, varName, methodName, calleeName,
@@ -13578,6 +13631,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (calleeSym?.type instanceof FunctionType && (!hasFunctionOverloads || lexicalPointerShadow)) {
       if (lexicalPointerShadow) node.call.lexicalIndirectCall = true;
       node.call = this.visit(node.call) as FunctionCallNode;
+      const foldedRevert = this.foldedCallRevertStatement(node.call);
+      if (foldedRevert) return this.visit(foldedRevert);
       return node;
     }
 
@@ -13589,6 +13644,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       const varType = this.symbolTables[0]?.get(varName)?.type ?? this.stateVariableMap.get(varName)?.type;
       if (varType instanceof AddressType && varType.interfaceName && this.interfaceMap.has(varType.interfaceName)) {
         const resolved = this.visit(node.call);
+        const foldedRevert = this.foldedCallRevertStatement(resolved);
+        if (foldedRevert) return this.visit(foldedRevert);
         if (resolved instanceof ExternalFunctionCallNode) {
           const wrapper = new MethodCallStatementNode(
             new MethodCallNode(new IdentifierNode(varName), callName.split('.')[1], []),
@@ -13616,6 +13673,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // dotted calls through the same using-for resolver and return the fully visited rewritten call.
     if (callName.includes('.') && !this.functionDefinitions.has(callName) && this.usingForBindings.size > 0) {
       const resolved = this.visit(node.call);
+      const foldedRevert = this.foldedCallRevertStatement(resolved);
+      if (foldedRevert) return this.visit(foldedRevert);
       if (resolved instanceof FunctionCallNode && resolved.identifier.name !== callName) {
         node.call = resolved;
         return node;
@@ -13628,6 +13687,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const globalCallee = this.symbolTables[0].get(callName);
     if (!this.functionDefinitions.has(callName) && globalCallee?.symbolType === SymbolType.FUNCTION) {
       node.call = this.visit(node.call) as FunctionCallNode;
+      const foldedRevert = this.foldedCallRevertStatement(node.call);
+      if (foldedRevert) return this.visit(foldedRevert);
       return node;
     }
 
@@ -13644,6 +13705,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.call.resolvedFunction = overloads[0];
     }
     node.call = this.visit(node.call) as FunctionCallNode;
+    const foldedRevert = this.foldedCallRevertStatement(node.call);
+    if (foldedRevert) return this.visit(foldedRevert);
     return node;
   }
 
@@ -16723,6 +16786,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           // body from the referenced contract for an accurate foldability hint.
           const realFoo = this.deployResultLocals.get(varName)!.referencedContract?.functions
             .find((f) => f.name === node.methodName);
+          if (realFoo && this.calleeCannotComplete(realFoo)) {
+            const failed = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, []);
+            failed.sourceEffectOrdinal = node.sourceEffectOrdinal;
+            failed.callInfo = { interfaceName: calleeName, functionName: node.methodName, externalCallSlotIndex: -1 };
+            failed.foldedIntoDeploy = true;
+            failed.foldedCallReverts = true;
+            failed.location = node.location;
+            return failed;
+          }
           throw new DeployThenCallError(node, varName, node.methodName, calleeName,
             realFoo ? this.isDeployFoldable(realFoo) : false);
         }
@@ -16870,6 +16942,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     } finally {
       this.discardedMethodCalls.delete(node.call);
     }
+    const foldedRevert = this.foldedCallRevertStatement(result);
+    if (foldedRevert) return this.visit(foldedRevert);
     if (result instanceof FunctionCallNode) {
       // Transform MethodCallStatement -> FunctionCallStatement
       const stmt = new FunctionCallStatementNode(result);

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { AuthenticationErrorBch2025Additions } from '@bitauth/libauth';
 import {
+  Contract,
+  FailedRequireError,
+  FailedTransactionEvaluationError,
   HashType,
   OutputTokenCommitmentTooLongError,
   SighashType,
@@ -16,6 +20,7 @@ import { encodeFunctionArgument } from '../src/Argument.js';
 import { addressToLockScript, randomUtxo } from '../src/utils.js';
 import { placeholderP2PKHUnlocker } from '../src/walletconnect-utils.js';
 import { aliceAddress, alicePriv, alicePub, aliceTokenAddress, bobAddress } from './fixture/vars.js';
+import { compileString } from './direct-compile.js';
 
 // Behaviour ported from CashScript 0.14.0 (see docs/framed/UPSTREAM_0140_PORT.md for the upstream commits).
 
@@ -24,6 +29,8 @@ const alice = new SignatureTemplate(alicePriv);
 const p2pkhTransaction = (provider: MockNetworkProvider): TransactionBuilder => new TransactionBuilder({ provider })
   .addInput(randomUtxo({ satoshis: 10_000n }), alice.unlockP2PKH())
   .addOutput({ to: bobAddress, amount: 9_000n });
+
+const lineOf = (source: string, text: string): number => source.split('\n').findIndex((line) => line.includes(text)) + 1;
 
 describe('TransactionBuilder', () => {
   const provider = new MockNetworkProvider();
@@ -133,3 +140,121 @@ describe('SignatureTemplate', () => {
   });
 });
 
+describe('debugging', () => {
+  const provider = new MockNetworkProvider();
+
+  const NESTED_SOURCE = `
+contract Nested {
+    function assertPositive(int value) private pure {
+        require(value > 0, "value must be positive");
+    }
+
+    function validate(int amount) private pure {
+        assertPositive(amount);
+    }
+
+    function spend(int x) public {
+        validate(x);
+        require(tx.outputs.length == 1);
+    }
+
+    function other(int y) public {
+        require(y == 2);
+    }
+}`;
+
+  it('lists the call stack of a require that fails in a nested function call', async () => {
+    const contract = new Contract(compileString(NESTED_SOURCE), [], { provider });
+    const utxo = randomUtxo();
+    await provider.addUtxo(contract.address, utxo);
+    const transaction = new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock.spend(0n))
+      .addOutput({ to: contract.address, amount: 10_000n });
+
+    const failure = (() => {
+      try { transaction.debug(); } catch (error) { return error; }
+      return undefined;
+    })();
+    expect(failure).toBeInstanceOf(FailedRequireError);
+    const { message } = failure as FailedRequireError;
+    expect(message).toContain('with the following message: value must be positive');
+    expect(message).toContain(`  at assertPositive (Nested.scash:${lineOf(NESTED_SOURCE, 'require(value > 0')}) - `);
+    expect(message).toContain(
+      `  at validate (Nested.scash:${lineOf(NESTED_SOURCE, 'assertPositive(amount);')}) - assertPositive(amount)`,
+    );
+    expect(message).toContain(`  at Nested.scash:${lineOf(NESTED_SOURCE, 'validate(x);')} - validate(x)`);
+  });
+
+  it('attributes a failing final require of a plain variable to that require', async () => {
+    const source = `
+contract Test() {
+  function test_final_require_variable(int x) {
+    bool isLarge = x > 5;
+    require(isLarge);
+  }
+}`;
+    const contract = new Contract(compileString(source), [], { provider });
+    const utxo = randomUtxo();
+    await provider.addUtxo(contract.address, utxo);
+    const transaction = new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock.test_final_require_variable(1n))
+      .addOutput({ to: contract.address, amount: 1_000n });
+
+    expect(transaction).toFailRequireWith('Test.scash:5 Require statement failed at input 0 in contract Test.scash at line 5.');
+    expect(transaction).toFailRequireWith('Failing statement: require(isLarge)');
+  });
+
+  // An operation cost overrun can stop evaluation on any instruction: the one a require statement ends in, or one in
+  // a skipped branch, which still costs operations
+  it('reports an operation cost overrun as such, never as a failed require statement', async () => {
+    const source = `
+contract Test() {
+  function spend(int rounds, bytes padding) {
+    bytes32 digest = sha256(0x00);
+    for (int i = 0; i < rounds; i = i + 1) {
+      digest = sha256(digest);
+    }
+    require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode, "Output 0 must pay back to the contract");
+    require(tx.outputs[0].value >= 1000, "Output 0 must keep 1000 sats");
+  }
+}`;
+    const artifact = compileString(source);
+    const contract = new Contract(artifact, [], { provider });
+    const requireIps = artifact.debug!.requires.map((statement) => statement.ip);
+    const attempt = async (rounds: bigint, padding: number): Promise<unknown> => {
+      const utxo = randomUtxo();
+      await provider.addUtxo(contract.address, utxo);
+      const transaction = new TransactionBuilder({ provider })
+        .addInput(utxo, contract.unlock.spend(rounds, new Uint8Array(padding)))
+        .addOutput({ to: contract.address, amount: 1_000n });
+      try {
+        transaction.debug();
+        return undefined;
+      } catch (error) {
+        return error;
+      }
+    };
+
+    // The first round count that overruns without padding; the rounds spend most of the budget and the padding sets
+    // how large it is, so scanning both moves the point where it runs out across the instructions after the loop
+    let firstOverrun = 1n;
+    while (await attempt(firstOverrun, 0) === undefined) firstOverrun *= 2n;
+    let overrunsOnRequires = 0;
+    for (let rounds = firstOverrun; rounds < firstOverrun + 9n; rounds++) {
+      for (let padding = 0; ; padding++) {
+        const failure = await attempt(rounds, padding);
+        if (failure === undefined) break;
+
+        // The require conditions all hold, so every failure is the overrun
+        expect(failure).toBeInstanceOf(FailedTransactionEvaluationError);
+        expect(failure).not.toBeInstanceOf(FailedRequireError);
+        const { libauthErrorMessage, failingInstructionPointer } = failure as FailedTransactionEvaluationError;
+        expect(libauthErrorMessage).toContain(AuthenticationErrorBch2025Additions.excessiveOperationCost);
+        if (requireIps.includes(failingInstructionPointer)) overrunsOnRequires++;
+      }
+    }
+
+    // The scan has to reach the case the fix is about: the budget running out on a require statement's own instruction
+    expect(overrunsOnRequires).toBeGreaterThan(0);
+  });
+});

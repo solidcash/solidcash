@@ -119,6 +119,10 @@ import {
   InvalidParameterTypeError,
   UnequalTypeError,
   UnsupportedBinaryOperandsError,
+  ImplicitConversionError,
+  ArgumentConversionError,
+  solidityRationalName,
+  solidityTypeName,
   SignedExponentError,
   UnsupportedTypeError,
   MultiDimArrayValueAccessError,
@@ -242,6 +246,14 @@ function literalRational(node: Node): { numerator: bigint; denominator: bigint }
     default:
       return undefined;
   }
+}
+
+// The exact value of a decimal literal (`0.1` is 1/10), or undefined for a spelling it does not cover.
+function decimalRational(text: string): { numerator: bigint; denominator: bigint } | undefined {
+  const match = text.replaceAll('_', '').match(/^(-?)(\d*)\.?(\d*)$/);
+  if (!match || match[2] + match[3] === '') return undefined;
+  const magnitude = BigInt(match[2] + match[3]);
+  return { numerator: match[1] ? -magnitude : magnitude, denominator: 10n ** BigInt(match[3].length) };
 }
 
 export default class TypeCheckTraversal extends AstTraversal {
@@ -1202,6 +1214,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.expression.type = node.type;
       }
       expectAssignable(node, node.expression.type, node.type);
+      this.validateSolidityLiteralBinding(node, node.expression, node.type);
+      this.validateSolidityFunctionArrayLiteral(node, node.expression, node.type, node);
       this.checkIntLiteralRange(node, node.expression, node.type);
     }
 
@@ -1327,6 +1341,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceBytesWiden(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
+    this.validateSolidityLiteralBinding(node.expression, node.expression, node.identifier.type);
+    this.validateSolidityFunctionArrayLiteral(node.expression, node.expression, node.identifier.type,
+      node.identifier.definition?.definition);
     this.checkIntLiteralRange(node, node.expression, node.identifier.type!);
     // Pack a non-empty literal at the DECLARED element width, not the literals' inferred width - same reason
     // as visitVariableDefinition. After expectAssignable so a real type mismatch still throws.
@@ -1843,6 +1860,10 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitFunctionCall(node: FunctionCallNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
+    if ((node.identifier.name === GlobalFunction.ADDMOD || node.identifier.name === GlobalFunction.MULMOD)
+      && !node.resolvedFunction && !node.identifier.definition?.definition && this.inSolidityUnit(node)) {
+      this.validateSolidityBuiltinArguments(node);
+    }
 
     if (this.evmCompat && this.isEvmCreate2AddressHash(node)) {
       const loc = this.diagLine(node.location);
@@ -2060,6 +2081,16 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     return node;
+  }
+
+  // A literal number the source passes to addmod/mulmod must convert to uint256 (solc TypeError 9553).
+  private validateSolidityBuiltinArguments(node: FunctionCallNode): void {
+    for (const argument of node.parameters) {
+      if (!(argument instanceof DecimalLiteralNode)
+        && !(argument instanceof BinaryOpNode && argument.sourceArithmetic)) continue;
+      const mismatch = this.solidityLiteralMismatch(argument, new IntType(false, 256));
+      if (mismatch) throw new ArgumentConversionError(argument, mismatch[0], 'uint256', mismatch[1]);
+    }
   }
 
   private isEvmCreate2AddressHash(node: FunctionCallNode): boolean {
@@ -2667,6 +2698,45 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   private inSolidityUnit(node: Node): boolean {
     return (node.location?.sourceFileId ?? this.rootFileId).endsWith('.sol');
+  }
+
+  // solc's conversion of an exact literal number to an integer type: integral and in range. Returns the literal's
+  // solc name and the reason when it does not convert.
+  private solidityLiteralMismatch(expr: ExpressionNode, target: Type | undefined): [string, string] | undefined {
+    if (!(target instanceof IntType)) return undefined;
+    const value = expr instanceof DecimalLiteralNode ? decimalRational(expr.value) : literalRational(expr);
+    if (value === undefined || value === 'huge') return undefined;
+    const name = solidityRationalName(value.numerator, value.denominator);
+    if (value.numerator % value.denominator !== 0n) return [name, ''];
+    const integer = value.numerator / value.denominator;
+    if (integer < 0n && !target.signed) return [name, 'Cannot implicitly convert signed literal to unsigned type.'];
+    if (integer < target.minValue || integer > target.maxValue) {
+      return [name, `Literal is too large to fit in ${target}.`];
+    }
+    return undefined;
+  }
+
+  // Literal arithmetic a `.sol` unit binds or assigns to an integer (solc TypeError 9574 / 7407).
+  private validateSolidityLiteralBinding(node: Node, expr: ExpressionNode, target: Type | undefined): void {
+    if (!(expr instanceof BinaryOpNode) || !expr.sourceArithmetic || !this.inSolidityUnit(node)) return;
+    const mismatch = this.solidityLiteralMismatch(expr, target);
+    if (mismatch) throw new ImplicitConversionError(node, mismatch[0], solidityTypeName(target!), mismatch[1]);
+  }
+
+  // solc converts an array literal to a memory array only between identical base types: a function-typed literal
+  // keeps its elements' common mutability, which must equal the target's (TypeError 9574 / 7407).
+  private validateSolidityFunctionArrayLiteral(node: Node, expr: ExpressionNode, target: Type | undefined,
+    declaration: Node | undefined): void {
+    const memory = (declaration instanceof VariableDefinitionNode || declaration instanceof ParameterNode)
+      && declaration.modifier.includes(Modifier.MEMORY);
+    if (!memory || !(expr instanceof ArrayNode) || !(expr.type instanceof ArrayType) || !(target instanceof ArrayType)
+      || !this.inSolidityUnit(node)) return;
+    const literal = expr.type.elementType;
+    if (literal instanceof FunctionType && target.elementType instanceof FunctionType
+      && literal.stateMutability !== target.elementType.stateMutability) {
+      throw new ImplicitConversionError(node, `${solidityTypeName(literal)}[${expr.elements.length}] memory`,
+        solidityTypeName(target, Modifier.MEMORY));
+    }
   }
 
   // solc's operand rules (TypeError 2271) for what a `.sol` unit writes, where native SolidCash is wider: reference

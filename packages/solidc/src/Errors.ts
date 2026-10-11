@@ -1,4 +1,6 @@
-import { type Type, PrimitiveType, StructType, EnumType } from '@solidcash/utils';
+import {
+  type Type, ArrayType, BytesType, FunctionType, PrimitiveType, StructType, EnumType,
+} from '@solidcash/utils';
 import {
   IdentifierNode,
   FunctionDefinitionNode,
@@ -479,6 +481,59 @@ export class UnsupportedBinaryOperandsError extends SolidCashError {
   constructor(node: BinaryOpNode, detail = '') {
     super(node, `Built-in binary operator ${node.operator} cannot be applied to types ${node.left.type} and `
       + `${node.right.type}.${detail ? ` ${detail}` : ''}`);
+  }
+}
+
+// solc's spelling of a type in a diagnostic; `location` is a reference type's data location suffix.
+export function solidityTypeName(type: Type, location?: string): string {
+  const suffix = location ? ` ${location}` : '';
+  if (type instanceof ArrayType) return `${solidityTypeName(type.elementType)}[${type.bound ?? ''}]${suffix}`;
+  if (type instanceof StructType) return `struct ${type.name}${suffix}`;
+  if (type === PrimitiveType.STRING) return `string${suffix}`;
+  if (type instanceof BytesType && type.bound === undefined) return `bytes${suffix}`;
+  if (type instanceof FunctionType) {
+    const list = (types: Type[]): string => types.map((t) => solidityTypeName(t)).join(',');
+    const mutability = type.stateMutability === 'nonpayable' ? '' : ` ${type.stateMutability}`;
+    const returns = type.returnTypes.length > 0 ? ` returns (${list(type.returnTypes)})` : '';
+    return `function (${list(type.parameterTypes)})${mutability}${type.isExternal ? ' external' : ''}${returns}`;
+  }
+  return type.toString();
+}
+
+// solc's spelling of an exact literal number (`int_const 5`, `rational_const 1 / 10`), long digits abbreviated.
+export function solidityRationalName(numerator: bigint, denominator: bigint): string {
+  let [a, b] = [numerator < 0n ? -numerator : numerator, denominator < 0n ? -denominator : denominator];
+  while (b !== 0n) [a, b] = [b, a % b];
+  const sign = denominator < 0n ? -1n : 1n;
+  const [n, d] = a === 0n ? [numerator, denominator] : [(sign * numerator) / a, (sign * denominator) / a];
+  const readable = (value: bigint): string => {
+    const text = value.toString();
+    return text.length > 32 ? `${text.slice(0, 4)}...(${text.length - 8} digits omitted)...${text.slice(-4)}` : text;
+  };
+  return d === 1n ? `int_const ${readable(n)}` : `rational_const ${readable(n)} / ${readable(d)}`;
+}
+
+// solc's spelling of a string literal: printable ASCII is quoted, anything else is shown as hex.
+export function solidityStringLiteralName(bytes: Uint8Array): string {
+  if (bytes.every((byte) => byte > 0x1f && byte < 0x7f)) {
+    return `literal_string "${Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')}"`;
+  }
+  return `literal_string hex"${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}"`;
+}
+
+// solc TypeError 9574 / 7407: a `.sol` unit binds or assigns a value Solidity does not implicitly convert.
+export class ImplicitConversionError extends SolidCashError {
+  constructor(node: Node, actual: string, expected: string, detail = '') {
+    super(node, `Type ${actual} is not implicitly convertible to expected type ${expected}.`
+      + `${detail ? ` ${detail}` : ''}`);
+  }
+}
+
+// solc TypeError 9553: a `.sol` unit passes an argument Solidity does not implicitly convert to the parameter type.
+export class ArgumentConversionError extends SolidCashError {
+  constructor(node: Node, actual: string, expected: string, detail = '') {
+    super(node, 'Invalid type for argument in function call. Invalid implicit conversion from '
+      + `${actual} to ${expected} requested.${detail ? ` ${detail}` : ''}`);
   }
 }
 

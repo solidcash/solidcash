@@ -14434,7 +14434,9 @@ function compileResolvedAst(
       ast = ast.accept(new NamedReturnTransformation()) as Ast;
       // Inline-only library functions still require source-level parameter/return location validation before
       // this early declaration-artifact return.
-      ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.evmCompat ?? false)) as Ast;
+      ast = ast.accept(new ValidateDataLocations(
+        mergedCompilerOptions.evmCompat ?? false, mergedCompilerOptions.rootFileId,
+      )) as Ast;
       // Interfaces/declaration-only files still require semantic validation (X184). A generic-storage library,
       // however, has already representation-lowered its storage pointer names for later import/inlining; running
       // the ordinary contract symbol pass here mistakes those placeholders for unresolved source identifiers.
@@ -14523,7 +14525,9 @@ function compileResolvedAst(
 
   // Validate source-level location and modifier rules before storage/memory pointer lowerings erase the
   // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
-  ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.evmCompat ?? false)) as Ast;
+  ast = ast.accept(new ValidateDataLocations(
+    mergedCompilerOptions.evmCompat ?? false, mergedCompilerOptions.rootFileId,
+  )) as Ast;
   ast = ast.accept(new OptimizeFixedArrayValues()) as Ast;
 
   // Every mapping uses the authenticated vmap backend. There is no omission-prone legacy mapping fallback.

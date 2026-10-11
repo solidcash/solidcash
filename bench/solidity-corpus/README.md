@@ -90,7 +90,9 @@ pure first slice below, and the stateful slice after it.
   as in `bench.mjs`); an `external` target function is respelled `public` so the wrapper can call it. Each line
   is one spend on a fresh `MockNetworkProvider` (the `conformance/bch.ts` shape). `cmp=false` on FAILURE lines, so
   a call that returns normally is a mismatch; a FAILURE line needs a VM failure (`FailedTransactionError`), not a
-  build error.
+  build error. A target with a custom storage layout (`contract C layout at N`), which solc forbids inheriting
+  from, gets the check function inserted into a copy of its own body instead (the same contract plus a public
+  function; storage is untouched); the shape is recorded per check (`shape`) and tallied in the scorecard.
 - **keccak256 side-cars**: keccak256 runs in compute side-cars a deployer funds, so each spend places them first,
   as `conformance/bch.ts` does: `max(1, minInstances)` mutable NFTs (category `ee..ee`) at
   `keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, false)`, read from the artifact's `keccak256`
@@ -102,21 +104,33 @@ pure first slice below, and the stateful slice after it.
   raises the input's operation budget) and scored as `matched-with-density-reserve` or
   `mismatched-with-density-reserve`, so op-cost limits stay visible instead of folding into plain results. FAILURE
   lines are retried too: a revert that only the density limit causes never counts as a plain match.
-- **Limits of the wrapper**: the target is reached through an internal call, so `msg.sig`/`msg.data`, custom storage
-  layouts and entry-point-only paths can refuse or differ for wrapper reasons; those show up as refusals or
-  mismatches with their reason, not as silent passes.
+- **Limits of the wrapper**: the target is reached through an internal call, so `msg.data` read by an internal
+  function (it sees the wrapper's calldata) and entry-point-only paths can refuse or differ for wrapper reasons;
+  those show up as refusals or mismatches with their reason, not as silent passes. `msg.sig` does not leak the
+  wrapper's selector: in this compiler a public function's `msg.sig` is its own selector however it is reached, and
+  an internal reader gets its public caller's. So `msg_sig_after_internal_call_is_same` (public `foo` calls public
+  `boo`, which returns `msg.sig`) mismatches on the compiler's own rule (`boo`'s selector, solc: the entry's), not
+  on the wrapper.
 
 **Stateful slice** (scored in its own section; the pure slice above is unchanged):
 
 - **Fixtures**: those WITH state variables, otherwise the same fixture and line restrictions (no constructor
   parameters; a parameterless constructor runs at deploy). The getter of an elementary `public` state variable is
   callable too: its mapping keys and array indices become parameters and the wrapper reads the variable directly
-  (`m[__a0]`), since a derived contract cannot call a getter internally; struct/enum/string getters skip.
+  (`m[__a0]`), since a derived contract cannot call a getter internally; struct/enum/string getters skip. A getter
+  wins over a base function it overrides (`uint public override test` over an `external` `test()`), so that
+  function is not respelled `public` (which would break the override).
 - **Execution**: one wrapper `contract __Check is <Target>` with a `__check_<k>(args, expected, bool cmp)` per
   called signature, compiled with `forceStateful: true` added to the bench options, deployed ONCE per fixture with
   `getContractFactory(artifact, signer).deploy()` on a fresh `MockNetworkProvider` (fresh funding txid, so a fresh
   category; the mock reset hooks are fired). Every runnable line then runs in file order as its own `send()`, so
-  state carries from line to line as in solc's runner.
+  state carries from line to line as in solc's runner. A `layout at` target gets the checks inside a copy of its
+  own body, as in the pure slice. A derived wrapper the lifecycle policy refuses (`UnauthorizedLifecycleError`: a
+  `__check_<k>` reaches a child deploy and has no trusted-key signature check) is compiled again that way: the
+  compiler's message-bus auto-selection reads only the root contract's own functions, before inheritance is
+  expanded, so behind a derived wrapper the target's call-graph edges are invisible, the wrapper is narrowed to
+  direct mode, and there the policy applies; inside the target the edges are seen as when the target compiles
+  alone. The fixture records `shape`, and the scorecard tallies both reasons.
 - **FAILURE lines** must fail with a VM error (`FailedTransactionError`, or the SDK's
   `preflight failed at input N:` message) and broadcast nothing (a send counter on the provider); a revert after a
   partial broadcast is a mismatch (`state changed`). A value line that reverts is re-sent with `cmp=false`: success
@@ -158,6 +172,20 @@ errors) and 8 mismatch behind a reserve (still over the density limit); after a 
 lines are refused at compile (91 of them, 25 fixtures, because a derived wrapper cannot inherit a custom storage
 layout; 25 because the lifecycle policy flags a wrapper that reaches a child deploy) and 51 at deploy (byte rules,
 derivation oscillation, constructor vmap keys). The pure slice in the same run: 1,346 of 1,612 matched.
+
+Wrapper refusals removed (2026-10-11, 8 workers, 150 s for both slices): `layout at` targets (25 stateful
+fixtures / 91 lines, 1 pure line) and lifecycle refusals (11 fixtures / 25 lines) run with the checks inside the
+target, and the overriding getter of `public_state_overridding` runs (3 of 3 match). Stateful: 570 of 659 executed
+lines match before any divergence (86.49%), 6 behind a reserve, 74 mismatch and 9 mismatch behind a reserve; after
+a divergence 46 of 112 match; 38 lines are refused at compile and 62 at deploy. The layout fixtures match 57 of 67
+clean lines (7 of the 10 misses are wrong `.slot`/`.offset` or slot-addressed `sload`/`sstore` values), the
+lifecycle ones 6 of 13 (6 OP_VERIFY reverts on lines that deploy a fresh child, 1 keccak probe error; 6 more
+lines refused at deploy, 1 at compile on Yul `create`). Pure: 1,480 of 1,613 (91.75%). Refusals the wrapper still
+causes: an internal call to a returning dynamic-array state helper (10 lines), to an overloaded function
+(`storage_array_ref`, 16), to a function ending in an assembly `return` (2), and `MESSAGE_BUS_REQUIRED` on a
+derived `__check_0` (`write_storage_external`, 3: the same hidden call-graph edges as the lifecycle refusal);
+6 more lines fail inside the target's own code (undefined `x`/`s`, an assign type) though the target compiles
+alone, so likely on the derived shape (not diagnosed).
 
 ## Retained release scorecard (2026-08, 7,343 files)
 

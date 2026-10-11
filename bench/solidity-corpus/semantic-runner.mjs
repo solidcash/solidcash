@@ -17,13 +17,16 @@ import { isMainThread, parentPort, Worker, workerData } from 'worker_threads';
 // spend of `__check(args, expected, cmp)` on a fresh MockNetworkProvider, with the keccak256 compute side-cars a
 // deployer funds. `cmp=false` on FAILURE lines, so a call that returns normally shows as a mismatch instead of a
 // failed equality. A spend stopped by the op-cost density limit is retried once behind a deployer's density reserve
-// and scored apart (matched/mismatched-with-density-reserve).
+// and scored apart (matched/mismatched-with-density-reserve). A target with a custom storage layout (`layout at`,
+// which solc forbids inheriting from) gets the check functions inside a copy of its own body instead.
 // Stateful slice: a fixture WITH state variables (no constructor parameters, same line restrictions; elementary
-// public getters too) gets one wrapper with `__check_<k>` per signature, compiled with forceStateful, deployed ONCE
-// through getContractFactory(...).deploy(); its lines then run in file order, one transaction each, so state carries
-// over. A FAILURE line must revert without broadcasting; a reverted value line is re-sent with cmp=false (success =
-// wrong value, state advances as in solc). Lines after a mismatch, or after a skipped value line of a state-writing
-// function, are tagged afterDivergence. A density-limit stop replays the whole fixture behind the reserve.
+// public getters too; a getter wins over a base function it overrides) gets one wrapper with `__check_<k>` per
+// signature, compiled with forceStateful (a derived wrapper refused by the lifecycle policy is compiled again with the
+// checks inside the target), deployed ONCE through getContractFactory(...).deploy(); its lines then run in file
+// order, one transaction each, so state carries over. A FAILURE line must revert without broadcasting; a reverted
+// value line is re-sent with cmp=false (success = wrong value, state advances as in solc). Lines after a mismatch, or
+// after a skipped value line of a state-writing function, are tagged afterDivergence. A density-limit stop replays
+// the whole fixture behind the reserve.
 // Output: semantic-results.json and semantic-scorecard.txt (pure slice as before, then the stateful section).
 // Env: CORPUS_RESULTS, SOLC_CORPUS, LIMIT (selected fixtures), FILTER (path substring), SLICE=pure|stateful,
 // CORPUS_WORKERS, FIXTURE_TIMEOUT_MS, CORPUS_OUTPUT_DIR, SELECT_ONLY=true|list (selection only, no execution),
@@ -35,6 +38,10 @@ const DENSITY_RESERVE = '-with-density-reserve'; // status suffix of a line retr
 // Stateful slice: forceStateful so a fixture whose state compiles away still deploys as a stateful contract.
 const STATEFUL_COMPILE_OPTIONS = { ...COMPILE_OPTIONS, forceStateful: true };
 const DENSITY_STOP = /operation cost density limit/;
+// Wrapper shapes with the checks inside the target (see wrapSource); a lifecycle refusal of the derived one retries.
+const IN_TARGET_LAYOUT = 'in-target: layout at';
+const IN_TARGET_LIFECYCLE = 'in-target: lifecycle refusal';
+const LIFECYCLE_REFUSAL = /^UnauthorizedLifecycleError: /;
 // A stateful send reports a VM failure either as FailedTransactionError or as the SDK's preflight/probe message.
 const VM_ERROR = /preflight failed at input \d+: |^Program |\bProgram (?:failed|attempted|completed|exceeded)\b/;
 const errHead = (cause) => `${cause?.name || 'Error'}: ${String(cause?.message).split('\n')[0]}`;
@@ -192,13 +199,7 @@ async function workerMain() {
 
   // A line stopped by the density limit reruns the whole fixture behind the reserve (state must replay); lines from
   // the first stopped one on take the reserve run's results, tagged like the pure slice's retries.
-  const runStatefulJob = async ({ source, sequence }) => {
-    let artifact;
-    try {
-      artifact = compileString(source, STATEFUL_COMPILE_OPTIONS);
-    } catch (cause) {
-      return { compiled: false, error: errHead(cause) };
-    }
+  const runStatefulArtifact = async (artifact, sequence) => {
     if (artifact.constructorInputs?.length) return { compiled: true, skip: 'constructor-inputs' };
     const plain = await runSequence(artifact, sequence);
     const at = plain.deployError ? (DENSITY_STOP.test(plain.deployError) ? 0 : -1)
@@ -208,6 +209,26 @@ async function workerMain() {
     if (reserve.deployError) return { compiled: true, deployError: `${reserve.deployError} (with density reserve)` };
     const tagged = reserve.outcomes.map((o) => ({ ...o, status: `${o.status}${DENSITY_RESERVE}` }));
     return { compiled: true, outcomes: plain.deployError ? tagged : [...plain.outcomes.slice(0, at), ...tagged.slice(at)] };
+  };
+
+  // A derived wrapper the lifecycle policy refuses is compiled again with its checks inside the target.
+  const compileStateful = (source, fallback) => {
+    try {
+      return { artifact: compileString(source, STATEFUL_COMPILE_OPTIONS) };
+    } catch (cause) {
+      if (!fallback || !LIFECYCLE_REFUSAL.test(errHead(cause))) return { error: errHead(cause) };
+    }
+    try {
+      return { artifact: compileString(fallback, STATEFUL_COMPILE_OPTIONS), shape: IN_TARGET_LIFECYCLE };
+    } catch (cause) {
+      return { error: errHead(cause), shape: IN_TARGET_LIFECYCLE };
+    }
+  };
+
+  const runStatefulJob = async ({ source, fallback, sequence }) => {
+    const { artifact, error, shape } = compileStateful(source, fallback);
+    const result = error ? { compiled: false, error } : await runStatefulArtifact(artifact, sequence);
+    return { ...result, ...(shape && { shape }) };
   };
 
   parentPort.on('message', async ({ id, job }) => {
@@ -372,7 +393,8 @@ function findContracts(code) {
     const is = /\bis\b([\s\S]*)$/.exec(header);
     const bases = is ? splitTop(is[1]).map((b) => /^([A-Za-z_$][\w$.]*)/.exec(b)?.[1]).filter(Boolean) : [];
     const kind = m[1].startsWith('abstract') ? 'abstract' : m[1];
-    contracts.push({ kind, name: m[2], bases, members: splitMembers(code, open + 1, close) });
+    const layout = /\blayout\s+at\b/.test(header); // custom storage layout: solc forbids inheriting from it
+    contracts.push({ kind, name: m[2], bases, close, layout, members: splitMembers(code, open + 1, close) });
     head.lastIndex = close + 1;
   }
   return contracts;
@@ -535,14 +557,15 @@ function selectFixture(src) {
     if (/"/.test(call.argText) || (!call.failure && /"/.test(call.retText))) return skip('value:string-or-hex');
     let check = checks.get(sig);
     if (!check) {
-      const decls = ancestry.flatMap((c) => c.members
-        .filter((mb) => mb.fn?.name === call.name && mb.fn.params.length === sigTypes.length
-          && mb.fn.params.every((p, k) => p.abi === sigTypes[k]))
-        .map((mb) => ({ contract: c, member: mb })));
-      const found = decls.length > 0 || !stateful ? undefined : ancestry.flatMap((c) => c.members
+      // A public state variable's getter wins over a base function it overrides (nothing can override it).
+      const found = !stateful ? undefined : ancestry.flatMap((c) => c.members
         .map((member) => ({ contract: c, member, getter: parseGetter(member.text) })))
         .find((d) => d.getter?.name === call.name);
       if (found?.getter.kind) return skip(`getter-${found.getter.kind}`);
+      const decls = found ? [] : ancestry.flatMap((c) => c.members
+        .filter((mb) => mb.fn?.name === call.name && mb.fn.params.length === sigTypes.length
+          && mb.fn.params.every((p, k) => p.abi === sigTypes[k]))
+        .map((mb) => ({ contract: c, member: mb })));
       if (found && found.getter.fn.params.map((p) => p.abi).join() === sigTypes.join()) {
         decls.push({ contract: found.contract, member: { ...found.member, fn: found.getter.fn } });
       }
@@ -617,24 +640,42 @@ function checkFunction(check, name) {
     }`;
 }
 
+// The check functions go into a derived `contract __Check is <Target>`, or (`inTarget`) into a copy of the
+// target's own body: solc forbids inheriting from a custom storage layout (`layout at`), and the compiler's
+// message-bus auto-selection reads only the root contract's own functions, so a derived wrapper hides the target's
+// call-graph edges. `requireLine` is the source line of the body's last `require(`.
+function wrapSource(edited, target, body, inTarget) {
+  const head = inTarget ? `${edited.slice(0, target.close).trimEnd()}\n\n`
+    : `${edited.trimEnd()}\n\ncontract __Check is ${target.name} {\n`;
+  const tail = inTarget ? `\n${edited.slice(target.close)}` : '\n}\n';
+  const requireLine = head.split('\n').length + body.slice(0, body.lastIndexOf('        require(')).split('\n').length - 1;
+  return { source: `${head}${body}${tail}`, requireLine };
+}
+
 // Wrapper source for one signature (pure slice).
 function buildWrapper(src, code, target, check) {
   const { edited, rewrote } = respellExternal(src, code, check.decls);
-  const source = `${edited.trimEnd()}\n\ncontract __Check is ${target.name} {\n${checkFunction(check, '__check')}\n}\n`;
-  const requireLine = source.slice(0, source.lastIndexOf('        require(')).split('\n').length;
-  return { sig: check.sig, source, requireLine, lines: check.lines, ...(rewrote && { rewrote: 'external->public' }) };
+  const { source, requireLine } = wrapSource(edited, target, checkFunction(check, '__check'), target.layout);
+  return {
+    sig: check.sig, source, requireLine, lines: check.lines,
+    ...(rewrote && { rewrote: 'external->public' }), ...(target.layout && { shape: IN_TARGET_LAYOUT }),
+  };
 }
 
 // Stateful slice: one wrapper with `__check_<k>` per signature, deployed once; `lines` is every line in file order
-// with its check index, whether it carries `cmp`, and whether its function may write state.
+// with its check index, whether it carries `cmp`, and whether its function may write state. `inTargetSource` is
+// the fallback for a derived wrapper the lifecycle policy refuses.
 function buildStatefulWrapper(src, code, target, checks) {
   const { edited, rewrote } = respellExternal(src, code, checks.flatMap((check) => check.decls));
-  const fns = checks.map((check, k) => checkFunction(check, `__check_${k}`));
-  const source = `${edited.trimEnd()}\n\ncontract __Check is ${target.name} {\n${fns.join('\n')}\n}\n`;
+  const body = checks.map((check, k) => checkFunction(check, `__check_${k}`)).join('\n');
+  const { source } = wrapSource(edited, target, body, target.layout);
   const lines = checks.flatMap((check, k) => check.lines.map((line) => ({
     ...line, check: k, cmp: check.fn.rets.length > 0, writes: mutabilityRank(check) === 2,
   }))).sort((a, b) => a.line - b.line);
-  return { sigs: checks.map((check) => check.sig), source, lines, ...(rewrote && { rewrote: 'external->public' }) };
+  return {
+    sigs: checks.map((check) => check.sig), source, lines, ...(rewrote && { rewrote: 'external->public' }),
+    ...(target.layout ? { shape: IN_TARGET_LAYOUT } : { inTargetSource: wrapSource(edited, target, body, true).source }),
+  };
 }
 
 // ------------------------------------------------------------------------------------------------ main side
@@ -725,7 +766,8 @@ async function main() {
           if (job.stateful) {
             const sequence = job.stateful.lines.filter((l) => l.args)
               .map(({ check, args, failure, cmp }) => ({ check, args, failure, cmp }));
-            active.postMessage({ id, job: { stateful: { source: job.stateful.source, sequence } } });
+            const { source, inTargetSource: fallback } = job.stateful;
+            active.postMessage({ id, job: { stateful: { source, fallback, sequence } } });
             return;
           }
           const runnable = job.checks.map((c) => ({
@@ -781,6 +823,7 @@ function recordFixture(job, result) {
     fixture.checks.push({
       sig: check.sig,
       ...(check.rewrote && { rewrote: check.rewrote }),
+      ...(check.shape && { shape: check.shape }),
       ...(reply && { compiled: reply.compiled }),
       ...(reply?.error && { error: reply.error }),
       ...(reply?.skip && { skip: reply.skip }),
@@ -808,6 +851,7 @@ function recordStatefulFixture(job, result) {
   fixture.checks = stateful.sigs.map((sig) => ({ sig }));
   Object.assign(fixture, {
     ...(stateful.rewrote && { rewrote: stateful.rewrote }),
+    ...((reply?.shape ?? stateful.shape) && { shape: reply?.shape ?? stateful.shape }),
     ...(reply && { compiled: reply.compiled }),
     ...(reply?.skip && { skip: reply.skip }),
   });
@@ -889,6 +933,8 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
     ...block('MISMATCH SHAPES', tally(mismatches.map(shapeOf))), '',
     ...block('REFUSED-AT-COMPILE (by error head, per line)', tally(lines.filter((l) => l.status === 'refused-at-compile')
       .map((l) => errorShape(l.outcome)))), '',
+    ...block('WRAPPER INSIDE THE TARGET (fixtures, by reason)', tally(run
+      .map((f) => f.checks?.find((c) => c.shape)?.shape).filter(Boolean))), '',
     '--- MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
     ...lines.filter((l) => l.status === `matched${DENSITY_RESERVE}`)
       .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${l.outcome}`), '',
@@ -957,6 +1003,8 @@ function statefulReport(fixtures) {
     '',
     ...block('STATEFUL REFUSED (by status and error head, per line)', tally(lines
       .filter((l) => l.status?.startsWith('refused')).map((l) => `${l.status}: ${errorShape(l.outcome)}`))), '',
+    ...block('STATEFUL WRAPPER INSIDE THE TARGET (fixtures, by reason)', tally(run.filter((f) => f.shape)
+      .map((f) => f.shape))), '',
     '--- STATEFUL MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
     ...lines.filter((l) => l.status?.startsWith(`matched${DENSITY_RESERVE}`))
       .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${l.outcome}`), '',

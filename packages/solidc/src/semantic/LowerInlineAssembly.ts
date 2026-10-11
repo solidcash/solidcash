@@ -1027,7 +1027,71 @@ let yulMemUsed = false;
 // is function-scoped, so one buffer is declared at the function-body top and shared across every block (a later
 // block reads what an earlier one wrote); a per-block re-init would reset the free pointer to 0x80 each time.
 let functionYulMemUsed = false;
+// Set per function when a later assembly block mloads a constant word an earlier block mstored (see
+// crossBlockMemoryFlow): each of its blocks then tries the shared runtime `__yulmem` buffer first.
+let functionCrossBlockMemory = false;
 let yulTmpN = 0;
+
+// Constant word offsets a Yul block mstores, and those it mloads before any mstore of its own, in source order.
+function constantMemoryAccesses(block: YulBlockNode, writes: Set<bigint>, reads: Set<bigint>): void {
+  const scan = (e: YulExpressionNode | undefined): void => {
+    if (!(e instanceof YulFunctionCallNode)) return;
+    e.args.forEach(scan);
+    const off = e.args.length > 0 && isIntLiteral(e.args[0]) ? BigInt(e.args[0].raw) : undefined;
+    if (off === undefined) return;
+    if (e.name === 'mload' && e.args.length === 1 && !writes.has(off)) reads.add(off);
+    else if (e.name === 'mstore' && e.args.length === 2) writes.add(off);
+  };
+  const walk = (b: YulBlockNode): void => constantMemoryAccesses(b, writes, reads);
+  for (const s of block.statements) {
+    if (s instanceof YulVariableDeclarationNode || s instanceof YulAssignmentNode) scan(s.value);
+    else if (s instanceof YulExpressionStatementNode) scan(s.expression);
+    else if (s instanceof YulBlockNode) walk(s);
+    else if (s instanceof YulFunctionDefinitionNode) walk(s.body);
+    else if (s instanceof YulIfNode) {
+      scan(s.condition);
+      walk(s.body);
+    } else if (s instanceof YulSwitchNode) {
+      scan(s.expression);
+      s.cases.forEach((c) => walk(c.body));
+      if (s.defaultBody) walk(s.defaultBody);
+    } else if (s instanceof YulForLoopNode) {
+      walk(s.pre);
+      scan(s.condition);
+      walk(s.body);
+      walk(s.post);
+    }
+  }
+}
+
+function collectYulBlocks(node: Node, out: YulBlockNode[]): void {
+  if (node instanceof AssemblyStatementNode) {
+    if (node.yulBlock) out.push(node.yulBlock);
+    return;
+  }
+  for (const key of Object.keys(node)) {
+    if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+    const v = (node as unknown as Record<string, unknown>)[key];
+    if (v instanceof Node) collectYulBlocks(v, out);
+    else if (Array.isArray(v)) for (const x of v) if (x instanceof Node) collectYulBlocks(x, out);
+  }
+}
+
+// EVM memory is function-scoped, but the compile-time constant-offset map is per block: a word one block mstores
+// there never reaches a later block's mload, which falls back to a `__yulmem` the write skipped.
+function crossBlockMemoryFlow(body: Node): boolean {
+  const blocks: YulBlockNode[] = [];
+  collectYulBlocks(body, blocks);
+  const written = new Set<bigint>();
+  for (const block of blocks) {
+    const writes = new Set<bigint>();
+    const reads = new Set<bigint>();
+    constantMemoryAccesses(block, writes, reads);
+    if ([...reads].some((off) => written.has(off))) return true;
+    writes.forEach((off) => written.add(off));
+  }
+  return false;
+}
 
 // A Yul log0-log4 (EVM LOG opcodes = event emission) was lowered in the current contract: emit its topics + data
 // region as an anonymous event NFT. Set while lowering; the `event __YulLog(bytes) anonymous` decl is synthesized
@@ -3566,6 +3630,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     }
     bufferWrites = new Map();
     functionYulMemUsed = false;
+    functionCrossBlockMemory = crossBlockMemoryFlow(node.body);
     mutableCalldataComponents = new Set();
     collectMutableCalldataComponents(node, mutableCalldataComponents);
     // Keep only dynamic calldata parameters and named calldata returns. Storage-pointer `.offset` is read-only
@@ -3732,6 +3797,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     yulLoopDepth = 0;
     bufferWrites = new Map();
     functionYulMemUsed = false;
+    functionCrossBlockMemory = false;
     return result;
   }
 
@@ -3815,14 +3881,15 @@ export default class LowerInlineAssembly extends AstTraversal {
     // Fast path: the compile-time constant-offset memory model. If it rejects a memory op (dynamic offset, msize,
     // sub-word/dynamic keccak, mstore8, dynamic mcopy), re-lower the WHOLE block on the runtime `__yulmem` buffer -
     // all-or-nothing, so the two models never mix within a block. bufferWrites is per-function, so snapshot it and
-    // restore before the retry (a partial compile-time attempt may have pushed stale buffer entries).
+    // restore before the retry (a partial compile-time attempt may have pushed stale buffer entries). A function
+    // whose blocks pass constant words to each other tries the shared runtime buffer first.
     const bufSnapshot = new Map(bufferWrites);
-    const compiled = this.tryLowerAsm(node, false);
-    if (compiled) return compiled;
-    bufferWrites = new Map(bufSnapshot);
-    const runtime = this.tryLowerAsm(node, true);
-    if (!runtime) bufferWrites = new Map(bufSnapshot);
-    return runtime ?? node;
+    for (const runtime of functionCrossBlockMemory ? [true, false] : [false, true]) {
+      const lowered = this.tryLowerAsm(node, runtime);
+      if (lowered) return lowered;
+      bufferWrites = new Map(bufSnapshot);
+    }
+    return node;
   }
 
   private tryLowerAsm(node: AssemblyStatementNode, runtime: boolean): BlockNode | undefined {

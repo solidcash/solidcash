@@ -145,3 +145,18 @@ describe('assembly: a word assigned to a narrower integer is cleaned to its widt
     params: '', retType: 'int8', body: 'int8 x = 0; assembly { x := 0x80 } return -x;', args: [], label: 'int8 neg',
   })));
 });
+
+// EVM memory is function-scoped: a later assembly block of the same function loads what an earlier one stored.
+describe('assembly: memory stored in one block is loaded by a later block', () => {
+  const flow = (params: string, body: string, args: readonly unknown[], label: string): Promise<void> =>
+    assertConformant(fnCase({ params, retType: 'uint', body, args, label }));
+  it('mstore(0, v) then mload(0) in the next block', () => flow(
+    'uint v', 'uint x = 0; assembly { mstore(0, v) } assembly { x := mload(0) } return x;', [0x42n], 'scratch word'));
+  it('a free-memory-pointer bump is seen by a later block', () => flow(
+    'uint n', 'uint a = 0; uint b = 0; assembly { a := mload(0x40) } '
+      + 'assembly { let p := mload(0x40) mstore(0x40, add(p, n)) } assembly { b := mload(0x40) } return b - a;',
+    [0x20n], 'free pointer bump'));
+  it('a word stored before a branch is loaded inside it', () => flow(
+    'uint v', 'uint x = 0; assembly { mstore(0x20, v) } if (v > 3) { assembly { x := mload(0x20) } } return x;',
+    [5n], 'branch load'));
+});

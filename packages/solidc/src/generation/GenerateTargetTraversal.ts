@@ -31325,12 +31325,51 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /**
+   * The state fields a slot's runtime selector reads. A foreign function-pointer call names its selector as the
+   * companion `bytes4` field of the lowered wrapper, and a varying-method choice selects between two of those,
+   * so every producer resolves to state accesses (possibly under a ternary).
+   */
+  private runtimeSelectorStateVariables(slot: ExternalCallSlot): StateVariableNode[] {
+    const found: StateVariableNode[] = [];
+    const collect = (expression: ExpressionNode | undefined): void => {
+      if (!expression) return;
+      if (expression instanceof TernaryOpNode) {
+        collect(expression.ifTrue);
+        collect(expression.ifFalse);
+        return;
+      }
+      const name = expression instanceof StateAccessNode
+        ? expression.stateVariable?.name
+        : expression instanceof IdentifierNode ? expression.name : undefined;
+      if (!name) return;
+      const stateVariable = this.stateVariables.find((candidate) => candidate.name === name);
+      if (stateVariable) found.push(stateVariable);
+    };
+    collect(slot.runtimeSelector);
+    return found;
+  }
+
   /** Emit auto-covenant verification for state writes */
   private externalCallReceiverStateWrites(node: FunctionDefinitionNode): Set<string> {
     const retained = new Set<string>();
     // Only the ordinary direct-call epilogue below consumes these values. Graph handlers authenticate their
     // receivers at the callsite, and a function that delegatecalls writes no state of its own to retain.
     if (node.graphEmissionHandler || this.functionHasDelegatecall) return retained;
+    // Selector cells: the epilogue evaluates every slot's runtime selector once (its `rtSelTemps` pass, with no
+    // loop/nested exemption), so a selector naming a written state field must resolve to the post-write value.
+    // A lowered foreign function-pointer store writes the wrapper address and this companion selector together,
+    // so dropping the companion while its twin stays makes the epilogue read address a missing slot.
+    if (!this.framedMaster) {
+      for (const slot of this.externalCallSlots) {
+        for (const stateVariable of this.runtimeSelectorStateVariables(slot)) {
+          const stackName = this.pendingStateWrites.get(
+            `${stateVariable.nftIndex}:${stateVariable.fieldIndex}`,
+          );
+          if (stackName) retained.add(stackName);
+        }
+      }
+    }
     for (const slot of this.externalCallSlots) {
       // Match the slots which reach emitExternalCallVerification's scalar identity path. Loop dispatch verifies
       // its receiver inline (or through the existing dynamic-array preservation path), so retaining a scalar

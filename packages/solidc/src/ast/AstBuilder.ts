@@ -350,6 +350,29 @@ function isThisState(ctx: ThisExprContext): boolean {
   return ctx.Identifier_list().length === 1 && ctx.expression_list().length === 0 && !ctx.memberName();
 }
 
+const CALLABLE_RULES = new Set([
+  'FunctionDefinitionContext', 'ModifierDefinitionContext', 'ConstructorDefinitionContext',
+  'FreeFunctionDefinitionContext', 'FallbackDefinitionContext', 'ReceiveDefinitionContext',
+]);
+const DECLARED_TYPE_RULES = new Set([
+  'TypeNameContext', 'ArrayTypeContext', 'FunctionArrayTypeContext', 'MappingTypeContext',
+]);
+
+// True when `name` is declared (a type followed by the name: parameter, return or local) anywhere in the callable
+// enclosing `ctx`. Over-approximates scoping: any such declaration may shadow a state variable of that name.
+function declaredInEnclosingCallable(ctx: ParserRuleContext, name: string): boolean {
+  let callable: ParserRuleContext | undefined = ctx;
+  while (callable && !CALLABLE_RULES.has(callable.constructor.name)) callable = callable.parentCtx;
+  const declares = (node: ParseTree): boolean => {
+    if (!(node instanceof ParserRuleContext)) return false;
+    const children = node.children ?? [];
+    if (children.some((child) => child instanceof AnyIdentifierContext && child.getText() === name)
+      && children.some((child) => DECLARED_TYPE_RULES.has(child.constructor.name))) return true;
+    return children.some(declares);
+  };
+  return callable !== undefined && declares(callable);
+}
+
 /** The exact length of an array type whose bound is past Number.MAX_SAFE_INTEGER (`ArrayType.bound` rounds it). */
 export const exactArrayBounds = new WeakMap<ArrayType, bigint>();
 
@@ -5794,8 +5817,14 @@ export default class AstBuilder
     // qualifier before lvalue classification; otherwise the generic member fallback mistakes `C` for a mapping.
     if (!isThis && (rawName === this.currentContractName || this.currentContractBaseNames.has(rawName))
       && segs[0]?.member) {
+      const ownQualifier = rawName === this.currentContractName;
       rawName = segs[0].member;
       segs = segs.slice(1);
+      // `C.x op= v` under a same-named parameter/return/local writes the state variable, as `this.x op= v` does.
+      const stateType = this.stateVarTypes.get(rawName);
+      if (ownQualifier && segs.length === 0 && valueCtx && this.stateVarNames.has(rawName)
+        && !(stateType instanceof ArrayType || stateType instanceof StructType)
+        && declaredInEnclosingCallable(valueCtx, rawName)) isThis = true;
     }
     // Recursively-flattened struct state: collapse leading members that descend through flattened struct
     // fields into the name (`str.nstr.nestedValue` -> rawName `str__nstr`, member `nestedValue`), so the
@@ -7460,10 +7489,14 @@ export default class AstBuilder
     }
 
     // The current contract name may qualify its own state (`C.a`, including `C.a[i]` and `C.a.length`).
-    // This is a scope qualifier, not a struct/member base; reduce it to the ordinary bare state read.
+    // This is a scope qualifier, not a struct/member base; reduce it to the ordinary bare state read. When a
+    // parameter, return or local of the same name could capture that bare read, address the state directly.
     if (expression instanceof IdentifierNode && expression.name === this.currentContractName
       && this.stateVarNames.has(fieldName)) {
-      const state = new IdentifierNode(fieldName);
+      const stateType = this.stateVarTypes.get(fieldName);
+      const shadowed = !(stateType instanceof ArrayType || stateType instanceof StructType)
+        && declaredInEnclosingCallable(ctx, fieldName);
+      const state = shadowed ? new StateAccessNode(fieldName) : new IdentifierNode(fieldName);
       state.location = Location.fromCtx(ctx);
       return state;
     }

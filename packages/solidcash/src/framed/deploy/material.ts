@@ -19,7 +19,7 @@ import {
   validatorAddress,
   validatorTemplateHash,
 } from '@solidcash/utils';
-import { compositionPlaceholders } from 'solidc';
+import { compositionPlaceholders } from 'solidc/runtime';
 
 const {
   ADDRESS_SLOT_LENGTH,

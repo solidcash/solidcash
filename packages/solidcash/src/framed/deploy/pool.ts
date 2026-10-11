@@ -9,7 +9,7 @@
  */
 
 import { TokenCapability, type Artifact } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from 'solidc/runtime';
 import { FACET_SATOSHIS } from '../composer/draft.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 

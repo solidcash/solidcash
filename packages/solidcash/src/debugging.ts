@@ -13,7 +13,7 @@ import type { WalletTemplate, WalletTemplateScriptUnlocking } from '@bitauth/lib
 import { type Artifact, type FunctionDebugInformation, type LogData, type LogEntry, Op, PrimitiveType, type RequireStatement, type StackItem, asmToBytecode, bytecodeToAsm, decodeBool, decodeInt, decodeString } from '@solidcash/utils';
 import { findLastIndex, toRegExp } from './utils.js';
 import { FailedRequireError, FailedTransactionError, FailedTransactionEvaluationError } from './Errors.js';
-import { getBitauthUri } from './libauth-template/LibauthTemplate.js';
+import { getBitauthUri } from './libauth-template/bitauth-uri.js';
 import { createVirtualMachineBch2026ForProvider } from './network/createVirtualMachine.js';
 import { VmTarget } from './interfaces.js';
 import type NetworkProvider from './network/NetworkProvider.js';

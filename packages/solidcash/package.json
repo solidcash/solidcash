@@ -95,5 +95,8 @@
     "typescript": "^5.9.2",
     "vitest": "^4.0.15"
   },
-  "gitHead": "bf02a4b641d5d03c035d052247a545109c17b708"
+  "gitHead": "bf02a4b641d5d03c035d052247a545109c17b708",
+  "browser": {
+    "./dist/framed/proxy/generate.js": "./dist/framed/proxy/generate.browser.js"
+  }
 }

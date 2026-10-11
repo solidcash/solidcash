@@ -1,7 +1,5 @@
-import { binToBase64 } from '@bitauth/libauth/build/lib/format/base64.js';
 import { assertSuccess } from '@bitauth/libauth/build/lib/format/error.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import type { Input } from '@bitauth/libauth/build/lib/message/transaction-types.js';
 import type { TransactionBch } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
 import type { AuthenticationInstructionPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-types.js';
@@ -29,9 +27,8 @@ import {
   type Utxo,
 } from '../interfaces.js';
 import SignatureTemplate from '../SignatureTemplate.js';
-import { addressToLockScript, extendedStringify, zip } from '../utils.js';
+import { addressToLockScript, zip } from '../utils.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { zlibSync } from 'fflate';
 import MockNetworkProvider from '../network/MockNetworkProvider.js';
 import { addHexPrefixExceptEmpty, DEFAULT_VM_TARGET, formatBytecodeForDebugging, formatFunctionBodyForDebugging, formatInvokeBodyForDebugging, formatParametersForDebugging, getBodyLockScriptName, getBodyUnlockScriptName, getDefinedFunctionBodyLockScriptName, getInvokeBodyLockScriptName, getLockScriptName, getSignatureAndPubkeyFromP2PKHInput, getUnlockScriptName, serialiseTokenDetails } from './utils.js';
 
@@ -148,22 +145,9 @@ export const debugLibauthTemplate = (template: WalletTemplate, transaction: Tran
   return debugTemplate(template, allArtifacts, verifyTransaction, transaction.provider);
 };
 
-export const getBitauthUri = (template: WalletTemplate, includePrivateKeys = true): string => {
-  // A failure-path debug URL is attached to thrown errors automatically; it must never carry signing keys. The
-  // explicit opt-in `TransactionBuilder.getBitauthUri()` keeps the keys (it warns), while automatic failure paths
-  // pass `includePrivateKeys = false` and get placeholder values instead.
-  if (!includePrivateKeys) {
-    for (const scenario of Object.values(template.scenarios ?? {})) {
-      const keys = (scenario.data as { keys?: { privateKeys?: Record<string, string> } } | undefined)?.keys;
-      if (keys?.privateKeys) {
-        for (const name of Object.keys(keys.privateKeys)) keys.privateKeys[name] = '[REDACTED]';
-      }
-    }
-  }
-  const base64toBase64Url = (base64: string): string => base64.replace(/\+/g, '-').replace(/\//g, '_');
-  const payload = base64toBase64Url(binToBase64(zlibSync(utf8ToBin(extendedStringify(template)))));
-  return `https://ide.bitauth.com/import-template/${payload}`;
-};
+// Re-exported for the existing importers (`TransactionBuilder`); `debugging.ts` takes it from the leaf module
+// directly, because importing it from here would close the `debugging.ts` <-> `LibauthTemplate.ts` cycle.
+export { getBitauthUri } from './bitauth-uri.js';
 
 const generateAllTemplateEntities = (
   transactionBuilder: TransactionBuilder,

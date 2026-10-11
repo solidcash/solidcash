@@ -383,7 +383,7 @@ describe('struct field types: struct arrays and forward / recursive references',
 
   it('still rejects a directly recursive fixed struct array', () => {
     expect(() => compileString('contract C { struct S { uint x; S[1] child; } }',
-      { evmCompat: true })).toThrow(/not supported as a struct field|recursive struct/);
+      { evmCompat: true })).toThrow(/not supported as a struct field|recursive struct/i);
   });
 });
 
@@ -419,8 +419,8 @@ describe('view-function state-effect validation', () => {
 
 describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
   // The tuple codegen assigns into stack slots, which state vars lack. A tuple assignment whose targets are all
-  // state vars desugars to sequential state assigns - byte-identical to the manual form, and a swap stays
-  // correct because a state read always reads the input commitment.
+  // state vars desugars to sequential state assigns, byte-identical to the manual form when no component reads a
+  // target. A read after a pending write sees the new value, so a swap captures its components first.
   const bc = (body: string): string => compileString(
     `contract C() { uint256 x; uint256 y; function f(uint256 a, uint256 b) { ${body} } }`,
     { evmCompat: true, forceStateful: true },
@@ -430,8 +430,8 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
     expect(bc('(x, y) = (a, b);')).toBe(bc('x = a; y = b;'));
   });
 
-  it('(x, y) = (y, x) swap matches x = y; y = x (input-read semantics)', () => {
-    expect(bc('(x, y) = (y, x);')).toBe(bc('x = y; y = x;'));
+  it('(x, y) = (y, x) is not the sequential x = y; y = x (that reads the pending write)', () => {
+    expect(bc('(x, y) = (y, x);')).not.toBe(bc('x = y; y = x;'));
   });
 
   it('(x, y) = f() captures the multi-return before writing state', () => {

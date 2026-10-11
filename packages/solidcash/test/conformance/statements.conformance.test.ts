@@ -89,6 +89,8 @@ describe('statements: tuple assignment order', () => {
     '(y, y, y) = (set(1), set(2), set(3));', 'x * 10 + y'));
   it('a state swap reads both values before writing', () => stateful('tuple-state-swap',
     'uint x; uint y;', 'x = 1; y = 2; (x, y) = (y, x);', 'x * 10 + y'));
+  it('sequential state assignments read the pending write', () => stateful('state-seq-read',
+    'uint x; uint y;', 'x = 1; y = 2; x = y; y = x;', 'x * 10 + y'));
   // Distinct keys: the SDK's vmap batch refuses two writes landing on one mapping key in a transaction.
   // Duplicate stateful input from a shared proof, not a key spelling: from an empty map the read lanes m[1], m[6] and
   // the write batch all prove absence with the head node, and a direct function gives each read its own input (only

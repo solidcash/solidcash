@@ -53,6 +53,10 @@ import {
   ArrayPushNode,
   ArrayAssignNode,
   ArrayDeleteNode,
+  StateArrayPushNode,
+  StateArrayPopNode,
+  StateArrayAssignNode,
+  StateArrayDeleteNode,
   TryCatchNode,
   RevertNode,
   ConstantDefinitionNode,
@@ -2328,6 +2332,28 @@ function substituteInStatement(
 
   if (stmt instanceof ArrayDeleteNode) {
     stmt.index = substituteInExpression(stmt.index, subs, storage);
+    return stmt;
+  }
+
+  // A struct-field array statement (`p.keys.push(k)` -> `p__keys`) carries its operands like the plain forms.
+  if (stmt instanceof StateArrayPushNode) {
+    stmt.value = substituteInExpression(stmt.value, subs, storage);
+    return stmt;
+  }
+
+  if (stmt instanceof StateArrayAssignNode) {
+    stmt.index = substituteInExpression(stmt.index, subs, storage);
+    stmt.value = substituteInExpression(stmt.value, subs, storage);
+    return stmt;
+  }
+
+  if (stmt instanceof StateArrayDeleteNode) {
+    stmt.index = substituteInExpression(stmt.index, subs, storage);
+    return stmt;
+  }
+
+  if (stmt instanceof StateArrayPopNode) {
+    if (stmt.resizeTo) stmt.resizeTo = substituteInExpression(stmt.resizeTo, subs, storage);
     return stmt;
   }
 

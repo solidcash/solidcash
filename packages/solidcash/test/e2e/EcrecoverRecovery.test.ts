@@ -558,3 +558,48 @@ describe('HELPER RECOVERY: recovery arguments read off a VM probe', () => {
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
+
+// A STATEFUL contract's helper recovery publishes no arg params, so the stateful spend reads each recovery's
+// (h, v, r, s) off a VM probe of the master at its A side-car read, then co-spends as the direct path does.
+describe('STATEFUL HELPER RECOVERY: recovery arguments read off a VM probe of the stateful spend', () => {
+  const statefulHelper = compileString(`
+  contract StatefulHelperAuth(bytes20 owner) {
+      uint nonce;
+      function signer(bytes32 digest, int vv, bytes32 rr, bytes32 ss) private pure returns (bytes20) {
+          return ecrecoverEvm(digest, vv, rr, ss);
+      }
+      function bump(bytes32 h, int v, bytes32 r, bytes32 s) {
+          require(signer(h, v, r, s) == owner);
+          this.nonce = this.nonce + 1;
+      }
+  }`);
+  const bump = async (owner: Uint8Array, { h, v, r, s }: Recovery): Promise<Record<string, unknown>> => {
+    const provider = new MockNetworkProvider();
+    const contract = new Contract(statefulHelper, [owner], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, statefulHelper.stateLayout!, { nonce: 0n }, { saltContract: true },
+    );
+    const salt = hexToBin(categoryId).slice().reverse();   // branded side-cars use the reversed category
+    await deployPair(provider, salt, 1);
+    await deployKeccak(provider, salt, 1, true);
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await sc.bump(h, v, r, s).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+    return sc.getState();
+  };
+  const VERIFY_FAILED = /Program failed an OP_(EQUAL)?VERIFY operation/;
+
+  it('STATEFUL HELPER: spends with a valid signature and increments the nonce', async () => {
+    const abi = statefulHelper.abi.find((fn) => fn.name === 'bump');
+    expect((abi?.ecrecoverArgParams ?? []).flat().filter((param) => param !== null)).toEqual([]);
+    expect(abi?.ecrecoverEvmFlags).toEqual([true]);
+    const g = await goodSigner('stateful-helper');
+    expect((await bump(hexToBin(g.wallet.address.slice(2)), g)).nonce).toBe(1n);
+  });
+
+  it('STATEFUL HELPER: rejects a wrong signer', async () => {
+    const g = await goodSigner('stateful-helper-neg');
+    const other = hexToBin(ethers.Wallet.createRandom().address.slice(2));
+    await expect(bump(other, g)).rejects.toThrow(VERIFY_FAILED);
+  });
+});

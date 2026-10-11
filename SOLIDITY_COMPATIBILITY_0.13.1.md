@@ -15,10 +15,10 @@ fail before broadcast when its required transaction shape cannot be constructed.
 | ABI encode/decode | Yes | Yes | Yes | Yes | EVM-vs-BCH differential: `packages/solidcash/test/conformance/abi.conformance.test.ts`, `decode.conformance.test.ts` (including dirty-word reverts); VM round-trip `SolidityCorpusBehavior.test.ts` | Supported subset; EVM selectors require `evmCompat`; `abi.decode` reverts on a non-clean word as solc does |
 | Statements and control flow (loops, break/continue, early returns, memory values) | Yes | Yes | Yes | Yes | EVM-vs-BCH differential of whole function bodies in both compile modes: `packages/solidcash/test/conformance/statements.conformance.test.ts` | Supported; a loop-heavy function needs a deploy-time density reserve (`salt`, `packages/solidcash/test/e2e/StatelessDensityReserve.test.ts`) when its script is too short to fund the loop's operation cost |
 | Structs and fixed arrays | Yes | Yes | Yes | Yes | VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/StructsMappings.test.ts`, `packages/solidc/test/solidity-compat/storage-collections.test.ts` | Supported |
-| Dynamic arrays | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/DynamicArrays.test.ts`, `packages/solidcash/test/e2e/ChunkedArrays.test.ts` | Supported within documented commitment/chunk limits |
+| Dynamic arrays | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/DynamicArrays.test.ts`, `packages/solidcash/test/e2e/ChunkedArrays.test.ts`; memory values `packages/solidcash/test/conformance/memory.conformance.test.ts` | Supported within documented commitment/chunk limits. KNOWN DIVERGENCE: a memory array of arrays is value-copied, so an inner array stored twice does not alias |
 | Mappings | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts`; value and slot parity `packages/solidcash/test/conformance/{mapping,slot-layout}.conformance.test.ts` | Supported subset, including VM coverage for computed and last-use local keys; documented dynamic-loop/chunk limits apply |
 | Function pointers | Yes | Yes | Partial | Partial | `packages/solidcash/test/e2e/ForeignFunctionPointer.test.ts`, `FunctionPointerArrayCall.test.ts`, `FunctionPointerTernaryCall.test.ts` | Supported for internal pointers and single foreign pointers. KNOWN FAILURE: an `external` function-pointer array (`function(..) external[]` with push) fails to lower, see `packages/solidc/test/solidity-compat/README.md` and `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts` |
-| Inheritance and modifiers | Yes | Yes | Yes | N/A | VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/solidity-compat/inheritance.test.ts`, `packages/solidc/test/Modifiers.test.ts` | Supported subset |
+| Inheritance and modifiers | Yes | Yes | Yes | N/A | EVM-vs-BCH differential of whole contracts (super chains, C3 diamonds, virtual dispatch, modifiers, using-for, overloads, recursion): `packages/solidcash/test/conformance/contracts.conformance.test.ts`; VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/solidity-compat/inheritance.test.ts`, `packages/solidc/test/Modifiers.test.ts` | Supported subset |
 | Libraries and using-for | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/InheritedUsingForReceiver.test.ts`; compile coverage `packages/solidc/test/solidity-compat/libraries-imports.test.ts` | Supported subset |
 | Enums and user-defined value types | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/EnumParam.test.ts`, `EnumCast.test.ts`, `EnumMappingKey.test.ts`, `YulUdvtPacking.test.ts` | Supported |
 | Events and custom errors | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/EventAnonymousE2E.test.ts`; custom errors `SolidityCorpusBehavior.test.ts`, `packages/testing/test/framed/revert-matchers.test.ts` | Supported; error arguments are artifact metadata, not on-chain revert data |
@@ -68,14 +68,14 @@ Measured 2026-10-11 on `feat/parity` (merged into `feat/per-call`) with `evmComp
 | Measure | Result |
 |---|---:|
 | solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2717/2805 = 96.86% |
-| solc corpus, fixtures solc rejects that SolidCash also rejects | 1976/2158 = 91.57% |
-| Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 134/141 = 95.04% |
-| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 423/435 = 97.24% |
+| solc corpus, fixtures solc rejects that SolidCash also rejects | 2007/2158 = 93.00% |
+| Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 137/141 = 97.16% |
+| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 511/517 = 98.84% |
 | Executable corpus fixtures traced to a VM test (`bench/solidity-corpus/BEHAVIORAL_COVERAGE.md`) | 155/1506 = 10.29% |
 
-The 12 differential divergences are documented `it.fails` cases (Yul arithmetic and signed operations, and casts per
-compile mode). The 31 statement-level cases were added after the other 404 were measured; the compiler changes since
-(left-shift truncation, literal bytes writes) do not reach those 404, which were not re-run. Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
+The 6 differential divergences are documented `it.fails` cases: integer casts per compile mode (4) and aliasing of an
+inner array stored in a memory array of arrays (2; arrays of arrays are value-copied). Each conformance file was run
+after its last change; files untouched by a change were not re-run for it. Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
 selfdestruct, an untrusted delegatecall target).
 
 ## Release rule

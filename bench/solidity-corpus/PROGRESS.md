@@ -5465,3 +5465,11 @@ fixtures (layout 70, pointer 43, data location 28, recursive struct 9, lineariza
 were already rejected for another reason.
 
 The remaining 182 are led by literal/rational typing (2271, 9553, 7407, 9574) and Yul access rules (1408, 6578).
+
+## 2026-10-11: negative parity 91.57% -> 93.00% (182 -> 151 over-accepted)
+
+Positives unchanged (2717/2805). Newly rejected with solc's reasons: binary operators on reference values, signed
+shift amounts and literal arithmetic past 4096 bits in `.sol` units (TypeError 2271, 10); structs holding mappings
+outside storage and internal function types in public library functions (4061/4103, 6); contracts whose storage
+reaches 2^256 slots (7676, 5); invalid implicit conversions in `.sol` units (9574/7407/9553, 10). Contract/address
+conversions stay accepted while the address representation decision is deferred.

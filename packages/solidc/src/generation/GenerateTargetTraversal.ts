@@ -25991,6 +25991,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
+    const sharedProofPrior = this.entrySlots[slotIndex]?.sharedProofPriorSlot;
+    if (sharedProofPrior !== undefined && !this.readsRecordsFromFrame && !routeBatch
+      && !this.isCompilerMessageBusRoute()) {
+      this.emitSharedProofRedirect(collection.name, sharedProofPrior, loc);
+    }
     if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) !== undefined) {
       if (this.readsPastBatchWrite()) this.emitCreatedTargetName(slotIndex, loc);
       // The node a write targets may be one an earlier frame created, which the frame names at its output alone.
@@ -26043,6 +26048,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.pushToStack('(value)');
     return node;
+  }
+
+  /**
+   * [Hk32, entryAddr, idx] -> [Hk32, entryAddr, idx']. A direct pure read whose own entry input holds no node of its
+   * collection takes the earlier slot's proof input instead; the caller authenticates that input and proves the key
+   * against it as usual. The key must differ from every batch write target of the collection: a read sharing the
+   * written node's input would otherwise return its pre-write value.
+   */
+  private emitSharedProofRedirect(collection: string, prior: number, loc: SingleLocationData): void {
+    const writes = this.currentFunction.sortedBatchInfo?.find((batch) => batch.collection === collection)
+      ?.slotIndices ?? [];
+    if (writes.some((write) => this.getStackIndex(
+      this.vmapWitnessName(`__internal__vmapBatchSlot_${write}`), true) < 0)) return;
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    for (const write of writes) {
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+      this.emitPickVMapWitness(`__internal__vmapBatchSlot_${write}`, loc);
+      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc); this.emit(Op.OP_VERIFY, loc);
+    }
+    this.emit(Op.OP_DROP, loc);
+    this.emitEntryInputIndex(prior, loc, 2);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   visitMappingAccess(node: MappingAccessNode): Node {

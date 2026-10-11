@@ -4022,6 +4022,24 @@ export default class SymbolTableTraversal extends AstTraversal {
             }) && { linear: true }),
           }));
 
+        // A direct pure read can need the node another slot of its collection spends (two keys bracketed by one
+        // predecessor). Let it prove its key with the collection's first slot's proof input; the covenant refuses
+        // a key a batch write targets, so a read never sees a written node's old value. Every write of the
+        // collection must be a batch target for that check.
+        if (!node.messageBusRoute && !node.name.startsWith('__message_bus_')
+          && !node.modifiers.includes(FunctionModifier.DELEGATE) && this.compilerOptions.composition !== 'framed') {
+          for (const info of ordered) {
+            const coll = this.collectionMap.get(info.collection);
+            if (!coll?.sorted || info.inLoop || isWritten(info) || isChunkableValueType(coll.innermostValueType)) continue;
+            const prior = ordered.find((candidate) => candidate.collection === info.collection);
+            if (!prior || prior === info || prior.inLoop || prior.keyParams.length !== info.keyParams.length) continue;
+            const batch = node.sortedBatchInfo?.find((candidate) => candidate.collection === info.collection);
+            if (ordered.some((other) => other.collection === info.collection && isWritten(other)
+              && !(batch?.slotIndices.includes(other.slotIndex) ?? false))) continue;
+            info.sharedProofPriorSlot = prior.slotIndex;
+          }
+        }
+
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
         // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.
         for (const batch of node.sortedBatchInfo ?? []) {

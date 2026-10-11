@@ -1196,6 +1196,8 @@ export interface EntryAccessAbi {
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
   aliasCondDeleteSlot?: number;
   runtimeAliasPriorSlots?: readonly number[];
+  /** A direct pure sorted read that may prove its key with this earlier slot's proof input (the SDK funds its own). */
+  sharedProofPriorSlot?: number;
   // A sorted (vmap) write of an unbounded bytes/string value from this function parameter. The SDK persists the
   // full value as chunks (P5b); the entry stores only len ++ sha256(value). Absent for computed-expression values.
   valueParam?: string;

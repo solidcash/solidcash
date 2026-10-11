@@ -692,3 +692,20 @@ export function fnCase(o: {
     label: o.label,
   };
 }
+
+// A function body that must revert on both VMs. Solidity calls it from `f`; SolidCash evaluates it and accepts any
+// result, so only the body itself can refuse the spend.
+export function fnRevertCase(o: {
+  params: string; retType: string; body: string; args: readonly unknown[]; label: string; evmCompat?: boolean;
+  decls?: string;
+}): RevertCase {
+  const ok = fnCase(o);
+  const names = o.params.length === 0 ? '' : o.params.split(',').map((p) => p.trim().split(/\s+/).pop()).join(', ');
+  const decls = o.decls ? `  ${o.decls}\n` : '';
+  return {
+    ...ok,
+    scash: `contract Conf() {\n${decls}  function calc(${o.params}) private pure returns (${o.retType}) {\n`
+      + `    ${o.body}\n  }\n  function f(${o.params}) {\n    ${o.retType} r = calc(${names});\n`
+      + '    require(r == r);\n  }\n}\n',
+  };
+}

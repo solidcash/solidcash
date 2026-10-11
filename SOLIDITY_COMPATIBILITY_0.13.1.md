@@ -11,7 +11,7 @@ fail before broadcast when its required transaction shape cannot be constructed.
 | Area | Parse | Type check | Codegen | SDK | Behavioral evidence | 0.13.1 status |
 |---|---:|---:|---:|---:|---|---|
 | Integers and checked/unchecked arithmetic | Yes | Yes | Yes | Yes | EVM-vs-BCH differential in both compile modes: `packages/solidcash/test/conformance/{arithmetic,unchecked,numbers,bitwise,comparisons}.conformance.test.ts`; VM spends in `packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts` | Supported; left shifts truncate to their type, as in Solidity |
-| Integer casts | Yes | Yes | Yes | Yes | `packages/solidcash/test/conformance/casts.conformance.test.ts` (both modes) | Supported. evmCompat truncates and reads bytesN big-endian like the EVM; native reverts on loss by design; same-width sign reinterpretation reverts in both modes |
+| Integer casts | Yes | Yes | Yes | Yes | `packages/solidcash/test/conformance/casts.conformance.test.ts` (both modes) | Supported. evmCompat truncates unsigned narrowing, reinterprets same-width int <-> uint as two's complement (`uint256(int256(-1)) == 2^256-1`, `int8(uint8(0xfa)) == -6`) and reads bytesN big-endian like the EVM; native reverts on loss and on sign reinterpretation by design |
 | ABI encode/decode | Yes | Yes | Yes | Yes | EVM-vs-BCH differential: `packages/solidcash/test/conformance/abi.conformance.test.ts`, `decode.conformance.test.ts` (including dirty-word reverts); VM round-trip `SolidityCorpusBehavior.test.ts` | Supported subset; EVM selectors require `evmCompat`; `abi.decode` reverts on a non-clean word as solc does |
 | Statements and control flow (loops, break/continue, early returns, memory values) | Yes | Yes | Yes | Yes | EVM-vs-BCH differential of whole function bodies in both compile modes: `packages/solidcash/test/conformance/statements.conformance.test.ts` | Supported; a loop-heavy function needs a deploy-time density reserve (`salt`, `packages/solidcash/test/e2e/StatelessDensityReserve.test.ts`) when its script is too short to fund the loop's operation cost |
 | Structs and fixed arrays | Yes | Yes | Yes | Yes | VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/StructsMappings.test.ts`, `packages/solidc/test/solidity-compat/storage-collections.test.ts` | Supported |
@@ -70,13 +70,13 @@ Measured 2026-10-11 on `feat/parity` (merged into `feat/per-call`) with `evmComp
 | solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2719/2805 = 96.93% |
 | solc corpus, fixtures solc rejects that SolidCash also rejects | 2009/2158 = 93.10% |
 | Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 138/141 = 97.87% |
-| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 565/569 = 99.30% |
+| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 584/587 = 99.49% |
 | solc corpus semantic expectations executed on the BCH VM, pure-function slice (`bench/solidity-corpus/semantic-runner.mjs`) | 1464/1612 = 90.82% |
 | Executable corpus fixtures traced to a VM test (`bench/solidity-corpus/BEHAVIORAL_COVERAGE.md`) | 155/1506 = 10.29% |
 
-The 4 differential divergences are documented `it.fails` cases: integer casts per compile mode (native narrowing and
-same-width sign reinterpretation revert by design). Each conformance file was run after its last change; files
-untouched by a change were not re-run for it. The semantic runner's mismatches are triaged in
+The 3 differential divergences are documented native-mode `it.fails` cast cases (narrowing and same-width sign
+reinterpretation revert by design; bytesN reads little-endian). Each conformance file was run after its last change;
+files untouched by a change were not re-run for it. The semantic runner's mismatches are triaged in
 `bench/solidity-corpus/semantic-scorecard.txt`; most remaining ones are BCH platform differences (chain id, gas and
 blob fields) or runner-wrapper limits. Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
 selfdestruct, an untrusted delegatecall target).

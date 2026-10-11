@@ -12,6 +12,8 @@ four items: the ABI-coder pragmas, super/C3 inheritance, fixed-point, and signed
 4. **Signedness** - ASSESSED: not a cast problem. Explicit int/uint casts already compile + are value-preserving;
    implicit int+uint mixing is rejected by both (not a discrepancy). Only EVM overflow-wrap / negative->unsigned
    two's-complement reinterpretation diverges (fundamental BCH sign-magnitude, by-design). No code change needed.
+   UPDATE: evmCompat now reinterprets same-width int <-> uint casts as two's complement (`uint256(int256(-1))`
+   == 2^256-1); native SolidCash keeps the checked, reverting cast.
 
 ## 1. `pragma experimental ABIEncoderV2` / `pragma abicoder v2` are no-ops (DONE)
 

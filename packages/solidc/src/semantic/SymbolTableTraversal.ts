@@ -138,7 +138,9 @@ import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
 import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
 import { blockEndsWithReturn, nestedStatementLists } from './EarlyReturnTransformation.js';
 import { isReturnFlag } from './ConfineReturns.js';
-import { castKeyLabel, constantKeyLabel, type CompileTimeKeyContext } from './compileTimeKeyValue.js';
+import {
+  castKeyLabel, compileTimeKeyLabel, constantKeyLabel, type CompileTimeKeyContext,
+} from './compileTimeKeyValue.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -944,8 +946,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private writtenNames = new WeakMap<Node, { readonly names: Set<string>; readonly tuples: Set<string> }>();
   private writtenNamesOf?: FunctionDefinitionNode;
   private canonSeen: Set<string> = new Set(); // cycle guard for transitive local-key canonicalization
-  // Set while a mapping key is canonicalized: a constant or a byte-changing cast of a compile-time value is then
-  // published as the value the body hashes for it (`compileTimeKeyValue.ts`).
+  // Set while a mapping key is canonicalized: a constant, a byte-changing cast of a compile-time value, a bitwise
+  // operation over byte values or a type introspection is then published as the value the body hashes for it
+  // (`compileTimeKeyValue.ts`).
   private keyValueFolding = false;
   // Each node's straight-line statement number in the function body, and each statement's state effects: a
   // canonical read of state the body already assigned names the assigned value, so the SDK evaluates it against
@@ -11964,7 +11967,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       return `call:${node.identifier.name}(${args})`;
     }
     if (node instanceof BinaryOpNode) {
-      return `binop:${node.operator}(${this.canonicalizeExpression(node.left)},${this.canonicalizeExpression(node.right)})`;
+      const folded = this.keyValueFolding ? compileTimeKeyLabel(node, this.compileTimeKeyContext()) : undefined;
+      return folded
+        ?? `binop:${node.operator}(${this.canonicalizeExpression(node.left)},${this.canonicalizeExpression(node.right)})`;
     }
     if (node instanceof UnaryOpNode) {
       return `unop:${node.operator}(${this.canonicalizeExpression(node.expression)})`;
@@ -12035,6 +12040,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof NewArrayNode) {
       return `newarr:${node.elementType.toString()}(${this.canonicalizeExpression(node.size)})`;
+    }
+    if (node instanceof TypeIntrospectionNode && this.keyValueFolding) {
+      const folded = compileTimeKeyLabel(node, this.compileTimeKeyContext());
+      if (folded !== undefined) return folded;
     }
     // Generic structural fallback for every other expression type. Must remain operand-injective: silently
     // collapsing two distinct keys into one entry slot is the C4 state-write mis-targeting bug.

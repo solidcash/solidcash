@@ -292,3 +292,34 @@ contract Test() {
     expect(overrunsOnRequires).toBeGreaterThan(0);
   });
 });
+
+describe('compiled contracts', () => {
+  // A for-loop init that reassigns an existing variable has to leave its final value in that variable
+  it('keeps the value a for-loop init reassigns after the loop', async () => {
+    const source = `
+contract ForLoopReassignedInit() {
+    function spend(int n) {
+        int i = 0;
+        for (i = 0; i < n; i++) {
+            require(tx.outputs[i].value >= 1000);
+        }
+        require(i == tx.outputs.length);
+    }
+}`;
+    const provider = new MockNetworkProvider();
+    const contract = new Contract(compileString(source), [], { provider });
+    const transaction = async (n: bigint): Promise<TransactionBuilder> => {
+      const utxo = randomUtxo();
+      await provider.addUtxo(contract.address, utxo);
+      return new TransactionBuilder({ provider })
+        .addInput(utxo, contract.unlock.spend(n))
+        .addOutput({ to: contract.address, amount: 1_000n })
+        .addOutput({ to: contract.address, amount: 1_000n });
+    };
+
+    const loopsOverEveryOutput = await transaction(2n);
+    expect(() => loopsOverEveryOutput.debug()).not.toThrow();
+    const stopsShort = await transaction(1n);
+    expect(stopsShort).toFailRequireWith(`ForLoopReassignedInit.scash:${lineOf(source, 'require(i ==')}`);
+  });
+});

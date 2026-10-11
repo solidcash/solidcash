@@ -9,7 +9,7 @@ export {
   ensureMessageBusAdmissionStamp,
   getArtifactCacheHitCount,
   resetPendingSpanAdmissionAnalysis,
-  type CompileOptions, type SplitCompileOptions,
+  type CompileOptions, type CompileStringOptions, type SplitCompileOptions,
 } from './compiler.js';
 export {
   assertNoUnknownSolidcEnvKeys,

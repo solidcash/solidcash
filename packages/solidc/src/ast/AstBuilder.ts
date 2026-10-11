@@ -230,7 +230,7 @@ import {
   ConstructedExpressionContext, BinaryOpContext, SliceContext, UnaryOpContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
-import { Location, withSourceFile } from './Location.js';
+import { Location, sourceFileOf, withSourceFile } from './Location.js';
 import { buildYulBlock } from './YulAstBuilder.js';
 import { findReservedYulIdentifier, isBchAsmBlock } from './YulAST.js';
 import {
@@ -1480,7 +1480,7 @@ export default class AstBuilder
       const versionToken = constraint.VersionLiteral() ?? constraint.DecimalLiteral();
       const versionConstraint = `${op}${versionToken?.getText() ?? ''}`;
       if (!semver.satisfies(actualVersion, versionConstraint)) {
-        throw new VersionError(actualVersion, versionConstraint);
+        throw new VersionError(actualVersion, versionConstraint, sourceFileOf(Location.fromCtx(ctx)));
       }
     });
   }
@@ -5239,7 +5239,8 @@ export default class AstBuilder
       throw new ParseError('Date should be in format `YYYY-MM-DDThh:mm:ss`', Location.fromCtx(ctx));
     }
 
-    const timestamp = Math.round(Date.parse(stringValue) / 1000);
+    // Date literals are always in UTC, so we append 'Z' to the string
+    const timestamp = Math.round(Date.parse(`${stringValue}Z`) / 1000);
 
     if (Number.isNaN(timestamp)) {
       throw new ParseError(`Incorrectly formatted date "${stringValue}"`, Location.fromCtx(ctx));

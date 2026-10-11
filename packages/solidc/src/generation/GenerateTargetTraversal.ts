@@ -15970,6 +15970,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Otherwise the push opcode is computed from the chunk's size at runtime. OP_SIZE is a signed VM number, so
     // sizes 0 and 128-255 are not a single byte; normalize with OP_NUM2BIN, and prepend OP_PUSHDATA1 above 75 bytes.
+    // Chunks over 255 bytes are not supported, so the size's high byte has to be 0x00 (an OP_0 would be empty and
+    // never match it).
     this.visit(element);
     this.emit(Op.OP_SIZE, endLocationData);
     this.emit(Op.OP_DUP, endLocationData);
@@ -15983,7 +15985,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NUM2BIN, endLocationData);
     this.emit(encodeInt(1n), endLocationData);
     this.emit(Op.OP_SPLIT, endLocationData);
-    this.emit(Op.OP_DROP, endLocationData);
+    this.emit(hexToBin('00'), endLocationData);
+    this.emit(Op.OP_EQUALVERIFY, endLocationData);
     this.emit(hexToBin('4c'), endLocationData);
     this.emit(Op.OP_SWAP, endLocationData);
     this.emit(Op.OP_CAT, endLocationData);

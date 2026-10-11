@@ -263,6 +263,7 @@ import expandInheritance from './semantic/InheritanceExpansionTransformation.js'
 import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
+import { createMapResolver } from './createMapResolver.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
@@ -1251,6 +1252,25 @@ export function parseImportedFileCached(
     if (oldest !== undefined) importedParseCache.delete(oldest);
   }
   return ast;
+}
+
+/** Options of the string entry points, which can also resolve imports from an in-memory map of sources. */
+export interface CompileStringOptions extends CompileOptions {
+  /**
+   * Import sources keyed by path, for filesystem-free import resolution (shorthand for
+   * `importResolver: createMapResolver(files)`). A relative import resolves against the importing file's path.
+   */
+  files?: Record<string, string>;
+}
+
+/** Turn the `files` shorthand into the import resolver it stands for. */
+function withFilesResolver<T extends CompileStringOptions>(options: T): Omit<T, 'files'> {
+  const { files, ...remaining } = options;
+  if (files === undefined) return remaining;
+  if (remaining.importResolver !== undefined) {
+    throw new Error('Pass either files or importResolver to the compiler, not both');
+  }
+  return { ...remaining, importResolver: createMapResolver(files) };
 }
 
 export interface SplitCompileOptions extends CompileOptions {
@@ -3012,7 +3032,8 @@ function withoutUpgradesFrom(options: CompileOptions): CompileOptions {
   return Object.defineProperties({}, descriptors) as CompileOptions;
 }
 
-export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+export function compileString(code: string, options: CompileStringOptions = {}): Artifact {
+  const compilerOptions: CompileOptions = withFilesResolver(options);
   // SOLIDC env registry: when SOLIDC_STRICT_UNKNOWN_ENV=1 (CI), refuse unknown SOLIDC_* before any compile work.
   enforceSolidcEnvPolicy();
   clearDefineFrameValidations();
@@ -18305,7 +18326,8 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
  * Abstract contracts are excluded (not deployable). `compileString` is unchanged (single primary artifact).
  * See docs/multi-contract-artifacts.md.
  */
-export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
+export function compileStringMulti(code: string, options: CompileStringOptions = {}): ArtifactMap {
+  const compilerOptions: CompileOptions = withFilesResolver(options);
   const { upgradesFrom } = compilerOptions;
   return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
     const artifacts = compileStringMultiUnchecked(code, withoutUpgradesFrom(compilerOptions));
@@ -18446,7 +18468,10 @@ const LIFECYCLE_MODIFIERS = new Set([
  * entry points retain their existing Artifact return type and bytecode. The splitter operates on fresh ASTs for
  * every shard, so the normal mutating compiler pipeline remains isolated per artifact.
  */
-export function compileStringSplit(code: string, compilerOptions: SplitCompileOptions = {}): SplitArtifactBundle {
+export function compileStringSplit(
+  code: string, options: SplitCompileOptions & CompileStringOptions = {},
+): SplitArtifactBundle {
+  const compilerOptions: SplitCompileOptions = withFilesResolver(options);
   return withCompilerWarnings(
     compilerOptions.suppressWarnings,
     () => compileStringSplitUnchecked(code, compilerOptions),

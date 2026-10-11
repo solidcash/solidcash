@@ -2416,6 +2416,10 @@ function compileWithExternalAdmissionFallback(
   // `admitExternalHandlers` false refuses every external handler, so the attributed answer is kept only when it
   // admits at least as many handlers. A per-handler refusal that somehow reshaped the route into a smaller one
   // therefore loses to the answer that shipped, and a contract can only gain handlers here.
+  // Each successful compileOnce leaves its own span analysis pending for the final publish gate, so refusedAll
+  // replaces attributed's. Restore it when attributed is returned, or the handlers attributed admits (an
+  // effect-free external one, say) are gated against refusedAll's refusals.
+  const attributedAnalysis = pendingSpanAdmissionAnalysis;
   let refusedAll: Artifact | undefined;
   try {
     refusedAll = compileOnce(false, false, false, false);
@@ -2424,6 +2428,7 @@ function compileWithExternalAdmissionFallback(
   }
   if (attributed !== undefined
     && (refusedAll === undefined || admittedHandlerCount(attributed) >= admittedHandlerCount(refusedAll))) {
+    pendingSpanAdmissionAnalysis = attributedAnalysis;
     return attributed;
   }
   if (mergedCompilerOptions.__messageBusVerifierProgram && attributed === undefined && firstError) {

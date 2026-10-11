@@ -520,18 +520,17 @@ const GRAPH_HANDLER_EFFECT_DETAIL: Record<string, string> = {
 /**
  * X83. A keccak256 side-car read whose block-layout slot was never reserved, refused by name.
  *
- * X42's family on a slot kind it did not cover. `keccakInLoop` is a WHOLE-FUNCTION flag: when any keccak256
- * call in a function sits inside a loop, `computeBlockLayout` reserves NO fixed `keccakSideCar` slot at all,
- * because a loop reads one side-car per iteration from the trailing region [blockSize, ..) under a runtime
- * counter. Code generation routes a call to that trailing region only while the loop counter is live, so a
- * keccak256 call OUTSIDE the loop in the same function still asks for a fixed slot and died on
- * `Block slot not found: keccakSideCar[N]`.
+ * X42's family on a slot kind it did not cover. `keccakInLoop` is a WHOLE-FUNCTION flag: a loop reads one side-car
+ * per iteration from the trailing region [blockSize, ..) under a runtime counter, and code generation routes a call
+ * there only while that counter is live. A keccak256 call OUTSIDE the loop asks for a fixed slot, which died on
+ * `Block slot not found: keccakSideCar[N]` while `computeBlockLayout` reserved no fixed slot for such a function.
  *
- * The mix is not always written: a fixed-bound loop is unrolled before the pre-scan, so `MerkleTree.sol`'s
- * `string[4]` loop became four straight-line calls beside the genuine `while` loop's one.
- *
- * The refusal fires only where the internal invariant already threw - the slot is looked up first and named
- * only when it is absent - so no program that compiled stops compiling and no emitted byte changes.
+ * The mix is now laid out: the pre-scan records each straight-line call's emission index (`keccakFixedSlotIndices`)
+ * and the layout reserves one unbatched fixed slot per index inside the block, disjoint from the trailing region.
+ * A fixed-bound loop is unrolled before the pre-scan, so `string[4]` loop calls count as straight-line here.
+ * A stateful route's row dispatcher is a keccak loop on neither side: the pre-scan skips it as emitLoopKeccakSetup
+ * does, so a handler body inlined under it keeps the route's fixed slots that its clones read. The refusal remains
+ * for a fixed read the pre-scan did not foresee, such as a source loop inlined into the route.
  */
 export class KeccakSideCarSlotError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
@@ -541,12 +540,11 @@ export class KeccakSideCarSlotError extends SolidCashError {
 
 const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
   'keccak-loop-and-straight-line-mix-not-enabled':
-    'a keccak256 call outside a loop is not admitted in a function that also calls keccak256 inside a loop. '
-    + 'The loop reads one compute side-car per iteration from the trailing region, so the block layout reserves '
-    + 'no fixed keccakSideCar slot and the unlooped call has nothing to read. A fixed-bound loop is unrolled '
-    + 'before the layout is computed, so a `for (i < CONSTANT)` over keccak256 counts as unlooped here. Put the '
-    + 'unlooped keccak256 in its own function - one keccak256 convention per function, either all in one loop '
-    + 'or all straight-line - and call it from this one',
+    'this keccak256 call reads a fixed compute side-car slot that its keccak-loop function did not reserve. A '
+    + 'function that also hashes inside a loop reserves one fixed slot per keccak256 call outside every loop, and '
+    + 'its loop reads one side-car per iteration past the block. A call inside a loop that code generation does '
+    + 'not run as a keccak loop (a source loop inlined into the message-bus route) has neither. Put the looped '
+    + 'keccak256 in its own function and call it from this one',
   'keccak-side-car-slot-not-reserved':
     'this keccak256 call has no reserved compute side-car slot in the function\'s block layout. The layout '
     + 'reserves one slot per statically counted keccak256 call, so code generation reached more calls than the '

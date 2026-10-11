@@ -27,6 +27,10 @@ variable-width **structs** via single-blob framing); a **nested-array** element,
 -> **collection**. (`address` is variable-width on BCH - a locking bytecode of 23/25/35 B - so it framed-packs
 like `bytes`, not flat like the fixed-width types.)
 `packed` always selects the inline blob.
+Under `evmCompat` a bounded chunk-packable `T[N]` is a packed blob instead (Solidity reads it as one value). When
+that blob cannot fit a 128-byte commitment (exact size for fixed-width elements, the layout estimate otherwise) yet
+fits a 10,000-byte stack item, it chunk-packs: zero-filled at genesis so it always holds N elements, `.length`
+folds to N, and push/pop stay refused (`boundedArrayExceedsCommitment`).
 The selecting predicate is `arrayT.bound === undefined && isChunkPackableElementType(elementType)`
 (`AstBuilder.ts`), behind the `chunkedArrays` compiler option which now **defaults on**.
 

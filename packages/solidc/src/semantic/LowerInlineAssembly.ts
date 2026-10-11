@@ -527,9 +527,11 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
       continue;
     }
     const sv = m.sv;
-    if (sv.isDynamic && sv.type instanceof ArrayType) currentDynamicArrayTypes.set(sv.name, sv.type);
+    // A bounded chunk-packed array keeps its static EVM footprint; only an unbounded one is a length slot.
+    const lengthSlot = sv.isDynamic && !(sv.type instanceof ArrayType && sv.type.bound !== undefined);
+    if (lengthSlot && sv.type instanceof ArrayType) currentDynamicArrayTypes.set(sv.name, sv.type);
     // A fixed struct/array (non-dynamic) occupies whole EVM slots and does not pack; the next var starts fresh.
-    const composite = sv.isDynamic ? 0 : compositeSlotWords(sv.type);
+    const composite = lengthSlot ? 0 : compositeSlotWords(sv.type);
     if (composite > 0) {
       if (byteOff > 0) { slot += 1n; byteOff = 0; }
       currentVarSlot.set(sv.name, slot);

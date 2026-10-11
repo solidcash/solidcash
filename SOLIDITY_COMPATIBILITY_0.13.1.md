@@ -70,16 +70,17 @@ Measured 2026-10-11 on `feat/parity` (merged into `feat/per-call`) with `evmComp
 | solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2719/2805 = 96.93% |
 | solc corpus, fixtures solc rejects that SolidCash also rejects | 2009/2158 = 93.10% |
 | Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 138/141 = 97.87% |
-| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 592/595 = 99.50% |
+| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 610/614 = 99.35% |
 | solc corpus semantic expectations executed on the BCH VM, pure-function slice (`bench/solidity-corpus/semantic-runner.mjs`) | 1482/1613 = 91.88% |
-| the same, stateful slice (deploy once, lines in order, before any divergence) | 599/675 = 88.74% |
+| the same, stateful slice (deploy once, lines in order, before any divergence) | 644/707 = 91.09% |
 | Executable corpus fixtures traced to a VM test (`bench/solidity-corpus/BEHAVIORAL_COVERAGE.md`) | 155/1506 = 10.29% |
 
-The 3 differential divergences are documented native-mode `it.fails` cast cases (narrowing and same-width sign
-reinterpretation revert by design; bytesN reads little-endian). Each conformance file was run after its last change;
+The 4 differential divergences are `it.fails` cases: 3 native-mode casts (narrowing and same-width sign
+reinterpretation revert by design; bytesN reads little-endian) and 1 SDK derivation gap (a tuple into two mapping
+elements whose keys depend on the RHS keys one entry twice). Each conformance file was run after its last change;
 files untouched by a change were not re-run for it. The semantic runner's mismatches are triaged in
-`bench/solidity-corpus/semantic-scorecard.txt`; most remaining ones are BCH platform differences (chain id, gas and
-blob fields) or runner-wrapper limits. Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
+`bench/solidity-corpus/semantic-scorecard.txt`; most remaining ones are BCH platform differences (an uncatchable failed
+call in `tryCatch/*`, chain id, gas and blob fields) or runner-wrapper limits. Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
 selfdestruct, an untrusted delegatecall target).
 
 ## Release rule

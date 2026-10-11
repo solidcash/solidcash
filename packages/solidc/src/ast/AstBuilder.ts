@@ -242,8 +242,8 @@ import {
 import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../version.js';
 import {
-  InvalidArrayBoundError, InvalidDataLocationError, ParseError, StateVariableNameCollisionError,
-  TernaryTypeMismatchError, NestedSelfdestructError,
+  InvalidArrayBoundError, InvalidDataLocationError, MissingDataLocationError, ParseError,
+  StateVariableNameCollisionError, TernaryTypeMismatchError, NestedSelfdestructError,
   UnsupportedTypeError, VersionError,
 } from '../Errors.js';
 
@@ -255,6 +255,8 @@ const COMPOUND_OPS: Record<string, BinaryOperator> = {
   '&=': BinaryOperator.BIT_AND, '|=': BinaryOperator.BIT_OR, '^=': BinaryOperator.BIT_XOR,
   '<<=': BinaryOperator.SHIFT_LEFT, '>>=': BinaryOperator.SHIFT_RIGHT,
 };
+
+const ANY_DATA_LOCATION = '"storage", "memory" or "calldata"';
 
 // Arithmetic the source wrote, directly or as a compound/increment: its literal operands take the bounded type.
 function sourceBinaryOp(left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode {
@@ -523,6 +525,7 @@ export default class AstBuilder
     private chunkedArrays = true,
     private sourceCode = '',
     private importedFileId?: string,
+    private rootFileId?: string,
   ) {
     super();
     this.sourceContainsSelfdestruct = sourceCode.includes('selfdestruct');
@@ -564,8 +567,48 @@ export default class AstBuilder
   private usesLegacySolidityDefaultFunctionVisibility(): boolean {
     // Unversioned sources retain SolidCash's native implicit-public shorthand. Once a source explicitly selects
     // Solidity, follow its version boundary: visibility became mandatory in Solidity 0.5.
-    return !/pragma\s+solidity\b/.test(this.sourceCode)
-      || /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-4](?:\.|\s|;)/.test(this.sourceCode);
+    return !/pragma\s+solidity\b/.test(this.sourceCode) || this.selectsPreSolidity05();
+  }
+
+  private selectsPreSolidity05(): boolean {
+    return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-4](?:\.|\s|;)/.test(this.sourceCode);
+  }
+
+  private explicitDataLocationsRequired?: boolean;
+
+  // Data locations became mandatory in Solidity 0.5. Enforced for `.sol` source units under evmCompat unless a
+  // pre-0.5 pragma is selected; string and `.scash` sources (pragma or not) keep SolidCash's implicit location.
+  private requiresExplicitDataLocations(): boolean {
+    this.explicitDataLocationsRequired ??= this.evmCompat
+      && (this.importedFileId ?? this.rootFileId ?? '').endsWith('.sol') && !this.selectsPreSolidity05();
+    return this.explicitDataLocationsRequired;
+  }
+
+  private requireDataLocation(
+    type: Type, modifiers: string[], allowedLocations: string, declaration: string, location?: Location,
+  ): void {
+    if (!this.requiresExplicitDataLocations()) return;
+    const referenceType = type instanceof ArrayType || type instanceof MappingType || type instanceof StructType
+      || (type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING;
+    if (!referenceType || modifiers.some((modifier) => modifier === Modifier.STORAGE
+      || modifier === Modifier.MEMORY || modifier === Modifier.CALLDATA)) return;
+    throw new MissingDataLocationError(allowedLocations, declaration, location);
+  }
+
+  // Parameters and returns of a function; `storage` is allowed on internal, private, library and free functions.
+  private requireFunctionDataLocations(
+    fn: FunctionDefinitionNode, returnsCtx: ReturnTypeContext | null, storageAllowed: boolean,
+  ): void {
+    if (!this.requiresExplicitDataLocations()) return;
+    const allowed = storageAllowed ? ANY_DATA_LOCATION : '"memory" or "calldata"';
+    const external = fn.modifiers.includes(FunctionModifier.EXTERNAL) ? ' external' : '';
+    for (const parameter of fn.parameters) {
+      this.requireDataLocation(parameter.type, parameter.modifier, allowed, `parameter in${external} function`,
+        parameter.location);
+    }
+    const returnParams = returnsCtx?.returnParam_list() ?? [];
+    fn.returnTypes.forEach((type, i) => this.requireDataLocation(type, fn.returnModifiers[i] ?? [], allowed,
+      'return parameter in function', returnParams[i] ? Location.fromCtx(returnParams[i]) : fn.location));
   }
 
   private validateFunctionTypeModifiers(root: ParseTree): void {
@@ -2014,6 +2057,9 @@ export default class AstBuilder
     this.expiredLoopVariableNames.clear();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     for (const p of parameters) {
+      this.requireDataLocation(p.type, p.modifier, '"storage" or "memory"', 'constructor parameter', p.location);
+    }
+    for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
       if (p.type instanceof ArrayType) this.localArrayVarTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
@@ -2197,6 +2243,8 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
+    this.requireFunctionDataLocations(functionDefinition, returnTypeCtx, functionDefinition.modifiers.some(
+      (modifier) => modifier === FunctionModifier.INTERNAL || modifier === FunctionModifier.PRIVATE));
     const externalFunctionReturnIndices = functionDefinition.returnTypes
       .map((type, index) => type instanceof FunctionType && type.isExternal ? index : -1)
       .filter((index) => index >= 0);
@@ -2405,6 +2453,8 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
+    this.requireFunctionDataLocations(functionDefinition, returnTypeCtx, functionDefinition.modifiers.some(
+      (modifier) => modifier === FunctionModifier.INTERNAL || modifier === FunctionModifier.PRIVATE));
 
     return functionDefinition;
   }
@@ -2519,6 +2569,7 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
+    this.requireFunctionDataLocations(functionDefinition, returnTypeCtx, true);
     // Record a struct-returning free/library function (the OZ StorageSlot factory is a library function).
     if (functionDefinition.returnTypes?.length === 1 && functionDefinition.returnTypes[0] instanceof StructType) {
       this.functionReturnStructs.set(functionDefinition.name, functionDefinition.returnTypes[0]);
@@ -2541,6 +2592,9 @@ export default class AstBuilder
     const parameters = ctx.parameterList()
       ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
       : [];
+    for (const p of parameters) {
+      this.requireDataLocation(p.type, p.modifier, ANY_DATA_LOCATION, 'parameter in function', p.location);
+    }
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
       if (p.type instanceof ArrayType) this.localArrayVarTypes.set(p.name, p.type);
@@ -2769,6 +2823,7 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
+    this.requireDataLocation(type, modifiers, ANY_DATA_LOCATION, 'variable', Location.fromCtx(ctx));
 
     // `uint x = y = 3;` - the initializer is an assignment chain: run the chain first, then initialize from
     // the first target's value (re-read after its write).

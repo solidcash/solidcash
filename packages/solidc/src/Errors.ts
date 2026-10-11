@@ -642,6 +642,13 @@ export class UninitializedPointerError extends SolidCashError {
   }
 }
 
+// Solidity 0.5+ (solc TypeError 6651): a reference-type parameter, return or local needs an explicit location.
+export class MissingDataLocationError extends ParseError {
+  constructor(allowedLocations: string, declaration: string, location?: Location) {
+    super(`Data location must be ${allowedLocations} for ${declaration}, but none was given`, location);
+  }
+}
+
 export class ArrayElementError extends SolidCashError {
   constructor(
     node: ArrayNode,

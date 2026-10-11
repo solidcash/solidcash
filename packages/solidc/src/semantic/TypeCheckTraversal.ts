@@ -1809,8 +1809,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         + 'address (wrap the hash explicitly, e.g. new LockingBytecodeP2PKH(hash)).');
     }
 
-    // Warn if integer literal exceeds target type's range
-    if (node.expression instanceof IntLiteralNode) {
+    // Warn if integer literal exceeds target type's range (an assembly word truncates to it instead)
+    if (node.expression instanceof IntLiteralNode && !node.yulWordCleanup) {
       const litValue = node.expression.value;
       if (node.type instanceof IntType) {
         if (litValue < node.type.minValue || litValue > node.type.maxValue) {

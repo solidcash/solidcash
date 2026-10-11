@@ -2,7 +2,9 @@
 // 0 (no revert), and the signed builtins read their words as two's complement. Every case runs against the EVM
 // reference in both compile modes.
 import { describe, it } from 'vitest';
-import { assertConformant, asmCase } from './harness.js';
+import {
+  assertConformant, assertReverts, asmCase, fnCase, fnRevertCase,
+} from './harness.js';
 
 const MAX = (1n << 256n) - 1n;
 // The two's-complement word of a (possibly negative) value.
@@ -80,4 +82,32 @@ describe('assembly: mulDiv-style 512-bit product', () => {
     'uint a, uint b, uint d',
     [1n << 128n, 1n << 128n, 1000003n],
   ));
+});
+
+// `x := w` writes the raw word; Solidity cleans it to x's width at each use (low bits, sign-extended for intN). A
+// signed source is read as its two's-complement word.
+describe('assembly: a word assigned to a narrower integer is cleaned to its width', () => {
+  const clean = (params: string, retType: string, body: string, args: readonly unknown[], label: string): Promise<void> =>
+    assertConformant(fnCase({ params, retType, body, args, label }));
+  it('uint8 := 0x0101 then + 1 == 2', () => clean(
+    '', 'uint8', 'uint8 x = 0; assembly { x := 0x0101 } return x + 1;', [], 'uint8 wide literal'));
+  it('uint8 := 0x0101 compares equal to 1', () => clean(
+    '', 'bool', 'uint8 x = 1; uint8 y = 0; assembly { y := 0x0101 } return x == y;', [], 'uint8 compare'));
+  it('int8 := 0xf0 sign-extends, then >> 3 == -2', () => clean(
+    'uint8 b', 'int', 'int8 a = 0; assembly { a := 0xf0 } return a >> b;', [3n], 'int8 signextend shift'));
+  it('~ of int8 := 0x9c is 99', () => clean(
+    '', 'int', 'int8 a = 0; assembly { a := 0x9C } a = ~a; return a;', [], 'int8 bitnot'));
+  it('int16 := int256 0x01fffe keeps the low half (-2)', () => clean(
+    'int a', 'int', 'int16 x = 0; assembly { x := a } return x;', [0x01fffen], 'int16 from int256'));
+  it('int8 := int256 -1 is -1', () => clean(
+    'int a', 'int', 'int8 x = 0; assembly { x := a } return x;', [-1n], 'int8 from negative int256'));
+  it('uint8 := int256 -2 is 0xfe', () => clean(
+    'int a', 'uint8', 'uint8 x = 0; assembly { x := a } return x;', [-2n], 'uint8 from negative int256'));
+  it('uint := int256 -7 is its two\'s-complement word', () => clean(
+    'int a', 'uint', 'uint r = 0; assembly { r := a } return r;', [-7n], 'uint from negative int256'));
+  it('int := sub(0, 7) is -7', () => clean(
+    'uint a', 'int', 'int x = 0; assembly { x := sub(0, a) } return x;', [7n], 'int256 from word'));
+  it('int8 := 0x80 is -128, so -x still overflows', () => assertReverts(fnRevertCase({
+    params: '', retType: 'int8', body: 'int8 x = 0; assembly { x := 0x80 } return -x;', args: [], label: 'int8 neg',
+  })));
 });

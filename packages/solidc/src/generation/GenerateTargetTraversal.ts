@@ -13489,9 +13489,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     );
     this.popFromStack();
     this.pushToStack('(value)');
-    // Emit bounds check for casts to bounded int types
+    // Emit bounds check for casts to bounded int types; an assembly word written to an int variable truncates
     if (node.type instanceof IntType && !node.isUnsafe) {
-      this.emitIntBoundsCheck(node.type, { location: node.location, positionHint: PositionHint.END });
+      const locationData = { location: node.location, positionHint: PositionHint.END };
+      if (node.yulWordCleanup) this.emitTwosComplementTruncation(node.type, locationData);
+      else this.emitIntBoundsCheck(node.type, locationData);
     }
     // Emit bounds check for casts to fixed-point types
     if (node.type instanceof FixedType && !node.isUnsafe) {
@@ -13502,6 +13504,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEnumBoundsCheck(node.type, { location: node.location, positionHint: PositionHint.END });
     }
     return node;
+  }
+
+  // Two's-complement truncation of a VM number of either sign to `type`, as the EVM cleans a dirty word: an
+  // unsigned type reduces into [0, 2^bits) with a sign-safe double modulo; a signed one is biased by 2^(bits-1),
+  // reduced and unbiased (emitShiftTruncation). The modulus is built at runtime, a few bytes at any width.
+  private emitTwosComplementTruncation(type: IntType, locationData: SingleLocationData): void {
+    if (type.signed) {
+      this.emitShiftTruncation(type, locationData);
+      return;
+    }
+    const ops = (...script: Script): void => script.forEach((op) => this.emit(op, locationData));
+    ops(Op.OP_1, encodeInt(BigInt(type.bits)), Op.OP_LSHIFTNUM); // [v, R]
+    ops(Op.OP_TUCK, Op.OP_MOD, Op.OP_OVER, Op.OP_ADD, Op.OP_SWAP, Op.OP_MOD); // [((v mod R) + R) mod R]
   }
 
   // Verify a value cast to an enum is an actual member. Contiguous enums use a cheap range check; non-contiguous

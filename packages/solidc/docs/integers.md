@@ -138,6 +138,10 @@ v <= type.max   (OP_LESSTHANOREQUAL,    OP_VERIFY)
 
 If either fails, the script fails (a failed `require`-style verification) rather than silently wrapping.
 
+The exception is an inline-assembly `x := w` into an integer variable: like the EVM's cleanup of a dirty word, it
+keeps the low N bits of `w` (sign-extended for `intN`) instead of checking, and a signed source is read as its
+two's-complement word.
+
 **A bounded arithmetic result is checked where it is computed**, as Solidity checks each operation. An integer
 literal beside a bounded operand takes that operand's type, as Solidity converts it, so `x - 1` on a `uint256` is
 checked exactly like `x - y` and reverts below zero. `bigint` arithmetic is not checked: the VM has one big-number

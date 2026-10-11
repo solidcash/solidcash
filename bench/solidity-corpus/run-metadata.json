@@ -5,30 +5,22 @@
   "platform": "linux-arm64",
   "fixtureCount": 7343,
   "fixtureTimeoutMs": 30000,
-  "workers": 8,
+  "workers": 6,
   "checkedNegativeFixtures": true,
   "primaryResult": {
-    "compiled": 2622,
-    "namedFailures": 72,
-    "timeouts": 111
+    "compiled": 2717,
+    "namedFailures": 88,
+    "timeouts": 0
   },
   "retryTimeoutMs": 120000,
   "retryWorkers": 4,
-  "retriedTimeoutFixtures": 111,
+  "retriedTimeoutFixtures": 0,
   "retryErrorNames": [],
   "retryPasses": [
     {
-      "timeoutMs": 30000,
-      "workers": 4,
-      "selectedFixtures": 111,
-      "includeTimeouts": true,
-      "errorNames": [],
-      "isolatedWorkers": true
-    },
-    {
       "timeoutMs": 120000,
       "workers": 4,
-      "selectedFixtures": 83,
+      "selectedFixtures": 0,
       "includeTimeouts": true,
       "errorNames": [],
       "isolatedWorkers": true
@@ -37,28 +29,13 @@
   "resumedTimeoutsFromResults": false,
   "negativeAuditPasses": [
     {
-      "timeoutMs": 30000,
-      "workers": 4,
-      "selectedFixtures": 2158,
-      "accepted": 326,
-      "timeouts": 104
-    },
-    {
       "timeoutMs": 120000,
       "workers": 4,
-      "selectedFixtures": 104,
-      "accepted": 328,
+      "selectedFixtures": 1,
+      "accepted": 313,
       "timeouts": 0
-    },
-    {
-      "timeoutMs": 30000,
-      "workers": 4,
-      "selectedFixtures": 328,
-      "accepted": 323,
-      "timeouts": 0,
-      "recheckedAccepted": true
     }
   ],
-  "checkedNegativesFromResults": false,
-  "recheckedAcceptedNegatives": true
+  "checkedNegativesFromResults": true,
+  "recheckedAcceptedNegatives": false
 }

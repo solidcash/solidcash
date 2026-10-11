@@ -68,9 +68,8 @@ Bounded integers are range-checked whenever a value **lands in a bounded slot**:
 assignment to a bounded variable/state variable/parameter/return, or a write into a fixed-width array. A
 violation fails the script rather than silently wrapping.
 
-Arithmetic *intermediates* are not checked per operation. The BCH VM has a single big-number type, so
-intermediates do not overflow at 256 bits; the bound is checked when the result is stored. This matches
-Solidity's observable behaviour for `a = b + c` while avoiding redundant per-operation checks.
+Arithmetic on bounded integers is also checked per operation, as in Solidity 0.8: an operation whose result
+leaves the range of its type fails the script, even before the result is stored.
 
 `unchecked { }` replaces the range check with wraparound modulo 2^N, matching Solidity:
 

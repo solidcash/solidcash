@@ -15,8 +15,9 @@ Set `SOLC_CORPUS` when the Solidity checkout is not at `/Code/solidity`. The gen
 equivalent runtime coverage. Generic SolidCash tests can exercise the same behavior without naming its upstream
 fixture.
 
-The current baseline contains 1,504 successfully compiled semantic fixtures with executable expectations. Of those,
-161 are explicitly traced to an e2e or conformance test, leaving 1,343 without a durable fixture-to-runtime link. The
+The current baseline (2026-10-11) contains 1,506 successfully compiled semantic fixtures with executable expectations.
+Of those, 155 are explicitly traced to an e2e or conformance test, leaving 1,351 without a durable fixture-to-runtime
+link (161 of 1,504 were traced on 2026-08-04; tests pruned since then took six links with them). The
 largest untraced topics include arrays, ABI coding, via-IR/Yul, inline assembly, function calls, libraries, operators,
 structs, and inheritance.
 

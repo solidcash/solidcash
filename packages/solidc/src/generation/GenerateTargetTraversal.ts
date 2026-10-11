@@ -19741,9 +19741,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitEvmWordFromUintInline(loc);
   }
 
+  /**
+   * True when an array element can go through the fixed-width word loop: it must BOTH encode as exactly one
+   * 32-byte word and have a fixed packed width, because that loop splits the packed element stream by width.
+   * Neither predicate alone is enough - `isFixedWidthType` admits a bounded array or packed struct element
+   * (`bool[2][]`), which emitEvmAbiWord then refuses; being a word admits `address`, whose packed width follows
+   * addressForm, so getFixedWidth has no width to split by. Both belong on the composite path instead.
+   */
+  private isEvmWordElement(type: Type): boolean {
+    return isFixedWidthType(type) && this.isEvmAbiWordType(type);
+  }
+
+  /** A type that abi.encode emits as exactly one 32-byte word. */
+  private isEvmAbiWordType(type: Type): boolean {
+    const effective = type instanceof ValueType ? type.underlyingType : type;
+    return effective === PrimitiveType.BOOL
+      || effective instanceof IntType || effective instanceof FixedType || effective instanceof EnumType
+      || effective === PrimitiveType.BIGINT || effective === PrimitiveType.INT
+      || effective instanceof AddressType
+      || (effective instanceof BytesType && effective.bound !== undefined && effective.bound <= 32);
+  }
+
   // evmCompat: encode a static value type as one 32-byte big-endian EVM ABI word. Numbers left-pad (value in
   // the low bytes, two's-complement for signed); bytesN right-pad (data in the high bytes). Tracker-neutral.
   private emitEvmAbiWord(type: Type, loc: SingleLocationData): void {
+    // A user-defined value type is its underlying value on the stack, so it shares that type's word shape.
+    if (type instanceof ValueType) {
+      this.emitEvmAbiWord(type.underlyingType, loc);
+      return;
+    }
     if (type === PrimitiveType.BOOL) {
       this.emit(Op.OP_IF, loc);
       this.emit(encodeInt(1n), loc);
@@ -19890,7 +19916,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // each struct as one pushdata-framed value rather than as a tight getFixedWidth() row. Decode that frame and
     // append the struct's inline ABI tuple on every iteration. Treating the struct like a scalar below either
     // assigns it one word or splits its framed representation at the wrong byte boundary.
-    if (!isFixedWidthType(elemType)) {
+    if (!this.isEvmWordElement(elemType)) {
       if (packed) throw new Error('evmCompat: abi.encodePacked of an array of composite elements is unsupported');
       this.emitEvmStaticCompositeArrayTail(elemType, loc);
       return;
@@ -20196,7 +20222,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // fixed-size array of static elements (uint256[3]): inline element words, no length word - the ABI static
       // encoding. Scalar elements use the packed loop directly. Composite elements reuse the framed-element
       // array encoder, then discard its dynamic-array length word to leave the fixed array's inline ABI tuple.
-      if (isFixedWidthType(type.elementType)) this.emitEvmArrayTail(type.elementType, loc, true);
+      if (this.isEvmWordElement(type.elementType)) this.emitEvmArrayTail(type.elementType, loc, true);
       else {
         this.emitEvmStaticCompositeArrayTail(type.elementType, loc);
         this.emitDropFirst32(loc);
@@ -20723,6 +20749,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // Decode one 32-byte big-endian EVM word (on top) into a SolidCash value. Inverse of emitEvmAbiWord.
   private emitEvmWordToValue(type: Type, loc: SingleLocationData): void {
+    // A user-defined value type decodes to its underlying value, exactly as it encoded from one.
+    if (type instanceof ValueType) {
+      this.emitEvmWordToValue(type.underlyingType, loc);
+      return;
+    }
     if (type === PrimitiveType.BOOL) {
       this.emit(Op.OP_REVERSEBYTES, loc);
       this.emit(Op.OP_BIN2NUM, loc); // 0x01 or empty
@@ -20901,6 +20932,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // evmCompat: encode a value type for abi.encodePacked - NATURAL width (no 32-byte padding), big-endian,
   // two's-complement for signed; bytesN is its raw N bytes; bool is one byte.
   private emitEvmPackedValue(type: Type, loc: SingleLocationData): void {
+    // A user-defined value type packs as its underlying value (same stack representation).
+    if (type instanceof ValueType) {
+      this.emitEvmPackedValue(type.underlyingType, loc);
+      return;
+    }
     if (type === PrimitiveType.BOOL) {
       this.emit(Op.OP_IF, loc);
       this.emit(encodeInt(1n), loc);
@@ -20931,11 +20967,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 'hash' packs the 20-byte Solidity identity; 'bytecode' packs the whole lock, unchanged. An explicit
       // narrowing cast is unaffected either way: the cast is the narrowing, not the packing.
       if (this.addressForm === 'hash') this.emit(compileCast(type, new BytesType(20), false, true), loc);
-    } else if ((type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING) {
-      // dynamic bytes/string: packed is the raw content (no length prefix) - the value already IS that.
+    } else if (type instanceof BytesType || type === PrimitiveType.STRING) {
+      // bytes/string (dynamic or bounded): packed is the raw content with no padding and no length prefix -
+      // the value already IS that. A bounded bytesN stays unpadded here even though abi.encode pads it.
       return;
-    } else if (type instanceof ArrayType && type.bound === undefined) {
-      // dynamic array: each element padded to a 32-byte word, no length prefix (encode-tail minus the length).
+    } else if (type instanceof ArrayType) {
+      // Array argument: elements padded to a 32-byte word each, no length prefix - the same packing for a
+      // dynamic and a bounded array (encode-tail minus the length word).
       this.emitEvmArrayTail(type.elementType, loc, true);
       return;
     } else {

@@ -429,6 +429,21 @@ class IdentifierNameCounter extends AstTraversal {
 }
 
 /**
+ * True when `expression` names the contract's own address: `this`, a cast of it, or its own locking bytecode.
+ *
+ * Mirrors the framed composer's `isOwnAddress`, and the local predicate the external-call path uses, so the
+ * genesis fold classifies a child's `address(this).balance` exactly as codegen classifies the read.
+ */
+function isOwnAddressExpression(expression: ExpressionNode): boolean {
+  let current: ExpressionNode = expression;
+  while (current instanceof CastNode) current = current.expression;
+  if (current instanceof IdentifierNode && current.name === 'this') return true;
+  return current instanceof UnaryOpNode && current.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+    && current.expression instanceof NullaryOpNode
+    && current.expression.operator === NullaryOperator.INPUT_INDEX;
+}
+
+/**
  * Widest pushdata encoding of an address: its locking bytecode is stored inline, and the widest form is
  * P2SH32 (`OP_HASH256 <32> OP_EQUAL` = 35 B), so 36 with the push prefix.
  */
@@ -896,8 +911,16 @@ export default class SymbolTableTraversal extends AstTraversal {
   private genesisAdditionalHelperFunctions: readonly FunctionDefinitionNode[] = [];
   private genesisHelperStack: Set<FunctionDefinitionNode> = new Set();
   // The value the deploy being folded funds the CHILD with. A child's constructor observes it as `msg.value`
-  // (EVM: `new C{value: v}()`), and a folded same-tx call carries no value of its own, so a call fold installs 0.
+  // (EVM: `new C{value: v}`). A folded same-transaction call carries no value of its own, so the call replay
+  // installs none here and a `msg.value` read inside a folded call stays refused rather than folding a value
+  // that belongs to a different message.
   private genesisDeployValue?: ExpressionNode;
+  // The balance that same funding gives the freshly created child. `address(this).balance` / `this.balance`
+  // inside the child is exactly the deploy's `{value:}` amount - for the constructor replay and for any
+  // same-transaction call on it, since a folded call cannot carry a value of its own. Kept apart from
+  // `genesisDeployValue` because the two differ once a call is replayed: a call's `msg.value` is that call's
+  // value, while the child's balance still carries the genesis funding.
+  private genesisChildBalance?: ExpressionNode;
   private insideGenesisPureHelper: boolean = false;
   private allowGenesisHelperInputs: boolean = false;
   private deploymentHelperWasInlined: boolean = false;
@@ -2647,6 +2670,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       value.type = t;
       return value;
     }
+    // The freshly created child's own balance is the value this deploy funds it with: `new C{value: v}` gives
+    // C exactly v at genesis, and a folded same-transaction call carries no value of its own, so the funded
+    // amount IS the balance the child's body observes (`address(this).balance`, `this.balance`). This is the
+    // balance twin of the `msg.value` mapping above. A read of any other address's balance still fails closed.
+    if (expr instanceof StateAccessNode && expr.name === 'balance' && expr.stateVariable === undefined) {
+      return this.genesisChildBalance ? cloneNode(this.genesisChildBalance) : null;
+    }
+    if (expr instanceof FieldAccessNode && expr.name === 'balance'
+      && isOwnAddressExpression(expr.expression)) {
+      return this.genesisChildBalance ? cloneNode(this.genesisChildBalance) : null;
+    }
     if (expr instanceof StateAccessNode) {
       const prior = fieldExprs.get(expr.name);
       if (prior) return cloneNode(prior);
@@ -3272,6 +3306,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const priorAdditionalHelpers = this.genesisAdditionalHelperFunctions;
     const priorHelperStack = this.genesisHelperStack;
     const priorDeployValue = this.genesisDeployValue;
+    const priorChildBalance = this.genesisChildBalance;
     this.genesisHelperContract = contract;
     this.genesisAdditionalHelperFunctions = additionalHelperFunctions;
     this.genesisHelperStack = new Set();
@@ -3283,6 +3318,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       zero.location = deployNode.location;
       this.genesisDeployValue = zero;
     }
+    this.genesisChildBalance = this.genesisDeployValue;
     try {
       const fixedGenesisValueType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
         if (type instanceof ArrayType) {
@@ -3390,6 +3426,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.genesisAdditionalHelperFunctions = priorAdditionalHelpers;
       this.genesisHelperStack = priorHelperStack;
       this.genesisDeployValue = priorDeployValue;
+      this.genesisChildBalance = priorChildBalance;
     }
     deployNode.ctorFoldFailed = failed;
     deployNode.constructorStateFoldComplete = !failed && statements.every((statement) =>
@@ -3446,18 +3483,34 @@ export default class SymbolTableTraversal extends AstTraversal {
     // default (`uint16[5] memory arr; arr[0] = v; ..` then `return arr` implied). The seed is only emitted if the
     // body reads it, and a default that does not fold leaves the name unseeded, so the write that needs it still
     // fails closed rather than folding a wrong value.
-    foo.returnNames.forEach((name, index) => {
-      if (subs.has(name) || index >= foo.returnTypes.length) return;
-      const declaration = ((foo.body as BlockNode | undefined)?.statements ?? []).find((statement) =>
-        statement instanceof VariableDefinitionNode && statement.name === name) as
-        VariableDefinitionNode | undefined;
-      const seed = this.foldGenesisExpr(
-        createDefaultValueExpression(declaration?.type ?? foo.returnTypes[index], foo.location!),
-        subs, fieldExprs, readableFieldType, declaration?.type ?? foo.returnTypes[index],
-      );
-      if (seed) subs.set(name, seed);
-    });
-    const res = this.foldStatementList(statements, subs, fieldExprs, readableFieldType, stateFieldType);
+    // The child's genesis balance is in scope for the call's replay too: `t.getBalance()` on a freshly
+    // deployed `t` reads the same funded value the constructor saw.
+    const priorChildBalance = this.genesisChildBalance;
+    const deployValue = deployNode.callOptions?.value as ExpressionNode | undefined;
+    if (deployValue) {
+      this.genesisChildBalance = deployValue;
+    } else {
+      const zero = new IntLiteralNode(0n);
+      zero.location = deployNode.location;
+      this.genesisChildBalance = zero;
+    }
+    let res: false | { returnValue?: ExpressionNode, wrote: boolean };
+    try {
+      foo.returnNames.forEach((name, index) => {
+        if (subs.has(name) || index >= foo.returnTypes.length) return;
+        const declaration = ((foo.body as BlockNode | undefined)?.statements ?? []).find((statement) =>
+          statement instanceof VariableDefinitionNode && statement.name === name) as
+          VariableDefinitionNode | undefined;
+        const seed = this.foldGenesisExpr(
+          createDefaultValueExpression(declaration?.type ?? foo.returnTypes[index], foo.location!),
+          subs, fieldExprs, readableFieldType, declaration?.type ?? foo.returnTypes[index],
+        );
+        if (seed) subs.set(name, seed);
+      });
+      res = this.foldStatementList(statements, subs, fieldExprs, readableFieldType, stateFieldType);
+    } finally {
+      this.genesisChildBalance = priorChildBalance;
+    }
     if (!res) return false;
     // Solidity returns its named results when the body falls through without a `return`, so a body that only
     // built its named result still folds to that value.

@@ -67,6 +67,17 @@ folds into a parent-context expression where, on the child's default state:
 So `this.counter = this.counter + 1` folds to `1`; `int x = sup*2; this.a = x` inlines the local;
 `this.a = sup; this.b = this.a + 1` chains. The folded expressions are cloned, so the child's own
 compilation is untouched; TypeCheck types them (see `visitInstantiation`).
+- Also foldable: the child's **own balance** at genesis, `address(this).balance` / `this.balance` written
+  inside the folded callee. The deploying transaction funds the child (`new C{value: v}`), and a folded
+  same-transaction call cannot carry a value of its own (that arm is refused), so the funded amount IS the
+  balance the child's body observes - the balance twin of the `msg.value` mapping above. The expression comes
+  from the deploy's `{value:}`, or a literal zero for a valueless deploy, and it is installed for the
+  constructor replay and for the call replay alike (`genesisChildBalance`). A balance read of ANY OTHER
+  address still fails closed, since it is not a fold-time value. `test/libsolidity/semanticTests/saltedCreate/
+  salted_create_with_value.sol` is this shape (its oracle expects `f(), 10 ether -> 3007, 3008, 3009` for
+  `{value: 3}` with constructor args 7, 8, 9), pinned by `solidc/test/DeployFoldGenesisBalance.test.ts` and
+  evaluated on the VM by `solidcash/test/e2e/DeployFoldGenesisBalance.e2e.test.ts` (the folded genesis is read
+  back out of the covenant's own commitment).
 - Not yet foldable (-> `DeployThenCallError`): **control flow** (if/loops), function calls, contract
   constants; and the always-forbidden `tx.*`, `msg.sender`/`msg.value`, external calls, `emit`,
   `blockhash`/block.*, `new`/`deploy`, `selfdestruct`. Control flow needs the state-transition subroutine

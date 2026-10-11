@@ -15621,7 +15621,9 @@ function compileResolvedAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('msg.sender'))) {
     const byName = new Map<string, FunctionDefinitionNode[]>();
     const directSenderNames = new Set<string>();
-    for (const fn of ast.contract.functions) {
+    // A library call (`L.f()`, run on the caller's frame as a delegatecall is) reads the caller's msg.sender too.
+    const senderScope = [...ast.contract.functions, ...ast.freeFunctions];
+    for (const fn of senderScope) {
       const group = byName.get(fn.name) ?? [];
       group.push(fn);
       byName.set(fn.name, group);
@@ -15632,7 +15634,7 @@ function compileResolvedAst(
       if (direct) directSenderNames.add(fn.name);
     }
     if (directSenderNames.size > 0) {
-      for (const fn of ast.contract.functions) {
+      for (const fn of senderScope) {
         if ([...collectNamedFunctionClosure(fn, byName)].some((name) => directSenderNames.has(name))) {
           fn.usesMsgSender = true;
         }

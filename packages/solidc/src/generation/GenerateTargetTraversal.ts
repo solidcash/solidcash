@@ -20762,8 +20762,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (dynIdx.length === 0) {
       // All static: the head is the whole encoding (each arg inline - value word or fixed-width struct's field words).
       params.forEach((param, i) => {
-        params[i] = this.visit(param);
-        this.emitEvmEncodeValue(params[i].type!, loc);
+        params[i] = this.emitEvmEncodeArgument(param, loc);
         if (i > 0) {
           this.emit(Op.OP_CAT, loc);
           this.popFromStack(2);
@@ -20778,13 +20777,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // at runtime via tracker-tracked PICK/SIZE so it stays correct for any number of dynamics at any positions.
     // Phase A: encode each arg to a blob (static word or dynamic tail) kept as tracked slot __abiblob_i.
     for (let i = 0; i < n; i += 1) {
-      params[i] = this.visit(params[i]);
-      this.emitEvmEncodeValue(params[i].type!, loc);
+      params[i] = this.emitEvmEncodeArgument(params[i], loc);
       this.popFromStack();
       this.pushToStack(`__abiblob${i}`);
     }
     // Phases B-D: build the head, append the tails, drop the blob slots. Shared with the dynamic-struct tail.
     this.emitEvmHeadTailFromBlobs(params.map((p) => p.type!), loc);
+  }
+
+  // Evaluate one abi.encode argument and leave its EVM ABI bytes (head word or dynamic tail) on top.
+  private emitEvmEncodeArgument(param: ExpressionNode, loc: SingleLocationData): ExpressionNode {
+    if (this.emitEvmExternalSelfFunctionWord(param, loc)) return param;
+    const visited = this.visit(param) as ExpressionNode;
+    this.emitEvmEncodeValue(visited.type!, loc);
+    return visited;
+  }
+
+  /**
+   * An external self function value (`this.f`) as its ABI word: the contract's 20-byte identity (the one its
+   * address word carries), f's selector, then 8 zero bytes. Its stack value is a functionId, so the word is built
+   * from the reference; any other external function value stays refused by emitEvmAbiWord.
+   */
+  private emitEvmExternalSelfFunctionWord(param: ExpressionNode, loc: SingleLocationData): boolean {
+    const selector = param instanceof IdentifierNode && param.isExternalSelfRef
+      ? param.functionReference?.functionSelector : undefined;
+    if (selector?.length !== 4) return false;
+    const inputIndex = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
+    inputIndex.location = param.location;
+    const self = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, inputIndex);
+    self.location = param.location;
+    this.visit(self); // address(this), as the builder lowers it
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, loc);
+    this.emit(selector, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(new Uint8Array(8), loc);
+    this.emit(Op.OP_CAT, loc);
+    return true;
   }
 
   // ABI-encode a declared return tuple which is already present on the stack. One call expression may produce

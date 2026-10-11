@@ -111,7 +111,9 @@ import {
   hopContainerId, hopContainerInputs, hopPaying, hopValueOutputs, learnHopSend, madeHopSends, planHopValue,
   unlearnedHopSends, type HopSend, type HopValue,
 } from './hop-value.js';
-import { carriedFromChain, deriveReentryWriters, reentrySettleBefore, withReentryFrames } from './reentry.js';
+import {
+  carriedFromChain, deriveReentryWriters, reentrySettleBefore, subtreeOf, withReentryFrames, type EnclosingRoot,
+} from './reentry.js';
 import {
   EnclosingValueLearned, enclosingCandidateCount, inlineValueAt, learnEnclosingValues,
 } from './enclosed-values.js';
@@ -1467,7 +1469,7 @@ interface SettleHopOptions {
 }
 
 /** What callee frames' own bodies computed, keyed by master: each return, unstated write view and event payload. */
-interface CalleeSettlement {
+export interface CalleeSettlement {
   readonly retvals: Map<string, Uint8Array>;
   readonly writeViews: Map<string, readonly (Uint8Array | undefined)[]>;
   /**
@@ -1489,6 +1491,11 @@ interface CalleeSettlement {
   readonly deferred?: Error;
   /** Every deferred refusal, by the index of the callee whose settle refused, so the first one met is reported. */
   readonly deferredFrames?: ReadonlyMap<number, Error>;
+  /**
+   * The callee frames the machine accepted as the settle left them, by master. A frame that accepts declares every
+   * view its body computes, so a view it never handed back is the one the plan states.
+   */
+  readonly accepted?: ReadonlySet<string>;
 }
 
 /**
@@ -1541,8 +1548,15 @@ export function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: r
  *
  * `seed` states what an earlier settle of the same frames learned, so each starts from it; `only` settles the named
  * callee indices alone, which is how the frames before a stopped plan's site are settled to learn their results.
+ *
+ * The plain call path settles its callee frames here too (`callInShape`), from a plan of its own composition: it
+ * builds each attempt's draft itself (`compose`), names its own root as the frame a re-entered contract's frames run
+ * inside (`enclosingRoot`), learns only the judged frame's views before asking about it (`judgeSubtreeViewsOnly`),
+ * plans a chunkable write's value only by planning the call again (`returnOnWriteValue`), states its own candidate
+ * in a callee's `retval` slot (`retvalPlaceholder`), and judges a frame that makes calls once its subtree derived
+ * (`judgeDerivedFrames`), since no entry loop of its own learns what such a frame leaves.
  */
-async function settleCallees(options: {
+export async function settleCallees(options: {
   readonly vm: Machine;
   readonly artifacts: readonly Artifact[];
   readonly planFor: (
@@ -1561,11 +1575,45 @@ async function settleCallees(options: {
    * needs their verdict outright.
    */
   readonly deferFailures?: boolean;
+  /** Builds the draft each attempt derives from its plan; the composer's own host when absent. */
+  readonly compose?: (plan: CompositionDraftPlan) => ReturnType<typeof createComposedDerivationHost>;
+  /**
+   * The root frame the callees run inside, which a frame re-entering the root's contract is derived up to
+   * (`deriveReentryWriters`); the hop's implementation frame when absent.
+   */
+  readonly enclosingRoot?: (plan: CompositionDraftPlan) => EnclosingRoot | undefined;
+  /**
+   * Learns, before a callee's program is asked about, only the views the frame and the frames it enters left
+   * unstated. A plan that leaves its root's own records unstated would otherwise run the root again for every
+   * attempt of every callee, though no callee reads what the root writes after it: a callee that re-enters the
+   * root's contract is derived up to its entry first (`deriveReentryWriters`), which learns those views.
+   */
+  readonly judgeSubtreeViewsOnly?: boolean;
+  /**
+   * Hands the settlement back once a callee's chunkable write exposes its whole value at its pin, for a caller that
+   * plans such a write from its value only by planning the call again; a value only a node's inline view shows is
+   * not learned for such a caller.
+   */
+  readonly returnOnWriteValue?: boolean;
+  /**
+   * The candidate the plan states in a callee's `retval` slot, whose close against the body's own return names the
+   * value; the hop's own (`hopRetvalPlaceholder`) when absent.
+   */
+  readonly retvalPlaceholder?: (callee: HopCallee) => Uint8Array;
+  /**
+   * Judges a callee that makes calls once its subtree derived, as a callee that makes none is judged: the machine is
+   * asked about the frame, and a value its body closes against only after its calls is learned from that close. The
+   * hop leaves such a frame settled when its derivation completes, and its own entry's loop learns what is left; a
+   * caller without such a loop sets this.
+   */
+  readonly judgeDerivedFrames?: boolean;
 }): Promise<CalleeSettlement> {
   const trace = hopTraceOn();
   const deferFailures = options.deferFailures === true;
   let deferred: Error | undefined;
   const deferredFrames = new Map<number, Error>();
+  // The frames the machine accepted as this settle left them, which a caller may read the views they owe from.
+  const accepted = new Set<string>();
   const learned = new Map<string, Uint8Array>(options.seed?.retvals ?? []);
   const writeViews = new Map<string, readonly (Uint8Array | undefined)[]>(options.seed?.writeViews ?? []);
   const writeValues = new Map<string, Uint8Array>(options.seed?.writeValues ?? []);
@@ -1603,7 +1651,7 @@ async function settleCallees(options: {
     // planned without them, so the hop is planned again from them before the frame is judged (`reached-values.ts`).
     const reachedValue = learnedReachedValue(options.callees, nodeWritersBefore.get(calleeIndex), writeValues);
     if (reachedValue !== undefined) throw new EnclosingValueLearned(reachedValue.master, reachedValue.value);
-    const placeholder = hopRetvalPlaceholder(callee.contract, callee.entry);
+    const placeholder = options.retvalPlaceholder?.(callee) ?? hopRetvalPlaceholder(callee.contract, callee.entry);
     // One attempt per value the frame computes — its return, each unstated write, each event payload — plus the
     // attempt that is accepted once every one of them is stated, and one per view a writer it runs inside leaves it.
     const attempts = MAXIMUM_HOP_ATTEMPTS
@@ -1613,7 +1661,8 @@ async function settleCallees(options: {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       bumpFramedCounter('hopAttempts');
       const plan = options.planFor(learned, writeViews, writeValues, calleeEvents);
-      const candidate = createComposedDerivationHost({ vm: options.vm, artifacts: options.artifacts, plan });
+      const candidate = options.compose?.(plan)
+        ?? createComposedDerivationHost({ vm: options.vm, artifacts: options.artifacts, plan });
       if (trace) {
         hopTrace(`attempt callee=${callee.master} `
           + `${traceFrameFacts(callee.master, callee.functionName, callee.kind)} n=${attempt} `
@@ -1621,7 +1670,7 @@ async function settleCallees(options: {
       }
       // A frame that starts from a view an earlier frame of its contract wrote is judged once the draft learned it,
       // so the writers are derived first, the root's own first when the frame calls back into it (`reentry.ts`).
-      deriveReentryWriters(candidate, options.callees, calleeIndex, enclosingRootOf(plan));
+      deriveReentryWriters(candidate, options.callees, calleeIndex, (options.enclosingRoot ?? enclosingRootOf)(plan));
       // A frame inside a writer whose value only the writer's own run exposes starts from that value, which is read
       // here: a chunking value plans the hop again from it, and the view of any other node is stated for the writer
       // before the frame is judged (`enclosed-values.ts`).
@@ -1659,7 +1708,9 @@ async function settleCallees(options: {
               + `${traceFrameFacts(callee.master, callee.functionName, callee.kind)} `
               + traceStopInstructions(options.vm, candidate.draft.programFor(callee.master)));
           }
-          break;
+          // A caller that judges each frame here reads the derived frame below, as it reads a frame that makes no
+          // call: a declaration its body closes against only after its calls is learned from that close.
+          if (options.judgeDerivedFrames !== true) break;
         } catch (error) {
           if (trace) {
             hopTrace(`stop callee=${callee.master} reason=stall:${hopTraceError(error)} `
@@ -1694,7 +1745,12 @@ async function settleCallees(options: {
       // A frame whose own body computes a value the plan left unstated closes against that placeholder, and a frame
       // this loop never resumes at a site would hand the placeholder to the machine below: the draft learns what its
       // own runs compute first, so a close the loop reads back is about a value and not about the placeholder.
-      candidate.draft.learnUnstatedViews();
+      if (options.judgeSubtreeViewsOnly === true) {
+        candidate.draft.learnUnstatedViewsOf(
+          subtreeOf(options.callees, calleeIndex).map((at) => options.callees[at]!.master));
+      } else {
+        candidate.draft.learnUnstatedViews();
+      }
       const program = candidate.draft.programFor(callee.master);
       const state = options.vm.evaluate({
         inputIndex: participant(candidate.draft.layout, callee.master).index,
@@ -1703,6 +1759,7 @@ async function settleCallees(options: {
       });
       if (options.vm.stateSuccess(state) === true) {
         if (trace) hopTrace(`stop callee=${callee.master} reason=accepted`);
+        accepted.add(callee.master);
         break;
       }
       const reading = readComputedDeclaration({
@@ -1749,8 +1806,9 @@ async function settleCallees(options: {
           writeViews.set(callee.master, views);
           // A chunking value the node keeps inline passes no pin, so the view this close rebuilt is the only place it
           // shows; a later reach of the node continues from it as from a pin's (`reached-values.ts`).
-          const inline = callee.entryWrites?.awaitsValue === true && !writeValues.has(callee.master)
-            && continuedWriters.has(calleeIndex) ? inlineValueAt(options.callees, calleeIndex, at, view) : undefined;
+          const inline = options.returnOnWriteValue !== true && callee.entryWrites?.awaitsValue === true
+            && !writeValues.has(callee.master) && continuedWriters.has(calleeIndex)
+            ? inlineValueAt(options.callees, calleeIndex, at, view) : undefined;
           if (inline !== undefined) writeValues.set(callee.master, inline);
           continue;
         }
@@ -1778,6 +1836,9 @@ async function settleCallees(options: {
           // The run the write now takes replaces the one the reach was placed with, so the views learned against
           // the unstated run name records the plan no longer declares.
           writeViews.delete(callee.master);
+          if (options.returnOnWriteValue === true) {
+            return { retvals: learned, writeViews, writeValues, events: calleeEvents, accepted };
+          }
           continue;
         }
         // The body computed a chunkable value the close did not expose, so the run's width stays unstated: refuse
@@ -1843,7 +1904,7 @@ async function settleCallees(options: {
     }
   }
   return {
-    retvals: learned, writeViews, writeValues, events: calleeEvents,
+    retvals: learned, writeViews, writeValues, events: calleeEvents, accepted,
     ...(deferred === undefined ? {} : { deferred, deferredFrames }),
   };
 }

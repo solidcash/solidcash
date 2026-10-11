@@ -353,6 +353,14 @@ export interface CompositionDraft {
    * draft can compute yet is left as it is, and a later call learns it once the value it depends on is stated.
    */
   learnUnstatedViews(): void;
+  /**
+   * Learns the views the plan left unstated for the named masters only, as `learnUnstatedViews` learns them for
+   * every master, in plan order.
+   *
+   * A caller that judges one frame needs the declarations of that frame and of the frames it enters stated before it
+   * evaluates them; the other frames' runs are not what it asks about, and each would be one more run of its program.
+   */
+  learnUnstatedViewsOf(masters: Iterable<string>): void;
 }
 
 /**
@@ -937,6 +945,14 @@ export function composeDraft(
     // views back: learning them here is what leaves every program the draft hands out with its declarations stated.
     learnUnstatedViews: () => {
       for (const master of plan.masters) {
+        const block = blocks.get(master.master);
+        if (block !== undefined) learnComputedValues(master.master, block);
+      }
+    },
+    learnUnstatedViewsOf: (masters) => {
+      const named = new Set(masters);
+      for (const master of plan.masters) {
+        if (!named.has(master.master)) continue;
         const block = blocks.get(master.master);
         if (block !== undefined) learnComputedValues(master.master, block);
       }

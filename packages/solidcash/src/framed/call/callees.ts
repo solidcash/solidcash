@@ -65,7 +65,9 @@ import {
   entryRecordReadUnlock, eventCloseOf, eventLockingBytecode, eventSentinel, readComputedDeclaration,
   stateRecordUnlockingBytecode, type FramedDeploymentSet,
 } from '../deploy/index.js';
-import { calleeSettleOrder, calleeValueWitnesses, learnedValueFromClose, placeOwnWrites } from '../proxy/deploy.js';
+import {
+  calleeSettleOrder, calleeValueWitnesses, learnedValueFromClose, placeOwnWrites, type CalleeSettlement,
+} from '../proxy/deploy.js';
 import { EnclosingValueLearned, learnEnclosingValues } from '../proxy/enclosed-values.js';
 import { sharedNodeId } from '../proxy/entry-writes.js';
 import { FramedProxyDeployError } from '../proxy/errors.js';
@@ -1098,4 +1100,61 @@ function enclosingWriterValues(
  */
 export function calleeValuesOwed(planned: PlannedCallees, values: CalleeValues): boolean {
   return planned.callees.some((callee) => callee.truncated !== true && owesValue(callee, values));
+}
+
+/**
+ * The callee values as the hop's per-frame settlement starts from them (`settleCallees`'s `seed`): it states each
+ * event payload not learned yet as the sentinel its output carries, which is the sentinel `calleeFrames` states for
+ * one, so both build the same plan.
+ */
+export function calleeSettlementSeed(
+  planned: PlannedCallees, values: CalleeValues, maximumCommitmentBytes: number,
+): CalleeSettlement {
+  const events = new Map<string, readonly Uint8Array[]>();
+  for (const callee of planned.callees) {
+    const sentinels = calleeEventSentinels(callee, maximumCommitmentBytes);
+    if (sentinels.length === 0) continue;
+    const known = values.events.get(callee.master) ?? [];
+    events.set(callee.master, sentinels.map((sentinel, position) => known[position] ?? sentinel));
+  }
+  return {
+    retvals: new Map(values.retvals),
+    writeViews: new Map(values.views),
+    writeValues: new Map(values.writeValues ?? []),
+    events,
+  };
+}
+
+/**
+ * The callee values a per-frame settlement learned. A payload the settlement still states as its sentinel is one no
+ * close handed back, so it is not learned here either and its frame still owes it (`calleeValuesOwed`). A frame the
+ * machine accepted declares every view its body computes, so a view it never handed back is the one the plan states,
+ * as the composition's own reading of an accepting frame takes it (`acceptedFrameViews`).
+ */
+export function calleeValuesOfSettlement(
+  planned: PlannedCallees, settlement: CalleeSettlement, maximumCommitmentBytes: number,
+): CalleeValues {
+  const events = new Map<string, readonly (Uint8Array | undefined)[]>();
+  const views = new Map(settlement.writeViews);
+  for (const callee of planned.callees) {
+    const payloads = settlement.events.get(callee.master);
+    if (payloads !== undefined) {
+      const sentinels = calleeEventSentinels(callee, maximumCommitmentBytes);
+      events.set(callee.master, payloads.map((payload, position) => {
+        const sentinel = sentinels[position];
+        return sentinel !== undefined && sentinel.length > 0 && bytesEqual(payload, sentinel) ? undefined : payload;
+      }));
+    }
+    const candidates = callee.entryWrites?.learningCandidates ?? [];
+    const known = views.get(callee.master) ?? [];
+    if (settlement.accepted?.has(callee.master) === true && candidates.some((_candidate, at) => known[at] === undefined)) {
+      views.set(callee.master, candidates.map((candidate, at) => known[at] ?? Uint8Array.from(candidate)));
+    }
+  }
+  return {
+    retvals: new Map(settlement.retvals),
+    events,
+    views,
+    ...(settlement.writeValues.size === 0 ? {} : { writeValues: new Map(settlement.writeValues) }),
+  };
 }

@@ -71,8 +71,8 @@ Measured 2026-10-11 on `feat/parity` (merged into `feat/per-call`) with `evmComp
 | solc corpus, fixtures solc rejects that SolidCash also rejects | 2009/2158 = 93.10% |
 | Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 138/141 = 97.87% |
 | EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 589/592 = 99.49% |
-| solc corpus semantic expectations executed on the BCH VM, pure-function slice (`bench/solidity-corpus/semantic-runner.mjs`) | 1477/1612 = 91.63% |
-| the same, stateful slice (deploy once, lines in order, before any divergence) | 504/576 = 87.50% |
+| solc corpus semantic expectations executed on the BCH VM, pure-function slice (`bench/solidity-corpus/semantic-runner.mjs`) | 1482/1613 = 91.88% |
+| the same, stateful slice (deploy once, lines in order, before any divergence) | 599/675 = 88.74% |
 | Executable corpus fixtures traced to a VM test (`bench/solidity-corpus/BEHAVIORAL_COVERAGE.md`) | 155/1506 = 10.29% |
 
 The 3 differential divergences are documented native-mode `it.fails` cast cases (narrowing and same-width sign

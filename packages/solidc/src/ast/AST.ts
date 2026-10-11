@@ -1135,6 +1135,14 @@ export class StateAssignNode extends StatementNode {
   }
 }
 
+/** Whether a type chain reaches a mapping, through arrays and struct fields. A mapping has no encodable value,
+ * so a mapping-bearing chain can only be addressed as a key path, never stored as one entry value. */
+function chainContainsMapping(type: Type, seen: Set<string> = new Set()): boolean {
+  if (type instanceof MappingType) return true;
+  if (type instanceof ArrayType) return chainContainsMapping(type.elementType, seen);
+  return false;
+}
+
 export class CollectionNode extends Node implements Named {
   immutable: boolean = false;
   // Verified mapping (vmap) backend: entries form a sorted list keyed by H(key), so non-existence is authenticated
@@ -1172,8 +1180,18 @@ export class CollectionNode extends Node implements Named {
     const keys: Type[] = [];
     let current: Type = this.type;
     // A mapping whose VALUE is an array stores that array as the entry value blob; its trailing indices are
-    // handled by MappingAccess.arrayIndex / the nested-array RMW lowering, not as collection keys.
+    // handled by MappingAccess.arrayIndex / the nested-array RMW lowering, not as collection keys - unless the
+    // element chain contains a mapping, which has no encodable value, and then the indices DO join the key
+    // space exactly as for an array whose element is a mapping.
     if (current instanceof MappingType) {
+      while (current instanceof MappingType) {
+        keys.push(current.keyType);
+        current = current.valueType;
+      }
+      while (current instanceof ArrayType && chainContainsMapping(current.elementType)) {
+        keys.push(PrimitiveType.BIGINT);
+        current = current.elementType;
+      }
       while (current instanceof MappingType) {
         keys.push(current.keyType);
         current = current.valueType;
@@ -1198,6 +1216,8 @@ export class CollectionNode extends Node implements Named {
   get innermostValueType(): Type {
     let current: Type = this.type;
     if (current instanceof MappingType) {
+      while (current instanceof MappingType) current = current.valueType;
+      while (current instanceof ArrayType && chainContainsMapping(current.elementType)) current = current.elementType;
       while (current instanceof MappingType) current = current.valueType;
       return current;
     }

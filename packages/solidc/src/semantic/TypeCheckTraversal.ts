@@ -692,7 +692,10 @@ export default class TypeCheckTraversal extends AstTraversal {
             throw new UnsupportedStructFieldTypeError(node, field.type);
           }
         }
-      } else if (!isValidStateType(innerValue)) {
+      } else if (!isValidStateType(innerValue) && !isValidCollectionElementType(innerValue)) {
+        // A mapping nested in an array is not a standalone encodable value, but it IS addressable as a key path:
+        // `mapping(K => mapping(K2 => V)[])` is the collection model's shape for an array of mappings under a
+        // mapping key, exactly as `mapping(K2 => V)[]` is for a top-level one.
         throw new UnsupportedMappingValueTypeError(node, innerValue);
       }
     }

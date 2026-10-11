@@ -385,6 +385,11 @@ export default class AstBuilder
   private stateArrayVarTypes: Map<string, ArrayType> = new Map();
   // Entry-NFT state arrays that are represented as CollectionNode rather than packed/chunked StateVariableNode.
   private stateCollectionArrayTypes: Map<string, ArrayType> = new Map();
+  // Dimensions of every unbounded ARRAY collection, keyed by collection name. A sparse entry-NFT collection has
+  // no length cell of its own, so one is synthesized per dimension: the outer dimension is the private scalar
+  // `<name>$len`, and each inner dimension counts per index above it in the companion mapping
+  // `<name>$len$<level>`. See collectionLengthRead / buildCollectionLengthPush.
+  private collectionLengthDepths: Map<string, number> = new Map();
   // State mapping variables -> MappingType, so `using L for mapping(K=>V)` desugars `m.method(args)` to
   // `L.method(m, args)` (m becomes a mapping-storage param, inlined at the call site).
   private mappingStateVarTypes: Map<string, MappingType> = new Map();
@@ -1614,6 +1619,37 @@ export default class AstBuilder
         constantDefinitions.push(visited); // `<vis> constant X` is a baked constant, not stored state
       } else {
         stateVariables.push(visited as StateVariableNode);
+      }
+    }
+
+    // A sparse entry-NFT collection has no length cell, so an unbounded one (`T[]` whose element is not
+    // chunk-packable - an array of mappings, or a nested array) could offer no `push`/`pop`/`delete`/`.length`.
+    // Give each unbounded ARRAY collection a length authority: the outer dimension a private scalar state var
+    // `<name>$len`, each inner dimension a count per index above it in the companion mapping
+    // `<name>$len$<level>`. Index and element access keep the flat collection, so the element key space and its
+    // encoding are unchanged.
+    this.collectionLengthDepths.clear();
+    for (const collection of [...collections]) {
+      if (!(collection.type instanceof ArrayType) || collection.type.bound !== undefined) continue;
+      const depth = this.arrayDimensions(collection.type);
+      if (depth < 1) continue;
+      this.collectionLengthDepths.set(collection.name, depth);
+      const lengthVar = new StateVariableNode(PrimitiveType.BIGINT, `${collection.name}$len`);
+      lengthVar.visibility = StateVariableVisibility.PRIVATE;
+      lengthVar.location = collection.location;
+      stateVariables.push(lengthVar);
+      for (let level = 1; level < depth; level += 1) {
+        const dimension = this.arrayTypeAtLevel(collection.type, level);
+        if (!dimension || dimension.bound !== undefined) continue; // a bounded dimension folds to its bound
+        // Only the first inner dimension gets an authority: it is a chunk-packed `int` array. A plain entry
+        // mapping would be a SORTED (vmap) collection, and a sorted entry may not be read back after a write
+        // with an expression key - which `b.push(); b[b.length - 1]...` does.
+        if (level !== 1) continue;
+        const authority = new StateVariableNode(new ArrayType(PrimitiveType.BIGINT), `${collection.name}$len$1`);
+        authority.isDynamic = true;
+        authority.visibility = StateVariableVisibility.PRIVATE;
+        authority.location = collection.location;
+        stateVariables.push(authority);
       }
     }
 
@@ -4700,6 +4736,13 @@ export default class AstBuilder
 
   visitUnaryOp(ctx: UnaryOpContext): ExpressionNode {
     const operator = ctx._op.text as UnaryOperator;
+    // `.length` of an unbounded array collection reads its synthesized length authority (see
+    // collectionLengthDepths). Resolved from the RECEIVER context, before the sub-expression is visited, so its
+    // index expressions are visited exactly once.
+    if (operator === UnaryOperator.SIZE) {
+      const lengthRead = this.collectionLengthFromReceiver(ctx.expression(), Location.fromCtx(ctx));
+      if (lengthRead) return lengthRead;
+    }
     let expression = this.visit(ctx.expression());
     if (operator === UnaryOperator.REVERSE && this.isContractMemberCall(ctx.expression(), 'reverse')) {
       return this.buildContractMemberCall(ctx, ctx.expression(), expression as ExpressionNode, 'reverse', []);
@@ -6368,6 +6411,20 @@ export default class AstBuilder
 
   visitDeleteLocal(ctx: DeleteLocalContext): StatementNode {
     const name = ctx.Identifier().getText();
+    // `delete a` on an unbounded array collection resets the length to zero. The element entries stay (Solc does
+    // not clear a mapping inside an array either); the next push resets the new element's inner counts.
+    if (this.collectionLengthDepths.has(name)) {
+      const loc = Location.fromCtx(ctx);
+      const zero = new IntLiteralNode(0n);
+      zero.location = loc;
+      const reset = new StateAssignNode(this.collectionLengthAuthorityName(name, 0), zero);
+      reset.location = loc;
+      const clear = this.collectionLengthInnerClear(name, loc);
+      if (!clear) return reset;
+      const block = new BlockNode([reset, clear]);
+      block.location = loc;
+      return block;
+    }
     // `delete s` on a flattened struct state var: reset every VALUE leaf to its default. Mapping leaves
     // persist (Solidity: delete does not touch mappings inside structs); array leaves are skipped too
     // (collection-model deletes have their own statement forms).
@@ -6623,8 +6680,21 @@ export default class AstBuilder
     return block;
   }
 
-  visitDeleteState(ctx: DeleteStateContext): DeleteStateNode {
-    const node = new DeleteStateNode(ctx.Identifier().getText());
+  visitDeleteState(ctx: DeleteStateContext): StatementNode {
+    const name = ctx.Identifier().getText();
+    if (this.collectionLengthDepths.has(name)) {
+      const loc = Location.fromCtx(ctx);
+      const zero = new IntLiteralNode(0n);
+      zero.location = loc;
+      const reset = new StateAssignNode(this.collectionLengthAuthorityName(name, 0), zero);
+      reset.location = loc;
+      const clear = this.collectionLengthInnerClear(name, loc);
+      if (!clear) return reset;
+      const block = new BlockNode([reset, clear]);
+      block.location = loc;
+      return block;
+    }
+    const node = new DeleteStateNode(name);
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -8309,6 +8379,20 @@ export default class AstBuilder
     value: ExpressionNode, noArg: boolean, ctx: ParserRuleContext,
   ): StatementNode {
     const loc = Location.fromCtx(ctx);
+    if (!member) {
+      const lengthTarget = this.collectionLengthTarget(rawName, keyFns);
+      if (lengthTarget) {
+        // An array whose element is a mapping has no element VALUE to append: Solidity refuses `array.push(map)`
+        // ("Storage arrays with nested mappings do not support .push(<arg>)"); only the no-arg form that grows the
+        // length is valid.
+        if (!noArg && this.collectionElementContainsMapping(lengthTarget.name)) {
+          throw new ParseError(
+            'Storage arrays with nested mappings do not support .push(<arg>)', Location.fromCtx(ctx),
+          );
+        }
+        return this.buildCollectionLengthPush(lengthTarget, loc);
+      }
+    }
     if (!member && keyFns.length === 0) this.validateArrayLengthMutation(rawName, isThis, ctx);
     if (!member && keyFns.length >= 1) {
       const node = new MappingAssignNode(rawName, keyFns.map((fn) => fn()), value);
@@ -8351,6 +8435,10 @@ export default class AstBuilder
     ctx: ParserRuleContext,
   ): StatementNode {
     const loc = Location.fromCtx(ctx);
+    if (!member) {
+      const lengthTarget = this.collectionLengthTarget(rawName, keyFns);
+      if (lengthTarget) return this.buildCollectionLengthPop(lengthTarget, loc);
+    }
     if (!member && keyFns.length === 0) this.validateArrayLengthMutation(rawName, isThis, ctx);
     if (!member && keyFns.length >= 1) {
       const placeholder = new IntLiteralNode(0n); placeholder.location = loc;
@@ -8362,6 +8450,203 @@ export default class AstBuilder
     const node = (isThis || this.packedStateArrayNames.has(rawName))
       ? new StateArrayPopNode(rawName) : new ArrayPopNode(rawName);
     node.location = loc; return node;
+  }
+
+  /** Number of array dimensions wrapped around the element type (0 for a non-array type). */
+  private arrayDimensions(type: Type): number {
+    let depth = 0;
+    let current: Type = type;
+    while (current instanceof ArrayType) { depth += 1; current = current.elementType; }
+    return depth;
+  }
+
+  /** The array type of the `level`-th dimension (level 0 is the declared array type itself). */
+  private arrayTypeAtLevel(type: ArrayType, level: number): ArrayType | undefined {
+    let current: Type = type;
+    for (let i = 0; i < level && current instanceof ArrayType; i += 1) current = current.elementType;
+    return current instanceof ArrayType ? current : undefined;
+  }
+
+  /** True when the element type left after every array dimension of a collection array is a mapping. */
+  private collectionElementContainsMapping(name: string): boolean {
+    const type = this.stateCollectionArrayTypes.get(name);
+    if (!type) return false;
+    let current: Type = type;
+    while (current instanceof ArrayType) current = current.elementType;
+    return current instanceof MappingType;
+  }
+
+  /** True when dimension `level` of an unbounded collection array is itself an unbounded array dimension. */
+  private collectionDimensionIsUnbounded(name: string, level: number): boolean {
+    const type = this.stateCollectionArrayTypes.get(name);
+    const dimension = type ? this.arrayTypeAtLevel(type, level) : undefined;
+    return dimension !== undefined && dimension.bound === undefined;
+  }
+
+  /** The synthesized name of the length authority for dimension `level` of an unbounded array collection. */
+  private collectionLengthAuthorityName(name: string, level: number): string {
+    return level === 0 ? `${name}$len` : `${name}$len$${level}`;
+  }
+
+  /**
+   * Read the length of the dimension `level` of an unbounded array collection (`level` is the number of array
+   * indices already applied). Returns undefined when the name is not a collection array or when that dimension is
+   * absent or bounded - a bounded dimension folds to its declared bound in SymbolTableTraversal instead.
+   */
+  private collectionLengthRead(
+    name: string, indexKeys: Array<() => ExpressionNode>, loc: Location,
+  ): ExpressionNode | undefined {
+    const type = this.stateCollectionArrayTypes.get(name);
+    if (!type) return undefined;
+    const level = indexKeys.length;
+    const dimension = this.arrayTypeAtLevel(type, level);
+    if (!dimension || dimension.bound !== undefined) return undefined;
+    const authority = this.collectionLengthAuthorityName(name, level);
+    if (level === 0) {
+      const read = new StateAccessNode(authority);
+      read.location = loc;
+      return read;
+    }
+    // Only the first inner dimension has an authority; a deeper `.length` has none in this model.
+    if (level !== 1) return undefined;
+    const base = new StateAccessNode(authority);
+    base.location = loc;
+    const read = new ArrayAccessNode(base, indexKeys[0]());
+    read.location = loc;
+    return read;
+  }
+
+  /**
+   * `.length` on a parsed receiver: `a`, `a[i]` (an index chain into a collection array), or a storage-pointer
+   * local bound to one (`mapping(K=>V)[] storage b = a[i]; b.length`). Returns undefined for anything else, so
+   * every other `.length` keeps the handling it had.
+   */
+  private collectionLengthFromReceiver(ctx: ExpressionContext, loc: Location): ExpressionNode | undefined {
+    const receiver = this.extractLvalue(ctx);
+    if (!receiver) return undefined;
+    if (receiver.segs.some((seg) => seg.member !== undefined)) return undefined;
+    const keys = receiver.segs.filter((seg) => seg.key !== undefined).map((seg) => seg.key!);
+    const direct = this.collectionLengthRead(receiver.rawName, keys, loc);
+    if (direct) return direct;
+    const alias = this.storageAliases.get(receiver.rawName);
+    if (!alias) return undefined;
+    return this.collectionLengthRead(
+      alias.container, alias.keys.map((key) => (): ExpressionNode => cloneNode(key) as ExpressionNode), loc,
+    );
+  }
+
+  /**
+   * The unbounded collection array and dimension a `push`/`pop` target addresses: the collection itself
+   * (`a.push()`, dimension 0) or a storage-pointer local to one of its elements (`b.push()` where
+   * `b = a[i]`, dimension 1). Undefined for a member (struct-field) target, for a packed/chunked state array,
+   * and for an index chain that reaches past the array dimensions into the element.
+   */
+  private collectionLengthTarget(
+    rawName: string, keyFns: Array<() => ExpressionNode>,
+  ): { name: string; level: number; keys: Array<() => ExpressionNode> } | undefined {
+    const alias = this.storageAliases.get(rawName);
+    const aliased = alias !== undefined && this.stateCollectionArrayTypes.has(alias.container);
+    const name = aliased ? alias!.container : rawName;
+    const keys: Array<() => ExpressionNode> = aliased
+      ? alias!.keys.map((key) => (): ExpressionNode => cloneNode(key) as ExpressionNode)
+      : keyFns;
+    const depth = this.collectionLengthDepths.get(name);
+    if (depth === undefined) return undefined;
+    const level = keys.length;
+    if (level >= depth) return undefined;
+    if (!this.collectionDimensionIsUnbounded(name, level)) return undefined;
+    return { name, level, keys };
+  }
+
+  /** `delete` of an unbounded collection array also drops every inner count it owns (`<name>$len$1`). */
+  private collectionLengthInnerClear(name: string, loc: Location): StatementNode | undefined {
+    if (!this.collectionDimensionIsUnbounded(name, 1)) return undefined;
+    const node = new DeleteStateNode(this.collectionLengthAuthorityName(name, 1));
+    node.location = loc;
+    return node;
+  }
+
+  /** The length authority an increment/decrement of `target` writes, plus a read of its current value. */
+  private collectionLengthCell(
+    target: { name: string; level: number; keys: Array<() => ExpressionNode> }, loc: Location,
+  ): { read: () => ExpressionNode; write: (value: ExpressionNode) => StatementNode } {
+    const authority = this.collectionLengthAuthorityName(target.name, target.level);
+    if (target.level === 0) {
+      return {
+        read: () => { const node = new StateAccessNode(authority); node.location = loc; return node; },
+        write: (value) => { const node = new StateAssignNode(authority, value); node.location = loc; return node; },
+      };
+    }
+    return {
+      read: () => {
+        const base = new StateAccessNode(authority);
+        base.location = loc;
+        const node = new ArrayAccessNode(base, target.keys[0]());
+        node.location = loc;
+        return node;
+      },
+      write: (value) => {
+        const node = new StateArrayAssignNode(authority, target.keys[0](), value);
+        node.location = loc;
+        return node;
+      },
+    };
+  }
+
+  /**
+   * `push()` on an unbounded array collection: raise the dimension's count and reset the next inner dimension's
+   * count at the new index, so the pushed element starts as a fresh empty array (Solidity semantics). The pushed
+   * index is the pre-increment count, held in a local so no cell is read after being written.
+   */
+  private buildCollectionLengthPush(
+    target: { name: string; level: number; keys: Array<() => ExpressionNode> }, loc: Location,
+  ): BlockNode {
+    const cell = this.collectionLengthCell(target, loc);
+    const countName = `__len_${this.nestedLvalueCounter++}`;
+    const readCount = new VariableDefinitionNode(PrimitiveType.BIGINT, [], countName, cell.read());
+    readCount.location = loc;
+    readCount.allowUnused = true;
+    const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+    const one = new IntLiteralNode(1n);
+    one.location = loc;
+    const bump = cell.write(new BinaryOpNode(idAt(countName), BinaryOperator.PLUS, one));
+    const statements: StatementNode[] = [readCount, bump];
+    const next = target.level + 1;
+    if (next === 1 && this.collectionDimensionIsUnbounded(target.name, next)) {
+      // The pushed element starts as a fresh empty inner array: reset its count at the index just created.
+      const zero = new IntLiteralNode(0n);
+      zero.location = loc;
+      const clear = new StateArrayAssignNode(
+        this.collectionLengthAuthorityName(target.name, next), idAt(countName), zero,
+      );
+      clear.location = loc;
+      statements.push(clear);
+    }
+    const block = new BlockNode(statements);
+    block.location = loc;
+    return block;
+  }
+
+  /** `pop()` on an unbounded array collection: require a non-empty dimension, then lower its count by one. */
+  private buildCollectionLengthPop(
+    target: { name: string; level: number; keys: Array<() => ExpressionNode> }, loc: Location,
+  ): BlockNode {
+    const cell = this.collectionLengthCell(target, loc);
+    const countName = `__len_${this.nestedLvalueCounter++}`;
+    const readCount = new VariableDefinitionNode(PrimitiveType.BIGINT, [], countName, cell.read());
+    readCount.location = loc;
+    readCount.allowUnused = true;
+    const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+    const zero = new IntLiteralNode(0n);
+    zero.location = loc;
+    const guard = new RequireNode(new BinaryOpNode(idAt(countName), BinaryOperator.GT, zero));
+    guard.location = loc;
+    const one = new IntLiteralNode(1n);
+    one.location = loc;
+    const drop = cell.write(new BinaryOpNode(idAt(countName), BinaryOperator.MINUS, one));
+    const block = new BlockNode([readCount, guard, drop]);
+    block.location = loc;
+    return block;
   }
 
   private validateArrayLengthMutation(rawName: string, isThis: boolean, ctx: ParserRuleContext): void {

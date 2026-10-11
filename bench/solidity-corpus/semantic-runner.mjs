@@ -31,6 +31,10 @@ import { isMainThread, parentPort, Worker, workerData } from 'worker_threads';
 // runs again as a stateful fixture (StatefulContract building fills it) and is scored in the stateful slice.
 // Pipeline-specific fixtures (`compileViaYul: true|false` settings: expectations of solc's via-IR or legacy pipeline
 // only, often shipped as disagreeing twins) run as usual but are scored apart, outside both slices' rates.
+// Size limits: every spend and deploy runs under the real BCH-2026 input, stack item and NFT commitment limits (the
+// mock relaxes them). A line stopped by one runs again under the mock's relaxed limits and is scored apart
+// (matched/mismatched-under-mock-size-limits, naming the limit); a stateful fixture replays from that line. A stop
+// on a size limit in both runs is the line's own outcome.
 // Output: semantic-results.json and semantic-scorecard.txt (pure slice, stateful section, pipeline section).
 // Env: CORPUS_RESULTS, SOLC_CORPUS, LIMIT (selected fixtures), FILTER (path substring), SLICE=pure|stateful,
 // CORPUS_WORKERS, FIXTURE_TIMEOUT_MS, CORPUS_OUTPUT_DIR, SELECT_ONLY=true|list (selection only, no execution),
@@ -42,6 +46,36 @@ const DENSITY_RESERVE = '-with-density-reserve'; // status suffix of a line retr
 // Stateful slice: forceStateful so a fixture whose state compiles away still deploys as a stateful contract.
 const STATEFUL_COMPILE_OPTIONS = { ...COMPILE_OPTIONS, forceStateful: true };
 const DENSITY_STOP = /operation cost density limit/;
+// Real BCH-2026 values of the size limits MOCK_CONSENSUS_LIMITS relaxes (its operation-cost budget is real already).
+const REAL_SIZE_LIMITS = { maximumInputBytes: 10_000, maximumStackItemBytes: 10_000, maximumNftCommitmentBytes: 128 };
+const MOCK_SIZE = '-under-mock-size-limits'; // status suffix of a line re-run under the mock's relaxed size limits
+// A stop on one of those limits, read from the whole error text and its causes (a byte-gate refusal lists its rules
+// below its first line).
+const SIZE_STOPS = [
+  ['commitment', new RegExp('commitment[^\\n]*(?:exceeds limit|longer than the maximum size)|excessive token commitment '
+    + 'length|NFT commitment limit|NFT commitment; active consensus permits', 'i')],
+  ['input', new RegExp('unlocking bytecode exceeds the maximum bytecode length|excessive unlocking bytecode length'
+    + '|consensus-unlocking-bytes|unlocking-bytecode bytes; maximum is|redeem script is \\d+ bytes \\(limit', 'i')],
+  ['stack item', /exceeded the maximum stack item length|maximum stack item is \d+ bytes/i],
+];
+const sizeStop = (cause) => {
+  let text = '';
+  for (let c = cause, depth = 0; c && depth < 5; c = c.cause, depth++) {
+    text += `\n${c.libauthErrorMessage ?? ''}\n${c.message ?? c}`;
+  }
+  const size = SIZE_STOPS.find(([, pattern]) => pattern.test(text))?.[0];
+  return size ? { size } : {};
+};
+// A line re-run under the relaxed limits: the suffix replaces a density-reserve one (kept as a flag), and the line
+// names the limit and the real run's outcome at that stop.
+const underMockSizeLimits = ({ size: _size, status, ...rest }, limit, realOutcome) => ({
+  ...rest,
+  status: `${status.replace(DENSITY_RESERVE, '')}${MOCK_SIZE}`,
+  sizeLimit: limit,
+  realOutcome,
+  ...(status.endsWith(DENSITY_RESERVE) && { densityReserve: true }),
+});
+const withoutSize = ({ size: _size, ...rest }) => rest;
 // Wrapper shapes with the checks inside the target (see wrapSource). A derived wrapper hides the target's call-graph
 // edges, so these refusals of it retry in the target, each recording its shape.
 const IN_TARGET_LAYOUT = 'in-target: layout at';
@@ -87,9 +121,9 @@ async function workerMain() {
   };
 
   // Same spend shape as packages/solidcash/test/conformance/bch.ts buildAndSend. `salt` is a deployer's density
-  // reserve (a dropped redeem-script push), which raises the input's operation budget.
-  const spend = async (artifact, args, salt) => {
-    const provider = new MockNetworkProvider();
+  // reserve (a dropped redeem-script push), which raises the input's operation budget. No `limits`: the mock's own.
+  const spend = async (artifact, args, salt, limits) => {
+    const provider = new MockNetworkProvider(limits && { consensusLimits: limits });
     const contract = new Contract(artifact, [], { provider, ...(salt && { salt }) });
     const keccak = artifact.externalLibraries?.find((library) => library.name === 'keccak256' && library.resultNft);
     if (keccak) await fundKeccakSideCars(provider, false, Math.max(1, keccak.minInstances ?? 1));
@@ -112,29 +146,36 @@ async function workerMain() {
     return String(reason).split('\n')[0];
   };
 
-  const attempt = async (artifact, requireLine, line, salt) => {
+  const attempt = async (artifact, requireLine, line, salt, limits) => {
     try {
-      await spend(artifact, line.args, salt);
+      await spend(artifact, line.args, salt, limits);
       return line.failure
         ? { status: 'mismatched', outcome: 'success (no revert)' }
         : { status: 'matched', outcome: 'success' };
     } catch (cause) {
       if (!(cause instanceof FailedTransactionError)) {
-        return { status: 'mismatched', outcome: `build-error: ${errHead(cause)}` };
+        return { status: 'mismatched', outcome: `build-error: ${errHead(cause)}`, ...sizeStop(cause) };
       }
       const atCheck = cause instanceof FailedRequireError && cause.requireStatement?.line === requireLine;
       const outcome = canonicalOutcome(atCheck ? 'wrong value' : `revert: ${vmReason(cause)}`);
-      return { status: line.failure ? 'matched' : 'mismatched', outcome };
+      return { status: line.failure ? 'matched' : 'mismatched', outcome, ...sizeStop(cause) };
     }
   };
 
   // A spend stopped by the op-cost density limit is retried once behind a 512-byte reserve (the SDK caps a salt at
   // 520); the status suffix keeps those lines apart from plain matches and mismatches.
-  const runLine = async (artifact, requireLine, line) => {
-    const first = await attempt(artifact, requireLine, line);
+  const runLineUnder = async (artifact, requireLine, line, limits) => {
+    const first = await attempt(artifact, requireLine, line, undefined, limits);
     if (!/^revert: .*operation cost density limit/.test(first.outcome)) return first;
-    const retry = await attempt(artifact, requireLine, line, new Uint8Array(512).fill(0x5a));
+    const retry = await attempt(artifact, requireLine, line, new Uint8Array(512).fill(0x5a), limits);
     return { ...retry, status: `${retry.status}${DENSITY_RESERVE}` };
+  };
+
+  const runLine = async (artifact, requireLine, line) => {
+    const { size, ...real } = await runLineUnder(artifact, requireLine, line, REAL_SIZE_LIMITS);
+    if (!size) return real;
+    const relaxed = await runLineUnder(artifact, requireLine, line);
+    return relaxed.size ? real : underMockSizeLimits(relaxed, size, real.outcome);
   };
 
   const runCheck = async (check) => {
@@ -156,8 +197,8 @@ async function workerMain() {
   // funding txids (a deploy's category) and fires the mock reset hooks, so no process-global cache crosses fixtures.
   // A send counter on the provider tells whether a reverted line broadcast anything (a partial state change).
   let fundingNonce = 0;
-  const runSequence = async (artifact, sequence, salt) => {
-    const provider = new MockNetworkProvider();
+  const runSequence = async (artifact, sequence, salt, limits) => {
+    const provider = new MockNetworkProvider(limits && { consensusLimits: limits });
     provider.reset();
     const counter = { sent: 0 };
     const sendRaw = provider.sendRawTransaction.bind(provider);
@@ -171,7 +212,7 @@ async function workerMain() {
     try {
       contract = await getContractFactory(artifact, signer).deploy(...(salt ? [{ salt }] : []));
     } catch (cause) {
-      return { deployError: statefulOutcome(cause) };
+      return { deployError: statefulOutcome(cause), ...sizeStop(cause) };
     }
     const outcomes = [];
     for (const step of sequence) {
@@ -195,33 +236,49 @@ async function workerMain() {
     } catch (cause) {
       const outcome = statefulOutcome(cause);
       const reverted = outcome.startsWith('revert: ');
+      const size = sizeStop(cause);
       if (step.failure) {
         const sent = counter.sent - before;
-        if (!reverted || sent === 0) return { status: reverted ? 'matched' : 'mismatched', outcome };
-        return { status: 'mismatched', outcome: `${outcome} (after ${sent} broadcast tx: state changed)` };
+        if (!reverted || sent === 0) return { status: reverted ? 'matched' : 'mismatched', outcome, ...size };
+        return { status: 'mismatched', outcome: `${outcome} (after ${sent} broadcast tx: state changed)`, ...size };
       }
-      if (step.cmp && reverted && !DENSITY_STOP.test(outcome)) {
+      if (step.cmp && reverted && !DENSITY_STOP.test(outcome) && !size.size) {
         try {
           await fn(...step.args.slice(0, -1), false).send();
           return { status: 'mismatched', outcome: 'wrong value' };
         } catch { /* the revert is not the comparison */ }
       }
-      return { status: 'mismatched', outcome };
+      return { status: 'mismatched', outcome, ...size };
     }
   };
 
   // A line stopped by the density limit reruns the whole fixture behind the reserve (state must replay); lines from
   // the first stopped one on take the reserve run's results, tagged like the pure slice's retries.
-  const runStatefulArtifact = async (artifact, sequence) => {
-    if (artifact.constructorInputs?.length) return { compiled: true, skip: 'constructor-inputs' };
-    const plain = await runSequence(artifact, sequence);
+  const runSequenceUnder = async (artifact, sequence, limits) => {
+    const plain = await runSequence(artifact, sequence, undefined, limits);
     const at = plain.deployError ? (DENSITY_STOP.test(plain.deployError) ? 0 : -1)
       : plain.outcomes.findIndex((o) => DENSITY_STOP.test(o.outcome));
-    if (at < 0) return { compiled: true, ...plain };
-    const reserve = await runSequence(artifact, sequence, new Uint8Array(512).fill(0x5a));
-    if (reserve.deployError) return { compiled: true, deployError: `${reserve.deployError} (with density reserve)` };
+    if (at < 0) return plain;
+    const reserve = await runSequence(artifact, sequence, new Uint8Array(512).fill(0x5a), limits);
+    if (reserve.deployError) return { ...reserve, deployError: `${reserve.deployError} (with density reserve)` };
     const tagged = reserve.outcomes.map((o) => ({ ...o, status: `${o.status}${DENSITY_RESERVE}` }));
-    return { compiled: true, outcomes: plain.deployError ? tagged : [...plain.outcomes.slice(0, at), ...tagged.slice(at)] };
+    return { outcomes: plain.deployError ? tagged : [...plain.outcomes.slice(0, at), ...tagged.slice(at)] };
+  };
+
+  // Real size limits first. From the first line (or deploy) stopped by one that the relaxed limits do not stop, the
+  // lines take a relaxed replay's results; a deploy refused in both runs keeps the real refusal.
+  const runStatefulArtifact = async (artifact, sequence) => {
+    if (artifact.constructorInputs?.length) return { compiled: true, skip: 'constructor-inputs' };
+    const real = await runSequenceUnder(artifact, sequence, REAL_SIZE_LIMITS);
+    const kept = real.deployError ? { deployError: real.deployError } : { outcomes: real.outcomes.map(withoutSize) };
+    if (!(real.deployError ? real.size : real.outcomes.some((o) => o.size))) return { compiled: true, ...kept };
+    const relaxed = await runSequenceUnder(artifact, sequence);
+    const at = real.deployError ? 0 : real.outcomes.findIndex((o, k) => o.size && !relaxed.outcomes?.[k]?.size);
+    if (relaxed.deployError || at < 0) return { compiled: true, ...kept };
+    const [limit, stop] = real.deployError ? [real.size, real.deployError]
+      : [real.outcomes[at].size, real.outcomes[at].outcome];
+    const tagged = relaxed.outcomes.map((o) => underMockSizeLimits(o, limit, stop));
+    return { compiled: true, outcomes: [...(kept.outcomes ?? []).slice(0, at), ...tagged.slice(at)] };
   };
 
   // A derived wrapper refused for the target's hidden call-graph edges is compiled again with its checks inside it.
@@ -728,7 +785,8 @@ async function main() {
   const LIMIT = process.env.LIMIT ? Number(process.env.LIMIT) : Infinity;
   const FILTER = process.env.FILTER || '';
   const SLICE = process.env.SLICE || ''; // pure | stateful: run one slice only
-  const FIXTURE_TIMEOUT_MS = process.env.FIXTURE_TIMEOUT_MS ? Number(process.env.FIXTURE_TIMEOUT_MS) : 120000;
+  // Real size limits keep the SDK on its live-network VM path (no fast evaluators, full debug() probe traces).
+  const FIXTURE_TIMEOUT_MS = process.env.FIXTURE_TIMEOUT_MS ? Number(process.env.FIXTURE_TIMEOUT_MS) : 600000;
   const WORKER_COUNT = process.env.CORPUS_WORKERS ? Number(process.env.CORPUS_WORKERS) : 8;
   const started = Date.now();
 
@@ -837,6 +895,7 @@ async function main() {
     resultsFile: RESULTS,
     compileOptions: COMPILE_OPTIONS,
     statefulCompileOptions: STATEFUL_COMPILE_OPTIONS,
+    sizeLimits: REAL_SIZE_LIMITS,
     slice: SLICE || null,
     limit: LIMIT === Infinity ? null : LIMIT,
     filter: FILTER || null,
@@ -914,14 +973,32 @@ function tally(values) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
 }
 
-const reserveTag = (line) => (line.status?.endsWith(DENSITY_RESERVE) ? '(with density reserve) ' : '');
+const limitTag = (line) => {
+  if (line.status?.endsWith(DENSITY_RESERVE)) return '(with density reserve) ';
+  if (!line.status?.endsWith(MOCK_SIZE)) return '';
+  return `(under mock size limits: ${line.sizeLimit}${line.densityReserve ? ', with density reserve' : ''}) `;
+};
 const divergenceTag = (line) => (line.afterDivergence ? '(after divergence) ' : '');
 const block = (title, entries) => [`--- ${title} ---`, ...entries.map(([k, n]) => `${String(n).padStart(5)}  ${k}`)];
 const errorShape = (text) => String(text).replace(/'[^']*'/g, "'..'").replace(/\d+/g, 'N').slice(0, 120);
 // Group key for an outcome: digits and quoted text folded so shapes aggregate.
 const shapeOf = (line) => `${/->\s*FAILURE\b/.test(line.call) ? 'expected FAILURE' : 'expected values'}, got `
-  + divergenceTag(line) + reserveTag(line)
+  + divergenceTag(line) + limitTag(line)
   + String(line.outcome).replace(/"[^"]*"/g, '".."').replace(/\d+/g, 'N').slice(0, 110);
+// Lines a real size limit stopped, run under the mock's relaxed ones: by limit and by fixture, then the matched ones
+// (the mismatched ones are listed with the mismatches, tagged with their limit).
+const mockSizeBlocks = (prefix, lines) => {
+  const sized = lines.filter((l) => l.status?.endsWith(MOCK_SIZE));
+  return [
+    ...block(`${prefix}UNDER MOCK SIZE LIMITS (by the real BCH-2026 limit that stopped the line, and status)`,
+      tally(sized.map((l) => `${l.sizeLimit}: ${l.status}${l.afterDivergence ? ' (after divergence)' : ''}`))), '',
+    ...block(`${prefix}UNDER MOCK SIZE LIMITS (lines by fixture and limit)`,
+      tally(sized.map((l) => `${l.rel}  ${l.sizeLimit}`))), '',
+    `--- ${prefix}MATCHED UNDER MOCK SIZE LIMITS (fixture:line  call  =>  outcome) ---`,
+    ...sized.filter((l) => l.status.startsWith('matched'))
+      .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${limitTag(l)}${l.outcome}`),
+  ];
+};
 
 function writeReports(outputDir, meta, candidateCount, fixtures) {
   // The pure slice reports as before: a stateful fixture is one skipped for its state variables (or its routing).
@@ -941,6 +1018,8 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
       matchedWithDensityReserve: count(`matched${DENSITY_RESERVE}`),
       mismatched: count('mismatched'),
       mismatchedWithDensityReserve: count(`mismatched${DENSITY_RESERVE}`),
+      matchedUnderMockSizeLimits: count(`matched${MOCK_SIZE}`),
+      mismatchedUnderMockSizeLimits: count(`mismatched${MOCK_SIZE}`),
       refusedAtCompile: count('refused-at-compile'),
       skipped: count('skipped'),
       error: count('error'),
@@ -954,12 +1033,15 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
   writeFileSync(join(outputDir, 'semantic-results.json'), `${JSON.stringify({ meta, summary, fixtures }, null, 1)}\n`);
 
   const L = summary.lines;
-  const executed = L.matched + L.matchedWithDensityReserve + L.mismatched + L.mismatchedWithDensityReserve;
+  const executed = L.matched + L.matchedWithDensityReserve + L.mismatched + L.mismatchedWithDensityReserve
+    + L.matchedUnderMockSizeLimits + L.mismatchedUnderMockSizeLimits;
   const pct = executed ? ((100 * L.matched) / executed).toFixed(2) : '0.00';
   const header = `=== SOLC SEMANTIC RUNTIME PARITY (first slice): ${L.matched}/${executed} executed lines matched `
     + `(${pct}%) | ${L.matchedWithDensityReserve} matched-with-density-reserve | ${L.mismatched} mismatched `
-    + `| ${L.mismatchedWithDensityReserve} mismatched-with-density-reserve | ${L.refusedAtCompile} refused-at-compile `
-    + `| ${L.skipped} skipped | ${L.error} error | ${run.length} fixtures run of ${candidateCount} compiled candidates `
+    + `| ${L.mismatchedWithDensityReserve} mismatched-with-density-reserve | ${L.matchedUnderMockSizeLimits} `
+    + `matched-under-mock-size-limits | ${L.mismatchedUnderMockSizeLimits} mismatched-under-mock-size-limits `
+    + `| ${L.refusedAtCompile} refused-at-compile | ${L.skipped} skipped | ${L.error} error | ${run.length} fixtures `
+    + `run of ${candidateCount} compiled candidates `
     + `| ${meta.elapsedSeconds}s ===`;
   const mismatches = lines.filter((l) => l.status?.startsWith('mismatched'));
   const out = [
@@ -967,8 +1049,9 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
     ...block('FIXTURES SKIPPED (by reason)', Object.entries(summary.skippedFixtures)), '',
     ...block('LINES (selected fixtures)', [['selected', L.selected], ['matched', L.matched],
       [`matched${DENSITY_RESERVE}`, L.matchedWithDensityReserve], ['mismatched', L.mismatched],
-      [`mismatched${DENSITY_RESERVE}`, L.mismatchedWithDensityReserve], ['refused-at-compile', L.refusedAtCompile],
-      ['skipped', L.skipped], ['error (timeout/worker)', L.error]]), '',
+      [`mismatched${DENSITY_RESERVE}`, L.mismatchedWithDensityReserve],
+      [`matched${MOCK_SIZE}`, L.matchedUnderMockSizeLimits], [`mismatched${MOCK_SIZE}`, L.mismatchedUnderMockSizeLimits],
+      ['refused-at-compile', L.refusedAtCompile], ['skipped', L.skipped], ['error (timeout/worker)', L.error]]), '',
     ...block('LINES SKIPPED (by reason)', Object.entries(summary.lineSkipReasons)), '',
     ...block('MISMATCH SHAPES', tally(mismatches.map(shapeOf))), '',
     ...block('REFUSED-AT-COMPILE (by error head, per line)', tally(lines.filter((l) => l.status === 'refused-at-compile')
@@ -978,8 +1061,9 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
     '--- MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
     ...lines.filter((l) => l.status === `matched${DENSITY_RESERVE}`)
       .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${l.outcome}`), '',
+    ...mockSizeBlocks('', lines), '',
     '--- MISMATCHES (fixture:line  call  =>  outcome) ---',
-    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${reserveTag(l)}${l.outcome}`), '',
+    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${limitTag(l)}${l.outcome}`), '',
     ...stateful.blocks, '',
     ...pipelines.blocks,
     '',
@@ -994,7 +1078,7 @@ function statefulReport(fixtures) {
   const lines = run.flatMap((f) => f.lines.map((l) => ({ ...l, rel: f.rel })));
   const count = (status, after = false) => lines
     .filter((l) => l.status === status && Boolean(l.afterDivergence) === after).length;
-  const executed = (after) => ['matched', 'mismatched'].flatMap((s) => [s, `${s}${DENSITY_RESERVE}`])
+  const executed = (after) => ['matched', 'mismatched'].flatMap((s) => [s, `${s}${DENSITY_RESERVE}`, `${s}${MOCK_SIZE}`])
     .reduce((n, s) => n + count(s, after), 0);
   const summary = {
     fixturesWithState: fixtures.filter((f) => !f.routed).length,
@@ -1007,9 +1091,12 @@ function statefulReport(fixtures) {
       matchedWithDensityReserve: count(`matched${DENSITY_RESERVE}`),
       mismatched: count('mismatched'),
       mismatchedWithDensityReserve: count(`mismatched${DENSITY_RESERVE}`),
+      matchedUnderMockSizeLimits: count(`matched${MOCK_SIZE}`),
+      mismatchedUnderMockSizeLimits: count(`mismatched${MOCK_SIZE}`),
       afterDivergence: {
         executed: executed(true),
         matched: count('matched', true) + count(`matched${DENSITY_RESERVE}`, true),
+        matchedUnderMockSizeLimits: count(`matched${MOCK_SIZE}`, true),
       },
       refusedAtCompile: count('refused-at-compile'),
       refusedAtDeploy: count('refused-at-deploy'),
@@ -1023,8 +1110,10 @@ function statefulReport(fixtures) {
   const pct = clean ? ((100 * L.matched) / clean).toFixed(2) : '0.00';
   const header = `=== STATEFUL SLICE (deploy once, lines in order): ${L.matched}/${clean} executed lines matched `
     + `(${pct}%) | ${L.matchedWithDensityReserve} matched-with-density-reserve | ${L.mismatched} mismatched `
-    + `| ${L.mismatchedWithDensityReserve} mismatched-with-density-reserve | after divergence `
-    + `${L.afterDivergence.matched}/${L.afterDivergence.executed} matched | ${L.refusedAtCompile} refused-at-compile `
+    + `| ${L.mismatchedWithDensityReserve} mismatched-with-density-reserve | ${L.matchedUnderMockSizeLimits} `
+    + `matched-under-mock-size-limits | ${L.mismatchedUnderMockSizeLimits} mismatched-under-mock-size-limits `
+    + `| after divergence ${L.afterDivergence.matched}/${L.afterDivergence.executed} matched `
+    + `| ${L.refusedAtCompile} refused-at-compile `
     + `| ${L.refusedAtDeploy} refused-at-deploy | ${L.skipped} skipped | ${L.error} error | ${run.length} fixtures `
     + `run of ${summary.fixturesWithState} with state variables + ${summary.routedFixtures} routed from the pure slice ===`;
   const mismatches = lines.filter((l) => l.status?.startsWith('mismatched'));
@@ -1034,8 +1123,11 @@ function statefulReport(fixtures) {
     ...block('STATEFUL LINES (selected fixtures; after-divergence lines counted apart)', [['selected', L.selected],
       ['matched', L.matched], [`matched${DENSITY_RESERVE}`, L.matchedWithDensityReserve],
       ['mismatched', L.mismatched], [`mismatched${DENSITY_RESERVE}`, L.mismatchedWithDensityReserve],
+      [`matched${MOCK_SIZE}`, L.matchedUnderMockSizeLimits], [`mismatched${MOCK_SIZE}`, L.mismatchedUnderMockSizeLimits],
       ['matched after-divergence', L.afterDivergence.matched],
-      ['mismatched after-divergence', L.afterDivergence.executed - L.afterDivergence.matched],
+      [`matched${MOCK_SIZE} after-divergence`, L.afterDivergence.matchedUnderMockSizeLimits],
+      ['mismatched after-divergence', L.afterDivergence.executed - L.afterDivergence.matched
+        - L.afterDivergence.matchedUnderMockSizeLimits],
       ['refused-at-compile', L.refusedAtCompile], ['refused-at-deploy', L.refusedAtDeploy],
       ['skipped', L.skipped], ['error (timeout/worker)', L.error]]), '',
     ...block('STATEFUL LINES SKIPPED (by reason)', Object.entries(summary.lineSkipReasons)), '',
@@ -1053,8 +1145,9 @@ function statefulReport(fixtures) {
     '--- STATEFUL MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
     ...lines.filter((l) => l.status?.startsWith(`matched${DENSITY_RESERVE}`))
       .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${l.outcome}`), '',
+    ...mockSizeBlocks('STATEFUL ', lines), '',
     '--- STATEFUL MISMATCHES (fixture:line  call  =>  outcome) ---',
-    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${reserveTag(l)}${l.outcome}`),
+    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}${limitTag(l)}${l.outcome}`),
   ];
   return { summary, header, blocks };
 }
@@ -1109,7 +1202,7 @@ function pipelineReport(fixtures) {
     '--- PIPELINE-SPECIFIC LINES NOT MATCHED (fixture:line  call  =>  outcome) ---',
     ...lines.filter((l) => !l.status.startsWith('matched') && l.status !== 'skipped')
       .map((l) => `[${l.pipeline}] ${l.rel}:${l.line}  ${l.call}  =>  ${divergenceTag(l)}`
-        + `${l.status.startsWith('mismatched') ? reserveTag(l) : `${l.status}: `}${l.outcome}`),
+        + `${l.status.startsWith('mismatched') ? limitTag(l) : `${l.status}: `}${l.outcome}`),
   ];
   return { summary, header, blocks };
 }

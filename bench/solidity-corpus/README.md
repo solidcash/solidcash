@@ -104,6 +104,24 @@ pure first slice below, and the stateful slice after it.
   raises the input's operation budget) and scored as `matched-with-density-reserve` or
   `mismatched-with-density-reserve`, so op-cost limits stay visible instead of folding into plain results. FAILURE
   lines are retried too: a revert that only the density limit causes never counts as a plain match.
+- **Size limits**: the mock's own profile (`MOCK_CONSENSUS_LIMITS`) keeps the real operation-cost budget but relaxes
+  the input, stack item and NFT commitment limits to 1,000,000 bytes, so a line could match with a 2-kilobyte state
+  commitment no node accepts. Every spend therefore runs on `new MockNetworkProvider({ consensusLimits })` with the
+  real BCH-2026 values (`maximumInputBytes` 10,000, `maximumStackItemBytes` 10,000, `maximumNftCommitmentBytes`
+  128; everything else as before). A line stopped by one of them (read from the whole error text: `input` for an
+  unlocking bytecode over the maximum bytecode length or a byte-gate `consensus-unlocking-bytes` refusal, `stack
+  item` for a pushed item over the maximum stack item length, `commitment` for a state or token commitment over the
+  limit) runs again under the relaxed limits and is scored `matched-under-mock-size-limits` or
+  `mismatched-under-mock-size-limits`, recording the limit (`sizeLimit`) and the real run's outcome
+  (`realOutcome`); a density reserve the relaxed run needed becomes a flag (`densityReserve`). Like reserve lines,
+  they count as executed and never as matched. A line the relaxed run stops on a size limit too keeps its real
+  outcome: `create_memory_array_too_large` allocates 10^77 bytes in both, and a plain `TransactionBuilder.send()`
+  meets the SDK's finalized byte gate, which applies the real 10,000-byte input limit whatever the provider's
+  profile (no gate receipt is registered for it).
+- **Runtime under real limits**: the SDK keys its private-network fast paths on `maximumInputBytes > 10,000`
+  (`createVirtualMachine.ts` installs the cached P2SH and invoke evaluators only above it; probe derivation in
+  `faithful-probe-trace.ts` uses libauth `debug()` traces at or below it), so at the real limit every spend takes
+  the live-network path and runs several times slower. The default `FIXTURE_TIMEOUT_MS` is 600 s (was 120 s).
 - **Limits of the wrapper**: the target is reached through an internal call, so `msg.data` read by an internal
   function (it sees the wrapper's calldata) and entry-point-only paths can refuse or differ for wrapper reasons;
   those show up as refusals or mismatches with their reason, not as silent passes. `msg.sig` does not leak the
@@ -148,6 +166,10 @@ pure first slice below, and the stateful slice after it.
 - **Density reserve**: a density-limit stop replays the WHOLE fixture behind the 512-byte deploy salt
   (`deploy({ salt })`), since state must replay too; lines from the first stopped one take the replay's results
   with the `-with-density-reserve` suffix.
+- **Size limits**: the deploy and every line run under the same real limits. A deploy stopped by one, or the first
+  line stopped by one that the relaxed limits do not stop, replays the whole fixture under the relaxed limits; lines
+  from that point take the replay's results with the `-under-mock-size-limits` suffix and the stop's limit and
+  outcome. A deploy refused in both runs stays `refused-at-deploy` with the real refusal.
 - **Refusals**: a wrapper that does not compile refuses all the fixture's lines (`refused-at-compile`), a failed
   deploy `refused-at-deploy`.
 
@@ -173,11 +195,14 @@ RESCORE=true node bench/solidity-corpus/semantic-runner.mjs       # rebuild both
 ```
 
 Output: `semantic-results.json` (per fixture and line: matched / matched-with-density-reserve / mismatched /
-mismatched-with-density-reserve / refused-at-compile / skipped with reason / error for timeouts) and
-`semantic-scorecard.txt` (counts, mismatch shapes, the lines matched behind a reserve, then every mismatch, a
-reserve one tagged `(with density reserve)`; the stateful header is its second line and the stateful section, with
-`refused-at-deploy`, the revert reasons that matched FAILURE lines, the routed lines and `(after divergence)` tags,
-follows the pure one; the pipeline header is the third line, its section comes last). First run (2026-10-11, corpus
+mismatched-with-density-reserve / matched-under-mock-size-limits / mismatched-under-mock-size-limits /
+refused-at-compile / skipped with reason / error for timeouts; `meta.sizeLimits` holds the limits applied) and
+`semantic-scorecard.txt` (counts, mismatch shapes, the lines matched behind a reserve, the mock-size lines by
+limit and status and by fixture and limit plus the matched ones, then every mismatch, a reserve one tagged
+`(with density reserve)` and a mock-size one `(under mock size limits: <limit>)`; the stateful header is its
+second line and the stateful section, with `refused-at-deploy`, the revert reasons that matched FAILURE lines, the
+routed lines and `(after divergence)` tags, follows the pure one; the pipeline header is the third line, its section
+comes last). First run (2026-10-11, corpus
 816d9b2a, 6 workers, 140 s): 489 fixtures / 1,778 lines selected; 1,332 of 1,612 executed lines matched (82.6%), 280
 mismatched, 4 refused at compile, 154 skipped, 8 timed out. With side-cars and the reserve (2026-10-11, 8 workers,
 140 s): 1,344 of 1,612 matched (83.4%), 8 matched with a reserve (5 of them FAILURE lines that still stop on the
@@ -220,6 +245,21 @@ derivation on a duplicate stateful input. Stateful: 637 of 707 clean lines (90.1
 refused at compile and 64 at deploy; `write_storage_external` now compiles in the target and stops at deploy
 (derivation oscillation). 12 more stateful fixtures match through this branch's newer compiler
 (`storageLayoutSpecifier` slots and offsets, `interfaceID/interfaces`, `base_base_overload`), not the runner.
+
+Real size limits (2026-10-11, corpus 816d9b2a, 8 workers, 646 s for both slices, was 151 s): every spend and deploy
+runs under the real input, stack item and commitment limits. 45 lines stop on one and run again under the mock's
+limits: 39 on `commitment`, all at deploy (`Commitment for NFT index N exceeds limit`: `fixed_arrays_in_storage` 9,
+`fixed_out_of_bounds_array_access` 8, `state_variable_reference_types_slot_offset` 5,
+`nested_array_memory_to_storage` 4, 12 more array and struct copy fixtures with 13 lines, one pipeline-specific),
+6 on `input` (`copy_struct_array_from_storage` 4: a 10,049-byte constructor probe; `storage_memory_nested_struct`
+1: 13,061 bytes; 1 pure line), none on `stack item`. 14 of them matched under the relaxed limits before, 30 were
+refused at deploy in the previous scorecard and now deploy only under the relaxed limits. Stateful: 638 of 750
+clean executed lines match (85.07%; 89.99% without the 41 mock-size lines, of which 37 match and 4 mismatch), after
+divergence 27 of 66, 18 refused at deploy (was 56: 29 of those 30, and 9 `deployedCodeExclusion` lines that deploy
+through this branch's newer SDK, the same under the relaxed limits). Pure: 1,373 of 1,489 (92.21%). Every line of
+`all_possible_user_defined_value_types_with_operators` (8, timeouts at 120 s before, 562 s now) is over the input
+limit (12,262 to 12,870 bytes): one reverts on its own under the relaxed limits
+(`mismatched-under-mock-size-limits`), the other 7 stop at the SDK byte gate in both runs and stay plain mismatches.
 
 ## Retained release scorecard (2026-08, 7,343 files)
 

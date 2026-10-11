@@ -33,14 +33,15 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *     also called on the same spend - and was attributed to `sendRawTransaction`.
  * (3) It then "settled" the row the other way by measuring `@mem-cash/validation` 0.0.7, where the overrides
  *     genuinely are dropped, and concluded the bare VM is the faithful one. THAT is the conclusion that
- *     mattered and it was wrong for this repo: `packages/solidcash/package.json` declares `^0.0.8` (exactly
- *     0.0.8 for a 0.0.x range) and `yarn.lock` resolves 0.0.8. The 0.0.7 reading was accurate; generalising it
+ *     mattered and it was wrong for this repo: `packages/solidcash/package.json` declares `^0.0.10` (exactly
+ *     0.0.10 for a 0.0.x range) and `yarn.lock` resolves 0.0.10. The 0.0.7 reading was accurate; generalising it
  *     was not.
  *
- * AT 0.0.8 - the sanctioned version - `TxVerifierConfig.consensus` exists, MockNetworkProvider's overrides
- * (`MockNetworkProvider.ts:80-98`) reach the decider, and `createVirtualMachineBch2026ForProvider` agrees with
- * it on every shape measured while the bare VM diverges in both directions. Row 2 below now measures the submit
- * path REFUSING both dimensions, which is 0.0.8 behaviour and is pinned as such.
+ * AT 0.0.10 - the sanctioned version, 0.0.8 before it - `TxVerifierConfig.consensus` exists, MockNetworkProvider's
+ * overrides (`MockNetworkProvider.ts:335-353`) reach the decider, and `createVirtualMachineBch2026ForProvider`
+ * agrees with it on every shape measured while the bare VM diverges in both directions. Row 2 below measures the
+ * submit path REFUSING both dimensions, which is 0.0.8-and-later behaviour and is pinned as such. Re-measured at
+ * 0.0.10 on 2026-10-11: every row here is green.
  *
  * Rows 1 and 3 are unchanged and are version-independent: they compare the two FACTORIES, not the decider.
  * Row 3 is row 1's guard negative control, differing ONLY in `maximumStackItemBytes`.
@@ -83,7 +84,7 @@ const evaluateInput0 = (
   transaction: builder.buildLibauthTransaction(),
 }) as { error?: string }).error;
 
-describe('X109 - the decider applies the published limits (@mem-cash/validation 0.0.8)', () => {
+describe('X109 - the decider applies the published limits (@mem-cash/validation 0.0.10)', () => {
   it('1. the bare VM accepts what the provider-faithful VM rejects, with the gate reading false', async () => {
     const provider = new MockNetworkProvider({
       consensusLimits: limits(8), policy: { enforceDust: false },
@@ -96,10 +97,10 @@ describe('X109 - the decider applies the published limits (@mem-cash/validation 
       .toMatch(/exceeded the maximum stack item length/);
   });
 
-  it('2. the decider DOES enforce the published limits, in both dimensions [0.0.8]', async () => {
+  it('2. the decider DOES enforce the published limits, in both dimensions [0.0.10]', async () => {
     // VERSION-DEPENDENT. At 0.0.7 both submits below ACCEPT, because TxVerifierConfig has no `consensus` field
     // and the overrides are dropped. X121 row 0 is the version gate; this row states which side it pins.
-    expect(MEM_CASH_VALIDATION_VERSION, 'this row pins 0.0.8 behaviour').toBe('0.0.8');
+    expect(MEM_CASH_VALIDATION_VERSION, 'this row pins 0.0.10 behaviour').toBe('0.0.10');
 
     // maximumStackItemBytes: enforced. The refusal names the published 8 and the offending 65-byte signature.
     const strictItem = new MockNetworkProvider({

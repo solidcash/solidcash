@@ -36,7 +36,7 @@ type VM = AuthenticationVirtualMachine<
  * accept/reject gate for `.build()` on a `recursiveStateHandler` function, and `TransactionBuilder.send()`
  * propagates it for a standard non-covenant transaction.
  *
- * At `@mem-cash/validation` 0.0.8 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
+ * At `@mem-cash/validation` 0.0.10 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
  * `consensusLimits` reach the decider, so a bare VM here was wrong in BOTH directions. Measured:
  *
  * - FAIL-OPEN: `decrement(3).build()` was ADMITTED under `operationCostBudgetPerByte: 150` while the decider

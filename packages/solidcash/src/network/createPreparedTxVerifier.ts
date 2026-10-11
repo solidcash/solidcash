@@ -37,11 +37,11 @@ const toVmOutputs = (sourceOutputs: readonly SourceOutput[]): LibauthOutput[] =>
 }));
 
 /**
- * Prepared-transaction adapter for mem-cash 0.0.8's verification pipeline.
+ * Prepared-transaction adapter for mem-cash 0.0.10's verification pipeline.
  *
  * The core node has already decoded the raw transaction once to resolve its source outputs. SDK builders can
  * additionally provide that same decoded transaction, avoiding the verifier's second decode/re-encode cycle.
- * Every pre-VM check and its ordering mirrors mem-cash 0.0.8; calls without an exact prepared match delegate to
+ * Every pre-VM check and its ordering mirrors mem-cash 0.0.10; calls without an exact prepared match delegate to
  * the stock verifier. This adapter is only selected for oversized BCH-2026 mock profiles at its call site.
  */
 export function createPreparedBch2026TxVerifier(

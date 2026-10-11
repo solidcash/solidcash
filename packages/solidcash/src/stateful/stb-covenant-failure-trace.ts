@@ -289,7 +289,7 @@ export function logCovenantFailureTrace(
   // X109 / X121: this path only PRINTS, so it decides nothing and is left bare deliberately. The gate above
   // is `> 10_000`, so a provider publishing limits AT 10,000 reaches this branch.
   //
-  // At `@mem-cash/validation` 0.0.8 - the version this package declares - the published limits DO reach the
+  // At `@mem-cash/validation` 0.0.10 - the version this package declares - the published limits DO reach the
   // decider, so a bare VM here can trace a shape the decider judged differently. Being bare makes this
   // tracer stricter than a strict profile and looser than a relaxed one; for a diagnostic that only widens
   // or narrows what gets printed, which is why it is not worth the extra coupling. The deciding twin below

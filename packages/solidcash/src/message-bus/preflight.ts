@@ -949,7 +949,7 @@ import {
  *
  * The same per-input BCH-2026 evaluation `sendPreflightedMessageBusTransaction` runs, from the same
  * provider-derived factory `StatefulTransactionBuilder._strictRecursiveVmPreflight` uses, which at
- * `@mem-cash/validation` 0.0.8 agrees with the mock's own decider on every shape measured (X121).
+ * `@mem-cash/validation` 0.0.10 agrees with the mock's own decider on every shape measured (X121).
  *
  * `debug()` IS NOT THE INSTRUMENT TO REACH FOR at any of the sites that route through here. The four
  * `StatefulContract` lifecycle-admin sites bypass it outright; `TransactionBuilder.send` debugs a COVENANT

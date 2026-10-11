@@ -72,8 +72,8 @@
   "dependencies": {
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist",
     "@electrum-cash/network": "^4.1.3",
-    "@mem-cash/electrum": "^0.0.7",
-    "@mem-cash/validation": "^0.0.8",
+    "@mem-cash/electrum": "^0.0.10",
+    "@mem-cash/validation": "^0.0.10",
     "@mr-zwets/bchn-api-wrapper": "^1.0.1",
     "@solidcash/utils": "^0.13.1",
     "fflate": "^0.8.2",

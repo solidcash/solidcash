@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { build } from 'esbuild';
+import { build, type BuildResult } from 'esbuild';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { randomUtxo } from '../../src/utils.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -19,14 +18,16 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * repository's `paths` mapping, which would otherwise resolve `solidc/runtime` to `packages/solidc/src`: a consumer
  * has no such mapping.
  *
- * A bundle only RUNS when the bundler preserves top-level await, which is what `splitting` gives esbuild and what
- * Rollup, Vite and webpack give without being asked. `@bitauth/libauth` instantiates its WebAssembly crypto behind a
+ * A bundle RUNS when the bundler preserves top-level await, which is what `splitting` gives esbuild and what Rollup,
+ * Vite and webpack give without being asked. `@bitauth/libauth` instantiates its WebAssembly crypto behind a
  * module-level `await`; in a single-file esbuild bundle that makes every module initializer async, and esbuild then
- * cannot order an import cycle that contains one: the cycle's initializers await each other and never settle, and a
- * module-scope read of a binding that sits behind a re-export barrel can see `undefined`. `dist/stateful/index.js`
- * (cycles among the `stateful/` and `message-bus/` modules) and libauth's own `compiler-utils.js` both fail that way
- * in a single-file bundle. The static test below therefore bundles WITHOUT splitting - the strongest form of "the
- * compiler is not in the graph" - and the runtime tests bundle with it.
+ * cannot order an import cycle that contains one: the cycle's initializers await each other and never settle.
+ * `dist/stateful/index.js` still fails that way (cycles among the `stateful/` and `message-bus/` modules), so the
+ * tests that import every entry bundle with `splitting`. `dist/network/mock/index.js` and `dist/index.js` do
+ * initialize from a single file, which the tests below pin: their graph used to enter libauth's compiler through the
+ * root barrel that `@mem-cash/*` 0.0.9 and older imported, before the awaits that binding depends on had settled,
+ * and that read threw `createVirtualMachineBchSpec is not a function`. `@mem-cash/*` 0.0.10 imports only the modules
+ * it uses, and no libauth barrel is left in the graph.
  */
 
 const packageRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -43,7 +44,9 @@ const distEntries = ((): string[] => {
 const COMPILER_CORE = /solidc[/\\](?:src|dist)[/\\](?:compiler|compileFile)\.(?:js|ts)$/;
 
 /** Bundle an entry from the package's `dist`, as a bundler outside this repository resolves it. */
-const bundleResult = async (relative: string, platform: 'browser' | 'node', splitting = false) => build({
+const bundleResult = async (
+  relative: string, platform: 'browser' | 'node', splitting = false,
+): Promise<BuildResult> => build({
   entryPoints: [join(packageRoot, relative)],
   bundle: true,
   platform,
@@ -58,6 +61,21 @@ const bundleResult = async (relative: string, platform: 'browser' | 'node', spli
 
 const bundle = async (relative: string, platform: 'browser' | 'node'): Promise<string[]> =>
   Object.keys((await bundleResult(relative, platform)).metafile.inputs);
+
+/** Import a single-file browser bundle: the configuration whose module-init order is the fragile one. */
+const importSingleFileBundle = async (relative: string): Promise<{
+  modules: string[];
+  exports: Record<string, any>;
+}> => {
+  const result = await bundleResult(relative, 'browser');
+  const dir = mkdtempSync(join(tmpdir(), 'solidcash-browser-single-'));
+  const file = join(dir, 'bundle.mjs');
+  writeFileSync(file, result.outputFiles[0].text);
+  return {
+    modules: Object.keys(result.metafile.inputs),
+    exports: await import(pathToFileURL(file).href) as Record<string, any>,
+  };
+};
 
 /** Import a browser bundle the way a browser would load it, from the files the bundler wrote. */
 const importBundle = async (relative: string): Promise<Record<string, any>> => {
@@ -97,6 +115,14 @@ describe('SDK browser bundle', () => {
       }
     }
     expect(failures).toEqual([]);
+  }, 300_000);
+
+  it('initializes the mock provider from a single-file browser bundle', async () => {
+    const { modules, exports: single } = await importSingleFileBundle('dist/network/mock/index.js');
+    expect(typeof single.MockNetworkProvider).toBe('function');
+    // The cause of the old failure: libauth's root barrel, and the vmb tests only it reached.
+    expect(modules.filter((module) => /libauth\/build\/lib\/lib\.js$/.test(module))).toEqual([]);
+    expect(modules.filter((module) => /\/vmb-tests\//.test(module))).toEqual([]);
   }, 300_000);
 
   it('keeps the compiler in the Node build of the framed entry', async () => {

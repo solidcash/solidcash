@@ -20,12 +20,13 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *
  * `debugging.ts` DECIDES: `StatefulContract._preflightRecursiveBuilder` calls `builder.debug()` and rethrows,
  * so its VM is the accept/reject gate for `.build()` on a `recursiveStateHandler`. It built a bare
- * `createVirtualMachineBch2026()`, which at `@mem-cash/validation` 0.0.8 diverges from the decider in BOTH
- * directions. X121 rows 2/4/6 measured the divergence and pinned the fail-open half as a KNOWN GAP because the
- * repair needed a hunk in `libauth-template/LibauthTemplate.ts`. Both halves are landed now, together: an
- * optional parameter nobody supplies would read as provider-aware while behaving bare.
+ * `createVirtualMachineBch2026()`, which diverges from the decider in BOTH directions at every sanctioned
+ * version (0.0.8 and 0.0.10). X121 rows 2/4/6 measured the divergence and pinned the fail-open half as a KNOWN
+ * GAP because the repair needed a hunk in `libauth-template/LibauthTemplate.ts`. Both halves are landed now,
+ * together: an optional parameter nobody supplies would read as provider-aware while behaving bare.
  *
- * EVERY BEHAVIOURAL CLAIM IS PINNED TO 0.0.8 and row 0 asserts it, for the reason X121 row 0 gives: at 0.0.7
+ * EVERY BEHAVIOURAL CLAIM IS PINNED TO 0.0.10 (re-measured there on 2026-10-11, all green) and row 0 asserts
+ * it, for the reason X121 row 0 gives: at 0.0.7
  * `TxVerifierConfig` has no `consensus` field, the published overrides are silently dropped, and every verdict
  * here inverts.
  *
@@ -153,16 +154,16 @@ async function p2pkhSpend(provider: MockNetworkProvider): Promise<TransactionBui
   return builder;
 }
 
-describe('X130 - the debug VM decides on the published limits (@mem-cash/validation 0.0.8)', () => {
-  it('0. VERSION GATE: the installed decider is 0.0.8, which every row below is pinned to', () => {
+describe('X130 - the debug VM decides on the published limits (@mem-cash/validation 0.0.10)', () => {
+  it('0. VERSION GATE: the installed decider is 0.0.10, which every row below is pinned to', () => {
     expect(
       MEM_CASH_VALIDATION_VERSION,
-      `@mem-cash/validation ${MEM_CASH_VALIDATION_VERSION} is installed. This file pins 0.0.8 - the version `
-      + 'packages/solidcash/package.json declares (^0.0.8 means exactly 0.0.8 for a 0.0.x range) and yarn.lock '
+      `@mem-cash/validation ${MEM_CASH_VALIDATION_VERSION} is installed. This file pins 0.0.10 - the version `
+      + 'packages/solidcash/package.json declares (^0.0.10 means exactly 0.0.10 for a 0.0.x range) and yarn.lock '
       + 'resolves. At 0.0.7 TxVerifierConfig has no `consensus` field, MockNetworkProvider consensusLimits are '
       + 'silently dropped, and every verdict below is inverted. Reinstall the workspace rather than relaxing '
       + 'a row.',
-    ).toBe('0.0.8');
+    ).toBe('0.0.10');
   });
 
   it('1. FAIL-OPEN CLOSED: .build() refuses depth 3 at 140 x density, and so does the decider', async () => {

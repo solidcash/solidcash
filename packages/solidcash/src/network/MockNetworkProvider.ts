@@ -75,19 +75,19 @@ export const MOCK_DEFAULT_BLOCK_TIME = 1700000000;
  * `@mem-cash/validation` applying them. `_strictRecursiveVmPreflight` reads the SAME limits, so the build-time
  * gate and the broadcast-time decider agree only while that override channel works.
  *
- * `@mem-cash/validation` 0.0.8 declares `TxVerifierConfig.consensus` and threads it into every VM it builds.
+ * `@mem-cash/validation` 0.0.8 and later declare `TxVerifierConfig.consensus` and thread it into every VM they build.
  * 0.0.7 has neither the field nor any read of it: `createVmFacade(version, standard)` takes no third argument
  * and the whole object is dropped. On 0.0.7 the decider therefore runs libauth's stock limits while the
  * preflight reads the published ones, and the gate is FAIL-OPEN in the direction that matters - `decrement(24)`
  * builds against a published 10,000,000 and is then refused at broadcast by a stock 800.
  *
- * `packages/solidcash/package.json` declares `^0.0.8`, which for a `0.0.x` range means exactly 0.0.8, and
+ * `packages/solidcash/package.json` declares `^0.0.10`, which for a `0.0.x` range means exactly 0.0.10, and
  * `yarn.lock` resolves it. A stale `node_modules` is the only way to reach 0.0.7 - and a failing test is not a
  * runtime guard. This measures the behaviour once and refuses to construct a provider that cannot decide.
  *
  * BEHAVIOURAL, NOT A VERSION STRING. A version string can be right while the build on disk is not (a patched
- * tarball, a linked working copy, a renamed channel), and a future 0.0.9 would fail a `=== '0.0.8'` check while
- * honouring overrides perfectly. This measures the only thing that matters: hand the real `createTxVerifier` a
+ * tarball, a linked working copy, a renamed channel), and a version string can fail a `===` check against a
+ * build that honours overrides perfectly. This measures the only thing that matters: hand the real `createTxVerifier` a
  * limit and see whether its verdict moves.
  *
  * CONTROLLED AND MULTI-FIELD, both deliberate.
@@ -95,8 +95,7 @@ export const MOCK_DEFAULT_BLOCK_TIME = 1700000000;
  *    broken", so a RELAXED control that must ACCEPT runs first. If the control fails, the message says the
  *    probe is inconclusive rather than blaming the install.
  *  - The strict points cover the channels this provider actually depends on, including
- *    `operationCostBudgetPerByte`, which 0.0.8 does not even declare in `ConsensusOverrides` and which is the
- *    field the recursive-preflight decision turns on.
+ *    `operationCostBudgetPerByte`, the field the recursive-preflight decision turns on.
  *
  * SCOPE. It establishes that the installed build applies published consensus overrides, demonstrated on two or
  * three fields depending on the VM version. It is not a claim that every field in `MOCK_CONSENSUS_LIMITS` is
@@ -207,8 +206,8 @@ export const probeConsensusOverrides = (
       return 'MockNetworkProvider: the installed @mem-cash/validation does NOT honour published consensus '
         + `limits. Probed on ${vmVersion}: the identical transaction is accepted at the relaxed limits and `
         + `must be refused at \`${point.field}: ${point.strict}\`, but the decider answered `
-        + `"${strict.reason}". Run \`yarn install\` - packages/solidcash/package.json requires exactly 0.0.8 `
-        + '(`^0.0.8` on a 0.0.x range) and 0.0.7 silently ignores published consensus limits, which makes '
+        + `"${strict.reason}". Run \`yarn install\` - packages/solidcash/package.json requires exactly 0.0.10 `
+        + '(`^0.0.10` on a 0.0.x range) and 0.0.7 silently ignores published consensus limits, which makes '
         + '`consensusLimits` on this provider decorative: the build-time preflight would read them while the '
         + 'broadcast-time decider ran libauth stock values, so shapes would pass `.build()` and fail `.send()`.';
     }
@@ -595,9 +594,11 @@ export default class MockNetworkProvider implements NetworkProvider {
       return txid;
     }
 
-    // libauth's CashToken introspection operations in current releases call the common checked-push helper rather
-    // than the selected BCH instruction set's stack-item limit. mem-cash overrides those operations natively in
-    // its next release; keep 0.0.8 compatible by scoping the legacy common value to this synchronous mock check.
+    // libauth's CashToken introspection operations call the common checked-push helper rather than the selected
+    // BCH instruction set's stack-item limit. `@mem-cash/validation` 0.0.8 has that defect, so the published
+    // limit is scoped to the common value for this synchronous mock check; 0.0.10 - the version this package
+    // declares - overrides those operations natively in its own verifier, which leaves this scoping as a 0.0.8
+    // compatibility layer. It is a candidate for removal once nothing supports 0.0.8.
     const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
     const previousStackItemLength = commonConsensus.maximumStackItemLength;
     commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;

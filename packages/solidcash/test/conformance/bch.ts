@@ -81,13 +81,19 @@ export async function evalBchCheck(
 // Stateful eval: genesis the contract's data NFT(s), then spend `fnName` through the StatefulContract covenant.
 // Used for slot-layout conformance (assembly `.slot` reads live in a stateful contract). resolve = PASS,
 // FailedRequireError = MISMATCH.
-async function buildAndSendStateful(artifact: BchArtifact, fnName: string, args: readonly unknown[]): Promise<void> {
+async function prepareStateful(
+  artifact: BchArtifact, fnName: string, args: readonly unknown[],
+): Promise<() => Promise<unknown>> {
   const provider = new MockNetworkProvider();
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, { saltContract: true });
   const sc = StatefulContract.withCategory(contract, categoryId);
   const fn = (sc as unknown as Record<string, (...a: unknown[]) => { send: () => Promise<unknown> }>)[fnName];
-  await fn(...args).send();
+  return () => fn(...args).send();
+}
+
+async function buildAndSendStateful(artifact: BchArtifact, fnName: string, args: readonly unknown[]): Promise<void> {
+  await (await prepareStateful(artifact, fnName, args))();
 }
 
 export async function evalBchStatefulCheck(
@@ -98,6 +104,23 @@ export async function evalBchStatefulCheck(
     return true;
   } catch (e) {
     if (e instanceof FailedRequireError) return false;
+    throw e;
+  }
+}
+
+// Stateful revert probe on a fresh genesis: true only when the VM refused the spend (the SDK's preflight evaluation
+// or the node). A genesis setup failure or an SDK error is rethrown.
+export async function evalBchStatefulVmRejects(
+  artifact: BchArtifact, fnName: string, args: readonly unknown[],
+): Promise<boolean> {
+  const send = await prepareStateful(artifact, fnName, args);
+  try {
+    await send();
+    return false;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (e instanceof FailedTransactionError
+      || /preflight failed|undefined function identifier|mandatory-script-verify/.test(message)) return true;
     throw e;
   }
 }

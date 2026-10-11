@@ -2,7 +2,8 @@
 // functions, overloads, internal function pointers, enums and recursion. Each source declares `C` with `f`.
 import { describe, it } from 'vitest';
 import {
-  assertConformant, assertStatefulConformant, contractCase, type ConformanceCase,
+  assertConformant, assertStatefulConformant, assertStatefulReverts, contractCase, contractRevertCase,
+  type ConformanceCase,
 } from './harness.js';
 
 const run = (
@@ -14,6 +15,10 @@ const runStateful = (label: string, source: string, params: string, args: readon
   const c: ConformanceCase = contractCase({ label, source, params, retType: 'uint256', args });
   return assertStatefulConformant({ ...c, scash: c.scash.replace(' public pure {', ' public {') });
 };
+
+// A stateful `C` whose `f` must revert on both VMs from zero state.
+const runStatefulReverts = (label: string, source: string, params: string, args: readonly unknown[]): Promise<void> =>
+  assertStatefulReverts(contractRevertCase({ label, source, params, retType: 'uint256', args }));
 
 describe('contracts: inheritance', () => {
   it('super chain', () => run('super', `
@@ -266,4 +271,45 @@ contract C {
     return C.x * 100 + x;
   }
 }`, 'uint256 x', [5n]));
+});
+
+// A state pointer `ev` assigned and called in one function folds `ev()` to its target only when an assignment
+// reaches every call; otherwise the call reads the stored pointer, which is unset in zero state and reverts.
+const statePointer = (params: string, body: string, extra = ''): string => `
+contract C {
+  uint256 base;
+  function() internal returns (uint256) ev;
+  function seven() internal pure returns (uint256) { return 7; }
+  function nine() internal pure returns (uint256) { return 9; }${extra}
+  function f(${params}) public returns (uint256) {
+    ${body}
+  }
+}`;
+
+describe('contracts: state function pointer assigned and called in one function', () => {
+  const conditional = statePointer('bool c', 'if (c) ev = seven;\n    return ev() + base;');
+  const inLoop = statePointer('uint256 n', 'for (uint256 i = 0; i < n; i++) ev = seven;\n    return ev() + base;');
+
+  it('a conditional assignment that ran calls its target', () => runStateful('fnptr-cond-set', conditional,
+    'bool c', [true]));
+
+  it('a conditional assignment that did not run leaves the pointer unset', () => runStatefulReverts(
+    'fnptr-cond-unset', conditional, 'bool c', [false]));
+
+  it('a reassignment on one path calls the reassigned target', () => runStateful('fnptr-reassigned',
+    statePointer('bool c', 'ev = seven;\n    if (c) ev = nine;\n    return ev() + base;'), 'bool c', [true]));
+
+  it('an assignment inside a loop that ran calls its target', () => runStateful('fnptr-loop-set', inLoop,
+    'uint256 n', [2n]));
+
+  it('an assignment inside a loop that ran zero times leaves the pointer unset', () => runStatefulReverts(
+    'fnptr-loop-unset', inLoop, 'uint256 n', [0n]));
+
+  it('a straight-line alias reaches calls in nested branches', () => runStateful('fnptr-alias',
+    statePointer('uint256 x', 'ev = seven;\n    if (x > 2) return ev() * x + base;\n    return ev() + base;'),
+    'uint256 x', [3n]));
+
+  it('a pointer only another function assigns is unset', () => runStatefulReverts('fnptr-unset-elsewhere',
+    statePointer('uint256 x', 'return ev() + base + x;', '\n  function set() public { ev = seven; }'),
+    'uint256 x', [1n]));
 });

@@ -5,7 +5,7 @@ import {
   compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
 } from './evm.js';
 import {
-  compileBch, evalBchCheck, evalBchVmRejects, compileBchStateful, evalBchStatefulCheck,
+  compileBch, evalBchCheck, evalBchVmRejects, compileBchStateful, evalBchStatefulCheck, evalBchStatefulVmRejects,
 } from './bch.js';
 
 const SPDX = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n';
@@ -182,6 +182,23 @@ export async function assertReverts(c: RevertCase): Promise<void> {
       throw new Error(`Revert MISMATCH${tag} (${modeName(evmCompat)}): expected the BCH covenant to reject, `
         + 'but it accepted');
     }
+  }
+}
+
+// Assert the EVM reference AND the stateful BCH covenant (both from zero state) reject the call. Compile errors throw.
+export async function assertStatefulReverts(c: RevertCase): Promise<void> {
+  const tag = c.label ? ` [${c.label}]` : '';
+  const evm = compileEvm(c.solidity);
+  const artifact = compileBchStateful(c.scash);
+  let evmReverted = false;
+  try {
+    await evalEvm(evm, c.evmFn, c.args);
+  } catch {
+    evmReverted = true;
+  }
+  if (!evmReverted) throw new Error(`Revert MISMATCH${tag}: expected EVM to revert, but it returned a value`);
+  if (!await evalBchStatefulVmRejects(artifact, c.bchFn, c.args)) {
+    throw new Error(`Revert MISMATCH${tag}: expected the stateful BCH covenant to reject, but it accepted`);
   }
 }
 
@@ -729,6 +746,23 @@ export function contractCase(o: {
     bchFn: 'check',
     args: o.args,
     ...(o.evmCompat === undefined ? {} : { evmCompat: o.evmCompat }),
+    label: o.label,
+  };
+}
+
+// A whole contract whose `f` must revert on both VMs: the derived `Check` calls it and accepts any result, so only `f`
+// itself can refuse the spend.
+export function contractRevertCase(o: {
+  source: string; params: string; retType: string; args: readonly unknown[]; label: string;
+}): RevertCase {
+  const names = o.params.length === 0 ? '' : o.params.split(',').map((p) => p.trim().split(/\s+/).pop()).join(', ');
+  return {
+    solidity: `${SPDX}${o.source}\n`,
+    scash: `${o.source}\ncontract Check is C {\n  function check(${o.params}) public {\n`
+      + `    ${o.retType} r = f(${names});\n    require(r == r);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'check',
+    args: o.args,
     label: o.label,
   };
 }

@@ -499,8 +499,9 @@ function declPos(n: { location?: { start: { line: number; column: number } } }):
 // (EVM counts every member - a mapping / dynamic array takes one slot; a fixed struct/array takes its whole
 // multi-word footprint; sub-word scalars pack). Collections are merged in so a mapping's slot is known (needed
 // to bridge the assembly mapping-slot idiom to the high-level mapping) and so a scalar declared after a mapping
-// gets its correct EVM slot. currentSlots (int-field decode) is only filled for packed scalar slots.
-function computeStorageLayout(vars: StateVariableNode[], collections: CollectionNode[] = []): void {
+// gets its correct EVM slot. currentSlots (int-field decode) is only filled for packed scalar slots. A `layout at`
+// base shifts the whole layout, inherited vars included (solc's base applies to the linearized layout).
+function computeStorageLayout(vars: StateVariableNode[], collections: CollectionNode[] = [], base = 0n): void {
   currentSlots = new Map();
   currentVarSlot = new Map();
   currentDynamicArrayTypes = new Map();
@@ -510,7 +511,7 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
   type Member = { sv: StateVariableNode } | { col: CollectionNode };
   const members: Member[] = [...vars.map((sv) => ({ sv })), ...collections.map((col) => ({ col }))];
   members.sort((a, b) => declPos('sv' in a ? a.sv : a.col) - declPos('sv' in b ? b.sv : b.col));
-  let slot = 0n;
+  let slot = base;
   let byteOff = 0;
   for (const m of members) {
     if ('col' in m) {
@@ -3528,7 +3529,8 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitContract(node: ContractNode): Node {
     const savedContractName = currentContractName;
     currentContractName = node.name;
-    computeStorageLayout(node.stateVariables, node.collections);
+    computeStorageLayout(node.stateVariables, node.collections, node.storageLayoutBase);
+    // Transient storage has its own slot space: `layout at` does not shift it.
     computeTransientLayout(node.transientStateVars);
     const fileConstantTypes = currentConstantTypes;
     currentConstantTypes = new Map([

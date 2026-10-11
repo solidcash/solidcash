@@ -20724,8 +20724,9 @@ export function parseCode(
     );
   }
 
-  // Solidity's storage-layout specifier sets an EVM storage base slot;
-  // it has no meaning on the UTXO model, so drop the clause so the contract parses. Anchored to a
+  // Solidity's storage-layout specifier sets an EVM storage base slot. NFT-commitment state has no slot space, so
+  // drop the clause so the contract parses and keep only its evaluated base (ContractNode.storageLayoutBase, set
+  // below), which shifts the EVM-visible slot numbers. Anchored to a
   // contract header (so a `layout at .. {` inside a string / body is not touched) and stopping at
   // the body `{`. The clause may span lines and contain NatSpec comments; blank its non-newline characters so
   // downstream source locations keep their original line numbers. Native generated helpers have no such
@@ -20733,27 +20734,30 @@ export function parseCode(
   // Current Solidity grammar places the clause BEFORE inheritance (`contract C layout at 42 is A`); preserve the
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
   // spelling below for compatibility with sources SolidCash already accepted. solc's checks on the clause run first.
+  let layoutBases: Map<string, bigint> | undefined;
   if (code.includes('layout at')) {
-    withSourceFile(importedFileId, () => validateStorageLayoutSpecifiers(code));
+    const bases = withSourceFile(importedFileId, () => validateStorageLayoutSpecifiers(code));
+    layoutBases = bases;
+    const warnUnevaluated = (header: string): void => {
+      const name = /\bcontract\s+(\w+)/.exec(header)?.[1];
+      if (name !== undefined && !bases.has(name)) {
+        console.log(`Warning: the \`layout at\` base slot of contract ${name} could not be evaluated - its EVM `
+          + 'slot numbers (.slot, sload/sstore) are not offset by it.');
+      }
+    };
     code = code.replace(
       // eslint-disable-next-line max-len
       /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
       (_m, header, layoutPrefix, expr, inheritance) => {
-        if (/\berc7201\b/.test(expr)) {
-          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-            + 'base slot on the UTXO model, so the layout specifier is ignored.');
-        }
+        warnUnevaluated(header);
         return header + (layoutPrefix + expr).replace(/[^\r\n]/g, ' ') + inheritance;
       },
     );
     code = code.replace(
       // eslint-disable-next-line max-len
       /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
-      (_m, header, clause, expr) => {
-        if (/\berc7201\b/.test(expr)) {
-          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-            + 'base slot on the UTXO model, so the layout specifier is ignored.');
-        }
+      (_m, header, clause) => {
+        warnUnevaluated(header);
         return header + clause.replace(/[^\r\n]/g, ' ');
       },
     );
@@ -20850,6 +20854,12 @@ export function parseCode(
     parseProfileTotals.bytes += code.length;
     parseProfileTotals.ms += ms;
     if (sllFailed) parseProfileTotals.sllFails += 1;
+  }
+  if (layoutBases?.size) {
+    for (const contract of [ast.contract, ...ast.importedContracts]) {
+      const base = contract ? layoutBases.get(contract.name) : undefined;
+      if (base !== undefined) contract.storageLayoutBase = base;
+    }
   }
   return ast;
 }

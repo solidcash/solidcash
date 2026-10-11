@@ -492,3 +492,69 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
       .send()).rejects.toThrow(OP_VERIFY_INPUT_0);
   });
 });
+
+// A recovery inside a helper publishes no ecrecoverArgParams (the entry carries only its closure ecrecoverEvmFlags),
+// so the SDK reads each recovery's (h, v, r, s) off a VM probe of the spend at its A side-car read.
+describe('HELPER RECOVERY: recovery arguments read off a VM probe', () => {
+  // OpenZeppelin ECDSA shape: an overload pins v and forwards to the recovering overload.
+  const overloads = compileString(`
+  contract AuthOverloads(bytes20 owner) {
+      function signer(bytes32 h, int v, bytes32 r, bytes32 s) private pure returns (bytes20) {
+          return ecrecoverEvm(h, v, r, s);
+      }
+      function signer(bytes32 h, bytes32 r, bytes32 s) private pure returns (bytes20) {
+          return signer(h, 27, r, s);
+      }
+      function verify(bytes32 h, bytes32 r, bytes32 s) {
+          require(signer(h, r, s) == owner);
+      }
+  }`);
+  const helper = compileString(`
+  contract AuthHelper(bytes20 owner) {
+      function signer(bytes32 h, int v, bytes32 r, bytes32 s) private pure returns (bytes20) {
+          return ecrecoverEvm(h, v, r, s);
+      }
+      function verify(bytes32 h, int v, bytes32 r, bytes32 s) {
+          require(signer(h, v, r, s) == owner);
+      }
+  }`);
+  const spend = async (
+    artifact: ReturnType<typeof compileString>, owner: Uint8Array, args: unknown[],
+  ): Promise<{ txid: string }> => {
+    const provider = new MockNetworkProvider();
+    const contract = new Contract(artifact, [owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 1);
+    await deployKeccak(provider, SHARED_LIBRARY_SALT, 1);
+    return new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.verify(...args))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+  };
+  // The overload pins v = 27: re-sign until the signature's recovery id is 27 (each draw is 1/2).
+  const signerV27 = async (prefix: string): Promise<Recovery> => {
+    for (let t = 0; t < 64; t++) {
+      const g = await goodSigner(`${prefix}-${t}`);
+      if (g.v === 27n) return g;
+    }
+    throw new Error(`no v == 27 signature in 64 signings of "${prefix}"`);
+  };
+
+  it('OVERLOADS: an overload pinning v forwards to the recovering helper and spends', async () => {
+    expect(overloads.abi.find((fn) => fn.name === 'verify')?.ecrecoverEvmFlags).toEqual([true]);
+    const { h, r, s, wallet } = await signerV27('ovl');
+    const tx = await spend(overloads, hexToBin(wallet.address.slice(2)), [h, r, s]);
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('OVERLOADS: rejects a wrong owner', async () => {
+    const { h, r, s } = await signerV27('ovl-neg');
+    await expect(spend(overloads, new Uint8Array(20), [h, r, s])).rejects.toThrow(NON_TRUTHY_INPUT_0);
+  });
+
+  it('DIRECT HELPER: a helper called with the entry\'s own (h, v, r, s) spends', async () => {
+    const { h, v, r, s, wallet } = await goodSigner('helper');
+    const tx = await spend(helper, hexToBin(wallet.address.slice(2)), [h, v, r, s]);
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+});

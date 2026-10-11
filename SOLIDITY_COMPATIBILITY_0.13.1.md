@@ -1,6 +1,6 @@
 # SolidCash 0.13.1 Solidity Compatibility Manifest
 
-Status: release-candidate contract (conservative)
+Status: release-candidate contract (conservative), reviewed 2026-10-11
 Applies to: `solidc` 0.13.1 with `evmCompat: true`
 
 This manifest defines the compatibility claims for 0.13.1. “Supported” means the construct has parser, semantic,
@@ -10,18 +10,27 @@ fail before broadcast when its required transaction shape cannot be constructed.
 
 | Area | Parse | Type check | Codegen | SDK | Behavioral evidence | 0.13.1 status |
 |---|---:|---:|---:|---:|---|---|
-| Integers and checked/unchecked arithmetic | Yes | Yes | Yes | Yes | `packages/solidc/test/solidity-compat/expressions-control-flow.test.ts`, `packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts` | Supported |
-| ABI encode/decode | Yes | Yes | Yes | Yes | `packages/solidc/test/solidity-compat/calls-abi.test.ts`, `packages/solidc/test/AbiEncoding.test.ts` | Supported subset; EVM selectors require `evmCompat` |
-| Structs and fixed arrays | Yes | Yes | Yes | Yes | `packages/solidc/test/StructsMappings.test.ts`, `packages/solidc/test/solidity-compat/storage-collections.test.ts` | Supported |
-| Dynamic arrays | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/`, `packages/solidc/test/Arrays.test.ts` | Supported within documented commitment/chunk limits |
-| Mappings | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts` | Supported subset, including VM coverage for computed and last-use local keys; documented dynamic-loop/chunk limits apply |
-| Inheritance and modifiers | Yes | Yes | Yes | N/A | `packages/solidc/test/solidity-compat/inheritance.test.ts`, `packages/solidc/test/Modifiers.test.ts` | Supported subset |
-| Events and custom errors | Yes | Yes | Yes | Yes | `packages/solidc/test/solidity-compat/events-errors.test.ts`, `packages/solidcash/test/e2e/EventAnonymousE2E.test.ts` | Supported |
-| External reads/calls and returns | Yes | Yes | Yes | Partial | `packages/solidc/test/ExternalCalls.test.ts`, `packages/solidcash/test/e2e/CrossContractCallInfra.test.ts` | Experimental for composed state mutation; unbounded-byte return and circular-address shapes deferred |
-| Proxy/delegate calls | Yes | Yes | Partial | Partial | `packages/solidcash/test/e2e/DefaultProxyIntegrity.test.ts` and delegate tests under `packages/solidcash/test/e2e/` | Built-in `upgrades.deployProxy` profile supported for scalar/data-NFT state; custom forwarders and other delegate shapes remain experimental; no token/satoshi movement or fallback-only transparent proxy |
-| Inline assembly/Yul | Yes | Yes | Subset | N/A | `packages/solidc/test/InlineAssemblyYul.test.ts`, `packages/solidc/test/solidity-compat/yul-evm.test.ts` | Supported lowerable subset; EVM-only operations must produce a diagnostic |
-| Lifecycle deploy/upgrade/destroy/split/merge | Yes | Yes | Yes | Yes | lifecycle tests under `packages/solidcash/test/e2e/` | Supported only for documented SDK transaction builders; delegate restrictions still apply |
+| Integers and checked/unchecked arithmetic | Yes | Yes | Yes | Yes | EVM-vs-BCH differential in both compile modes: `packages/solidcash/test/conformance/{arithmetic,unchecked,numbers,bitwise,comparisons}.conformance.test.ts`; VM spends in `packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts` | Supported |
+| Integer casts | Yes | Yes | Yes | Yes | `packages/solidcash/test/conformance/casts.conformance.test.ts` (both modes) | Supported. evmCompat truncates and reads bytesN big-endian like the EVM; native reverts on loss by design; same-width sign reinterpretation reverts in both modes |
+| ABI encode/decode | Yes | Yes | Yes | Yes | EVM-vs-BCH differential: `packages/solidcash/test/conformance/abi.conformance.test.ts`, `decode.conformance.test.ts` (including dirty-word reverts); VM round-trip `SolidityCorpusBehavior.test.ts` | Supported subset; EVM selectors require `evmCompat`; `abi.decode` reverts on a non-clean word as solc does |
+| Structs and fixed arrays | Yes | Yes | Yes | Yes | VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/StructsMappings.test.ts`, `packages/solidc/test/solidity-compat/storage-collections.test.ts` | Supported |
+| Dynamic arrays | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/DynamicArrays.test.ts`, `packages/solidcash/test/e2e/ChunkedArrays.test.ts` | Supported within documented commitment/chunk limits |
+| Mappings | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts`; value and slot parity `packages/solidcash/test/conformance/{mapping,slot-layout}.conformance.test.ts` | Supported subset, including VM coverage for computed and last-use local keys; documented dynamic-loop/chunk limits apply |
+| Function pointers | Yes | Yes | Partial | Partial | `packages/solidcash/test/e2e/ForeignFunctionPointer.test.ts`, `FunctionPointerArrayCall.test.ts`, `FunctionPointerTernaryCall.test.ts` | Supported for internal pointers and single foreign pointers. KNOWN FAILURE: an `external` function-pointer array (`function(..) external[]` with push) fails to lower, see `packages/solidc/test/solidity-compat/README.md` and `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts` |
+| Inheritance and modifiers | Yes | Yes | Yes | N/A | VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/solidity-compat/inheritance.test.ts`, `packages/solidc/test/Modifiers.test.ts` | Supported subset |
+| Libraries and using-for | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/InheritedUsingForReceiver.test.ts`; compile coverage `packages/solidc/test/solidity-compat/libraries-imports.test.ts` | Supported subset |
+| Enums and user-defined value types | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/EnumParam.test.ts`, `EnumCast.test.ts`, `EnumMappingKey.test.ts`, `YulUdvtPacking.test.ts` | Supported |
+| Events and custom errors | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/EventAnonymousE2E.test.ts`; custom errors `SolidityCorpusBehavior.test.ts`, `packages/testing/test/framed/revert-matchers.test.ts` | Supported; error arguments are artifact metadata, not on-chain revert data |
+| try/catch | Yes | Yes | Yes | N/A | `packages/solidc/test/solidity-compat/expressions-control-flow.test.ts` | Supported syntax; a failed call fails the whole transaction, so `catch` bodies never run |
+| External reads/calls and returns | Yes | Yes | Yes | Partial | `packages/solidcash/test/e2e/CrossContractCallInfra.test.ts` (including unbounded `bytes` returns), `packages/solidc/test/ExternalCalls.test.ts` | Experimental for composed state mutation; circular-address shapes deferred; a low-level call's `success` is always true |
+| CREATE/CREATE2 | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/ContractDeployment.test.ts`, `_Create2ComputedSalt.test.ts` | Supported for documented SDK transaction builders; deploy entries need a trusted-key signature check |
+| fallback/receive | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/FallbackReceive.test.ts`, `FallbackWithInput.test.ts` | Supported |
+| Proxy/delegate calls | Yes | Yes | Partial | Partial | `packages/solidcash/test/e2e/DefaultProxyIntegrity.test.ts`, `UpgradesDeployProxy.test.ts` (data-NFT state) | Built-in `upgrades.deployProxy` profile supported for scalar/data-NFT state; custom forwarders and other delegate shapes remain experimental; no token/satoshi movement or fallback-only transparent proxy |
+| Inline assembly/Yul | Yes | Yes | Subset | N/A | VM spends `packages/solidcash/test/e2e/{YulInlineAssembly,YulMemoryByte,YulLogEvent,YulUdvtPacking,AssemblyReturnHalts}.test.ts`; differential `assembly.conformance.test.ts`; compile coverage `packages/solidc/test/InlineAssemblyYul.test.ts`, `packages/solidc/test/solidity-compat/yul-evm.test.ts` | Supported lowerable subset; EVM-only operations must produce a diagnostic. Known divergences: Yul arithmetic is checked (no wrap), division/modulo by zero revert, `sar`/`slt`/`signextend` differ |
+| Lifecycle deploy/upgrade/destroy/split/merge | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/{ContractDeployment,Upgrade,Selfdestruct,SplitMerge,LargeContractSplitting}.test.ts` | Supported only for documented SDK transaction builders; delegate restrictions still apply |
 | Hardhat/ethers-style testing | N/A | N/A | N/A | Partial | `packages/testing/test/`, `examples/testing-suite/test/` | Supported migration layer, not drop-in universal Hardhat compatibility |
+
+Most VM evidence above compiles native SolidCash sources; the differential conformance suite runs both modes.
 
 ## Application porting notes
 
@@ -47,7 +56,25 @@ unchanged EVM deployments:
   stack.
 - `msg.sender`, `msg.value`, gas shims, block data, addresses, events, and transaction introspection follow the BCH
   definitions in the public documentation.
-- Reentrancy and EVM gas accounting do not exist in the BCH execution model.
+- Reentrancy and EVM gas accounting do not exist in the BCH execution model under the default (direct and
+  message-bus) conventions; the framed convention runs a re-entrant call on a second master of the contract, in EVM
+  order (`docs/framed/AUDIT_MSG_SENDER.md`).
+
+## Measured parity
+
+Measured 2026-10-11 on `feat/per-call` with `evmCompat: true`:
+
+| Measure | Result |
+|---|---:|
+| solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2717/2805 = 96.86% |
+| solc corpus, fixtures solc rejects that SolidCash also rejects | 1845/2158 = 85.50% |
+| Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 132/141 = 93.62% |
+| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 392/404 = 97.03% |
+| Executable corpus fixtures traced to a VM test (`bench/solidity-corpus/BEHAVIORAL_COVERAGE.md`) | 155/1506 = 10.29% |
+
+The 12 differential divergences are documented `it.fails` cases (Yul arithmetic and signed operations, and casts per
+compile mode). Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
+selfdestruct, an untrusted delegatecall target).
 
 ## Release rule
 

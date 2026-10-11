@@ -5438,3 +5438,13 @@ Further over-accepted-negative correctness work is **deferred from the current r
 post-release Solidity-compatibility backlog and must not be conflated with the separate protocol/covenant
 soundness gates. Resume efficiently with `RECHECK_ACCEPTED_NEGATIVES=true`; do not repeat the full 7,343-file bench
 unless the release scope or positive baseline changes.
+
+## 2026-10-11: retained scorecard refreshed on feat/per-call
+
+Re-measured on corpus revision `816d9b2a` (positive 30 s tier with a 120 s fresh-worker retry, negatives 30 s then
+120 s): **2717/2805** positive (88 named failures, +19 on the 2026-08-05 retained 2698) and **313/2158** negatives
+over-accepted (-10), zero unchecked, zero timeouts. `release-baseline.json` now holds that floor. Five failures that
+surfaced as raw `Error`s now carry named classes (`UnsupportedEvmAbiEncodingError`, `UnpinnedExternalCallTargetError`,
+`LogicalSenderUnavailableError`), as the baseline gate requires. Against the 2026-07-20 per-fixture run, 513 in-scope
+fixtures started compiling and 9 stopped: 5 are the deploy-authorization refusal (by design), 4 are open gaps.
+

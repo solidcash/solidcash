@@ -1482,10 +1482,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     const targetsOf = (call: FunctionCallNode): FunctionDefinitionNode[] => {
       if (call.resolvedFunction && calls.has(call.resolvedFunction)) return [call.resolvedFunction];
       // Function overload selection is finalized by TypeCheckTraversal, which runs after this layout pass.
-      // All same-name overloads share the call boundary here; reserve the widest matching closure and let the
-      // later resolved edge retain the exact stable ordinal. This is conservative without multiplying mutually
-      // exclusive overload bodies into one invocation.
-      return functionsByName.get(call.identifier.name) ?? [];
+      // The same-name overloads a call can bind share the call boundary here; reserve the widest matching closure
+      // and let the later resolved edge retain the exact stable ordinal. This is conservative without multiplying
+      // mutually exclusive overload bodies into one invocation.
+      const overloads = functionsByName.get(call.identifier.name) ?? [];
+      // A call binds only an overload of its own arity: Solidity has no default or variadic parameters, and a
+      // using-for receiver is already the first argument here. By name alone, an overload calling a differently
+      // sized overload of itself (OpenZeppelin's tryRecover(hash, signature) -> tryRecover(hash, v, r, s)) reads
+      // as a recursive component. No overload of that arity keeps the whole name group.
+      const sameArity = overloads.filter((fn) => fn.parameters.length === call.parameters.length);
+      return sameArity.length > 0 ? sameArity : overloads;
     };
     const contributionOf = (
       call: FunctionCallNode, known: ReadonlyMap<FunctionDefinitionNode, number>,

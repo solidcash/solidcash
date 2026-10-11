@@ -2496,6 +2496,9 @@ export class StringConcatNode extends ExpressionNode {
 }
 
 export class AbiDecodeNode extends ExpressionNode {
+  /** The data comes from the compiler's own encoder, so its words are not re-validated (a split forwarder). */
+  trustedEncoding?: boolean;
+
   constructor(
     public data: ExpressionNode,
     public schema: Type[],

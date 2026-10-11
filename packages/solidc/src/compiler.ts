@@ -19361,6 +19361,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
       const guard = new RequireNode(ok); guard.location = fn.location;
       const bytes = new IdentifierNode(dataName); bytes.location = fn.location;
       const decode = new AbiDecodeNode(bytes, fn.returnTypes); decode.location = fn.location;
+      decode.trustedEncoding = true;
       let returnStatement: ReturnNode;
       const statements: StatementNode[] = [capture, guard];
       if (fn.returnTypes.length === 1) {

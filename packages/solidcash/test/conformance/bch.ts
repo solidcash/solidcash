@@ -3,7 +3,7 @@
 // solidcash SDK against MockNetworkProvider: TransactionBuilder.send() runs the real script VM locally
 // (via debug()) and throws FailedRequireError iff a require() failed. So resolve = PASS, throw = MISMATCH.
 import { compileString } from '../direct-compile.js';
-import { Contract, TransactionBuilder, FailedRequireError, randomUtxo } from 'solidcash';
+import { Contract, TransactionBuilder, FailedRequireError, FailedTransactionError, randomUtxo } from 'solidcash';
 import { MockNetworkProvider } from 'solidcash/network/mock';
 import { StatefulContract } from 'solidcash/stateful';
 import { setupStatefulUtxos } from '../test-util.js';
@@ -100,5 +100,19 @@ export async function evalBchRejects(
     return false;
   } catch {
     return true;
+  }
+}
+
+// True only when the BCH VM refused the spend: a failed require, a failed evaluation, or a node rejection. An error
+// from building the transaction (an SDK argument check, a compile-time refusal) is not a revert and is rethrown.
+export async function evalBchVmRejects(
+  artifact: BchArtifact, fnName: string, args: readonly unknown[],
+): Promise<boolean> {
+  try {
+    await buildAndSend(artifact, fnName, args);
+    return false;
+  } catch (e) {
+    if (e instanceof FailedTransactionError) return true;
+    throw e;
   }
 }

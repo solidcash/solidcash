@@ -5,7 +5,7 @@ import {
   compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
 } from './evm.js';
 import {
-  compileBch, evalBchCheck, evalBchRejects, compileBchStateful, evalBchStatefulCheck,
+  compileBch, evalBchCheck, evalBchVmRejects, compileBchStateful, evalBchStatefulCheck,
 } from './bch.js';
 
 const SPDX = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n';
@@ -18,22 +18,29 @@ export interface ConformanceCase {
   evmFn: string;
   bchFn: string;
   args: readonly unknown[]; // inputs, shared by both sides (JS values both encoders accept: bigint, hex, bool)
-  evmCompat?: boolean; // compile the BCH side with evmCompat (EVM-faithful abi encoding)
+  evmCompat?: boolean; // the BCH compile mode; unset runs a value or revert case in both native and evmCompat
   expectedConst?: string; // abi cases: the ethers-computed expected bytes, baked into scash + cross-checked vs solc
   bothAccept?: boolean; // single-word abi: identical bytes32-compare covenant on both VMs (run via assertBothAccept)
   label?: string;
 }
 
+// A case that does not pin a compile mode runs in both: the native and evmCompat lowerings differ (narrowing casts,
+// byte order) and each claims EVM-faithful values.
+const modesOf = (c: ConformanceCase): readonly boolean[] => (c.evmCompat === undefined ? [false, true] : [c.evmCompat]);
+const modeName = (evmCompat: boolean): string => (evmCompat ? 'evmCompat' : 'native');
+
 // Run one case: eval the EVM reference, then assert the BCH covenant accepts that result. Throws on mismatch.
 export async function assertConformant(c: ConformanceCase): Promise<void> {
   const { decoded } = await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
-  const pass = await evalBchCheck(compileBch(c.scash, c.evmCompat), c.bchFn, [...c.args, ...decoded]);
-  if (!pass) {
-    const tag = c.label ? ` [${c.label}]` : '';
-    throw new Error(
-      `Conformance MISMATCH${tag}: EVM ${c.evmFn}(${fmt(c.args)}) = ${fmt(decoded)}, `
-      + 'but the BCH covenant rejected that as its computed result',
-    );
+  for (const evmCompat of modesOf(c)) {
+    const pass = await evalBchCheck(compileBch(c.scash, evmCompat), c.bchFn, [...c.args, ...decoded]);
+    if (!pass) {
+      const tag = c.label ? ` [${c.label}]` : '';
+      throw new Error(
+        `Conformance MISMATCH${tag} (${modeName(evmCompat)}): EVM ${c.evmFn}(${fmt(c.args)}) = ${fmt(decoded)}, `
+        + 'but the BCH covenant rejected that as its computed result',
+      );
+    }
   }
 }
 
@@ -164,8 +171,13 @@ export async function assertReverts(c: RevertCase): Promise<void> {
     evmReverted = true;
   }
   if (!evmReverted) throw new Error(`Revert MISMATCH${tag}: expected EVM to revert, but it returned a value`);
-  const bchRejected = await evalBchRejects(compileBch(c.scash), c.bchFn, c.args);
-  if (!bchRejected) throw new Error(`Revert MISMATCH${tag}: expected the BCH covenant to reject, but it accepted`);
+  // Only the VM refusing the spend counts; a failure to build the transaction is rethrown, not taken as a revert.
+  for (const evmCompat of modesOf(c)) {
+    if (!await evalBchVmRejects(compileBch(c.scash, evmCompat), c.bchFn, c.args)) {
+      throw new Error(`Revert MISMATCH${tag} (${modeName(evmCompat)}): expected the BCH covenant to reject, `
+        + 'but it accepted');
+    }
+  }
 }
 
 // Build a revert case: `expr` must overflow/underflow/divide-by-zero under checked semantics.
@@ -607,4 +619,45 @@ function argsByName(params: string, args: readonly unknown[]): Record<string, un
 
 function fmt(vals: readonly unknown[]): string {
   return vals.map((v) => (typeof v === 'bigint' ? v.toString() : JSON.stringify(v))).join(', ');
+}
+
+// abi.decode of one EVM word as `type`, used for the decoder's clean-encoding checks. The Solidity side returns the
+// decoded value; the SolidCash side decodes it and uses it. `decls` declares any type the case names (an enum).
+export function wordDecodeCase(o: { type: string; word: string; decls?: string; label?: string }): ConformanceCase {
+  const decls = o.decls ? `  ${o.decls}\n` : '';
+  return {
+    solidity: `${SPDX}contract C {\n${decls}  function f(bytes memory blob) public pure returns (${o.type}) {\n`
+      + `    return abi.decode(blob, (${o.type}));\n  }\n}\n`,
+    scash: `contract Conf() {\n${decls}  function f(bytes blob) {\n`
+      + `    ${o.type} x = abi.decode(blob, (${o.type}));\n    require(x == x);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'f',
+    args: [o.word],
+    evmCompat: true,
+    label: o.label ?? `decode<${o.type}>(${o.word})`,
+  };
+}
+
+// The clean encoding of a word decodes on both VMs.
+export async function assertWordDecodes(c: ConformanceCase): Promise<void> {
+  const tag = c.label ? ` [${c.label}]` : '';
+  await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
+  if (await evalBchVmRejects(compileBch(c.scash, true), c.bchFn, c.args)) {
+    throw new Error(`Decode MISMATCH${tag}: the EVM decoded a clean word that the BCH covenant rejected`);
+  }
+}
+
+// A word that is not the clean encoding of its type reverts on both VMs, and on BCH it is the VM that refuses it.
+export async function assertWordRejected(c: ConformanceCase): Promise<void> {
+  const tag = c.label ? ` [${c.label}]` : '';
+  let evmReverted = false;
+  try {
+    await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
+  } catch {
+    evmReverted = true;
+  }
+  if (!evmReverted) throw new Error(`Decode MISMATCH${tag}: expected the EVM to revert on a dirty word`);
+  if (!await evalBchVmRejects(compileBch(c.scash, true), c.bchFn, c.args)) {
+    throw new Error(`Decode MISMATCH${tag}: the BCH covenant accepted a word the EVM reverts on`);
+  }
 }

@@ -4,7 +4,7 @@ import { describe, it } from 'vitest';
 import {
   assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase, bchArrayDecodeCase,
   bch2ArrayDecodeCase, bchDecodeSchemaCase, bchNestedArrayDecodeCase, bchStructDecodeCase,
-  bchFixedArrayDecodeCase,
+  bchFixedArrayDecodeCase, assertWordDecodes, assertWordRejected, wordDecodeCase,
 } from './harness.js';
 import { ethersAbiEncode } from './evm.js';
 
@@ -242,4 +242,32 @@ describe('abi.decode (evmCompat): mixed scalar + array schemas', () => {
   it('(uint256, uint256[], uint256)', () => m([sc('uint256', 7n), ar('uint256', [4n, 5n]), sc('uint256', 8n)]));
   it('(address-shaped uint160, uint256[])', () => m([sc('uint160', 0x1122n), ar('uint256', [10n, 20n])]));
   it('(int256, int256[]) mixed sign', () => m([sc('int256', -5n), ar('int256', [-1n, 2n])]));
+});
+
+// solc's ABI decoder reverts on a word that is not the clean encoding of its type; each dirty word is paired with the
+// clean word of the same type, which has to decode on both VMs.
+describe('abi.decode (evmCompat): clean-encoding checks', () => {
+  const word = (hex: string): string => `0x${hex.padStart(64, '0')}`;
+  const ADDR = 'ab'.repeat(20);
+  const ENUM = 'enum E { A, B, C }';
+  const clean = (type: string, w: string, decls?: string): Promise<void> => (
+    assertWordDecodes(wordDecodeCase({ type, word: w, decls })));
+  const dirty = (type: string, w: string, decls?: string): Promise<void> => (
+    assertWordRejected(wordDecodeCase({ type, word: w, decls })));
+
+  it('bool 1 decodes', () => clean('bool', word('01')));
+  it('bool 2 reverts', () => dirty('bool', word('02')));
+  it('bool with only the top bit set reverts', () => dirty('bool', `0x80${'00'.repeat(31)}`));
+  it('address decodes', () => clean('address', word(ADDR)));
+  it('address with a dirty top byte reverts', () => dirty('address', `0x01${'00'.repeat(11)}${ADDR}`));
+  it('address with a dirty byte beside the value reverts', () => dirty('address', `0x${'00'.repeat(11)}80${ADDR}`));
+  it('bytes4 decodes', () => clean('bytes4', `0xdeadbeef${'00'.repeat(28)}`));
+  it('bytes4 with dirty padding reverts', () => dirty('bytes4', `0xdeadbeef01${'00'.repeat(27)}`));
+  it('uint8 255 decodes', () => clean('uint8', word('ff')));
+  it('uint8 256 reverts', () => dirty('uint8', word('0100')));
+  it('int8 -1 decodes', () => clean('int8', `0x${'ff'.repeat(32)}`));
+  it('int8 128 reverts (not sign-extended)', () => dirty('int8', word('80')));
+  it('int8 -129 reverts', () => dirty('int8', `0x${'ff'.repeat(31)}7f`));
+  it('enum member 2 of 3 decodes', () => clean('E', word('02'), ENUM));
+  it('enum value 3 of 3 reverts', () => dirty('E', word('03'), ENUM));
 });

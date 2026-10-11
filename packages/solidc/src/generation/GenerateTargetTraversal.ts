@@ -16448,9 +16448,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
     }
     if (node.operator === BinaryOperator.SPLIT) this.pushToStack('(value)');
-    // Emit overflow/underflow check for bounded integer arithmetic
+    // Emit overflow/underflow check for bounded integer arithmetic. A left shift truncates instead, as in Solidity.
     if (node.type instanceof IntType) {
-      this.emitIntBoundsCheck(node.type, locationData);
+      if (node.operator === BinaryOperator.SHIFT_LEFT) this.emitShiftTruncation(node.type, locationData);
+      else this.emitIntBoundsCheck(node.type, locationData);
     }
     // FixedType scale adjustments and bounds checks
     if (node.type instanceof FixedType) {
@@ -17000,6 +17001,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, locationData);
     this.emit(hexToBin('00'), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);
+  }
+
+  // A left shift truncates to its type rather than failing, as in Solidity. An unsigned operand shifts to a
+  // non-negative value, so one modulo by a runtime-built 2^bits suffices; a signed one wraps in full.
+  private emitShiftTruncation(type: IntType, locationData: SingleLocationData): void {
+    if (type.signed) {
+      this.emitIntWrap(type, locationData);
+      return;
+    }
+    this.emit(Op.OP_1, locationData);
+    this.emit(encodeInt(BigInt(type.bits)), locationData);
+    this.emit(Op.OP_LSHIFTNUM, locationData);
+    this.emit(Op.OP_MOD, locationData);
   }
 
   // Emit modular wrapping for bounded integer types (unchecked mode).

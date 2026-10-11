@@ -4495,6 +4495,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       trailingEntryCommitments: string[];
       eventCommitments: string[];
       dynamicChunkCommitments: Record<string, string[]>;
+      valueChunkOutputs: Array<{ lockingBytecode: Uint8Array; commitment: string }>;
       transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
     }> {
     return deriveDeployCommitmentsImpl(

@@ -364,8 +364,11 @@ const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
 const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
-/** How one EVM word of a Solidity-compat call's payload maps to the callee's argument push. */
-type CompatWordKind = { kind: 'uint' | 'int' | 'address' } | { kind: 'bytes'; size: number };
+/**
+ * How one EVM head word of a Solidity-compat call's payload maps to the callee's argument push; `dynamic` is a
+ * string/bytes offset to its length-prefixed tail.
+ */
+type CompatWordKind = { kind: 'uint' | 'int' | 'address' | 'dynamic' } | { kind: 'bytes'; size: number };
 /** A Solidity-compat call payload's arguments: EVM words, or one SolidCash push per argument. */
 type CompatCallArguments = { format: 'evm'; words: CompatWordKind[] } | { format: 'pushdata'; count: number };
 
@@ -24995,13 +24998,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const shape = parameter.type && this.isDynamicAbiType(parameter.type) ? 'ABI-dynamic' : 'not a value type';
         return this.compatWordKind(parameter.type)
           ?? refuse(`argument ${index} ('${parameter.type}') is ${shape} in an EVM-encoded payload; only address, `
-            + 'bool, enum, int/uint and bytes1..bytes32 words can be bound to the callee\'s unlocking');
+            + 'bool, enum, int/uint and bytes1..bytes32 words and string/bytes values can be bound to the callee\'s '
+            + 'unlocking');
       }),
     };
   }
 
-  /** How an EVM word of `type` maps to the callee's argument push; undefined for no single static word. */
+  /** How an EVM head word of `type` maps to the callee's argument push; undefined for no single head word. */
   private compatWordKind(type: Type | undefined): CompatWordKind | undefined {
+    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) {
+      return { kind: 'dynamic' };
+    }
     const value = type instanceof ValueType ? type.underlyingType : type;
     if (value instanceof AddressType) return { kind: 'address' };
     if (value instanceof IntType || value instanceof FixedType) return { kind: value.signed ? 'int' : 'uint' };
@@ -25063,10 +25070,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Binds a compat call's payload arguments to the co-spent callee from the redeem end, as the kernel's V5 does:
    * argument i is the (i+1)-th push before the redeem, whatever hidden witnesses follow the selector. An EVM word
-   * decodes to exactly the callee's push; a pushdata argument matches it byte for byte. [data, idx] -> [data]
+   * decodes to exactly the callee's push, a string/bytes offset word to the value of the tail it names; a pushdata
+   * argument matches it byte for byte. [data, idx] -> [data]
    */
   private emitCompatCallArgumentBinding(binding: CompatCallArguments, loc: SingleLocationData): void {
     const count = binding.format === 'evm' ? binding.words.length : binding.count;
+    // [.., word] -> [.., n]: a big-endian word as a minimal unsigned VM number.
+    const wordToUint = (): void => {
+      this.emit(Op.OP_REVERSEBYTES, loc);
+      this.emit(new Uint8Array([0x00]), loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(Op.OP_BIN2NUM, loc);
+    };
     // Only a script-hash lock (23 or 35 bytes) makes the last push a redeem script; a P2S lock is the whole script.
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);
@@ -25122,7 +25137,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitCompatAddressMatch(loc);                    // [.., rest]
         continue;
       }
-      if (word.kind === 'bytes') {
+      if (word.kind === 'dynamic') {
+        // The word is the tail's offset past the selector; the tail is a length word, then the right-padded value.
+        wordToUint();
+        this.emit(encodeInt(4n), loc);
+        this.emit(Op.OP_ADD, loc);                           // [.., ai, rest, tail start]
+        this.emit(encodeInt(BigInt(count - index + 2)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_NIP, loc);                           // [.., ai, rest, tail]
+        this.emit(encodeInt(32n), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_SWAP, loc);
+        wordToUint();                                        // [.., ai, rest, padded, length]
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_DROP, loc);                          // [.., ai, rest, value]
+      } else if (word.kind === 'bytes') {
         if (word.size < 32) {
           this.emit(encodeInt(BigInt(word.size)), loc);
           this.emit(Op.OP_SPLIT, loc);
@@ -25130,10 +25161,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       } else {
         // The word's one value as a minimal VM number: unsigned below 2^256, two's complement for a signed type.
-        this.emit(Op.OP_REVERSEBYTES, loc);
-        this.emit(new Uint8Array([0x00]), loc);
-        this.emit(Op.OP_CAT, loc);
-        this.emit(Op.OP_BIN2NUM, loc);
+        wordToUint();
         if (word.kind === 'int') {
           this.emit(Op.OP_DUP, loc);
           this.emit(encodeInt(1n << 255n), loc);

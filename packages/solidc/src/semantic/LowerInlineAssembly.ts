@@ -1595,14 +1595,14 @@ function buildLogEmit(
   return loc(new EmitStatementNode(YUL_LOG_EVENT, [data]), src);
 }
 
-// Yul arithmetic builtins -> solidc operators (value `a op b`). All but exp are YUL_WORD_BUILTINS.
+// Yul arithmetic builtins -> solidc operators (value `a op b`), all YUL_WORD_BUILTINS.
 const ARITH_OPS: Record<string, BinaryOperator> = {
   add: BinaryOperator.PLUS, sub: BinaryOperator.MINUS, mul: BinaryOperator.MUL,
   div: BinaryOperator.DIV, sdiv: BinaryOperator.DIV, mod: BinaryOperator.MOD, smod: BinaryOperator.MOD,
   exp: BinaryOperator.POW,
 };
 const YUL_WORD_BUILTINS: ReadonlySet<string> = new Set<YulWordBuiltin>([
-  'add', 'sub', 'mul', 'div', 'sdiv', 'mod', 'smod', 'slt', 'sgt', 'sar', 'signextend',
+  'add', 'sub', 'mul', 'div', 'sdiv', 'mod', 'smod', 'slt', 'sgt', 'sar', 'signextend', 'shl', 'exp',
 ]);
 // Integer bitwise needs both operands to be a bounded int, so literal operands are cast to uint256.
 const BITWISE_OPS: Record<string, BinaryOperator> = {
@@ -1789,10 +1789,22 @@ function lowerWordOperand(arg: YulExpressionNode, src: YulNode): ExpressionNode 
   return isBytes32Word(arg) ? loc(new CastNode(UINT256, lowerValue(arg), false), src) : lowerValue(arg);
 }
 
-// Literal operands fold to their word when it is small (a large word is cheaper built at runtime than pushed).
+// a^e mod 2^256 by square and multiply.
+function powWord(a: bigint, exponent: bigint): bigint {
+  let result = 1n;
+  let base = a & WORD_MASK;
+  for (let e = exponent; e > 0n; e >>= 1n) {
+    if ((e & 1n) === 1n) result = (result * base) & WORD_MASK;
+    base = (base * base) & WORD_MASK;
+  }
+  return result;
+}
+
+// Literal operands fold to their word when it is small (a large word is cheaper built at runtime than pushed); exp
+// always folds (its runtime form is a loop).
 const YUL_WORD_FOLD: Partial<Record<YulWordBuiltin, (a: bigint, b: bigint) => bigint>> = {
   add: (a, b) => (a + b) & WORD_MASK, sub: (a, b) => (a - b) & WORD_MASK, mul: (a, b) => (a * b) & WORD_MASK,
-  div: (a, b) => (b === 0n ? 0n : a / b), mod: (a, b) => (b === 0n ? 0n : a % b),
+  div: (a, b) => (b === 0n ? 0n : a / b), mod: (a, b) => (b === 0n ? 0n : a % b), exp: powWord,
 };
 
 // `name(left, right)` with EVM semantics over words in [0, 2^256) (BinaryOpNode.yulBuiltin; a signed operand is
@@ -1803,7 +1815,7 @@ function yulWordOp(
   const fold = YUL_WORD_FOLD[name];
   if (fold && left instanceof IntLiteralNode && right instanceof IntLiteralNode) {
     const word = fold(left.value, right.value);
-    if (word < 1n << 32n) return intLit(word, src);
+    if (word < 1n << 32n || name === 'exp') return intLit(word, src);
   }
   const node = loc(new BinaryOpNode(left, op, right), src);
   node.yulBuiltin = name;
@@ -2124,9 +2136,16 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       ? loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(lastReturnData), call)), call)
       : intLit(0n, call);
   }
-  // addmod(a,b,n) / mulmod(a,b,n) -> the matching solidc builtin ((a op b) mod n, full-width).
+  // addmod(a,b,n) / mulmod(a,b,n) -> the matching solidc builtin ((a op b) mod n, full-width). Unless n is a nonzero
+  // constant, it is marked so that n = 0 gives 0, as the EVM.
   if ((name === 'addmod' || name === 'mulmod') && args.length === 3) {
-    return loc(new FunctionCallNode(loc(new IdentifierNode(name), call), args.map((a) => lowerValue(a))), call);
+    const node = loc(new FunctionCallNode(loc(new IdentifierNode(name), call), args.map((a) => lowerValue(a))), call);
+    const n = args[2];
+    const inverted = n instanceof YulFunctionCallNode && n.name === 'not' && n.args.length === 1
+      ? yulConstFold(n.args[0]) : undefined;
+    const modulus = inverted === undefined ? yulConstFold(n) : ~inverted & WORD_MASK;
+    if (modulus === undefined || modulus === 0n) node.yulZeroModulus = true;
+    return node;
   }
   // signextend(i, v) / sar(shift, v), value operand first. A literal i stays a literal for codegen; i >= 31 leaves v.
   if (name === 'signextend' && args.length === 2) {
@@ -2209,15 +2228,22 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     // e.g. `add(keccak256(0,23), 1)` as a computed __evm_storage slot key.
     const left = lowerWordOperand(args[0], call);
     const right = lowerWordOperand(args[1], call);
-    return YUL_WORD_BUILTINS.has(name)
-      ? yulWordOp(name as YulWordBuiltin, left, ARITH_OPS[name], right, call)
-      : loc(new BinaryOpNode(left, ARITH_OPS[name], right), call);
+    // exp(2, e) is shl(e, 1).
+    if (name === 'exp' && left instanceof IntLiteralNode && left.value === 2n && !(right instanceof IntLiteralNode)) {
+      return yulWordOp('shl', intLit(1n, call), BinaryOperator.SHIFT_LEFT, right, call);
+    }
+    return yulWordOp(name as YulWordBuiltin, left, ARITH_OPS[name], right, call);
   }
   if (name in BITWISE_OPS && args.length === 2) {
     return loc(new BinaryOpNode(lowerBitwiseOperand(args[0]), BITWISE_OPS[name], lowerBitwiseOperand(args[1])), call);
   }
-  // shl(shift, value)=value*2^shift, shr(shift, value)=value/2^shift. Avoids the `<<`/`>>` operators,
-  // which require bigint/bytes; staying on uint256 keeps bitwise on the same value valid.
+  // shl by a runtime shift: (value << shift) mod 2^256, 0 past the word (BinaryOpNode.yulBuiltin).
+  if (name === 'shl' && args.length === 2 && !isIntLiteral(args[0])) {
+    return yulWordOp('shl', lowerWordOperand(args[1], call), BinaryOperator.SHIFT_LEFT,
+      lowerWordOperand(args[0], call), call);
+  }
+  // shl(shift, value)=value*2^shift for a literal shift, shr(shift, value)=value/2^shift. Avoids the `<<`/`>>`
+  // operators, which require bigint/bytes; staying on uint256 keeps bitwise on the same value valid.
   if ((name === 'shl' || name === 'shr') && args.length === 2) {
     // The shifted value is a 256-bit word (`value*2^shift` must not overflow a narrow operand's type, e.g.
     // shl(0x40, uint64) would truncate to 0); widen it to uint256 to match EVM word arithmetic.
@@ -2235,7 +2261,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     const pow2 = isIntLiteral(args[0])
       ? intLit(2n ** BigInt(args[0].raw), call)
       : loc(new BinaryOpNode(intLit(2n, call), BinaryOperator.POW, lowerValue(args[0])), call);
-    return loc(new BinaryOpNode(value, name === 'shl' ? BinaryOperator.MUL : BinaryOperator.DIV, pow2), call);
+    return loc(new BinaryOpNode(value, BinaryOperator.DIV, pow2), call);
   }
   if (name in CMP_OPS && args.length === 2) return boolToWord(lowerCompare(call), call);
   if (name === 'not' && args.length === 1) {

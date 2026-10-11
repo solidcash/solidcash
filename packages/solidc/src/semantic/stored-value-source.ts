@@ -187,6 +187,8 @@ function publishFunctionSources(
         }
         return { kind: 'unary', operator: node.operator, type, expression };
       }
+      // A Yul word builtin (BinaryOpNode.yulBuiltin) has EVM semantics no recipe operator states.
+      if (node instanceof BinaryOpNode && node.yulBuiltin) return undefined;
       if (node instanceof BinaryOpNode || node instanceof ArrayAccessNode) {
         const left = serialize(node instanceof BinaryOpNode ? node.left : node.array, env);
         const right = serialize(node instanceof BinaryOpNode ? node.right : node.index, env);

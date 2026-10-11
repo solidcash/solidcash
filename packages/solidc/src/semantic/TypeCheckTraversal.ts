@@ -118,6 +118,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import {
   InvalidParameterTypeError,
   UnequalTypeError,
+  UnsupportedBinaryOperandsError,
   SignedExponentError,
   UnsupportedTypeError,
   MultiDimArrayValueAccessError,
@@ -180,6 +181,68 @@ import { generatedOriginOf } from '../ast/Location.js';
  * predecessor's output, the linear rank and rows, and the created-record count.
  */
 const FRAMED_DERIVED_BATCH_PARAMETER = /^__internal__vmapBatch/;
+
+const LITERAL_PRECISION = 'Precision of rational constants is limited to 4096 bits.';
+
+// The comparable-by-reference kind of a type that Solidity cannot compare with an operator, if any.
+function referenceKind(type: Type | undefined): string | undefined {
+  if (type instanceof MappingType) return 'mapping';
+  if (type instanceof StructType) return `struct ${type.name}`;
+  if (type instanceof ArrayType) return 'array';
+  if ((type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING) return 'bytes';
+  return undefined;
+}
+
+function bitLength(value: bigint): number {
+  return (value < 0n ? -value : value).toString(2).length;
+}
+
+// The exact value of a literal integer expression (+ - * / ** << >>, as solc evaluates it), 'huge' once it cannot
+// stay within solc's 4096-bit limit, or undefined when the expression is not literal.
+function literalRational(node: Node): { numerator: bigint; denominator: bigint } | 'huge' | undefined {
+  if (node instanceof IntLiteralNode) return { numerator: node.value, denominator: 1n };
+  if (node instanceof UnaryOpNode && node.operator === UnaryOperator.NEGATE) {
+    const inner = literalRational(node.expression);
+    return inner === undefined || inner === 'huge' ? inner : { numerator: -inner.numerator, denominator: inner.denominator };
+  }
+  if (!(node instanceof BinaryOpNode)) return undefined;
+  const left = literalRational(node.left);
+  const right = literalRational(node.right);
+  if (left === undefined || right === undefined) return undefined;
+  if (left === 'huge' || right === 'huge') return 'huge';
+  const integral = (r: { numerator: bigint; denominator: bigint }): bigint | undefined =>
+    (r.numerator % r.denominator === 0n ? r.numerator / r.denominator : undefined);
+  switch (node.operator) {
+    case BinaryOperator.PLUS:
+    case BinaryOperator.MINUS: {
+      const sign = node.operator === BinaryOperator.PLUS ? 1n : -1n;
+      return { numerator: left.numerator * right.denominator + sign * right.numerator * left.denominator,
+        denominator: left.denominator * right.denominator };
+    }
+    case BinaryOperator.MUL:
+      return { numerator: left.numerator * right.numerator, denominator: left.denominator * right.denominator };
+    case BinaryOperator.DIV:
+      if (right.numerator === 0n) return undefined;
+      return { numerator: left.numerator * right.denominator * (right.numerator < 0n ? -1n : 1n),
+        denominator: left.denominator * (right.numerator < 0n ? -right.numerator : right.numerator) };
+    case BinaryOperator.POW: {
+      const exponent = integral(right);
+      if (exponent === undefined || exponent < 0n) return undefined;
+      if (exponent > 4096n && bitLength(left.numerator) + bitLength(left.denominator) > 2) return 'huge';
+      return { numerator: left.numerator ** exponent, denominator: left.denominator ** exponent };
+    }
+    case BinaryOperator.SHIFT_LEFT:
+    case BinaryOperator.SHIFT_RIGHT: {
+      const base = integral(left);
+      const amount = integral(right);
+      if (base === undefined || amount === undefined || amount < 0n) return undefined;
+      if (node.operator === BinaryOperator.SHIFT_RIGHT) return { numerator: base >> amount, denominator: 1n };
+      return amount > 4096n && base !== 0n ? 'huge' : { numerator: base << amount, denominator: 1n };
+    }
+    default:
+      return undefined;
+  }
+}
 
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
@@ -2602,6 +2665,44 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
   }
 
+  private inSolidityUnit(node: Node): boolean {
+    return (node.location?.sourceFileId ?? this.rootFileId).endsWith('.sol');
+  }
+
+  // solc's operand rules (TypeError 2271) for what a `.sol` unit writes, where native SolidCash is wider: reference
+  // values of one kind do not compare, a shift amount is unsigned, and literal arithmetic is exact within 4096 bits.
+  private validateSolidityBinaryOperands(node: BinaryOpNode): void {
+    const { left, right, operator } = node;
+    const comparison = [BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.LT, BinaryOperator.LE,
+      BinaryOperator.GT, BinaryOperator.GE].includes(operator);
+    const kind = referenceKind(left.type);
+    if (comparison && kind !== undefined && kind === referenceKind(right.type)) {
+      throw new UnsupportedBinaryOperandsError(node);
+    }
+    const shift = operator === BinaryOperator.SHIFT_LEFT || operator === BinaryOperator.SHIFT_RIGHT;
+    if (shift && right.type instanceof IntType && right.type.signed && literalRational(right) === undefined) {
+      throw new UnsupportedBinaryOperandsError(node);
+    }
+    if (operator === BinaryOperator.POW || shift) {
+      const amount = literalRational(right);
+      const baseIsLiteral = literalRational(left) !== undefined;
+      if (amount === 'huge') {
+        throw new UnsupportedBinaryOperandsError(node, baseIsLiteral ? LITERAL_PRECISION : 'Exponent too large.');
+      }
+      if (amount !== undefined && amount.numerator % amount.denominator !== 0n) {
+        throw new UnsupportedBinaryOperandsError(node, baseIsLiteral ? '' : 'Exponent is fractional.');
+      }
+      if (amount !== undefined && operator === BinaryOperator.POW && !baseIsLiteral && amount.numerator >= 1n << 256n) {
+        throw new UnsupportedBinaryOperandsError(node, 'Exponent too large.');
+      }
+    }
+    const value = literalRational(node);
+    if (value === 'huge'
+      || (value !== undefined && (bitLength(value.numerator) > 4096 || bitLength(value.denominator) > 4096))) {
+      throw new UnsupportedBinaryOperandsError(node, LITERAL_PRECISION);
+    }
+  }
+
   visitBinaryOp(node: BinaryOpNode): Node {
     // Visit non-decimal side first so its type is available for propagation
     const leftIsDecimal = node.left instanceof DecimalLiteralNode;
@@ -2630,6 +2731,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.left = this.visit(node.left);
       node.right = this.visit(node.right);
     }
+
+    if (node.sourceArithmetic && this.inSolidityUnit(node)) this.validateSolidityBinaryOperands(node);
 
     // Solidity hex number literals (`0x100...`) are big-endian integers, not byte strings. On a hex-vs-int
     // pairing (e.g. `x >= 0x100000000000000000000000000000000`), reinterpret the literal as its integer

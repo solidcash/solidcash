@@ -467,6 +467,14 @@ export class UnequalTypeError extends TypeError {
   }
 }
 
+// solc TypeError 2271: a `.sol` unit applies an operator to operands Solidity does not define it for.
+export class UnsupportedBinaryOperandsError extends SolidCashError {
+  constructor(node: BinaryOpNode, detail = '') {
+    super(node, `Built-in binary operator ${node.operator} cannot be applied to types ${node.left.type} and `
+      + `${node.right.type}.${detail ? ` ${detail}` : ''}`);
+  }
+}
+
 export class TernaryTypeMismatchError extends TypeError {
   constructor(node: TernaryOpNode) {
     const ifTrue = node.ifTrue.type;

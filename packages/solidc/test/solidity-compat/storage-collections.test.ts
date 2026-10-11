@@ -956,6 +956,18 @@ describe('foreign external fn-ptr ARRAY dispatch table (fixed method on runtime 
     const fire = art.abi.find((f) => f.name === 'fire')!;
     expect(fire.externalCalls!.some((e) => e.loopArrayVar === 'fns' && e.functionName === 'ping')).toBe(true);
   });
+
+  // A this-qualified element write is claimed by the inline pass (no selector array, fixed-method call).
+  it('this.fns[i] = IFoo(a).ping fills the fixed-method table', () => {
+    const art = compileString(`${IF} contract C { function(uint) external[] fns;`
+      + ' function reg(uint i, address a) public { this.fns[i] = IFoo(a).ping; }'
+      + ' function fire(uint v) public { fns[0](v); } }', { evmCompat: true });
+    const stateVars = art.stateLayout!.variables.map((v) => `${v.name}:${v.type}`);
+    expect(stateVars).toContain('fns:address[]');
+    expect(stateVars.some((v) => v.startsWith('__fnsel_fns:'))).toBe(false);
+    const fire = art.abi.find((f) => f.name === 'fire')!;
+    expect(fire.externalCalls!.some((e) => !e.loopArrayVar && e.functionName === 'ping')).toBe(true);
+  });
 });
 
 describe('low-level .call on a struct-field address receiver (MultiSigWallet transaction.destination.call)', () => {

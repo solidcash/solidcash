@@ -79,6 +79,8 @@ and `packages/solidc/test/CashScript014Port.test.ts`.
 
 ## The peephole rules (HELD)
 
+Decision, 2026-10-11: the user chose to keep these held until the density-reserve question is settled.
+
 Upstream's new rules were applied to both engines, appended after every existing rule in the same order (so
 `optimiseBytecodeOld` stays an exact cross-check), without upstream's two `OP_3DUP` rules, which upstream itself
 disabled for their operation cost. Measured on the 301-contract `valid-contract-files` corpus

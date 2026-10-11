@@ -1668,7 +1668,7 @@ const ARITH_OPS: Record<string, BinaryOperator> = {
   exp: BinaryOperator.POW,
 };
 const YUL_WORD_BUILTINS: ReadonlySet<string> = new Set<YulWordBuiltin>([
-  'add', 'sub', 'mul', 'div', 'sdiv', 'mod', 'smod', 'slt', 'sgt', 'sar', 'signextend', 'shl', 'exp',
+  'add', 'sub', 'mul', 'div', 'sdiv', 'mod', 'smod', 'slt', 'sgt', 'sar', 'signextend', 'shl', 'shr', 'exp',
 ]);
 // Integer bitwise needs both operands to be a bounded int, so literal operands are cast to uint256.
 const BITWISE_OPS: Record<string, BinaryOperator> = {
@@ -2316,7 +2316,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     return yulWordOp('shl', lowerWordOperand(args[1], call), BinaryOperator.SHIFT_LEFT,
       lowerWordOperand(args[0], call), call);
   }
-  // shl(shift, value)=value*2^shift for a literal shift, shr(shift, value)=value/2^shift. Avoids the `<<`/`>>`
+  // shl(shift, value)=value*2^shift and shr(shift, value)=value/2^shift for a literal shift. Avoids the `<<`/`>>`
   // operators, which require bigint/bytes; staying on uint256 keeps bitwise on the same value valid.
   if ((name === 'shl' || name === 'shr') && args.length === 2) {
     // The shifted value is a 256-bit word (`value*2^shift` must not overflow a narrow operand's type, e.g.
@@ -2332,10 +2332,11 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       const masked = loc(new BinaryOpNode(value, BinaryOperator.MOD, intLit(2n ** (256n - s), call)), call);
       return loc(new BinaryOpNode(masked, BinaryOperator.MUL, intLit(2n ** s, call)), call);
     }
-    const pow2 = isIntLiteral(args[0])
-      ? intLit(2n ** BigInt(args[0].raw), call)
-      : loc(new BinaryOpNode(intLit(2n, call), BinaryOperator.POW, lowerValue(args[0])), call);
-    return loc(new BinaryOpNode(value, BinaryOperator.DIV, pow2), call);
+    // shr by a runtime shift: OP_RSHIFTNUM of the word, 0 past the word (BinaryOpNode.yulBuiltin).
+    if (!isIntLiteral(args[0])) {
+      return yulWordOp('shr', value, BinaryOperator.SHIFT_RIGHT, lowerWordOperand(args[0], call), call);
+    }
+    return loc(new BinaryOpNode(value, BinaryOperator.DIV, intLit(2n ** BigInt(args[0].raw), call)), call);
   }
   if (name in CMP_OPS && args.length === 2) return boolToWord(lowerCompare(call), call);
   if (name === 'not' && args.length === 1) {

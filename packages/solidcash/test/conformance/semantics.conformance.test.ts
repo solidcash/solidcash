@@ -2,7 +2,7 @@
 // shifts past the type width, bytesN shifts and indexing, type(T) bounds, tuples, delete, and the checks that must
 // revert on both VMs. Each body runs as an internal Solidity function and as a private SolidCash helper.
 import { describe, it } from 'vitest';
-import { assertConformant, assertReverts, fnCase, fnRevertCase } from './harness.js';
+import { asmCase, assertConformant, assertReverts, fnCase, fnRevertCase } from './harness.js';
 
 const run = (
   label: string, params: string, retType: string, body: string, args: readonly unknown[],
@@ -26,6 +26,38 @@ describe('semantics: shifts past the width', () => {
   it('uint256 << 300 is zero', () => run('shl-past', 'uint256 a', 'uint256', 'return a << 300;', [5n]));
   it('uint256 >> 300 is zero', () => run('shr-past', 'uint256 a', 'uint256', 'return a >> 300;', [5n]));
   it('uint8 << 8 is zero', () => run('shl-uint8-width', 'uint8 a', 'uint8', 'return a << 8;', [255n]));
+});
+
+// Runtime amounts below, at and far past the width: 0 for << and for >> of a non-negative value, -1 for >> of a
+// negative one.
+const MAX = (1n << 256n) - 1n;
+const amountsFor = (bits: number): bigint[] => [0n, BigInt(bits - 1), BigInt(bits), BigInt(bits + 1), 1n << 255n, MAX];
+const shifts = async (label: string, type: string, op: string, x: bigint): Promise<void> => {
+  const bits = Number(type.replace(/^u?int/, ''));
+  for (const n of amountsFor(bits)) {
+    await run(`${label}-${n}`, `${type} a, uint256 n`, type, `return a ${op} n;`, [x, n]);
+  }
+};
+
+describe('semantics: shifts by a runtime amount', () => {
+  it('uint256 <<', () => shifts('shl-uint256', 'uint256', '<<', 5n));
+  it('uint256 >>', () => shifts('shr-uint256', 'uint256', '>>', MAX));
+  it('int256 << of a negative value', () => shifts('shl-int256-neg', 'int256', '<<', -3n));
+  it('int256 << of a positive value', () => shifts('shl-int256-pos', 'int256', '<<', 3n));
+  it('int256 >> of a negative value', () => shifts('shr-int256-neg', 'int256', '>>', -3n));
+  it('int256 >> of a positive value', () => shifts('shr-int256-pos', 'int256', '>>', 3n));
+  it('uint8 <<', () => shifts('shl-uint8', 'uint8', '<<', 255n));
+  it('uint8 >>', () => shifts('shr-uint8', 'uint8', '>>', 255n));
+  it('int8 << of a negative value', () => shifts('shl-int8-neg', 'int8', '<<', -3n));
+  it('int8 >> of a negative value', () => shifts('shr-int8-neg', 'int8', '>>', -100n));
+  it('uint256 << by a uint8 amount', () => run('shl-uint8-amount', 'uint256 a, uint8 n', 'uint256',
+    'return a << n;', [5n, 255n]));
+  it('Yul shr', async () => {
+    for (const n of amountsFor(256)) {
+      await assertConformant(asmCase({ params: 'uint sh, uint v', retType: 'uint', yul: 'r := shr(sh, v)',
+        args: [n, MAX], label: `yul-shr-${n}` }));
+    }
+  });
 });
 
 describe('semantics: bytesN', () => {

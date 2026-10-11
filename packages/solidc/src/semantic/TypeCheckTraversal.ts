@@ -2865,7 +2865,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     // A Yul word builtin yields a uint256 word (a bool for slt/sgt) from unsigned integer operands of any width. A
-    // signed operand holds its sign-magnitude value, not its word: sar/signextend/shl read any other operand through
+    // signed operand holds its sign-magnitude value, not its word: sar/signextend/shl/shr read any other operand via
     // a checked uint256 cast (a negative one fails closed), the rest keep their plain operator (a known divergence).
     if (node.yulBuiltin) {
       const isWord = (t?: Type): boolean => isNumericType(t) && !(t instanceof IntType && t.signed)
@@ -2876,7 +2876,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         cast.location = e.location;
         return this.visit(cast) as ExpressionNode;
       };
-      if (node.yulBuiltin === 'sar' || node.yulBuiltin === 'signextend' || node.yulBuiltin === 'shl') {
+      if (node.yulBuiltin === 'sar' || node.yulBuiltin === 'signextend' || node.yulBuiltin === 'shl'
+        || node.yulBuiltin === 'shr') {
         node.left = asWord(node.left);
         node.right = asWord(node.right);
       } else if (!isWord(node.left.type) || !isWord(node.right.type)) {

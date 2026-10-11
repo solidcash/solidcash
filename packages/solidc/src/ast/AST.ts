@@ -2034,7 +2034,8 @@ export class SliceNode extends ExpressionNode {
 
 // Yul builtins that codegen evaluates with EVM semantics over 256-bit words (GenerateTargetTraversal.emitYulWordOp).
 export type YulWordBuiltin =
-  | 'add' | 'sub' | 'mul' | 'div' | 'sdiv' | 'mod' | 'smod' | 'slt' | 'sgt' | 'sar' | 'signextend' | 'shl' | 'exp';
+  | 'add' | 'sub' | 'mul' | 'div' | 'sdiv' | 'mod' | 'smod' | 'slt' | 'sgt' | 'sar' | 'signextend' | 'shl' | 'shr'
+  | 'exp';
 
 export class BinaryOpNode extends ExpressionNode {
   // Written in source or desugared from it: an integer literal operand takes the bounded operand's type.

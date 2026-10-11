@@ -857,7 +857,7 @@ describe('Yul assignment to a named storage return slot', () => {
       + ' function pointer() internal view returns (S storage result) {'
       + ' assembly { for {} eq(0, 0) { result.slot := s.slot } {} } } }',
       { evmCompat: true },
-    )).toThrow(/Unsupported inline assembly/);
+    )).toThrow(/can be returned without prior assignment/);
   });
 
   it('recognizes a for-loop initializer as definite named-return initialization', () => {
@@ -884,7 +884,7 @@ describe('Yul assignment to a named storage return slot', () => {
       + ' function pointer(uint choice) internal view returns (S storage result) { assembly {'
       + ' switch choice case 0 { result.slot := s.slot } } } }',
       { evmCompat: true },
-    )).toThrow(/Unsupported inline assembly|Expected variable|Unsupported return/);
+    )).toThrow(/can be returned without prior assignment/);
   });
 });
 
@@ -912,7 +912,7 @@ describe('Yul initialization of local storage-pointer aliases', () => {
       'contract C { struct S { bool flag; } S s; function f(bool choose) internal pure { S storage p;'
       + ' assembly { if choose { p.slot := s.slot } } p; } }',
       { evmCompat: true },
-    )).toThrow(/Unsupported inline assembly/);
+    )).toThrow(/can be accessed without prior assignment/);
   });
 });
 

@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { AuthenticationErrorBch2025Additions } from '@bitauth/libauth';
+import type { ElectrumClient, ElectrumClientEvents } from '@electrum-cash/network';
 import {
   Contract,
   FailedRequireError,
   FailedTransactionEvaluationError,
   HashType,
+  Network,
   OutputTokenCommitmentTooLongError,
   SighashType,
   SignatureAlgorithm,
@@ -16,6 +18,7 @@ import {
   UnlockerLockingBytecodeMismatchError,
 } from '../src/index.js';
 import { MockNetworkProvider } from '../src/network/mock/index.js';
+import ElectrumNetworkProvider from '../src/network/ElectrumNetworkProvider.js';
 import { encodeFunctionArgument } from '../src/Argument.js';
 import { addressToLockScript, randomUtxo } from '../src/utils.js';
 import { placeholderP2PKHUnlocker } from '../src/walletconnect-utils.js';
@@ -137,6 +140,37 @@ describe('SignatureTemplate', () => {
   it('always appends the fork id flag to the sighash type of a signature', () => {
     const signature = alice.generateSignature(new Uint8Array(32).fill(7));
     expect(signature.at(-1)).toBe(SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXOS | 0x40);
+  });
+});
+
+describe('network providers', () => {
+  it('the mock spends a UTXO that was added with an uppercase txid', async () => {
+    const provider = new MockNetworkProvider();
+    const utxo = randomUtxo({ satoshis: 10_000n });
+    const uppercase = { ...utxo, txid: utxo.txid.toUpperCase() };
+    await provider.addUtxo(aliceAddress, uppercase);
+
+    const transaction = new TransactionBuilder({ provider })
+      .addInput(uppercase, alice.unlockP2PKH())
+      .addOutput({ to: bobAddress, amount: 9_000n });
+
+    await expect(transaction.send()).resolves.toBeDefined();
+  });
+
+  it('the Electrum provider reads the block height with headers.get_tip, not a subscription', async () => {
+    const requests: string[] = [];
+    const electrum = {
+      connect: async (): Promise<void> => undefined,
+      disconnect: async (): Promise<boolean> => true,
+      request: async (name: string): Promise<unknown> => {
+        requests.push(name);
+        return { height: 1234, hex: '' };
+      },
+    } as unknown as ElectrumClient<ElectrumClientEvents>;
+    const provider = new ElectrumNetworkProvider(Network.CHIPNET, { electrum });
+
+    expect(await provider.getBlockHeight()).toBe(1234);
+    expect(requests).toEqual(['blockchain.headers.get_tip']);
   });
 });
 

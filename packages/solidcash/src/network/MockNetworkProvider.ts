@@ -669,7 +669,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     const scriptHash = binToHex(sha256(lockingBytecodeBin));
 
     this.indexer.addUtxo({
-      txid: utxo.txid,
+      // Outpoints are matched as lowercase hex, which is how a spending transaction's input names them
+      txid: utxo.txid.toLowerCase(),
       vout: utxo.vout,
       satoshis: utxo.satoshis,
       scriptHash,

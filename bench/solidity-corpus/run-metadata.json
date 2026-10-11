@@ -4,23 +4,23 @@
   "node": "v22.22.0",
   "platform": "linux-arm64",
   "fixtureCount": 7343,
-  "fixtureTimeoutMs": 30000,
-  "workers": 6,
+  "fixtureTimeoutMs": 5000,
+  "workers": 8,
   "checkedNegativeFixtures": true,
   "primaryResult": {
-    "compiled": 2717,
+    "compiled": 2715,
     "namedFailures": 88,
-    "timeouts": 0
+    "timeouts": 2
   },
   "retryTimeoutMs": 120000,
-  "retryWorkers": 4,
-  "retriedTimeoutFixtures": 0,
+  "retryWorkers": 2,
+  "retriedTimeoutFixtures": 2,
   "retryErrorNames": [],
   "retryPasses": [
     {
       "timeoutMs": 120000,
-      "workers": 4,
-      "selectedFixtures": 0,
+      "workers": 2,
+      "selectedFixtures": 2,
       "includeTimeouts": true,
       "errorNames": [],
       "isolatedWorkers": true
@@ -32,7 +32,7 @@
       "timeoutMs": 120000,
       "workers": 4,
       "selectedFixtures": 1,
-      "accepted": 313,
+      "accepted": 182,
       "timeouts": 0
     }
   ],

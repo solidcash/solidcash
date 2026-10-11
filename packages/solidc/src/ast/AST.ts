@@ -1119,6 +1119,15 @@ export class StateVariableNode extends Node implements Named, Typed {
 export abstract class StatementNode extends Node {
   /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
   messageBusFixedChunkableWriteGuard?: string;
+  /** Base contract that wrote this statement when its constructor is inlined into a derived one (`super` scope). */
+  baseConstructorOf?: string;
+}
+
+/** A base constructor's own modifiers, expanded with the most-derived (virtual) modifier definitions. */
+export interface PendingConstructorModifiers {
+  invocations: CustomModifierInvocation[];
+  location: Location;
+  qualifiers?: string[];
 }
 
 export class StateAssignNode extends StatementNode {
@@ -1590,6 +1599,8 @@ export class BlockNode extends StatementNode {
   // Scoped blocks are NOT flattened into their parent statement list, so their nested variable scope survives
   // (two sibling blocks may reuse a name; a block local may shadow nothing outside it).
   scoped?: boolean;
+  // An inlined base constructor body still to be wrapped by that constructor's modifiers (modifier expansion).
+  pendingConstructorModifiers?: PendingConstructorModifiers;
 
   constructor(
     public statements?: StatementNode[],

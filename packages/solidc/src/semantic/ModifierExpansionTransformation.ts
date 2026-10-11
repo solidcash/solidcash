@@ -431,7 +431,9 @@ export default function expandModifiers(ast: SourceFileNode): SourceFileNode {
   if (contract.constructorDef) {
     const constructor = contract.constructorDef;
     const prefixLength = constructor.constructorPreludeLength;
-    const prefix = (constructor.body.statements ?? []).slice(0, prefixLength);
+    const prefix = expandBaseConstructorModifiers(
+      (constructor.body.statements ?? []).slice(0, prefixLength), modifierMap, libraryQualifiers,
+    );
     constructor.body.statements = (constructor.body.statements ?? []).slice(prefixLength);
     expandFunctionModifiers(constructor, modifierMap, libraryQualifiers);
     constructor.body.statements = [...prefix, ...(constructor.body.statements ?? [])];
@@ -458,6 +460,24 @@ export default function expandModifiers(ast: SourceFileNode): SourceFileNode {
   }
 
   return ast;
+}
+
+// An inlined base constructor body (see inlinedBaseConstructorBody) wrapped by that constructor's own modifiers.
+function expandBaseConstructorModifiers(
+  statements: StatementNode[],
+  modifierMap: Map<string, ModifierDefinitionNode>,
+  forbiddenQualifiers: Set<string>,
+): StatementNode[] {
+  return statements.flatMap((statement) => {
+    const pending = statement instanceof BlockNode ? statement.pendingConstructorModifiers : undefined;
+    if (!pending) return [statement];
+    const base = new FunctionDefinitionNode('__construct', [], statement as BlockNode);
+    base.location = pending.location;
+    base.customModifiers = pending.invocations;
+    base.allowedModifierQualifiers = pending.qualifiers;
+    expandFunctionModifiers(base, modifierMap, forbiddenQualifiers);
+    return base.body.statements ?? [];
+  });
 }
 
 function expandFunctionModifiers(

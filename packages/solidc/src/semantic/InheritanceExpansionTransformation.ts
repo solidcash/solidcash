@@ -1096,12 +1096,13 @@ function inlineParentConstructors(
     const clonedCtor = ancestor.constructorDef ? cloneNode(ancestor.constructorDef) : undefined;
     if (clonedCtor) {
       const ancestorSubs = new Map(ctorParams.map((p, i) => [p.name, evaluatedArgs[i]]));
-      substituteInFunction(clonedCtor, ancestorSubs, storagePointerContext(contract, ctorParams, ancestorSubs));
+      const storage = storagePointerContext(contract, ctorParams, ancestorSubs);
+      substituteInFunction(clonedCtor, ancestorSubs, storage);
+      // The ancestor constructor (incl. inlined state-var initializers) legitimately touches the ancestor's OWN
+      // private state; tag its accesses so the flattened child does not trip the private-access check.
+      tagModifierStateAccess(clonedCtor.body.statements ?? [], ancestorName);
+      parentStmts.push(...inlinedBaseConstructorBody(clonedCtor, ancestor, ancestorSubs, storage));
     }
-    // The ancestor constructor (incl. inlined state-var initializers) legitimately touches the ancestor's OWN
-    // private state; tag its accesses so the flattened child does not trip the private-access check.
-    if (clonedCtor) tagModifierStateAccess(clonedCtor.body.statements ?? [], ancestorName);
-    parentStmts.push(...(clonedCtor?.body.statements ?? []));
   }
 
   // Solidity evaluates/runs sibling base constructors from right to left (`is A, B, C` -> C, B, A).
@@ -1117,12 +1118,15 @@ function inlineParentConstructors(
     if (!invocation && ctorParams.length > 0) continue;
     const clonedCtor = parent.constructorDef ? cloneNode(parent.constructorDef) : undefined;
     const evaluatedArgs = invocation ? bindInvocationArgs(invocation, ctorParams, parentName) : [];
-    if (invocation && clonedCtor) {
-      const parentSubs = new Map(ctorParams.map((p, i) => [p.name, evaluatedArgs[i]]));
-      substituteInFunction(clonedCtor, parentSubs, storagePointerContext(contract, ctorParams, parentSubs));
+    const parentSubs = new Map<string, ExpressionNode>(
+      invocation ? ctorParams.map((p, i) => [p.name, evaluatedArgs[i]]) : [],
+    );
+    const storage = invocation ? storagePointerContext(contract, ctorParams, parentSubs) : undefined;
+    if (invocation && clonedCtor) substituteInFunction(clonedCtor, parentSubs, storage);
+    if (clonedCtor) {
+      tagModifierStateAccess(clonedCtor.body.statements ?? [], parentName);
+      parentStmts.push(...inlinedBaseConstructorBody(clonedCtor, parent, parentSubs, storage));
     }
-    if (clonedCtor) tagModifierStateAccess(clonedCtor.body.statements ?? [], parentName);
-    parentStmts.push(...(clonedCtor?.body.statements ?? []));
   }
   if (parentStmts.length === 0) return;
 
@@ -1134,6 +1138,42 @@ function inlineParentConstructors(
   }
   contract.constructorDef.body.statements = [...parentStmts, ...(contract.constructorDef.body.statements ?? [])];
   contract.constructorDef.constructorPreludeLength += parentStmts.length;
+}
+
+// A base constructor's statements inlined into a derived constructor keep the base that wrote them (its `super`
+// resolves from there) and stay wrapped by that constructor's own modifiers, which modifier expansion applies with
+// the most-derived (virtual) definitions. A root base never reroutes its `m(args)` invocations, so they join here.
+function inlinedBaseConstructorBody(
+  ctor: FunctionDefinitionNode,
+  base: ContractNode,
+  subs: Map<string, ExpressionNode>,
+  storage?: StoragePointerContext,
+): StatementNode[] {
+  const statements = ctor.body.statements ?? [];
+  const prelude = statements.slice(0, ctor.constructorPreludeLength);
+  let own = statements.slice(ctor.constructorPreludeLength);
+  const modifierNames = new Set(base.modifierDefinitions.map((modifier) => modifier.name));
+  const invocations = [
+    ...ctor.customModifiers,
+    ...base.parentInvocations.filter((pi) => modifierNames.has(pi.parentName))
+      .map((pi) => ({ name: pi.parentName, args: pi.args.map((arg) => cloneNode(arg)), location: pi.location })),
+  ].sort((a, b) => a.location.start.line - b.location.start.line
+    || a.location.start.column - b.location.start.column);
+  if (invocations.length > 0) {
+    for (const invocation of invocations) {
+      invocation.args = invocation.args.map((arg) => substituteInExpression(arg, subs, storage));
+      tagModifierStateAccess(invocation.args, base.name);
+    }
+    const body = new BlockNode(own);
+    body.location = ctor.body.location ?? ctor.location;
+    body.scoped = true;
+    body.pendingConstructorModifiers = {
+      invocations, location: ctor.location, qualifiers: ctor.allowedModifierQualifiers,
+    };
+    own = [body];
+  }
+  for (const statement of [...prelude, ...own]) statement.baseConstructorOf ??= base.name;
+  return [...prelude, ...own];
 }
 
 /**
@@ -1589,9 +1629,15 @@ function resolveSuperAndBaseCalls(
   const entryRoots = new Set<string>();
   for (const special of [contract.constructorDef, contract.fallbackDef, contract.receiveDef]) {
     if (!special?.body) continue;
-    new SuperCallRewriter(
-      makeResolve(contract.name, entryRoots), isDiscardedBaseReference, entryRoots,
-    ).visit(special.body);
+    // An inlined base constructor statement resolves `super` from the base that wrote it.
+    special.body.statements = (special.body.statements ?? []).map((statement) => {
+      if (statement instanceof PlaceholderStatementNode) return statement;
+      const writer = statement.baseConstructorOf;
+      const definingContract = writer !== undefined && indexOf.has(writer) ? writer : contract.name;
+      return new SuperCallRewriter(
+        makeResolve(definingContract, entryRoots), isDiscardedBaseReference, entryRoots,
+      ).visit(statement) as StatementNode;
+    });
   }
   // Modifier bodies are expanded only after inheritance flattening. Resolve their super/Base calls now while
   // the linearization and preserved implementations are still available, and conservatively retain any base

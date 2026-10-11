@@ -245,6 +245,7 @@ import {
   compileBinaryOp,
   compileAddressToEvmIdentity,
   compileCast,
+  compileEvmWordCast,
   compileGlobalFunction,
   compileNullaryOp,
   compileTimeOp,
@@ -13478,6 +13479,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitCast(node: CastNode): Node {
     node.expression = this.visit(node.expression);
 
+    // A Yul `:=` word cast follows the EVM word layout and cleanup (truncation) rather than a checked conversion.
+    if (node.evmWord && !node.isUnsafe && this.compilerOptions.evmCompat) {
+      const from = node.expression.type as Type;
+      const nonNegative = (from instanceof IntType && !from.signed)
+        || (node.expression instanceof IntLiteralNode && node.expression.value >= 0n);
+      const script = compileEvmWordCast(from, node.type, nonNegative);
+      if (script !== undefined) {
+        this.emit(script, { location: node.location, positionHint: PositionHint.END });
+        this.popFromStack();
+        this.pushToStack('(value)');
+        return node;
+      }
+    }
+
     this.emit(
       compileCast(
         node.expression.type as Type,
@@ -13492,7 +13507,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Emit bounds check for casts to bounded int types; an assembly word written to an int variable truncates
     if (node.type instanceof IntType && !node.isUnsafe) {
       const locationData = { location: node.location, positionHint: PositionHint.END };
-      if (node.yulWordCleanup) this.emitTwosComplementTruncation(node.type, locationData);
+      if (node.evmWord) this.emitTwosComplementTruncation(node.type, locationData);
       else this.emitIntBoundsCheck(node.type, locationData);
     }
     // Emit bounds check for casts to fixed-point types

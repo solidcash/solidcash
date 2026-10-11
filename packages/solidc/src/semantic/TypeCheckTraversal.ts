@@ -1810,7 +1810,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     // Warn if integer literal exceeds target type's range (an assembly word truncates to it instead)
-    if (node.expression instanceof IntLiteralNode && !node.yulWordCleanup) {
+    if (node.expression instanceof IntLiteralNode && !node.evmWord) {
       const litValue = node.expression.value;
       if (node.type instanceof IntType) {
         if (litValue < node.type.minValue || litValue > node.type.maxValue) {

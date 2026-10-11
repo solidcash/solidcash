@@ -121,8 +121,13 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     }
     return [];
   }
-  // IntType -> BytesType: same as int -> bytes
+  // IntType -> BytesType: same as int -> bytes. Under Solidity compatibility a same-width unsigned value may set the
+  // top bit (bytes32(type(uint256).max)), which needs a sign byte: encode N+1 bytes and drop that byte.
   if (from instanceof IntType && to instanceof BytesType && to.bound !== undefined) {
+    if (solidityCompat && !from.signed && from.bits === to.bound * 8) {
+      const n = BigInt(to.bound);
+      return [encodeInt(n + 1n), Op.OP_NUM2BIN, encodeInt(n), Op.OP_SPLIT, Op.OP_DROP, Op.OP_REVERSEBYTES];
+    }
     return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN, ...(solidityCompat ? [Op.OP_REVERSEBYTES] : [])];
   }
   // BytesType -> IntType: bytes are read as a script number. For an UNSIGNED target, sign-pad a 0x00 high byte
@@ -248,6 +253,50 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   if (from === to) return [];
 
   throw new Error(`compileCast: unsupported conversion from ${from.toString()} to ${to.toString()}`);
+}
+
+// Two's-complement truncation of an integer to `to` (Solidity's cleanup of a dirty word). The moduli are built at
+// runtime. A known non-negative value needs one modulo; otherwise the remainder is lifted into [0, 2^bits) first.
+// A signed target is biased by H = 2^(bits-1), reduced into [0, 2H) and unbiased.
+export function compileIntTruncation(to: IntType, nonNegative: boolean): Script {
+  if (!to.signed) {
+    const modulus: Script = [Op.OP_1, encodeInt(BigInt(to.bits)), Op.OP_LSHIFTNUM];
+    return nonNegative
+      ? [...modulus, Op.OP_MOD]
+      : [...modulus, Op.OP_TUCK, Op.OP_MOD, Op.OP_OVER, Op.OP_ADD, Op.OP_SWAP, Op.OP_MOD];
+  }
+  const biased: Script = [
+    Op.OP_1, encodeInt(BigInt(to.bits - 1)), Op.OP_LSHIFTNUM, // [v, H]
+    Op.OP_TUCK, Op.OP_ADD, Op.OP_OVER, Op.OP_DUP, Op.OP_ADD, // [H, v+H, 2H]
+  ];
+  const reduced: Script = nonNegative
+    ? [Op.OP_MOD]
+    : [Op.OP_TUCK, Op.OP_MOD, Op.OP_OVER, Op.OP_ADD, Op.OP_SWAP, Op.OP_MOD];
+  return [...biased, ...reduced, Op.OP_SWAP, Op.OP_SUB];
+}
+
+// A cast to or from the raw 32-byte word a Yul `:=` copies (CastNode.evmWord), in evmCompat byte order: an int
+// target keeps the word's low bits (two's complement), a bytesN target takes the word's leading N bytes, and a
+// bytesN source is left-aligned in the word. Undefined for a pair the ordinary cast handles.
+export function compileEvmWordCast(from: Type, to: Type, nonNegative: boolean): Script | undefined {
+  const fromInt = from instanceof IntType || from === PrimitiveType.INT || from === PrimitiveType.BIGINT;
+  if (fromInt && to instanceof IntType) {
+    const fits = from instanceof IntType && (from.signed === to.signed ? to.bits >= from.bits
+      : !from.signed && to.bits > from.bits);
+    return fits ? [] : compileIntTruncation(to, nonNegative);
+  }
+  if (fromInt && to instanceof BytesType && to.bound !== undefined) {
+    // NUM2BIN to 33 bytes fits any word; drop its sign byte, then keep the leading N big-endian bytes.
+    const word: Script = nonNegative ? [] : compileIntTruncation(new IntType(false, 256), false);
+    const lead: Script = to.bound < 32 ? [encodeInt(BigInt(to.bound)), Op.OP_SPLIT, Op.OP_DROP] : [];
+    return [...word, encodeInt(33n), Op.OP_NUM2BIN, Op.OP_REVERSEBYTES, Op.OP_1, Op.OP_SPLIT, Op.OP_NIP, ...lead];
+  }
+  if (from instanceof BytesType && from.bound !== undefined && to instanceof IntType) {
+    const align: Script = from.bound < 32 ? [encodeInt(BigInt(8 * (32 - from.bound))), Op.OP_LSHIFTNUM] : [];
+    const narrow: Script = to.signed || to.bits < 256 ? compileIntTruncation(to, true) : [];
+    return [Op.OP_REVERSEBYTES, new Uint8Array([0x00]), Op.OP_CAT, Op.OP_BIN2NUM, ...align, ...narrow];
+  }
+  return undefined;
 }
 
 const GLOBAL_FUNCTION_SCRIPT: Record<GlobalFunction, Script> = {

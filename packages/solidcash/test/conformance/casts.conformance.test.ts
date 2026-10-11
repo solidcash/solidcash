@@ -23,6 +23,7 @@ describe('casts: narrowing and byte order, per compile mode', () => {
   const native = inMode(false);
   const compat = inMode(true);
   const BE_255 = `0x${'00'.repeat(31)}ff`;
+  const TOP_BIT = (1n << 255n) + 0x1234n;
 
   // EVM narrowing truncates (uint8(0x1234) == 0x34), and so does evmCompat. Native SolidCash range-checks and reverts
   // on data loss (unsafe casts truncate): a deliberate safety divergence.
@@ -33,5 +34,8 @@ describe('casts: narrowing and byte order, per compile mode', () => {
   it.fails('native: int -> uint reinterpret (-1 -> 2^256-1) reverts', () => native('uint256(a)', 'int a', 'uint', [-1n]));
   // bytesN <-> uint byte order: big-endian on the EVM and under evmCompat, little-endian in native SolidCash.
   it('evmCompat: uint256(bytes32(0x00..ff)) == 255 (big-endian)', () => compat('uint256(a)', 'bytes32 a', 'uint', [BE_255]));
+  // A same-width unsigned value with its top bit set converts too (its VM number needs a sign byte).
+  it('evmCompat: bytes32(uint256) with the top bit set', () => compat('bytes32(a)', 'uint a', 'bytes32', [TOP_BIT]));
+  it('evmCompat: bytes4(uint32) with the top bit set', () => compat('bytes4(a)', 'uint32 a', 'bytes4', [0xabcdef00n]));
   it.fails('native: uint256(bytes32(0x00..ff)) reads little-endian', () => native('uint256(a)', 'bytes32 a', 'uint', [BE_255]));
 });

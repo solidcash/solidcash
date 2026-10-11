@@ -240,8 +240,10 @@ they extract the embedded 20-byte hash at offset 3 of the P2PKH form. Both warn,
 lossy and meaningless for a non-P2PKH address. Compare addresses as addresses wherever you can.
 :::
 
-Members: `.transfer(amount)`, `.send(amount)`, `.call(data)`, `.staticcall(data)`, `.delegatecall(data)`,
-`.code`, `.codehash`. See [Contract Calls](/docs/language/advanced-features#external-contract-interaction).
+Members: `.balance`, `.transfer(amount)`, `.send(amount)`, `.call(data)`, `.staticcall(data)`,
+`.delegatecall(data)`, `.code`, `.codehash`. `.balance` sums the satoshi container of the matching inputs
+(the contract's own balance is also `this.balance`, and `this.outState.balance` reads the outputs). See
+[Contract Calls](/docs/language/advanced-features#external-contract-interaction).
 
 ## Enums
 

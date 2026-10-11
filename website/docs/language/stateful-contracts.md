@@ -249,6 +249,17 @@ operation support are described in [Arrays](./arrays.md); both physical chunk fo
 Token containers manage native CashToken fungible tokens (FTs) and NFTs held by a stateful contract. Each held
 category gets a deterministic covenant address bound to the contract's category.
 
+### Token Container Properties
+
+`this.tokens[category]` exposes the container's `.tokenAmount` (fungible amount) and `.nftCount` fields.
+Output aggregates are available through `this.outState.tokens[category].tokenAmount` and
+`this.outState.tokens[category].nftCount`.
+
+### Token Container Methods
+
+`.transfer(lockingBytecode, amount)` sends fungible tokens, and `.transferNft(lockingBytecode, commitment, amount)`
+sends an NFT, each by enforcing the matching transaction output.
+
 ```solidity
 contract Vault() {
     int withdrawals;
@@ -270,10 +281,9 @@ contract Vault() {
 }
 ```
 
-Fields also include `.nftCount`; output aggregates are available through
-`this.outState.tokens[category].tokenAmount` and `.nftCount`. Category-key rules, covenant preservation,
-deposits, SDK access, auto-derived outputs, and the current multiple-UTXO limitation are covered in the
-dedicated [Token Containers](./token-containers.md) reference.
+Category-key rules, covenant preservation, deposits, SDK access, auto-derived outputs, and the current
+multiple-UTXO limitation are covered in the dedicated
+[Token Containers](./token-containers.md) reference.
 
 ## Satoshi Container
 

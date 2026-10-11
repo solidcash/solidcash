@@ -319,10 +319,13 @@ export function buildDataNftCovenantBytecode(categoryIdHex: string): string {
  *  128-byte commitment limit (a sign-magnitude number can be up to commitmentLimit bytes). */
 const VM_NUMBER_MAX_BYTE_LENGTH = 150;
 
-/** Check if a type string represents an int-like type (int, int8, uint256, fixed128x18, etc.) */
+/**
+ * Check if a type string represents an int-like type (int, int8, uint256, fixed128x18, etc.). A function pointer
+ * (`function(...)...`) is its integer functionId on the wire, as in the compiler's emitPushdataEncode.
+ */
 function isIntLikeType(type: string): boolean {
   return type === 'bigint' || type === 'int' || type === 'uint' || type === 'fixed' || type === 'ufixed'
-    || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type);
+    || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type) || type.startsWith('function(');
 }
 
 /** Parse a bounded int/fixed type string and return its min/max range, or undefined for unbounded 'bigint'. */

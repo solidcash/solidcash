@@ -7,6 +7,7 @@ import { BytesType } from '@solidcash/utils';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { byteElementValue } from './byteElementValue.js';
 
 /**
  * Value-copies a LOCAL `bytes` element write `b[i] = v` that LowerMemoryModel did NOT convert to a __yulmem
@@ -61,7 +62,7 @@ export default class DesugarLocalBytesElementWrite extends AstTraversal {
     const at = <T extends Node>(x: T): T => { x.location = node.location; return x; };
     const read = (): IdentifierNode => at(new IdentifierNode(node.name));
     const idx = (): ExpressionNode => cloneNode(node.index) as ExpressionNode;
-    const value = this.visit(node.value) as ExpressionNode;
+    const value = byteElementValue(this.visit(node.value) as ExpressionNode);
     const len = at(new UnaryOpNode(UnaryOperator.SIZE, read()));
     const prefix = at(new SliceNode(read(), at(new IntLiteralNode(0n)), idx()));
     const iPlus1 = at(new BinaryOpNode(idx(), BinaryOperator.PLUS, at(new IntLiteralNode(1n))));

@@ -69,7 +69,8 @@ assignment to a bounded variable/state variable/parameter/return, or a write int
 violation fails the script rather than silently wrapping.
 
 Arithmetic on bounded integers is also checked per operation, as in Solidity 0.8: an operation whose result
-leaves the range of its type fails the script, even before the result is stored.
+leaves the range of its type fails the script, even before the result is stored. Shifts are the exception, again as
+in Solidity: `x << n` truncates to the type of `x` (`uint8(200) << 4 == 128`) and never fails.
 
 `unchecked { }` replaces the range check with wraparound modulo 2^N, matching Solidity:
 

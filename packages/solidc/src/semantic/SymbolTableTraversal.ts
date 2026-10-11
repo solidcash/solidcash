@@ -128,6 +128,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
 import { evmResultMayNeedPreimage, externalResultEncoding } from './ExternalResultEncoding.js';
+import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
 import { computeExpressionSiteKey, generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import {
@@ -500,6 +501,14 @@ function isFoldableCreationCodeHash(node: FunctionCallNode): boolean {
     && arg.contractName !== undefined;
 }
 
+/** The message-bus route's generated row loop, `for (__message_bus_row = 0; __message_bus_row < rowCount; ..)`. */
+function isMessageBusRowLoop(loop: WhileNode | DoWhileNode): boolean {
+  const boundsRow = (expression: Node): boolean => (expression instanceof IdentifierNode
+    ? expression.name === '__message_bus_row'
+    : expression instanceof BinaryOpNode && (boundsRow(expression.left) || boundsRow(expression.right)));
+  return boundsRow(loop.condition);
+}
+
 export function getMaxPushdataEncodedSizeForType(
   type: Type, seen: Set<string> = new Set(), addressBytes: number = ADDRESS_MAX_ENCODED_BYTES,
 ): number {
@@ -839,6 +848,8 @@ function flagSetsBefore(body: BlockNode, gate: BranchNode, flag: string): PathGu
 interface FunctionBodySurvey {
   usesMsgSender: boolean;
   keccakInLoop: boolean;
+  /** Emission index (codegen pre-order) of each keccak256 call outside every loop. */
+  keccakFixedSlotIndices: number[];
   hasValueTransfer: boolean;
   hasFunctionCall: boolean;
   hasExternalRead: boolean;
@@ -853,6 +864,9 @@ interface ActiveFunctionBodySurvey {
   seen: WeakMap<Node, boolean>;
   recoveryLoopDepth: number;
   keccakLoopDepth: number;
+  /** keccak256 calls numbered so far, in the pre-order emitKeccakComputeCall assigns its index `i` in. */
+  keccakEmitted: number;
+  keccakNumbered: WeakSet<Node>;
 }
 
 /** What one straight-line statement of a function body may do to state, for canonicalizing later state reads. */
@@ -889,9 +903,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!survey) return super.visit(node);
     const recoveryLoop = node instanceof WhileNode || node instanceof DoWhileNode
       || node instanceof CollectionIterationNode;
-    const keccakLoop = node instanceof WhileNode || node instanceof DoWhileNode;
+    // A stateful route's row dispatcher is a transport loop: codegen reads a keccak256 under it from a fixed
+    // block slot (emitLoopKeccakSetup skips the route), so it must not drop the route's fixed slots.
+    const keccakLoop = (node instanceof WhileNode || node instanceof DoWhileNode)
+      && !(this.isStatefulContract && isMessageBusRowLoop(node));
     if (recoveryLoop) survey.recoveryLoopDepth += 1;
     if (keccakLoop) survey.keccakLoopDepth += 1;
+    if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256
+      && !isFoldableCreationCodeHash(node) && !survey.keccakNumbered.has(node)) {
+      survey.keccakNumbered.add(node);
+      const index = survey.keccakEmitted++;
+      if (survey.keccakLoopDepth === 0) survey.result.keccakFixedSlotIndices.push(index);
+    }
     try {
       const result = super.visit(node);
       this.recordBodySurveyNode(result, survey);
@@ -3676,6 +3699,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const bodySurvey: FunctionBodySurvey = {
       usesMsgSender: false,
       keccakInLoop: false,
+      keccakFixedSlotIndices: [],
       hasValueTransfer: false,
       hasFunctionCall: false,
       hasExternalRead: false,
@@ -3686,6 +3710,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     this.activeBodySurvey = {
       result: bodySurvey, seen: new WeakMap(), recoveryLoopDepth: 0, keccakLoopDepth: 0,
+      keccakEmitted: 0, keccakNumbered: new WeakSet(),
     };
     try {
       node.body = this.visit(node.body);
@@ -3850,7 +3875,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.keccakCompute = true;
       // A keccak256 call inside a loop runs a runtime-variable number of times, so the static call count is a
       // LOWER BOUND on the side-cars needed. Flag it so the SDK provisions extra instances (see artifact).
-      if (bodySurvey.keccakInLoop) node.keccakInLoop = true;
+      if (bodySurvey.keccakInLoop) {
+        node.keccakInLoop = true;
+        if (bodySurvey.keccakFixedSlotIndices.length > 0) {
+          node.keccakFixedSlotIndices = bodySurvey.keccakFixedSlotIndices;
+        }
+      }
     }
 
     // ecrecoverPubKey (+ its p2pkh/evm projections) recovers a secp256k1 pubkey via a co-spent recovery side-car
@@ -12884,7 +12914,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const length = at(new UnaryOpNode(UnaryOperator.SIZE, read()));
       const suffix = at(new SliceNode(read(), next, length));
       const rebuilt = at(new BinaryOpNode(
-        at(new BinaryOpNode(prefix, BinaryOperator.PLUS, node.value)), BinaryOperator.PLUS, suffix,
+        at(new BinaryOpNode(prefix, BinaryOperator.PLUS, byteElementValue(node.value))), BinaryOperator.PLUS, suffix,
       ));
       const assignment = at(new AssignNode(read(), rebuilt));
       assignment.isReferenceDataWrite = true;
@@ -17960,6 +17990,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       const kCalls = ordinaryCalls + (node.ecrecoverEvmCallCount ?? 0);
       const kSlots = Math.ceil(kCalls / 3);
       for (let i = 0; i < kSlots; i++) slots.push({ kind: 'keccakSideCar', offset: offset++, slotIndex: i });
+    } else if (node.keccakInLoop && node.keccakFixedSlotIndices !== undefined
+      && this.compilerOptions.composition !== 'framed') {
+      // A keccak loop beside straight-line calls. Codegen leaves a keccak-loop function unbatched and reads a
+      // straight-line call at slotIndex = its emission index, so reserve exactly those slots inside the block;
+      // the loop's per-iteration side-cars stay in the trailing region past blockSize, disjoint from them.
+      for (const slotIndex of node.keccakFixedSlotIndices) {
+        slots.push({ kind: 'keccakSideCar', offset: offset++, slotIndex });
+      }
     }
 
     // ecrecover recovery side-cars: each ecrecoverPubKey call rides a consecutive PAIR of self-preserving 1:1

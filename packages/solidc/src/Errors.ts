@@ -224,6 +224,13 @@ export class CompilerRecursionLimitError extends Error {
   }
 }
 
+/** A struct contains itself by value (directly, or through fixed-size arrays and other structs), as solc refuses. */
+export class RecursiveStructDefinitionError extends SolidCashError {
+  constructor(node: StructDefinitionNode) {
+    super(node, 'Recursive struct definition');
+  }
+}
+
 export class RecursiveStructUnsupportedError extends SolidCashError {
   constructor(node: FunctionDefinitionNode) {
     super(node, 'Recursive struct types are unsupported because BCH requires a finite inline encoding');
@@ -627,6 +634,21 @@ export class InvalidDataLocationError extends SolidCashError {
   }
 }
 
+// solc TypeError 3464.
+export class UninitializedPointerError extends SolidCashError {
+  constructor(node: Node, variable: string, location: string, use: 'accessed' | 'returned') {
+    super(node, `${variable} is of ${location} pointer type and can be ${use} without prior assignment, which would`
+      + ' lead to undefined behaviour');
+  }
+}
+
+// Solidity 0.5+ (solc TypeError 6651): a reference-type parameter, return or local needs an explicit location.
+export class MissingDataLocationError extends ParseError {
+  constructor(allowedLocations: string, declaration: string, location?: Location) {
+    super(`Data location must be ${allowedLocations} for ${declaration}, but none was given`, location);
+  }
+}
+
 export class ArrayElementError extends SolidCashError {
   constructor(
     node: ArrayNode,
@@ -720,6 +742,20 @@ export class StateVariableNameCollisionError extends ParseError {
     location: Location,
   ) {
     super(`State variable name '${name}' collides with built-in 'this.${name}'`, location);
+  }
+}
+
+/**
+ * A Solidity storage-layout specifier (`contract C layout at <expr>`) that solc rejects. A valid specifier is still
+ * ignored with a warning (state lives in NFT commitments); `rule` is the solc diagnostic the message reproduces.
+ */
+export class StorageLayoutSpecifierError extends ParseError {
+  constructor(
+    public rule: string,
+    message: string,
+    location?: Location,
+  ) {
+    super(`${message} (solc ${rule})`, location);
   }
 }
 

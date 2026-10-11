@@ -994,6 +994,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   keccakComputeSites?: string[];
   keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds the static count;
   // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
+  /**
+   * keccakInLoop only: the emission index (emitKeccakComputeCall's `i`, pre-order) of each keccak256 call outside
+   * every loop. Each reserves one unbatched fixed keccakSideCar slot with that slotIndex.
+   */
+  keccakFixedSlotIndices?: number[];
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
   // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery PAIR per iteration from the

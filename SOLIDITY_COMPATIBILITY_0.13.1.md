@@ -10,9 +10,10 @@ fail before broadcast when its required transaction shape cannot be constructed.
 
 | Area | Parse | Type check | Codegen | SDK | Behavioral evidence | 0.13.1 status |
 |---|---:|---:|---:|---:|---|---|
-| Integers and checked/unchecked arithmetic | Yes | Yes | Yes | Yes | EVM-vs-BCH differential in both compile modes: `packages/solidcash/test/conformance/{arithmetic,unchecked,numbers,bitwise,comparisons}.conformance.test.ts`; VM spends in `packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts` | Supported |
+| Integers and checked/unchecked arithmetic | Yes | Yes | Yes | Yes | EVM-vs-BCH differential in both compile modes: `packages/solidcash/test/conformance/{arithmetic,unchecked,numbers,bitwise,comparisons}.conformance.test.ts`; VM spends in `packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts` | Supported; left shifts truncate to their type, as in Solidity |
 | Integer casts | Yes | Yes | Yes | Yes | `packages/solidcash/test/conformance/casts.conformance.test.ts` (both modes) | Supported. evmCompat truncates and reads bytesN big-endian like the EVM; native reverts on loss by design; same-width sign reinterpretation reverts in both modes |
 | ABI encode/decode | Yes | Yes | Yes | Yes | EVM-vs-BCH differential: `packages/solidcash/test/conformance/abi.conformance.test.ts`, `decode.conformance.test.ts` (including dirty-word reverts); VM round-trip `SolidityCorpusBehavior.test.ts` | Supported subset; EVM selectors require `evmCompat`; `abi.decode` reverts on a non-clean word as solc does |
+| Statements and control flow (loops, break/continue, early returns, memory values) | Yes | Yes | Yes | Yes | EVM-vs-BCH differential of whole function bodies in both compile modes: `packages/solidcash/test/conformance/statements.conformance.test.ts` | Supported; a loop-heavy function needs a deploy-time density reserve (`salt`, `packages/solidcash/test/e2e/StatelessDensityReserve.test.ts`) when its script is too short to fund the loop's operation cost |
 | Structs and fixed arrays | Yes | Yes | Yes | Yes | VM spends in `SolidityCorpusBehavior.test.ts`; compile coverage `packages/solidc/test/StructsMappings.test.ts`, `packages/solidc/test/solidity-compat/storage-collections.test.ts` | Supported |
 | Dynamic arrays | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/DynamicArrays.test.ts`, `packages/solidcash/test/e2e/ChunkedArrays.test.ts` | Supported within documented commitment/chunk limits |
 | Mappings | Yes | Yes | Yes | Yes | `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts`; value and slot parity `packages/solidcash/test/conformance/{mapping,slot-layout}.conformance.test.ts` | Supported subset, including VM coverage for computed and last-use local keys; documented dynamic-loop/chunk limits apply |
@@ -62,18 +63,19 @@ unchanged EVM deployments:
 
 ## Measured parity
 
-Measured 2026-10-11 on `feat/per-call` with `evmCompat: true`:
+Measured 2026-10-11 on `feat/parity` (merged into `feat/per-call`) with `evmCompat: true`:
 
 | Measure | Result |
 |---|---:|
 | solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2717/2805 = 96.86% |
-| solc corpus, fixtures solc rejects that SolidCash also rejects | 1845/2158 = 85.50% |
-| Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 132/141 = 93.62% |
-| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 392/404 = 97.03% |
+| solc corpus, fixtures solc rejects that SolidCash also rejects | 1976/2158 = 91.57% |
+| Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 134/141 = 95.04% |
+| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 423/435 = 97.24% |
 | Executable corpus fixtures traced to a VM test (`bench/solidity-corpus/BEHAVIORAL_COVERAGE.md`) | 155/1506 = 10.29% |
 
 The 12 differential divergences are documented `it.fails` cases (Yul arithmetic and signed operations, and casts per
-compile mode). Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
+compile mode). The 31 statement-level cases were added after the other 404 were measured; the compiler changes since
+(left-shift truncation, literal bytes writes) do not reach those 404, which were not re-run. Of the 88 failing corpus fixtures, 12 are deliberate security refusals (an unauthenticated deploy or
 selfdestruct, an untrusted delegatecall target).
 
 ## Release rule

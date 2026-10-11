@@ -4,12 +4,14 @@ import {
 import {
   AbiDecodeNode, ArrayAccessNode, AssemblyStatementNode, AssignNode, BranchNode, ContractNode, ExpressionNode,
   FunctionCallNode,
-  FunctionDefinitionNode, FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode,
+  FunctionDefinitionNode, FunctionModifier, IdentifierNode, ModifierDefinitionNode, Node, NullaryOpNode, SliceNode,
+  SourceFileNode,
   StateAssignNode, StringLiteralNode, TupleAssignmentNode, ReturnNode, TupleIndexOpNode, VariableDefinitionNode,
   TryCatchNode,
   WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import PointerAssignmentAnalysis from './PointerAssignmentAnalysis.js';
 import { Modifier } from '../ast/Globals.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import {
@@ -34,6 +36,14 @@ export default class ValidateDataLocations extends AstTraversal {
   private currentFunctionHasAssembly = false;
   private immutableStateNames = new Set<string>();
   private functionDefinitions = new Map<string, FunctionDefinitionNode[]>();
+  private libraryModifierDefinitions: ModifierDefinitionNode[] = [];
+  private modifierDefinitions = new Map<string, ModifierDefinitionNode>();
+  private pointerAssignments = new PointerAssignmentAnalysis({
+    modifier: (name) => this.modifierDefinitions.get(name),
+    functions: (name) => this.functionDefinitions.get(name) ?? [],
+    isStateName: (name) => this.stateTypes.has(name),
+  });
+
   private solidityLegacyNow = false;
 
   constructor(private evmCompat = false) {
@@ -42,6 +52,7 @@ export default class ValidateDataLocations extends AstTraversal {
 
   visitSourceFile(node: SourceFileNode): Node {
     this.solidityLegacyNow = node.solidityLegacyNow;
+    this.libraryModifierDefinitions = node.libraryModifierDefinitions;
     if (node.abiCoderVersion === 'v1') this.validateAbiV1Source(node);
     for (const fn of [
       ...node.freeFunctions,
@@ -116,7 +127,11 @@ export default class ValidateDataLocations extends AstTraversal {
     const previousAbstract = this.currentContractIsAbstract;
     const previousImmutableStateNames = this.immutableStateNames;
     const previousStateTypes = this.stateTypes;
+    const previousModifierDefinitions = this.modifierDefinitions;
     this.currentContractIsAbstract = node.isAbstract;
+    // Same resolution as modifier expansion: the last definition of a name wins.
+    this.modifierDefinitions = new Map([...node.modifierDefinitions, ...this.libraryModifierDefinitions]
+      .map((modifier) => [modifier.name, modifier] as const));
     if (this.evmCompat) {
       for (const state of node.stateVariables) {
         const nonValueType = state.type instanceof ArrayType
@@ -170,6 +185,7 @@ export default class ValidateDataLocations extends AstTraversal {
     this.currentContractIsAbstract = previousAbstract;
     this.immutableStateNames = previousImmutableStateNames;
     this.stateTypes = previousStateTypes;
+    this.modifierDefinitions = previousModifierDefinitions;
     return node;
   }
 
@@ -245,6 +261,7 @@ export default class ValidateDataLocations extends AstTraversal {
     this.initializedStoragePointerLocals = new Set();
     this.currentFunctionHasAssembly = this.containsAssembly(node.body);
     node.body = this.visit(node.body) as typeof node.body;
+    this.pointerAssignments.check(node);
     this.currentFunction = previous;
     this.bindingLocations = previousLocations;
     this.bindingTypes = previousTypes;

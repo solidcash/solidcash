@@ -262,6 +262,7 @@ import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
 import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
+import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayoutSpecifiers.js';
 import { ImportResolver } from './ImportResolver.js';
 import { createMapResolver } from './createMapResolver.js';
 import {
@@ -269,7 +270,7 @@ import {
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
-  UnboundReturnCallError, UnpublishableLoopGuardError,
+  UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -2416,6 +2417,10 @@ function compileWithExternalAdmissionFallback(
   // `admitExternalHandlers` false refuses every external handler, so the attributed answer is kept only when it
   // admits at least as many handlers. A per-handler refusal that somehow reshaped the route into a smaller one
   // therefore loses to the answer that shipped, and a contract can only gain handlers here.
+  // Each successful compileOnce leaves its own span analysis pending for the final publish gate, so refusedAll
+  // replaces attributed's. Restore it when attributed is returned, or the handlers attributed admits (an
+  // effect-free external one, say) are gated against refusedAll's refusals.
+  const attributedAnalysis = pendingSpanAdmissionAnalysis;
   let refusedAll: Artifact | undefined;
   try {
     refusedAll = compileOnce(false, false, false, false);
@@ -2424,6 +2429,7 @@ function compileWithExternalAdmissionFallback(
   }
   if (attributed !== undefined
     && (refusedAll === undefined || admittedHandlerCount(attributed) >= admittedHandlerCount(refusedAll))) {
+    pendingSpanAdmissionAnalysis = attributedAnalysis;
     return attributed;
   }
   if (mergedCompilerOptions.__messageBusVerifierProgram && attributed === undefined && firstError) {
@@ -3226,7 +3232,7 @@ function parseAndResolve(
     : code;
   // Lexing + parsing
   let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.evmCompat,
-    mergedCompilerOptions.chunkedArrays);
+    mergedCompilerOptions.chunkedArrays, undefined, mergedCompilerOptions.rootFileId);
   // Hardhat's console library is a compiler/runtime debugging hook, not a source dependency that SolidCash
   // should parse or link. Its calls are represented by ConsoleStatementNode and already emit no BCH bytecode,
   // while retaining artifact log metadata for the SDK debugger. Accept both Solidity import spellings without
@@ -3254,6 +3260,7 @@ function parseAndResolve(
   // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
   // definitions are merged (and the primary is chosen), re-resolve those placeholders to the real StructType.
   if (hadImports) reresolveImportedStructTypes(ast);
+  assertNoRecursiveStructDefinitions(ast);
   profileLog('parseAndResolve', parseResolveStarted, {
     files: parseProfileTotals.files - filesBefore,
     sllFails: parseProfileTotals.sllFails - sllBefore,
@@ -20647,6 +20654,7 @@ export function parseCode(
   evmCompat = false,
   chunkedArrays = true,
   importedFileId?: string,
+  rootFileId?: string,
 ): Ast {
   // Solidity corpus files append diagnostic expectations after `// ----`; that trailer is test metadata, not
   // source text, and often repeats the SPDX spelling inside warning prose.
@@ -20711,8 +20719,9 @@ export function parseCode(
   // clause; skip the two regex walks unless the source actually contains one.
   // Current Solidity grammar places the clause BEFORE inheritance (`contract C layout at 42 is A`); preserve the
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
-  // spelling below for compatibility with sources SolidCash already accepted.
+  // spelling below for compatibility with sources SolidCash already accepted. solc's checks on the clause run first.
   if (code.includes('layout at')) {
+    withSourceFile(importedFileId, () => validateStorageLayoutSpecifiers(code));
     code = code.replace(
       // eslint-disable-next-line max-len
       /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
@@ -20809,7 +20818,7 @@ export function parseCode(
     // AST building
     const astStarted = compilerProfileEnabled() ? Date.now() : 0;
     const built = new AstBuilder(
-      parseTree, evmCompat, chunkedArrays, code, importedFileId,
+      parseTree, evmCompat, chunkedArrays, code, importedFileId, rootFileId,
     ).build() as Ast;
     if (compilerProfileEnabled()) {
       profileLog('parseCode:file', parseStarted, {
@@ -20836,6 +20845,37 @@ export function parseCode(
 // merged at parse time) to the real StructType, now that imports are merged. Scoped to the main contract's
 // state variables + collections (the array-bearing declarations); a non-struct placeholder (interface array
 // or a typo) is left untouched and validated downstream as before.
+/**
+ * solc refuses a struct that contains itself by value: directly, or through fixed-size arrays and other structs held
+ * by value. A dynamic array or mapping ends that chain. Struct names shared by two definitions are not followed, so
+ * same-named structs of different contracts cannot be mistaken for one another.
+ */
+function assertNoRecursiveStructDefinitions(ast: Ast): void {
+  const definitions = [
+    ...(ast.structDefinitions ?? []),
+    ...(ast.contract?.structDefinitions ?? []),
+    ...(ast.importedContracts ?? []).flatMap((contract) => contract.structDefinitions ?? []),
+  ];
+  const counts = new Map<string, number>();
+  for (const definition of definitions) counts.set(definition.name, (counts.get(definition.name) ?? 0) + 1);
+  const byName = new Map(definitions.filter((definition) => counts.get(definition.name) === 1)
+    .map((definition) => [definition.name, definition]));
+  const reaches = (type: Type, target: string, seen: Set<string>): boolean => {
+    if (type instanceof ArrayType) return type.bound !== undefined && reaches(type.elementType, target, seen);
+    const name = type instanceof StructType || type instanceof AddressType ? (type as { name?: string }).name : undefined;
+    if (name === undefined || !byName.has(name)) return false;
+    if (name === target) return true;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    return byName.get(name)!.fields.some((field) => reaches(field.type, target, seen));
+  };
+  for (const definition of byName.values()) {
+    if (definition.fields.some((field) => reaches(field.type, definition.name, new Set()))) {
+      throw new RecursiveStructDefinitionError(definition);
+    }
+  }
+}
+
 function reresolveImportedStructTypes(ast: Ast): void {
   const contract = ast.contract;
   if (!contract) return;

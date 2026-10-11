@@ -21,8 +21,13 @@ export interface ConformanceCase {
   evmCompat?: boolean; // the BCH compile mode; unset runs a value or revert case in both native and evmCompat
   expectedConst?: string; // abi cases: the ethers-computed expected bytes, baked into scash + cross-checked vs solc
   bothAccept?: boolean; // single-word abi: identical bytes32-compare covenant on both VMs (run via assertBothAccept)
+  // Bytes of deploy-time density reserve (a dropped salt) for bodies that outrun a small script's operation budget.
+  densityReserve?: number;
   label?: string;
 }
+
+const saltOf = (c: ConformanceCase): Uint8Array | undefined =>
+  (c.densityReserve ? new Uint8Array(c.densityReserve).fill(0x5a) : undefined);
 
 // A case that does not pin a compile mode runs in both: the native and evmCompat lowerings differ (narrowing casts,
 // byte order) and each claims EVM-faithful values.
@@ -33,7 +38,7 @@ const modeName = (evmCompat: boolean): string => (evmCompat ? 'evmCompat' : 'nat
 export async function assertConformant(c: ConformanceCase): Promise<void> {
   const { decoded } = await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
   for (const evmCompat of modesOf(c)) {
-    const pass = await evalBchCheck(compileBch(c.scash, evmCompat), c.bchFn, [...c.args, ...decoded]);
+    const pass = await evalBchCheck(compileBch(c.scash, evmCompat), c.bchFn, [...c.args, ...decoded], saltOf(c));
     if (!pass) {
       const tag = c.label ? ` [${c.label}]` : '';
       throw new Error(
@@ -173,7 +178,7 @@ export async function assertReverts(c: RevertCase): Promise<void> {
   if (!evmReverted) throw new Error(`Revert MISMATCH${tag}: expected EVM to revert, but it returned a value`);
   // Only the VM refusing the spend counts; a failure to build the transaction is rethrown, not taken as a revert.
   for (const evmCompat of modesOf(c)) {
-    if (!await evalBchVmRejects(compileBch(c.scash, evmCompat), c.bchFn, c.args)) {
+    if (!await evalBchVmRejects(compileBch(c.scash, evmCompat), c.bchFn, c.args, saltOf(c))) {
       throw new Error(`Revert MISMATCH${tag} (${modeName(evmCompat)}): expected the BCH covenant to reject, `
         + 'but it accepted');
     }
@@ -660,4 +665,30 @@ export async function assertWordRejected(c: ConformanceCase): Promise<void> {
   if (!await evalBchVmRejects(compileBch(c.scash, true), c.bchFn, c.args)) {
     throw new Error(`Decode MISMATCH${tag}: the BCH covenant accepted a word the EVM reverts on`);
   }
+}
+
+// The same function body on both VMs: Solidity runs it as an internal pure function whose result `f` returns, and
+// SolidCash runs it as a private helper whose result must equal the EVM's. Exercises statements (loops, branches,
+// early returns, memory values) rather than one expression. `params` is a typed list ('uint a, uint b').
+export function fnCase(o: {
+  params: string; retType: string; body: string; args: readonly unknown[]; label: string; evmCompat?: boolean;
+  decls?: string; densityReserve?: number;
+}): ConformanceCase {
+  const decls = o.decls ? `  ${o.decls}\n` : '';
+  const names = o.params.length === 0 ? '' : o.params.split(',').map((p) => p.trim().split(/\s+/).pop()).join(', ');
+  const paramsSep = o.params.length > 0 ? `${o.params}, ` : '';
+  const helper = (visibility: string): string => `  function calc(${o.params}) ${visibility} pure returns (${o.retType}) {\n`
+    + `    ${o.body}\n  }\n`;
+  return {
+    solidity: `${SPDX}contract C {\n${decls}${helper('internal')}`
+      + `  function f(${o.params}) public pure returns (${o.retType}) {\n    return calc(${names});\n  }\n}\n`,
+    scash: `contract Conf() {\n${decls}${helper('private')}`
+      + `  function f(${paramsSep}${o.retType} __expected) {\n    require(calc(${names}) == __expected);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'f',
+    args: o.args,
+    ...(o.evmCompat === undefined ? {} : { evmCompat: o.evmCompat }),
+    ...(o.densityReserve === undefined ? {} : { densityReserve: o.densityReserve }),
+    label: o.label,
+  };
 }

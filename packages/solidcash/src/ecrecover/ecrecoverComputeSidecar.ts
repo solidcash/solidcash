@@ -11,7 +11,7 @@ import {
   SHARED_LIBRARY_SALT,
 } from '@solidcash/utils';
 import { computeEcrecoverWitness, type EcrecoverWitness } from './ecrecoverRecovery.js';
-import { pushDataBytes } from '../keccak/keccakComputeSidecar.js';
+import { OP_INPUTBYTECODE, leSmallNumber, pushDataBytes } from '../keccak/keccakComputeSidecar.js';
 import type { Unlocker, Utxo, Output } from '../interfaces.js';
 
 const numByte = (n: number): Uint8Array => Uint8Array.from([n]);
@@ -118,6 +118,29 @@ export function buildEcrecoverComputePlaceholders(
     unlockerB: unlocker(lockB, redeemB, 3),
     recreateB: recreate(lockB, new Uint8Array(34), sidecarB),
   };
+}
+
+/**
+ * Read recovery arguments off a contract's VM debug trace. An executed OP_INPUTBYTECODE whose index (top of stack) is
+ * a recovery's A side-car input (`aInputs`: input index -> recovery ordinal) has that recovery's 97-byte argBlob
+ * hash||v||r||s one below. Returns the first blob read per recovery.
+ */
+export function extractEcrecoverArgBlobsFromTrace(
+  trace: unknown[], aInputs: ReadonlyMap<number, number>,
+): Map<number, Uint8Array> {
+  const found = new Map<number, Uint8Array>();
+  for (const s of trace) {
+    const step = s as { ip: number; stack?: Uint8Array[]; instructions?: { opcode: number }[]; controlStack?: unknown[] };
+    if (step.controlStack?.some((c) => c === false)) continue;
+    if (step.instructions?.[step.ip]?.opcode !== OP_INPUTBYTECODE || !step.stack || step.stack.length < 2) continue;
+    const idx = step.stack[step.stack.length - 1];
+    if (idx.length > 0 && (idx[idx.length - 1] & 0x80) !== 0) continue; // negative index
+    const k = aInputs.get(leSmallNumber(idx));
+    const argBlob = step.stack[step.stack.length - 2];
+    if (k === undefined || argBlob.length !== 97 || found.has(k)) continue;
+    found.set(k, Uint8Array.from(argBlob));
+  }
+  return found;
 }
 
 let probeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;

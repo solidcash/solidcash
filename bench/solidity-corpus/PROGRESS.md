@@ -5448,3 +5448,20 @@ surfaced as raw `Error`s now carry named classes (`UnsupportedEvmAbiEncodingErro
 `LogicalSenderUnavailableError`), as the baseline gate requires. Against the 2026-07-20 per-fixture run, 513 in-scope
 fixtures started compiling and 9 stopped: 5 are the deploy-authorization refusal (by design), 4 are open gaps.
 
+
+## 2026-10-11: negative parity 85.50% -> 91.57% (313 -> 182 over-accepted)
+
+Positive set unchanged (**2717/2805**, the same fixtures). 131 fixtures solc rejects are now rejected too, each with
+solc's own reason:
+- storage layout specifiers (`contract C layout at <expr>`): TypeError 1505/1763/1139/6753/8894, 60 fixtures;
+- storage/calldata pointers returned or read before assignment, TypeError 3464: 34 (an assignment binds its
+  target before its right side is read, as in solc, so `b = b` stays accepted);
+- reference-type parameters, returns and locals without a data location in a `.sol` unit, TypeError 6651: 21;
+- structs that contain themselves by value, TypeError 2046: 4 (9 fixtures in the family, all now refused);
+- inheritance graphs with no C3 linearization once interfaces are included, TypeError 5005: 3.
+
+The counts are the targeted fixtures. Counted on the new results, these rules raise the first error on 153 negative
+fixtures (layout 70, pointer 43, data location 28, recursive struct 9, linearization 3), including fixtures that
+were already rejected for another reason.
+
+The remaining 182 are led by literal/rational typing (2271, 9553, 7407, 9574) and Yul access rules (1408, 6578).

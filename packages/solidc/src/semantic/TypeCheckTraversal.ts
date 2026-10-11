@@ -2641,11 +2641,14 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.right = this.hexLiteralToInt(node.right);
       }
       // A string literal compared against bytesN (`id == "abc"`): coerce the literal to a padded bytesN value.
-      node.left = this.maybeCoerceStringToBytesN(node.left, node.right.type);
-      node.right = this.maybeCoerceStringToBytesN(node.right, node.left.type);
-      // A literal 0 compared against bytesN (`data[i] == 0`): coerce it to the zero-filled bytesN value.
-      node.left = this.maybeCoerceZeroToBytes(node.left, node.right.type);
-      node.right = this.maybeCoerceZeroToBytes(node.right, node.left.type);
+      // Never for `++`: a concatenated literal keeps its own bytes rather than the other operand's width.
+      if (node.operator !== BinaryOperator.PLUS) {
+        node.left = this.maybeCoerceStringToBytesN(node.left, node.right.type);
+        node.right = this.maybeCoerceStringToBytesN(node.right, node.left.type);
+        // A literal 0 compared against bytesN (`data[i] == 0`): coerce it to the zero-filled bytesN value.
+        node.left = this.maybeCoerceZeroToBytes(node.left, node.right.type);
+        node.right = this.maybeCoerceZeroToBytes(node.right, node.left.type);
+      }
       // A hex literal compared against an address (`a == 0x1234..`, a 20-byte address literal): cast it to the
       // address type so both sides match (the literal becomes an address value at the VM level).
       node.left = this.maybeCoerceHexToAddress(node.left, node.right.type);

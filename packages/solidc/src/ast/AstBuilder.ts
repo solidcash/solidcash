@@ -8937,6 +8937,14 @@ export default class AstBuilder
       if (opText && chain) {
         const { links, valueCtx } = this.unrollAssignChain(exprCtx, opText, chain);
         stmts.push(...this.buildAssignChainStatements(links, valueCtx, loc));
+      } else if (!consume) {
+        // A branch with no assignment TAIL is still an expression the arm must evaluate - `cond ? c = s :
+        // (c = s);` and `cond ? (c = s).f : ..;` carry the assignment inside a parenthesised expression
+        // (`parenExpression`'s AssignmentExpression), and `cond ? f() : c = s;` carries an ordinary call.
+        // Building the arm without it silently dropped that branch's whole effect.
+        const statement = new ExpressionStatementNode(this.visit(exprCtx) as ExpressionNode);
+        statement.location = loc;
+        stmts.push(statement);
       }
       if (consume) stmts.push(consume(exprCtx));
       const b = new BlockNode(stmts);

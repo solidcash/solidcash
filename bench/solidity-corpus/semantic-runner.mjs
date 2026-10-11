@@ -14,14 +14,17 @@ import { isMainThread, parentPort, Worker, workerData } from 'worker_threads';
 //               ignored; call options, events, builtins, library/constructor lines, strings/bytes/arrays/structs/
 //               address, or anything unparsed skip the whole fixture.
 // Per (fixture, signature) one wrapper `contract __Check is <Target>` is appended and compiled; each line is one
-// spend of `__check(args, expected, cmp)` on a fresh MockNetworkProvider. `cmp=false` on FAILURE lines, so a call
-// that returns normally shows as a mismatch instead of a failed equality. Output: semantic-results.json and
+// spend of `__check(args, expected, cmp)` on a fresh MockNetworkProvider, with the keccak256 compute side-cars a
+// deployer funds. `cmp=false` on FAILURE lines, so a call that returns normally shows as a mismatch instead of a
+// failed equality. A spend stopped by the op-cost density limit is retried once behind a deployer's density reserve
+// and scored apart (matched/mismatched-with-density-reserve). Output: semantic-results.json and
 // semantic-scorecard.txt. Env: CORPUS_RESULTS, SOLC_CORPUS, LIMIT (selected fixtures), FILTER (path substring),
 // CORPUS_WORKERS, FIXTURE_TIMEOUT_MS, CORPUS_OUTPUT_DIR, SELECT_ONLY=true|list (selection only, no execution),
 // RESCORE=true (re-derive both reports from an existing semantic-results.json, no execution).
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
 const COMPILE_OPTIONS = { evmCompat: true, enforceFinalRequire: false }; // bench.mjs covenant-safety policy
 const SEMANTIC_PREFIX = 'test/libsolidity/semanticTests/';
+const DENSITY_RESERVE = '-with-density-reserve'; // status suffix of a line retried behind a density reserve
 const errHead = (cause) => `${cause?.name || 'Error'}: ${String(cause?.message).split('\n')[0]}`;
 // The script ending non-truthy is the wrapper's final require failing where the SDK could not map it to a line.
 const canonicalOutcome = (outcome) => (/^revert: .*completed with a non-truthy value on top of the stack/.test(outcome)
@@ -34,13 +37,30 @@ async function workerMain() {
   const { Contract, TransactionBuilder, FailedTransactionError, FailedRequireError, randomUtxo } =
     await import(workerData.sdkUrl);
   const { default: MockNetworkProvider } = await import(workerData.mockUrl);
+  const { SHARED_LIBRARY_SALT, keccakComputeLockingBytecode } = await import(workerData.utilsUrl);
   const noop = () => {};
   console.log = console.error = console.warn = console.info = noop;
 
-  // Same spend shape as packages/solidcash/test/conformance/bch.ts buildAndSend.
-  const spend = async (artifact, args) => {
+  // Deployer-funded keccak256 compute side-cars (shared salt: the contract is stateless). A dynamic keccak loop
+  // reads STATEFUL-covenant ones; the SDK probe needs N + 1 for N iterations, capped at 64.
+  const fundKeccakSideCars = async (provider, stateful, count) => {
+    const lock = Buffer.from(keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, stateful)).toString('hex');
+    for (let i = 0; i < count; i++) {
+      await provider.addUtxo(lock, {
+        ...randomUtxo({ satoshis: 100_000n }),
+        token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+  };
+
+  // Same spend shape as packages/solidcash/test/conformance/bch.ts buildAndSend. `salt` is a deployer's density
+  // reserve (a dropped redeem-script push), which raises the input's operation budget.
+  const spend = async (artifact, args, salt) => {
     const provider = new MockNetworkProvider();
-    const contract = new Contract(artifact, [], { provider });
+    const contract = new Contract(artifact, [], { provider, ...(salt && { salt }) });
+    const keccak = artifact.externalLibraries?.find((library) => library.name === 'keccak256' && library.resultNft);
+    if (keccak) await fundKeccakSideCars(provider, false, Math.max(1, keccak.minInstances ?? 1));
+    if (keccak?.unbounded) await fundKeccakSideCars(provider, true, 64 + 1);
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     const utxos = await contract.getUtxos();
     await new TransactionBuilder({ provider })
@@ -59,9 +79,9 @@ async function workerMain() {
     return String(reason).split('\n')[0];
   };
 
-  const runLine = async (artifact, requireLine, line) => {
+  const attempt = async (artifact, requireLine, line, salt) => {
     try {
-      await spend(artifact, line.args);
+      await spend(artifact, line.args, salt);
       return line.failure
         ? { status: 'mismatched', outcome: 'success (no revert)' }
         : { status: 'matched', outcome: 'success' };
@@ -73,6 +93,15 @@ async function workerMain() {
       const outcome = canonicalOutcome(atCheck ? 'wrong value' : `revert: ${vmReason(cause)}`);
       return { status: line.failure ? 'matched' : 'mismatched', outcome };
     }
+  };
+
+  // A spend stopped by the op-cost density limit is retried once behind a 512-byte reserve (the SDK caps a salt at
+  // 520); the status suffix keeps those lines apart from plain matches and mismatches.
+  const runLine = async (artifact, requireLine, line) => {
+    const first = await attempt(artifact, requireLine, line);
+    if (!/^revert: .*operation cost density limit/.test(first.outcome)) return first;
+    const retry = await attempt(artifact, requireLine, line, new Uint8Array(512).fill(0x5a));
+    return { ...retry, status: `${retry.status}${DENSITY_RESERVE}` };
   };
 
   const runCheck = async (check) => {
@@ -507,6 +536,7 @@ async function main() {
     compilerUrl: new URL('../../packages/solidc/dist/index.js', import.meta.url).href,
     sdkUrl: new URL('../../packages/solidcash/dist/index.js', import.meta.url).href,
     mockUrl: new URL('../../packages/solidcash/dist/network/MockNetworkProvider.js', import.meta.url).href,
+    utilsUrl: new URL('../../packages/utils/dist/index.js', import.meta.url).href,
   };
   const createRunner = () => {
     let worker;
@@ -604,9 +634,10 @@ function tally(values) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
 }
 
+const reserveTag = (line) => (line.status?.endsWith(DENSITY_RESERVE) ? '(with density reserve) ' : '');
 // Group key for an outcome: digits and quoted text folded so shapes aggregate.
 const shapeOf = (line) => `${/->\s*FAILURE\b/.test(line.call) ? 'expected FAILURE' : 'expected values'}, got `
-  + String(line.outcome).replace(/"[^"]*"/g, '".."').replace(/\d+/g, 'N').slice(0, 110);
+  + reserveTag(line) + String(line.outcome).replace(/"[^"]*"/g, '".."').replace(/\d+/g, 'N').slice(0, 110);
 
 function writeReports(outputDir, meta, candidateCount, fixtures) {
   const run = fixtures.filter((f) => f.status !== 'skipped');
@@ -619,7 +650,9 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
     lines: {
       selected: lines.length,
       matched: count('matched'),
+      matchedWithDensityReserve: count(`matched${DENSITY_RESERVE}`),
       mismatched: count('mismatched'),
+      mismatchedWithDensityReserve: count(`mismatched${DENSITY_RESERVE}`),
       refusedAtCompile: count('refused-at-compile'),
       skipped: count('skipped'),
       error: count('error'),
@@ -629,25 +662,31 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
   writeFileSync(join(outputDir, 'semantic-results.json'), `${JSON.stringify({ meta, summary, fixtures }, null, 1)}\n`);
 
   const L = summary.lines;
-  const executed = L.matched + L.mismatched;
+  const executed = L.matched + L.matchedWithDensityReserve + L.mismatched + L.mismatchedWithDensityReserve;
   const pct = executed ? ((100 * L.matched) / executed).toFixed(2) : '0.00';
   const header = `=== SOLC SEMANTIC RUNTIME PARITY (first slice): ${L.matched}/${executed} executed lines matched `
-    + `(${pct}%) | ${L.mismatched} mismatched | ${L.refusedAtCompile} refused-at-compile | ${L.skipped} skipped `
-    + `| ${L.error} error | ${run.length} fixtures run of ${candidateCount} compiled candidates `
+    + `(${pct}%) | ${L.matchedWithDensityReserve} matched-with-density-reserve | ${L.mismatched} mismatched `
+    + `| ${L.mismatchedWithDensityReserve} mismatched-with-density-reserve | ${L.refusedAtCompile} refused-at-compile `
+    + `| ${L.skipped} skipped | ${L.error} error | ${run.length} fixtures run of ${candidateCount} compiled candidates `
     + `| ${meta.elapsedSeconds}s ===`;
   const block = (title, entries) => [`--- ${title} ---`, ...entries.map(([k, n]) => `${String(n).padStart(5)}  ${k}`)];
-  const mismatches = lines.filter((l) => l.status === 'mismatched');
+  const mismatches = lines.filter((l) => l.status?.startsWith('mismatched'));
   const out = [
     header, '',
     ...block('FIXTURES SKIPPED (by reason)', Object.entries(summary.skippedFixtures)), '',
-    ...block('LINES (selected fixtures)', [['selected', L.selected], ['matched', L.matched], ['mismatched', L.mismatched],
-      ['refused-at-compile', L.refusedAtCompile], ['skipped', L.skipped], ['error (timeout/worker)', L.error]]), '',
+    ...block('LINES (selected fixtures)', [['selected', L.selected], ['matched', L.matched],
+      [`matched${DENSITY_RESERVE}`, L.matchedWithDensityReserve], ['mismatched', L.mismatched],
+      [`mismatched${DENSITY_RESERVE}`, L.mismatchedWithDensityReserve], ['refused-at-compile', L.refusedAtCompile],
+      ['skipped', L.skipped], ['error (timeout/worker)', L.error]]), '',
     ...block('LINES SKIPPED (by reason)', Object.entries(summary.lineSkipReasons)), '',
     ...block('MISMATCH SHAPES', tally(mismatches.map(shapeOf))), '',
     ...block('REFUSED-AT-COMPILE (by error head, per line)', tally(lines.filter((l) => l.status === 'refused-at-compile')
       .map((l) => String(l.outcome).replace(/'[^']*'/g, "'..'").replace(/\d+/g, 'N').slice(0, 120)))), '',
+    '--- MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
+    ...lines.filter((l) => l.status === `matched${DENSITY_RESERVE}`)
+      .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${l.outcome}`), '',
     '--- MISMATCHES (fixture:line  call  =>  outcome) ---',
-    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${l.outcome}`),
+    ...mismatches.map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${reserveTag(l)}${l.outcome}`),
     '',
   ];
   writeFileSync(join(outputDir, 'semantic-scorecard.txt'), out.join('\n'));

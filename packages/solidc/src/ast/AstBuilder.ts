@@ -138,7 +138,6 @@ import type {
   BlockContext,
   BlockStatementContext,
   TimeOpStatementContext,
-  ArrayContext,
   LiteralExpressionContext,
   RequireStatementContext,
   PragmaDirectiveContext,
@@ -218,8 +217,8 @@ import type {
   CallArgumentContext,
   ExpressionListContext,
 } from '../grammar/SolidCashParser.js';
-// Value imports (not type-only): needed for `instanceof` when detecting a tuple-valued ternary.
-import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
+// Value imports (not type-only): `instanceof` for a tuple-valued ternary and an array-literal initializer.
+import { ArrayContext, TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
 // Imported as values (not `import type`) for runtime `instanceof` in extractLvalue / visitExpressionStatement.
 import {
   ParenthesisedContext, ArrayAccessContext, FieldAccessContext,
@@ -432,6 +431,8 @@ export default class AstBuilder
   // `<name>$len`, and each inner dimension counts per index above it in the companion mapping
   // `<name>$len$<level>`. See collectionLengthRead / buildCollectionLengthPush.
   private collectionLengthDepths: Map<string, number> = new Map();
+  // Declarations of collection-model array state vars with an initializer; lowered into the constructor.
+  private collectionInitializers: Map<CollectionNode, StateVariableDeclarationContext> = new Map();
   // Mappings whose value is an unbounded array whose element chain reaches a mapping: the array a pointer bound
   // to `m[k]` addresses, whose count is the companion mapping `<name>$len` keyed by the mapping keys.
   private collectionMappingValueArrays: Set<string> = new Set();
@@ -1725,8 +1726,12 @@ export default class AstBuilder
     // Visit state variable declarations and separate into state variables vs collections
     let stateVariables: StateVariableNode[] = [];
     const collections: CollectionNode[] = [];
+    // Source position of each declaration: initializers run in this order (scalars and arrays interleaved).
+    const declarationOrder = new Map<Node, number>();
+    this.collectionInitializers.clear();
     for (const svCtx of ctx.stateVariableDeclaration_list()) {
       const visited = this.visit(svCtx);
+      declarationOrder.set(visited, declarationOrder.size);
       if (visited instanceof CollectionNode) {
         collections.push(visited);
       } else if (visited instanceof ConstantDefinitionNode) {
@@ -1746,6 +1751,7 @@ export default class AstBuilder
     this.collectionMappingValueArrays.clear();
     for (const collection of [...collections]) {
       if (!(collection.type instanceof ArrayType) || collection.type.bound !== undefined) continue;
+      if (this.isExternalFnPtrTable(collection.type)) continue;
       const depth = this.arrayDimensions(collection.type);
       if (depth < 1) continue;
       this.collectionLengthDepths.set(collection.name, depth);
@@ -2021,29 +2027,43 @@ export default class AstBuilder
     }
 
     // Lower inline state-variable initializers `T x = expr;` into constructor assignments `this.x = expr;`,
-    // run at deploy before the user's constructor body. Create a `__construct` if none exists.
-    const initStatements: StatementNode[] = stateVariables
-      .filter((sv) => sv.initializer)
-      .flatMap((sv) => {
-        const markInitializerContext = (node: Node): void => {
-          if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_VALUE) {
-            node.fromStateInitializer = true;
-          }
-          for (const value of Object.values(node)) {
-            if (value instanceof Node) markInitializerContext(value);
-            else if (Array.isArray(value)) {
-              for (const item of value) if (item instanceof Node) markInitializerContext(item);
-            }
-          }
-        };
-        markInitializerContext(sv.initializer!);
-        const assign = new StateAssignNode(sv.name, sv.initializer!);
-        assign.location = sv.location;
-        sv.initializer = undefined;
-        const statements = [...sv.initializerPrelude, assign];
-        sv.initializerPrelude = [];
-        return statements;
-      });
+    // run at deploy in declaration order before the user's constructor body. Create a `__construct` if none exists.
+    const markInitializerContext = (node: Node): void => {
+      if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_VALUE) {
+        node.fromStateInitializer = true;
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) markInitializerContext(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) markInitializerContext(item);
+        }
+      }
+    };
+    const stateInitializer = (sv: StateVariableNode): StatementNode[] => {
+      markInitializerContext(sv.initializer!);
+      const assign = new StateAssignNode(sv.name, sv.initializer!);
+      assign.location = sv.location;
+      sv.initializer = undefined;
+      const statements = [...sv.initializerPrelude, assign];
+      sv.initializerPrelude = [];
+      return statements;
+    };
+    const orderOf = (node: Node): number => declarationOrder.get(node) ?? Number.MAX_SAFE_INTEGER;
+    const initStatements: StatementNode[] = [
+      ...stateVariables.filter((sv) => sv.initializer)
+        .map((sv) => ({ order: orderOf(sv), build: (): StatementNode[] => stateInitializer(sv) })),
+      ...collections.filter((collection) => this.collectionInitializers.has(collection))
+        .map((collection) => ({
+          order: orderOf(collection),
+          build: (): StatementNode[] => {
+            const statements = this.buildCollectionInitializer(
+              collection, this.collectionInitializers.get(collection)!,
+            );
+            statements.forEach(markInitializerContext);
+            return statements;
+          },
+        })),
+    ].sort((a, b) => a.order - b.order).flatMap(({ build }) => build());
     if (initStatements.length > 0) {
       if (constructorDef) {
         constructorDef.body.statements = [...initStatements, ...(constructorDef.body.statements ?? [])];
@@ -5826,6 +5846,7 @@ export default class AstBuilder
         node.visibility = visibility;
         node.visibilityExplicit = visibilityExplicit;
         node.immutable = isImmutable;
+        this.readStateVariableInitializer(ctx, node);
         node.location = Location.fromCtx(ctx);
         return markOverride(node);
       }
@@ -5840,6 +5861,7 @@ export default class AstBuilder
         node.visibility = visibility;
         node.visibilityExplicit = visibilityExplicit;
         node.immutable = isImmutable;
+        this.readStateVariableInitializer(ctx, node);
         node.location = Location.fromCtx(ctx);
         return markOverride(node);
       }
@@ -5855,6 +5877,7 @@ export default class AstBuilder
         node.visibility = visibility;
         node.visibilityExplicit = visibilityExplicit;
         node.immutable = isImmutable;
+        this.readStateVariableInitializer(ctx, node);
         node.location = Location.fromCtx(ctx);
         return markOverride(node);
       }
@@ -5865,6 +5888,8 @@ export default class AstBuilder
       node.visibilityExplicit = visibilityExplicit;
       node.immutable = isImmutable;
       node.location = Location.fromCtx(ctx);
+      // The initializer needs the contract's collection tables; visitContract lowers it (buildCollectionInitializer).
+      if (ctx.expression?.()) this.collectionInitializers.set(node, ctx);
       return markOverride(node);
     }
 
@@ -5935,28 +5960,97 @@ export default class AstBuilder
     node.visibilityExplicit = visibilityExplicit;
     node.immutable = isImmutable;
     node.isTransient = isTransient; // lowered to a per-function local in visitContract
-    const initCtx = ctx.expression?.();
-    if (initCtx) {
-      let qualifiedInitializerRead: StateAccessNode | undefined;
-      if ((ctx as any)._sop) {
-        const loc = Location.fromCtx(ctx);
-        const { links, valueCtx } = this.unrollAssignChain(
-          initCtx, (ctx as any)._sop.text, (ctx as any).assignChain(),
-        );
-        node.initializerPrelude = this.buildAssignChainStatements(links, valueCtx, loc);
-        const outerTarget = this.extractLvalue(initCtx);
-        if (outerTarget && !outerTarget.isThis && outerTarget.segs.length === 1
-          && outerTarget.segs[0].member
-          && (outerTarget.rawName === this.currentContractName
-            || this.currentContractBaseNames.has(outerTarget.rawName))) {
-          qualifiedInitializerRead = new StateAccessNode(outerTarget.segs[0].member);
-          qualifiedInitializerRead.location = loc;
-        }
-      }
-      node.initializer = qualifiedInitializerRead ?? this.visit(initCtx) as ExpressionNode;
-    }
+    this.readStateVariableInitializer(ctx, node);
     node.location = Location.fromCtx(ctx);
     return markOverride(node);
+  }
+
+  // `T x = expr;` (or a chain `T x = a = expr;`): record the initializer and the chain's prelude on the node.
+  // visitContract lowers them into the constructor, ahead of its body.
+  private readStateVariableInitializer(ctx: StateVariableDeclarationContext, node: StateVariableNode): void {
+    const initCtx = ctx.expression?.();
+    if (!initCtx) return;
+    let qualifiedInitializerRead: StateAccessNode | undefined;
+    if ((ctx as any)._sop) {
+      const loc = Location.fromCtx(ctx);
+      const { links, valueCtx } = this.unrollAssignChain(
+        initCtx, (ctx as any)._sop.text, (ctx as any).assignChain(),
+      );
+      node.initializerPrelude = this.buildAssignChainStatements(links, valueCtx, loc);
+      const outerTarget = this.extractLvalue(initCtx);
+      if (outerTarget && !outerTarget.isThis && outerTarget.segs.length === 1
+        && outerTarget.segs[0].member
+        && (outerTarget.rawName === this.currentContractName
+          || this.currentContractBaseNames.has(outerTarget.rawName))) {
+        qualifiedInitializerRead = new StateAccessNode(outerTarget.segs[0].member);
+        qualifiedInitializerRead.location = loc;
+      }
+    }
+    node.initializer = qualifiedInitializerRead ?? this.visit(initCtx) as ExpressionNode;
+  }
+
+  // Initializer of a collection-model array state var: an array literal becomes element writes `x[i]... = e`
+  // (an unbounded outer dimension also sets its length authority `x$len`); `new T[](n)` sets `x$len = n`. Any
+  // other initializer, or one that sizes an inner dynamic dimension (no settable count), is refused.
+  private buildCollectionInitializer(
+    collection: CollectionNode, ctx: StateVariableDeclarationContext,
+  ): StatementNode[] {
+    const { name } = collection;
+    const type = collection.type as ArrayType;
+    const loc = Location.fromCtx(ctx);
+    const refusal = (reason: string): ParseError => new ParseError(
+      `Initializer of array state variable '${name}' is not supported by its entry-collection storage: ${reason}`,
+      loc,
+    );
+    const literalAt = (value: number): IntLiteralNode => {
+      const node = new IntLiteralNode(BigInt(value));
+      node.location = loc;
+      return node;
+    };
+    const setLength = (length: ExpressionNode): StatementNode => {
+      if (!this.collectionLengthDepths.has(name)) throw refusal('the array has no length authority');
+      const node = new StateAssignNode(this.collectionLengthAuthorityName(name, 0), length);
+      node.location = loc;
+      return node;
+    };
+    if ((ctx as any)._sop) throw refusal('an assignment chain is not supported');
+    const initCtx = ctx.expression()!;
+    const literal = unwrapParens(initCtx);
+    if (!(literal instanceof ArrayContext)) {
+      const value = this.visit(initCtx);
+      if (!(value instanceof NewArrayNode) || type.bound !== undefined) {
+        throw refusal('only an array literal or `new T[](n)` is supported');
+      }
+      if (this.collectionDimensionIsUnbounded(name, 1)) {
+        throw refusal('the lengths of its inner dynamic arrays cannot be initialized');
+      }
+      return [setLength(value.size)];
+    }
+    const statements: StatementNode[] = [];
+    const writeLiteral = (arrayCtx: ArrayContext, keys: ExpressionNode[]): void => {
+      const dimension = this.arrayTypeAtLevel(type, keys.length)!;
+      const elements = arrayCtx.expression_list();
+      if (dimension.bound !== undefined && elements.length > dimension.bound) {
+        throw refusal(`the literal has more than ${dimension.bound} elements`);
+      }
+      if (dimension.bound === undefined) {
+        if (keys.length > 0) throw refusal('an inner dynamic array length cannot be initialized');
+        statements.push(setLength(literalAt(elements.length)));
+      }
+      elements.forEach((elementCtx, index) => {
+        const elementKeys = [...keys.map((key) => cloneNode(key) as ExpressionNode), literalAt(index)];
+        const nested = unwrapParens(elementCtx);
+        if (nested instanceof ArrayContext && dimension.elementType instanceof ArrayType) {
+          writeLiteral(nested, elementKeys);
+          return;
+        }
+        const assign = new MappingAssignNode(name, elementKeys, this.visit(elementCtx) as ExpressionNode);
+        assign.location = loc;
+        statements.push(assign);
+      });
+    };
+    writeLiteral(literal, []);
+    return statements;
   }
 
   visitStateAccess(ctx: ThisExprContext): StateAccessNode {
@@ -8871,6 +8965,15 @@ export default class AstBuilder
     return current instanceof MappingType;
   }
 
+  /**
+   * An external function-pointer table (`function(..) external[]`) has no collection length authority: the fn-ptr
+   * lowering moves it to chunk-backed `address[]` (+ `bytes[]` selector) state arrays whose own length headers
+   * count it, so its push (value kept), pop, delete and `.length` take the ordinary array forms.
+   */
+  private isExternalFnPtrTable(type: ArrayType): boolean {
+    return type.elementType instanceof FunctionType && type.elementType.isExternal;
+  }
+
   /** True when dimension `level` of an unbounded collection array is itself an unbounded array dimension. */
   private collectionDimensionIsUnbounded(name: string, level: number): boolean {
     const type = this.stateCollectionArrayTypes.get(name);
@@ -8898,7 +9001,7 @@ export default class AstBuilder
       return read;
     }
     const type = this.stateCollectionArrayTypes.get(name);
-    if (!type) return undefined;
+    if (!type || this.isExternalFnPtrTable(type)) return undefined;
     const level = indexKeys.length;
     const dimension = this.arrayTypeAtLevel(type, level);
     if (!dimension || dimension.bound !== undefined) return undefined;

@@ -2,7 +2,9 @@
 // helper on BCH, in both compile modes, and must produce the same value. Covers what single-expression cases cannot:
 // loops, branches and early returns, memory arrays and structs, and bytes/string values.
 import { describe, it } from 'vitest';
-import { assertConformant, assertStatefulConformant, fnCase } from './harness.js';
+import {
+  assertConformant, assertDeployedStatefulConformant, assertStatefulConformant, fnCase, type ConformanceCase,
+} from './harness.js';
 
 // A loop body outruns the operation budget a small script's own length buys; its deployer adds a density reserve.
 const LOOP_RESERVE = 512;
@@ -13,17 +15,21 @@ const run = (
 ): Promise<void> => assertConformant(fnCase({ label, params, retType, body, args, ...opts }));
 
 // A state-writing body on both VMs: the EVM returns `result` from `f`, and the BCH covenant must compute the same.
+const statefulCase = (label: string, decls: string, body: string, result: string): ConformanceCase => ({
+  solidity: '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n'
+    + `contract C {\n  ${decls}\n  function f() public returns (uint) {\n    ${body}\n    return ${result};\n  }\n}\n`,
+  scash: `contract Conf() {\n  ${decls}\n  function f(uint __expected) {\n    ${body}\n`
+    + `    require(${result} == __expected);\n  }\n}\n`,
+  evmFn: 'f',
+  bchFn: 'f',
+  args: [],
+  label,
+});
 const stateful = (label: string, decls: string, body: string, result: string): Promise<void> =>
-  assertStatefulConformant({
-    solidity: '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n'
-      + `contract C {\n  ${decls}\n  function f() public returns (uint) {\n    ${body}\n    return ${result};\n  }\n}\n`,
-    scash: `contract Conf() {\n  ${decls}\n  function f(uint __expected) {\n    ${body}\n`
-      + `    require(${result} == __expected);\n  }\n}\n`,
-    evmFn: 'f',
-    bchFn: 'f',
-    args: [],
-    label,
-  });
+  assertStatefulConformant(statefulCase(label, decls, body, result));
+// The same shape deployed on both VMs, so state-variable initializers run before `f`.
+const deployed = (label: string, decls: string, body: string, result: string): Promise<void> =>
+  assertDeployedStatefulConformant(statefulCase(label, decls, body, result));
 
 describe('statements: control flow', () => {
   it('for loop accumulates', () => run('for', 'uint n', 'uint',
@@ -83,6 +89,8 @@ describe('statements: tuple assignment order', () => {
     '(y, y, y) = (set(1), set(2), set(3));', 'x * 10 + y'));
   it('a state swap reads both values before writing', () => stateful('tuple-state-swap',
     'uint x; uint y;', 'x = 1; y = 2; (x, y) = (y, x);', 'x * 10 + y'));
+  it('sequential state assignments read the pending write', () => stateful('state-seq-read',
+    'uint x; uint y;', 'x = 1; y = 2; x = y; y = x;', 'x * 10 + y'));
   // Distinct keys: the SDK's vmap batch refuses two writes landing on one mapping key in a transaction.
   // Duplicate stateful input from a shared proof, not a key spelling: from an empty map the read lanes m[1], m[6] and
   // the write batch all prove absence with the head node, and a direct function gives each read its own input (only
@@ -90,6 +98,20 @@ describe('statements: tuple assignment order', () => {
   it.fails('mapping element keys see a RHS effect', () => stateful('tuple-mapping-keys',
     'mapping(uint => uint) m; uint n; function k() private returns (uint) { n += 1; return n; }',
     '(m[n], m[n + 5]) = (k(), 7);', 'm[1] * 10 + m[6] + n * 1000'));
+});
+
+// solc runs state-variable initializers at deployment, in declaration order, before the constructor body.
+describe('statements: state array initializers', () => {
+  it('dynamic array literal', () => deployed('init-dynamic-literal',
+    'uint[] a = [uint(1), 2, 3];', '', 'a.length * 100 + a[0] * 10 + a[2]'));
+  it('bounded array literal', () => deployed('init-bounded-literal',
+    'uint[3] b = [uint(4), 5, 6];', '', 'b[0] * 100 + b[1] * 10 + b[2]'));
+  it('new T[](n) sets the length', () => deployed('init-new-array',
+    'uint[] c = new uint[](4);', '', 'c.length * 10 + c[3]'));
+  it('bounded bool blob', () => deployed('init-bool-blob',
+    'bool[3] flags = [true, false, true];', '', '(flags[0] ? 100 : 0) + (flags[1] ? 10 : 0) + (flags[2] ? 1 : 0)'));
+  it('reads an earlier state variable', () => deployed('init-reads-state',
+    'uint x = 7; uint[] d = [x, x + 1];', '', 'd.length * 100 + d[0] * 10 + d[1]'));
 });
 
 describe('statements: memory structs', () => {

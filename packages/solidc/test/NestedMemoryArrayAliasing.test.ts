@@ -38,3 +38,19 @@ describe('nested memory array aliasing on the value-copy fallback', () => {
       + `require(g[0][1] == v); ${FALL_BACK}`)).contractName).toBe('C');
   });
 });
+
+describe('delete on a nested array element in an alias group', () => {
+  it('lowers deletes mixed with writes exactly as writes of the element default', () => {
+    const body = (first: string, second: string): string => 'uint256[][] memory g = new uint256[][](2); '
+      + 'uint256[] memory row = new uint256[](3); g[0] = row; g[1] = row; g[0][1] = v; g[1][2] = v; '
+      + `${first} g[0][0] = v; ${second} require(row[0] == v && row[1] + row[2] == 0);`;
+    expect(compileString(contract(body('delete g[1][1];', 'delete g[0][2];'))).bytecode)
+      .toBe(compileString(contract(body('g[1][1] = 0;', 'g[0][2] = 0;'))).bytecode);
+  });
+
+  it('refuses an element of a stored row deleted afterwards on the fallback', () => {
+    expect(() => compileString(contract('uint256[][] memory g = new uint256[][](2); '
+      + `uint256[] memory row = new uint256[](2); g[0] = row; delete g[0][1]; require(row[1] == 0); ${FALL_BACK}`)))
+      .toThrow(REFUSED);
+  });
+});

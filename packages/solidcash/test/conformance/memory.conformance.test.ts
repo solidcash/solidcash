@@ -13,6 +13,9 @@ const ALIAS_ROWS = 'uint256[][] memory g = new uint256[][](2); uint256[] memory 
   + 'g[1] = row; g[0][1] = v; return g[1][1];';
 const READ_ALIAS_ROW = 'uint256[][] memory g = new uint256[][](2); g[0] = new uint256[](2); uint256[] memory r = g[0]; '
   + 'r[0] = v; return g[0][0];';
+const DELETE_ROWS = 'uint256[][] memory g = new uint256[][](2); uint256[] memory row = new uint256[](3); g[0] = row; '
+  + 'g[1] = new uint256[](2); g[0][0] = v; g[0][1] = v + 1; g[1][1] = v + 2; delete g[0][0]; g[1][0] = v * 2; '
+  + 'delete g[1][1]; row[2] = v; return row[0] * 10000 + g[0][1] * 1000 + g[0][2] * 100 + g[1][0] * 10 + g[1][1];';
 const BUILD_ROWS = 'function build(uint256 v) internal pure returns (uint256[][] memory) { uint256[][] memory g = '
   + 'new uint256[][](2); uint256[] memory row = new uint256[](2); g[0] = row; g[1] = row; g[0][1] = v; return g; }';
 
@@ -27,6 +30,8 @@ describe('memory: nested arrays', () => {
     run('array-2d-read-alias', 'uint256 v', 'uint256', READ_ALIAS_ROW, [5n], { evmCompat }));
   it('a 2-D array with an aliased row returned by a helper', () => run('array-2d-return', 'uint256 v', 'uint256',
     'uint256[][] memory h = build(v); return h[1][1] * 10 + h.length;', [7n], { decls: BUILD_ROWS, densityReserve: 512 }));
+  it('elements of a 2-D array deleted and assigned in one function', () => run('array-2d-delete', 'uint256 v',
+    'uint256', DELETE_ROWS, [3n], { densityReserve: 512 }));
   it('a fixed 2-D array', () => run('array-fixed-2d', 'uint256 v', 'uint256',
     'uint256[2][3] memory m; m[2][1] = v; m[0][0] = 1; return m[2][1] * 10 + m[0][0] + m[1][1];', [4n]));
 });

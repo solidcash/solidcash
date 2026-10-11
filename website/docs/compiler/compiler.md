@@ -88,7 +88,7 @@ const P2PKH = compileFile(new URL('p2pkh.scash', import.meta.url));
 
 ### compileString()
 ```ts
-compileString(sourceCode: string): Artifact
+compileString(sourceCode: string, options?: CompileStringOptions): Artifact
 ```
 
 Compiles a SolidCash contract from a source code string. This compile method is handy in a browser compilation setting like the [SolidCash Playground](https://playground.solidcash.org/) where testing contracts can be quickly compiled and discarded. The method is also useful if no source file is locally available (e.g. the source code is retrieved with a REST API).
@@ -169,7 +169,15 @@ set. See [Large Contracts & Split Bundles](./large-contracts.md) for planning, d
 | `messageBusKernel` | Default `true`: compile message-bus routes as the kernel row loop instead of the legacy unroll |
 
 `importResolver` and `rootFileId` are the browser/tooling hooks for imported sources. `compileFile*` supplies a
-Node filesystem resolver automatically, including `node_modules` and optional `.sol` resolution.
+Node filesystem resolver automatically, including `node_modules` and optional `.sol` resolution. The
+`compileString*` entry points also take `files`, an in-memory map of import sources keyed by path, as shorthand for
+`importResolver: createMapResolver(files)`:
+
+```ts
+const artifact = compileString('import "./math.scash";\ncontract Calculator() { ... }', {
+  files: { 'math.scash': 'function double(int x) pure returns (int) { return x * 2; }' },
+});
+```
 
 Unsafe and relaxed options exist for migration, testing, and private networks. Publishing an artifact requires
 the limits and security settings of the network which will validate it.

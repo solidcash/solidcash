@@ -2,6 +2,41 @@
 title: Release Notes
 ---
 
+## Unreleased
+
+Ported from CashScript 0.14.0, adapted to SolidCash.
+
+#### solidc compiler
+- :hammer_and_wrench: `compileString()`, `compileStringMulti()` and `compileStringSplit()` take `files`, an
+  in-memory map of import sources, as shorthand for `importResolver: createMapResolver(files)`.
+- :hammer_and_wrench: A version pragma that fails in an imported file names that file in the `VersionError`.
+- :bug: Fix bug where date literals were parsed in the local time zone instead of UTC.
+- :bug: Fix bug where a `LockingBytecodeNullData` chunk of more than 255 bytes, sized at runtime, was pushed with a
+  truncated length instead of failing the script.
+
+#### SolidCash SDK
+- :sparkles: Add `calculateTransactionFee()` to `TransactionBuilder`.
+- :sparkles: A require that fails inside a nested function call reports the call stack that led to it.
+- :hammer_and_wrench: `SignatureTemplate` exposes `sighashType`, `signatureAlgorithm` and `publicKey` properties, and
+  `HashType` is renamed to `SighashType`. The old names remain as deprecated aliases. **BREAKING**:
+  `generateSignature()` no longer takes `bchForkId`, since BCH consensus always requires the fork id flag.
+- :hammer_and_wrench: Typed errors for an empty transaction and for fee limits (`TransactionInputsRequiredError`,
+  `TransactionOutputsRequiredError`, `TransactionFeeTooHighError`, `TransactionFeePerByteTooHighError`), and an NFT
+  commitment longer than the provider allows is refused when the output is added.
+- :hammer_and_wrench: A UTXO that states its `lockingBytecode` is checked against the lock its unlocker spends, and a
+  mismatch is refused with `UnlockerLockingBytecodeMismatchError`.
+- :hammer_and_wrench: `ElectrumNetworkProvider` uses Electrum protocol 1.5.0 and no longer subscribes to headers in
+  `getBlockHeight()`.
+- :bug: **BREAKING**: Fix bug where invalid hex string arguments were silently encoded to different bytes, and where
+  `pubkey` arguments were not checked to be 33 or 65 bytes.
+- :bug: **BREAKING**: Fix bug where `setLocktime()` accepted values that are not an unsigned 32-bit integer.
+- :bug: Fix bug where `getTransactionSize()` undersized inputs that use `placeholderP2PKHUnlocker()`.
+- :bug: Fix bug where `send()` threw a `FailedTransactionError` when the transaction was broadcast but could not be
+  retrieved afterwards.
+- :bug: Fix bug where debugging reported a VM resource limit as a failed require statement.
+- :bug: Fix bug where a failing final `require(variable)` was reported at the wrong statement in debugging.
+- :bug: Fix bug where the `MockNetworkProvider` could not spend a UTXO added with an uppercase txid.
+
 ## v0.13.1
 
 #### solidc compiler

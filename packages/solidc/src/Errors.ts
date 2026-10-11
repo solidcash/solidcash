@@ -224,6 +224,13 @@ export class CompilerRecursionLimitError extends Error {
   }
 }
 
+// solc TypeError 7676: the state variables' storage size upper bound reaches 2^256 slots.
+export class ContractStorageTooLargeError extends SolidCashError {
+  constructor(node: ContractNode) {
+    super(node, 'Contract requires too much storage');
+  }
+}
+
 /** A struct contains itself by value (directly, or through fixed-size arrays and other structs), as solc refuses. */
 export class RecursiveStructDefinitionError extends SolidCashError {
   constructor(node: StructDefinitionNode) {

@@ -350,6 +350,9 @@ function isThisState(ctx: ThisExprContext): boolean {
   return ctx.Identifier_list().length === 1 && ctx.expression_list().length === 0 && !ctx.memberName();
 }
 
+/** The exact length of an array type whose bound is past Number.MAX_SAFE_INTEGER (`ArrayType.bound` rounds it). */
+export const exactArrayBounds = new WeakMap<ArrayType, bigint>();
+
 export default class AstBuilder
   extends ParseTreeVisitor<Node>
   implements SolidCashVisitor<Node> {
@@ -6966,8 +6969,12 @@ export default class AstBuilder
       elementType = this.resolveType(elemName) ?? new AddressType(false, elemName);
     }
     const bound = this.resolveArrayBound(ctx);
-    return new ArrayType(elementType, bound);
+    const type = new ArrayType(elementType, bound);
+    if (bound !== undefined && !Number.isSafeInteger(bound)) exactArrayBounds.set(type, this.exactArrayBound!);
+    return type;
   }
+
+  private exactArrayBound?: bigint;
 
   // Resolve an array dimension `[expr]` to a number. The dimension is a compile-time-constant expression: a
   // numeric/hex literal, a named integer constant (`int constant N = 3; T[N]`), or arithmetic over those
@@ -6993,6 +7000,7 @@ export default class AstBuilder
     if (value >= (1n << 256n)) {
       throw new ParseError('Array length too large, maximum is 2**256 - 1', Location.fromCtx(ctx));
     }
+    this.exactArrayBound = value;
     return Number(value);
   }
 

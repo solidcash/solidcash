@@ -126,7 +126,7 @@ import {
   type ExternalCallExpression,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
 } from './ast/AST.js';
-import AstBuilder from './ast/AstBuilder.js';
+import AstBuilder, { exactArrayBounds } from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
 import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
@@ -270,7 +270,7 @@ import {
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
-  UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError,
+  UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -14511,6 +14511,7 @@ function compileResolvedAst(
     ast = expandInheritance(ast, mergedCompilerOptions.evmCompat ?? false);
   }
   detectMappingArrayPagination(ast.contract);
+  assertStorageWithinEvmSlots(ast.contract);
 
   // OpenZeppelin upgradeable bases reserve future EVM storage slots with private fixed arrays named `__gap`.
   // They carry no runtime value and are never read; materializing them in CashToken commitments can consume
@@ -20845,6 +20846,26 @@ export function parseCode(
 // merged at parse time) to the real StructType, now that imports are merged. Scoped to the main contract's
 // state variables + collections (the array-bearing declarations); a non-struct placeholder (interface array
 // or a typo) is left untouched and validated downstream as before.
+/**
+ * solc caps a contract's storage at 2^256 slots, counting each state variable's size upper bound (no packing): a value,
+ * mapping or dynamic array is one slot, a static array its length times its element, a struct the sum of its fields.
+ */
+function assertStorageWithinEvmSlots(contract: ContractNode): void {
+  const slots = (type: Type, active: Set<StructType>): bigint => {
+    if (type instanceof ArrayType && type.bound !== undefined) {
+      return (exactArrayBounds.get(type) ?? BigInt(type.bound)) * slots(type.elementType, active);
+    }
+    if (!(type instanceof StructType) || active.has(type)) return 1n;
+    const nested = new Set(active).add(type);
+    return type.fields.reduce((total, field) => total + slots(field.type, nested), 0n);
+  };
+  let total = BigInt(contract.collections.length);
+  for (const variable of contract.stateVariables) {
+    total += slots(variable.type, new Set());
+    if (total >= 1n << 256n) throw new ContractStorageTooLargeError(contract);
+  }
+}
+
 /**
  * solc refuses a struct that contains itself by value: directly, or through fixed-size arrays and other structs held
  * by value. A dynamic array or mapping ends that chain. Struct names shared by two definitions are not followed, so

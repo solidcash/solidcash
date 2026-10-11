@@ -226,6 +226,14 @@ export class CompilerRecursionLimitError extends Error {
   }
 }
 
+// solc TypeError 6480: two or more bases expose one signature and the derived unit does not override it.
+export class AmbiguousOverrideError extends SolidCashError {
+  constructor(node: ContractNode | InterfaceNode, functionName: string) {
+    super(node, `Derived contract must override function "${functionName}". Two or more base classes define `
+      + 'function with same name and parameter types');
+  }
+}
+
 // solc TypeError 7676: the state variables' storage size upper bound reaches 2^256 slots.
 export class ContractStorageTooLargeError extends SolidCashError {
   constructor(node: ContractNode) {

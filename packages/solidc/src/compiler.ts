@@ -265,6 +265,7 @@ import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayoutSpecifiers.js';
 import { ImportResolver } from './ImportResolver.js';
 import { createMapResolver } from './createMapResolver.js';
+import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
@@ -3261,6 +3262,11 @@ function parseAndResolve(
   // definitions are merged (and the primary is chosen), re-resolve those placeholders to the real StructType.
   if (hadImports) reresolveImportedStructTypes(ast);
   assertNoRecursiveStructDefinitions(ast);
+  if ((mergedCompilerOptions.rootFileId ?? '').endsWith('.sol')) {
+    assertNoAmbiguousOverrides([
+      ...(ast.contract ? [ast.contract] : []), ...(ast.importedContracts ?? []), ...(ast.interfaceDefinitions ?? []),
+    ]);
+  }
   profileLog('parseAndResolve', parseResolveStarted, {
     files: parseProfileTotals.files - filesBefore,
     sllFails: parseProfileTotals.sllFails - sllBefore,

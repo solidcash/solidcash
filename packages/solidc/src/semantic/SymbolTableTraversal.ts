@@ -857,6 +857,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private genesisHelperContract?: ContractNode;
   private genesisAdditionalHelperFunctions: readonly FunctionDefinitionNode[] = [];
   private genesisHelperStack: Set<FunctionDefinitionNode> = new Set();
+  // The value the deploy being folded funds the CHILD with. A child's constructor observes it as `msg.value`
+  // (EVM: `new C{value: v}()`), and a folded same-tx call carries no value of its own, so a call fold installs 0.
+  private genesisDeployValue?: ExpressionNode;
   private insideGenesisPureHelper: boolean = false;
   private allowGenesisHelperInputs: boolean = false;
   private deploymentHelperWasInlined: boolean = false;
@@ -2570,6 +2573,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // A child constructor or same-transaction initializer observes the deploying contract as msg.sender.
     // While folding that transition into the parent's deploy covenant, this is exactly the active input's
     // locking bytecode. Preserve the EVM sequencing without introducing the child's impossible co-spend.
+    if (expr instanceof NullaryOpNode && expr.operator === NullaryOperator.MSG_VALUE) {
+      // The deploying covenant funds the child with `new C{value: v}`; the child's constructor observes exactly
+      // that as its `msg.value`. The covenant verifies the genesis this computes, so an SDK that funds the child
+      // with anything else fails closed against the emitted commitment.
+      return this.genesisDeployValue ? cloneNode(this.genesisDeployValue) : null;
+    }
     if (expr instanceof NullaryOpNode && expr.operator === NullaryOperator.MSG_SENDER) {
       const inputIndex = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
       inputIndex.location = expr.location;
@@ -3145,9 +3154,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     const priorHelperContract = this.genesisHelperContract;
     const priorAdditionalHelpers = this.genesisAdditionalHelperFunctions;
     const priorHelperStack = this.genesisHelperStack;
+    const priorDeployValue = this.genesisDeployValue;
     this.genesisHelperContract = contract;
     this.genesisAdditionalHelperFunctions = additionalHelperFunctions;
     this.genesisHelperStack = new Set();
+    const deployValue = deployNode.callOptions?.value;
+    if (deployValue) {
+      this.genesisDeployValue = deployValue as ExpressionNode;
+    } else {
+      const zero = new IntLiteralNode(0n);
+      zero.location = deployNode.location;
+      this.genesisDeployValue = zero;
+    }
     try {
       const fixedGenesisValueType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
         if (type instanceof ArrayType) {
@@ -3254,6 +3272,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.genesisHelperContract = priorHelperContract;
       this.genesisAdditionalHelperFunctions = priorAdditionalHelpers;
       this.genesisHelperStack = priorHelperStack;
+      this.genesisDeployValue = priorDeployValue;
     }
     deployNode.ctorFoldFailed = failed;
     deployNode.constructorStateFoldComplete = !failed && statements.every((statement) =>
@@ -13764,6 +13783,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       node.parameters = this.visitList(node.parameters);
+      // Visit the value first: the constructor fold substitutes it for the child's `msg.value`, and a folded
+      // expression is consumed by code generation as-is (an unvisited node would carry no resolved type).
+      if (node.callOptions?.value) {
+        node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+      }
 
       // Generated message-bus route source cannot call arbitrary user-private helpers. Inline the same
       // conservative straight-line pure subset that deployment-recipe analysis accepts.
@@ -13774,9 +13798,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       // deploy-then-call folds so their `this.field` reads see the true genesis value.
       this.tryFoldChildConstructor(node);
 
-      if (node.callOptions?.value) {
-        node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
-      }
       // Salt (EVM create2): honored - baked as an outermost `<salt> OP_DROP` address segment in codegen,
       // COMPOSED with the category self-pin for a stateful target (`<salt> OP_DROP | <cat self-pin> | base`,
       // exactly as the SDK's Contract layers it), so `new T{salt}(...)` yields a deterministic,

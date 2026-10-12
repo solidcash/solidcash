@@ -98,9 +98,15 @@ export interface DeployProxyOptions {
   proxyOverrides?: DeployContractOptions;
   implementationOverrides?: DeployContractOptions;
   /**
-   * The coin that enters a framed proxy's `initialize` hop, or absent to take the runner's own largest tokenless
-   * UTXO. A hop's root frame binds `msg.sender` to the lock of the input it names, so the coin has to sit at the
-   * deployer's own P2PKH lock.
+   * Framed only: `'hop'` runs the initializer as a separate hop after the proxy's genesis, the one way an initializer
+   * that calls another contract runs; the proxy is uninitialized on chain until that hop confirms. The default mints
+   * the proxy's genesis already initialized.
+   */
+  initializeAs?: 'genesis' | 'hop';
+  /**
+   * The coin a separate framed `initialize` hop (`initializeAs: 'hop'`) enters with, or absent to take the runner's
+   * own largest tokenless UTXO. A hop's root frame binds `msg.sender` to the lock of the input it names, so the coin
+   * has to sit at the deployer's own P2PKH lock.
    */
   callerFunding?: FramedProxyCallerFunding;
 }
@@ -714,12 +720,16 @@ export type FramedProxyHandle = ConnectedStatefulContract<Artifact> & {
   waitForDeployment(): Promise<unknown>;
 };
 
+/** What a proxy's genesis is selected to fund beyond its pools: the records, nodes and events its initializer mints. */
+const INITIALIZED_STATE_SATOSHIS = 50_000n;
+
 /** One genesis's funding: the caller's override, or a fresh vout-0 coin the Signer fans out and pays. */
 async function framedGenesisHalf(
   overrides: DeployContractOptions | undefined,
   artifact: Artifact,
   signer: Signer,
   excluded: ReadonlySet<string>,
+  extraSatoshis = 0n,
 ): Promise<FramedProxyDeployHalf> {
   const { fundingUtxo, funder, changeAddress, ...rest } = overrides ?? {};
   delete rest.initialState;
@@ -731,7 +741,7 @@ async function framedGenesisHalf(
   // also funds are counted beside it, so a leaner signer is still offered a coin the whole genesis can spend.
   const pool = resolveMasterPoolSize({ masters: rest.threadCount, validators: rest.validatorCount });
   const selected = fundingUtxo
-    ?? await selectGenesisFundingUtxo(signer, artifact, excluded, 1, poolGenesisSatoshis(pool));
+    ?? await selectGenesisFundingUtxo(signer, artifact, excluded, 1, poolGenesisSatoshis(pool) + extraSatoshis);
   return {
     ...rest,
     fundingUtxo: selected,
@@ -743,10 +753,10 @@ async function framedGenesisHalf(
 /**
  * Routes a `deployProxy` of a framed implementation onto the framed deployment.
  *
- * Two geneses (the implementation's, then the proxy's with a record naming the implementation's address) and an
- * `initialize` hop through the proxy. The proxy is the caller's `options.proxy`, or generated from the
- * implementation's own declaration when none is given. The hop is entered by the deployer, so the Signer's own
- * P2PKH lock is the `callerLockingBytecode` the framed deployment takes.
+ * Two geneses: the implementation's, then the proxy's, minted with the state its `initialize` leaves (or with
+ * `initializeAs: 'hop'`, uninitialized and followed by a separate hop). The proxy is the caller's `options.proxy`,
+ * or generated from the implementation's own declaration when none is given. The initializer is entered by the
+ * deployer, so the Signer's own P2PKH lock is the `callerLockingBytecode` the framed deployment takes.
  */
 async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
   factory: ContractFactory<TImpl>,
@@ -763,11 +773,11 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
       + 'lock is the caller the hop runs as.',
     );
   }
-  // The hop always runs: the framed record belongs to the proxy, so state seeded at the implementation's genesis
-  // would sit in a record the proxy's delegate frames never read.
+  // The initializer always runs: the framed record belongs to the proxy, so state seeded at the implementation's
+  // genesis would sit in a record the proxy's delegate frames never read.
   if (options.initializer === false) {
     throw new Error(
-      'A framed deployment always runs one initialize hop through the proxy; `initializer: false` (seed state at '
+      'A framed deployment always runs its initializer through the proxy; `initializer: false` (seed state at '
       + 'genesis) has no framed equivalent.',
     );
   }
@@ -785,16 +795,19 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
 
   const { buildProxyArtifact, deployFramedProxy } = await import('../framed/proxy/index.js');
   const proxyArtifact = options.proxy ?? buildProxyArtifact(implementationArtifact);
-  // The hop is entered by the deployer's own coin, so a caller that funds it is selected before the geneses and
-  // excluded from them: a genesis must not spend the coin the hop is about to sign.
-  const callerFunding = options.callerFunding ?? await framedCallerFunding(signer);
-  const callerOutpoint = `${callerFunding.utxo.txid}:${callerFunding.utxo.vout}`;
+  // A separate hop is entered by the deployer's own coin, so a caller that funds one is selected before the geneses
+  // and excluded from them: a genesis must not spend the coin the hop is about to sign. By default the proxy's
+  // genesis mints the initialized state itself and is funded for it.
+  const separateHop = options.initializeAs === 'hop';
+  const callerFunding = separateHop ? options.callerFunding ?? await framedCallerFunding(signer) : undefined;
+  const callerOutpoints = callerFunding === undefined ? [] : [`${callerFunding.utxo.txid}:${callerFunding.utxo.vout}`];
   const implementationDeploy = await framedGenesisHalf(
-    options.implementationOverrides, implementationArtifact, signer, new Set([callerOutpoint]),
+    options.implementationOverrides, implementationArtifact, signer, new Set(callerOutpoints),
   );
   const proxyDeploy = await framedGenesisHalf(
     options.proxyOverrides, proxyArtifact, signer,
-    new Set([`${implementationDeploy.fundingUtxo.txid}:${implementationDeploy.fundingUtxo.vout}`, callerOutpoint]),
+    new Set([`${implementationDeploy.fundingUtxo.txid}:${implementationDeploy.fundingUtxo.vout}`, ...callerOutpoints]),
+    separateHop ? 0n : INITIALIZED_STATE_SATOSHIS,
   );
 
   const deployment = await deployFramedProxy({
@@ -804,11 +817,11 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
     proxyArtifact,
     proxyDeploy,
     initialize: { functionName: initializer, args: (initialState ?? []) as FunctionArgument[] },
-    callerLockingBytecode: callerFunding.funder.generateLockingBytecode(),
-    callerFunding,
+    callerLockingBytecode: callerFunding?.funder.generateLockingBytecode() ?? signer.getLockingBytecode(),
+    ...(callerFunding === undefined ? {} : { initializeAs: 'hop' as const, callerFunding }),
   });
-  // A hop a participant refused is not broadcast, so a proxy whose initialize was refused is refused here by the
-  // verdicts that name it, rather than handed back uninitialized.
+  // A derivation a participant refused broadcasts nothing, so a proxy whose initialize was refused is refused here
+  // by the verdicts that name it, rather than handed back uninitialized.
   if (!deployment.initialize.accepted) {
     const refused = deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
@@ -886,11 +899,12 @@ async function framedProxyHandle(
  * An implementation artifact compiled for the framed convention is routed to the framed deployment instead,
  * because the direct builder below - implementation beside a proxy whose data NFTs sit at a category-derived
  * address, one `initialize` forwarded through the pinned delegatecall - has nothing to spend for a master program.
- * That route is a different three-transaction shape (both geneses and an `initialize` hop) and its result is a
- * `FramedProxyHandle`: the contract's entries addressed and held by the proxy, with the `FramedProxyDeployment`
- * nested under it - the proxy's category and address, the implementation it forwards to, the derived hop and the
- * machine's verdict on every participant. It needs a Signer runner to name the hop's caller and to fund the
- * geneses, and it always runs the hop, so `initializer: false` is refused.
+ * That route is a different shape (both geneses, the proxy's minted with the state its derived `initialize` leaves)
+ * and its result is a `FramedProxyHandle`: the contract's entries addressed and held by the proxy, with the
+ * `FramedProxyDeployment` nested under it - the proxy's category and address, the implementation it forwards to, the
+ * derived initializer and the machine's verdict on every participant. It needs a Signer runner to name the
+ * initializer's caller and to fund the geneses, and it always runs the initializer, so `initializer: false` is
+ * refused.
  */
 export function deployProxy(
   implementationFactory: ContractFactory<FramedArtifact>, initialState?: ProxyInitialState,

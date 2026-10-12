@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, encodeEventCommitment, type StateLayout } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -9,7 +9,6 @@ import { deployMaster, readFramedDeployment } from '../../../src/framed/deploy/i
 import { participant } from '../../../src/framed/composer/index.js';
 import {
   FramedProxyDeployError, buildProxyArtifact, deployFramedProxy, proxyRecordParticipantId,
-  type FramedProxyCallerFunding,
 } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -52,14 +51,13 @@ const NO_IMPLEMENTATION_FIELD = 'pragma solidcash ^0.13.0;'
   + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; }'
   + ' }';
 
-/** Funds the two genesis UTXOs and the hop's caller coin, and returns the deployer's own lock and funders. */
+/** Funds the two genesis UTXOs, and returns the deployer's own lock and funder; the proxy's genesis is initialized. */
 async function funded(network: MockNetworkProvider): Promise<{
   readonly funder: ReturnType<Contract['unlock']['spend']>;
   readonly implFunding: { txid: string; vout: number; satoshis: bigint };
   readonly proxyFunding: { txid: string; vout: number; satoshis: bigint };
   readonly deployerLock: Uint8Array;
   readonly changeAddress: string;
-  readonly callerFunding: FramedProxyCallerFunding;
 }> {
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -67,17 +65,12 @@ async function funded(network: MockNetworkProvider): Promise<{
   const proxyFunding = { txid: PROXY_CATEGORY, vout: 0, satoshis: 500_000n };
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
-  // The initialize hop is entered with the deployer's own coin, at its own P2PKH lock.
-  const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
-  const callerUtxo = { txid: '33'.repeat(31) + 'cc', vout: 0, satoshis: 100_000n };
-  await network.addUtxo(binToHex(deployerLock), callerUtxo);
   return {
     funder: funder.unlock.spend(alicePub, signature),
     implFunding,
     proxyFunding,
-    deployerLock,
+    deployerLock: encodeLockingBytecodeP2pkh(alicePkh),
     changeAddress: funder.address,
-    callerFunding: { utxo: callerUtxo, funder: signature.unlockP2PKH() },
   };
 }
 
@@ -127,7 +120,7 @@ describe('a generated proxy', () => {
   it('settles a writing initialize through the proxy it generated, keeping the implementation\'s address', async () => {
     const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { funder, implFunding, proxyFunding, changeAddress, deployerLock, callerFunding } = await funded(network);
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
     const proxy = buildProxyArtifact(artifacts.Impl!);
 
     const deployment = await deployFramedProxy({
@@ -137,7 +130,6 @@ describe('a generated proxy', () => {
       proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
-      callerFunding,
       vm: compositionMachine(),
     });
 
@@ -145,9 +137,9 @@ describe('a generated proxy', () => {
       .toStrictEqual([`${artifacts.Impl!.contractName}.initialize()`, `${proxy.contractName}.__fallback()`]);
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
-    // The hop is broadcast with the deployer's coin. It spends the proxy's master, its validator and facet, the
-    // implementation's master and the record, then the deployer's own coin.
-    expect(deployment.initialize.broadcast).toBeDefined();
+    // The derived hop spends the proxy's master, its validator and facet, the implementation's master and the
+    // record, then the deployer's own coin. It is never broadcast: the proxy's genesis mints what it wrote.
+    expect(deployment.initialize.broadcast.txid).toBe(deployment.proxy.tx.txid);
     expect(deployment.initialize.transaction.inputs.length).toBe(6);
 
     // The entry computed the state it wrote: the flag set and the version written, with the address still there.
@@ -160,7 +152,7 @@ describe('a generated proxy', () => {
     expect(bytesToHex(deployment.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(written));
 
-    // The proxy's record holds what the broadcast hop wrote, read back through the shipped decoder.
+    // The proxy's record holds what the entry wrote, minted by its genesis and read back through the shipped decoder.
     const discovery = await readFramedDeployment(network, deployment.proxy.categoryId, proxy.stateLayout!);
     expect(discovery.records.length).toBe(1);
     const recordState = new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'));
@@ -183,7 +175,7 @@ describe('a generated proxy', () => {
       + ' }';
     const artifacts = compileStringMulti(source, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { funder, implFunding, proxyFunding, changeAddress, deployerLock, callerFunding } = await funded(network);
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
     const generated = buildProxyArtifact(artifacts.Impl!);
 
     const deployment = await deployFramedProxy({
@@ -193,7 +185,6 @@ describe('a generated proxy', () => {
       proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
-      callerFunding,
       vm: compositionMachine(),
     });
 
@@ -273,7 +264,7 @@ describe('a generated proxy', () => {
       + ' }';
     const artifacts = compileStringMulti(source, { composition: 'framed' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { funder, implFunding, proxyFunding, changeAddress, deployerLock, callerFunding } = await funded(network);
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
     const generated = buildProxyArtifact(artifacts.Impl!);
 
     const deployment = await deployFramedProxy({
@@ -283,7 +274,6 @@ describe('a generated proxy', () => {
       proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
-      callerFunding,
       vm: compositionMachine(),
     });
 

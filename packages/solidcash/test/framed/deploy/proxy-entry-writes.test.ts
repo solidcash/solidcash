@@ -138,7 +138,7 @@ async function funded(network: MockNetworkProvider, withCaller = false): Promise
 async function deploy(
   source: string,
   args: readonly unknown[] = [],
-  // A framed proxy deploy always funds and broadcasts its initialize hop (SDKFRAMED-2).
+  // Funds the deployer's coins; the default deployment mints the proxy initialized and spends none (SDKFRAMED-2).
   broadcast = true,
 ): Promise<{
     readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
@@ -295,15 +295,19 @@ describe('a proxied initialize that writes a sorted mapping', () => {
     // The node's slot is the key's, so the created node is the entry's own write.
     expect(bytesToHex(decodeEntryCommitment(created.after).slot)).toBe(bytesToHex(keyToSlotMulti([who])));
 
-    // The empty head is spent and recreated relinked to the created node's slot, and the hop is broadcast.
+    // The derived hop spends the empty head and recreates it relinked to the created node's slot. The proxy's genesis
+    // mints that relinked head and the created node, so no empty head is ever on chain.
     const headIndex = deployment.initialize.draft.layout.participants
       .find((placed) => placed.id.startsWith('mapping-head-'))!.index;
-    expect(bytesToHex(deployment.initialize.transaction.outputs[headIndex]!.token!.nft!.commitment))
-      .toBe(bytesToHex(plan.written.find((node) => node.existed)!.after));
-    const hop = deployment.initialize.broadcast;
-    expect(hop).toBeDefined();
-    expect(binToHex(hop!.inputs[headIndex]!.outpointTransactionHash)).toBe(deployment.proxy.tx.txid);
-    expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
+    const relinked = bytesToHex(plan.written.find((node) => node.existed)!.after);
+    expect(bytesToHex(deployment.initialize.transaction.outputs[headIndex]!.token!.nft!.commitment)).toBe(relinked);
+    const minted = deployment.proxy.tx.outputs
+      .map((output) => bytesToHex(output.token?.nft?.commitment ?? new Uint8Array()));
+    expect(minted).toContain(relinked);
+    expect(minted).toContain(bytesToHex(created.after));
+    expect(minted).not.toContain(bytesToHex(headSentinelCommitment()));
+    expect(deployment.initialize.broadcast.txid).toBe(deployment.proxy.tx.txid);
+    expect(await network.getRawTransaction(deployment.proxy.tx.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
   it('rewrites the key the collection already holds in place, through the hop a later call takes', async () => {

@@ -13,13 +13,14 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A proxied initialize that is broadcast, not only derived.
+ * A proxied initialize that is broadcast as a separate hop, not only derived (`initializeAs: 'hop'`).
  *
- * The derived hop is the specification — the same unlocking bytecodes, the same participant outputs, the record at
- * the commitment the entry computed — but it is laid out on synthetic outpoints. When the caller offers its own
- * coin, `deployFramedProxy` rebuilds the hop on the outpoints the two geneses actually created (the masters, the
- * validator, the record and the caller's coin), signs the caller's input over the real transaction, and broadcasts
- * it. These tests drive that on the mock network and read the entry's state back through the shipped decoder.
+ * The derived hop is the specification (the same unlocking bytecodes, the same participant outputs, the record at
+ * the commitment the entry computed), but it is laid out on synthetic outpoints. Asked for a separate hop, with the
+ * caller's own coin, `deployFramedProxy` rebuilds the hop on the outpoints the two geneses actually created (the
+ * masters, the validator, the record and the caller's coin), signs the caller's input over the real transaction, and
+ * broadcasts it. These tests drive that on the mock network and read the entry's state back through the shipped
+ * decoder. The default mints the proxy's genesis initialized instead (`AuditSdkFramedProxyAtomic`).
  */
 
 const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
@@ -100,6 +101,7 @@ function broadcast(): Promise<Broadcast> {
       proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
+      initializeAs: 'hop',
       callerFunding: { utxo: callerUtxo, funder: signature.unlockP2PKH() },
       vm: compositionMachine(),
     });

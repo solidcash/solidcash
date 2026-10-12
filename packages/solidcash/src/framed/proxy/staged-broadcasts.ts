@@ -1,11 +1,12 @@
 /**
  * Holding a deployment's transactions until every one of them is built and accepted (audit SDKFRAMED-2).
  *
- * A proxy deployment is two geneses and the `initialize` hop that spends their outputs, so the hop can only be
- * planned once the geneses are signed. Broadcasting them first would leave an uninitialized proxy on chain whenever
- * the hop is then refused. The overlay lets the pipeline run unchanged: a broadcast through it is held, not relayed,
- * and its reads serve the held transactions on top of the provider's own (their outputs listed, the coins they spend
- * hidden). `release` relays them in the order they were handed in.
+ * A proxy deployment derives `initialize` against its geneses, so they are signed before anything is known about
+ * the initializer; broadcasting them first would leave an uninitialized proxy on chain whenever it is then refused.
+ * The overlay lets the pipeline run unchanged: a broadcast through it is held, not relayed, and its reads serve the
+ * held transactions on top of the provider's own (their outputs listed, the coins they spend hidden). `release`
+ * relays them in the order they were handed in. An overlay that is never released is a probe: what it held is
+ * discarded, as a proxy's uninitialized probe genesis is once its initialized genesis is signed.
  *
  * Every other property read is forwarded to the wrapped provider and writes land on it, so the deployment registry
  * (kept on the provider under a symbol) is the wrapped provider's own through the overlay. After `release` the

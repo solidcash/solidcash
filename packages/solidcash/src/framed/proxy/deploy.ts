@@ -1,13 +1,16 @@
 /**
- * Deploying a framed contract behind a proxy, in three transactions, none of which calls another contract.
+ * Deploying a framed contract behind a proxy, in two transactions, neither of which calls another contract.
  *
  *   1. the implementation's genesis: its category, master pool and validator pool (and the records its own
  *      constructor frame computed);
- *   2. the proxy's genesis: the same pools, with the proxy's one record carrying the implementation's address and
- *      the empty head of every sorted collection the implementation declares;
- *   3. `initialize` through the proxy: a root frame on the proxy's master whose body delegatecalls the
- *      implementation, which runs as a `DELEGATE` frame on the proxy's own records, so its `msg.sender` and
- *      `address(this)` are the deployer's and the proxy's.
+ *   2. the proxy's genesis: the same pools, and the proxy's records as `initialize` leaves them.
+ *
+ * `initialize` is the proxy's constructor frame (audit SDKFRAMED-2): a root frame on the proxy's master whose body
+ * delegatecalls the implementation, which runs as a `DELEGATE` frame on the proxy's own records, so its `msg.sender`
+ * and `address(this)` are the deployer's and the proxy's. It is derived against a probe of the proxy's genesis (its
+ * records carrying the implementation's address, every collection empty) beside the implementation's held genesis,
+ * and the genesis that is broadcast mints the records, nodes, chunks and events that derivation left. The probe and
+ * the derived hop are never broadcast, so no uninitialized proxy state is ever on chain for anyone to take first.
  *
  * The proxy shape is the one the convention compiles: a contract whose only body is a `fallback` that forwards
  * the call data it received to an address it holds in state. Its master reads that address from its record and
@@ -15,17 +18,14 @@
  * other shape is refused by name rather than guessing where the implementation's address lives or what a body
  * forwards.
  *
- * The first two transactions are broadcast through the shipped deployment entry point, which selects the framed
- * genesis from the artifact. The third is built by the shipped composer: the plan names the deployed masters, the
- * proxy's record and validator, and the delegate edge, and the shipped derivation resolves the callee reference
- * and fills the witnesses. That derived transaction is the specification of the hop. The hop is rebuilt on the
- * outpoints the two geneses create (the two masters, the validator, the proxy's record) and the caller's own coin
- * (`callerFunding`, required), and signed by the caller.
+ * The geneses go through the shipped deployment entry point, which selects the framed genesis from the artifact.
+ * The derivation is the shipped composer's: the plan names the deployed masters, the proxy's record and validator,
+ * and the delegate edge, and the shipped derivation resolves the callee reference and fills the witnesses.
  *
- * Nothing is broadcast until all three are built and the hop is accepted: the geneses are signed through an overlay
- * that holds them and serves their outputs to the hop's planning, and the three go out back to back only then. A
- * refusal anywhere before that broadcasts nothing, so no proxy is left uninitialized for anyone to initialize first
- * (audit SDKFRAMED-2).
+ * An initializer that calls another contract changes state the proxy's genesis cannot mint, so it is refused unless
+ * the caller asks for a separate hop (`initializeAs: 'hop'`): the uninitialized proxy genesis, then the derived hop
+ * rebuilt on the outpoints the geneses create and signed by the caller's own coin (`callerFunding`). All three are
+ * held until the hop is accepted and then broadcast back to back, but until the hop confirms anyone can race it.
  *
  * A later call by anyone is the same hop on the same live pools: `callFramedProxyEntry` names the entry and the
  * caller's coin and runs the identical plan, derivation, evaluation and broadcast. The delegation is one
@@ -49,7 +49,7 @@ import { framedValidator } from 'solidc/runtime';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
 } from '../../Argument.js';
-import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
+import type { Output, TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
 import { registerDeployment } from '../../stateful/deployment-registry.js';
@@ -133,7 +133,7 @@ import {
 } from './written-values.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
-export type FramedProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
+export type FramedProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState' | 'mintedState'>;
 
 /** The caller's own funding for a hop: the coin the root frame's caller input spends. */
 export interface FramedProxyCallerFunding {
@@ -168,8 +168,15 @@ export interface FramedProxyDeployOptions {
   /** The deployer's own 25-byte P2PKH lock: the root frame's caller, and the `initialize` frame's `msg.sender`. */
   readonly callerLockingBytecode: Uint8Array;
   /**
-   * The caller's own funding for the initialize hop. Required: a deployment without it is refused, since the geneses
-   * alone would leave the proxy uninitialized for anyone to initialize first.
+   * Where `initialize` runs. `'genesis'` (the default) mints the proxy's genesis with the state the derived
+   * `initialize` leaves, so the proxy is never on chain uninitialized. `'hop'` broadcasts the uninitialized genesis
+   * and then `initialize` as a separate root hop: the one way an initializer that calls another contract runs, at
+   * the cost that anyone can initialize the proxy first until the hop confirms (audit SDKFRAMED-2).
+   */
+  readonly initializeAs?: 'genesis' | 'hop';
+  /**
+   * The caller's own funding for a separate hop (`initializeAs: 'hop'`), which refuses a deployment without it; the
+   * default genesis spends no caller coin and ignores it.
    *
    * The derived hop is rebuilt on the outpoints the two geneses create, the caller input is signed by `funder` over
    * that transaction, and the three transactions are broadcast. The caller's input is the deployer's own (the
@@ -237,11 +244,9 @@ export interface FramedProxyDeployment {
     /** The first returned value, for the common single-value `initialize`. */
     readonly value: StateValue;
     /**
-     * The provider's receipt for the hop, broadcast right after the two geneses.
-     *
-     * The hop's outputs carry what `transaction` describes — the same participants recreated, the record at the
-     * commitment the entry computed — placed on the outpoints the geneses created. `transaction` remains the
-     * derived specification.
+     * The provider's receipt for the transaction that put the initialized state on chain: the proxy's genesis, which
+     * minted the state `transaction` derives (the default), or with `initializeAs: 'hop'` the hop, rebuilt on the
+     * outpoints the geneses created and broadcast right after them. `transaction` remains the derived specification.
      */
     readonly broadcast: TransactionDetails;
   };
@@ -1058,21 +1063,23 @@ export async function deployFramedProxy(
       throw new FramedProxyDeployError('each genesis funding UTXO must be at vout 0 to create a token category');
     }
   }
-  // The hop is what initializes the proxy, so a deployment that cannot broadcast it is refused (audit SDKFRAMED-2).
+  // A separate hop is what initializes the proxy then, so one that cannot be broadcast is refused (SDKFRAMED-2).
+  const separateHop = options.initializeAs === 'hop';
   const { callerFunding } = options;
-  if (callerFunding === undefined) {
+  if (separateHop && callerFunding === undefined) {
     throw new FramedProxyDeployError(
-      'a framed proxy deployment needs `callerFunding`: without the caller\'s own coin the initialize hop cannot be '
-      + 'broadcast, and the geneses alone would leave the proxy uninitialized for anyone to initialize first',
+      'a framed proxy initialized by a separate hop needs `callerFunding`: without the caller\'s own coin the hop '
+      + 'cannot be broadcast, and the geneses alone would leave the proxy uninitialized for anyone to initialize first',
     );
   }
   // A refusal knowable now is raised before anything is signed.
-  const upFrontRefusal = await deployFundingRefusal(options, callerFunding);
+  const upFrontRefusal = await deployFundingRefusal(options, separateHop ? callerFunding : undefined);
   if (upFrontRefusal !== undefined) throw new FramedProxyDeployError(upFrontRefusal);
   // Every transaction below is signed through the overlay, which holds it and serves its outputs to the reads after
-  // it, so a refusal anywhere before the release broadcasts nothing.
+  // it, so a refusal anywhere before the release broadcasts nothing. By default the derivation reads through an inner
+  // overlay that also holds the probe proxy genesis, and is never released.
   const staging = stageBroadcasts(options.provider);
-  const { provider } = staging;
+  const { provider } = separateHop ? staging : stageBroadcasts(staging.provider);
 
   const validatorProgram = framedValidator.buildValidatorProgram();
   const implementationCategory = hexToBin(options.implementationDeploy.fundingUtxo.txid);
@@ -1123,14 +1130,15 @@ export async function deployFramedProxy(
     .filter((collection) => collection.sorted === true)
     .map((collection) => ({ name: collection.name, signature: collection.signature }));
 
-  // 1. The implementation's genesis and pools, signed and held until the hop is accepted.
+  // 1. The implementation's genesis and pools, signed and held until the derivation is accepted.
   const implementation = await deployStatefulContract(
     implementationArtifact, [...(options.implementationArgs ?? [])],
-    { ...options.implementationDeploy, provider },
+    { ...options.implementationDeploy, provider: staging.provider },
   );
 
-  // 2. The proxy's genesis, its one record carrying the implementation's address, and the empty head of every
-  // sorted collection the implementation declares.
+  // 2. The proxy's uninitialized genesis, its one record carrying the implementation's address, and the empty head
+  // of every sorted collection the implementation declares: the probe the derivation runs on, or with a separate hop
+  // the genesis itself.
   const proxy = await deployStatefulContract(proxyArtifact, [], {
     ...options.proxyDeploy,
     provider,
@@ -1303,10 +1311,25 @@ export async function deployFramedProxy(
       `the "${options.initialize.functionName}" hop was refused, so nothing was broadcast: ${refused}`,
     );
   }
-  // The hop is rebuilt on the geneses' outpoints and signed, and held like them.
-  const broadcast = await broadcastHop({
+  // By default the proxy's genesis mints the state the derivation left, in place of the probe's.
+  const initialized = separateHop ? undefined : await deployStatefulContract(proxyArtifact, [], {
+    ...options.proxyDeploy,
+    provider: staging.provider,
+    mintedState: initializedProxyState({
+      entryLabel: entryLabelFor(options.initialize.functionName),
+      callees: externalPlan.callees,
+      genesis: proxy.tx.outputs,
+      program,
+      draft,
+      category: proxyCategory,
+      validatorLock: proxyMaster.address,
+    }),
+  });
+  const proxyGenesis = initialized ?? proxy;
+  // With a separate hop, the hop is rebuilt on the geneses' outpoints and signed, and held like them.
+  const broadcast = initialized?.tx ?? await broadcastHop({
     provider,
-    callerFunding,
+    callerFunding: callerFunding!,
     callerLockingBytecode: options.callerLockingBytecode,
     proxyArtifact,
     implementationArtifact,
@@ -1319,8 +1342,8 @@ export async function deployFramedProxy(
       : { spentUtxos: new Map([...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends]) }),
   });
 
-  // 3. Everything is built and the hop accepted: the implementation's genesis, the proxy's and the hop go out back
-  // to back, in that order.
+  // 3. Everything is built and accepted: the implementation's genesis and the proxy's (and a separate hop) go out
+  // back to back, in that order.
   try {
     await staging.release();
   } catch (error) {
@@ -1349,8 +1372,8 @@ export async function deployFramedProxy(
       address: implementationMaster.address, tx: implementation.tx,
     },
     proxy: {
-      contract: proxy.contract, categoryId: proxy.categoryId,
-      address: proxyMaster.address, tx: proxy.tx,
+      contract: proxyGenesis.contract, categoryId: proxyGenesis.categoryId,
+      address: proxyMaster.address, tx: proxyGenesis.tx,
     },
     initialize: {
       transaction: program.transaction, sourceOutputs: program.sourceOutputs,
@@ -1367,9 +1390,9 @@ export async function deployFramedProxy(
   };
 }
 
-/** Why the coins a proxy deployment signs for cannot carry it: both genesis coins and the hop's caller coin. */
+/** Why the coins a proxy deployment signs for cannot carry it: both genesis coins and a separate hop's caller coin. */
 async function deployFundingRefusal(
-  options: FramedProxyDeployOptions, callerFunding: FramedProxyCallerFunding,
+  options: FramedProxyDeployOptions, callerFunding: FramedProxyCallerFunding | undefined,
 ): Promise<string | undefined> {
   const halves = [options.implementationDeploy, options.proxyDeploy];
   for (const half of halves) {
@@ -1377,6 +1400,7 @@ async function deployFundingRefusal(
       options.provider, half.fundingUtxo, half.funder.generateLockingBytecode(), { role: 'funder', tokenFree: true });
     if (refusal !== undefined) return refusal;
   }
+  if (callerFunding === undefined) return undefined;
   if (!bytesEqual(callerFunding.funder.generateLockingBytecode(), options.callerLockingBytecode)) {
     return CALLER_LOCK_REFUSAL;
   }
@@ -1424,6 +1448,67 @@ function recordOutputs(
     const output = placed === undefined ? undefined : program.transaction.outputs[placed.index];
     return output?.token?.nft?.commitment ?? commitment;
   });
+}
+
+type HopOutput = NonNullable<ShippedVmProgram['transaction']>['outputs'][number];
+
+/** An output's whole content, so two outputs nothing can tell apart compare equal. */
+function outputKey(output: HopOutput): string {
+  const { token } = output;
+  const nft = token?.nft === undefined ? '' : `${token.nft.capability}:${binToHex(token.nft.commitment)}`;
+  const held = token === undefined ? '' : `${binToHex(token.category)}:${token.amount}:${nft}`;
+  return `${binToHex(output.lockingBytecode)}:${output.valueSatoshis}:${held}`;
+}
+
+/**
+ * The proxy's state as the derived `initialize` leaves it, which its genesis mints in place of the probe's: what the
+ * probe minted and the hop does not spend, then every output of the proxy's own state the hop recreates or creates.
+ * The pools (masters at the minting capability, validators at `validatorLock`) are the genesis's own to mint. An
+ * effect elsewhere (another contract's frame, a send) is refused: only a separate hop can carry it.
+ */
+function initializedProxyState(options: {
+  readonly entryLabel: string;
+  readonly callees: readonly HopCallee[];
+  readonly genesis: readonly HopOutput[];
+  readonly program: ShippedVmProgram;
+  readonly draft: CompositionDraft;
+  readonly category: Uint8Array;
+  readonly validatorLock: Uint8Array;
+}): Output[] {
+  const { program, draft } = options;
+  const elsewhere = (what: string): FramedProxyDeployError => new FramedProxyDeployError(
+    `the implementation's ${options.entryLabel} ${what}, which the proxy's genesis cannot mint; pass `
+    + '`initializeAs: \'hop\'` to run it as a separate hop, which leaves the proxy uninitialized until it confirms',
+  );
+  if (options.callees.length > 0) {
+    throw elsewhere(`calls another contract (${options.callees.map((callee) => callee.functionName).join(', ')})`);
+  }
+  const isState = (output: HopOutput | undefined): boolean => output?.token !== undefined
+    && bytesEqual(output.token.category, options.category) && output.token.nft?.capability !== 'minting'
+    && !bytesEqual(output.lockingBytecode, options.validatorLock);
+  const unspent = options.genesis.filter(isState);
+  const left: HopOutput[] = [];
+  for (const placed of draft.layout.participants) {
+    const source: HopOutput | undefined = program.sourceOutputs[placed.index];
+    const output: HopOutput | undefined = program.transaction.outputs[placed.index];
+    if (source !== undefined && isState(source)) {
+      const at = unspent.findIndex((minted) => outputKey(minted) === outputKey(source));
+      if (at === -1) {
+        throw new FramedProxyDeployError(
+          `the ${options.entryLabel} derivation spends "${placed.id}", which the proxy's genesis does not mint`);
+      }
+      unspent.splice(at, 1);
+      if (output !== undefined && isState(output)) left.push(output);
+    } else if (source?.token !== undefined && (output === undefined || outputKey(output) !== outputKey(source))) {
+      throw elsewhere(`changes "${placed.id}"`);
+    }
+  }
+  for (const { index } of draft.trailingOutputs) {
+    const output: HopOutput | undefined = program.transaction.outputs[index];
+    if (output === undefined || !isState(output)) throw elsewhere(`lists output ${index} outside the proxy's own state`);
+    left.push(output);
+  }
+  return [...unspent, ...left].map(libauthOutputToSolidCashOutput);
 }
 
 /** What a settled hop produced, before the caller's own coin turns it into a broadcast transaction. */

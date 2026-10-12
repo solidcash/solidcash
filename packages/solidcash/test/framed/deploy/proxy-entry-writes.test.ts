@@ -138,7 +138,8 @@ async function funded(network: MockNetworkProvider, withCaller = false): Promise
 async function deploy(
   source: string,
   args: readonly unknown[] = [],
-  broadcast = false,
+  // A framed proxy deploy always funds and broadcasts its initialize hop (SDKFRAMED-2).
+  broadcast = true,
 ): Promise<{
     readonly deployment: Awaited<ReturnType<typeof deployFramedProxy>>;
     readonly network: MockNetworkProvider;

@@ -21,6 +21,24 @@ export function settlesSortedTargetsByActivity(fn: AbiFunction | undefined): boo
 }
 
 /**
+ * DS-6: the writes a guarded direct batch shares with a conditional delete (the compiler's `guardedBatchWriteSlots`).
+ * The batch transition settles one only where it ran; elsewhere its slot keeps the node it spends.
+ */
+export function guardedBatchWriteSlots(fn: AbiFunction | undefined): Set<number> {
+  if (fn === undefined || fn.name.startsWith('__message_bus') || fn.inputs.some((input) => input.name === 'batchBlob')
+    || settlesSortedTargetsByActivity(fn)) return new Set();
+  const slots = fn.blockLayout?.slots ?? [];
+  const batches = fn.sortedBatchInfo ?? [];
+  const entryWith = (slot: number, flag: 'conditional' | 'softDelete'): boolean => slots.some((layout) => (
+    layout.kind === 'entry' && layout.slotIndex === slot && layout[flag] === true));
+  if (!batches.every((batch) => batch.slotIndices.every((slot) => entryWith(slot, 'conditional')))
+    || slots.find((layout) => layout.kind === 'entry' && layout.softDelete)?.slotIndex === undefined) return new Set();
+  return new Set(batches.filter((batch) => batch.slotIndices.length > 1
+    && batch.slotIndices.some((slot) => entryWith(slot, 'softDelete')))
+    .flatMap((batch) => batch.slotIndices.filter((slot) => !entryWith(slot, 'softDelete'))));
+}
+
+/**
  * A conditional write of an activity-settled body whose arm did not run keeps the node its slot spends, and the
  * covenant counts that node alone: drop the predecessor relink its insert plan published, mark the write inactive
  * (-2) and narrow the batch trailing count. Returns whether the plan changed.

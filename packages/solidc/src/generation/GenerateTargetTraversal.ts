@@ -29885,6 +29885,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       batch.slotIndices.length === 1 && batch.slotIndices[0] === slot)));
   }
 
+  /** The soft-delete slot whose input guards the sorted batch transition, where every batch target is conditional. */
+  private sortedBatchGuard(node: FunctionDefinitionNode): BlockLayoutSlot | undefined {
+    const targets = new Set((node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+    // DS-6: an activity-settled body runs every check; the guard's inputs are the spender's. A framed frame settles
+    // each target at the node its group names, whatever input sits at the slot's fixed offset.
+    return !this.settlesSortedTargetsByActivity(node) && !this.readsRecordsFromFrame
+      && [...targets].every((slot) => node.blockLayout?.slots.some(
+        (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional,
+      )) ? node.blockLayout?.slots.find((layout) => layout.kind === 'entry' && layout.softDelete) : undefined;
+  }
+
+  /**
+   * DS-6: the writes a guarded direct batch shares with a conditional delete. Each takes its own ran flag: the batch
+   * transition runs only where all ran, and elsewhere the unrun census keeps each write's node exactly.
+   */
+  private guardedBatchWriteSlots(node: FunctionDefinitionNode): Set<number> {
+    if (this.functionHasDelegatecall || this.sortedBatchGuard(node)?.slotIndex === undefined || !this.directConvention
+      || this.framedMaster || this.readsRecordsFromFrame || this.isCompilerMessageBusRoute(node)) return new Set();
+    const softDelete = (slot: number): boolean => node.blockLayout?.slots.some(
+      (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.softDelete) === true;
+    return new Set((node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1
+      && batch.slotIndices.some(softDelete)).flatMap((batch) => batch.slotIndices.filter((slot) => !softDelete(slot))));
+  }
+
   /** An activity-settled target's settlement: its own delete site, its write flag, or the plain transition. */
   private sortedTargetActivity(slot: number): string | undefined {
     if (this.condDeleteSlots.has(slot)) return CONDITIONAL_DELETE_ACTIVITY;
@@ -29944,13 +29968,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * parsed commitment fields across checks avoids coupling this verifier to the body's tracked-stack lifetime.
    */
   private emitGuardedSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
-    const targets = new Set(node.sortedBatchInfo!.flatMap((batch) => batch.slotIndices));
-    // DS-6: an activity-settled body runs every check; the guard's inputs are the spender's. A framed frame settles
-    // each target at the node its group names, whatever input sits at the slot's fixed offset.
-    const guard = !this.settlesSortedTargetsByActivity(node) && !this.readsRecordsFromFrame
-      && [...targets].every((slot) => node.blockLayout?.slots.some(
-        (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional,
-      )) ? node.blockLayout?.slots.find((layout) => layout.kind === 'entry' && layout.softDelete) : undefined;
+    const guard = this.sortedBatchGuard(node);
     const loc = { location: node.location, positionHint: PositionHint.END } as SingleLocationData;
     this.restoreVMapWitnessSnapshots(node, loc);
     const runtimeAliasSlots = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices)
@@ -29962,7 +29980,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
     // The guard's inputs are the spender's: a direct entry settles a batch that did not run as no change at all, and
-    // runs it only where the delete slot's input is a node of its collection.
+    // runs it only where the delete slot's input is a node of its collection and each write it shares with the
+    // delete ran, as an unrun write's slot is pinned by nothing in the transition.
     const settlesUnrun = guard?.slotIndex !== undefined && this.directConvention && !this.framedMaster
       && !this.readsRecordsFromFrame && !this.isCompilerMessageBusRoute(node);
     const beforeGuard = [...this.stack];
@@ -29982,7 +30001,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitPickVMapWitness(`__internal__vmapBatchSlot_${guard.slotIndex}`, loc);
       this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_ENDIF, loc);
-      if (settlesUnrun) { this.emit(Op.OP_BOOLAND, loc); this.popFromStack(); }
+      if (settlesUnrun) {
+        this.emit(Op.OP_BOOLAND, loc); this.popFromStack();
+        for (const slot of [...this.guardedBatchWriteSlots(node)].sort((a, b) => a - b)) {
+          const flag = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
+          if (!this.conditionalSortedWriteFlagSlots.has(slot) || this.getStackIndex(flag, true) < 0) continue;
+          this.emit(encodeInt(BigInt(this.getStackIndex(flag) + 1)), loc); this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_BOOLAND, loc);
+        }
+      }
       this.emit(Op.OP_IF, loc);
     }
     // The verification reads the proof node's declared view, which is the segment the write landed in rather than
@@ -46939,7 +46966,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot: the direct
    * epilogue or the framed batch transition binds the node where it stays false. Loop, alias and invoked writes get
-   * none, nor does a direct multi-slot batch's target or a framed one the body makes wherever it reaches it.
+   * none, nor does a direct multi-slot batch's target, bar one sharing a guarded batch with a delete, or a framed one
+   * the body makes wherever it reaches it.
    */
   private allocateConditionalSortedWriteFlags(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
@@ -46951,6 +46979,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slots = new Set<number>();
     const invokedWrites = new Set<number>();
     this.collectConditionalSortedWriteSlots(node.body, false, slots, new Map(), invokedWrites);
+    const guardedWrites = this.guardedBatchWriteSlots(node);
     for (const slotIndex of [...slots].sort((a, b) => a - b)) {
       const info = this.entrySlots[slotIndex];
       if (info === undefined || info.inLoop) continue;
@@ -46975,8 +47004,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A framed master binds a one-slot batch target in its single-target transition, and a multi-slot batch's
       // target the body may skip in the batch transition (`emitFramedKeptBatchTarget`): the batch's own flag, which
       // any of its writes sets, cannot tell which ran. In a direct multi-slot batch a relinked predecessor changes
-      // without an upsert of its own, which a flag would refuse.
-      if (this.framedMaster ? !inSingleSlotBatch && !(inMultiSlotBatch && mayNotRun) : inMultiSlotBatch) {
+      // without an upsert of its own, which a flag would refuse, bar a guarded batch that runs only where its flagged
+      // writes all ran.
+      if (this.framedMaster ? !inSingleSlotBatch && !(inMultiSlotBatch && mayNotRun)
+        : inMultiSlotBatch && !guardedWrites.has(slotIndex)) {
         continue;
       }
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });

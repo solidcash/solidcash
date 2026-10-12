@@ -67,12 +67,12 @@ Measured 2026-10-11 on `feat/parity` (merged into `feat/per-call`) with `evmComp
 
 | Measure | Result |
 |---|---:|
-| solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2719/2805 = 96.93% |
+| solc corpus, single-file semantic and syntax fixtures that compile (`bench/solidity-corpus`) | 2720/2805 = 96.97% |
 | solc corpus, fixtures solc rejects that SolidCash also rejects | 2009/2158 = 93.10% |
 | Solidity-by-Example, compiled as-is (`bench/solidity-by-example`) | 138/141 = 97.87% |
-| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 610/614 = 99.35% |
-| solc corpus semantic expectations executed on the BCH VM under the real BCH-2026 size limits, pure-function slice (`bench/solidity-corpus/semantic-runner.mjs`) | 1375/1475 = 93.22% |
-| the same, stateful slice (deploy once, lines in order, before any divergence; includes external-call fixtures routed from the pure run; 15 lines need a commitment or input larger than a real node accepts and count as unmatched, 14 of them match under the mock's relaxed sizes) | 710/783 = 90.68% |
+| EVM-vs-BCH differential cases with the same result (`packages/solidcash/test/conformance`) | 672/676 = 99.41% |
+| solc corpus semantic expectations executed on the BCH VM under the real BCH-2026 size limits, pure-function slice (`bench/solidity-corpus/semantic-runner.mjs`) | 1377/1477 = 93.23% |
+| the same, stateful slice (deploy once, lines in order, before any divergence; includes external-call fixtures routed from the pure run; 15 lines need a commitment or input larger than a real node accepts and count as unmatched, 14 of them match under the mock's relaxed sizes) | 711/783 = 90.80% |
 | the same, pipeline-specific expectations (`compileViaYul` true/false, excluded from both rates) | legacy 26/30, via-IR 94/103 |
 | Executable corpus fixtures traced to a VM test (`bench/solidity-corpus/BEHAVIORAL_COVERAGE.md`) | 155/1506 = 10.29% |
 

@@ -1,9 +1,9 @@
-=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1375/1475 executed lines matched (93.22%) | 7 matched-with-density-reserve | 83 mismatched | 9 mismatched-with-density-reserve | 0 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | 1 refused-at-compile | 115 skipped | 0 error | 438 fixtures run of 1542 compiled candidates | 627.1s ===
-=== STATEFUL SLICE (deploy once, lines in order): 710/783 executed lines matched (90.68%) | 6 matched-with-density-reserve | 43 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 21/53 matched | 4 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 326 fixtures run of 621 with state variables + 6 routed from the pure slice ===
+=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1377/1477 executed lines matched (93.23%) | 7 matched-with-density-reserve | 83 mismatched | 9 mismatched-with-density-reserve | 0 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | 0 refused-at-compile | 115 skipped | 0 error | 439 fixtures run of 1543 compiled candidates | 696.9s ===
+=== STATEFUL SLICE (deploy once, lines in order): 711/783 executed lines matched (90.80%) | 6 matched-with-density-reserve | 42 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 23/58 matched | 4 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 326 fixtures run of 622 with state variables + 5 routed from the pure slice ===
 === PIPELINE-SPECIFIC EXPECTATIONS (compileViaYul true/false, excluded from both rates): legacy 26/30 | via-IR 94/103 executed lines matched | 42 fixtures run of 84 | 8 twin pairs: 3 legacy, 2 both, 1 neither, 1 unmeasured, 1 via-IR ===
 
 --- FIXTURES SKIPPED (by reason) ---
-  621  state-variables
+  622  state-variables
   101  type:array
    47  type:string-bytes
    41  value:string-or-hex
@@ -20,8 +20,8 @@
    13  evm-version:older
    11  type:address
     7  target-is-library
-    6  routed-to-stateful: external-call witnesses
     5  ret-type:array
+    5  routed-to-stateful: external-call witnesses
     4  no-contract
     4  ret-arity
     3  fallback-call
@@ -36,14 +36,14 @@
     1  unparsed
 
 --- LINES (selected fixtures) ---
- 1591  selected
- 1375  matched
+ 1592  selected
+ 1377  matched
     7  matched-with-density-reserve
    83  mismatched
     9  mismatched-with-density-reserve
     0  matched-under-mock-size-limits
     1  mismatched-under-mock-size-limits
-    1  refused-at-compile
+    0  refused-at-compile
   115  skipped
     0  error (timeout/worker)
 
@@ -66,7 +66,6 @@
     1  expected values, got revert: Program called an OP_SPLIT operation with an invalid index. stack item length: N; requested split inde
 
 --- REFUSED-AT-COMPILE (by error head, per line) ---
-    1  UnsupportedStructFieldTypeError: Type '..' is not supported as a struct field type at Line N, Column N
 
 --- WRAPPER INSIDE THE TARGET (fixtures, by reason) ---
     1  in-target: layout at
@@ -190,7 +189,7 @@ test/libsolidity/semanticTests/various/codehash_assembly.sol:22  g() -> 0xc5d246
 test/libsolidity/semanticTests/various/codehash_assembly.sol:23  h() -> true  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115792089237316195423570985008687907853269984665640564039457584007913129639935 -> -1  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 752000 (density control length: 940); operation cost following operation: 752070.
 
-=== STATEFUL SLICE (deploy once, lines in order): 710/783 executed lines matched (90.68%) | 6 matched-with-density-reserve | 43 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 21/53 matched | 4 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 326 fixtures run of 621 with state variables + 6 routed from the pure slice ===
+=== STATEFUL SLICE (deploy once, lines in order): 711/783 executed lines matched (90.80%) | 6 matched-with-density-reserve | 42 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 23/58 matched | 4 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 326 fixtures run of 622 with state variables + 5 routed from the pure slice ===
 
 --- STATEFUL FIXTURES SKIPPED (by reason) ---
    30  constructor-params
@@ -218,16 +217,16 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
     1  type:struct
 
 --- STATEFUL LINES (selected fixtures; after-divergence lines counted apart) ---
-  850  selected
-  710  matched
+  855  selected
+  711  matched
     6  matched-with-density-reserve
-   43  mismatched
+   42  mismatched
     9  mismatched-with-density-reserve
    14  matched-under-mock-size-limits
     1  mismatched-under-mock-size-limits
-   21  matched after-divergence
+   23  matched after-divergence
     0  matched-under-mock-size-limits after-divergence
-   32  mismatched after-divergence
+   35  mismatched after-divergence
     4  refused-at-compile
    10  refused-at-deploy
     0  skipped
@@ -239,11 +238,11 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
    16  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
     9  expected values, got (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
     8  expected values, got (after divergence) (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
+    8  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
     7  expected values, got (after divergence) wrong value
-    7  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction o
+    6  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program called an OP_SPLIT operation with an invalid in
     5  expected values, got (after divergence) (with density reserve) revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
-    5  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
-    5  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program called an OP_SPLIT operation with an invalid in
+    5  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction o
     5  expected values, got wrong value
     4  expected values, got build-error: Error: keccakN batch too large (N total blocks); a single side-car input funds at most N keccak b
     3  expected values, got (after divergence) (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NcNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
@@ -278,14 +277,12 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
 --- STATEFUL WRAPPER INSIDE THE TARGET (fixtures, by reason) ---
    25  in-target: layout at
     3  in-target: undefined reference
-    2  in-target: assign type
 
 --- STATEFUL SELF-CALL WRAPPER (this.f(): reads msg.sig/msg.data; fixture:line  call  =>  status: outcome) ---
 test/libsolidity/semanticTests/optimizer/unused_store_storage_removal_bug.sol:14  f() ->  =>  matched: success
 test/libsolidity/semanticTests/optimizer/unused_store_storage_removal_bug.sol:15  x() -> 1  =>  matched: success
 
 --- STATEFUL LINES ROUTED FROM THE PURE SLICE (external-call witnesses; fixture:line  call  =>  status: outcome) ---
-test/libsolidity/semanticTests/abicoder/calldataDecoding/struct/member_external_function_v2.sol:14  test() -> 7, 3  =>  mismatched: revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 2; requested index: -1.
 test/libsolidity/semanticTests/functionCall/precompile_extcodesize_check.sol:31  testHighLevel() -> true  =>  mismatched: revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 2; requested index: -1.
 test/libsolidity/semanticTests/functionCall/precompile_extcodesize_check.sol:32  testLowLevel() -> 0xc76596d400000000000000000000000000000000000000000000000000000000  =>  mismatched: revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/functionCall/precompile_extcodesize_check.sol:33  testHighLevel2() -> FAILURE  =>  matched: revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 2; requested index: -1.
@@ -341,7 +338,6 @@ test/libsolidity/semanticTests/structs/copy_struct_array_from_storage.sol:95  te
 test/libsolidity/semanticTests/structs/copy_struct_array_from_storage.sol:96  test4() -> true  =>  (under mock size limits: input) success
 
 --- STATEFUL MISMATCHES (fixture:line  call  =>  outcome) ---
-test/libsolidity/semanticTests/abicoder/calldataDecoding/struct/member_external_function_v2.sol:14  test() -> 7, 3  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 2; requested index: -1.
 test/libsolidity/semanticTests/array/array_storage_index_access.sol:18  test_indices(uint256): 129 ->  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2220800 (density control length: 2776); operation cost following operation: 2222781.
 test/libsolidity/semanticTests/array/array_storage_index_access.sol:38  test_indices(uint256): 0xFF ->  =>  (after divergence) (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2220800 (density control length: 2776); operation cost following operation: 2222961.
 test/libsolidity/semanticTests/array/array_storage_index_access.sol:43  test_indices(uint256): 1000 ->  =>  (after divergence) (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 2220800 (density control length: 2776); operation cost following operation: 2222961.
@@ -388,7 +384,6 @@ test/libsolidity/semanticTests/functionCall/mapping_internal_return.sol:22  h() 
 test/libsolidity/semanticTests/functionCall/precompile_extcodesize_check.sol:31  testHighLevel() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 2; requested index: -1.
 test/libsolidity/semanticTests/functionCall/precompile_extcodesize_check.sol:32  testLowLevel() -> 0xc76596d400000000000000000000000000000000000000000000000000000000  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/functionTypes/store_function.sol:27  t() -> 9  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 3; requested index: -1.
-test/libsolidity/semanticTests/functionTypes/struct_with_external_function.sol:31  f() -> 1, 2  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 3; requested index: -1.
 test/libsolidity/semanticTests/getters/transient_value_types_multi_frame_call.sol:20  f() -> -2  =>  wrong value
 test/libsolidity/semanticTests/getters/transient_value_types_multi_frame_call.sol:21  h() -> -1  =>  (after divergence) wrong value
 test/libsolidity/semanticTests/inheritance/transient_storage_state_variable_abstract_contract.sol:26  f() -> 1, 1, 2, 2  =>  wrong value
@@ -421,11 +416,15 @@ test/libsolidity/semanticTests/variables/transient_state_variable.sol:20  g() ->
 test/libsolidity/semanticTests/variables/transient_state_variable_cleanup_tstore.sol:14  f() -> 0xff  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 3. Requested byte length: 2.
 test/libsolidity/semanticTests/various/gasleft_decrease.sol:19  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/various/gasleft_decrease.sol:20  g() -> true  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/viaYul/copy_struct_invalid_ir_bug.sol:23  f() ->  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/copy_struct_invalid_ir_bug.sol:23  f() ->  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: -1.
 test/libsolidity/semanticTests/viaYul/msg_sender.sol:9  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 18; requested split index: 20.
 test/libsolidity/semanticTests/viaYul/storage/dirty_storage_bytes_long.sol:18  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/storage/dirty_storage_dynamic_array.sol:18  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/storage/dirty_storage_struct.sol:21  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/storage/mappings.sol:32  test_simple(uint256): 0 -> 3, 4, 5  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/storage/mappings.sol:33  test_simple(uint256): 1 -> 3, 4, 5  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/storage/mappings.sol:34  test_simple(uint256): 2 -> 3, 4, 5  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/viaYul/storage/mappings.sol:35  test_cleanup() -> true  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 
 === PIPELINE-SPECIFIC EXPECTATIONS (compileViaYul true/false, excluded from both rates): legacy 26/30 | via-IR 94/103 executed lines matched | 42 fixtures run of 84 | 8 twin pairs: 3 legacy, 2 both, 1 neither, 1 unmeasured, 1 via-IR ===
 

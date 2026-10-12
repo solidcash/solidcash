@@ -479,6 +479,56 @@ function guardedDeleteMayAlias(node: Node, mapping: string, keys: readonly KeyKi
   return executableChildren(node).some((child) => guardedDeleteMayAlias(child, mapping, keys, arms));
 }
 
+/**
+ * DS-6: a scalar cache whose last write (`lastWrite`, an index into `statements`) a guarded delete of another key of the
+ * mapping follows is flushed right after that write. The flush then stays the delete's swap-remove alias write and
+ * keeps its value where the keys meet and the delete does not run. One the body only writes (`writeOnly`) starts at
+ * the default. One it also reads keeps its read, and moves only where nothing after the write reads the mapping: such
+ * a read would see the pre-state. Undefined where the flush stays at the end.
+ */
+function closeBeforeGuardedDelete(
+  statements: readonly StatementNode[], local: string, dirty: string, mapping: string, keys: readonly KeyKind[],
+  functions: ReadonlySet<string>,
+): { lastWrite: number; writeOnly: boolean } | undefined {
+  let lastWrite = -1;
+  statements.forEach((statement, index) => {
+    if (reaches(statement, (node) => node instanceof AssignNode && node.identifier.name === dirty)) lastWrite = index;
+  });
+  const after = statements.slice(lastWrite + 1);
+  if (lastWrite < 0 || !after.some((statement) => guardedDeleteMayAlias(statement, mapping, keys))) return undefined;
+  const reads = statements.some((statement) => readsCache(statement, local));
+  if (reads && after.some((statement) => readsCache(statement, local)
+    || mayReadMapping(statement, mapping, functions))) return undefined;
+  return { lastWrite, writeOnly: !reads };
+}
+
+/** The cache a whole-entry write flushes when `dirty` is that cache's dirty flag. */
+function flushedCache(write: Node | undefined, value: Node, dirty: Node): string | undefined {
+  return write instanceof MappingAssignNode && write.arrayIndex === undefined && !write.arrayPush && !write.arrayPop
+    && value instanceof IdentifierNode && value.name.startsWith(PREFIX)
+    && dirty instanceof IdentifierNode && dirty.name === `${value.name}_dirty` ? value.name : undefined;
+}
+
+/**
+ * A cache flush and the cache it writes back: `if (<cache>_dirty) { m[k] = <cache>; }` as `makeFlush` builds it, or
+ * `m[k] = <cache>_dirty ? <cache> : m[k]` where IfConvertConditionalEntryOp predicated it.
+ */
+function cacheFlush(node: Node): { write: MappingAssignNode; local: string } | undefined {
+  if (node instanceof MappingAssignNode && node.expression instanceof TernaryOpNode) {
+    const { condition, ifTrue, ifFalse } = node.expression;
+    const local = ifFalse instanceof MappingAccessNode && ifFalse.name === node.name
+      ? flushedCache(node, ifTrue, condition) : undefined;
+    return local === undefined ? undefined : { write: node, local };
+  }
+  if (!(node instanceof BranchNode) || node.elseBlock !== undefined || node.preserveConditionalEntryWrites !== true) {
+    return undefined;
+  }
+  const [write, ...rest] = node.ifBlock.statements ?? [];
+  const local = rest.length === 0 && write instanceof MappingAssignNode
+    ? flushedCache(write, write.expression, node.condition) : undefined;
+  return local === undefined ? undefined : { write: write as MappingAssignNode, local };
+}
+
 function expressionParameterDependencies(node: Node, out = new Set<string>()): Set<string> {
   if (node instanceof IdentifierNode) out.add(node.name);
   if (node instanceof FunctionCallNode) {
@@ -786,30 +836,19 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (lastWrite >= 0 && calling.slice(lastWrite + 1).some(Boolean)) closings.set(item, statements[lastWrite]!);
       }
     }
-    // DS-6: a scalar cache whose last write a guarded delete of another key of the mapping follows is flushed right
-    // after that write. The flush then stays the delete's swap-remove alias write and keeps its value where the keys
-    // meet and the delete does not run. One the body only writes starts at the default. One it also reads keeps its
-    // read, and moves only where nothing after the write reads the mapping: such a read would see the pre-state.
+    // DS-6 (closeBeforeGuardedDelete). Under the message bus a route cloned from this body stages no alias write, so
+    // the body keeps its end flush here and CloseDirectEntryCaches moves it in the direct body once routes are cloned.
     const writeOnly = new Set<(typeof prepared)[number]>();
     if (this.composesAliases && !this.callsCloseSegments && !this.routeSnapshotKeysOnly) {
       const functions = new Set([...this.contractFunctionNames, ...this.sourceFunctionNames]);
       for (const item of prepared) {
         if (item.span !== undefined || !this.scalarMappings.has(item.e.mapping)
           || isChunkableValueType(item.e.valueType)) continue;
-        let lastWrite = -1;
-        statements.forEach((statement, index) => {
-          if (reaches(statement, (node) => node instanceof AssignNode && node.identifier.name === item.dirty)) {
-            lastWrite = index;
-          }
-        });
-        const after = statements.slice(lastWrite + 1);
-        if (lastWrite < 0
-          || !after.some((statement) => guardedDeleteMayAlias(statement, item.e.mapping, item.e.keys))) continue;
-        const reads = statements.some((statement) => readsCache(statement, item.local));
-        if (reads && after.some((statement) => readsCache(statement, item.local)
-          || mayReadMapping(statement, item.e.mapping, functions))) continue;
-        closings.set(item, statements[lastWrite]!);
-        if (!reads) writeOnly.add(item);
+        const close = closeBeforeGuardedDelete(statements, item.local, item.dirty, item.e.mapping, item.e.keys,
+          functions);
+        if (close === undefined) continue;
+        closings.set(item, statements[close.lastWrite]!);
+        if (close.writeOnly) writeOnly.add(item);
       }
     }
     // Flushes that close after one statement keep the order the entries were prepared in.
@@ -1744,6 +1783,84 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     };
     scan(node);
     return found;
+  }
+}
+
+/**
+ * DS-6 under the message bus: each direct entry body's read-modify-write caches take the placement
+ * `closeBeforeGuardedDelete` gives, once route synthesis has cloned the bodies. A route and its handler clones compile
+ * without alias staging, so a flush moved before the delete there would skip the write where the keys meet and the
+ * delete does not run: they keep the end flush, as does an entry a route invokes itself and a cache also flushed before
+ * a return. So does a cache the body only writes: the SDK plans a delete the kernel's argument activation turns off as
+ * a read, and a write-only alias write then finds no node at the delete's slot (refused by the VM preflight).
+ */
+export class CloseDirectEntryCaches extends AstTraversal {
+  private sourceFunctionNames: string[] = [];
+
+  visitSourceFile(node: SourceFileNode): Node {
+    this.sourceFunctionNames = node.freeFunctions.map((fn) => fn.name);
+    if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
+    return node;
+  }
+
+  visitContract(node: ContractNode): Node {
+    const scalars = new Set(node.collections.filter((col) => col.type instanceof MappingType && col.sorted
+      && !(col.innermostValueType instanceof ArrayType) && !(col.innermostValueType instanceof StructType)
+      && !isChunkableValueType(col.innermostValueType)).map((col) => col.name));
+    if (scalars.size === 0) return node;
+    const routed = (fn: FunctionDefinitionNode): boolean => fn.messageBusRoute === true
+      || fn.name.startsWith('__message_bus');
+    const flushes = (statement: StatementNode): boolean => scalars.has(cacheFlush(statement)?.write.name ?? '');
+    const direct = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]
+      .filter((fn): fn is FunctionDefinitionNode => fn?.body instanceof BlockNode && fn.isEntryPoint
+        && !fn.collectionJournal && !routed(fn) && (fn.body.statements ?? []).some(flushes));
+    if (direct.length === 0) return node;
+    const invoked = new Set<string>();
+    for (const fn of node.functions) {
+      if (!routed(fn) || !fn.body) continue;
+      reaches(fn.body, (child) => {
+        if (child instanceof FunctionCallNode) invoked.add(child.identifier.name);
+        return false;
+      });
+    }
+    const functions = new Set([...node.functions.map((fn) => fn.name), ...this.sourceFunctionNames]);
+    for (const fn of direct) if (!invoked.has(fn.name)) this.closeFlushes(fn.body as BlockNode, scalars, functions);
+    return node;
+  }
+
+  private closeFlushes(body: BlockNode, scalars: ReadonlySet<string>, functions: ReadonlySet<string>): void {
+    const flushedAfter = new Map<StatementNode, StatementNode>();
+    for (const flush of [...(body.statements ?? [])]) {
+      const found = cacheFlush(flush);
+      if (found === undefined || !scalars.has(found.write.name)) continue;
+      const { write, local } = found;
+      const dirty = `${local}_dirty`;
+      const keys = write.keys.map((key) => canonKeyOf(key, true)?.key);
+      let flushes = 0;
+      reaches(body, (node) => {
+        if ((node instanceof BranchNode || node instanceof TernaryOpNode) && node.condition instanceof IdentifierNode
+          && node.condition.name === dirty) flushes += 1;
+        return false;
+      });
+      const statements = body.statements ?? [];
+      const declaration = statements.find((statement): statement is VariableDefinitionNode =>
+        statement instanceof VariableDefinitionNode && statement.name === local);
+      const marker = statements.find((statement) =>
+        statement instanceof VariableDefinitionNode && statement.name === dirty);
+      if (flushes !== 1 || declaration === undefined || marker === undefined
+        || keys.some((key) => key === undefined)) continue;
+      const others = statements.filter((statement) => statement !== declaration && statement !== marker
+        && statement !== flush);
+      const close = closeBeforeGuardedDelete(others, local, dirty, write.name, keys as KeyKind[], functions);
+      if (close === undefined || close.writeOnly
+        || statements.indexOf(others[close.lastWrite]!) > statements.indexOf(flush)) continue;
+      // Flushes that close after one statement keep their order.
+      const closing = others[close.lastWrite]!;
+      const kept = statements.filter((statement) => statement !== flush);
+      const at = kept.indexOf(flushedAfter.get(closing) ?? closing) + 1;
+      flushedAfter.set(closing, flush);
+      body.statements = [...kept.slice(0, at), flush, ...kept.slice(at)];
+    }
   }
 }
 

@@ -15,9 +15,11 @@ import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
  * write whose delete sits in a later branch, a switch case or an else-if arm, on the straight line, in a nested block
  * or in an earlier branch or switch arm, keeps its value where that delete does not run; so does a write before an
  * if-converted delete. A loop's writes are cached and flushed once, before that delete: the last value is kept. A
- * cached read-modify-write, in a loop or not, reads the entry once and is flushed there too: the sum is kept. A read
- * of the delete's key after the write, in the delete's arm or before its branch, sees the written value where the
- * keys meet: a call whose require the written value fails is refused though the old value passes it.
+ * cached read-modify-write, in a loop or not, reads the entry once and is flushed there too: the sum is kept. Under
+ * the message bus a direct body's read-modify-write is flushed there as well; a cache the body only writes and a
+ * route's handler clone keep their flush at the end. A read of the delete's key after the write, in the delete's
+ * arm or before its branch, sees the written value where the keys meet: a call whose require the written value fails
+ * is refused though the old value passes it.
  */
 
 const WRITE_FIRST_SOURCE = `contract SameKeyWriteFirst {
@@ -237,9 +239,10 @@ type Tx = ReturnType<typeof decodeTransactionUnsafe>;
 
 interface Deployed { provider: Provider; sc: StatefulContract<any>; pinned: Contract; cat: string; deleteSlot?: number }
 
-async function deploy(source: string, name: string, alias = true): Promise<Deployed> {
+async function deploy(source: string, name: string, alias = true, messageBus = false): Promise<Deployed> {
   const provider = createTestProvider();
-  const artifact = compileString(source, { forceStateful: true });
+  const artifact = compileString(source, { forceStateful: true, messageBus });
+  if (messageBus) expect(artifact.messageBus).toBeDefined();
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, contract, artifact.stateLayout!, {}, { saltContract: true },
@@ -277,8 +280,10 @@ const outcomeOf = (provider: Provider, hex: string): Promise<string> => provider
  * The call writes 300 to key 7, whose one node sits at the delete's slot (an alias write) or carries 300 (none); that
  * node with another value is refused.
  */
-async function expectForgedValueRefused(source: string, name: string, args: bigint[], alias = true): Promise<void> {
-  const { provider, sc, pinned, cat, deleteSlot } = await deploy(source, name, alias);
+async function expectForgedValueRefused(
+  source: string, name: string, args: bigint[], alias = true, messageBus = false,
+): Promise<void> {
+  const { provider, sc, pinned, cat, deleteSlot } = await deploy(source, name, alias, messageBus);
   const hex = await capture(provider, () => sc.getFunction(name)(...args).send());
   const tx = decodeTransactionUnsafe(hexToBin(hex));
   const lock = (cashAddressToLockingBytecode(getEntryNftAddress(pinned, cat, 'm')) as { bytecode: Uint8Array })
@@ -657,6 +662,102 @@ describe('a read of the key after a write before a delete of it in a later branc
     const { sc } = await deploy(LOOP_THEN_READ_DROP_SOURCE, 'setThenDrop');
     await expect(sc.getFunction('setThenDrop')(7n, 7n, 99n, 1n).send()).rejects.toThrow();
     await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+  }, 300_000);
+});
+
+describe('under the message bus, a read-modify-write in a fixed-bound loop before a delete of the same key', () => {
+  it('keeps the sum where the delete does not run', async () => {
+    const { sc } = await deploy(LOOP_ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(7n, 7n, 100n, 0n).send();
+    await expect(sc.getFunction('check')(7n, 270n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('deletes the key where the delete runs', async () => {
+    const { sc } = await deploy(LOOP_ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(7n, 7n, 100n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('adds to one key and deletes the other only where the delete runs', async () => {
+    const { sc } = await deploy(LOOP_ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(20n, 7n, 100n, 0n).send();
+    await expect(sc.getFunction('check')(20n, 400n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+    await sc.getFunction('addThenDrop')(7n, 20n, 10n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 90n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 0n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('refuses the key\'s node taking another value where the delete does not run', async () => {
+    // 70 + 2 * 115 = 300.
+    await expectForgedValueRefused(LOOP_ADD_THEN_DROP_SOURCE, 'addThenDrop', [7n, 7n, 115n, 0n], true, true);
+  }, 300_000);
+});
+
+describe('under the message bus, a read-modify-write in a runtime loop before a delete of the same key', () => {
+  it('keeps the sum where the delete does not run', async () => {
+    const { sc } = await deploy(RUNTIME_LOOP_ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(7n, 7n, 10n, 0n, 3n).send();
+    await expect(sc.getFunction('check')(7n, 100n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('deletes the key where the delete runs', async () => {
+    const { sc } = await deploy(RUNTIME_LOOP_ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(7n, 7n, 10n, 1n, 2n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('keeps the key where the loop does not run, and deletes it where only the delete runs', async () => {
+    const { sc } = await deploy(RUNTIME_LOOP_ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(7n, 7n, 10n, 0n, 0n).send();
+    await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+    await sc.getFunction('addThenDrop')(7n, 7n, 10n, 1n, 0n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+});
+
+describe('under the message bus, a write in a fixed-bound loop before a delete of the same key', () => {
+  it('keeps the flush after the delete', () => {
+    const artifact = compileString(LOOP_THEN_DROP_SOURCE, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus).toBeDefined();
+    const fn = artifact.abi.find((entry) => entry.name === 'setThenDrop')!;
+    expect(fn.entryAccesses?.some((access) => access.aliasCondDeleteSlot !== undefined)).toBe(false);
+  });
+});
+
+describe('under the message bus, a read-modify-write before a delete of the same key in a later branch', () => {
+  it('keeps the sum where the delete does not run', async () => {
+    const { sc } = await deploy(ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(7n, 7n, 100n, 0n).send();
+    await expect(sc.getFunction('check')(7n, 170n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('deletes the key where the delete runs', async () => {
+    const { sc } = await deploy(ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(7n, 7n, 100n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('adds to one key and deletes the other only where the delete runs', async () => {
+    const { sc } = await deploy(ADD_THEN_DROP_SOURCE, 'addThenDrop', true, true);
+    await sc.getFunction('addThenDrop')(20n, 7n, 100n, 0n).send();
+    await expect(sc.getFunction('check')(20n, 300n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+    await sc.getFunction('addThenDrop')(7n, 20n, 10n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 80n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 0n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('refuses the key\'s node taking another value where the delete does not run', async () => {
+    // 70 + 230 = 300.
+    await expectForgedValueRefused(ADD_THEN_DROP_SOURCE, 'addThenDrop', [7n, 7n, 230n, 0n], true, true);
   }, 300_000);
 });
 

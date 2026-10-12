@@ -236,7 +236,7 @@ import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
-import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
+import CacheMappingEntryInLoop, { CloseDirectEntryCaches } from './semantic/CacheMappingEntryInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
 import {
@@ -15676,6 +15676,11 @@ function compileResolvedAst(
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
   }
+  // DS-6: with the bus on, a direct body's read-modify-write cache before a guarded delete is flushed after its last
+  // write only now, past every route clone of that body (CloseDirectEntryCaches).
+  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.composition !== 'framed') {
+    ast = ast.accept(new CloseDirectEntryCaches()) as Ast;
+  }
 
   // Propagate logical msg.sender use through the named internal-call closure before the body-local semantic
   // survey injects entry-point context. Modifier expansion commonly leaves `entry -> _checkOwner -> _msgSender`;
@@ -19584,6 +19589,9 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new CacheMappingEntryInLoop(
       false, compilerOptions.composition === 'framed', !compilerOptions.messageBus,
     )) as Ast;
+    if (compilerOptions.messageBus && compilerOptions.composition !== 'framed') {
+      singleAst = singleAst.accept(new CloseDirectEntryCaches()) as Ast;
+    }
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.messageBusKernel === true,
     )) as Ast;

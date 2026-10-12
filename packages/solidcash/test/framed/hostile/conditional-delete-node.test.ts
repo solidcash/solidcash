@@ -5,7 +5,8 @@ import {
   encodeIntegerValue, scriptToBytecode, type RecordEntry,
 } from '@solidcash/utils';
 import {
-  MASTER_INDEX, created, deployFramedMaster, evaluateMasterSpend, node, spent, type DeployedMaster, type PlacedRecord,
+  MASTER_INDEX, created, deployFramedMaster, evaluateMasterSpend, head, node, spent, type DeployedMaster,
+  type PlacedRecord,
 } from '../../../../solidc/test/framed/master/record-spend.js';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
@@ -33,6 +34,9 @@ import { participant, type CompositionDraftPlan, type DraftCall } from '../../..
  * declared for a later frame only on slot and successor. It now reads and closes against its declared views, as a
  * framed write does, and settlement chains them. Beside a write of the same collection the delete is one target of
  * a batch, and a group declaring the deleted key inserted is refused by that close.
+ *
+ * A key the list does not hold has no node to clear: the group declares the node that brackets the key kept, and the
+ * delete, taken or skipped, proves the key absent there and leaves the node as it was.
  */
 
 const encoder = new TextEncoder();
@@ -108,75 +112,87 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function run() { ITags(0x${hexOf(seededAddress(TAGS_LABEL))}).remove("${KEY_TEXT}", 1); require(true); }`
   + ' }';
 
+let removeDeployment: ReturnType<typeof compileAndDeploy> | undefined;
+
+/** The Hub's `run`, calling `remove` of Tags, whose one record is the node spent at `before`, declared to `after`. */
+function composeRemove(before: Uint8Array, after: Uint8Array): ShapeOutcome {
+  const { artifacts, contracts } = (removeDeployment ??= compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Tags: TAGS_LABEL }));
+  const hub = contracts.Hub!;
+  const tags = contracts.Tags!;
+  const redeem = scriptToBytecode(buildEntryNftCovenantScript(
+    tags.category, computeCollectionHash(artifacts.Tags!.stateLayout!.collections![0]!.signature),
+  ));
+  const entryLock = encodeLockingBytecodeP2sh32(hash256(redeem));
+  const blocks: CompositionDraftPlan['blocks'] = [
+    { contract: 'Hub', masters: ['hub-1'], validator: { id: 'validator', settles: [] }, state: [] },
+    { contract: 'Tags', masters: ['tags-1'], state: ['node'] },
+  ];
+  const layout = layoutWithFacets(blocks);
+  const nodeIndex = participant(layout, 'node').index;
+  const record: RecordEntry = { in: nodeIndex, out: nodeIndex, viewIn: before, viewOut: after };
+  const pushes = [selectorOf(artifacts, 'Tags', 'remove'), YES, KEY];
+  const validator = validatorFor(hub.category);
+  const nodeSource = {
+    lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(tags.category, 'mutable', before),
+  };
+  const plan: CompositionDraftPlan = {
+    blocks,
+    userInputs: userInputs(['user'], layout.participantCount),
+    masters: [
+      master({
+        master: 'hub-1', contract: 'Hub', entry: 'run', program: hub.program,
+        facts: {
+          contract: 'Hub', functionName: entryName('Hub', 'run'), kind: FrameKind.ROOT,
+          callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
+        },
+        frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: hub.address, value: 0n },
+        enteredBy: 'user', origin: 'user',
+        calls: [{ kind: FrameKind.CALL, callee: 'tags-1', target: tags.address, value: 0n, argumentPushes: pushes }],
+        segments: [[], []],
+      }),
+      master({
+        master: 'tags-1', contract: 'Tags', entry: 'remove', program: tags.program,
+        facts: {
+          contract: 'Tags', functionName: entryName('Tags', 'remove'), kind: FrameKind.CALL,
+          callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
+        },
+        frame: { kind: FrameKind.CALL, sender: hub.address, self: tags.address, value: 0n },
+        enteredBy: 'hub-1', origin: 'user', argumentPushes: pushes, segments: [[record]], dispatches: true,
+      }),
+    ],
+    inputs: {
+      'hub-1': { source: masterInput(hub) },
+      'tags-1': { source: masterInput(tags) },
+      validator: {
+        source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(hub.category, 'mutable') },
+      },
+      node: {
+        source: nodeSource,
+        output: { ...nodeSource, token: token(tags.category, 'mutable', after) },
+        // The entry covenant's write path: `<masterInputIndex> <flag 1>`.
+        unlockingBytecode: createUnlockingBytecode('p2sh32', redeem, [
+          encodeFunctionArgument(1n, 'bigint') as Uint8Array,
+          encodeFunctionArgument(BigInt(participant(layout, 'tags-1').index), 'bigint') as Uint8Array,
+        ]),
+      },
+      user: userInput(),
+    },
+    validator: { id: 'validator', covers: ['Tags'], settles: [], redeemScript: validator.redeem },
+  };
+  return composeAndDerive(plan, [artifacts.Hub!, artifacts.Tags!], [rootOf('Hub', 'run', 'hub-1')]);
+}
+
 describe('a framed delete a branch guards, called through a composition', () => {
   it('settles the delete: every contract input is accepted and the node carries the default', () => {
-    const { artifacts, contracts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Tags: TAGS_LABEL });
-    const hub = contracts.Hub!;
-    const tags = contracts.Tags!;
-    const redeem = scriptToBytecode(buildEntryNftCovenantScript(
-      tags.category, computeCollectionHash(artifacts.Tags!.stateLayout!.collections![0]!.signature),
-    ));
-    const entryLock = encodeLockingBytecodeP2sh32(hash256(redeem));
-    const blocks: CompositionDraftPlan['blocks'] = [
-      { contract: 'Hub', masters: ['hub-1'], validator: { id: 'validator', settles: [] }, state: [] },
-      { contract: 'Tags', masters: ['tags-1'], state: ['node'] },
-    ];
-    const layout = layoutWithFacets(blocks);
-    const nodeIndex = participant(layout, 'node').index;
-    const record: RecordEntry = { in: nodeIndex, out: nodeIndex, viewIn: BEFORE, viewOut: DELETED };
-    const pushes = [selectorOf(artifacts, 'Tags', 'remove'), YES, KEY];
-    const validator = validatorFor(hub.category);
-    const nodeSource = {
-      lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(tags.category, 'mutable', BEFORE),
-    };
-    const plan: CompositionDraftPlan = {
-      blocks,
-      userInputs: userInputs(['user'], layout.participantCount),
-      masters: [
-        master({
-          master: 'hub-1', contract: 'Hub', entry: 'run', program: hub.program,
-          facts: {
-            contract: 'Hub', functionName: entryName('Hub', 'run'), kind: FrameKind.ROOT,
-            callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
-          },
-          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: hub.address, value: 0n },
-          enteredBy: 'user', origin: 'user',
-          calls: [{ kind: FrameKind.CALL, callee: 'tags-1', target: tags.address, value: 0n, argumentPushes: pushes }],
-          segments: [[], []],
-        }),
-        master({
-          master: 'tags-1', contract: 'Tags', entry: 'remove', program: tags.program,
-          facts: {
-            contract: 'Tags', functionName: entryName('Tags', 'remove'), kind: FrameKind.CALL,
-            callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
-          },
-          frame: { kind: FrameKind.CALL, sender: hub.address, self: tags.address, value: 0n },
-          enteredBy: 'hub-1', origin: 'user', argumentPushes: pushes, segments: [[record]], dispatches: true,
-        }),
-      ],
-      inputs: {
-        'hub-1': { source: masterInput(hub) },
-        'tags-1': { source: masterInput(tags) },
-        validator: {
-          source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(hub.category, 'mutable') },
-        },
-        node: {
-          source: nodeSource,
-          output: { ...nodeSource, token: token(tags.category, 'mutable', DELETED) },
-          // The entry covenant's write path: `<masterInputIndex> <flag 1>`.
-          unlockingBytecode: createUnlockingBytecode('p2sh32', redeem, [
-            encodeFunctionArgument(1n, 'bigint') as Uint8Array,
-            encodeFunctionArgument(BigInt(participant(layout, 'tags-1').index), 'bigint') as Uint8Array,
-          ]),
-        },
-        user: userInput(),
-      },
-      validator: { id: 'validator', covers: ['Tags'], settles: [], redeemScript: validator.redeem },
-    };
-    const outcome = composeAndDerive(plan, [artifacts.Hub!, artifacts.Tags!], [rootOf('Hub', 'run', 'hub-1')]);
-    expect(outcome.verdicts.filter((verdict) => !verdict.accepted)
-      .map((verdict) => `${verdict.participant}: ${verdict.objection}`)).toStrictEqual([]);
-    expect(bytesToHex(outcome.transaction.outputs[nodeIndex]!.token!.nft!.commitment)).toBe(bytesToHex(DELETED));
+    const outcome = composeRemove(BEFORE, DELETED);
+    expect(refusalsOf(outcome)).toStrictEqual([]);
+    expect(nodeOutput(outcome)).toBe(bytesToHex(DELETED));
+  });
+
+  it('settles the delete of a key the list does not hold: the head that brackets it is kept', () => {
+    const outcome = composeRemove(head(NEXT), head(NEXT));
+    expect(refusalsOf(outcome)).toStrictEqual([]);
+    expect(nodeOutput(outcome)).toBe(bytesToHex(head(NEXT)));
   });
 });
 
@@ -437,5 +453,44 @@ describe('a framed delete a branch guards, in one batch beside a write of its co
     const inserted = created(lock(), 4, node(SLOT_MID, SLOT_HIGH, CLEARED));
     expect(edits(YES, { a: [write()], k: [low, inserted] })).toBe(false);
     expect(edits(NO, { a: [write()], k: [low, inserted] })).toBe(false);
+  });
+});
+
+/** The master's verdict on `remove(MID, c)`, its group's records as declared: the list holds LOW and HIGH. */
+const removes = (c: Uint8Array, records: readonly PlacedRecord[]): boolean =>
+  evaluateMasterSpend(TAGS, { args: [c, MID], records }).accepted;
+
+/** LOW's node, linked to `next`. */
+const lowNode = (next: Uint8Array, tail: Uint8Array = OLD): Uint8Array => node(SLOT_LOW, next, tail);
+
+describe('a framed delete a branch guards, of a key the list does not hold', () => {
+  it('settles the delete and the skip with the kept node that brackets the key', () => {
+    // LOW before HIGH, LOW the tail, and the head before HIGH: each is the node the key would follow.
+    for (const bracket of [lowNode(SLOT_HIGH), lowNode(ZERO), head(SLOT_HIGH)]) {
+      expect(removes(YES, [spent(LOCK, FIXED, bracket)])).toBe(true);
+      expect(removes(NO, [spent(LOCK, FIXED, bracket)])).toBe(true);
+    }
+  });
+
+  it('refuses a kept node that does not bracket the key', () => {
+    // HIGH's node sits past the key; the head, with LOW between it and the key, links short of it.
+    for (const other of [node(SLOT_HIGH, ZERO, OLD), head(SLOT_LOW)]) {
+      expect(removes(YES, [spent(LOCK, FIXED, other)])).toBe(false);
+      expect(removes(NO, [spent(LOCK, FIXED, other)])).toBe(false);
+    }
+  });
+
+  it('refuses the node that brackets the key written back with its successor dropped or a value changed', () => {
+    for (const after of [lowNode(ZERO), lowNode(SLOT_HIGH, CLEARED)]) {
+      expect(removes(YES, [spent(LOCK, FIXED, lowNode(SLOT_HIGH), after)])).toBe(false);
+      expect(removes(NO, [spent(LOCK, FIXED, lowNode(SLOT_HIGH), after)])).toBe(false);
+    }
+  });
+
+  it('refuses the key\'s group declared as an insert: the bracketing node relinked to a created node', () => {
+    const relinked = spent(LOCK, FIXED, lowNode(SLOT_HIGH), lowNode(SLOT_MID));
+    const inserted = created(LOCK, FIXED + 1, node(SLOT_MID, SLOT_HIGH, CLEARED));
+    expect(removes(YES, [relinked, inserted])).toBe(false);
+    expect(removes(NO, [relinked, inserted])).toBe(false);
   });
 });

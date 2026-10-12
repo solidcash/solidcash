@@ -19,6 +19,7 @@ import {
 } from './delegate-event-jobevent-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { legacyGroupLooksLikePublishJobEvent } from './legacy-planning-heuristics.js';
+import { isScidIdentityCommitment } from './logical-identity.js';
 import {
   chunkableWriterEventOutputIndex,
   isCreatedJobEventCommitment,
@@ -39,7 +40,7 @@ import {
   scaledEmitOutputIndex,
   type ScaledPreserveEmitHost,
 } from './stb-scaled-preserve-emit.js';
-import { selectCompilerWriterEvent } from './value-chunk-base-writer-select.js';
+import { lowLevelCallStateOwnerCategory, selectCompilerWriterEvent } from './value-chunk-base-writer-select.js';
 import {
   isPersistedCompatibilityValueChunkReady,
   persistedJobEventsWidth,
@@ -47,6 +48,7 @@ import {
 import { placeChunkableWriterEventOutput } from './writer-event-delegate-layout.js';
 
 export interface NestedEmitEventsHost extends ScaledPreserveEmitHost {
+  readonly categoryId: string;
   readonly pendingValueChunkPredecessors: UnlockableUtxo[];
   forcedChunkableValueWriteBandStart?: number;
   detachedEventReceipts: Array<{ eventSignature: string; commitment: string }>;
@@ -119,8 +121,15 @@ export function reassertNestedEmitEvents(
     : scaledEmitOutputIndex(host, builder.outputs.length)
       ?? chunkableWriterEventOutputIndex(impl, eventOffset);
   const persistEmitEarly = shouldRematerializePersistUpdateForHost(host);
-  const categoryId = eventSelection.status === 'exact'
+  const selectedCategory = eventSelection.status === 'exact'
     ? eventSelection.categoryId : chunkableValueWriteCategory(host);
+  // A direct delegate runs on its state owner's records, so its event (at impl + offset) carries the owner's
+  // category and lock; the implementation's brand fails the delegate's event check and DX-8 conservation.
+  const delegateOwnerCategory = llcGroup?.callMode === 'delegatecall' && llcGroup.compilerRoute === undefined
+    && selectedCategory === llcGroup.categoryId
+    ? lowLevelCallStateOwnerCategory(llcIndex, llcGroup, host.externalCallUtxoGroups, host.categoryId)
+    : undefined;
+  const categoryId = delegateOwnerCategory ?? selectedCategory;
   const emitInfo = eventSelection.status === 'exact'
     ? { eventSignature: eventSelection.eventSignature }
     : publishFn?.emits?.[0];
@@ -199,9 +208,10 @@ export function reassertNestedEmitEvents(
   const emitSignature = emitInfo?.eventSignature
     ?? (legacyEventFallback ? 'JobEvent(uint256,JobEventData)' : undefined);
   if (!emitSignature) return;
-  const lockingBytecode = derived?.lockingBytecode ?? scriptToLockingBytecode(
-    buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash(emitSignature)), addressType,
-  );
+  const lockingBytecode = (delegateOwnerCategory === undefined ? derived?.lockingBytecode : undefined)
+    ?? scriptToLockingBytecode(
+      buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash(emitSignature)), addressType,
+    );
   let constructedCommit: string | undefined;
   if (legacyEventFallback) {
     const visibleArgs = proxyGroup?.logicalFunctionArgs ?? proxyGroup?.functionArgs
@@ -230,7 +240,13 @@ export function reassertNestedEmitEvents(
       ? encodeJobEventEmitCommitment(visibleArgs![0], emitEvent, structs)
       : undefined;
   }
-  const eventCommitment = constructedCommit ?? derived?.commitment;
+  // A delegate's materialized owner event outranks a cached derivation, as in reassertDelegateImplEvents.
+  const occupant = builder.outputs[dest];
+  const occupantCommitment = String(occupant?.token?.nft?.commitment ?? '');
+  const ownerEventCommitment = delegateOwnerCategory !== undefined && occupant?.token?.category === categoryId
+    && occupant.token.nft?.capability === 'none' && !/^(00)*$/.test(occupantCommitment)
+    && !isScidIdentityCommitment(occupantCommitment) ? occupantCommitment : undefined;
+  const eventCommitment = constructedCommit ?? ownerEventCommitment ?? derived?.commitment;
   if (!legacyEventFallback && !eventCommitment) return;
   const persistEmit = shouldRematerializePersistUpdateForHost(host);
   // Only descriptor-free legacy plans infer detached receipts from the historical JobEvent wire.
@@ -305,7 +321,9 @@ export function reassertNestedEmitEvents(
       }
     }
   }
-  const placed = placeChunkableWriterEventOutput(builder.outputs, dest, {
+  // Never fabricate an empty event in a delegate owner's frame: the derivation learns it there.
+  const ownerFrameUnlearned = delegateOwnerCategory !== undefined && !eventCommitment;
+  const placed = !ownerFrameUnlearned && placeChunkableWriterEventOutput(builder.outputs, dest, {
     to: lockingBytecode,
     amount: 1200n,
     token: {

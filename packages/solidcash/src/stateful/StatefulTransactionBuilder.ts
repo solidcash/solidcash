@@ -1532,6 +1532,7 @@ export class StatefulTransactionBuilder {
   private _nestedEmitEventsHost(): NestedEmitEventsHost {
     return {
       ...this._scaledPreserveEmitHost(),
+      categoryId: this.categoryId,
       pendingValueChunkPredecessors: this.pendingValueChunkPredecessors,
       forcedChunkableValueWriteBandStart: this.forcedChunkableValueWriteBandStart,
       detachedEventReceipts: this.detachedEventReceipts,

@@ -381,6 +381,7 @@ import {
 } from './sc-materialize-create-builder-low-level-stateful-call.js';
 export { publishPreparedKernelDelegateOwnerFrame };
 import { runCreateBuilderDerivePass as runCreateBuilderDerivePassImpl } from './sc-run-create-builder-derive-pass.js';
+import { settlesSortedTargetsByActivity } from './conditional-sorted-activity.js';
 import {
   materializeCreateBuilderReturnEmit as materializeCreateBuilderReturnEmitImpl,
 } from './sc-materialize-create-builder-return-emit.js';
@@ -8577,14 +8578,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         })));
       }
 
-      const batchGuardSlot = entryAbiFunction?.blockLayout?.slots.find(
-        (slot) => slot.kind === 'entry' && slot.softDelete,
-      )?.slotIndex;
-      const batchGuardEntry = batchGuardSlot === undefined ? undefined
-        : entryNfts.find((entry) => entry.slotIndex === batchGuardSlot);
-      const batchNoOp = !!(batchGuardEntry?.utxo?.token?.nft?.commitment && batchGuardSlot !== undefined
-        && binToHex(decodeEntryCommitment(hexToBin(batchGuardEntry.utxo.token.nft.commitment)).slot)
-          !== binToHex(batchTargetSlots.get(batchGuardSlot)!));
+      // A conditional delete whose key is absent spends the key's predecessor at its slot and keeps it. An
+      // activity-settled body (DS-6) plans no transition for that delete's own batch; any other body's guard skips
+      // the whole batch verifier there, so every batch takes the no-op witnesses.
+      const softDeleteSlots = (entryAbiFunction?.blockLayout?.slots ?? [])
+        .filter((slot) => slot.kind === 'entry' && slot.softDelete).map((slot) => slot.slotIndex);
+      const absentSoftDelete = (slotIndex: number | undefined): boolean => {
+        const commitment = slotIndex === undefined ? undefined
+          : entryNfts.find((entry) => entry.slotIndex === slotIndex)?.utxo?.token?.nft?.commitment;
+        return !!commitment && binToHex(decodeEntryCommitment(hexToBin(commitment)).slot)
+          !== binToHex(batchTargetSlots.get(slotIndex!)!);
+      };
+      const settlesByActivity = settlesSortedTargetsByActivity(entryAbiFunction);
+      const batchNoOp = !settlesByActivity && absentSoftDelete(softDeleteSlots[0]);
 
       // Atomic fixed-write batches: collapse logical accesses that share an original predecessor onto one physical
       // proof input. The block slot of the first logical owner carries that UTXO; later aliases receive funders and
@@ -8630,7 +8636,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (batch.linear && inactiveBatchSlots.size > 0) {
           throw new Error(`Linear vmap batch '${batch.collection}' cannot contain inactive message-bus slots`);
         }
-        if (batchNoOp) {
+        if (batchNoOp || (settlesByActivity && batch.slotIndices.some((slotIndex) => (
+          softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))))) {
           const noOpRows = batch.linear ? batch.slotIndices.map((slotIndex) => ({
             slotIndex, slot: batchTargetSlots.get(slotIndex)!, next: new Uint8Array(32),
           })).sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1) : [];

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  bigIntToVmNumber, binToHex, cashAddressToLockingBytecode, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, cashAddressToLockingBytecode, decodeAuthenticationInstructions, decodeTransactionUnsafe,
+  encodeAuthenticationInstructions, encodeDataPush, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
+import type { AuthenticationInstruction } from '@bitauth/libauth';
+import type { AbiFunction } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
@@ -45,6 +48,7 @@ const randomTxid = (): string => (0x8000 + Math.floor(Math.random() * 0x7fff)).t
 
 interface Deployed {
   provider: Provider; sc: StatefulContract<any>; pinned: Contract; cat: string; deleteSlot: (fn: string) => number;
+  abi: (fn: string) => AbiFunction;
 }
 
 async function deploy(): Promise<Deployed> {
@@ -59,9 +63,10 @@ async function deploy(): Promise<Deployed> {
   await sc.getFunction('set')(7n, 70n).send();
   await sc.getFunction('set')(8n, 80n).send();
   await sc.getFunction('setOwner')(5n, 50n).send();
-  const deleteSlot = (fn: string): number => artifact.abi.find((entry) => entry.name === fn)!.blockLayout!.slots
+  const abi = (fn: string): AbiFunction => artifact.abi.find((entry) => entry.name === fn)!;
+  const deleteSlot = (fn: string): number => abi(fn).blockLayout!.slots
     .find((slot) => slot.kind === 'entry' && slot.softDelete)!.offset;
-  return { provider, sc, pinned, cat: categoryId, deleteSlot };
+  return { provider, sc, pinned, cat: categoryId, deleteSlot, abi };
 }
 
 /** The collection's own nodes, the head included. */
@@ -105,6 +110,40 @@ async function plainAtDeleteSlot({ provider, pinned, cat }: Deployed, hex: strin
       commitment: encodeEntryCommitment(keyToSlot(bigIntToVmNumber(FORGED_KEY)), new Uint8Array(32),
         bigIntToVmNumber(1234n)) } },
   } as any;
+  return binToHex(encodeTransaction(tx as Tx));
+}
+
+/**
+ * The honest spend of a delete that did not run, with the delete's proof witness naming the input `at` slots past
+ * the master and the delete slot's output recreated with the commitment of the coin that input spends (at `address`).
+ */
+async function keptFromInput(
+  { provider, abi }: Deployed, hex: string, fn: string, at: number, address: string,
+): Promise<string> {
+  const { inputs, blockLayout } = abi(fn);
+  const slot = blockLayout!.slots.find((entry) => entry.kind === 'entry' && entry.softDelete)!;
+  const tx = decodeTransactionUnsafe(hexToBin(hex));
+  // The master pushes an optional selector, then its arguments last-first, then its redeem script.
+  const pushes = decodeAuthenticationInstructions(tx.inputs[0].unlockingBytecode) as AuthenticationInstruction[];
+  const lead = pushes.length - inputs.length - 1;
+  expect([0, 1]).toContain(lead);
+  const proof = lead + inputs.length - 1
+    - inputs.findIndex((input) => input.name === `__internal__vmapBatchProof_${slot.slotIndex}`);
+  const push = (value: number): Uint8Array => encodeDataPush(bigIntToVmNumber(BigInt(value)));
+  expect(binToHex(encodeAuthenticationInstructions([pushes[proof]]))).toBe(binToHex(push(slot.offset)));
+  pushes.splice(proof, 1, ...decodeAuthenticationInstructions(push(at)) as AuthenticationInstruction[]);
+  tx.inputs[0] = { ...tx.inputs[0], unlockingBytecode: encodeAuthenticationInstructions(pushes) };
+  const spent = tx.inputs[at];
+  const coin = (await provider.getUtxos(address)).find((utxo) => (
+    utxo.txid === binToHex(spent.outpointTransactionHash) && utxo.vout === spent.outpointIndex));
+  expect(coin?.token?.nft?.commitment).toBeTruthy();
+  const copied = hexToBin(coin!.token!.nft!.commitment);
+  const node = tx.outputs[slot.offset];
+  expect(binToHex(node.token!.nft!.commitment)).not.toBe(binToHex(copied));
+  tx.outputs[slot.offset] = { ...node, token: { ...node.token!, nft: { ...node.token!.nft!, commitment: copied } } };
+  // A longer copied commitment must not drop the fee under the relay floor, which is checked before any script.
+  const change = tx.outputs.map((output, index) => (output.token ? -1 : index)).filter((index) => index >= 0).pop()!;
+  tx.outputs[change] = { ...tx.outputs[change], valueSatoshis: tx.outputs[change].valueSatoshis - 1000n };
   return binToHex(encodeTransaction(tx as Tx));
 }
 
@@ -170,4 +209,19 @@ describe('a conditional sorted delete cannot switch off the batch transition', (
       await expect(sc.getFunction('checkOwner')(8n, 90n).send()).resolves.toBeDefined();
     }, 300_000,
   );
+
+  it('refuses a kept node copied from the input its delete proof witness names', async () => {
+    const deployed = await deploy();
+    const { provider, sc, pinned, cat, abi } = deployed;
+    // The write arm runs and the delete arm does not, so the delete slot keeps m's node 8.
+    const hex = await capture(provider, () => sc.getFunction('moveOrDrop')(8n, 90n, 1n).send());
+    const other = abi('moveOrDrop').blockLayout!.slots.find((slot) => slot.kind === 'entry' && !slot.softDelete)!;
+    const forged = await keptFromInput(
+      deployed, hex, 'moveOrDrop', other.offset, getEntryNftAddress(pinned, cat, 'owners'),
+    );
+    expectScriptRejection(await outcomeOf(provider, forged), 0);
+    await expect(provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');
+    await expect(sc.getFunction('check')(8n, 80n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('checkOwner')(8n, 90n).send()).resolves.toBeDefined();
+  }, 300_000);
 });

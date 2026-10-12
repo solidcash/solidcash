@@ -12346,7 +12346,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.preAllocatedEntryWrites.has(slotIndex) || this.pendingEntryWrites.has(slotIndex)) return;
     const keyStackName = `__entry_key_enc_${slotIndex}`;
     const valueStackName = `__entry_value_enc_${slotIndex}`;
-    this.emitEntryInputIndex(slotIndex, locationData, 0);
+    // An activity-settled delete keeps the node at its own fixed input: its batch proof witness is bound to nothing.
+    const fn = this.currentFunction;
+    if (fn && this.settlesSortedTargetsByActivity(fn)
+      && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))) {
+      this.emitFixedEntryInputIndex(slotIndex, locationData);
+    } else this.emitEntryInputIndex(slotIndex, locationData, 0);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
     this.pushToStack(keyStackName);
     this.emit(encodeInt(0n), locationData);

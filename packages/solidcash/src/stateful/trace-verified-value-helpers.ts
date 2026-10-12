@@ -193,6 +193,12 @@ export function parseNftCapability(catBytes: Uint8Array): 'none' | 'mutable' | '
   throw new Error(`Unknown NFT capability byte: 0x${catBytes[32].toString(16).padStart(2, '0')}`);
 }
 
+/** Whether `value` can be an OP_OUTPUTTOKENCATEGORY result: empty, a category, or a category plus capability 01/02. */
+function isTokenCategoryResult(value: Uint8Array): boolean {
+  if (value.length === 0 || value.length === 32) return true;
+  return value.length === 33 && (value[32] === 0x01 || value[32] === 0x02);
+}
+
 /**
  * Extract all expected values from `<expected> <idx> opcode OP_EQUALVERIFY` patterns.
  * Returns all stack[-2] values found for the given opcode + EQUALVERIFY combo.
@@ -274,6 +280,9 @@ export function extractVerifiedValuesFromTrace(
             : binToHex(top) === actualHex ? below
               : Uint8Array.from(stack[stack.length - (expectedOperandOnTop ? 1 : 2)])
           : Uint8Array.from(stack[stack.length - (expectedOperandOnTop ? 1 : 2)]);
+        // A sparse trace hides the opcodes between an observation and the next EQUALVERIFY, so a category read consumed
+        // inside a closed branch can pair with an unrelated equality (e.g. a P2SH32 lock check): no category, no pin.
+        if (targetOpcode === Op.OP_OUTPUTTOKENCATEGORY && !isTokenCategoryResult(value)) continue;
         if (targetOutputIndex >= 0) {
           // Most loop-derived values use "last write wins". Some disjoint covenant families intentionally
           // inspect the same speculative output index while their regions are converging; their caller can retain

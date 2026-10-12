@@ -15398,6 +15398,7 @@ function compileResolvedAst(
   if (needsMsgSigContext) {
     ast = ast.accept(new LowerInternalMsgSigContext(
       mergedCompilerOptions.composition === 'framed', mergedCompilerOptions.evmCompat === true,
+      mergedCompilerOptions.messageBus !== true,
     )) as Ast;
   }
 

@@ -744,7 +744,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (node.type.elementType instanceof StructType) {
         // Validate each field of the struct
         for (const field of node.type.elementType.fields) {
-          if (!isValidStateType(field.type)) {
+          if (!isValidStateType(field.type, new Set(), true)) {
             throw new UnsupportedStructFieldTypeError(node, field.type);
           }
         }
@@ -766,7 +766,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       const innerValue = node.innermostValueType;
       if (innerValue instanceof StructType) {
         for (const field of innerValue.fields) {
-          if (!isValidStateType(field.type)) {
+          if (!isValidStateType(field.type, new Set(), true)) {
             throw new UnsupportedStructFieldTypeError(node, field.type);
           }
         }
@@ -993,7 +993,7 @@ export default class TypeCheckTraversal extends AstTraversal {
           continue;
         }
         if (field.type instanceof ArrayType && field.type.elementType instanceof MappingType) continue;
-        if (!isValidStateType(field.type)) {
+        if (!isValidStateType(field.type, new Set(), true)) {
           throw new UnsupportedStructFieldTypeError(node, field.type);
         }
       }
@@ -3938,10 +3938,11 @@ const inferPaddedBytesType = (node: FunctionCallNode): Type => {
   return new BytesType();
 };
 
-// allowExternalFnPtr: set ONLY for a bare top-level state variable. A self-ref external pointer (`this.f`) is a
-// functionId at runtime (identical to an internal pointer), so a top-level `function(..) external` state var is
-// sound; but a nested one (struct field / array element / mapping value) is deliberately NOT relaxed here (the
-// recursive calls do not propagate the flag) - that shape is untested and its rejection is codified.
+// allowExternalFnPtr: set ONLY for a bare top-level state variable or a struct field. A self-ref external pointer
+// (`this.f`) is a functionId at runtime (identical to an internal pointer), so such a `function(..) external` slot
+// is sound: a struct field still holding one after the fn-ptr lowering passes is a self-ref field (foreign values
+// become interface-typed or blob fields). An array element / mapping value is NOT relaxed (the flag does not
+// propagate through them).
 function isValidStateType(type: Type, seen: Set<string> = new Set(), allowExternalFnPtr = false): boolean {
   if (type === PrimitiveType.BIGINT || type === PrimitiveType.BOOL) return true;
   if (type === PrimitiveType.STRING) return true;
@@ -3965,7 +3966,7 @@ function isValidStateType(type: Type, seen: Set<string> = new Set(), allowExtern
     // back-edge to an already-visited struct is valid; guard against the cycle to avoid infinite recursion.
     if (seen.has(type.name)) return true;
     seen.add(type.name);
-    return type.fields.every((f) => isValidStateType(f.type, seen));
+    return type.fields.every((f) => isValidStateType(f.type, seen, true));
   }
   if (type instanceof ArrayType) return isValidStateType(type.elementType, seen);
   return false;

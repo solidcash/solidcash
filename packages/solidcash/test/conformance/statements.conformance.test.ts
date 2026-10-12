@@ -3,7 +3,8 @@
 // loops, branches and early returns, memory arrays and structs, and bytes/string values.
 import { describe, it } from 'vitest';
 import {
-  assertConformant, assertDeployedStatefulConformant, assertStatefulConformant, fnCase, type ConformanceCase,
+  assertConformant, assertDeployedStatefulConformant, assertStatefulConformant, assertStatefulReverts, fnCase,
+  type ConformanceCase,
 } from './harness.js';
 
 // A loop body outruns the operation budget a small script's own length buys; its deployer adds a density reserve.
@@ -30,6 +31,17 @@ const stateful = (label: string, decls: string, body: string, result: string): P
 // The same shape deployed on both VMs, so state-variable initializers run before `f`.
 const deployed = (label: string, decls: string, body: string, result: string): Promise<void> =>
   assertDeployedStatefulConformant(statefulCase(label, decls, body, result));
+
+// The same state-writing body, which must revert on both VMs.
+const statefulReverts = (label: string, decls: string, body: string): Promise<void> => assertStatefulReverts({
+  solidity: '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n'
+    + `contract C {\n  ${decls}\n  function f() public {\n    ${body}\n  }\n}\n`,
+  scash: `contract Conf() {\n  ${decls}\n  function f() {\n    ${body}\n  }\n}\n`,
+  evmFn: 'f',
+  bchFn: 'f',
+  args: [],
+  label,
+});
 
 describe('statements: control flow', () => {
   it('for loop accumulates', () => run('for', 'uint n', 'uint',
@@ -154,4 +166,25 @@ describe('statements: integer edges', () => {
     'return a << 255;', [3n]));
   it('bitwise not of uint8', () => run('not-uint8', 'uint8 a', 'uint8', 'return ~a;', [200n]));
   it('signed right shift rounds toward negative infinity', () => run('sar', 'int a', 'int', 'return a >> 1;', [-7n]));
+});
+
+// solc evaluates a require's error arguments, and its string message, after the condition even when it holds.
+const FLIP = 'error E(uint256 v); uint counter;'
+  + ' function even() private view returns (bool) { return counter % 2 == 0; }'
+  + ' function inc() private returns (uint256) { counter += 1; return counter; }'
+  + ' function flip() private { require(even(), E(inc())); }';
+
+describe('statements: require message evaluation', () => {
+  it('an error argument runs when the condition holds', () => stateful('require-error-arg-effect',
+    FLIP, 'flip();', 'counter'));
+  it('the second flip fails on the count the first one left', () => statefulReverts('require-error-arg-flip-twice',
+    FLIP, 'flip(); flip(); require(counter < 100);'));
+  it('an error argument that only reads keeps the plain guard', () => stateful('require-error-arg-view',
+    'error E(uint256 v); uint counter; function peek() private view returns (uint256) { return counter; }'
+    + ' function check() private view { require(counter % 2 == 0, E(peek() + 1)); }',
+    'check(); counter += 2; check();', 'counter'));
+  it('a string message call runs when the condition holds', () => stateful('require-message-call-effect',
+    'uint counter; function note() private returns (string memory) { counter += 10; return "odd"; }'
+    + ' function guard() private { require(counter % 2 == 0, note()); }',
+    'guard();', 'counter'));
 });

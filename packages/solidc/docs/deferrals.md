@@ -1900,3 +1900,26 @@ the co-spend set from the actual argument length.
 
 **Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
 computes off-chain; the refusal above still fires when the caller declines to fund the chain.
+
+## View and static calls do not pin the callee's state in direct composition (2026-10-12)
+
+**What:** in Solidity a call through a `view`/`pure` interface declaration (and any `staticcall`) runs as
+STATICCALL, so the callee cannot change state. In the DIRECT composition a plain `I(a).m()` runs in the REGULAR
+mode whatever `m`'s declared mutability (modes come only from explicit spellings: `I(a).m.staticcall()`,
+low-level `staticcall`). Even the explicit STATICCALL check (`emitStaticCallCommitmentPreservation`) pins only the
+callee's master commitment plus `requiredDataNftIndices`, which come from the caller's declared type; for a
+Solidity interface with no state declarations that list is empty, and a state write never changes the master
+commitment, so a "static" call can still change the callee's data NFTs and mapping entries. The message bus marks
+only explicit `.staticcall` edges read-only; the framed composition already routes view/pure interface calls to
+a static frame and its validator (V10) rejects any record change below it.
+
+**Proposed design (direct composition only):** an unpublished `readOnlyDeclared` slot flag for calls through a
+view/pure declaration (no explicit mode; not raw, opaque, fn-ptr or self), kept out of repeated-address batching.
+At the call's verification hook, pin the master commitment and scan the whole transaction for the callee's mutable
+NFTs (category + 0x01): every such input i has an output i with the same category and commitment, and every such
+output j has j below the input count with a matching input (no new entries). Layout-independent, about 45 bytes
+per view call, non-view calls byte-identical, no SDK change. Gaps: nested calls of the callee do not inherit
+read-only; satoshi and fungible-token movements of the callee are not pinned without value/amount checks.
+
+**Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions; it needs a
+decision, then an adversarial review like the other covenant changes.

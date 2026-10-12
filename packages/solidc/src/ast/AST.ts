@@ -1363,6 +1363,8 @@ export class TimeOpNode extends StatementNode {
 
 export class RequireNode extends StatementNode {
   errorDefinition?: ErrorDefinitionNode;
+  // A dynamic string message that may write state. Parse-time only: LowerRequireMessageEffects consumes it.
+  messageExpression?: ExpressionNode;
 
   constructor(
     public expression: ExpressionNode,
@@ -2398,9 +2400,9 @@ export class DecimalLiteralNode extends LiteralNode<string> {
 }
 
 export class StringLiteralNode extends LiteralNode<string> {
-  // Exact byte spelling of a Solidity-compatible ordinary string literal. `\xNN` escapes are raw bytes, so this
-  // can differ from UTF-8 encoding `value` (e.g. "\xff"). Type checking uses it for bytes destinations and to
-  // reject malformed UTF-8 only when the destination is actually string.
+  // Exact bytes of a Solidity-compatible string or unicode literal, `\xNN` escapes as raw bytes. `value` is their
+  // UTF-8 reading when they are valid UTF-8; otherwise (e.g. "\xff") they differ, so byte consumers read this. Type
+  // checking uses it for bytes destinations and to reject malformed UTF-8 only when the destination is string.
   solidityBytes?: Uint8Array;
   solidityInvalidUtf8 = false;
 

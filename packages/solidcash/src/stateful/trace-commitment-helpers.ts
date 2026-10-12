@@ -32,7 +32,9 @@ import {
 /**
  * A program-phase start: unlocking, locking or redeem bytecode at ip 0, before any OP_DEFINE. An OP_INVOKE body's
  * ip-0 step is not one: in sparse/reduced traces it is an observed opcode opening a helper (an outlined
- * OP_EQUALVERIFY), and slicing there drops the caller's OP_OUTPUTTOKENCOMMITMENT.
+ * OP_EQUALVERIFY), and slicing there drops the caller's OP_OUTPUTTOKENCOMMITMENT. functionCount is exact (every phase
+ * starts with an empty function table) and, unlike the invoke frames, survives the trace projections. A sparse trace
+ * seldom records a phase start, so it is scanned whole.
  */
 function isProgramPhaseStart(state: AuthenticationProgramStateCommon): boolean {
   return state.ip === 0 && !(state.functionCount > 0);

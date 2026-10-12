@@ -46966,8 +46966,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot: the direct
    * epilogue or the framed batch transition binds the node where it stays false. Loop, alias and invoked writes get
-   * none, nor does a direct multi-slot batch's target, bar one sharing a guarded batch with a delete, or a framed one
-   * the body makes wherever it reaches it.
+   * none, nor does a direct multi-slot batch's target, bar a write (alias or not) sharing a guarded batch with a
+   * delete, or a framed one the body makes wherever it reaches it.
    */
   private allocateConditionalSortedWriteFlags(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
@@ -46986,8 +46986,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // An invoked subroutine cannot set this frame's flag.
       if (invokedWrites.has(slotIndex)) continue;
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
-      // Alias writes carry their own key-inequality gate; a framed master's swap-remove write is a target as any.
-      if ((info.aliasCondDeleteSlot !== undefined && !this.framedMaster)
+      // Alias writes carry their own key-inequality gate; a framed master's swap-remove write is a target as any. A
+      // guarded batch's alias write may not run where its transition does, which pins nothing at its slot (DS-6).
+      if ((info.aliasCondDeleteSlot !== undefined && !this.framedMaster && !guardedWrites.has(slotIndex))
         || (info.runtimeAliasPriorSlots?.length ?? 0) > 0) continue;
       if (this.collectionDefinitions.find((c) => c.name === info.collection)?.sorted !== true) continue;
       const inSingleSlotBatch = node.sortedBatchInfo?.some(

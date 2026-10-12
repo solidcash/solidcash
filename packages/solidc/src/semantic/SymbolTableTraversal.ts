@@ -3981,6 +3981,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const ownsCollectionTopology = (node.modifiers.includes(FunctionModifier.DELEGATE)
           && fixedSortedWriteCount <= 1)
           || (node.name.startsWith('__message_bus_') && !node.messageBusRoute);
+        if (!ownsCollectionTopology) {
+          this.assignComposeAliasPriors(node, ordered, batchByCollection, loopWrittenCollections);
+        }
         node.sortedBatchInfo = ownsCollectionTopology ? undefined : [...batchByCollection]
           .filter(([collection]) => !loopWrittenCollections.has(collection)
             && (fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection)))
@@ -12401,6 +12404,75 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!(len instanceof UnaryOpNode) || len.operator !== UnaryOperator.SIZE) return undefined;
     if (!(len.expression instanceof StateAccessNode) || len.expression.name !== arrName) return undefined;
     return arrName;
+  }
+
+  /**
+   * Direct-convention compose-on-alias. Fixed batch writes of one sorted collection whose keys are not distinct
+   * literals can name one entry at runtime (`bal[msg.sender]` and `bal[this.owner]`). Each later write lists the
+   * earlier ones it may meet, so the covenant composes them in source order instead of refusing the shared entry.
+   * Only plain whole-value writes qualify, each one statement of the body itself, written once and before any
+   * return, with every read of the collection a whole-value read.
+   */
+  private assignComposeAliasPriors(
+    node: FunctionDefinitionNode, ordered: EntryAccessInfo[], batchByCollection: ReadonlyMap<string, number[]>,
+    loopWrittenCollections: ReadonlySet<string>,
+  ): void {
+    if (node.messageBusRoute || node.name.startsWith('__message_bus_') || this.insideConstructor
+      || node.modifiers.includes(FunctionModifier.DELEGATE) || this.compilerOptions.composition === 'framed'
+      || !(node.body instanceof BlockNode)) return;
+    const statements = node.body.statements ?? [];
+    const bySlotKey = new Map(ordered.map((info) => [`${info.collection}:${info.keyParams.join(':')}`, info]));
+    const slotOf = (collection: string, keys: ExpressionNode[]): number | undefined =>
+      bySlotKey.get(`${collection}:${this.getMappingKeyDescriptors(keys).keyParams.join(':')}`)?.slotIndex;
+    const literalKind = (canonical: string): string | undefined => /^(const|lit):/.exec(canonical)?.[1];
+    const distinct = (left: EntryAccessInfo, right: EntryAccessInfo): boolean => left.keySources.some((source, i) => {
+      const other = right.keySources[i]?.canonical;
+      return other !== undefined && literalKind(source.canonical) !== undefined
+        && literalKind(source.canonical) === literalKind(other) && source.canonical !== other;
+    });
+    for (const [collection, slots] of batchByCollection) {
+      const coll = this.collectionMap.get(collection);
+      if (slots.length < 2 || loopWrittenCollections.has(collection) || !coll?.sorted
+        || isChunkableValueType(coll.innermostValueType) || coll.innermostValueType instanceof StructType
+        || coll.innermostValueType instanceof ArrayType) continue;
+      let eligible = true;
+      let lastWrite = -1;
+      const writes = new Map<number, number>();
+      walkInvocationAst(node.body, (candidate) => {
+        if ((candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode
+          || candidate instanceof MappingDeleteNode) && candidate.collection?.name === collection) {
+          const index = statements.indexOf(candidate);
+          const slot = slotOf(collection, candidate.keys);
+          if (!(candidate instanceof MappingAssignNode) || index < 0 || slot === undefined || !slots.includes(slot)
+            || candidate.arrayIndex !== undefined || candidate.arrayPush === true || candidate.arrayPop === true) {
+            eligible = false;
+            return;
+          }
+          writes.set(slot, (writes.get(slot) ?? 0) + 1);
+          lastWrite = Math.max(lastWrite, index);
+        } else if (candidate instanceof MappingAccessNode && candidate.collection?.name === collection
+          && (candidate.arrayIndex !== undefined || candidate.isTokenContainerAccess === true)) {
+          eligible = false;
+        }
+      });
+      if (!eligible || slots.some((slot) => writes.get(slot) !== 1)) continue;
+      if (this.containsReturn(statements.slice(0, lastWrite))) continue;
+      const infos = slots.map((slot) => ordered.find((info) => info.slotIndex === slot)!);
+      for (const info of infos) {
+        const priors = infos.filter((prior) => prior.slotIndex < info.slotIndex && !distinct(prior, info))
+          .map((prior) => prior.slotIndex);
+        if (priors.length > 0) info.composeAliasPriorSlots = priors;
+      }
+    }
+  }
+
+  /** True when any of the statements holds a return. */
+  private containsReturn(statements: readonly Node[]): boolean {
+    return statements.some((statement) => {
+      let found = false;
+      walkInvocationAst(statement, (candidate) => { if (candidate instanceof ReturnNode) found = true; });
+      return found;
+    });
   }
 
   // Mark each WRITE slot that is followed (in source order) by a DELETE of a DIFFERENT key on the SAME

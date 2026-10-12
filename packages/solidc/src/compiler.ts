@@ -261,6 +261,7 @@ import FoldConstantBoolBranches from './semantic/FoldConstantBoolBranches.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
+import lowerRequireMessageEffects from './semantic/LowerRequireMessageEffects.js';
 import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayoutSpecifiers.js';
@@ -3268,6 +3269,8 @@ function parseAndResolve(
       ...(ast.contract ? [ast.contract] : []), ...(ast.importedContracts ?? []), ...(ast.interfaceDefinitions ?? []),
     ]);
   }
+  // Before any lowering, with every file's declarations known: hoisted message effects lower like source statements.
+  lowerRequireMessageEffects(ast);
   profileLog('parseAndResolve', parseResolveStarted, {
     files: parseProfileTotals.files - filesBefore,
     sllFails: parseProfileTotals.sllFails - sllBefore,
@@ -15550,8 +15553,11 @@ function compileResolvedAst(
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache. A framed body keeps the
   // cache inside the segments its own accesses run in, so the upsert lands where the source writes the entry.
+  // Without the message bus no route clones a body after this pass, so a mapping the body composes stays uncached.
   if (needsLoop || needsCollectionJournal) {
-    ast = ast.accept(new CacheMappingEntryInLoop(false, mergedCompilerOptions.composition === 'framed')) as Ast;
+    ast = ast.accept(new CacheMappingEntryInLoop(
+      false, mergedCompilerOptions.composition === 'framed', !mergedCompilerOptions.messageBus,
+    )) as Ast;
   }
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
@@ -19551,7 +19557,9 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
-    singleAst = singleAst.accept(new CacheMappingEntryInLoop(false, compilerOptions.composition === 'framed')) as Ast;
+    singleAst = singleAst.accept(new CacheMappingEntryInLoop(
+      false, compilerOptions.composition === 'framed', !compilerOptions.messageBus,
+    )) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.messageBusKernel === true,
     )) as Ast;

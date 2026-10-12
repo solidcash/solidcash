@@ -955,8 +955,10 @@ describe('nested internal-only ABI parameter types', () => {
     const compat = { evmCompat: true };
     expect(() => compileString('contract C { struct S { function() internal[2] callbacks; }'
       + ' function f(S memory value) public {} }', compat)).toThrow(/Function types cannot be used/);
+    // A mapping-holding struct is refused outside storage before the ABI check (solc TypeError 4061).
     expect(() => compileString('contract C { struct S { mapping(uint => uint) values; }'
-      + ' function f(S memory value) public {} }', compat)).toThrow(/Function types cannot be used/);
+      + ' function f(S memory value) public {} }', compat))
+      .toThrow(/Function types cannot be used|mapping-containing parameters must have 'storage' location/);
   });
 });
 

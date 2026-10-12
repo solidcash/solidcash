@@ -8534,6 +8534,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(entryAccessForSlot(entry.slotIndex)?.aliasCondDeleteSlot === undefined
             ? [] : [entryAccessForSlot(entry.slotIndex)!.aliasCondDeleteSlot!]),
           ...(entryAccessForSlot(entry.slotIndex)?.runtimeAliasPriorSlots ?? []),
+          ...(entryAccessForSlot(entry.slotIndex)?.composeAliasPriorSlots ?? []),
         ],
         target: batchTargetSlots.has(entry.slotIndex)
           ? binToHex(batchTargetSlots.get(entry.slotIndex)!) : undefined,
@@ -8757,8 +8758,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             )?.offset;
             if (ownerOffset === undefined) throw new Error(`vmap alias owner has no block slot ${ownerSlot}`);
             const raw = this._rawVMapBatchWitness?.get(slotIndex);
+            // A compose alias row names its owner's planned successor; the covenant binds the two.
+            const ownerOut = (entryAccessForSlot(slotIndex)?.composeAliasPriorSlots?.length ?? 0) > 0
+              ? plan.outputs.find((o) => bytesToSlotValue(o.slot) === bytesToSlotValue(ownerTarget)) : undefined;
             batchWitnesses.push(raw?.slot ?? settlementSlots.get(ownerSlot)!, raw?.proof ?? BigInt(ownerOffset),
-              raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
+              raw?.next ?? (ownerOut ? decodeEntryCommitment(ownerOut.commitment).nextKey : new Uint8Array(32)),
+              raw?.predOut ?? -2n, ...(batch.linear ? [raw?.rank ?? BigInt(linearRank.get(ownerSlot) ?? 0)] : []));
             continue;
           }
           const slot = settlementSlots.get(slotIndex)!;
@@ -8997,6 +9002,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
             }
           }
+          // A compose owner's node carries the value of its key's last write, which only the trace knows.
+          if ([...batchAliasOwners].some(([alias, owner]) => owner === slotIndex
+            && (entryAccessForSlot(alias)?.composeAliasPriorSlots?.length ?? 0) > 0)) resolvedWholeValue = undefined;
           let targetCommitment = out.commitment;
           if (resolvedWholeValue !== undefined) {
             const valueTail = collection.chunkableValue

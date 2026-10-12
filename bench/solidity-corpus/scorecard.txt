@@ -1,4 +1,4 @@
-=== SOLC-CORPUS SCORECARD: 2719/2805 single-file in-scope compiled (86 failed) | 2158 negative-fixtures (solc rejects; 149 accepted, 0 unchecked, 0 timeouts, diagnostic) | 239 multifile-skipped | 289 cmdline-skipped | 3 benchmark-skipped | 52 compilation-project-skipped | 4 external-project-skipped | 1793 non-language-harness-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 2720/2805 single-file in-scope compiled (85 failed) | 2158 negative-fixtures (solc rejects; 149 accepted, 0 unchecked, 0 timeouts, diagnostic) | 239 multifile-skipped | 289 cmdline-skipped | 3 benchmark-skipped | 52 compilation-project-skipped | 4 external-project-skipped | 1793 non-language-harness-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
    19  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not yet lowerable to BCH script ...
@@ -28,6 +28,6 @@
     1  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
     1  AmbiguousInlineOverloadError: Cannot inline call to '..': it has multiple N-argument overloads that are ...
     1  UntrustedDelegatecallTargetError: Function '..' delegates to otherContract, whose identity is controlled by the caller. ...
-    1  DirectStaleReadError: a read of `simple[...]` after its write with an expression key is not supported on the direct ...
     1  UnsupportedArrayElementTypeError: Unsupported array element type '..' at Line N, Column N
     1  NonCompileTimeExpressionError: Constant '..' must be initialized with a compile-time expression at Line N, Column N
+    1  UndefinedReferenceError: Undefined reference to symbol id at Line N, Column N

@@ -4,6 +4,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { parameterTypeToken } from '../semantic/parameterTypeToken.js';
 import { byteElementValue } from '../semantic/byteElementValue.js';
 import { getMaxPushdataEncodedSizeForType } from '../semantic/maxEncodedSize.js';
+import { mayWriteState } from '../semantic/LowerRequireMessageEffects.js';
 import { getFixedWidth, isFixedWidthType } from '../generation/utils.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
@@ -235,6 +236,7 @@ import {
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, sourceFileOf, withSourceFile } from './Location.js';
 import { buildYulBlock } from './YulAstBuilder.js';
+import { decodeUtf8Exact, stringLiteralBytes } from './stringLiteralBytes.js';
 import { findReservedYulIdentifier, isBchAsmBlock } from './YulAST.js';
 import {
   Modifier,
@@ -4058,10 +4060,24 @@ export default class AstBuilder
     // else: require(cond, <any other expression>) - a dynamic string message (a variable, member access, function
     // call, ternary, string.concat, ...). Solidity treats require as a plain function taking `string memory`; BCH
     // has no dynamic on-chain reason string, so the message is dropped and the require still reverts on false
-    // (same as revert(expression)). The condition still fully covers correctness.
+    // (same as revert(expression)). The condition still fully covers correctness. solc still evaluates the message
+    // after the condition, so one that may write state is kept for LowerRequireMessageEffects.
     const require = new RequireNode(expression, message, errorName, args);
     require.location = Location.fromCtx(ctx);
+    const dynamicMessage = rm && !rm.StringLiteral() && !rm.expressionList() ? rm.expression() : null;
+    if (dynamicMessage) require.messageExpression = this.requireMessageEffect(dynamicMessage);
     return require;
+  }
+
+  // A dynamic require message holding a call or an assignment, else undefined. One that does not build is dropped.
+  private requireMessageEffect(ctx: ExpressionContext): ExpressionNode | undefined {
+    if (!/[(=]|\+\+|--/.test(ctx.getText())) return undefined;
+    try {
+      const expression = this.visit(ctx) as ExpressionNode;
+      return mayWriteState(expression) ? expression : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   visitIfStatement(ctx: IfStatementContext): BranchNode {
@@ -4850,7 +4866,10 @@ export default class AstBuilder
         }
       }
       if (arg instanceof StringLiteralNode) {
-        const lit = new IntLiteralNode(computeErc7201SlotNumber(arg.value));
+        if (arg.solidityInvalidUtf8) {
+          throw new ParseError('erc7201(...) expects a valid UTF-8 string namespace id', Location.fromCtx(ctx));
+        }
+        const lit = new IntLiteralNode(computeErc7201SlotNumber(arg.solidityBytes ?? arg.value));
         lit.location = Location.fromCtx(ctx);
         // Type it as the uint256 slot number (arithmetic/comparison/slot contexts the spec uses).
         const cast = new CastNode(parseType('uint256'), lit, false);
@@ -5459,22 +5478,28 @@ export default class AstBuilder
     }
     const stringValue = parts.join('');
     const stringLiteral = new StringLiteralNode(stringValue, quote);
-    if (this.evmCompat) {
-      stringLiteral.solidityBytes = Uint8Array.from(solidityByteParts.flatMap((bytes) => [...bytes]));
-      try {
-        new TextDecoder('utf-8', { fatal: true }).decode(stringLiteral.solidityBytes);
-      } catch {
-        stringLiteral.solidityInvalidUtf8 = true;
-        stringLiteral.type = new BytesType(stringLiteral.solidityBytes.length);
-      }
+    if (this.evmCompat && !AstBuilder.setSolidityBytes(stringLiteral, solidityByteParts)) {
+      stringLiteral.solidityInvalidUtf8 = true;
+      stringLiteral.type = new BytesType(stringLiteral.solidityBytes!.length);
     }
     stringLiteral.location = location;
     return stringLiteral;
   }
 
+  // Record solc's bytes for a literal and, when they are valid UTF-8, make `value` their reading, so consumers that
+  // UTF-8-encode `value` agree with them (`"\xc3\xa9"` is "\u00e9", not "\u00c3\u00a9"). False on invalid UTF-8.
+  private static setSolidityBytes(literal: StringLiteralNode, parts: readonly Uint8Array[]): boolean {
+    literal.solidityBytes = Uint8Array.from(parts.flatMap((bytes) => [...bytes]));
+    const decoded = decodeUtf8Exact(literal.solidityBytes);
+    if (decoded === undefined) return false;
+    literal.value = decoded;
+    return true;
+  }
+
   createUnicodeLiteral(ctx: LiteralContext): StringLiteralNode {
     const location = Location.fromCtx(ctx);
     let quoteChar = '"';
+    const solidityByteParts: Uint8Array[] = [];
     const stringValue = ctx.UnicodeLiteral_list().map((token) => {
       const rawText = token.getText();
       // rawText is like: unicode"..." or unicode'...'
@@ -5483,9 +5508,18 @@ export default class AstBuilder
       if (this.evmCompat && inner.includes('\ufffd')) {
         throw new ParseError('String literal contains an invalid UTF-8 sequence', location);
       }
-      return this.processEscapes(inner, location);
+      const value = this.processEscapes(inner, location);
+      if (this.evmCompat) {
+        const bytes = stringLiteralBytes(inner);
+        if (bytes === undefined) throw new ParseError('Invalid string escape sequence', location);
+        solidityByteParts.push(bytes);
+      }
+      return value;
     }).join('');
     const stringLiteral = new StringLiteralNode(stringValue, quoteChar);
+    if (this.evmCompat && !AstBuilder.setSolidityBytes(stringLiteral, solidityByteParts)) {
+      throw new ParseError('String literal contains an invalid UTF-8 sequence', location);
+    }
     stringLiteral.location = location;
     return stringLiteral;
   }
@@ -5527,36 +5561,13 @@ export default class AstBuilder
         location,
       );
     }
-    const bytes: number[] = [];
-    const simpleEscapes: Record<string, number> = {
-      n: 0x0a, r: 0x0d, t: 0x09, '\\': 0x5c, '\'': 0x27, '"': 0x22,
-    };
-    for (let i = 0; i < raw.length; i++) {
-      if (raw[i] !== '\\') {
-        bytes.push(raw.charCodeAt(i));
-        continue;
-      }
-      const next = raw[i + 1];
-      if (next === 'x' && /^[0-9a-fA-F]{2}$/.test(raw.slice(i + 2, i + 4))) {
-        bytes.push(parseInt(raw.slice(i + 2, i + 4), 16));
-        i += 3;
-      } else if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 2, i + 6))) {
-        bytes.push(...new TextEncoder().encode(String.fromCodePoint(parseInt(raw.slice(i + 2, i + 6), 16))));
-        i += 5;
-      } else if (next === '\n') {
-        i++;
-      } else if (next === '\r') {
-        i += raw[i + 2] === '\n' ? 2 : 1;
-      } else if (next in simpleEscapes) {
-        bytes.push(simpleEscapes[next]);
-        i++;
-      } else {
-        // processEscapes provides the existing, more specific diagnostic for malformed/unknown escapes.
-        this.processEscapes(raw, location);
-        throw new ParseError('Invalid string escape sequence', location);
-      }
+    const bytes = stringLiteralBytes(raw);
+    if (bytes === undefined) {
+      // processEscapes provides the existing, more specific diagnostic for malformed/unknown escapes.
+      this.processEscapes(raw, location);
+      throw new ParseError('Invalid string escape sequence', location);
     }
-    return Uint8Array.from(bytes);
+    return bytes;
   }
 
   private processEscapes(raw: string, location?: Location): string {

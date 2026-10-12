@@ -12341,6 +12341,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * branch is NOT taken the covenant reconstructs key_enc CAT value_enc = the input commitment = PRESERVE; a taken
    * `delete` (visitMappingDelete) overwrites key_enc = key, value_enc = default = (key||default) = soft-delete.
    * emitEntryCovenantVerification existence-gates the slot, so an absent entry produces no output.
+   * A framed frame's batch-target delete seeds key_enc empty instead: its batch transition keeps the node its group
+   * names where the delete did not run (DS-6).
    */
   private preAllocateCondDeleteWrite(slotIndex: number, locationData: SingleLocationData): void {
     if (this.preAllocatedEntryWrites.has(slotIndex) || this.pendingEntryWrites.has(slotIndex)) return;
@@ -12348,11 +12350,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const valueStackName = `__entry_value_enc_${slotIndex}`;
     // An activity-settled delete keeps the node at its own fixed input: its batch proof witness is bound to nothing.
     const fn = this.currentFunction;
-    if (fn && this.settlesSortedTargetsByActivity(fn)
-      && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))) {
-      this.emitFixedEntryInputIndex(slotIndex, locationData);
-    } else this.emitEntryInputIndex(slotIndex, locationData, 0);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
+    if (this.framedGroupDelete(slotIndex)) {
+      this.emit(encodeInt(0n), locationData);
+    } else {
+      if (fn && this.settlesSortedTargetsByActivity(fn)
+        && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))) {
+        this.emitFixedEntryInputIndex(slotIndex, locationData);
+      } else this.emitEntryInputIndex(slotIndex, locationData, 0);
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
+    }
     this.pushToStack(keyStackName);
     this.emit(encodeInt(0n), locationData);
     this.pushToStack(valueStackName);
@@ -29776,20 +29782,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const collection = node.collection;
         const loc = { location: node.location, positionHint: PositionHint.END };
         this.emitSortedKeyHash(node, slotIndex, loc); // [Hk]
-        this.emit(Op.OP_DUP, loc);                    // [Hk, Hk]
-        this.emitEntryInputIndex(slotIndex, loc, 2);
-        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);    // [Hk, Hk, commitment]
-        this.emit(encodeInt(32n), loc);
-        this.emit(Op.OP_SPLIT, loc);                  // [Hk, Hk, slot, rest]
-        this.emit(Op.OP_DROP, loc);                   // [Hk, Hk, slot]
-        this.emit(Op.OP_EQUALVERIFY, loc);            // [Hk]
-        this.emit(Op.OP_DROP, loc);                   // []
+        if (this.framedGroupDelete(slotIndex)) {
+          // A framed frame's node is the one its group names: the batch operands carry its slot and successor, and
+          // the batch transition holds them to the views the frame declares (DS-6).
+          this.emitPickVMapWitness(`__internal__vmapBatchSlot_${slotIndex}`, loc);
+          this.emit(Op.OP_OVER, loc); this.emit(Op.OP_EQUALVERIFY, loc); // [Hk]
+          this.emitPickVMapWitness(`__internal__vmapBatchNext_${slotIndex}`, loc);
+          this.emit(Op.OP_CAT, loc);                  // [slot||next]
+        } else {
+          this.emit(Op.OP_DUP, loc);                    // [Hk, Hk]
+          this.emitEntryInputIndex(slotIndex, loc, 2);
+          this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);    // [Hk, Hk, commitment]
+          this.emit(encodeInt(32n), loc);
+          this.emit(Op.OP_SPLIT, loc);                  // [Hk, Hk, slot, rest]
+          this.emit(Op.OP_DROP, loc);                   // [Hk, Hk, slot]
+          this.emit(Op.OP_EQUALVERIFY, loc);            // [Hk]
+          this.emit(Op.OP_DROP, loc);                   // []
 
-        this.emitEntryInputIndex(slotIndex, loc, 0);
-        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-        this.emit(encodeInt(64n), loc);
-        this.emit(Op.OP_SPLIT, loc);                  // [slot||next, oldValue]
-        this.emit(Op.OP_DROP, loc);                   // [slot||next]
+          this.emitEntryInputIndex(slotIndex, loc, 0);
+          this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+          this.emit(encodeInt(64n), loc);
+          this.emit(Op.OP_SPLIT, loc);                  // [slot||next, oldValue]
+          this.emit(Op.OP_DROP, loc);                   // [slot||next]
+        }
         this.pushToStack('(value)');
         this.emitReplace(this.getStackIndex(`__entry_key_enc_${slotIndex}`), node);
         this.popFromStack();
@@ -29914,6 +29929,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const softDelete = (slot: number): boolean => this.sortedEntryLayout(node, slot)?.softDelete === true;
     return new Set((node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1
       && batch.slotIndices.some(softDelete)).flatMap((batch) => batch.slotIndices.filter((slot) => !softDelete(slot))));
+  }
+
+  /**
+   * DS-6: a framed frame's delete of a batch target, whose node is the one its group names. Its batch operands carry
+   * the node's slot and successor, and its batch transition closes it against the frame's declared views.
+   */
+  private framedGroupDelete(slot: number): boolean {
+    return this.readsRecordsFromFrame && this.batchTargetOrdinal(slot) !== undefined
+      && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchSlot_${slot}`), true) >= 0;
   }
 
   /** The soft-delete slot whose input guards the sorted batch transition, where every batch target is conditional. */
@@ -31747,6 +31771,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
           bin(Op.OP_ENDIF);
           if (this.readsRecordsFromFrame) this.emitFramedKeptBatchTarget(slot, loc);
+          if (this.readsRecordsFromFrame && this.condDeleteSlots.has(slot)) {
+            this.emitFramedGuardedDeleteClose(slot, collectionHash, loc);
+          }
 
           bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // proof commitment
           bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // predecessor output index
@@ -32252,6 +32279,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Closes a framed frame's branch-guarded delete at the node its batch target's proof names (DS-6).
+   *
+   * Entry and exit with the target's proof view on top of the alternate stack. The write segment must end the node
+   * at the default value with the slot and successor of the batch operands where the delete ran (its key register
+   * set), and at the proof view where it did not, as a framed write closes against its declared view: another frame
+   * may write the node before or after this one, and settlement chains the views. A spent node sits at the
+   * collection's address on both sides, one an earlier frame created, named `-(out + 1)`, at its output.
+   */
+  private emitFramedGuardedDeleteClose(slot: number, collectionHash: Uint8Array, loc: SingleLocationData): void {
+    const { keyStackName, valueStackName } = this.pendingEntryWrites.get(slot)!;
+    this.emitFramedCollectionAddress(collectionHash, loc);
+    this.emitPickVMapWitness(`__internal__vmapBatchProof_${slot}`, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_ADD, loc); // [addr, name]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_TUCK, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc); // [out]
+    this.emitPickTrackedFromBottom(keyStackName, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitPickTrackedFromBottom(keyStackName, loc);
+    this.emitPickTrackedFromBottom(valueStackName, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_SWAP, loc); // [end view, out]
+    this.emitRecordCommitmentRead('out', loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  /**
    * The one-target sorted-batch transition of a framed frame, answered from its write segment's declarations.
    *
    * Another frame may write the proof node before this one or rewrite it after, so the spent input and the written
@@ -32310,7 +32373,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     }
     if (keyNodeOnly) {
-      // The delete's own close holds the node it leaves.
+      this.emitFramedGuardedDeleteClose(slot, collectionHash, loc);
       this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
       return;
     }
@@ -32335,6 +32398,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     proofField('value'); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_ENDIF, loc);
+    if (this.condDeleteSlots.has(slot)) this.emitFramedGuardedDeleteClose(slot, collectionHash, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
     if (skippable) this.emit(Op.OP_ENDIF, loc);
   }
@@ -37679,8 +37743,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * not run, or (key||default) when it did. Runs AFTER emitReadOnlyEntryVerification so the derivation probe
    * extracts the always-passing read-only preservations BEFORE it may fail on an un-derived soft-delete output
    * (else the extracted commitments would be off by one). Then cleans up the slots' key_enc/value_enc.
-   * A framed frame's batch node is the one its group names, so its close runs whatever input sits at the slot's
-   * fixed offset, and the node it spends is held to the collection too (DS-6).
+   * A framed frame's batch-target delete is closed by its batch transition, against the frame's declared views
+   * (emitFramedGuardedDeleteClose, DS-6).
    */
   private emitConditionalDeleteVerification(node: FunctionDefinitionNode): void {
     if (this.condDeleteSlots.size === 0) return;
@@ -37688,13 +37752,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const slotIdx of this.condDeleteSlots) {
       if (node.messageBusHandlerManagedEntrySlots?.includes(slotIdx)) continue;
       if (!this.ownsFixedEntrySlot(slotIdx)) continue;
+      if (this.readsRecordsFromFrame
+        && (node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIdx)) ?? false)) continue;
       const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
-      const framedNode = this.readsRecordsFromFrame
-        && (node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIdx)) ?? false);
-      if (!framedNode) {
-        this.emitSlotExistsCheck('entry', slotIdx, locationData);
-        this.emit(Op.OP_IF, locationData);
-      }
+      this.emitSlotExistsCheck('entry', slotIdx, locationData);
+      this.emit(Op.OP_IF, locationData);
 
       // (a) output commitment == key_enc CAT value_enc
       this.emitPickSettlementValue(writeInfo.keyStackName, locationData, node);
@@ -37732,19 +37794,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       this.pushToStack('(value)');
       this.emitSortedEntryAddress(collectionHash, locationData);
-      if (framedNode) {
-        this.emit(Op.OP_DUP, locationData);
-        this.emitEntryInputIndex(slotIdx, locationData, 1);
-        this.emit(Op.OP_UTXOBYTECODE, locationData);
-        this.emit(Op.OP_EQUALVERIFY, locationData);
-      }
       this.emitEntryOutputIndex(slotIdx, locationData, 0);
       this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       this.pushToStack('(value)');
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
 
-      if (!framedNode) this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
     }
 
     // Clean up the soft-delete slots' key_enc/value_enc.

@@ -43924,8 +43924,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, locationData); // drop _returnOutputIdx
 
     this.emit(Op.OP_ELSE, locationData);
-    // Standalone call: just drop _returnOutputIdx
+    // Standalone call (DX-4): refuse every own-category return carrier (none-cap, OP_TRUE lock), the fingerprint
+    // the caller's return read and uniqueness count accept. Otherwise a spender passing -1 beside a self-minted
+    // carrier hands the caller an unauthenticated return value.
     this.emit(Op.OP_DROP, locationData);
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);        // [cat, n]
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_1SUB, locationData);                 // [cat, j]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUAL, locationData);                // [cat, j, ownImmutable]
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(hexToBin('51'), locationData);
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_BOOLAND, locationData);
+    this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_VERIFY, locationData);               // [cat, j]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_2DROP, locationData);
     this.emit(Op.OP_ENDIF, locationData);
 
     // Clean up __returnBlob from tracked stack

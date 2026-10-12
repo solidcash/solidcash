@@ -1956,9 +1956,14 @@ its -3 row as an insert), so the rebuilt placement's probe failed too. A -3 row 
 fails closed: two targets that both run on one node, such as two writes in one arm on adjacent keys; each needs the
 node at its own slot.
 
-The write-first order and a swap-remove pair under one arm take the alias path and keep the guarded batch.
+A write ahead of the delete (the write-first order, a swap-remove pair under one arm, an earlier arm or a cached
+loop's flush) is the delete's swap-remove alias write and settles the same way: it is flagged only where its key
+differs from the delete's, and may then insert. Where the keys meet the node is the delete's, and the write stages
+its value there where the delete may not run after it, so a write arm on one absent key stays refused. A swap-remove
+whose moved key is a state array's last (IterableMapping) keeps the guarded batch. A pair under one arm whose keys
+differ but whose nodes coincide is this residual.
 
 **Proposed design:** settle the targets that ran on one node as one transition, as the linear two-target arm
 settles two writes in one gap, behind their ran flags.
 
-**Why deferred:** it is a covenant change and no tested shape runs two targets in one arm.
+**Why deferred:** it is a covenant change; the tests keep such pairs' keys far apart.

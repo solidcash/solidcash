@@ -8644,7 +8644,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const noOpSlots = new Set(batchNoOp ? batch.slotIndices : batch.slotIndices.filter((slotIndex) => (
           settlesByActivity && softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))));
         // DS-6: activity-settled targets whose nodes coincide spend that node once, at the slot of the target that
-        // runs (`sortedNodeOwners`, else the first). The others are lent: their slot is funded and runs nothing.
+        // runs (`sortedNodeOwners`, else the first that is no alias skip: a swap-remove write whose key meets its
+        // delete's runs nothing). The others are lent: their slot is funded and runs nothing.
         const lentSlots = new Set<number>();
         if (settlesByActivity && batch.slotIndices.length > 1
           && batch.slotIndices.some((slotIndex) => softDeleteSlots.includes(slotIndex))) {
@@ -8655,8 +8656,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (uid !== undefined) byNode.set(uid, [...(byNode.get(uid) ?? []), slotIndex]);
           }
           for (const members of [...byNode.values()].filter((group) => group.length > 1)) {
-            const owner = members.find((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex)) ?? members[0];
-            if (overrides?.sortedNodeOwners === undefined) sortedNodeOwnerAlternatives.push(...members.slice(1));
+            const owner = members.find((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex))
+              ?? members.find((slotIndex) => !batchAliasSkips.has(slotIndex)) ?? members[0];
+            if (overrides?.sortedNodeOwners === undefined) {
+              sortedNodeOwnerAlternatives.push(...members.filter((member) => member !== owner));
+            }
             for (const slotIndex of members.filter((member) => member !== owner)) {
               lentSlots.add(slotIndex);
               const entry = entryNfts.find((candidate) => candidate.slotIndex === slotIndex)!;

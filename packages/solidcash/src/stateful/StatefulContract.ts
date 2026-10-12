@@ -6634,6 +6634,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
       /** DS-6: the sorted batch targets that spend, or chain on, a node they share with other targets (else the first). */
       sortedNodeOwners?: readonly number[];
+      /** DS-6: lent present deletes that run on their node's owner write: the node is relinked at its default value. */
+      sortedChainedDeletes?: readonly number[];
     },
   ): Promise<StatefulTransactionBuilder> {
     const callerArgs = [...args];
@@ -6922,8 +6924,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const batchTargetPlaceholders = new Map<number, string>();
     let exactBatchTargetSlots = new Set<number>();
     let batchPredCommitments = new Map<string, string[]>();
-    // DS-6: the owner sets that may hold a node shared with an earlier target instead, tried where the first refuses.
-    const sortedNodeOwnerAlternatives: number[][] = [];
+    // DS-6: the owner sets that may hold a node shared with an earlier target instead, tried where the first refuses;
+    // `chainedDeletes` run on their node's owner write.
+    const sortedNodeOwnerAlternatives: { owners: number[]; chainedDeletes?: number[] }[] = [];
     const runtimeMessageBusAliasSkipSlots = new Set<number>();
     const inactiveMessageBusEntrySlots = new Set(
       (entryAbiFunction as AbiFunction & { messageBusInactiveEntrySlots?: readonly number[] } | undefined)
@@ -8644,9 +8647,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const noOpSlots = new Set(batchNoOp ? batch.slotIndices : batch.slotIndices.filter((slotIndex) => (
           settlesByActivity && softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))));
         // DS-6: activity-settled targets whose nodes coincide spend that node once, at the slot of the target that
-        // runs (`sortedNodeOwners`, else the first). The others are lent: their slot is funded and runs nothing. Two
-        // listed writes both run on the node: the first spends it and the second chains on it.
+        // runs (`sortedNodeOwners`, else the first that is no alias skip: a swap-remove write whose key meets its
+        // delete's runs nothing). The others are lent: their slot is funded and runs nothing. Listed writes all run on
+        // the node: the first spends it and the others chain on it. An alias skip is no chain member. A lent delete
+        // names the first owner's input, which it reads where it runs beside that write.
         const lentSlots = new Set<number>();
+        const lentOwners = new Map<number, number>();
         if (settlesByActivity && batch.slotIndices.length > 1
           && batch.slotIndices.some((slotIndex) => softDeleteSlots.includes(slotIndex))) {
           const byNode = new Map<string, number[]>();
@@ -8655,16 +8661,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const uid = spent ? `${spent.txid}:${spent.vout}` : undefined;
             if (uid !== undefined) byNode.set(uid, [...(byNode.get(uid) ?? []), slotIndex]);
           }
+          // A deleted value reads as empty for these kinds.
+          const emptyDefault = /^(bool|u?int\d*)$/.test(collection.valueType);
           for (const members of [...byNode.values()].filter((group) => group.length > 1)) {
             const listed = members.filter((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex));
-            const owners = listed.length > 0 ? listed : [members[0]];
+            const first = members.find((slotIndex) => !batchAliasSkips.has(slotIndex)) ?? members[0];
+            const owners = listed.length > 0 ? listed : [first];
             if (overrides?.sortedNodeOwners === undefined) {
-              sortedNodeOwnerAlternatives.push(...members.slice(1).map((slotIndex) => [slotIndex]));
-              const memberWrites = members.filter((slotIndex) => !softDeleteSlots.includes(slotIndex));
-              if (memberWrites.length > 1) sortedNodeOwnerAlternatives.push(memberWrites);
+              sortedNodeOwnerAlternatives.push(...members.filter((member) => member !== first)
+                .map((slotIndex) => ({ owners: [slotIndex] })));
+              const memberWrites = members.filter((slotIndex) => !softDeleteSlots.includes(slotIndex)
+                && !batchAliasSkips.has(slotIndex));
+              if (memberWrites.length > 1) sortedNodeOwnerAlternatives.push({ owners: memberWrites });
+              const present = members.filter((slotIndex) => softDeleteSlots.includes(slotIndex)
+                && !noOpSlots.has(slotIndex));
+              if (memberWrites.length > 0 && present.length > 0 && emptyDefault) {
+                sortedNodeOwnerAlternatives.push({ owners: memberWrites, chainedDeletes: present });
+              }
             }
             for (const slotIndex of members.filter((member) => !owners.includes(member))) {
               lentSlots.add(slotIndex);
+              lentOwners.set(slotIndex, owners[0]);
               const entry = entryNfts.find((candidate) => candidate.slotIndex === slotIndex)!;
               entry.exists = false;
               entry.utxo = undefined;
@@ -8722,6 +8739,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           plan.outputs.push({ slot, commitment: encodeEntryCommitment(slot, proof.nextKey, proof.value), existed: true });
         }
         const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
+        // DS-6: a node a chained present delete ran on is relinked at its default value.
+        for (const slotIndex of overrides?.sortedChainedDeletes ?? []) {
+          if (!lentSlots.has(slotIndex)) continue;
+          const deleted = bytesToSlotValue(batchTargetSlots.get(slotIndex)!);
+          const at = predOutputs.findIndex((output) => bytesToSlotValue(output.slot) === deleted);
+          if (at < 0) continue;
+          const node = decodeEntryCommitment(predOutputs[at].commitment);
+          predOutputs[at] = { ...predOutputs[at], commitment: encodeEntryCommitment(node.slot, node.nextKey) };
+        }
         // An all-update batch has no rewritten predecessor suffix. Do not publish an empty
         // collection family: a routed counter loop may independently own non-empty rewritten
         // entries for the same collection, and zero-width metadata must not erase that plan.
@@ -8775,10 +8801,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
           // An absent delete and a lent target run no transition: each proof names its own slot, and a lent write
-          // is inactive (-2).
+          // is inactive (-2). A lent delete names its node's owner (DS-6).
           if (noOpSlots.has(slotIndex) || lentSlots.has(slotIndex)) {
+            const named = softDeleteSlots.includes(slotIndex) ? lentOwners.get(slotIndex) ?? slotIndex : slotIndex;
             const offset = entryAbiFunction!.blockLayout?.slots.find(
-              (slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex,
+              (slot) => slot.kind === 'entry' && slot.slotIndex === named,
             )?.offset;
             if (offset === undefined) throw new Error(`vmap no-op slot has no block offset ${slotIndex}`);
             batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32),
@@ -12806,10 +12833,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       (candidate as unknown as { __vmErrored?: boolean }).__vmErrored === true);
     if (vmErrored(builder)) {
       const tried = new Set<string>();
-      for (const owners of sortedNodeOwnerAlternatives) {
-        if (tried.has(owners.join())) continue;
-        tried.add(owners.join());
-        const retry = await this._createBuilder(functionName, callerArgs, { ...overrides, sortedNodeOwners: owners });
+      for (const { owners, chainedDeletes } of sortedNodeOwnerAlternatives) {
+        const key = `${owners.join()}|${chainedDeletes?.join() ?? ''}`;
+        if (tried.has(key)) continue;
+        tried.add(key);
+        const retry = await this._createBuilder(functionName, callerArgs, {
+          ...overrides, sortedNodeOwners: owners, sortedChainedDeletes: chainedDeletes,
+        });
         if (!vmErrored(retry)) return retry;
       }
     }

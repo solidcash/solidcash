@@ -1939,7 +1939,7 @@ calling initializer can run as the proxy genesis's own frame.
 
 **Why deferred:** it is a validator protocol extension; the default path no longer needs it.
 
-## Sorted batch targets sharing a node: more than a pair that run (DS-6 residual, 2026-10-12)
+## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
 two-target batch. Each target settles alone: the delete at its own site as a lone delete does (06c633c6d), each
@@ -1954,20 +1954,49 @@ deleted key absent in the written key's gap and two distinct absent keys in one 
 the SDK relinked the gap's predecessor to the lent delete's key (`batchPredecessorCommitment` counted its -3 row as an
 insert), so the rebuilt placement's probe failed too. A -3 row now links nothing.
 
-Two writes one call may run both (`else { m[i] = v; m[j] = w; }`, `chainedActivityWrites`) chain where both ran on
-one proof: the first spends the node, the second's slot is funded and its proof is the first's input. As in the
-linear two-target arm, the lower key links to the higher, which keeps the node's old successor, and only the lower
-relinks the node (as its own update, or by recreating it); the higher recreates nothing. The counts take the
-second's slot as no input and one output, so a node spent there is refused. The SDK adds the pair as an owner set to
-its rebuilds. Two absent keys in one gap and a present key with an absent key in its gap settle, in either source
-order and where the deleted key's node is theirs; a forged link, the shared node dropped, a node spent at the funded
-slot and an extra node beside the chain are refused at the master (AuditDS6TwoWritesOneNode.test.ts). The shape
-costs 110 B; other bodies are byte-identical. Still failing closed: more than two writes that run on one node, or a
-delete that runs on the node a write that ran spends; each needs the node at its own slot.
+Writes one call may run both of (`else { m[i] = v; m[j] = w; }`, `chainedActivityPairs`) chain where they ran on
+one proof: the first in batch order spends the node, the others' slots are funded and name its input. As the linear
+batch's rank rows order targets in one gap, each links to the next key above its own (a `below` relation per pair
+that ran, the next key the one no mate lies between), the highest keeps the node's old successor, and only the lowest
+relinks the node (as its own update, or by recreating it). The counts take a chained write's slot as no input and one
+output, so a node spent there is refused. Past a pair a write could be chained by a third mate, so two that ran on one
+proof must hold distinct keys. The SDK adds a group's writes as one owner set to its rebuilds. Two absent keys in one
+gap and a present key with an absent key in its gap settle, in either source order and where the deleted key's node is
+theirs (AuditDS6TwoWritesOneNode.test.ts); three absent keys in one gap in any source order, and a present key with
+two absent keys in its gap, settle too. A forged link (one past a write of the chain), the shared node dropped, a node
+spent at a funded slot and an extra node beside the chain are refused at the master (AuditDS6ChainOneNode.test.ts).
 
-The write-first order and a swap-remove pair under one arm take the alias path and keep the guarded batch.
+A delete one call may run beside a write of its batch (`if (s > 0) { delete m[k]; m[j] = v; }`,
+`chainedActivityDelete`, one delete per batch) reads the node its proof names. Away from its own input it sets a
+register: its own slot must hold no node of the collection, and a write that ran must name the same proof, so the node
+is that write's group's. The node then settles as the writes leave it, the delete first: a write of the node's own key
+updates it, and the lowest insert relinks it at the value the delete's registers leave (the default where the deleted
+key is the node's, else its own). Its close skips the funded slot. The SDK lends the delete to the writes' owner set,
+naming the first owner's input; where the deleted key is the node's own it rebuilds once more with the node relinked
+at the default value, which it plans for int and bool values only (its PredOut refresh accepts that relink). Absent
+keys of one gap (either key order) and the node's own key written beside a deleted absent key of its gap settle, and a
+node spent at the delete's slot is refused at the master (AuditDS6ChainOneNode.test.ts). The node's own key deleted
+beside a key of its gap written and one key deleted and written settle too, and the deleted key's node relinked at its
+old value is refused (same file).
 
-**Proposed design:** extend the chain past a pair (the linear batch's rank rows), and let a delete that ran chain as
-a pair member.
+A write ahead of the delete (the write-first order, a swap-remove pair under one arm, an earlier arm or a cached
+loop's flush) is the delete's swap-remove alias write and settles the same way: it is flagged only where its key
+differs from the delete's, and may then insert. Where the keys meet the node is the delete's, and the write stages
+its value there where the delete may not run after it, so a write arm on one absent key stays refused. A swap-remove
+whose moved key is a state array's last (IterableMapping) keeps the guarded batch. Where the keys meet the alias write
+is no owner and no chain member (the SDK's alias skip); where they differ, a delete that may run beside it (a pair under
+one arm, an earlier arm) chains as above. No test covers that alias pair on one node: the alias tests keep its keys far
+apart.
 
-**Why deferred:** it is a covenant change and no tested shape runs more than a pair on one node.
+The three-write body costs 342 B (1391 -> 1733), the delete-then-write body 88 B (597 -> 685); other bodies, the pair's
+included, were byte-identical before the alias path. Alias bodies whose write and delete may run both carry the chained
+delete since (not measured).
+
+Still failing closed: two writes of one key that ran on one node (the runtime alias of `m[i] = v; m[j] = w` with
+`i == j`), more than one delete of a batch beside its writes, and a deleted node's own key beside an insert where the
+value kind's default is not empty (the SDK does not plan that relink).
+
+**Proposed design:** a runtime alias of two writes settles as the later write alone (its alias row, as the compose
+batch does); deletes past one fold their registers in batch order; the SDK plans the default value of every kind.
+
+**Why deferred:** no tested shape writes one key twice or deletes twice beside its writes.

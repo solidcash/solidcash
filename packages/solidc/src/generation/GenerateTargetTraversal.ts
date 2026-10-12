@@ -1982,6 +1982,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Direct compose-on-alias: the batch writes emitted so far in source order, and the values kept for later reads.
   private composeWritesEmitted: number[] = [];
   private composeKeptValues: Map<number, string> = new Map();
+  // DS-6: the conditional deletes a swap-remove write has staged in so far; later reads of them take the registers.
+  private stagedAliasOwners: Set<number> = new Set();
   // In a constructor, the writes whose value (and, where a read compares keys, key hash) a later genesis read takes,
   // the stack names they are kept under, and each served read's plan.
   private genesisKeptWrites: WeakSet<Node> = new WeakSet();
@@ -8983,6 +8985,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.countSortedEntryAccesses(node);
     this.composeWritesEmitted = [];
     this.composeKeptValues = new Map();
+    this.stagedAliasOwners = new Set();
     this.refuseDirectStaleSortedReads(node);
     this.planGenesisReads(node);
 
@@ -12353,23 +12356,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.preAllocatedEntryWrites.has(slotIndex) || this.pendingEntryWrites.has(slotIndex)) return;
     const keyStackName = `__entry_key_enc_${slotIndex}`;
     const valueStackName = `__entry_value_enc_${slotIndex}`;
-    // An activity-settled delete keeps the node at its own fixed input: its batch proof witness is bound to nothing.
-    const fn = this.currentFunction;
     if (this.framedGroupDelete(slotIndex)) {
       this.emit(encodeInt(0n), locationData);
     } else {
-      if (fn && this.settlesSortedTargetsByActivity(fn)
-        && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))) {
-        this.emitFixedEntryInputIndex(slotIndex, locationData);
-      } else this.emitEntryInputIndex(slotIndex, locationData, 0);
+      this.emitCondDeleteSeedInputIndex(slotIndex, locationData);
       this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
     }
     this.pushToStack(keyStackName);
     this.emit(encodeInt(0n), locationData);
     this.pushToStack(valueStackName);
+    // DS-6: a delete a write of its batch may run beside reads the node its proof names (emitBoundSortedCondDelete).
+    const fn = this.currentFunction;
+    if (fn && this.settlesSortedTargetsByActivity(fn) && (fn.sortedBatchInfo ?? []).some((batch) => (
+      this.chainedActivityDelete(fn, batch.slotIndices) === slotIndex))) {
+      this.emit(encodeInt(0n), locationData);
+      this.pushToStack(GenerateTargetTraversalWithLocation.chainedDeleteName(slotIndex));
+    }
     this.pendingEntryWrites.set(slotIndex, { keyStackName, valueStackName });
     this.preAllocatedEntryWrites.add(slotIndex);
     this.condDeleteSlots.add(slotIndex);
+  }
+
+  /**
+   * The input a conditional delete's registers take their commitment from. An activity-settled delete keeps the node
+   * at its own fixed input: its batch proof witness is bound to nothing.
+   */
+  private emitCondDeleteSeedInputIndex(slotIndex: number, loc: SingleLocationData): void {
+    const fn = this.currentFunction;
+    if (fn && this.settlesSortedTargetsByActivity(fn)
+      && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))) {
+      this.emitFixedEntryInputIndex(slotIndex, loc);
+    } else this.emitEntryInputIndex(slotIndex, loc, 0);
   }
 
   visitTryCatch(node: TryCatchNode): Node {
@@ -26264,6 +26281,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       return node;
     }
+    if (this.stagedAliasOwners.has(slotIndex)) {
+      this.emitStagedOwnerRead(node, slotIndex, loc);
+      return node;
+    }
     const routeBatch = this.ownsMessageBusParticipantBlock()
       && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex)) ?? false)
       && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${slotIndex}`), true) >= 0;
@@ -26349,6 +26370,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.isCompilerMessageBusRoute()) {
       this.emitSharedProofRedirect(collection.name, sharedProofPrior, loc);
     }
+    if (this.activityAliasWrite(slotIndex)) {
+      this.emitActivityAliasReadRedirect(this.entrySlots[slotIndex].aliasCondDeleteSlot!, loc);
+    }
     if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) !== undefined) {
       if (this.readsPastBatchWrite()) this.emitCreatedTargetName(slotIndex, loc);
       // The node a write targets may be one an earlier frame created, which the frame names at its output alone.
@@ -26428,6 +26452,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_DROP, loc);
     this.emitEntryInputIndex(prior, loc, 2);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * DS-6: [Hk32, entryAddr, idx] -> [Hk32, entryAddr, idx']. A read of an activity-settled swap-remove write's entry
+   * whose own input holds no node of its collection takes its owner delete's fixed input: where the keys meet, the SDK
+   * spends the key's node there and funds the write's slot. The caller authenticates the input and proves the key.
+   */
+  private emitActivityAliasReadRedirect(owner: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(__alias_read_hk)'); this.pushToStack('(__alias_read_addr)');
+    this.emitFixedEntryInputIndex(owner, loc);
+    this.popFromStack(2);
     this.emit(Op.OP_ENDIF, loc);
   }
 
@@ -27014,8 +27056,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
+    // DS-6: an activity-settled alias write is flagged in its own arm alone, not where its delete takes the key.
+    const activityAlias = inBatch && this.activityAliasWrite(slotIndex);
     // Before the working area grows.
-    this.markConditionalSortedWriteFlag(slotIndex, node);
+    if (!activityAlias) this.markConditionalSortedWriteFlag(slotIndex, node);
 
     // MSG.SENDER MERGE: a preceding merge-capable upsert loop left a re-point register on the stack (the new
     // recipient's slot, 0 if none). This flush (the cached msg.sender DEBIT write) reads it into a tracked temp and,
@@ -27061,6 +27105,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUAL, loc);
         this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
         this.emit(Op.OP_ELSE, loc);
+        if (activityAlias) this.markConditionalSortedWriteFlag(slotIndex, node);
       }
     } else if (inBatch && !compose) {
       // A funded fixed slot does not imply an inactive logical write: distinct absent targets can share one
@@ -27095,15 +27140,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Copy this upsert's post-value witnesses from the immutable pre-handler capsule. Bottom-relative addressing
     // prevents arbitrary main-stack temporaries from redirecting one witness to an adjacent field. Only after all
     // copies are on the main stack do we park the compact per-upsert frame on the altstack. Duplicate `next` for
-    // swap-remove because it authenticates both input and output successors.
+    // swap-remove because it authenticates both input and output successors. An activity-settled alias write
+    // settles its own transition at the close, insert or update, as any write.
+    const updateOnly = aliasOwner !== undefined && !activityAlias;
     if (inBatch) {
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${slotIndex}`, loc);
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
-      if (aliasOwner !== undefined) {
+      if (updateOnly) {
         this.emitCopyUpsertVMapWitness(`__internal__vmapBatchNext_${slotIndex}`, loc);
       }
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchNext_${slotIndex}`, loc);
-      const parkedCount = aliasOwner === undefined ? 3 : 4;
+      const parkedCount = updateOnly ? 4 : 3;
       for (let i = 0; i < parkedCount; i += 1) this.emit(Op.OP_TOALTSTACK, loc);
     }
     // Keep H(k) out of the mutable main frame while evaluating the RHS and verifying value chunks. The chunk
@@ -27146,7 +27193,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     this.emit(Op.OP_FROMALTSTACK, loc); // [v, Hk32], H is intentionally untracked
-    if (staged) this.emitStagedAliasWrite(node, aliasOwner!, loc);
+    if (staged) this.emitStagedAliasWrite(node, aliasOwner!, activityAlias, loc);
 
     if (inBatch) {
       // Bind the SDK-planned full-width slot witness to the actual runtime key hash.
@@ -27177,7 +27224,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [v,H,addr,coSlot,coNext,coValue]
-      if (this.entrySlots[slotIndex]?.aliasCondDeleteSlot !== undefined) {
+      if (updateOnly) {
         // Swap-remove's conditional write is update-only: authenticate the exact existing node and preserve its
         // successor inline. The function-level batch verifier authenticates the delete owner independently.
         this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
@@ -29922,18 +29969,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.directConvention || this.framedMaster || this.readsRecordsFromFrame
       || this.isCompilerMessageBusRoute(node)) return false;
     const runtime = new Set(this.vmapRuntimeCollections(node));
-    // A write a shared batch settles alone: one a branch guards, with no alias of its own.
-    const settlesAlone = (slot: number): boolean => {
+    // A write a shared batch settles alone: one a branch guards, with no alias of its own bar the batch's delete.
+    // A swap-remove whose moved key is a state array's last keeps the guarded batch and its alias sentinel.
+    const settlesAlone = (slot: number, targets: readonly number[]): boolean => {
       const access = node.entryAccesses?.find((candidate) => candidate.slotIndex === slot);
+      const owner = access?.aliasCondDeleteSlot;
       return this.sortedEntryLayout(node, slot)?.conditional === true && access !== undefined
         && access.operations.includes('write') && !access.operations.includes('delete')
-        && access.aliasCondDeleteSlot === undefined && (access.runtimeAliasPriorSlots?.length ?? 0) === 0;
+        && (owner === undefined || (targets.includes(owner)
+          && !(access.keySources ?? []).some((source) => source.kind === 'stateArrayLast')))
+        && (access.runtimeAliasPriorSlots?.length ?? 0) === 0;
     };
     const batches = (node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.some((slot) => (
       this.sortedEntryLayout(node, slot)?.softDelete === true)));
     return batches.length > 0 && batches.every((batch) => batch.slotIndices.length === 1
       || (!runtime.has(batch.collection) && batch.slotIndices.every((slot) => (
-        this.sortedEntryLayout(node, slot)?.softDelete === true || settlesAlone(slot)))));
+        this.sortedEntryLayout(node, slot)?.softDelete === true || settlesAlone(slot, batch.slotIndices)))));
   }
 
   private sortedEntryLayout(node: FunctionDefinitionNode, slot: number): BlockLayoutSlot | undefined {
@@ -29949,27 +30000,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * DS-6: the two writes of an activity-settled batch, in batch order, where one call may run both: no branch or
-   * switch holds them in separate arms. Two that ran on one node chain on it (emitSortedBatchTransitionVerification).
+   * DS-6: the pairs of an activity-settled batch's writes, in batch order, that one call may run both. Writes that
+   * ran on one node chain on it (emitSortedBatchTransitionVerification).
    */
-  private chainedActivityWrites(node: FunctionDefinitionNode, targets: readonly number[]): [number, number] | undefined {
+  private chainedActivityPairs(node: FunctionDefinitionNode, targets: readonly number[]): [number, number][] {
     const writes = targets.filter((slot) => this.sortedEntryLayout(node, slot)?.softDelete !== true);
-    if (writes.length !== 2) return undefined;
+    return writes.flatMap((first, index) => writes.slice(index + 1)
+      .filter((second) => this.mayRunBoth(node.body, first, second))
+      .map((second): [number, number] => [first, second]));
+  }
+
+  /**
+   * DS-6: the one delete of an activity-settled batch that one call may run beside a write of it. It reads the node
+   * its proof names, which is a write's that ran where the two share a node.
+   */
+  private chainedActivityDelete(node: FunctionDefinitionNode, targets: readonly number[]): number | undefined {
+    const softDelete = (slot: number): boolean => this.sortedEntryLayout(node, slot)?.softDelete === true;
+    const deletes = targets.filter(softDelete);
+    return deletes.length === 1 && targets.some((slot) => !softDelete(slot)
+      && this.mayRunBoth(node.body, deletes[0], slot)) ? deletes[0] : undefined;
+  }
+
+  /** DS-6: a body's chained delete's register: set where it ran on a node away from its own input. */
+  private static chainedDeleteName(slot: number): string {
+    return `(__vmap_chained_delete_${slot})`;
+  }
+
+  /** DS-6: whether one call may run both slots' accesses: no branch or switch holds them in separate arms. */
+  private mayRunBoth(body: Node, first: number, second: number): boolean {
     const holds = (root: Node, slot: number): boolean => {
       let found = false;
       walkInvocationAst(root, (candidate) => {
-        if ((candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode)
-          && candidate.entrySlotIndex === slot) found = true;
+        if ((candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode
+          || candidate instanceof MappingDeleteNode) && candidate.entrySlotIndex === slot) found = true;
       });
       return found;
     };
-    const both = (root: Node): boolean => holds(root, writes[0]) && holds(root, writes[1]);
+    const both = (root: Node): boolean => holds(root, first) && holds(root, second);
     const mayRunBoth = (root: Node): boolean => {
       if (root instanceof BlockNode) {
         const statements = root.statements ?? [];
-        const first = statements.filter((statement) => holds(statement, writes[0]));
-        return first.some((statement) => statements.some((other) => other !== statement && holds(other, writes[1])))
-          || first.some((statement) => both(statement) && mayRunBoth(statement));
+        const holding = statements.filter((statement) => holds(statement, first));
+        return holding.some((statement) => statements.some((other) => other !== statement && holds(other, second)))
+          || holding.some((statement) => both(statement) && mayRunBoth(statement));
       }
       if (root instanceof UncheckedNode) return mayRunBoth(root.block);
       const arms = root instanceof BranchNode ? [root.ifBlock, root.elseBlock]
@@ -29977,7 +30050,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A loop, a call or any other statement holding both may run both.
       return arms === undefined || arms.some((arm) => arm !== undefined && both(arm) && mayRunBoth(arm));
     };
-    return both(node.body) && mayRunBoth(node.body) ? [writes[0], writes[1]] : undefined;
+    return both(body) && mayRunBoth(body);
   }
 
   /**
@@ -30129,11 +30202,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * DS-6: [v, H] with the write's witnesses parked. Where H meets the owner delete's slot, the key's node at the
    * delete's slot takes v: the delete's registers become its slot and successor with v, which the delete overwrites
-   * if it runs after. Elsewhere opens the write's own arm, which closes the conditional. A framed frame's node is the
-   * one the delete's group names, whose batch operands carry its successor; a group declared skipped, the kept node
-   * bracketing a key the list does not hold, takes no value and is refused.
+   * if it runs after. Elsewhere opens the write's own arm, which closes the conditional. An activity-settled write
+   * parked one successor and is flagged in its own arm alone. A framed frame's node is the one the delete's group
+   * names, whose batch operands carry its successor; a group declared skipped, the kept node bracketing a key the
+   * list does not hold, takes no value and is refused.
    */
-  private emitStagedAliasWrite(node: MappingAssignNode | MappingDeleteNode, owner: number, loc: SingleLocationData): void {
+  private emitStagedAliasWrite(
+    node: MappingAssignNode | MappingDeleteNode, owner: number, activity: boolean, loc: SingleLocationData,
+  ): void {
     this.emit(Op.OP_DUP, loc);
     this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${owner}`, loc);
     this.emit(Op.OP_EQUAL, loc);
@@ -30163,10 +30239,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.popFromStack();
-    // The parked slot, proof and both successors.
-    for (let pair = 0; pair < 2; pair += 1) {
-      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
-    }
+    // The parked slot, proof and successors.
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    if (activity) this.emit(Op.OP_DROP, loc);
+    else { this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_2DROP, loc); }
     this.emitReplace(this.getStackIndex(`__entry_value_enc_${owner}`), node);
     this.popFromStack();
     this.emitFixedEntryInputIndex(owner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -30176,6 +30253,58 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.emit(Op.OP_ELSE, loc);
     this.stack = atDecision;
+    if (activity) {
+      // H sits untracked on top.
+      this.pushToStack('(__upsert_hk)');
+      this.markConditionalSortedWriteFlag(node.entrySlotIndex, node);
+      this.popFromStack();
+    }
+    this.stagedAliasOwners.add(owner);
+  }
+
+  /** DS-6: a swap-remove alias write an activity-settled batch settles alone, as its other writes. */
+  private activityAliasWrite(slot: number): boolean {
+    return this.entrySlots[slot]?.aliasCondDeleteSlot !== undefined
+      && this.activityBatchWriteSlots(this.currentFunction).has(slot)
+      && this.settlesSortedTargetsByActivity(this.currentFunction);
+  }
+
+  /**
+   * DS-6: [] -> [value], a read of a conditional delete's entry after a swap-remove write staged in its registers.
+   * Where the keys met, the written value sits there and not in the node the transaction spends, so the read takes
+   * the node's pending commitment, key_enc ++ value_enc, from the input that seeded them, held to the collection.
+   */
+  private emitStagedOwnerRead(node: MappingAccessNode, slotIndex: number, loc: SingleLocationData): void {
+    const collection = node.collection!;
+    const valueType = collection.innermostValueType;
+    this.emitSortedKeyHash(node, slotIndex, loc);
+    this.pushToStack('(__staged_read_hk)');
+    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(sortedaddr)');
+    this.emitSortedEntryAddress(computeCollectionHash(`${collection.name}:${collection.type.toString()}`), loc);
+    this.emitCondDeleteSeedInputIndex(slotIndex, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack();
+    for (const register of [`__entry_key_enc_${slotIndex}`, `__entry_value_enc_${slotIndex}`]) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(register))), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+    }
+    this.emit(Op.OP_CAT, loc);
+    this.popFromStack(3); // [Hk, commitment], untracked as in emitSortedSetRead
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [Hk, slot, next, value]
+    this.emit(Op.OP_2OVER, loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc);
+    if (this.sortedValueKind(valueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitSortedAbsenceBracket(loc);
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
+    this.emitDefaultValue(loc, valueType);
+    this.emit(Op.OP_ENDIF, loc);
+    this.pushToStack('(value)');
   }
 
   /** An activity-settled target's settlement: its own delete site, its write flag, or the plain transition. */
@@ -30196,9 +30325,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DUP, loc);
     this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${slotIndex}`, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emitEntrySlotAtAddressCheck(slotIndex, loc);
-    this.emit(Op.OP_VERIFY, loc);
-    this.emitFixedEntryInputIndex(slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    const chained = GenerateTargetTraversalWithLocation.chainedDeleteName(slotIndex);
+    if (this.getStackIndex(chained, true) >= 0) {
+      // DS-6: the node is the one the proof names. Away from its own input it is a write's that ran on it (the batch
+      // transition holds the two to one node), and its own slot spends no node.
+      this.emitCopyUpsertVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
+      this.emitMasterInputIndex(loc, 1); this.emit(Op.OP_ADD, loc);
+      this.pushToStack('(__cond_delete_at)');
+      this.emit(Op.OP_DUP, loc); this.emitFixedEntryInputIndex(slotIndex, loc); this.emit(Op.OP_NUMNOTEQUAL, loc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_IF, loc);
+      this.emitEntrySlotAtAddressCheck(slotIndex, loc); this.emit(Op.OP_NOT, loc); this.emit(Op.OP_VERIFY, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emitReplace(this.getStackIndex(chained), node);
+      this.popFromStack();
+      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc); this.emitTakeFirst32(loc);
+      this.pushToStack('(sortedaddr)');
+      this.emitSortedEntryAddress(computeCollectionHash(this.entrySlots[slotIndex].collectionSignature), loc);
+      this.emit(Op.OP_OVER, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack();
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.popFromStack();
+    } else {
+      this.emitEntrySlotAtAddressCheck(slotIndex, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      this.emitFixedEntryInputIndex(slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    }
     this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [Hk, c, coSlot, coNext, coValue]
@@ -31423,8 +31575,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // DS-6: a batch a conditional delete shares with writes settles each target alone.
       const softDelete = (slot: number): boolean => this.sortedEntryLayout(node, slot)?.softDelete === true;
       const sharedActivity = byActivity && targets.length > 1 && targets.some(softDelete);
-      const chain = sharedActivity ? this.chainedActivityWrites(node, targets) : undefined;
-      const chainLink = (slot: number): string => `(__vmap_chain_lower_${slot})`;
+      // DS-6: writes one call may run both of chain where they ran on one node. `below(a, b)` is set where both ran,
+      // on one proof, and a's key is the lower one.
+      const pairs = sharedActivity ? this.chainedActivityPairs(node, targets) : [];
+      const below = (lower: number, higher: number): string => `(__vmap_chain_below_${lower}_${higher})`;
+      const paired = (a: number, b: number): boolean => pairs.some(([x, y]) => (x === a && y === b)
+        || (x === b && y === a));
+      const matesOf = (slot: number): number[] => targets.filter((other) => other !== slot && paired(slot, other));
+      const earlierMatesOf = (slot: number): number[] => matesOf(slot)
+        .filter((other) => targets.indexOf(other) < targets.indexOf(slot));
+      // A chained delete reads its node at the input of a write that ran on it (its site holds the register).
+      const deleteCandidate = sharedActivity ? this.chainedActivityDelete(node, targets) : undefined;
+      const chainedDelete = deleteCandidate !== undefined && this.getStackIndex(
+        GenerateTargetTraversalWithLocation.chainedDeleteName(deleteCandidate), true,
+      ) >= 0 ? deleteCandidate : undefined;
+      const deleteMayRunWith = (slot: number): boolean => chainedDelete !== undefined
+        && this.mayRunBoth(node.body, chainedDelete, slot);
+      const chainNames = pairs.flatMap(([first, second]) => [below(first, second), below(second, first)]);
       const settled = activity !== undefined || sharedActivity;
       const aliasWrite = targets.find((slot) => {
         const owner = this.entrySlots[slot]?.aliasCondDeleteSlot;
@@ -31434,11 +31601,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const pickTracked = (name: string, extra = 0): void => {
         this.emit(encodeInt(BigInt(this.getStackIndex(name) + extra)), loc); bin(Op.OP_PICK);
       };
-      // DS-6: a `link`ed target is one write of a chained pair; its `lower` flag is set where its key is the pair's
-      // lower one, its `higher` flag where the other's is.
+      // DS-6: [] -> [1 where `other`'s key is the next one above `slot`'s among the writes that ran on one node].
+      const follows = (slot: number, other: number, mates: readonly number[]): void => {
+        pickTracked(below(slot, other));
+        for (const between of mates) {
+          if (between === other || !paired(between, other)) continue;
+          pickTracked(below(slot, between), 1); pickTracked(below(between, other), 2);
+          bin(Op.OP_BOOLAND); bin(Op.OP_NOT); bin(Op.OP_BOOLAND);
+        }
+      };
+      // DS-6: a `link`ed target is a write that may chain: on its `mates`, the writes one call may run beside it, and,
+      // where `deleted`, beside the chained delete, whose value its node takes where the delete ran on it.
       const singleTarget = (
-        slot: number, ran = false, link?: { other: number; lower: string; higher: string },
+        slot: number, ran = false, link?: { mates: readonly number[]; deleted: boolean },
       ): void => {
+        const mates = link?.mates ?? [];
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => {
             proofIndex(slot, extra);
@@ -31452,22 +31629,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
           bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
         }
-        // One logical target has no intra-batch topology: its final next must equal the authenticated old next. The
-        // lower of a chained pair links to the higher, which keeps the old next.
-        if (link === undefined) directProofField('next');
-        else {
-          pickTracked(link.lower); bin(Op.OP_IF); arg(`__internal__vmapBatchSlot_${link.other}`);
-          bin(Op.OP_ELSE); directProofField('next'); bin(Op.OP_ENDIF);
+        // One logical target has no intra-batch topology: its final next must equal the authenticated old next. A
+        // chained write links to the mate whose key follows its own; the highest keeps the old next.
+        for (const other of mates) {
+          follows(slot, other, mates); bin(Op.OP_IF); arg(`__internal__vmapBatchSlot_${other}`); bin(Op.OP_ELSE);
         }
+        directProofField('next');
+        mates.forEach(() => bin(Op.OP_ENDIF));
         arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
         directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
         bin(Op.OP_IF);
         // UPDATE: no separate predecessor output is permitted.
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
         bin(Op.OP_ELSE);
-        // The higher of a chained pair follows the lower's node, which relinks the shared node once.
-        if (link !== undefined) {
-          pickTracked(link.higher); bin(Op.OP_IF);
+        // A chained write above a mate follows that mate's node: the lowest relinks the shared node once.
+        if (mates.length > 0) {
+          mates.forEach((other, at) => {
+            pickTracked(below(other, slot), at > 0 ? 1 : 0); if (at > 0) bin(Op.OP_BOOLOR);
+          });
+          bin(Op.OP_IF);
           arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
           bin(Op.OP_ELSE);
         }
@@ -31484,14 +31664,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitVerifyCatBaseEqMaster(loc);
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
         directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
-        directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
-        if (link !== undefined) bin(Op.OP_ENDIF);
+        if (link?.deleted === true && chainedDelete !== undefined) {
+          // A chained delete that ran on this node leaves it its registers' value.
+          pickTracked(GenerateTargetTraversalWithLocation.chainedDeleteName(chainedDelete), 2);
+          arg(`__internal__vmapBatchProof_${chainedDelete}`); arg(`__internal__vmapBatchProof_${slot}`);
+          bin(Op.OP_NUMEQUAL); bin(Op.OP_BOOLAND);
+          bin(Op.OP_IF);
+          pickTracked(`__entry_key_enc_${chainedDelete}`, 2); pickTracked(`__entry_value_enc_${chainedDelete}`, 3);
+          bin(Op.OP_CAT); this.emit(encodeInt(64n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+          bin(Op.OP_ELSE); directProofField('value', 2); bin(Op.OP_ENDIF);
+        } else directProofField('value', 2);
+        bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
+        if (mates.length > 0) bin(Op.OP_ENDIF);
         bin(Op.OP_ENDIF);
         if (!ran) bin(Op.OP_ENDIF);
       };
       // A framed frame takes the general arm for a swap-remove pair too: where the keys meet, the write is a no-op
-      // its frame declares skipped, as any skipped target.
-      if (aliasWrite !== undefined && aliasOwner !== undefined && !this.readsRecordsFromFrame) {
+      // its frame declares skipped, as any skipped target. An activity-settled pair settles each target alone.
+      if (aliasWrite !== undefined && aliasOwner !== undefined && !this.readsRecordsFromFrame && !sharedActivity) {
         const fixedField = (field: 'slot' | 'next'): void => commitmentField(() => {
           this.emitFixedEntryInputIndex(aliasOwner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
         }, field);
@@ -31521,21 +31711,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.activityKeptWriteSlots.add(targets[0]);
       } else if (sharedActivity) {
         // A delete settles at its own site and close. A write's proof is its own input, so no two targets name one
-        // node: where the write ran it is its single-target transition, elsewhere it keeps that node. A pair that ran
-        // on one proof chains instead: the first spends the node, the second's slot is funded.
-        if (chain !== undefined) {
-          // [link(first), link(second)]: both ran, on one proof, and that write's key is the lower one.
-          const flagOf = (slot: number): string => GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
-          pickTracked(flagOf(chain[0])); pickTracked(flagOf(chain[1]), 1); bin(Op.OP_BOOLAND);
-          arg(`__internal__vmapBatchProof_${chain[0]}`); arg(`__internal__vmapBatchProof_${chain[1]}`);
-          bin(Op.OP_NUMEQUAL); bin(Op.OP_BOOLAND); bin(Op.OP_DUP);
-          for (const [slot, other] of [chain, [chain[1], chain[0]]]) {
+        // node: where the write ran it is its single-target transition, elsewhere it keeps that node. A swap-remove
+        // alias write runs only where its key differs from the delete's: where they meet, the node is the delete's.
+        // Writes that ran on one proof chain instead: the first in batch order spends the node, the others' slots are
+        // funded. Like the linear batch's rank rows, each links to the next key above its own, and the lowest relinks
+        // the node.
+        const flagOf = (slot: number): string => GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
+        // Past a pair, a write could be chained by a third mate: two that ran on one proof must hold distinct keys.
+        const distinctKeys = new Set(pairs.flat()).size > 2;
+        for (const [first, second] of pairs) {
+          // [below(first, second), below(second, first)].
+          pickTracked(flagOf(first)); pickTracked(flagOf(second), 1); bin(Op.OP_BOOLAND);
+          arg(`__internal__vmapBatchProof_${first}`); arg(`__internal__vmapBatchProof_${second}`);
+          bin(Op.OP_NUMEQUAL); bin(Op.OP_BOOLAND);
+          if (distinctKeys) {
+            bin(Op.OP_DUP); arg(`__internal__vmapBatchSlot_${first}`); arg(`__internal__vmapBatchSlot_${second}`);
+            bin(Op.OP_EQUAL); bin(Op.OP_BOOLAND); bin(Op.OP_NOT); bin(Op.OP_VERIFY);
+          }
+          bin(Op.OP_DUP);
+          for (const [slot, other] of [[first, second], [second, first]]) {
             arg(`__internal__vmapBatchSlot_${slot}`); bin(Op.OP_BIN2NUM);
             arg(`__internal__vmapBatchSlot_${other}`); bin(Op.OP_BIN2NUM);
             bin(Op.OP_LESSTHAN); bin(Op.OP_BOOLAND);
-            if (slot === chain[0]) bin(Op.OP_SWAP);
+            if (slot === first) bin(Op.OP_SWAP);
           }
-          this.pushToStack(chainLink(chain[0])); this.pushToStack(chainLink(chain[1]));
+          this.pushToStack(below(first, second)); this.pushToStack(below(second, first));
+        }
+        if (chainedDelete !== undefined) {
+          // A delete that ran away from its own input names the input of a write that ran on its node.
+          const writes = targets.filter((slot) => !softDelete(slot) && deleteMayRunWith(slot));
+          pickTracked(GenerateTargetTraversalWithLocation.chainedDeleteName(chainedDelete)); bin(Op.OP_IF);
+          writes.forEach((slot, at) => {
+            pickTracked(flagOf(slot), at > 0 ? 1 : 0);
+            arg(`__internal__vmapBatchProof_${chainedDelete}`); arg(`__internal__vmapBatchProof_${slot}`);
+            bin(Op.OP_NUMEQUAL); bin(Op.OP_BOOLAND);
+            if (at > 0) bin(Op.OP_BOOLOR);
+          });
+          bin(Op.OP_VERIFY); bin(Op.OP_ENDIF);
         }
         for (const slot of targets) {
           if (softDelete(slot)) {
@@ -31545,10 +31757,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitFixedEntryInputIndex(slot, loc);
           this.pushToStack('(own_input)');
           proofIndex(slot);
-          if (chain !== undefined && slot === chain[1]) {
-            // A chained second names the first's input.
+          const earlier = earlierMatesOf(slot);
+          if (earlier.length > 0) {
+            // A chained write names an earlier mate's input.
             bin(Op.OP_NUMEQUAL);
-            pickTracked(chainLink(chain[0])); bin(Op.OP_BOOLOR); pickTracked(chainLink(chain[1])); bin(Op.OP_BOOLOR);
+            for (const other of earlier) {
+              pickTracked(below(other, slot)); bin(Op.OP_BOOLOR); pickTracked(below(slot, other)); bin(Op.OP_BOOLOR);
+            }
             bin(Op.OP_VERIFY);
           } else bin(Op.OP_NUMEQUALVERIFY);
           this.popFromStack();
@@ -31557,9 +31772,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_IF);
           arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
           bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
-          const other = chain?.find((write) => write !== slot);
-          singleTarget(slot, true, other === undefined ? undefined
-            : { other, lower: chainLink(slot), higher: chainLink(other) });
+          const mates = matesOf(slot);
+          singleTarget(slot, true, mates.length === 0 && !deleteMayRunWith(slot) ? undefined
+            : { mates, deleted: deleteMayRunWith(slot) });
           bin(Op.OP_ELSE);
           this.emitEntryPreservationBody(slot, loc);
           bin(Op.OP_ENDIF);
@@ -32078,13 +32293,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_ENDIF);
       };
       // A shared batch's target counts as the node its slot spends, which a write that ran spends as its proof; with
-      // `outputs`, a write that ran adds the predecessor it relinks. A chained second spends no node and adds its own.
+      // `outputs`, a write that ran adds the predecessor it relinks. A write chained on an earlier mate spends no node
+      // and adds its own; a chained delete's slot holds no node.
       const sharedCount = (outputs: boolean): void => {
         targets.forEach((slot, index) => {
           readSlotIsNode(slot);
-          if (chain !== undefined && slot === chain[1]) {
-            pickTracked(chainLink(chain[0]), index > 0 ? 2 : 1); pickTracked(chainLink(chain[1]), index > 0 ? 3 : 2);
-            bin(Op.OP_BOOLOR);
+          const links = earlierMatesOf(slot).flatMap((other) => [below(other, slot), below(slot, other)]);
+          if (links.length > 0) {
+            links.forEach((name, at) => {
+              pickTracked(name, (index > 0 ? 2 : 1) + (at > 0 ? 1 : 0)); if (at > 0) bin(Op.OP_BOOLOR);
+            });
             if (outputs) bin(Op.OP_BOOLOR);
             else { bin(Op.OP_NOT); bin(Op.OP_BOOLAND); }
           }
@@ -32239,7 +32457,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const countOpts = linearRoute ? { expectedOnAltstack: true } : undefined;
       this.emitVerifyChunkUtxoCount(inputExpected, false, loc, addr, countOpts);
       this.emitVerifyChunkUtxoCount(expected, true, loc, addr, countOpts);
-      for (const name of [addr, inputExpected, expected, ...[...(chain ?? [])].reverse().map(chainLink)]) {
+      for (const name of [addr, inputExpected, expected, ...[...chainNames].reverse()]) {
         const depth = this.getStackIndex(name);
         this.emit(encodeInt(BigInt(depth)), loc); bin(Op.OP_ROLL); bin(Op.OP_DROP);
         this.removeFromStack(depth);
@@ -38083,6 +38301,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
       this.emitDropSettlementValue(writeInfo.keyStackName, locationData, node);
       this.emitDropSettlementValue(writeInfo.valueStackName, locationData, node);
+      const chained = GenerateTargetTraversalWithLocation.chainedDeleteName(slotIdx);
+      if (this.getStackIndex(chained, true) >= 0) this.emitDropSettlementValue(chained, locationData, node);
     }
   }
 
@@ -47475,9 +47695,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (invokedWrites.has(slotIndex)) continue;
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       // Alias writes carry their own key-inequality gate; a framed master's swap-remove write is a target as any. A
-      // guarded batch's alias write may not run where its transition does, which pins nothing at its slot (DS-6).
-      if ((info.aliasCondDeleteSlot !== undefined && !this.framedMaster && !guardedWrites.has(slotIndex))
-        || (info.runtimeAliasPriorSlots?.length ?? 0) > 0) continue;
+      // guarded batch's alias write may not run where its transition does, which pins nothing at its slot, and an
+      // activity-settled batch's settles alone (DS-6).
+      if ((info.aliasCondDeleteSlot !== undefined && !this.framedMaster && !guardedWrites.has(slotIndex)
+        && !activityWrites.has(slotIndex)) || (info.runtimeAliasPriorSlots?.length ?? 0) > 0) continue;
       if (this.collectionDefinitions.find((c) => c.name === info.collection)?.sorted !== true) continue;
       const inSingleSlotBatch = node.sortedBatchInfo?.some(
         (batch) => batch.slotIndices.length === 1 && batch.slotIndices[0] === slotIndex,

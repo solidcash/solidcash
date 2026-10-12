@@ -17,12 +17,15 @@ export function batchPredecessorCommitment(
   const proofNext = asNumber(hexToBin(predecessorCommitment.slice(64, 128)));
   let next: Uint8Array | undefined;
   for (const targetIndex of batch.slotIndices) {
-    if (value(`__internal__vmapBatchPredOut_${targetIndex}`) === -2n) continue;
+    const predOut = value(`__internal__vmapBatchPredOut_${targetIndex}`);
+    if (predOut === -2n) continue;
     const target = value(`__internal__vmapBatchSlot_${targetIndex}`);
     if (!(target instanceof Uint8Array) || target.length !== 32) return undefined;
     const number = asNumber(target);
     // This proof is itself an active target: the fixed target output owns its recreation.
     if (number === proofSlot) return undefined;
+    // A no-op target (-3), such as an absent or lent conditional delete, links no key into the gap.
+    if (predOut === -3n) continue;
     if (number > proofSlot && (proofNext === 0n || number < proofNext)
       && (next === undefined || number < asNumber(next))) next = target;
   }

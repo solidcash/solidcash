@@ -1979,9 +1979,18 @@ node spent at the delete's slot is refused at the master (AuditDS6ChainOneNode.t
 beside a key of its gap written, one key deleted and written, and the deleted key's node relinked at its old value
 (refused) are in that file too; the SDK's PredOut refresh was fixed for them after the one run, unverified.
 
+A write ahead of the delete (the write-first order, a swap-remove pair under one arm, an earlier arm or a cached
+loop's flush) is the delete's swap-remove alias write and settles the same way: it is flagged only where its key
+differs from the delete's, and may then insert. Where the keys meet the node is the delete's, and the write stages
+its value there where the delete may not run after it, so a write arm on one absent key stays refused. A swap-remove
+whose moved key is a state array's last (IterableMapping) keeps the guarded batch. Where the keys meet the alias write
+is no owner and no chain member (the SDK's alias skip); where they differ, a delete that may run beside it (a pair under
+one arm, an earlier arm) chains as above. No test covers that alias pair on one node: the alias tests keep its keys far
+apart.
+
 The three-write body costs 342 B (1391 -> 1733), the delete-then-write body 88 B (597 -> 685); other bodies, the pair's
-included, are byte-identical. The write-first order and a swap-remove pair under one arm take the alias path and keep
-the guarded batch.
+included, were byte-identical before the alias path. Alias bodies whose write and delete may run both carry the chained
+delete since (not measured).
 
 Still failing closed: two writes of one key that ran on one node (the runtime alias of `m[i] = v; m[j] = w` with
 `i == j`), more than one delete of a batch beside its writes, and a deleted node's own key beside an insert where the

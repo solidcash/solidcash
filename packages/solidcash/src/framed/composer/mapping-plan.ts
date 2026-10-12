@@ -196,8 +196,8 @@ export interface MappingDeleteRequest {
    */
   readonly encodeDefault: () => Uint8Array;
   /**
-   * True for a delete a branch guards that is its batch's one target, which a framed body settles without creating a
-   * node (DS-6): at a key the list does not hold, run or not, it keeps the node that brackets the key.
+   * True for a delete a branch guards, which a framed body settles without creating a node (DS-6): at a key the list
+   * does not hold, run or not, it keeps the node that brackets the key.
    */
   readonly guarded?: boolean;
 }

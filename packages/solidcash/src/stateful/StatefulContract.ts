@@ -8647,9 +8647,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const noOpSlots = new Set(batchNoOp ? batch.slotIndices : batch.slotIndices.filter((slotIndex) => (
           settlesByActivity && softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))));
         // DS-6: activity-settled targets whose nodes coincide spend that node once, at the slot of the target that
-        // runs (`sortedNodeOwners`, else the first). The others are lent: their slot is funded and runs nothing. Listed
-        // writes all run on the node: the first spends it and the others chain on it. A lent delete names the first
-        // owner's input, which it reads where it runs beside that write.
+        // runs (`sortedNodeOwners`, else the first that is no alias skip: a swap-remove write whose key meets its
+        // delete's runs nothing). The others are lent: their slot is funded and runs nothing. Listed writes all run on
+        // the node: the first spends it and the others chain on it. An alias skip is no chain member. A lent delete
+        // names the first owner's input, which it reads where it runs beside that write.
         const lentSlots = new Set<number>();
         const lentOwners = new Map<number, number>();
         if (settlesByActivity && batch.slotIndices.length > 1
@@ -8664,10 +8665,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const emptyDefault = /^(bool|u?int\d*)$/.test(collection.valueType);
           for (const members of [...byNode.values()].filter((group) => group.length > 1)) {
             const listed = members.filter((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex));
-            const owners = listed.length > 0 ? listed : [members[0]];
+            const first = members.find((slotIndex) => !batchAliasSkips.has(slotIndex)) ?? members[0];
+            const owners = listed.length > 0 ? listed : [first];
             if (overrides?.sortedNodeOwners === undefined) {
-              sortedNodeOwnerAlternatives.push(...members.slice(1).map((slotIndex) => ({ owners: [slotIndex] })));
-              const memberWrites = members.filter((slotIndex) => !softDeleteSlots.includes(slotIndex));
+              sortedNodeOwnerAlternatives.push(...members.filter((member) => member !== first)
+                .map((slotIndex) => ({ owners: [slotIndex] })));
+              const memberWrites = members.filter((slotIndex) => !softDeleteSlots.includes(slotIndex)
+                && !batchAliasSkips.has(slotIndex));
               if (memberWrites.length > 1) sortedNodeOwnerAlternatives.push({ owners: memberWrites });
               const present = members.filter((slotIndex) => softDeleteSlots.includes(slotIndex)
                 && !noOpSlots.has(slotIndex));

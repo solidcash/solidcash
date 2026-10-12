@@ -5515,6 +5515,11 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** The raw entry NFT commitment currently planned for a slot's output, if any. */
+  getEntryRawCommitment(slotIndex: number): string | undefined {
+    return this.entryRawCommitments.get(slotIndex);
+  }
+
   /** Mark an entry slot's commitment as known exactly (injected), so auto-derivation must not re-derive it. */
   pinEntrySlot(slotIndex: number): this { this.pinnedEntrySlots.add(slotIndex); return this; }
 

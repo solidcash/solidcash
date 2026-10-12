@@ -369,6 +369,9 @@ const EXTERNAL_CALL_LOOP_WALK_EXCLUDED_KEYS = new Set([
 
 const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 
+/** A sorted-batch target its own conditional-delete site and close settle in place (see sortedTargetActivity). */
+const CONDITIONAL_DELETE_ACTIVITY = '(conditional delete)';
+
 /**
  * How one EVM head word of a Solidity-compat call's payload maps to the callee's argument push; `dynamic` is a
  * string/bytes offset to its length-prefixed tail.
@@ -2344,6 +2347,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // one "batch ran" flag gates whole-batch node preservation on the arm not taken: the direct epilogue, or a framed
   // master's batch transition.
   private conditionalSortedBatchFlags: Map<number, readonly number[]> = new Map();
+  // Flagged slots whose arm-not-taken preservation the activity-settled batch verifier already emitted (DS-6).
+  private activityKeptWriteSlots: Set<number> = new Set();
   // Dynamic (chunk-backed) writes whose value+A$len slots were pushed before a conditional (branch/switch) with
   // the current value, so a conditionally-taken write replaces them in place (survives the branch) - by var name.
   private preAllocatedDynamicWrites: Set<string> = new Set();
@@ -8319,6 +8324,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.conditionalSortedWriteFlagSlots = new Set();
     this.framedSkippableSlots = new Set();
     this.conditionalSortedBatchFlags = new Map();
+    this.activityKeptWriteSlots = new Set();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
     this.conditionalEmitIndices = new Set();
@@ -29746,6 +29752,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (delete claimed[k] writes the empty/false tail) and value mappings alike, single- or composite-key.
     if (node.collection?.sorted) {
       const slotIndex = node.entrySlotIndex;
+      if (this.condDeleteSlots.has(slotIndex) && !this.isDefineSubTraversal
+        && this.settlesSortedTargetsByActivity(this.currentFunction)
+        && this.vmapUpsertWitnessSnapshotNames?.includes(`__internal__vmapBatchSlot_${slotIndex}`)) {
+        this.emitBoundSortedCondDelete(node, slotIndex, { location: node.location, positionHint: PositionHint.END });
+        return node;
+      }
       if (this.condDeleteSlots.has(slotIndex)) {
         // Conditional vmap delete: the preallocated key register contains the complete input commitment so the
         // untaken path preserves it exactly. On the taken path authenticate H(key) against input.slot, retain
@@ -29855,13 +29867,83 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * DS-6: a direct body whose conditional deletes each own a one-target sorted batch settles its one-target batches
+   * by what ran, never behind a guard the spender controls. Read from the layout, as the SDK reads it.
+   */
+  private settlesSortedTargetsByActivity(node: FunctionDefinitionNode): boolean {
+    if (!this.directConvention || this.framedMaster || this.readsRecordsFromFrame
+      || this.isCompilerMessageBusRoute(node)) return false;
+    const batches = node.sortedBatchInfo ?? [];
+    const deletes = (node.blockLayout?.slots ?? []).flatMap((slot) => (slot.kind === 'entry' && slot.softDelete
+      && slot.slotIndex !== undefined && batches.some((batch) => batch.slotIndices.includes(slot.slotIndex!))
+      ? [slot.slotIndex] : []));
+    return deletes.length > 0 && deletes.every((slot) => batches.some((batch) => (
+      batch.slotIndices.length === 1 && batch.slotIndices[0] === slot)));
+  }
+
+  /** An activity-settled target's settlement: its own delete site, its write flag, or the plain transition. */
+  private sortedTargetActivity(slot: number): string | undefined {
+    if (this.condDeleteSlots.has(slot)) return CONDITIONAL_DELETE_ACTIVITY;
+    const flag = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
+    return this.conditionalSortedWriteFlagSlots.has(slot) && this.getStackIndex(flag, true) >= 0 ? flag : undefined;
+  }
+
+  /**
+   * A conditional sorted delete of an activity-settled body: the slot witness names the key and the input read is a
+   * node of the collection. A present key keeps its node's slot and successor with the default value; an absent
+   * key's input is its predecessor, which must bracket the key and stays as it is.
+   */
+  private emitBoundSortedCondDelete(node: MappingDeleteNode, slotIndex: number, loc: SingleLocationData): void {
+    this.emitSortedKeyHash(node, slotIndex, loc);
+    this.pushToStack('(__cond_delete_hk)');
+    this.emit(Op.OP_DUP, loc);
+    this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${slotIndex}`, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitEntrySlotAtAddressCheck(slotIndex, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emitFixedEntryInputIndex(slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [Hk, c, coSlot, coNext, coValue]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc); // present
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_NOTIF, loc); this.emitSortedPredecessorBracket(loc); this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_CAT, loc); // [Hk, c, coSlot||coNext]
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_NIP, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); // [present, key]
+    this.popFromStack();
+    this.pushToStack('(__cond_delete_present)');
+    this.pushToStack('(value)');
+    this.emitReplace(this.getStackIndex(`__entry_key_enc_${slotIndex}`), node);
+    this.popFromStack();
+    const vt = node.collection!.innermostValueType;
+    this.emitDefaultValue(loc, vt);
+    this.pushToStack('(value)');
+    if (this.isChunkableValue(vt)) this.emitChunkableValueTail(loc);
+    else if (this.sortedValueKind(vt) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+    // An absent key keeps the input commitment whole.
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_NOTIF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emitReplace(this.getStackIndex(`__entry_value_enc_${slotIndex}`), node);
+    this.popFromStack();
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+  }
+
+  /**
    * Verify an atomic fixed-write vmap transition using only stack-neutral, freshly-introspected fields. Keeping no
    * parsed commitment fields across checks avoids coupling this verifier to the body's tracked-stack lifetime.
    */
   private emitGuardedSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
     const targets = new Set(node.sortedBatchInfo!.flatMap((batch) => batch.slotIndices));
-    const guard = [...targets].every((slot) => node.blockLayout?.slots.some(
-      (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional,
+    // DS-6: an activity-settled body runs every check; the guard's inputs are the spender's.
+    const guard = !this.settlesSortedTargetsByActivity(node) && [...targets].every((slot) => (
+      node.blockLayout?.slots.some((layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional)
     )) ? node.blockLayout?.slots.find((layout) => layout.kind === 'entry' && layout.softDelete) : undefined;
     const loc = { location: node.location, positionHint: PositionHint.END } as SingleLocationData;
     this.restoreVMapWitnessSnapshots(node, loc);
@@ -31031,15 +31113,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       bin(Op.OP_FROMALTSTACK); bin(Op.OP_ADD); bin(Op.OP_TOALTSTACK);
     };
 
+    const byActivity = this.settlesSortedTargetsByActivity(node);
     for (const batch of node.sortedBatchInfo ?? []) {
       const collectionHash = computeCollectionHash(this.entrySlots[batch.slotIndices[0]].collectionSignature);
       const targets = batch.slotIndices;
+      const activity = byActivity && targets.length === 1 ? this.sortedTargetActivity(targets[0]) : undefined;
       const aliasWrite = targets.find((slot) => {
         const owner = this.entrySlots[slot]?.aliasCondDeleteSlot;
         return owner !== undefined && targets.includes(owner);
       });
       const aliasOwner = aliasWrite === undefined ? undefined : this.entrySlots[aliasWrite].aliasCondDeleteSlot;
-      const singleTarget = (slot: number): void => {
+      const singleTarget = (slot: number, ran = false): void => {
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => {
             proofIndex(slot, extra);
@@ -31047,9 +31131,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }, field);
         };
         // Message-bus routes expose the union of all handlers in one ABI. A target unused by the selected handler
-        // has no proof input or output and is authenticated by the same -2 sentinel as a general batch target.
-        arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
-        bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
+        // has no proof input or output and is authenticated by the same -2 sentinel as a general batch target. A
+        // write known to have run has already refused it.
+        if (!ran) {
+          arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
+          bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
+        }
         // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
         directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
         directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
@@ -31072,7 +31159,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
         directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
         bin(Op.OP_ENDIF);
-        bin(Op.OP_ENDIF);
+        if (!ran) bin(Op.OP_ENDIF);
       };
       // A framed frame takes the general arm for a swap-remove pair too: where the keys meet, the write is a no-op
       // its frame declares skipped, as any skipped target.
@@ -31090,6 +31177,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_NUMEQUAL); bin(Op.OP_EQUALVERIFY);
       } else if (targets.length === 1 && this.readsRecordsFromFrame) {
         this.emitFramedSingleTargetTransition(targets[0], collectionHash, loc);
+      } else if (activity === CONDITIONAL_DELETE_ACTIVITY) {
+        // Its delete site and close settle the node in place; the census below counts it where it sits.
+      } else if (activity !== undefined) {
+        // A write that ran is its transition, whose upsert the inactive sentinel would skip; one that did not keeps
+        // its node.
+        this.emit(encodeInt(BigInt(this.getStackIndex(activity))), loc); bin(Op.OP_PICK);
+        bin(Op.OP_IF);
+        arg(`__internal__vmapBatchPredOut_${targets[0]}`); this.emit(encodeInt(-2n), loc);
+        bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
+        singleTarget(targets[0], true);
+        bin(Op.OP_ELSE);
+        this.emitEntryPreservationBody(targets[0], loc);
+        bin(Op.OP_ENDIF);
+        this.activityKeptWriteSlots.add(targets[0]);
       } else if (targets.length === 1) {
         singleTarget(targets[0]);
       } else if (batch.linear && targets.length === 2) {
@@ -31527,6 +31628,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.directConvention && !this.isCompilerMessageBusRoute(node)) {
         for (const read of readSlots) {
           for (const target of targets) {
+            if (activity === CONDITIONAL_DELETE_ACTIVITY) continue; // no proof index
             // Tracked, so the proof index's picks run with no untracked item above the model.
             this.emitFixedEntryInputIndex(read, loc);
             this.pushToStack('(read_input)');
@@ -31536,7 +31638,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
         }
       }
-      const directSmallCensus = (targets.length === 1 || (targets.length === 2 && batch.linear === true))
+      const directSmallCensus = activity === undefined
+        && (targets.length === 1 || (targets.length === 2 && batch.linear === true))
         && aliasWrite === undefined && this.directConvention
         && !this.isCompilerMessageBusRoute(node)
         && !runtimeCollections.has(batch.collection)
@@ -31557,7 +31660,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         } else this.emitPickTrackedFromBottom(addr, loc);
         bin(Op.OP_EQUAL);
       };
-      if (readSlots.length > 0) pushAddr();
+      // An activity-settled target counts as its transition where its write ran, else as the node its slot keeps.
+      const targetCount = (slot: number, outputs: boolean): void => {
+        if (activity === CONDITIONAL_DELETE_ACTIVITY) { readSlotIsNode(slot); return; }
+        this.emit(encodeInt(BigInt(this.getStackIndex(activity!))), loc); bin(Op.OP_PICK);
+        bin(Op.OP_IF);
+        if (outputs) {
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_1ADD);
+        } else {
+          arg(`__internal__vmapBatchProof_${slot}`); bin(Op.OP_0); bin(Op.OP_GREATERTHAN);
+        }
+        bin(Op.OP_ELSE);
+        readSlotIsNode(slot);
+        bin(Op.OP_ENDIF);
+      };
+      if (readSlots.length > 0 || activity !== undefined) pushAddr();
       const expected = `(__vmap_batch_expected_${batch.collection})`;
       // A linear compose batch's alias rows (predOut -2) share their owner's node and add no output.
       const composeAliasRows = batch.linear && this.composeBatchSlots(targets[0]) !== undefined
@@ -31568,7 +31685,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_NUMEQUAL); bin(Op.OP_SUB);
         }
       };
-      if (directSmallCensus) {
+      if (activity !== undefined) {
+        targetCount(targets[0], true);
+      } else if (directSmallCensus) {
         // Every active write contributes one output and each nonnegative predOut one recreated predecessor.
         for (const slot of targets) {
           arg(`__internal__vmapBatchPredOut_${slot}`);
@@ -31610,7 +31729,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPickVMapWitness(vmapRuntimeOutputCountName(batch.collection), loc);
         this.emit(Op.OP_ADD, loc);
       }
-      for (let i = 0; !directSmallCensus && i < targets.length; i++) {
+      for (let i = 0; !directSmallCensus && activity === undefined && i < targets.length; i++) {
         const slot = targets[i];
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP);
         bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); // [pout, include]
@@ -31636,7 +31755,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       const inputExpected = `(__vmap_batch_input_expected_${batch.collection})`;
-      if (directSmallCensus) {
+      if (activity !== undefined) {
+        targetCount(targets[0], false);
+      } else if (directSmallCensus) {
         arg(`__internal__vmapBatchProof_${targets[0]}`);
         if (targets.length === 1) {
           bin(Op.OP_0); bin(Op.OP_GREATERTHAN);
@@ -31656,7 +31777,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(0n), loc);
       }
       this.pushToStack(inputExpected);
-      for (let i = 0; !directSmallCensus && i < targets.length; i++) {
+      for (let i = 0; !directSmallCensus && activity === undefined && i < targets.length; i++) {
         const slot = targets[i];
         arg(`__internal__vmapBatchProof_${slot}`); bin(Op.OP_DUP);
         bin(Op.OP_0); bin(Op.OP_GREATERTHAN); // [proof, include]
@@ -31687,7 +31808,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         cardinalityScanned.add(batch.collection);
       }
 
-      if (readSlots.length === 0) pushAddr();
+      if (readSlots.length === 0 && activity === undefined) pushAddr();
       const countOpts = linearRoute ? { expectedOnAltstack: true } : undefined;
       this.emitVerifyChunkUtxoCount(inputExpected, false, loc, addr, countOpts);
       this.emitVerifyChunkUtxoCount(expected, true, loc, addr, countOpts);
@@ -47041,6 +47162,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitConditionalSortedWritePreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     for (const i of [...this.conditionalSortedWriteFlagSlots].sort((a, b) => a - b)) {
+      if (this.activityKeptWriteSlots.has(i)) continue;
       const flagName = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(i);
       const flagIndex = this.getStackIndex(flagName, true);
       if (flagIndex < 0) continue;

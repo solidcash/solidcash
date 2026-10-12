@@ -14,6 +14,7 @@ import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { AssembledWitnessBag } from './sc-rebind-create-builder-assembled-witnesses.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
+import { dropSkippedConditionalInserts } from './conditional-sorted-activity.js';
 import {
   isValueChunkWriteReady,
   persistedValueChunkWriteState,
@@ -372,6 +373,18 @@ export async function runCreateBuilderDerivePass(
       functionName, pass: 1, ms: Date.now() - firstDeriveStarted,
       vmErrored: deriveResult.vmErrored,
     });
+    // DS-6: a conditional insert whose arm did not run keeps its node, so its planned relink leaves the plan.
+    if (entryAbiFunction === abiFunction && dropSkippedConditionalInserts(builder, abiFunction, finalArgs)) {
+      bag.stateInputUnlocker = buildStateInputUnlocker();
+      builder._setMasterUnlocker(bag.stateInputUnlocker);
+      deriveResult = await host.deriveFullTransactionState(
+        builder, requiredNftIndices, ecGroupsForDerive, ecCallsForDerive,
+        entryAccessesForDerive, emitInfos.length > 0 ? emitInfos : undefined,
+        eventBlockLayoutForDerive, derivTransferCount, derivTokenOps, delegatecallInputIndex,
+        osGroupsForDerive, timingEnabled,
+        onChainState.state, true,
+      );
+    }
     const dynamicLayoutChanged = builder.getDynamicLayoutRevision() !== layoutRevisionBeforeDerive;
     if (dynamicLayoutChanged
     || (builder as unknown as { __returnWitnessesReconciled?: boolean }).__returnWitnessesReconciled) {

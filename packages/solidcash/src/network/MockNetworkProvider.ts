@@ -6,7 +6,7 @@ import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
-import type { ConsensusLimits, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
+import type { ConsensusLimits, LedgerOutput, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
@@ -590,6 +590,24 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   async getRawTransaction(txid: string): Promise<string> {
     return this.indexer.getRawTx(txid)!;
+  }
+
+  /** The live output at `txid:vout` in this simulator's own ledger: `addUtxo` coins carry no transaction. */
+  async getLedgerOutput(txid: string, vout: number): Promise<LedgerOutput | undefined> {
+    const entry = this.indexer.storage.getUtxoByOutpoint(`${txid.toLowerCase()}:${vout}`);
+    if (entry === undefined) return undefined;
+    const token = entry.tokenData;
+    return {
+      lockingBytecode: entry.lockingBytecode,
+      satoshis: entry.satoshis,
+      ...(token === undefined ? {} : {
+        token: {
+          amount: token.amount,
+          category: token.category,
+          ...(token.nft === undefined ? {} : { nft: { ...token.nft } }),
+        },
+      }),
+    };
   }
 
   async sendPreparedTransaction(prepared: PreparedTransaction): Promise<string> {

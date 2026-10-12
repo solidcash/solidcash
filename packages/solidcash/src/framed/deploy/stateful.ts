@@ -35,6 +35,7 @@ import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/du
 import { deriveFramedGenesis } from './genesis.js';
 import { resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
+import { ownCoinRefusal } from './own-coin.js';
 import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
 
 /** Raised when a framed deployment cannot be built from the artifact or the options. */
@@ -72,6 +73,13 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     );
   }
 
+  // The category is the funding coin's txid, so the coin is proven at the funder's own lock before anything is
+  // signed: a coin a provider lists there but that sits at another lock would hand the category to its owner.
+  const funderLock = options.funder.generateLockingBytecode();
+  const coinRefusal = await ownCoinRefusal(
+    options.provider, options.fundingUtxo, funderLock, { role: 'funder', tokenFree: true });
+  if (coinRefusal !== undefined) throw new FramedDeployError(coinRefusal);
+
   const categoryId = options.fundingUtxo.txid;
   const category = new Uint8Array(hexToBin(categoryId));
   const validatorProgram = framedValidator.buildValidatorProgram();
@@ -87,7 +95,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // `balances[msg.sender]` (a token's mint) or `owner = msg.sender` would otherwise seed the placeholder. The lock the
   // deployment states wins - a Signer's own, which its later calls carry - so the coin that funds the genesis does
   // not decide it; a deployment that states none takes the funder's lock when it is a P2PKH lock.
-  const funderLock = options.funder.generateLockingBytecode();
   const senderLockingBytecode = options.senderLockingBytecode ?? (funderLock.length === 25 ? funderLock : undefined);
   // Every sorted collection an entry can write needs its empty head sentinel minted here, because a first insert
   // splices beside it and a head is minted only at genesis. A collection the constructor's own plan writes carries

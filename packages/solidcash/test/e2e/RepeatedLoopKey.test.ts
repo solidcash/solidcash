@@ -110,10 +110,13 @@ describe('a key a sorted-mapping loop repeats', () => {
     expect(await book.bal(7n)).toBe(42n);
   });
 
-  it('refuses two spellings of one key outside a loop before anything is signed', async () => {
+  it('composes two spellings of one key outside a loop; a read after the write still refuses', async () => {
     const book = await deploy('fill');
-    await expect(book.call('transfer', 7n, 7n, 2n)).rejects.toThrow(/duplicate slot/);
-    await expect(book.call('setThenRead', 7n, 7n, 11n)).rejects.toThrow(/Duplicate stateful input/);
+    const before = await book.bal(7n);
+    await book.call('transfer', 7n, 7n, 2n);
+    expect(await book.bal(7n)).toBe(before);
+    // A read of the key written through another spelling is not composed: it fails closed, in derivation or preflight.
+    await expect(book.call('setThenRead', 7n, 7n, 11n)).rejects.toThrow(/Duplicate stateful input|preflight failed/);
     await book.call('transfer', 7n, 9n, 2n);
     await book.call('setThenRead', 7n, 9n, 11n);
     expect([await book.bal(7n), await book.bal(9n), await book.seen()]).toStrictEqual([11n, 6n, 6n]);

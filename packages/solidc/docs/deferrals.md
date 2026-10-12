@@ -1924,22 +1924,20 @@ read-only; satoshi and fungible-token movements of the callee are not pinned wit
 **Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions; it needs a
 decision, then an adversarial review like the other covenant changes.
 
-## A framed proxy's `initialize` runs as a third transaction (audit SDKFRAMED-2 residual, 2026-10-12)
+## A framed proxy's `initialize` that calls another contract is not atomic (audit SDKFRAMED-2 residual, 2026-10-12)
 
-**What:** `deployFramedProxy` runs `initialize` as a separate hop after the implementation and proxy geneses.
-a77f58421 moved the coin proofs before the first genesis. The interim fix (2026-10-12) signs all three through a
-staging overlay (`framed/proxy/staged-broadcasts.ts`) that holds each broadcast and serves the held transactions to
-the hop's planning, so every refusal (record counts, the "sends value from a loop" check, planning errors, an
-unaccepted hop) is raised before anything is broadcast, and a deploy without `callerFunding` is refused. Remaining:
-the three still relay as three transactions, so a watcher who sees the proxy genesis can race the hop sent right
-after it, and a provider that accepts the geneses but refuses the hop leaves the proxy uninitialized. The direct
-(non-framed) deploy in `sc-deploy.ts` has the same unproven-coin shape that SDKFRAMED-1 closed for framed deploys;
-no audit row names it.
+**What:** a framed proxy deploy is atomic by default (d9251997a): `initialize` is evaluated off-chain like a framed
+constructor and the proxy genesis mints the records it leaves, so an uninitialized proxy never exists on chain; a
+reverting initializer broadcasts nothing. An initializer that calls another contract changes state a genesis cannot
+mint, so the default refuses it and names `initializeAs: 'hop'`. That opt-in runs the older flow: both geneses and
+the hop are signed and checked before any broadcast (6dad02a18), then relayed as three transactions, so a watcher who
+sees the proxy genesis can race the hop until it confirms. The direct (non-framed) deploy in `sc-deploy.ts` has the
+same unproven-coin shape that SDKFRAMED-1 closed for framed deploys; no audit row names it.
 
-**Proposed design:** run `initialize` as the proxy genesis's own constructor frame, so the records are minted
-initialized, as the plain framed deploy does.
+**Proposed design:** validator rules for frames inside a genesis (the proxy master is not an input there), so a
+calling initializer can run as the proxy genesis's own frame.
 
-**Why deferred:** it is a protocol change to the proxy genesis.
+**Why deferred:** it is a validator protocol extension; the default path no longer needs it.
 
 ## A conditional delete beside a write in one sorted batch refuses keys whose nodes coincide (DS-6 residual, 2026-10-12)
 

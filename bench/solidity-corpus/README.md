@@ -118,10 +118,12 @@ pure first slice below, and the stateful slice after it.
   outcome: `create_memory_array_too_large` allocates 10^77 bytes in both, and a plain `TransactionBuilder.send()`
   meets the SDK's finalized byte gate, which applies the real 10,000-byte input limit whatever the provider's
   profile (no gate receipt is registered for it).
-- **Runtime under real limits**: the SDK keys its private-network fast paths on `maximumInputBytes > 10,000`
-  (`createVirtualMachine.ts` installs the cached P2SH and invoke evaluators only above it; probe derivation in
-  `faithful-probe-trace.ts` uses libauth `debug()` traces at or below it), so at the real limit every spend takes
-  the live-network path and runs several times slower. The default `FIXTURE_TIMEOUT_MS` is 600 s (was 120 s).
+- **Runtime under real limits**: the mock's fast VM paths (`createVirtualMachine.ts` cached P2SH and invoke
+  evaluators and operation-limit check, the prepared transaction verifier) follow its `simulator` flag and enforce
+  the published limits. Probe derivation still keys on `maximumInputBytes > 10,000` (`evaluateProbeTrace` in
+  `faithful-probe-trace.ts`, the send discovery probe and the deploy probe take libauth `debug()` traces at or
+  below it), so a real-limit run takes the live-network derivation and is still slower than a relaxed one. The
+  default `FIXTURE_TIMEOUT_MS` is 600 s (was 120 s).
 - **Limits of the wrapper**: the target is reached through an internal call, so `msg.data` read by an internal
   function (it sees the wrapper's calldata) and entry-point-only paths can refuse or differ for wrapper reasons;
   those show up as refusals or mismatches with their reason, not as silent passes. `msg.sig` does not leak the

@@ -785,7 +785,8 @@ async function main() {
   const LIMIT = process.env.LIMIT ? Number(process.env.LIMIT) : Infinity;
   const FILTER = process.env.FILTER || '';
   const SLICE = process.env.SLICE || ''; // pure | stateful: run one slice only
-  // Real size limits keep the SDK on its live-network VM path (no fast evaluators, full debug() probe traces).
+  // Real size limits keep the SDK's live-network probe derivation (full debug() traces); the mock's own VM paths
+  // stay fast at any limits (its `simulator` flag) and enforce them.
   const FIXTURE_TIMEOUT_MS = process.env.FIXTURE_TIMEOUT_MS ? Number(process.env.FIXTURE_TIMEOUT_MS) : 600000;
   const WORKER_COUNT = process.env.CORPUS_WORKERS ? Number(process.env.CORPUS_WORKERS) : 8;
   const started = Date.now();

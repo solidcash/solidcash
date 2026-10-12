@@ -1939,7 +1939,7 @@ calling initializer can run as the proxy genesis's own frame.
 
 **Why deferred:** it is a validator protocol extension; the default path no longer needs it.
 
-## Sorted batch targets sharing a node: two that both run (DS-6 residual, 2026-10-12)
+## Sorted batch targets sharing a node: more than a pair that run (DS-6 residual, 2026-10-12)
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
 two-target batch. Each target settles alone: the delete at its own site as a lone delete does (06c633c6d), each
@@ -1948,17 +1948,26 @@ collection counts add per target. Every write's proof must be its own slot's inp
 node. Where the targets' nodes coincide the SDK spends the node once, at the slot of the target that runs, and funds
 the other target's slot: a funded slot is no node, so its existence-gated checks skip and the counts leave it out.
 The SDK places that node at the first target's slot and, where the probe refuses that, rebuilds with each other
-target as its owner (`sortedNodeOwners`); the covenant is unchanged. One key (present or absent), a write landing in
-the deleted key's gap, a deleted key absent in the written key's gap and two distinct absent keys in one gap settle
-in each arm (AuditDS6MultiTargetDelete.test.ts). The last was refused where the absent deleted key sorts before the
-written one: the SDK relinked the gap's predecessor to the lent delete's key (`batchPredecessorCommitment` counted
-its -3 row as an insert), so the rebuilt placement's probe failed too. A -3 row now links nothing. One residual
-fails closed: two targets that both run on one node, such as two writes in one arm on adjacent keys; each needs the
-node at its own slot.
+target as its owner (`sortedNodeOwners`). One key (present or absent), a write landing in the deleted key's gap, a
+deleted key absent in the written key's gap and two distinct absent keys in one gap settle in each arm
+(AuditDS6MultiTargetDelete.test.ts). The last was refused where the absent deleted key sorts before the written one:
+the SDK relinked the gap's predecessor to the lent delete's key (`batchPredecessorCommitment` counted its -3 row as an
+insert), so the rebuilt placement's probe failed too. A -3 row now links nothing.
+
+Two writes one call may run both (`else { m[i] = v; m[j] = w; }`, `chainedActivityWrites`) chain where both ran on
+one proof: the first spends the node, the second's slot is funded and its proof is the first's input. As in the
+linear two-target arm, the lower key links to the higher, which keeps the node's old successor, and only the lower
+relinks the node (as its own update, or by recreating it); the higher recreates nothing. The counts take the
+second's slot as no input and one output, so a node spent there is refused. The SDK adds the pair as an owner set to
+its rebuilds. Two absent keys in one gap and a present key with an absent key in its gap settle, in either source
+order and where the deleted key's node is theirs; a forged link, the shared node dropped, a node spent at the funded
+slot and an extra node beside the chain are refused at the master (AuditDS6TwoWritesOneNode.test.ts). The shape
+costs 110 B; other bodies are byte-identical. Still failing closed: more than two writes that run on one node, or a
+delete that runs on the node a write that ran spends; each needs the node at its own slot.
 
 The write-first order and a swap-remove pair under one arm take the alias path and keep the guarded batch.
 
-**Proposed design:** settle the targets that ran on one node as one transition, as the linear two-target arm
-settles two writes in one gap, behind their ran flags.
+**Proposed design:** extend the chain past a pair (the linear batch's rank rows), and let a delete that ran chain as
+a pair member.
 
-**Why deferred:** it is a covenant change and no tested shape runs two targets in one arm.
+**Why deferred:** it is a covenant change and no tested shape runs more than a pair on one node.

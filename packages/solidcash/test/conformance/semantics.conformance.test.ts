@@ -205,3 +205,16 @@ describe('semantics: conditionals of integer literals', () => {
   it('int8 overflow', () => reverts('ternary-mobile-signed-overflow', 'bool c', 'int16',
     'return (c ? -100 : -1) + (c ? -100 : -1);', [true]));
 });
+
+// bytesN(bytes) keeps the first N bytes and right-pads a shorter value with zeros (Solidity >= 0.8.5).
+const APPROVE = `0x095ea7b3${'00'.repeat(12)}${'11'.repeat(20)}${'00'.repeat(31)}01`;
+describe('semantics: bytesN of dynamic bytes', () => {
+  it('bytes4 of longer data truncates', () => run('bytes4-long', 'bytes memory data', 'bytes4',
+    'return bytes4(data);', [APPROVE]));
+  it('bytes4 of shorter data pads', () => run('bytes4-short', 'bytes memory data', 'bytes4',
+    'return bytes4(data);', ['0x1234']));
+  it('bytes32 of empty data is zero', () => run('bytes32-empty', 'bytes memory data', 'bytes32',
+    'return bytes32(data);', ['0x']));
+  it('a selector deny-list sees the selector', () => run('bytes4-deny-list', 'bytes memory data', 'bool',
+    'return bytes4(data) != bytes4(0x095ea7b3);', [APPROVE]));
+});

@@ -206,11 +206,16 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   // bool -> BytesType: no-op (bool 0/1 is already valid bytes)
   if (from === PrimitiveType.BOOL && to instanceof BytesType) return [];
 
-  // BytesType -> BytesType: equal bounds or an unbounded side is a no-op (same representation).
+  // BytesType -> BytesType: equal bounds or an unbounded target is a no-op (same representation).
   // Shrinking keeps the leftmost M bytes (Solidity left-aligned truncation); widening right-pads
   // with (M-N) zero bytes. e.g. bytes4(keccak256(x)) -> first 4 bytes of the hash.
+  // Dynamic bytes -> bytesM pads with M zero bytes, then keeps the first M (Solidity >= 0.8.5).
   if (from instanceof BytesType && to instanceof BytesType) {
-    if (from.bound === undefined || to.bound === undefined || from.bound === to.bound) return [];
+    if (to.bound === undefined || from.bound === to.bound) return [];
+    if (from.bound === undefined) {
+      const m = encodeInt(BigInt(to.bound));
+      return [encodeInt(0n), m, Op.OP_NUM2BIN, Op.OP_CAT, m, Op.OP_SPLIT, Op.OP_DROP];
+    }
     if (to.bound < from.bound) return [encodeInt(BigInt(to.bound)), Op.OP_SPLIT, Op.OP_DROP];
     return [new Uint8Array(to.bound - from.bound), Op.OP_CAT];
   }

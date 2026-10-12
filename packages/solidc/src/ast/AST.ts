@@ -281,6 +281,9 @@ export interface EntryAccessInfo {
   // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
   // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
   runtimeAliasPriorSlots?: number[];
+  // Direct-convention pure sorted read: when its own entry input holds no node of the collection, it proves its key
+  // with this earlier slot's proof input (two slots needing one node). The SDK funds the read's own input.
+  sharedProofPriorSlot?: number;
   // A sorted (vmap) mapping WRITE of an unbounded bytes/string value from a direct function parameter. The entry
   // commitment stores only len ++ sha256(value); the SDK persists the full value as chunks (P5b) using this
   // param's runtime argument. Undefined when the value is a computed expression (chunk persistence guarded off).

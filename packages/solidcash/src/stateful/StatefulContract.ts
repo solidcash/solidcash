@@ -8530,6 +8530,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }))));
       const batchAliasSkips = new Set(batchAliasOwners.keys());
       for (const slotIndex of batchAliasSkips) runtimeMessageBusAliasSkipSlots.add(slotIndex);
+      // A direct pure read whose proof node is the one its compiler-named prior slot spends reads that input; its
+      // own input is funded instead of spending the node twice.
+      for (const entry of entryNfts) {
+        const prior = entryAccessForSlot(entry.slotIndex)?.sharedProofPriorSlot;
+        const owner = prior === undefined ? undefined : entryNfts.find((candidate) => candidate.slotIndex === prior);
+        if (!entry.utxo || !owner?.utxo || runtimeMessageBusAliasSkipSlots.has(owner.slotIndex)
+          || entry.collection !== owner.collection) continue;
+        if (`${entry.utxo.txid.toLowerCase()}:${entry.utxo.vout}`
+          !== `${owner.utxo.txid.toLowerCase()}:${owner.utxo.vout}`) continue;
+        runtimeMessageBusAliasSkipSlots.add(entry.slotIndex);
+        entry.exists = false;
+        entry.utxo = undefined;
+      }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
         console.error('message-bus-route-entry-plan', entryNfts.map((entry) => ({

@@ -145,3 +145,20 @@ describe('semantics: inline array literals indexed in place', () => {
   it('uint8 overflow on an element', () => reverts('inline-mobile-overflow', 'uint256 i', 'uint256',
     'return [255, 1][i] + 1;', [0n]));
 });
+
+// A conditional of integer literals has their common mobile type (`c ? 63 : 255` is uint8), so arithmetic on it is
+// checked at that width, also when its condition is a literal. solc rejects mixed signs (`c ? -1 : 100`).
+describe('semantics: conditionals of integer literals', () => {
+  it('uint8 overflow under literal conditions', () => reverts('ternary-mobile-literal', '', 'uint16',
+    'return (true ? 63 : 255) + (false ? 63 : 255);', []));
+  it('uint8 overflow under bool conditions', () => reverts('ternary-mobile-bool', '', 'uint16',
+    'bool yes = true; bool no = false; return (yes ? 63 : 255) + (no ? 63 : 255);', []));
+  it('a uint8 sum that fits', () => run('ternary-mobile-fits', 'bool c', 'uint16',
+    'return (c ? 63 : 255) + (c ? 63 : 255);', [true]));
+  it('a literal beside a typed branch', () => run('ternary-mobile-mixed', 'bool c, uint8 x', 'uint16',
+    'return (c ? x : 63) + 1;', [true, 200n]));
+  it('an int8 sum that fits', () => run('ternary-mobile-signed', 'bool c', 'int16',
+    'return (c ? -1 : -100) + (c ? -1 : -28);', [false]));
+  it('int8 overflow', () => reverts('ternary-mobile-signed-overflow', 'bool c', 'int16',
+    'return (c ? -100 : -1) + (c ? -100 : -1);', [true]));
+});

@@ -5260,6 +5260,7 @@ export default class AstBuilder
     const ifFalse = this.visit(ctx._ifFalse);
     const ternary = new TernaryOpNode(condition, ifTrue, ifFalse);
     ternary.location = Location.fromCtx(ctx);
+    ternary.sourceConditional = true;
     if (!this.evmCompat
       && ((ifTrue instanceof IntLiteralNode && ifFalse instanceof HexLiteralNode)
         || (ifFalse instanceof IntLiteralNode && ifTrue instanceof HexLiteralNode))) {

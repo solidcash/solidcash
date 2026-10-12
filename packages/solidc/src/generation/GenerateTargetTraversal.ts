@@ -16154,10 +16154,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitExpressionStatement(node: ExpressionStatementNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
-    // A self-external function value is represented by a local functionId, not Solidity's
-    // (address, selector) pair. When an ABI encoding of only such references is discarded,
-    // neither its arguments nor its result have an observable effect. Do not emit an invalid
-    // EVM word for the functionId; an encoding whose value is used still fails closed.
+    // A discarded ABI encoding of only self-external function values has no observable effect: emit nothing.
     if (node.expression instanceof AbiEncodeNode && node.expression.parameters.length > 0
       && node.expression.parameters.every((parameter) => parameter instanceof IdentifierNode
         && parameter.isExternalSelfRef && parameter.functionReference)) return node;

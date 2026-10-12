@@ -53,10 +53,10 @@ after about 21300 moved by about +57 between the two commits.
 
 ## Verdict
 
-94 findings: 15 CRITICAL, 12 HIGH, 20 MEDIUM, 29 LOW, 18 INFO. Every CRITICAL row and all HIGH rows but two
+95 findings: 15 CRITICAL, 13 HIGH, 20 MEDIUM, 29 LOW, 18 INFO. Every CRITICAL row and all HIGH rows but two
 (SDKFRAMED-1, SDKFRAMED-2) were re-read by a second auditor or the coordinator. None was refuted outright: two HIGH
-rows were narrowed to MEDIUM (ARITH-2, SEM-2) and two rows rose to CRITICAL (DX-6, KB-2). DS-7 was added after
-the audit; its passes had missed it (see the Limits above).
+rows were narrowed to MEDIUM (ARITH-2, SEM-2) and two rows rose to CRITICAL (DX-6, KB-2). DS-7 and SEM-11
+were added after the audit, from the `feat/parity` work; the audit's passes had missed both.
 
 Both conventions have holes that an unprivileged attacker can use. Neither should hold value on a real chain until
 the CRITICAL rows are fixed and each is pinned by a hostile VM test.
@@ -66,6 +66,8 @@ the CRITICAL rows are fixed and each is pinned by a hostile VM test.
   - A sorted-mapping write can be skipped or replaced by the spender; `approve` alone forges any allowance (DS-1).
   - When a function writes a mapping and reads it in a branch the call skips, a stray own-category NFT stands in
     for a node, so another node of that mapping can be rewritten (DS-7, VM-proven on the mock network).
+  - A public function with a function-typed parameter can be handed the id of any function of the contract,
+    internal ones included, and invokes it (SEM-11; what that reaches is not yet tested).
   - One integer mapping key has many encodings, so a claim-once guard can be passed repeatedly (DS-4).
   - Un-accessed records can be destroyed or forged, and a forged data record passes as the real one, which gives an
     owner takeover (DS-2, DS-3, DS-5).
@@ -89,7 +91,7 @@ Most CRITICAL and HIGH rows fall into five classes. A fix should close the class
 | --- | --- | --- |
 | A. Unbound co-spent input | A check reads another input's unlocking bytecode or token, or finds an output by search, without binding that input's locking bytecode or its own output index. A look-alike at a bare lock satisfies it. | FM-1, CRYPTO-1, CRYPTO-2, CRYPTO-3, DX-5, KB-1, DS-2, DS-7 |
 | B. Presence-only satellites | A container, record or oracle UTXO authorizes any spend when a minting NFT of the category is co-spent, and the master accounts only for the satellites its own function touches. | DX-1, DX-2, DS-3, DX-6, DX-8, DX-7, CRYPTO-4 |
-| C. Spender-chosen switches | A witness value the spender chooses (a sentinel, an index, an exemption) turns a check off, and nothing binds it on that path. | DS-1, DS-6, DX-4, FW-1, FW-2, KB-3, DX-3 |
+| C. Spender-chosen switches | A witness value the spender chooses (a sentinel, an index, an exemption) turns a check off, and nothing binds it on that path. | DS-1, DS-6, DX-4, FW-1, FW-2, KB-3, DX-3, SEM-11 |
 | D. Non-canonical bytes | Bytes that are hashed or compared admit several encodings of one value, or one encoding of several values. | DS-4, FV-1, FW-1 (zero-padded views), KB-2, ARITH-2, ARITH-3, ARITH-4, ARITH-6 |
 | E. 2026-07 fixes regressed or bypassed | A fix from the last audit does not cover a path added since. | DS-3 and DX-6 (C3), DS-5 (C2), DS-2 (H1), DX-4 (H2), SEM-4 (H7), SEM-5 (H8) |
 
@@ -115,7 +117,7 @@ Most CRITICAL and HIGH rows fall into five classes. A fix should close the class
 | CRYPTO-1 | CONFIRMED | keccak256 results can be forged. The side-car check reads the side-car's unlocking bytecode, extracts its redeem push and compares the hash of the covenant bytes with a constant, but never compares the input's locking bytecode with P2SH32 of that redeem; the digest is then read from an output commitment. A coin at a bare lock replaying the genuine unlocking layout, plus a freshly minted NFT carrying any digest, passes. Breaks hash locks, Merkle proofs, commit-reveal and keccak-derived mapping keys. Applies under `framed` too. | GTT:13665-13721 |
 | CRYPTO-2 | CONFIRMED | ecrecover returns an attacker-chosen signer on the non-loop path, for every variant: side-cars A, B and the keccak side-car are taken from their unlocking bytes without a lock binding, and the pubkey and address are read from outputs. `ecrecover(...) == owner` passes for any signature. Only the dynamic-loop path binds the locks; framed bodies refuse ecrecover loops, so framed compiles always get the unbound path. | GTT:13961-13999, 14017-14068 (bound loop path: 13948, 13957, 14057) |
 
-### HIGH (12)
+### HIGH (13)
 
 | Id | Status | Finding | Where |
 | --- | --- | --- | --- |
@@ -126,6 +128,7 @@ Most CRITICAL and HIGH rows fall into five classes. A fix should close the class
 | DX-8 | CONFIRMED (impact conditional) | A delegatecall co-spends the implementation's master but conserves none of the implementation's own records: its data NFTs can be rewritten or destroyed and new ones minted. HIGH when the implementation exposes a standalone function gated on its own state (an owner-gated upgrade, selfdestruct or sweep): rewrite its owner, then destroy the implementation master, which bricks every proxy that pins it. MEDIUM otherwise (the SDK leaves the implementation's own state unused). | GTT:9519, 44186-44345, 44770-44771; `state.ts:133-180` |
 | KB-3 | CONFIRMED | A routed callee's execution is bound to the manifest only if its own route runs its verifier; a non-graph bound route skips the verifier when the active verifier index is negative, and no other participant checks it, so a caller trusts a manifest result the callee never produced. | `compiler.ts:13307, 12466-12481, 13020-13030` |
 | SEM-1 | CONFIRMED | The final-require safety net passes a function whose only `require` follows an early `return`: `hasPriorUnconditionalRequire` accepts a require anywhere in the list. `if (amount == 0) return; require(checkSig(s, owner));` lets anyone spend a stateless contract's UTXO. | `EnsureFinalRequireTraversal.ts:303, 382-393`; `ConfineReturns.ts:123-125` |
+| SEM-11 | CODE-CONFIRMED (reach), impact SUSPECTED | Added after the audit. A function-type parameter of a public function that receives a self-ref (`this.f`) at any internal call site is kept as an integer function id instead of the `(address, selector)` pair Solidity uses, and the call through it is `<args> <id> OP_INVOKE` with no check on the id. Every function, internal and private ones included, is numbered from one counter, so the caller can run any function body with arguments of its choosing; in Solidity such a parameter reaches only public and external functions. (An internal function type in a public signature is refused, as in solc.) What a foreign body does under the calling entry's layout is untraced; CRITICAL if an internal state writer runs. The `feat/parity` work is writing the test-first fix. | Lines at `25e887d0a`: `LowerForeignFunctionPointerParams.ts:41-43, 110-116`; GTT:15600-15619, 15623-15644; `SymbolTableTraversal.ts:2026-2030` |
 | CRYPTO-3 | CONFIRMED | `blockhash(n)` can be forged: the oracle input index is a caller parameter and the read checks only the category base (capability dropped) and that the commitment starts with `n`; no lock or length check. In a contract without events any caller can even mint the fake through the co-spent master, because the immutable-output guard is emitted only for contracts with events and exempts OP_1 locks. CRITICAL for a contract that pays out on a blockhash. Direct/kernel only (framed refuses blockhash). | GTT:14207-14228, 31351-31366, 9710-9713, 44874-44879; `SymbolTableTraversal.ts:3810-3817` |
 | CRYPTO-4 | CONFIRMED | By design the block-oracle keeper holds a second minting NFT of the contract's own category, and the data-NFT write, destroy and entry write paths only require some minting NFT of that category at a witnessed index. The keeper can rewrite or burn any data record or mapping entry without the master running, or mint forged records and a duplicate master (a keeper-to-owner escalation). | `docs/block-and-transaction-properties.md:316-319`; `packages/solidcash/src/oracle/blockOracleUpdater.ts:176-198`; `state.ts:192-256, 1910-1917` |
 | TOOLS-1 | CONFIRMED | The published `solidc`, `solidcash`, `@solidcash/utils` and `@solidcash/testing` depend on libauth through `git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist`, a mutable branch of a personal fork; libauth does key generation, signing and VM evaluation. The monorepo's `yarn.lock` pins `1cf4b432`, but consumers resolve the branch head at install. Reported independently as SDKCORE-9. | `packages/{solidc,solidcash,utils,testing}/package.json`; `yarn.lock:61-63` |
@@ -240,7 +243,8 @@ Most CRITICAL and HIGH rows fall into five classes. A fix should close the class
 2. **Class B:** conserve every container lock in aggregate, and run the full own-category census, in every master
    entry (DX-1, DX-2, DS-3, DX-6, DX-8). Give block oracles their own keeper category (CRYPTO-4).
 3. **Class C:** bind every sentinel at its one legitimate use: DS-1 (`-2` only on bus routes, with the binding),
-   DS-6, DX-4 (the caller binds the callee's return index), FW-1 and FW-2 (master and validator rules in `FW.md`).
+   DS-6, DX-4 (the caller binds the callee's return index), FW-1 and FW-2 (master and validator rules in `FW.md`),
+   SEM-11 (invoke only the ids a function-typed parameter can hold).
 4. **Class D:** reject non-minimal integer parameters before they are hashed (DS-4); tag validator keys in/out (FV-1)
    and compare views exactly (FW-1); length-check `bytesN`, struct and array parameters and `bytesN(bytes)` casts.
 5. **Remaining HIGH rows:** SEM-1, TOOLS-1 (pin libauth to a published version or a commit), SDKFRAMED-1 (check

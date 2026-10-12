@@ -127,6 +127,25 @@ generation/GenerateTargetTraversal.ts.
   funds can be stranded if that was the only path). :1056-1062 and :1083-1088 inline a parent constructor body
   without its `customModifiers` (constructors run only in genesis, GTT:9805-9815, so deploy-time only).
 
+### SEM-11 HIGH, CODE-CONFIRMED (reach) / SUSPECTED (impact) - a function-typed entry parameter invokes any function
+Added after the audit. Reported by the `feat/parity` work and re-read at `25e887d0a`; nothing run.
+- semantic/LowerForeignFunctionPointerParams.ts:41-43, 110-116: an external function-type parameter that receives a
+  self-ref (`this.f`) at ANY internal call site is not lowered to the `(address, selector)` foreign call; it stays
+  an integer function id. On a public function the unlocking script supplies that id.
+- GTT:15600-15619 (`visitIndirectFunctionCall`) and 15623-15644 (`visitIndirectCall`): `<args> <id> OP_INVOKE`, with
+  no check that the id is one of the values the parameter can legitimately hold.
+- SymbolTableTraversal.ts:2026-2030: every public, internal, private and external function gets an OP_DEFINE id from
+  one counter, so any small integer reaches some function body, internal helpers included.
+- Shape: `function run(function(uint) external returns (uint) cb, uint x) public returns (uint) { return cb(x); }`
+  plus `run(this.g, 1)` somewhere. A caller passes the id of an internal helper with a matching stack shape.
+  In Solidity such a parameter is `(address, selector)` and reaches only public and external functions.
+- Checked: an internal function type in an entry signature is refused (SymbolTableTraversal.ts:1986-1995,
+  `FunctionTypeNotEncodableError`), as solc does, so only the self-ref path above hands the caller an id.
+- Impact not traced: what a foreign body does under the calling entry's block layout (state reads and writes, side
+  cars) needs a VM test. If an internal state writer such as `_mint` runs, this is CRITICAL.
+- Fix: accept only the ids the parameter can hold (the self-refs passed to it, or public and external functions of
+  the matching type) and refuse any other.
+
 ## Checked and sound
 1. Modifier expansion covers functions, constructor (after the base prelude), library/free functions, fallback and
    receive (H5 fixed): ModifierExpansionTransformation.ts:424-458; gate compiler.ts:14651-14658.
@@ -141,7 +160,8 @@ generation/GenerateTargetTraversal.ts.
 8. Selectors only for isEntryPoint functions; collisions checked across entries, constructor, `__fallback()`,
    `__receive()` (SymbolTableTraversal.ts:2056-2111); private/internal never get a selector.
 9. Simple dispatch size-checks a 4-byte selector before OP_INVOKE; helper ids are small negative ints, internal ids
-   small positive (GTT:6383-6390, 6522-6526, 1688-1710) - not reachable from the unlocking script.
+   small positive (GTT:6383-6390, 6522-6526, 1688-1710) - not reachable through the selector. A function-typed
+   entry parameter does reach them (SEM-11).
 10. Fallback dispatch is an exact-match OR chain, else the fallback; with no fallback an unknown id hard-fails.
 11. Constructor arm is dispatchable but opens with genesisSpendCheck (GTT:8727, 9805-9815; framed/master/
     prologue.ts:86-92): cannot run on a live master.

@@ -29941,10 +29941,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitGuardedSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
     const targets = new Set(node.sortedBatchInfo!.flatMap((batch) => batch.slotIndices));
-    // DS-6: an activity-settled body runs every check; the guard's inputs are the spender's.
-    const guard = !this.settlesSortedTargetsByActivity(node) && [...targets].every((slot) => (
-      node.blockLayout?.slots.some((layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional)
-    )) ? node.blockLayout?.slots.find((layout) => layout.kind === 'entry' && layout.softDelete) : undefined;
+    // DS-6: an activity-settled body runs every check; the guard's inputs are the spender's. A framed frame settles
+    // each target at the node its group names, whatever input sits at the slot's fixed offset.
+    const guard = !this.settlesSortedTargetsByActivity(node) && !this.readsRecordsFromFrame
+      && [...targets].every((slot) => node.blockLayout?.slots.some(
+        (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional,
+      )) ? node.blockLayout?.slots.find((layout) => layout.kind === 'entry' && layout.softDelete) : undefined;
     const loc = { location: node.location, positionHint: PositionHint.END } as SingleLocationData;
     this.restoreVMapWitnessSnapshots(node, loc);
     const runtimeAliasSlots = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices)
@@ -32092,6 +32094,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const flagIndex = this.conditionalSortedWriteFlagSlots.has(slot)
       ? this.getStackIndex(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot), true) : -1;
     const skippable = flagIndex >= 0 && this.framedSkippableSlots.has(slot);
+    // A delete a branch guards creates no node: its group is the key's own node, cleared or kept in place (DS-6).
+    const keyNodeOnly = flagIndex < 0 && this.condDeleteSlots.has(slot)
+      && this.entrySlots[slot]?.operations.includes('write') !== true;
     if (skippable) {
       // A group declared skipped is one kept record, whose write site refuses it where the write ran.
       arg(predOut); this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc); this.emit(Op.OP_NUMEQUAL, loc);
@@ -32103,8 +32108,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitFramedBatchProofView(loc);
     this.emit(Op.OP_TOALTSTACK, loc);
     proofField('next'); arg(`__internal__vmapBatchNext_${slot}`); this.emit(Op.OP_EQUALVERIFY, loc);
-    proofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`); this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
+    proofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`);
+    this.emit(keyNodeOnly ? Op.OP_EQUALVERIFY : Op.OP_EQUAL, loc);
+    if (!keyNodeOnly) this.emit(Op.OP_IF, loc);
     // UPDATE: no predecessor is relinked.
     arg(predOut); this.emit(Op.OP_1NEGATE, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
     // A conditional write that did not run (its flag clear) leaves the node it spends unchanged.
@@ -32114,6 +32120,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NOTIF, loc);
       this.emitFramedKeptProofNode(slot, loc, true);
       this.emit(Op.OP_ENDIF, loc);
+    }
+    if (keyNodeOnly) {
+      // The delete's own close holds the node it leaves.
+      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
+      return;
     }
     this.emit(Op.OP_ELSE, loc);
     // INSERT: the predecessor's output, at the collection's covenant with the contract's mutable token. A write
@@ -37480,6 +37491,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * not run, or (key||default) when it did. Runs AFTER emitReadOnlyEntryVerification so the derivation probe
    * extracts the always-passing read-only preservations BEFORE it may fail on an un-derived soft-delete output
    * (else the extracted commitments would be off by one). Then cleans up the slots' key_enc/value_enc.
+   * A framed frame's batch node is the one its group names, so its close runs whatever input sits at the slot's
+   * fixed offset, and the node it spends is held to the collection too (DS-6).
    */
   private emitConditionalDeleteVerification(node: FunctionDefinitionNode): void {
     if (this.condDeleteSlots.size === 0) return;
@@ -37488,8 +37501,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.messageBusHandlerManagedEntrySlots?.includes(slotIdx)) continue;
       if (!this.ownsFixedEntrySlot(slotIdx)) continue;
       const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
-      this.emitSlotExistsCheck('entry', slotIdx, locationData);
-      this.emit(Op.OP_IF, locationData);
+      const framedNode = this.readsRecordsFromFrame
+        && (node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIdx)) ?? false);
+      if (!framedNode) {
+        this.emitSlotExistsCheck('entry', slotIdx, locationData);
+        this.emit(Op.OP_IF, locationData);
+      }
 
       // (a) output commitment == key_enc CAT value_enc
       this.emitPickSettlementValue(writeInfo.keyStackName, locationData, node);
@@ -37527,13 +37544,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       this.pushToStack('(value)');
       this.emitSortedEntryAddress(collectionHash, locationData);
+      if (framedNode) {
+        this.emit(Op.OP_DUP, locationData);
+        this.emitEntryInputIndex(slotIdx, locationData, 1);
+        this.emit(Op.OP_UTXOBYTECODE, locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+      }
       this.emitEntryOutputIndex(slotIdx, locationData, 0);
       this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       this.pushToStack('(value)');
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
 
-      this.emit(Op.OP_ENDIF, locationData);
+      if (!framedNode) this.emit(Op.OP_ENDIF, locationData);
     }
 
     // Clean up the soft-delete slots' key_enc/value_enc.

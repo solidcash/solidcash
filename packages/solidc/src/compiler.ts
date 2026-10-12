@@ -13352,7 +13352,31 @@ function synthesizeMessageBusRoute(
   const lifecycleRouteLocals = kernelLifecycleHandlers.size > 0
     ? `bigint __message_bus_active_lifecycle_mode = 0;
        bigint __message_bus_active_lifecycle_count = 0;` : '';
-  const atomicVerifierInvocation = `
+  // A negative verifier index is the standalone, manifest-free path. Refuse it whenever this transport's envelope
+  // reader would find an envelope, so a routed callee cannot run outside a manifest that callers rely on (KB-3).
+  const standaloneEnvelopeAbsent = proxyForwardEnvelopeTransport ? `
+          bytes standaloneUnlock = bytes.concat(tx.inputs[0].unlockingBytecode, hex"00000000000000000000000000");
+          bigint standalonePushAt = 1;
+          bigint standaloneIndexOpcode = int(bytes.concat(standaloneUnlock.slice(0, 1), hex"00"));
+          if (standaloneIndexOpcode >= 1 && standaloneIndexOpcode <= 3) {
+            standalonePushAt = 1 + standaloneIndexOpcode;
+          }
+          require(standaloneUnlock.slice(standalonePushAt, standalonePushAt + 1) != hex"4d"
+            || standaloneUnlock.slice(standalonePushAt + 3, standalonePushAt + 8) != hex"534342314d");`
+    : rootEnvelopeTransport ? `
+          bytes standaloneUnlock = bytes.concat(tx.inputs[0].unlockingBytecode, hex"000000000000000000000000");
+          require(standaloneUnlock.slice(0, 6) != hex"04534342314d"
+            || standaloneUnlock.slice(8, 12) != hex"4c334331");`
+      : `
+          if (tx.inputs.length > 1) {
+            require(bytes.concat(tx.inputs[tx.inputs.length - 2].unlockingBytecode, hex"00").slice(0, 1)
+              != hex"4d");
+          }`;
+  const standaloneEnvelopeRefusal = !(useBoundRoute && !graphExecutionContext) ? '' : `
+        if (__internal__activeVerifierIndex < 0
+          && tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {${standaloneEnvelopeAbsent}
+        }`;
+  const atomicVerifierInvocation = `${standaloneEnvelopeRefusal}
         if (${useBoundRoute && !graphExecutionContext ? '__internal__activeVerifierIndex >= 0 && ' : ''}
           tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {
           bytes __internal__atomicBindingDigest = __message_bus_verify_atomic(

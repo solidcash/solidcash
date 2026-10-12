@@ -8429,7 +8429,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const conditionalEntrySlots = new Set<number>();
       // A delete inside an if/else BRANCH is lowered to an existence-gated soft-delete WRITE (visitBranch +
       // preAllocateCondDeleteWrite); the SDK derives those as writes, not drops. Marked separately so switch/loop
-      // conditional deletes keep the plain path.
+      // conditional deletes keep the plain path, bar a switch delete a swap-remove write aliases (DS-6).
       const softDeleteEntrySlots = new Set<number>();
       const collectCondEntries = (n: Node | undefined): void => {
         if (!n) return;
@@ -8439,7 +8439,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         if (n instanceof SwitchNode && n.switchOps) {
           n.switchOps.mappingWriteSlots.forEach((s) => conditionalEntrySlots.add(s));
-          n.switchOps.mappingDeleteSlots.forEach((s) => conditionalEntrySlots.add(s));
+          n.switchOps.mappingDeleteSlots.forEach((s) => {
+            conditionalEntrySlots.add(s);
+            if (this.switchSoftDeletes(node, s)) softDeleteEntrySlots.add(s);
+          });
         }
         for (const key of Object.keys(n)) {
           // Skip type/location metadata and every semantic back-reference (the shared walk-excluded set): a
@@ -10900,6 +10903,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.pendingEntryDeletes.has(slotIndex)) continue;
       this.preAllocateCondDeleteWrite(slotIndex, locationData);
     }
+    this.seedArmAliasOwners([node.ifBlock, ...(node.elseBlock ? [node.elseBlock] : [])], locationData);
 
     // 2. Evaluate condition and branch (existing logic)
     node.condition = this.visit(node.condition);
@@ -13607,14 +13611,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.preAllocatedEntryWrites.add(slotIndex);
       }
     }
-    // Switch-case deletes keep the plain conditional-delete path (soft-delete lowering is branch-only for now).
+    // Switch-case deletes keep the plain conditional-delete path (soft-delete lowering is branch-only for now), bar a
+    // swap-remove write's owner, which takes the branch's (DS-6).
     for (const slotIndex of mappingDeleteSlots) {
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
+      if (this.switchSoftDeletes(this.currentFunction, slotIndex)) {
+        if (!this.pendingEntryDeletes.has(slotIndex)) this.preAllocateCondDeleteWrite(slotIndex, locationData);
+        continue;
+      }
       if (!this.preAllocatedEntryDeletes.has(slotIndex)) {
         this.pendingEntryDeletes.add(slotIndex);
         this.preAllocatedEntryDeletes.add(slotIndex);
       }
     }
+    this.seedArmAliasOwners([...node.cases.map((c) => c.body), ...(node.defaultCase ? [node.defaultCase] : [])],
+      locationData);
 
     // 2. Evaluate switch expression
     node.expression = this.visit(node.expression);
@@ -29996,6 +30007,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return softDelete && this.scopeDepth === 0 && this.plainLoopDepth === 0 && !this.condDeleteSlots.has(owner)
       && !this.preAllocatedEntryWrites.has(owner) && !this.pendingEntryWrites.has(owner)
       && !this.pendingEntryDeletes.has(owner) && this.ownsFixedEntrySlot(owner) && this.aliasWriteMayStage(node, owner);
+  }
+
+  /**
+   * DS-6: a staging write these arms hold, whose owner delete a later branch or switch seeds only where it is reached,
+   * seeds the owner's registers ahead of the arms, as seedsAliasOwner does on the straight line.
+   */
+  private seedArmAliasOwners(arms: readonly BlockNode[], loc: SingleLocationData): void {
+    const walk = (statement: Node): void => {
+      if (statement instanceof MappingAssignNode && !statement.arrayIndex) {
+        const owner = this.entrySlots[statement.entrySlotIndex]?.aliasCondDeleteSlot;
+        if (owner !== undefined && this.seedsAliasOwner(statement, owner)) this.preAllocateCondDeleteWrite(owner, loc);
+      } else if (statement instanceof BlockNode) {
+        (statement.statements ?? []).forEach(walk);
+      } else if (statement instanceof UncheckedNode) {
+        walk(statement.block);
+      } else if (statement instanceof BranchNode) {
+        walk(statement.ifBlock);
+        if (statement.elseBlock) walk(statement.elseBlock);
+      } else if (statement instanceof SwitchNode) {
+        statement.cases.forEach((c) => walk(c.body));
+        if (statement.defaultCase) walk(statement.defaultCase);
+      }
+    };
+    arms.forEach(walk);
+  }
+
+  /** DS-6: a switch case's delete that a direct swap-remove write aliases takes the branch's soft-delete lowering. */
+  private switchSoftDeletes(fn: FunctionDefinitionNode, slot: number): boolean {
+    return this.directConvention && !this.framedMaster && !this.isCompilerMessageBusRoute(fn)
+      && (fn.entryAccesses ?? []).some((access) => access.aliasCondDeleteSlot === slot
+        && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slot)
+          && batch.slotIndices.includes(access.slotIndex)));
   }
 
   /**

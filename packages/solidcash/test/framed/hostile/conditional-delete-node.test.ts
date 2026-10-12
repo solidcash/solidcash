@@ -5,8 +5,8 @@ import {
   encodeIntegerValue, scriptToBytecode, type RecordEntry,
 } from '@solidcash/utils';
 import {
-  MASTER_INDEX, created, deployFramedMaster, evaluateMasterSpend, head, node, spent, type DeployedMaster,
-  type PlacedRecord,
+  MASTER_INDEX, created, declarationOf, deployFramedMaster, evaluateMasterSpend, head, node, spent,
+  type DeployedMaster, type PlacedRecord,
 } from '../../../../solidc/test/framed/master/record-spend.js';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
@@ -36,7 +36,8 @@ import { participant, type CompositionDraftPlan, type DraftCall } from '../../..
  * a batch, and a group declaring the deleted key inserted is refused by that close.
  *
  * A key the list does not hold has no node to clear: the group declares the node that brackets the key kept, and the
- * delete, taken or skipped, proves the key absent there and leaves the node as it was.
+ * delete, taken or skipped, proves the key absent there and leaves the node as it was. Beside a write of its collection
+ * the write's insert may relink that node, and no link may name the deleted key's slot, which no node carries.
  */
 
 const encoder = new TextEncoder();
@@ -417,11 +418,13 @@ const editMaster = (): DeployedMaster => (editDeployment ??= deployFramedMaster(
   + '   }'
   + ' }', 'framed conditional delete beside a write'));
 
-/** The parameter naming each target of `edit`, in the order its frame declares their groups: the targets' slots. */
-const editTargets = (): string[] => editMaster().artifact.abi.find((fn) => fn.name === 'edit')!.entryAccesses!
+/** The parameter naming each target of `entry`, in the order its frame declares their groups: the targets' slots. */
+const targetKeys = (deployed: DeployedMaster, entry: string): string[] => deployed.artifact.abi
+  .find((fn) => fn.name === entry)!.entryAccesses!
   .filter((access) => access.operations.includes('write') || access.operations.includes('delete'))
   .sort((left, right) => left.slotIndex! - right.slotIndex!)
   .map((access) => access.keyParams[0]!);
+const editTargets = (): string[] => targetKeys(editMaster(), 'edit');
 
 /** The master's verdict on `edit(HIGH, "written", MID, c)`, each target's group of records declared in frame order. */
 const edits = (c: Uint8Array, groups: Readonly<Record<string, readonly PlacedRecord[]>>): boolean =>
@@ -492,5 +495,91 @@ describe('a framed delete a branch guards, of a key the list does not hold', () 
     const inserted = created(LOCK, FIXED + 1, node(SLOT_MID, SLOT_HIGH, CLEARED));
     expect(removes(YES, [relinked, inserted])).toBe(false);
     expect(removes(NO, [relinked, inserted])).toBe(false);
+  });
+});
+
+/**
+ * `edit` with the delete ahead of the write. `edit`'s write precedes a delete of its collection, so it is a swap-remove
+ * alias, which updates in place only; this one is not, and may insert its key.
+ */
+let tidyDeployment: DeployedMaster | undefined;
+const tidyMaster = (): DeployedMaster => (tidyDeployment ??= deployFramedMaster('pragma solidcash ^0.13.0;'
+  + ' contract Tags {'
+  + '   mapping(string => string) tags;'
+  + '   function tidy(string a, string v, string k, int c) {'
+  + '     if (c > 0) { delete this.tags[k]; } this.tags[a] = v; require(true);'
+  + '   }'
+  + ' }', 'framed conditional delete ahead of a write'));
+
+/** The records a spend lays the transaction out with, and the segment its frame declares. */
+interface DeclaredSpend { readonly records: PlacedRecord[]; readonly declared: RecordEntry[] }
+
+/** The master's verdicts on `(HIGH, "written", MID, c)`, its entry's one, with the delete taken, then skipped. */
+const verdicts = (deployed: DeployedMaster, spend: DeclaredSpend): boolean[] => [YES, NO].map((c) =>
+  evaluateMasterSpend(deployed, { args: [c, MID, encoder.encode('written'), HIGH], ...spend }).accepted);
+
+/**
+ * `tidy`'s write inserting HIGH after `bracket`, the list's last node, which brackets MID too: the write's group relinks
+ * it to `link` beside HIGH's created node, and the delete's keeps it as the group before it left it.
+ */
+const insertBeside = (bracket: (next: Uint8Array) => Uint8Array, link: Uint8Array): DeclaredSpend => {
+  const lock = tidyMaster().collectionLock('tags');
+  const relinked = bracket(link);
+  const inserted = node(SLOT_HIGH, ZERO, WRITTEN);
+  const declared: RecordEntry[] = [];
+  let current = bracket(ZERO);
+  for (const key of targetKeys(tidyMaster(), 'tidy')) {
+    if (key === 'k') {
+      declared.push({ in: 2, out: 2, viewIn: current, viewOut: current });
+      continue;
+    }
+    declared.push({ in: 2, out: 2, viewIn: current, viewOut: relinked });
+    declared.push({ in: 0xffff, out: 3, viewIn: new Uint8Array(), viewOut: inserted });
+    current = relinked;
+  }
+  return { records: [spent(lock, 2, bracket(ZERO), relinked), created(lock, 3, inserted)], declared };
+};
+
+describe('a framed delete a branch guards, of a key the list does not hold, beside a write of its collection', () => {
+  /** HIGH's node, the list's last, which the write rewrites in place. */
+  const write = (deployed: DeployedMaster): PlacedRecord => spent(deployed.collectionLock('tags'), 3,
+    node(SLOT_HIGH, ZERO, OLD), node(SLOT_HIGH, ZERO, WRITTEN));
+  /** The entry's groups as the records declare them, `a`'s the write's and `k`'s the delete's. */
+  const groups = (
+    deployed: DeployedMaster, entry: string, a: readonly PlacedRecord[], k: readonly PlacedRecord[],
+  ): DeclaredSpend => {
+    const records = targetKeys(deployed, entry).flatMap((key) => (key === 'a' ? a : k));
+    return { records, declared: declarationOf(records) };
+  };
+  const edited = (k: Uint8Array): DeclaredSpend => groups(editMaster(), 'edit', [write(editMaster())],
+    [spent(editMaster().collectionLock('tags'), 2, k)]);
+
+  it('settles the delete and the skip with the bracketing node kept beside the write\'s update', () => {
+    // The list `LOW -> HIGH` holds no node for MID: LOW brackets it.
+    expect(verdicts(editMaster(), edited(lowNode(SLOT_HIGH)))).toStrictEqual([true, true]);
+  });
+
+  it('settles the delete and the skip with the bracketing node the write\'s insert relinks', () => {
+    // LOW as the list's last, or the empty list's head, brackets both MID and HIGH, which the write splices in.
+    expect(verdicts(tidyMaster(), insertBeside((next) => lowNode(next), SLOT_HIGH))).toStrictEqual([true, true]);
+    expect(verdicts(tidyMaster(), insertBeside((next) => head(next), SLOT_HIGH))).toStrictEqual([true, true]);
+  });
+
+  it('refuses -2 at the delete, outside the skippable writes, where the kept node does not bracket the key', () => {
+    // MID held after LOW, its group declared as LOW kept; MID absent and the head kept with LOW between them.
+    for (const other of [lowNode(SLOT_MID), head(SLOT_LOW)]) {
+      expect(verdicts(editMaster(), edited(other))).toStrictEqual([false, false]);
+    }
+  });
+
+  it('refuses -2 at the write, which the derivation never reads as skipped: its group one kept record', () => {
+    // LOW, the list's last, kept by both groups: a skipped write's shape, at a write neither guarded nor an alias.
+    const kept = spent(tidyMaster().collectionLock('tags'), 2, lowNode(ZERO));
+    expect(verdicts(tidyMaster(), groups(tidyMaster(), 'tidy', [kept], [kept]))).toStrictEqual([false, false]);
+  });
+
+  it('refuses a link to the deleted key\'s slot, which no node carries', () => {
+    // LOW relinked to MID for HIGH's insert, which leaves HIGH's node unreachable.
+    expect(verdicts(tidyMaster(), insertBeside((next) => lowNode(next), SLOT_MID))).toStrictEqual([false, false]);
   });
 });

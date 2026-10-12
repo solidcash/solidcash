@@ -1939,7 +1939,7 @@ calling initializer can run as the proxy genesis's own frame.
 
 **Why deferred:** it is a validator protocol extension; the default path no longer needs it.
 
-## Sorted batch targets sharing a node: two absent keys in one gap, or two that both run (DS-6 residual, 2026-10-12)
+## Sorted batch targets sharing a node: two that both run (DS-6 residual, 2026-10-12)
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
 two-target batch. Each target settles alone: the delete at its own site as a lone delete does (06c633c6d), each
@@ -1949,19 +1949,16 @@ node. Where the targets' nodes coincide the SDK spends the node once, at the slo
 the other target's slot: a funded slot is no node, so its existence-gated checks skip and the counts leave it out.
 The SDK places that node at the first target's slot and, where the probe refuses that, rebuilds with each other
 target as its owner (`sortedNodeOwners`); the covenant is unchanged. One key (present or absent), a write landing in
-the deleted key's gap and a deleted key absent in the written key's gap settle in each arm
-(AuditDS6MultiTargetDelete.test.ts). Two residuals fail closed:
-- two distinct absent keys in one gap: refused at send (input 0, OP_VERIFY) in the one run of its test, which is
-  skipped; arm and cause not found. That refusal matches the first placement's, so the rebuilt placement's probe
-  likely reported an error too and the SDK kept the first builder.
-- two targets that both run on one node, such as two writes in one arm on adjacent keys: each needs the node at its
-  own slot.
+the deleted key's gap, a deleted key absent in the written key's gap and two distinct absent keys in one gap settle
+in each arm (AuditDS6MultiTargetDelete.test.ts). The last was refused where the absent deleted key sorts before the
+written one: the SDK relinked the gap's predecessor to the lent delete's key (`batchPredecessorCommitment` counted
+its -3 row as an insert), so the rebuilt placement's probe failed too. A -3 row now links nothing. One residual
+fails closed: two targets that both run on one node, such as two writes in one arm on adjacent keys; each needs the
+node at its own slot.
 
 The write-first order and a swap-remove pair under one arm take the alias path and keep the guarded batch.
 
-**Proposed design:** for the first, probe each placement and read which target ran from the trace rather than from
-`__vmErrored`. For the second, settle the targets that ran on one node as one transition, as the linear two-target
-arm settles two writes in one gap, behind their ran flags.
+**Proposed design:** settle the targets that ran on one node as one transition, as the linear two-target arm
+settles two writes in one gap, behind their ran flags.
 
-**Why deferred:** the first needs a diagnostic run the DS-6 item did not budget; the second is a covenant change and
-no tested shape runs two targets in one arm.
+**Why deferred:** it is a covenant change and no tested shape runs two targets in one arm.

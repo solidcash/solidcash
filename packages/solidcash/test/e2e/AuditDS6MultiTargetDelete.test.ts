@@ -302,8 +302,7 @@ describe('a conditional delete and a write whose nodes coincide', () => {
     expect((await nodes(deployed)).all).toHaveLength(3);
   }, 300_000);
 
-  // Refused at send (input 0, OP_VERIFY) in its one run, cause not found; deferrals.md, DS-6 residual.
-  it.skip('settles each arm with both keys absent in one gap', async () => {
+  it('settles each arm with both keys absent in one gap', async () => {
     const deployed = await deploy();
     const { sc } = deployed;
     const [k, j] = await keysIn(deployed, 7n, 2);

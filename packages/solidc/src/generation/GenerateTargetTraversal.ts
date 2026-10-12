@@ -291,7 +291,8 @@ import {
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
   UnsupportedEvmAbiEncodingError, UnpinnedExternalCallTargetError, LogicalSenderUnavailableError,
-  DirectStaleReadError, ConstructorStaleReadError, UnpublishableLoopGuardError, importedFileCaveat,
+  DirectStaleReadError, DirectInvokedStaleReadError, ConstructorStaleReadError, UnpublishableLoopGuardError,
+  importedFileCaveat,
   UncheckedFunctionIdParameterError,
   UncheckedFunctionIdValueError,
 } from '../Errors.js';
@@ -1984,6 +1985,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private composeKeptValues: Map<number, string> = new Map();
   // DS-6: the conditional deletes a swap-remove write has staged in so far; later reads of them take the registers.
   private stagedAliasOwners: Set<number> = new Set();
+  // DS-6: per unconditional owner delete, the swap-remove writes whose kept values its reads take until that delete.
+  private aliasKeptWrites: Map<number, number[]> = new Map();
   // In a constructor, the writes whose value (and, where a read compares keys, key hash) a later genesis read takes,
   // the stack names they are kept under, and each served read's plan.
   private genesisKeptWrites: WeakSet<Node> = new WeakSet();
@@ -8986,6 +8989,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.composeWritesEmitted = [];
     this.composeKeptValues = new Map();
     this.stagedAliasOwners = new Set();
+    this.aliasKeptWrites = new Map();
     this.refuseDirectStaleSortedReads(node);
     this.planGenesisReads(node);
 
@@ -26309,7 +26313,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the proven [Hk32, slot32, nextKey32] layout.
     this.emitSortedKeyHash(node, slotIndex, loc);     // [Hk32]
     // A compose read keeps its key hash beneath the proof: an earlier write of the same key overrides the pre-state.
-    const composeWrites = this.composeEarlierWrites(slotIndex);
+    const composeWrites = [...this.composeEarlierWrites(slotIndex), ...this.aliasKeptWritesOf(slotIndex)];
     if (composeWrites.length > 0) {
       this.emit(Op.OP_DUP, loc);
       this.pushToStack('(__vmap_compose_key)');
@@ -27017,6 +27021,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (write === slot || this.composeMayAlias(write, slot)));
   }
 
+  /** DS-6: the swap-remove writes whose values a read of their owner delete's entry takes where the keys meet. */
+  private aliasKeptWritesOf(slot: number): number[] {
+    return (this.aliasKeptWrites.get(slot) ?? []).filter((write) => {
+      const kept = this.composeKeptValues.get(write);
+      return kept !== undefined && this.getStackIndex(kept, true) >= 0;
+    });
+  }
+
   /**
    * [.., K, value] -> [.., value]: a compose read takes the value of the latest earlier write whose authenticated
    * slot hash equals its own key hash K, else the authenticated pre-state value it proved.
@@ -27093,13 +27105,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.composeBatchSlots(slotIndex) !== undefined;
     // DS-6: where the owner delete may not run after this write, the alias arm takes the value (emitStagedAliasWrite).
     const staged = aliasOwner !== undefined && inBatch && !hasRepoint && this.stagesAliasWrite(node, aliasOwner);
+    // DS-6: where the owner delete runs after it and a read of the owner's entry sits between, the value is kept.
+    const keptForOwner = aliasOwner !== undefined && inBatch && !hasRepoint && !staged
+      && this.aliasWriteKeepsForOwnerRead(node, aliasOwner);
+    if (aliasOwner !== undefined && inBatch && this.directAliasPair(node, aliasOwner)) {
+      this.refuseInvokedAliasRead(node);
+    }
     if (aliasOwner !== undefined) {
       // Bind H(lastKey) before deciding whether swap-remove aliases its later delete. On the alias arm the upsert
       // must be a true no-op (including not evaluating its value); the owner delete remains independently proven.
       this.emit(Op.OP_DUP, loc);
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${slotIndex}`, loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
-      if (!staged) {
+      if (!staged && !keptForOwner) {
         this.emit(Op.OP_DUP, loc);
         this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${aliasOwner}`, loc);
         this.emit(Op.OP_EQUAL, loc);
@@ -27184,6 +27202,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       this.composeKeptValues.set(slotIndex, name);
     }
+    if (keptForOwner) {
+      // The owner's reads take this value where their key hash meets this write's slot (emitComposeReadFold).
+      const name = `(__vmap_alias_${slotIndex})`;
+      this.emit(Op.OP_DUP, loc);
+      this.stack[0] = name;
+      this.pushToStack('(value)');
+      this.composeKeptValues.set(slotIndex, name);
+      this.aliasKeptWrites.set(aliasOwner!, [...(this.aliasKeptWrites.get(aliasOwner!) ?? []), slotIndex]);
+    }
     if (this.isChunkableValue(collection.innermostValueType)) {
       // Design D: pin the value chunks from the on-stack value BEFORE transforming it into the digest tail. This
       // works for ANY value (computed or a direct param) and rejects forged/absent chunks at write time.
@@ -27193,6 +27220,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_FROMALTSTACK, loc); // [v, Hk32], H is intentionally untracked
     if (staged) this.emitStagedAliasWrite(node, aliasOwner!, activityAlias, loc);
+    else if (keptForOwner) this.emitKeptAliasSkip(aliasOwner!, loc);
 
     if (inBatch) {
       // Bind the SDK-planned full-width slot witness to the actual runtime key hash.
@@ -27833,6 +27861,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Marks a write of a sorted entry slot as emitted; a value an earlier write kept no longer serves the slot. */
   private passSortedEntryWrite(slot: number): void {
+    this.aliasKeptWrites.delete(slot);
     this.passSortedEntryAccess(this.sortedWritesAhead, slot);
     if (!this.sortedWrittenValueSegment.delete(slot)) return;
     this.sortedCompositeValueCache.delete(slot);
@@ -30112,11 +30141,100 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** DS-6: stagesAliasWrite short of the owner delete's registers. */
   private aliasWriteMayStage(node: MappingAssignNode | MappingDeleteNode, owner: number): boolean {
+    return this.directAliasPair(node, owner) && !this.aliasDeleteFollowsWrite(this.currentFunction.body, node, owner);
+  }
+
+  /** DS-6: a direct swap-remove write of a non-chunkable value whose owner delete shares its batch. */
+  private directAliasPair(node: MappingAssignNode | MappingDeleteNode, owner: number): boolean {
     if (!this.directConvention || this.framedMaster || this.readsRecordsFromFrame || this.isDefineSubTraversal
       || this.isCompilerMessageBusRoute() || this.isChunkableValue(node.collection!.innermostValueType)) return false;
-    const sameBatch = this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(owner)
+    return this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(owner)
       && batch.slotIndices.includes(node.entrySlotIndex)) ?? false;
-    return sameBatch && !this.aliasDeleteFollowsWrite(this.currentFunction.body, node, owner);
+  }
+
+  /**
+   * DS-6: a swap-remove write whose owner delete follows it in its own statement list, with a read of the owner's
+   * entry between them. Where the keys meet the write is skipped, so that read takes the value it keeps.
+   */
+  private aliasWriteKeepsForOwnerRead(node: MappingAssignNode | MappingDeleteNode, owner: number): boolean {
+    if (this.plainLoopDepth > 0 || !this.directAliasPair(node, owner)) return false;
+    const lists: StatementNode[][] = [];
+    walkInvocationAst(this.currentFunction.body, (candidate) => {
+      if (candidate instanceof BlockNode && (candidate.statements ?? []).some((statement) => statement === node)) {
+        lists.push(candidate.statements!);
+      }
+    });
+    const statements = lists[0] ?? [];
+    const at = statements.findIndex((statement) => statement === node);
+    const end = statements.findIndex((statement, index) => index > at
+      && statement instanceof MappingDeleteNode && statement.entrySlotIndex === owner);
+    if (at < 0 || end < 0) return false;
+    let read = false;
+    walkInvocationAst(new BlockNode(statements.slice(at + 1, end)), (candidate) => {
+      if (candidate instanceof MappingAccessNode && candidate.entrySlotIndex === owner
+        && candidate.collection?.sorted === true && !candidate.isTokenContainerAccess
+        && !candidate.isGenesisRead) read = true;
+    });
+    return read;
+  }
+
+  /**
+   * DS-6: [v, H] with the write's witnesses parked and its value kept beneath. Where H meets the owner delete's slot
+   * the write is skipped, as the plain alias gate skips it; elsewhere opens the write's own arm, which closes it.
+   */
+  private emitKeptAliasSkip(owner: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${owner}`, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    const atDecision = [...this.stack];
+    this.emit(Op.OP_2DROP, loc);
+    this.popFromStack();
+    // The parked slot, proof and both successors.
+    for (let pair = 0; pair < 2; pair += 1) {
+      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
+    }
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = atDecision;
+  }
+
+  /**
+   * DS-6: refuses a direct swap-remove write followed by a call to an invoked function that reads its mapping. The
+   * invoked body takes the node the transaction spends, while the key's pending value sits in the owner delete's
+   * registers or in this write's kept copy.
+   */
+  private refuseInvokedAliasRead(node: MappingAssignNode | MappingDeleteNode): void {
+    const collection = node.collection!.name;
+    const own = new Set<Node>();
+    walkInvocationAst(node, (candidate) => { own.add(candidate); });
+    let after = false;
+    walkInvocationAst(this.currentFunction.body, (candidate) => {
+      if (candidate === node) after = true;
+      if (!after || own.has(candidate) || !(candidate instanceof FunctionCallNode)) return;
+      const callee = candidate.resolvedFunction;
+      if (callee === undefined || callee.functionId === undefined) return;
+      const [read] = this.invokedSortedReads(callee, collection, new Set());
+      if (read === undefined) return;
+      throw new DirectInvokedStaleReadError(candidate, this.sortedEntryText(collection, read.keys),
+        this.sortedEntryText(collection, node.keys), callee.name);
+    });
+  }
+
+  /** The reads of the sorted `collection` in `fn`'s body and in the functions it calls. */
+  private invokedSortedReads(
+    fn: FunctionDefinitionNode | undefined, collection: string, seen: Set<FunctionDefinitionNode>,
+  ): MappingAccessNode[] {
+    if (fn?.body === undefined || seen.has(fn)) return [];
+    seen.add(fn);
+    const reads: MappingAccessNode[] = [];
+    walkInvocationAst(fn.body, (candidate) => {
+      if (candidate instanceof MappingAccessNode && candidate.collection?.name === collection
+        && candidate.collection.sorted === true && !candidate.isTokenContainerAccess) reads.push(candidate);
+      else if (candidate instanceof FunctionCallNode) {
+        reads.push(...this.invokedSortedReads(candidate.resolvedFunction, collection, seen));
+      }
+    });
+    return reads;
   }
 
   /**

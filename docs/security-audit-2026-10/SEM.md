@@ -146,8 +146,9 @@ Added after the audit. Reported by the `feat/parity` work and re-read at `25e887
   Wrong-type and undefined ids already failed.
 - Fix: accept only the ids the parameter can hold (the self-refs passed to it, or public and external functions of
   the matching type) and refuse any other. Done on `feat/parity` by `3df64a824` (merged as `e5e3013f5`, test
-  `packages/solidcash/test/FnPtrEntryIdValidation.test.ts`); deeper nesting is refused. Not covered yet: ids from
-  `abi.decode` of caller bytes and ids returned by other contracts.
+  `packages/solidcash/test/FnPtrEntryIdValidation.test.ts`); deeper nesting is refused. `707df2835` (merged as
+  `e501c8513`) extends the check to ids from `abi.decode` and from external-call returns (the latter tested at
+  compile level only), and `11b716f9f` to struct fields entering public functions.
 
 ## Checked and sound
 1. Modifier expansion covers functions, constructor (after the base prelude), library/free functions, fallback and

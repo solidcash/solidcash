@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
+  type FramedProxyCallerFunding,
 } from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -85,13 +86,14 @@ const KEPT_BALANCE_SOURCE = SERVED_SOURCE.replace(/}\n$/, ''
 const COMPILE_OPTIONS = { composition: 'framed' } as const;
 const SOLIDITY_OPTIONS = { composition: 'framed', evmCompat: true } as const;
 
-/** Funds the two genesis UTXOs and returns the deployer's own lock and funder. */
+/** Funds the two genesis UTXOs and the hop's caller coin, and returns the deployer's own lock and funders. */
 async function funded(network: MockNetworkProvider): Promise<{
   readonly funder: ReturnType<Contract['unlock']['spend']>;
   readonly implFunding: { txid: string; vout: number; satoshis: bigint };
   readonly proxyFunding: { txid: string; vout: number; satoshis: bigint };
   readonly deployerLock: Uint8Array;
   readonly changeAddress: string;
+  readonly callerFunding: FramedProxyCallerFunding;
 }> {
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -99,12 +101,17 @@ async function funded(network: MockNetworkProvider): Promise<{
   const proxyFunding = { txid: PROXY_CATEGORY, vout: 0, satoshis: 500_000n };
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
+  // The initialize hop is entered with the deployer's own coin, at its own P2PKH lock.
+  const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
+  const callerUtxo = { txid: '53'.repeat(31) + 'af', vout: 0, satoshis: 100_000n };
+  await network.addUtxo(binToHex(deployerLock), callerUtxo);
   return {
     funder: funder.unlock.spend(alicePub, signature),
     implFunding,
     proxyFunding,
-    deployerLock: encodeLockingBytecodeP2pkh(alicePkh),
+    deployerLock,
     changeAddress: funder.address,
+    callerFunding: { utxo: callerUtxo, funder: signature.unlockP2PKH() },
   };
 }
 
@@ -122,7 +129,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
   it('refuses the initialize hop by name rather than reporting the stub\'s opcode', async () => {
     const artifacts = compileStringMulti(REFUSED_SOURCE, COMPILE_OPTIONS);
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock, callerFunding } = await funded(network);
 
     const deployment = deployFramedProxy({
       provider: network,
@@ -131,6 +138,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
       proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
+      callerFunding,
       vm: compositionMachine(),
     });
 
@@ -192,7 +200,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
     // shipped path. What decides the refusal is the body's own shape, not the hop itself.
     const artifacts = compileStringMulti(SERVED_SOURCE, COMPILE_OPTIONS);
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock, callerFunding } = await funded(network);
     const proxy = buildProxyArtifact(artifacts.Impl!);
 
     const deployment = await deployFramedProxy({
@@ -202,6 +210,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
       proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
+      callerFunding,
       vm: compositionMachine(),
     });
 
@@ -222,7 +231,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
     ))).toBe(false);
 
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock, callerFunding } = await funded(network);
     const deployment = await deployFramedProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
@@ -230,6 +239,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
       proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
+      callerFunding,
       vm: compositionMachine(),
     });
 

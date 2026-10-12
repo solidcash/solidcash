@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, type StateLayout } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { buildProxyArtifact, deployFramedProxy } from '../../../src/framed/proxy/index.js';
+import {
+  buildProxyArtifact, deployFramedProxy, type FramedProxyCallerFunding,
+} from '../../../src/framed/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -49,6 +51,7 @@ async function deploymentHalf(network: MockNetworkProvider): Promise<{
   readonly proxyDeploy: { fundingUtxo: { txid: string; vout: number; satoshis: bigint };
     funder: ReturnType<Contract['unlock']['spend']>; changeAddress: string };
   readonly callerLockingBytecode: Uint8Array;
+  readonly callerFunding: FramedProxyCallerFunding;
 }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -62,7 +65,14 @@ async function deploymentHalf(network: MockNetworkProvider): Promise<{
   for (const coin of [implementationDeploy.fundingUtxo, proxyDeploy.fundingUtxo]) {
     await network.addUtxo(source.address, coin);
   }
-  return { implementationDeploy, proxyDeploy, callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh) };
+  // The initialize hop is entered with the deployer's own coin, at its own P2PKH lock.
+  const callerLockingBytecode = encodeLockingBytecodeP2pkh(alicePkh);
+  const callerUtxo = { txid: '77'.repeat(31) + 'bb', vout: 0, satoshis: 100_000n };
+  await network.addUtxo(binToHex(callerLockingBytecode), callerUtxo);
+  return {
+    implementationDeploy, proxyDeploy, callerLockingBytecode,
+    callerFunding: { utxo: callerUtxo, funder: signature.unlockP2PKH() },
+  };
 }
 
 describe('an initialize hop whose entry returns a value', () => {
@@ -78,6 +88,7 @@ describe('an initialize hop whose entry returns a value', () => {
       proxyDeploy: half.proxyDeploy,
       initialize: { functionName: 'initialize', args: [4n] },
       callerLockingBytecode: half.callerLockingBytecode,
+      callerFunding: half.callerFunding,
       vm: compositionMachine(),
     });
 

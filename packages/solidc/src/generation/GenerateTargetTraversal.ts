@@ -680,6 +680,15 @@ function functionReadsSelector(fn: FunctionDefinitionNode): boolean {
   return found;
 }
 
+/** True when a body's only return is its last statement. */
+function hasSingleTailReturn(fn: FunctionDefinitionNode): boolean {
+  let returns = 0;
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof ReturnNode) returns += 1;
+  });
+  return returns === 1 && fn.body?.statements?.at(-1) instanceof ReturnNode;
+}
+
 /** True when a body makes an external self-call, `this.g()` or `Base(this).g()`. */
 function functionMakesExternalSelfCall(fn: FunctionDefinitionNode): boolean {
   let found = false;
@@ -5641,13 +5650,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           );
         }
         // A returning dynamic-array writer must be inlined so its declared result and the hidden length/blob
-        // journal share one caller-owned stack frame. Single-tail helpers are removed by
-        // InlineReturningStateHelpers; any survivor here has multiple/non-tail exits and cannot safely execute
-        // behind OP_INVOKE (the VM otherwise rejects its off-by-return-slot write-back).
+        // journal share one caller-owned stack frame. InlineReturningStateHelpers inlines single-tail helpers at
+        // every call it can hoist; any survivor here cannot safely execute behind OP_INVOKE (the VM otherwise
+        // rejects its off-by-return-slot write-back).
         if (writes.dynamicArray && !fn.graphEmissionHandler) {
-          throw new Error(
-            `Returning dynamic-array state helper '${fn.name}' must have one tail return so it can be inlined`,
-          );
+          throw new Error(hasSingleTailReturn(fn)
+            ? `Returning dynamic-array state helper '${fn.name}' must be inlined at every call; a call through a `
+              + 'function pointer, by recursion, or in a loop condition or conditionally evaluated operand cannot be'
+            : `Returning dynamic-array state helper '${fn.name}' must have one tail return so it can be inlined`);
         }
       }
       // X146. `scan` records a state variable only where the AST names it. A foreign function-pointer TABLE is

@@ -225,6 +225,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   /** Lexically scoped types used only by lazy event-helper continuation lowering. */
   private lazyValueTypes: Map<string, Type> = new Map();
   private localBufferNames: Set<string> = new Set(); // memory locals a lowering may relocate out of the stack
+  private dynamicStateArrays: Set<string> = new Set(); // chunk-packed (isDynamic) state arrays
+  private calledNames: Set<string> = new Set(); // functions some body calls by name
   private readonly analysisNodes = new Map<FunctionDefinitionNode, Node[]>();
 
 
@@ -477,6 +479,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.collectionValueTypes = new Map(node.collections.map((collection) => [
       collection.name, collection.innermostValueType,
     ]));
+    this.dynamicStateArrays = new Set(node.stateVariables
+      .filter((sv) => sv.isDynamic && sv.type instanceof ArrayType).map((sv) => sv.name));
+    this.calledNames = this.inlineSignatureChecks || this.dynamicStateArrays.size > 0
+      ? namesCalledFrom([...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns])
+      : new Set<string>();
 
     this.inlinedFns = new Set();
     this.rawSlotFreeFns = new Set();
@@ -497,9 +504,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // entry, so it cannot be an OP_INVOKE subroutine - an internal call to it must inline (Multicall2 `tryAggregate`
     // called by `tryBlockAndAggregate`). The public definition still stands as its own dispatched entry. So is one
     // that checks a transaction signature, which must run in the calling entry point's body.
-    const calledByName = this.inlineSignatureChecks
-      ? namesCalledFrom([...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns])
-      : new Set<string>();
+    const calledByName = this.calledNames;
     for (const fn of node.functions) {
       if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
@@ -507,7 +512,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
-          || this.transitivelyContainsEvent(fn) || (calledByName.has(fn.name) && this.checksSignature(fn)))) {
+          || this.transitivelyContainsEvent(fn) || (calledByName.has(fn.name) && this.checksSignature(fn))
+          || this.writesCalledDynamicStateArray(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -771,7 +777,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!this.eligibleShape(fn)) return false;
     return this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
       || this.containsLowLevelCall(fn) || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
-      || this.transitivelyContainsEvent(fn) || this.checksSignature(fn);
+      || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.writesCalledDynamicStateArray(fn);
   }
 
   /**
@@ -1130,6 +1136,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       }
     }
     return false;
+  }
+
+  // A bare `arr[i] = v`, `arr.push(..)` or `arr.pop()` on a chunk-packed state array stays an Array* node until
+  // SymbolTableTraversal makes it a StateArray* one, so touchesScalarState misses it. Code generation refuses a
+  // returning writer of one behind OP_INVOKE (its length/blob journal is the caller's frame), so a called one inlines.
+  private writesCalledDynamicStateArray(fn: FunctionDefinitionNode): boolean {
+    if (!this.calledNames.has(fn.name)) return false;
+    const nodes = this.nodesOf(fn);
+    const shadowed = new Set(fn.parameters.map((p) => p.name));
+    for (const n of nodes) if (n instanceof VariableDefinitionNode) shadowed.add(n.name);
+    return nodes.some((n) => (n instanceof ArrayAssignNode || n instanceof ArrayPushNode
+      || n instanceof ArrayPopNode || n instanceof ArrayDeleteNode)
+      && this.dynamicStateArrays.has(n.name) && !shadowed.has(n.name));
   }
 
   // A single-tail-return value helper taking a struct, mapping, or array storage pointer. Struct pointers rewrite

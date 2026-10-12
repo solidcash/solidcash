@@ -3,10 +3,12 @@ import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
   type Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
-  buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, type StateVariableInfo,
+  buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, hash256, type StateVariableInfo,
+  blockhashKeeperBatonLockingBytecode, buildBlockhashKeeperBatonScript,
 } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
-import type { Utxo, Unlocker } from '../interfaces.js';
+import type { Utxo, Unlocker, GenerateUnlockingBytecodeOptions } from '../interfaces.js';
+import { createSighashPreimage } from '../utils.js';
 import { readFramedState, type FramedState } from '../framed/deploy/records.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -129,8 +131,25 @@ export interface BlockOracleUpdaterConfig {
   electrumHost?: string; // Fulcrum host for blockchain.headers.subscribe
   // Project-global blockhash (n->hash) oracle token category. Required only for blockhash() consumers.
   blockhashOracleCategory?: string;
-  // The keeper's C_oracle minting NFT (master), used to mint the per-block (n->hash) oracle UTXOs.
+  // Override for the keeper's minting baton. By default it is the UTXO at the keeper baton covenant
+  // (blockhashKeeperBatonLockingBytecode(category, keeper public key)), spent with blockhashKeeperBatonUnlocker.
   blockhashOracleMaster?: { utxo: Utxo; unlocker: Unlocker };
+}
+
+/** Unlocks the keeper baton covenant (audit CRYPTO-4) with `<keeper signature> <redeem>`. */
+export function blockhashKeeperBatonUnlocker(categoryId: string, keeperKey: Uint8Array): Unlocker {
+  const keeper = new SignatureTemplate(keeperKey);
+  const category = hexToBin(categoryId);
+  const redeem = scriptToBytecode(buildBlockhashKeeperBatonScript(category, keeper.publicKey));
+  const lock = blockhashKeeperBatonLockingBytecode(category, keeper.publicKey);
+  return {
+    generateLockingBytecode: (): Uint8Array => lock,
+    generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions)
+    : Uint8Array => {
+      const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, redeem, keeper.sighashType);
+      return scriptToBytecode([keeper.generateSignature(hash256(preimage)), redeem]);
+    },
+  };
 }
 
 export class BlockOracleUpdater {
@@ -171,14 +190,12 @@ export class BlockOracleUpdater {
 
   /**
    * Mint the (n -> hash) oracle UTXO at addr(n) under the oracle category, spending + recreating the
-   * keeper's C_oracle minting master. Returns the mint txid.
+   * keeper's minting baton. Returns the mint txid.
    */
   async mintBlockhashPair(n: bigint, hash: Uint8Array): Promise<string> {
     const catHex = this.cfg.blockhashOracleCategory;
-    const master = this.cfg.blockhashOracleMaster;
-    if (!catHex || !master) {
-      throw new Error('blockhashOracleCategory + blockhashOracleMaster are required to mint (n->hash) pairs');
-    }
+    if (!catHex) throw new Error('blockhashOracleCategory is required to mint (n->hash) pairs');
+    const master = this.cfg.blockhashOracleMaster ?? await this.keeperBaton(catHex);
     const addrN = blockhashOracleLockingBytecode(hexToBin(catHex), n);
     const commitment = binToHex(buildBlockhashCommitment(n, hash));
     const mintSats = 1000n;
@@ -196,8 +213,18 @@ export class BlockOracleUpdater {
         amount: mintSats,
         token: { category: catHex, amount: 0n, nft: { capability: 'none', commitment } },
       }) // mint the (n,hash) oracle NFT
+      .setLocktime(Number(n)) // the baton covenant requires tx.time >= n
       .send();
     return tx.txid;
+  }
+
+  // The keeper's minting baton of the category at the keeper baton covenant.
+  private async keeperBaton(catHex: string): Promise<{ utxo: Utxo; unlocker: Unlocker }> {
+    const unlocker = blockhashKeeperBatonUnlocker(catHex, this.cfg.keeperKey);
+    const utxos = await this.cfg.contract.provider.getUtxosForLockingBytecode(unlocker.generateLockingBytecode());
+    const utxo = utxos.find((u) => u.token?.category === catHex && u.token.nft?.capability === 'minting');
+    if (!utxo) throw new Error(`no keeper baton of category ${catHex} at the blockhash keeper covenant`);
+    return { utxo, unlocker };
   }
 
   /**

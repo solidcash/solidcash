@@ -35,8 +35,8 @@ import AstTraversal from '../ast/AstTraversal.js';
  *
  * Owner duty to refresh: a baked owner key (`__blockOracleOwner`, an immutable pubkey register seeded at
  * genesis) + an injected `__updateBlockOracle(sig, ...fields)` that requires the owner signature and the
- * freshness/anti-over-reporting bound `tx.time >= number` (the owner cannot report a height above the
- * chain), then writes each register. block.chainid is a separate baked constant (NOT here).
+ * freshness/anti-over-reporting bound `tx.time >= number` with `number < 500,000,000` (the owner cannot report
+ * a height above the chain), then writes each register. block.chainid is a separate baked constant (NOT here).
  *
  * Runs before semantic analysis so injected decls/reads/writes resolve normally. `block.timestamp` always
  * lowers to the injected `__block_timestamp` oracle register; the compat-only tx.locktime mapping was removed.
@@ -371,6 +371,13 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     // Anti-over-reporting: bind the written height to the chain (tx.time >= number). Height-only, since
     // nLocktime is height XOR time; if block.number is unused there is no native temporal anchor.
     if (this.used.has('__block_number')) {
+      // CLTV also accepts a time-type operand under a time-type nLockTime: keep the number height-type.
+      const heightType = this.at(new BinaryOpNode(
+        this.at(new IdentifierNode(setterParam('__block_number'))) as IdentifierNode,
+        BinaryOperator.LT,
+        this.at(new IntLiteralNode(500_000_000n)) as IntLiteralNode,
+      )) as BinaryOpNode;
+      body.push(this.at(new RequireNode(heightType, 'block oracle: number is not a height')) as RequireNode);
       body.push(this.at(new TimeOpNode(
         TimeOp.CHECK_LOCKTIME, this.at(new IdentifierNode(setterParam('__block_number'))) as IdentifierNode,
         'block oracle: number exceeds chain height',

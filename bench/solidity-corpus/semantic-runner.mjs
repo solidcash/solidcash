@@ -99,7 +99,7 @@ const canonicalOutcome = (outcome) => (/^revert: .*completed with a non-truthy v
 // ---------------------------------------------------------------------------------------------- worker side
 
 async function workerMain() {
-  const { compileString } = await import(workerData.compilerUrl);
+  const { compileString, compileStringMulti } = await import(workerData.compilerUrl);
   const { Contract, TransactionBuilder, FailedTransactionError, FailedRequireError, randomUtxo } =
     await import(workerData.sdkUrl);
   const { default: MockNetworkProvider } = await import(workerData.mockUrl);
@@ -197,6 +197,20 @@ async function workerMain() {
   // funding txids (a deploy's category) and fires the mock reset hooks, so no process-global cache crosses fixtures.
   // A send counter on the provider tells whether a reverted line broadcast anything (a partial state change).
   let fundingNonce = 0;
+  // A check whose body creates a stateful child carries the deploy modifier. Its call's `.send()` is the plain call
+  // without the child genesis the deploy covenant verifies, so such a line runs `.deploy()`: the child artifacts are
+  // registered on the deployed contract and each line has its own vout-0 genesis coin.
+  const deployChecks = new WeakMap(); // artifact -> { checks, children }
+  const prepareDeployChecks = (artifact, source) => {
+    const deploying = artifact.abi.filter((fn) => (fn.deployTargets?.length ?? 0) > 0);
+    if (deploying.length === 0) return;
+    const names = [...new Set(deploying.flatMap((fn) => fn.deployTargets.map((target) => target.contractName)))];
+    let children = {};
+    try {
+      children = compileStringMulti(source, { ...STATEFUL_COMPILE_OPTIONS, compileDeclarations: names });
+    } catch { /* the deploy then names the missing child as its build error */ }
+    deployChecks.set(artifact, { checks: new Set(deploying.map((fn) => fn.name)), children });
+  };
   const runSequence = async (artifact, sequence, salt, limits) => {
     const provider = new MockNetworkProvider(limits && { consensusLimits: limits });
     provider.reset();
@@ -204,7 +218,8 @@ async function workerMain() {
     const sendRaw = provider.sendRawTransaction.bind(provider);
     provider.sendRawTransaction = async (hex) => { const txid = await sendRaw(hex); counter.sent += 1; return txid; };
     const signer = provider.getCachedSigner(0);
-    const txid = `${(++fundingNonce).toString(16).padStart(8, '0')}${'5a'.repeat(28)}`;
+    const nonce = (++fundingNonce).toString(16).padStart(8, '0');
+    const txid = `${nonce}${'5a'.repeat(28)}`;
     for (let vout = 0; vout < 8; vout++) {
       await provider.addUtxo(signer.getAddress(), { txid, vout, satoshis: 100_000_000n });
     }
@@ -214,9 +229,18 @@ async function workerMain() {
     } catch (cause) {
       return { deployError: statefulOutcome(cause), ...sizeStop(cause) };
     }
+    const deploying = deployChecks.get(artifact);
+    if (deploying) {
+      contract.registerArtifacts(deploying.children);
+      for (let k = 0; k < sequence.length; k++) {
+        const genesis = `${nonce}${k.toString(16).padStart(8, '0')}${'5b'.repeat(24)}`;
+        await provider.addUtxo(signer.getAddress(), { txid: genesis, vout: 0, satoshis: 100_000_000n });
+      }
+    }
     const outcomes = [];
     for (const step of sequence) {
-      outcomes.push(await statefulAttempt(contract.getFunction(`__check_${step.check}`), step, counter));
+      const name = `__check_${step.check}`;
+      outcomes.push(await statefulAttempt(contract.getFunction(name), step, counter, deploying?.checks.has(name)));
     }
     return { outcomes };
   };
@@ -226,10 +250,11 @@ async function workerMain() {
 
   // A FAILURE line must revert without broadcasting. A value line that reverts is re-sent with cmp=false: success
   // there means a wrong value, and the call then still changes state as solc's call did.
-  const statefulAttempt = async (fn, step, counter) => {
+  const sendCall = (call, deploys) => (deploys && typeof call.deploy === 'function' ? call.deploy() : call.send());
+  const statefulAttempt = async (fn, step, counter, deploys) => {
     const before = counter.sent;
     try {
-      await fn(...step.args).send();
+      await sendCall(fn(...step.args), deploys);
       return step.failure
         ? { status: 'mismatched', outcome: 'success (no revert)' }
         : { status: 'matched', outcome: 'success' };
@@ -244,7 +269,7 @@ async function workerMain() {
       }
       if (step.cmp && reverted && !DENSITY_STOP.test(outcome) && !size.size) {
         try {
-          await fn(...step.args.slice(0, -1), false).send();
+          await sendCall(fn(...step.args.slice(0, -1), false), deploys);
           return { status: 'mismatched', outcome: 'wrong value' };
         } catch { /* the revert is not the comparison */ }
       }
@@ -299,6 +324,7 @@ async function workerMain() {
 
   const runStatefulJob = async ({ source, fallback, sequence }) => {
     const { artifact, error, shape } = compileStateful(source, fallback);
+    if (artifact) prepareDeployChecks(artifact, source);
     const result = error ? { compiled: false, error } : await runStatefulArtifact(artifact, sequence);
     return { ...result, ...(shape && { shape }) };
   };

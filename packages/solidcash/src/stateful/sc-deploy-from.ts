@@ -823,8 +823,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }
   }
 
-  // Create unlockers for factory's master UTXO and data NFTs
-  const stateInputUnlocker = (factory.inner.unlock as any)[deployFunctionName](...finalArgs);
+  // Create unlockers for factory's master UTXO and data NFTs. The master is a covenant input like the data NFTs, so
+  // a zero-state factory's deploy gets the same best-effort template debug (its strict replay reports the P2PKH
+  // funder's signature as NULLFAIL); the finalized-bytes gate and the broadcast stay authoritative.
+  const stateInputUnlocker = {
+    ...(factory.inner.unlock as any)[deployFunctionName](...finalArgs), covenantUnlocker: true,
+  };
   const dataNftUnlockers = filteredDataNftUtxos.map(
     () => createDataNftUnlocker(factory.inner, 0, factory.categoryId),
   );

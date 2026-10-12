@@ -89,6 +89,9 @@ const ROUTED = 'routed-to-stateful: external-call witnesses';
 // `// ====` setting pinning a fixture's expectations to one solc pipeline.
 const PIPELINE_SETTING = /^\/\/ ====\s*\n(?:\/\/.*\n)*?\/\/ compileViaYul:\s*(true|false)\s*$/m;
 const pipelineOf = (src) => ({ true: 'via-IR', false: 'legacy' })[PIPELINE_SETTING.exec(src)?.[1]];
+// A fixture pinned to an older EVM (`EVMVersion: <X`, `<=X` or `=X`) expects behaviour the current EVM no longer has
+// (e.g. calls before STATICCALL existed); it is skipped with its reason, as its current-EVM twin is measured.
+const OLDER_EVM_SETTING = /^\/\/ ====\s*\n(?:\/\/.*\n)*?\/\/ EVMVersion:\s*(<=?|=)\s*(\w+)\s*$/m;
 // A stateful send reports a VM failure either as FailedTransactionError or as the SDK's preflight/probe message.
 const VM_ERROR = /preflight failed at input \d+: |^Program |\bProgram (?:failed|attempted|completed|exceeded)\b/;
 const errHead = (cause) => `${cause?.name || 'Error'}: ${String(cause?.message).split('\n')[0]}`;
@@ -828,6 +831,12 @@ async function main() {
     const pipeline = pipelineOf(src);
     const tags = { ...(selected.stateful && { stateful: true }), ...(pipeline && { pipeline }) };
     if (SLICE && (SLICE === 'stateful') !== Boolean(selected.stateful)) continue;
+    const olderEvm = OLDER_EVM_SETTING.exec(src);
+    if (olderEvm) {
+      fixtures.push({ rel, status: 'skipped', reason: 'evm-version:older', detail: `EVMVersion: ${olderEvm[1]}${olderEvm[2]}`,
+        ...tags });
+      continue;
+    }
     if (selected.skip || jobs.length >= LIMIT) {
       const { skip: reason, detail } = selected;
       if (reason) fixtures.push({ rel, status: 'skipped', reason, ...(detail && { detail }), ...tags });

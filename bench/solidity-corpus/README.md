@@ -187,6 +187,10 @@ matched. Twin pairs are the legacy/via-IR fixtures with the same name once a pip
 `via-IR`, `both` (every executed line of that side matched), `neither` or `unmeasured` (a side executed nothing).
 `RESCORE=true` re-derives the pipeline tag from the corpus source for results older than it.
 
+**Older-EVM fixtures** are skipped (`evm-version:older`): a fixture whose settings pin `EVMVersion: <X`, `<=X` or
+`=X` expects behaviour the current EVM no longer has (e.g. `various/staticcall_for_view_and_pure_pre_byzantium.sol`
+calls through a view interface before STATICCALL existed); its current-EVM twin is measured instead.
+
 ```bash
 CORPUS_RESULTS=/path/to/results.json node bench/solidity-corpus/semantic-runner.mjs  # default ./results.json
 LIMIT=20 node bench/solidity-corpus/semantic-runner.mjs           # first N selected fixtures

@@ -23,7 +23,7 @@ import type { OnChainState } from './StateReader.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { pinExactSortedBatchEntry } from './writer-event-delegate-layout.js';
-import { guardedBatchWriteSlots } from './conditional-sorted-activity.js';
+import { activityBatchWriteSlots, guardedBatchWriteSlots } from './conditional-sorted-activity.js';
 import { chunksFromValue } from './early-value-chunk-helpers.js';
 import {
   sameDerivedChunkOutputObservation,
@@ -126,8 +126,11 @@ export function registerCreateBuilderBuilderState(
     .filter((slot: any) => slot.kind === 'entry' && slot.conditional === true)
     .map((slot: any) => slot.slotIndex)
     .filter((slotIndex: any): slotIndex is number => slotIndex !== undefined));
-  // A guarded batch's write that did not run keeps its node, which the covenant pins: its output stays derivable.
-  const guardedWrites = guardedBatchWriteSlots(entryAbiFunction);
+  // A write sharing a batch with a delete keeps its node where it did not run, which the covenant pins: its output
+  // stays derivable.
+  const guardedWrites = new Set([
+    ...guardedBatchWriteSlots(entryAbiFunction), ...activityBatchWriteSlots(entryAbiFunction),
+  ]);
   for (const [slotIndex, commitment] of batchTargetPlaceholders) {
     builder.setEntryRawCommitment(slotIndex, commitment);
     // A placeholder only exists for a lane the batch publishes as active (inactive and alias-skipped lanes

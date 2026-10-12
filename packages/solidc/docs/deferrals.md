@@ -1941,20 +1941,20 @@ initialized, as the plain framed deploy does.
 
 **Why deferred:** it is a protocol change to the proxy genesis.
 
-## A conditional delete beside a write in one sorted batch refuses the write arm on an absent key (DS-6 residual, 2026-10-12)
+## A conditional delete beside a write in one sorted batch refuses keys whose nodes coincide (DS-6 residual, 2026-10-12)
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
-two-target batch. Its delete keeps the hardened guard of 34ffb8b25 (the delete slot's input sits at the entry
-address; a false guard means no write ran), and 32cc7fbe9 gives the write its own ran flag so an unrun write keeps
-its node. Three honest calls fail closed: the write arm while `k` is absent, the delete arm while `j` is absent
-(before 32cc7fbe9 it settled a duplicate predecessor relink), and a write arm that covers only part of a larger
-batch. Lone conditional deletes settle by what ran (06c633c6d) and have no such gap.
+two-target batch. Each target now settles alone: the delete at its own site as a lone delete does (06c633c6d), each
+write by its own ran flag (its single-target transition where it ran, its node kept where it did not), and the
+collection counts add per target. Every write's proof must be its own slot's input, so no two targets name one
+node. The write arm with `k` absent, the delete arm with `j` absent and a write arm covering part of a larger batch
+settle wherever the targets' nodes differ (AuditDS6MultiTargetDelete.test.ts). Where they coincide (adjacent keys,
+one gap, or one key) the SDK points the write's proof at the other target's input and the covenant refuses the call.
+The write-first order and a swap-remove pair under one arm take the alias path and keep the guarded batch.
 
-**Proposed design:** settle the delete outside the batch as the lone-delete code does, and give the write its own
-ran flag: when it ran, check its single-target transition; when it did not, keep its node. Collection counts add
-per target, and a write that ran may not use the delete slot's input as its proof node.
+**Proposed design:** for coinciding nodes, settle the shared node once: the delete's input is the write's proof node,
+and the arm that runs decides whether that node is cleared, relinked or kept.
 
-**Why deferred:** the SDK places inputs before its VM probe, but when the two keys share a node (adjacent keys,
-the same gap, or the same key) the slot that must hold that input depends on which branch runs. It needs a
-re-plan after the first derive pass, plus per-target no-op witnesses and a multi-target version of
-`dropSkippedConditionalInserts`.
+**Why deferred:** the SDK places inputs before its VM probe, but the slot that must hold the shared node depends on
+which branch runs. It needs a re-plan after the first derive pass and a covenant check that binds one input to both
+targets under each arm.

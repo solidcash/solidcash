@@ -26,8 +26,8 @@
  * element the published recipe does not resolve, and a mutation other than a push, are refused by name.
  *
  * A `delete m[k]` compiles to an in-place write of the value type's default, so that too is one write per target
- * with the target's commitment learned from the body's close. A branch-guarded delete that is its batch's one target
- * creates no node: at a key the list does not hold, its one record is the node that brackets the key, kept.
+ * with the target's commitment learned from the body's close. A branch-guarded delete creates no node: at a key the
+ * list does not hold, its one record is the node that brackets the key, kept, which a write beside it may relink.
  *
  * A write a branch guards publishes the condition it runs under, which the hop decides from the frame's facts as it
  * decides a conditional call site (`write-activation.ts`): a skipped write keeps its node, or its absent key's
@@ -905,15 +905,15 @@ function orderedAccesses(
 }
 
 /**
- * A delete a branch guards that is its batch's one target (DS-6): its frame creates no node, so at a key the list
- * does not hold its group is the kept node that brackets the key, whether the delete runs or not. The artifact
- * publishes it as a one-slot batch whose entry slot is a soft delete.
+ * A delete a branch guards (DS-6): its frame creates no node, so at a key the list does not hold its group is the kept
+ * node that brackets the key, whether the delete runs or not, alone in its batch or beside a write. The artifact
+ * publishes it as a batch target whose entry slot is a soft delete.
  */
-function loneGuardedDelete(fn: AbiFunction, access: NonNullable<AbiFunction['entryAccesses']>[number]): boolean {
+function guardedDelete(fn: AbiFunction, access: NonNullable<AbiFunction['entryAccesses']>[number]): boolean {
   const slotIndex = access.slotIndex;
   const written = access.operations.filter((operation) => operation !== 'read');
   return slotIndex !== undefined && written.length === 1 && written[0] === 'delete'
-    && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.length === 1 && batch.slotIndices[0] === slotIndex)
+    && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))
     && (fn.blockLayout?.slots ?? []).some((slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex
       && slot.softDelete === true);
 }
@@ -1298,9 +1298,9 @@ function planHopCollectionBatch(
       + 'whether the write creates the key\'s node',
     );
   }
-  // A lone guarded delete creates no node (DS-6): at a key the list does not hold, run or not, its group is the kept
-  // node that brackets the key, which the frame reads as skipped.
-  const settled = writes.map((write, at) => (loneGuardedDelete(fn, targets[at]!.access)
+  // A guarded delete creates no node (DS-6): at a key the list does not hold, run or not, its group is the kept node
+  // that brackets the key, which the frame reads as skipped; a write beside it may relink that node.
+  const settled = writes.map((write, at) => (guardedDelete(fn, targets[at]!.access)
     && !held(keyToSlotMulti([...write.keys])) ? { ...write, stated: false, skipped: true } : write));
   const plan = planMappingBatch({
     writes: settled, inventory,

@@ -639,7 +639,7 @@ const FRAMED_SELF_CONTEXT = '__internal__handlerSelf';
 const FRAMED_ORIGIN_CONTEXT = '__internal__handlerOrigin';
 /** The hidden operand a framed subroutine that reads `msg.value` receives it through. */
 const FRAMED_VALUE_CONTEXT = '__internal__handlerValue';
-/** The hidden operand a framed subroutine that reads `msg.sig` receives it through. */
+/** The hidden operand an invoked subroutine that reads `msg.sig` receives it through. */
 const FRAMED_SELECTOR_CONTEXT = '__internal__handlerSelector';
 
 /** True when a body reads the contract's own locking bytecode, `address(this)`. */
@@ -8641,7 +8641,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // above the caller's other hidden contexts because the caller pushes it last (see visitUserFunctionCall).
     // The origin sits above even that: the caller pushes it right after the address, the value after the origin,
     // and the selector after the value.
-    if (this.isDefineSubTraversal && this.framedMaster && this.framedSelectorCarrierNames().has(node.name)) {
+    if (this.isDefineSubTraversal && this.takesCallerSelector(node)) {
       this.pushToStack(FRAMED_SELECTOR_CONTEXT, true);
     }
     if (this.isDefineSubTraversal && this.framedMaster && this.framedValueCarrierNames().has(node.name)) {
@@ -15164,7 +15164,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_value_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (this.framedMaster && this.framedSelectorCarrierNames().has(targetFunc.name)) {
+    if (this.takesCallerSelector(targetFunc)) {
       // An internal call keeps the caller's selector; a self-call is a message call to the callee's own.
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (node.fromThisCall && targetFunc.functionSelector) this.emit(targetFunc.functionSelector, contextLoc);
@@ -46672,6 +46672,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private framedSelectorCarrierNames(): Set<string> {
     this.framedSelectorCarriers ??= this.framedCarrierNames(functionReadsSelector);
     return this.framedSelectorCarriers;
+  }
+
+  /**
+   * Whether an invoked body of `fn` takes its caller's `msg.sig` as a hidden operand. A direct build skips a body
+   * that takes it as `__internal__handlerMsgSig` already, and a function value: an indirect OP_INVOKE pushes no
+   * hidden operand.
+   */
+  private takesCallerSelector(fn: FunctionDefinitionNode): boolean {
+    if (this.framedMaster) return this.framedSelectorCarrierNames().has(fn.name);
+    if (!this.contractUsesMsgSig || this.compilerOptions.messageBus === true || fn.graphEmissionHandler
+      || fn.functionId === undefined || (this.journalSlotsByFunctionId.get(fn.functionId)?.length ?? 0) > 0
+      || !this.framedSelectorCarrierNames().has(fn.name)) return false;
+    return !this.sourcePrimaryContract || !this.functionReferenceIds(this.sourcePrimaryContract).has(fn.functionId);
   }
 
   /** The functions that reach a seed, directly or through the functions they call. */

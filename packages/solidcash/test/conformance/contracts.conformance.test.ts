@@ -231,6 +231,37 @@ contract C {
   })));
 });
 
+// msg.sig is the entry's selector in every function an internal call reaches. The EVM enters at `f`, the BCH side at
+// `check`, so each case compares selectors inside one run rather than against the EVM's value.
+describe('contracts: msg.sig through internal calls', () => {
+  it('a public function called internally reads the entry selector', () => run('msg-sig-internal-public', `
+contract C {
+  function boo() public pure returns (bytes4) { return msg.sig; }
+  function f() public pure returns (bool) { return boo() == msg.sig; }
+}`, '', 'bool', []));
+
+  it('a modifier on a public function called internally sees the entry selector', () => run('msg-sig-modifier', `
+contract C {
+  function _sig() internal pure returns (bytes4) { return msg.sig; }
+  modifier sameEntry(bytes4 entry) { require(msg.sig == entry && _sig() == entry); _; }
+  function g(bytes4 entry, uint256 x) public pure sameEntry(entry) returns (uint256) { return x + 1; }
+  function f(uint256 x) public pure returns (uint256) { return g(msg.sig, x) * 2; }
+}`, 'uint256 x', 'uint256', [5n]));
+
+  it('a function reached only as its own entry keeps its own selector', () => assertConformant(contractCase({
+    label: 'msg-sig-own-entry',
+    source: `
+contract C {
+  function g() public pure returns (bytes4) { return msg.sig; }
+  function f() public view returns (bool) { return this.g() != msg.sig; }
+}`,
+    params: '',
+    retType: 'bool',
+    args: [],
+    view: true,
+  })));
+});
+
 describe('contracts: interfaces and qualified state', () => {
   // ERC-165: an interface id XORs only the selectors the interface declares itself, not inherited ones. evmCompat
   // only: native selectors hash the platform signature, so a native interfaceId is not the EVM value by design.

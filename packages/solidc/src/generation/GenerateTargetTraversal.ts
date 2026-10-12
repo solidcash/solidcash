@@ -2449,6 +2449,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   invokeDebugInfo: Map<number, FunctionDebugInformation & { bytecode: string; name?: string }> = new Map();
   // Public/external functions OP_DEFINE'd under their own id: the only ids an entry-supplied pointer may name.
   private entryFunctionPointerTargets?: Array<{ id: number; type: FunctionType }>;
+  // No body OP_INVOKEs a runtime function value and no state holds one: an entry-supplied id is never invoked.
+  private functionValuesNeverInvoked = false;
 
   // Every OP_DEFINE'd body emitted at contract level, kept in Script form so cross-function outlining can share
   // repeated spans between them before the dispatcher is emitted. `outputIndex` is the body's data push.
@@ -3572,6 +3574,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         allFunctions.push(candidate.resolvedFunction);
       });
     }
+    this.functionValuesNeverInvoked = !allFunctions.some((fn) => fn.body && this.containsIndirectCall(fn.body, true))
+      && !node.contract.stateVariables.some((variable) => containsFunctionType(variable.type))
+      && !node.contract.collections.some((collection) => containsFunctionType(collection.valueType));
     this.outlinedRecoveryInputFunctionIds = new Set(allFunctions.flatMap((fn) => (
       fn.functionId !== undefined && Math.max(fn.recoveryEffectCount ?? 0, fn.ecrecoverCallCount ?? 0) > 0
         && fn.name !== '__message_bus_verify_atomic'
@@ -7089,6 +7094,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.userFunctionDefs = this.userFunctionDefs;
       subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
       subTraversal.entryFunctionPointerTargets = this.entryFunctionPointerTargets;
+      subTraversal.functionValuesNeverInvoked = this.functionValuesNeverInvoked;
       subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
       subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
       subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
@@ -9990,11 +9996,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * (private or compiler helpers included). Pin it, and each element of a function-pointer array, to this
    * contract's public/external functions of the parameter's type: the reach of an EVM external pointer. Parity
    * gap: the invoked body still sees the original msg.sender where the EVM gives address(this). Internal flows
-   * (`this.f` passed inside the contract) run the OP_DEFINE'd copy of the function and are not re-checked.
+   * (`this.f` passed inside the contract) run the OP_DEFINE'd copy of the function and are not re-checked. A
+   * contract that never invokes a function value needs no check; a constructor with no possible target fails.
    */
   private emitEntryFunctionIdChecks(node: FunctionDefinitionNode): void {
     const params = node.parameters.filter((param) => containsFunctionType(param.type));
-    if (params.length === 0 || !node.body) return;
+    if (params.length === 0 || !node.body || this.functionValuesNeverInvoked) return;
     // An unread or only-returned value is never invoked here; leave it (and the function's bytes) unchecked.
     const usage = new InvocableIdentifierCollector();
     usage.visit(node.body);
@@ -10010,11 +10017,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const ids = (this.entryFunctionPointerTargets ?? [])
         .filter((target) => implicitlyCastable(target.type, fnType))
         .map((target) => BigInt(target.id));
+      const loc: SingleLocationData = { location: param.location, positionHint: PositionHint.START };
+      if (ids.length === 0 && node.name === '__construct') {
+        // A deploy argument (a foreign `this.f` included) is never lowered to (address, selector): it names no
+        // body here, so a constructor that reads it fails instead of invoking a caller-chosen id.
+        this.emit(encodeBool(false), loc);
+        this.emit(Op.OP_VERIFY, loc);
+        continue;
+      }
       if (ids.length === 0) {
         throw new UncheckedFunctionIdParameterError(param, param.name, 'can only name this contract\'s '
           + `public/external functions of type ${fnType.toString()}, and none of them is invocable by id`);
       }
-      const loc: SingleLocationData = { location: param.location, positionHint: PositionHint.START };
       this.emit(encodeInt(BigInt(this.getStackIndex(param.name))), loc);
       this.emit(Op.OP_PICK, loc);
       this.pushToStack('(function_id)');
@@ -11339,7 +11353,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Whether a body calls through a function-typed value, whose target is chosen at run time. */
-  private containsIndirectCall(body: Node): boolean {
+  private containsIndirectCall(body: Node, includeExpressionCallees = false): boolean {
     const pending: Node[] = [body];
     const seen = new Set<Node>();
     while (pending.length > 0) {
@@ -11348,6 +11362,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       seen.add(current);
       if (current instanceof FunctionCallNode && current.resolvedFunction?.functionId === undefined
         && current.identifier?.type instanceof FunctionType) return true;
+      if (includeExpressionCallees && current instanceof IndirectCallNode) return true;
       for (const key in current) {
         if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
         const value = current[key as keyof Node];

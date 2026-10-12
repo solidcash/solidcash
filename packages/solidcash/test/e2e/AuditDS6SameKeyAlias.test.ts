@@ -19,7 +19,8 @@ import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
  * the message bus a direct body's read-modify-write is flushed there as well; a cache the body only writes and a
  * route's handler clone keep their flush at the end. A read of the delete's key after the write, in the delete's
  * arm or before its branch, sees the written value where the keys meet: a call whose require the written value fails
- * is refused though the old value passes it.
+ * is refused though the old value passes it. So does a read between the write and an unconditional delete, and one
+ * through an internal getter; a read of the key in an invoked function is refused at compile.
  */
 
 const WRITE_FIRST_SOURCE = `contract SameKeyWriteFirst {
@@ -230,6 +231,32 @@ const LOOP_THEN_READ_DROP_SOURCE = `contract SameKeyLoopThenReadDrop {
   function setThenDrop(int j, int k, int v, int sel) external {
     for (int i = 0; i < 2; i++) { m[j] = v + i; }
     if (sel > 0) { require(m[k] < 100); delete m[k]; }
+    require(true);
+  }
+}`;
+
+// The key is read between the write and its unconditional delete.
+const WRITE_READ_DROP_SOURCE = `contract SameKeyWriteReadDrop {
+  mapping(int => int) m;
+  function set(int k, int v) external { m[k] = v; require(true); }
+  function check(int k, int expected) external { require(m[k] == expected); }
+  function setReadDrop(int j, int k, int v) external {
+    m[j] = v;
+    require(m[k] < 100);
+    delete m[k];
+    require(true);
+  }
+}`;
+
+// The delete's arm reads the key in an invoked function: `getter` defines it, `read` calls it.
+const helperReadSource = (getter: string, read: string): string => `contract SameKeyHelperReadDrop {
+  mapping(int => int) m;
+  function set(int k, int v) external { m[k] = v; require(true); }
+  function check(int k, int expected) external { require(m[k] == expected); }
+  ${getter}
+  function setThenDrop(int j, int k, int v, int sel) external {
+    m[j] = v;
+    if (sel > 0) { require(${read}); delete m[k]; }
     require(true);
   }
 }`;
@@ -758,6 +785,59 @@ describe('under the message bus, a read-modify-write before a delete of the same
   it('refuses the key\'s node taking another value where the delete does not run', async () => {
     // 70 + 230 = 300.
     await expectForgedValueRefused(ADD_THEN_DROP_SOURCE, 'addThenDrop', [7n, 7n, 230n, 0n], true, true);
+  }, 300_000);
+});
+
+describe('a read of the key between a write and an unconditional delete of it', () => {
+  it('sees the written value where the keys meet', async () => {
+    const { sc } = await deploy(WRITE_READ_DROP_SOURCE, 'setReadDrop');
+    await sc.getFunction('setReadDrop')(7n, 7n, 50n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('refuses where the written value fails the require', async () => {
+    const { sc } = await deploy(WRITE_READ_DROP_SOURCE, 'setReadDrop');
+    await expect(sc.getFunction('setReadDrop')(7n, 7n, 300n).send()).rejects.toThrow();
+    await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('sees the other key\'s own value where the keys differ', async () => {
+    const { sc } = await deploy(WRITE_READ_DROP_SOURCE, 'setReadDrop');
+    await sc.getFunction('setReadDrop')(20n, 7n, 300n).send();
+    await expect(sc.getFunction('check')(20n, 300n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('refuses where the other key\'s own value fails the require', async () => {
+    // The written 50 would pass; key 20 holds 200.
+    const { sc } = await deploy(WRITE_READ_DROP_SOURCE, 'setReadDrop');
+    await expect(sc.getFunction('setReadDrop')(7n, 20n, 50n).send()).rejects.toThrow();
+    await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+});
+
+// An invoked body reads the node the transaction spends, not the key's pending value: such a read is refused.
+describe('a read of the key in a called function after a write before a delete of it', () => {
+  it('refuses an external getter the delete\'s arm calls on itself', () => {
+    const source = helperReadSource('function get(int k) external view returns (int) { return m[k]; }',
+      'this.get(k) < 100');
+    expect(() => compileString(source, { forceStateful: true })).toThrow('a read of `m[k]` in the invoked function '
+      + '\'get\' after the write of `m[j]` is not supported on the direct convention');
+  });
+
+  it('sees the written value through an internal getter, which is reduced in place', async () => {
+    // Even at a short-circuit operand the getter becomes its return expression, a read in the delete's arm.
+    const source = helperReadSource('function get(int k) internal view returns (int) { return m[k]; }',
+      'k != 3 && get(k) < 100');
+    const accepted = await deploy(source, 'setThenDrop');
+    await accepted.sc.getFunction('setThenDrop')(7n, 7n, 50n, 1n).send();
+    await expect(accepted.sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    const refused = await deploy(source, 'setThenDrop');
+    await expect(refused.sc.getFunction('setThenDrop')(7n, 7n, 300n, 1n).send()).rejects.toThrow();
+    await expect(refused.sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
   }, 300_000);
 });
 

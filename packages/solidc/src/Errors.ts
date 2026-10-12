@@ -981,6 +981,17 @@ export class DirectStaleReadError extends SolidCashError {
 }
 
 /**
+ * A direct body invokes a function that reads a verified-mapping entry after a swap-remove write of its mapping: the
+ * invoked body takes the node the transaction spends, not the value the write left.
+ */
+export class DirectInvokedStaleReadError extends SolidCashError {
+  constructor(public node: Node, entry: string, written: string, callee: string) {
+    super(node, `a read of \`${entry}\` in the invoked function '${callee}' after the write of \`${written}\` is not `
+      + 'supported on the direct convention: read it before the write, or into a local');
+  }
+}
+
+/**
  * A constructor reads a verified-mapping entry after a write whose key may name it and which keeps no value: the read
  * would take the genesis default rather than the value the write stored.
  */

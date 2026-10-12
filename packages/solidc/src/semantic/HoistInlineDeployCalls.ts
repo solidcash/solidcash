@@ -30,18 +30,28 @@ import AstTraversal from '../ast/AstTraversal.js';
  * `C __newcall_N = new C(); __newcall_N.m(args)`, so the existing deploy-then-call fold machinery
  * (which tracks NAMED deploy locals) applies unchanged - including the value-returning getter folds
  * (`return new C().i();`). Call options (`new C{value: v}()`) ride along on the hoisted instantiation.
+ * A deploy behind an interface/contract cast receiver (`I(address(new C())).m(args)`) is hoisted the same way
+ * and the cast keeps its shape (`I(address(__newcall_N)).m(args)`), so the call folds into a deploy that stays.
  *
  * A deploy mints a child, so hoisting out of a conditionally-evaluated position would change effects;
  * ternary branches, loop conditions, and short-circuit right operands are not descended into (such a
  * call keeps its original - unsupported - shape and error).
  */
 const PREFIX = '__newcall_';
+const LOW_LEVEL_METHODS = new Set(['call', 'staticcall', 'delegatecall']);
 
 export default class HoistInlineDeployCalls extends AstTraversal {
   private counter = 0;
   private hoists: StatementNode[] = [];
+  // Interface and contract names: a one-argument call to one of them is a cast receiver (`I(x)`).
+  private castTypeNames = new Set<string>();
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.castTypeNames = new Set([
+      ...node.interfaceDefinitions.map((iface) => iface.name),
+      ...node.importedContracts.map((contract) => contract.name),
+      ...(node.contract ? [node.contract.name] : []),
+    ]);
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
@@ -76,27 +86,53 @@ export default class HoistInlineDeployCalls extends AstTraversal {
   visitMethodCall(node: MethodCallNode): Node {
     const visited = super.visitMethodCall(node) as MethodCallNode; // hoist nested receivers first
     if (visited.object instanceof InstantiationNode) {
-      const inst = visited.object;
-      const tmpName = `${PREFIX}${this.counter++}`;
-      const contractName = inst.identifier.name;
-      const def = new VariableDefinitionNode(new AddressType(false, contractName), [], tmpName, inst);
-      def.location = inst.location;
-      this.hoists.push(def);
+      const read = this.hoistDeploy(visited.object);
       // The no-option call becomes the NAMESPACED FunctionCall form (`__newcall_N.m(args)`) - the shape the
       // deploy-then-call FOLD route handles; a call-option form stays a MethodCall (not folded in v1).
       if (!visited.callOptions) {
-        const id = new IdentifierNode(`${tmpName}.${visited.methodName}`);
+        const id = new IdentifierNode(`${read.name}.${visited.methodName}`);
         id.location = visited.location;
         const call = new FunctionCallNode(id, visited.parameters as ExpressionNode[]);
         if (visited.fieldNames) call.fieldNames = visited.fieldNames;
         call.location = visited.location;
         return call;
       }
-      const read = new IdentifierNode(tmpName);
-      read.location = inst.location;
       visited.object = read;
+    } else if (!LOW_LEVEL_METHODS.has(visited.methodName)) {
+      this.hoistCastReceiverDeploy(visited.object);
     }
     return visited;
+  }
+
+  // `I(address(new C()))` receiver: replace the deploy behind the casts with a hoisted local in place.
+  private hoistCastReceiverDeploy(receiver: ExpressionNode): void {
+    const isTypeCast = (expr: ExpressionNode): expr is FunctionCallNode => expr instanceof FunctionCallNode
+      && expr.parameters.length === 1 && this.castTypeNames.has(expr.identifier.name);
+    if (!isTypeCast(receiver)) return;
+    let parent: CastNode | FunctionCallNode = receiver;
+    for (;;) {
+      const inner: ExpressionNode = parent instanceof CastNode
+        ? parent.expression : parent.parameters[0] as ExpressionNode;
+      if (inner instanceof InstantiationNode) {
+        const read = this.hoistDeploy(inner);
+        if (parent instanceof CastNode) parent.expression = read;
+        else parent.parameters[0] = read;
+        return;
+      }
+      if (!(inner instanceof CastNode) && !isTypeCast(inner)) return;
+      parent = inner;
+    }
+  }
+
+  // `C __newcall_N = <deploy>;` before the current statement; returns a read of the local.
+  private hoistDeploy(inst: InstantiationNode): IdentifierNode {
+    const tmpName = `${PREFIX}${this.counter++}`;
+    const def = new VariableDefinitionNode(new AddressType(false, inst.identifier.name), [], tmpName, inst);
+    def.location = inst.location;
+    this.hoists.push(def);
+    const read = new IdentifierNode(tmpName);
+    read.location = inst.location;
+    return read;
   }
 
   // A deploy used directly as a state-array push value leaves its pending covenant stack items between the
@@ -115,16 +151,7 @@ export default class HoistInlineDeployCalls extends AstTraversal {
   }
 
   private hoistPushDeploy(expr: ExpressionNode): ExpressionNode {
-    if (expr instanceof InstantiationNode) {
-      const tmpName = `${PREFIX}${this.counter++}`;
-      const contractName = expr.identifier.name;
-      const def = new VariableDefinitionNode(new AddressType(false, contractName), [], tmpName, expr);
-      def.location = expr.location;
-      this.hoists.push(def);
-      const id = new IdentifierNode(tmpName);
-      id.location = expr.location;
-      return id;
-    }
+    if (expr instanceof InstantiationNode) return this.hoistDeploy(expr);
     if (expr instanceof CastNode) {
       expr.expression = this.hoistPushDeploy(expr.expression);
       return expr;

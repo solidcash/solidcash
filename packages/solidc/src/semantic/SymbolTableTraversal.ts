@@ -2919,6 +2919,18 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * A folded call declared `view`/`pure` is a STATICCALL in EVM, where any state write reverts. `reverts` when the
+   * callee body writes on every path (the call is that failure), `conditional` when only on some (refused).
+   */
+  private staticFoldWrite(
+    declared: InterfaceFunctionNode | FunctionDefinitionNode, fold: { wrote?: boolean, unconditionalWrite?: boolean },
+  ): 'none' | 'reverts' | 'conditional' {
+    const mutability = declaredStateMutability(declared);
+    if ((mutability !== 'view' && mutability !== 'pure') || !fold.wrote) return 'none';
+    return fold.unconditionalWrite ? 'reverts' : 'conditional';
+  }
+
+  /**
    * The function a deploy-time call targets. A name declared by the contract being folded (the child whose
    * constructor or callee is being replayed) or supplied by the caller, or - for a call through a function-typed
    * parameter - the function the caller bound to that parameter: `new D(this.sixteen)` against the child's
@@ -3076,7 +3088,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     fieldExprs: Map<string, ExpressionNode>, fieldType: (name: string) => Type | undefined,
     writableFieldType: (name: string) => Type | undefined = fieldType,
     constructorPredicates?: ExpressionNode[],
-  ): false | { returnValue?: ExpressionNode, wrote: boolean, discarded: number } {
+  ): false | { returnValue?: ExpressionNode, wrote: boolean, unconditionalWrite: boolean, discarded: number } {
     type PredicateTrackedExpression = ExpressionNode & { constructorPredicateUnsafe?: boolean };
     const predicateSourceUnsafe = (value: unknown, seen = new WeakSet<object>()): boolean => {
       if (Array.isArray(value)) return value.some((item) => predicateSourceUnsafe(item, seen));
@@ -3098,6 +3110,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     let returnValue: ExpressionNode | undefined;
     let wrote = false;
+    // A state write on every path of this list (a branch writes unconditionally only when both arms do).
+    let unconditionalWrite = false;
     // Statements the replay drops on purpose: a guard it does not reproduce, an inert expression statement, and
     // a transfer the callee makes to its own address. A body of only those has no observable transition, which
     // the caller treats like an empty body (a no-op call) instead of refusing it.
@@ -3178,7 +3192,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const falseResult = stmt.elseBlock ? this.foldStatementList(
           stmt.elseBlock.statements ?? [], falseSubs, falseFields, fieldType, writableFieldType,
           constructorPredicates,
-        ) : { wrote: false, discarded: 0 };
+        ) : { wrote: false, unconditionalWrite: false, discarded: 0 };
         if (!falseResult || falseResult.returnValue) return false;
         const joined = (
           whenTrue: ExpressionNode, whenFalse: ExpressionNode, type: Type,
@@ -3236,6 +3250,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           fieldExprs.set(name, joined(trueValue, falseValue, type));
         }
         wrote ||= trueResult.wrote || falseResult.wrote;
+        unconditionalWrite ||= trueResult.unconditionalWrite && falseResult.unconditionalWrite;
       } else if (stmt instanceof StateAssignNode) {
         const folded = this.foldGenesisExpr(
           cloneNode(stmt.expression), subs, fieldExprs, fieldType, writableFieldType(stmt.name),
@@ -3243,6 +3258,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!folded) return false;
         fieldExprs.set(stmt.name, folded);
         wrote = true;
+        unconditionalWrite = true;
       } else if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode) {
         // A not-yet-analyzed child body writes state as a BARE assign (the StateAssign rewrite happens in
         // the child's own pass): a local reassign updates subs, a child-field name is a state write.
@@ -3255,6 +3271,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else if (writableFieldType(stmt.identifier.name)) {
           fieldExprs.set(stmt.identifier.name, folded);
           wrote = true;
+          unconditionalWrite = true;
         } else {
           return false;
         }
@@ -3315,7 +3332,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         return false; // only straight-line local/field assignments (+ trailing require/return) fold
       }
     }
-    return { returnValue, wrote, discarded };
+    return { returnValue, wrote, unconditionalWrite, discarded };
   }
 
   // Folded genesis/return expressions embed CLONES of parent-context identifiers that the roll analysis
@@ -3519,10 +3536,11 @@ export default class SymbolTableTraversal extends AstTraversal {
   // straight-line sequence of `T local = expr;` and `this.field = expr;` assignments (plus an optional
   // trailing require, not enforced at deploy), where each expr folds (foldGenesisExpr). Records, per child
   // field, its final genesis expression in the parent's context, so the deploy covenant computes the value
-  // instead of using the default. Returns false (caller errors) for anything else.
+  // instead of using the default. Returns false (caller errors) for anything else. `wrote` / `unconditionalWrite`
+  // report a state write on some / every path (a read-only declaration of the callee must revert on it).
   private tryFoldDeployCall(
     deployNode: InstantiationNode, foo: FunctionDefinitionNode, parentArgs: ExpressionNode[],
-  ): false | { returnValue?: ExpressionNode } {
+  ): false | { returnValue?: ExpressionNode, wrote?: boolean, unconditionalWrite?: boolean } {
     const body = foo.body as BlockNode | undefined;
     if (!body) return false;
     const statements = body.statements ?? [];
@@ -3562,7 +3580,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       zero.location = deployNode.location;
       this.genesisChildBalance = zero;
     }
-    let res: false | { returnValue?: ExpressionNode, wrote: boolean, discarded: number };
+    let res: false | { returnValue?: ExpressionNode, wrote: boolean, unconditionalWrite: boolean, discarded: number };
     try {
       foo.returnNames.forEach((name, index) => {
         if (subs.has(name) || index >= foo.returnTypes.length) return;
@@ -3597,7 +3615,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.protectFoldedExprVars(init.values());
     }
     if (res.returnValue) this.protectFoldedExprVars([res.returnValue]);
-    return { returnValue: res.returnValue };
+    return { returnValue: res.returnValue, wrote: res.wrote, unconditionalWrite: res.unconditionalWrite };
   }
 
   /**
@@ -13337,10 +13355,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private validateExternalCallMutability(callee: InterfaceFunctionNode | FunctionDefinitionNode): void {
     const callerPure = this.currentFunction?.modifiers.includes(FunctionModifier.PURE);
     const callerView = this.currentFunction?.modifiers.includes(FunctionModifier.VIEW);
-    const calleeMutability = callee instanceof InterfaceFunctionNode ? callee.stateMutability
-      : callee.modifiers.includes(FunctionModifier.PURE) ? 'pure'
-        : callee.modifiers.includes(FunctionModifier.VIEW) ? 'view'
-          : callee.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable' : 'nonpayable';
+    const calleeMutability = declaredStateMutability(callee);
     if ((callerPure && calleeMutability !== 'pure')
       || (callerView && (calleeMutability === 'nonpayable' || calleeMutability === 'payable'))) {
       throw new InvalidModifierCombinationError(
@@ -13573,6 +13588,21 @@ export default class SymbolTableTraversal extends AstTraversal {
                     realFoo ? this.isDeployFoldable(realFoo) : false);
                 }
                 deployNode.hasFoldedChildCall = true;
+                const staticWrite = this.staticFoldWrite(ifaceFunc, foldRes);
+                if (staticWrite === 'conditional') {
+                  throw new DeployThenCallError(node, varName, methodName, deployNode.identifier.name, true);
+                }
+                if (staticWrite === 'reverts') {
+                  const failed = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
+                  failed.sourceEffectOrdinal = node.sourceEffectOrdinal;
+                  failed.callInfo = { interfaceName: calleeName, functionName: methodName, externalCallSlotIndex: -1 };
+                  failed.foldedIntoDeploy = true;
+                  failed.foldedCallReverts = true;
+                  failed.type = ifaceFunc.returnTypes.length === 1 ? ifaceFunc.returnTypes[0]
+                    : ifaceFunc.returnTypes.length > 1 ? new TupleType(ifaceFunc.returnTypes) : PrimitiveType.VOID;
+                  failed.location = node.location;
+                  return failed;
+                }
                 // A value-returning folded call IS its genesis expression in the parent's context
                 // (`r = c.m_x()` on a fresh deploy reads the value the deploy covenant verifies).
                 if (foldRes.returnValue) {
@@ -16904,31 +16934,40 @@ export default class SymbolTableTraversal extends AstTraversal {
           ? deployAlias
           : deployName ? this.deployResultLocals.get(deployName) : undefined;
         if (deployNode) {
+          const receiverName = deployName ?? `new ${deployNode.identifier.name}()`;
+          // An inline deploy the hoist left in place (a conditionally evaluated position) would vanish with the
+          // fold, which keeps only the call's effect: refuse it rather than drop the child.
+          if (deployAlias instanceof InstantiationNode) {
+            throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
+          }
           const realFunction = deployNode.referencedContract?.functions.find((f) => f.name === node.methodName);
           const fold = realFunction ? this.tryFoldDeployCall(deployNode, realFunction, parameters) : false;
           if (!fold) {
             throw new DeployThenCallError(
-              node, deployName ?? `new ${deployNode.identifier.name}()`, node.methodName, iface.name,
+              node, receiverName, node.methodName, iface.name,
               realFunction ? this.isDeployFoldable(realFunction) : false,
             );
           }
           deployNode.hasFoldedChildCall = true;
+          const staticWrite = this.staticFoldWrite(ifaceFunc, fold);
+          if (staticWrite === 'conditional') {
+            throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
+          }
           const sameReturns = realFunction!.returnTypes.length === ifaceFunc.returnTypes.length
             && realFunction!.returnTypes.every((t, i) => t.toString() === ifaceFunc.returnTypes[i].toString());
-          if (sameReturns && fold.returnValue) {
+          if (staticWrite === 'none' && sameReturns && fold.returnValue) {
             fold.returnValue.location = node.location;
             return fold.returnValue;
           }
-          if (!sameReturns && !this.discardedMethodCalls.has(node)) {
-            throw new DeployThenCallError(
-              node, deployName ?? `new ${deployNode.identifier.name}()`, node.methodName, iface.name, true,
-            );
+          if (staticWrite === 'none' && !sameReturns && !this.discardedMethodCalls.has(node)) {
+            throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
           }
           const inert = new ExternalFunctionCallNode(iface.name, addressExpr, node.methodName, parameters);
           inert.resultArrayOutput = node.resultArrayOutput;
           inert.sourceEffectOrdinal = node.sourceEffectOrdinal;
           inert.callInfo = { interfaceName: iface.name, functionName: node.methodName, externalCallSlotIndex: -1 };
           inert.foldedIntoDeploy = true;
+          if (staticWrite === 'reverts') inert.foldedCallReverts = true;
           inert.type = ifaceFunc.returnTypes.length === 1
             ? ifaceFunc.returnTypes[0]
             : ifaceFunc.returnTypes.length > 1 ? new TupleType(ifaceFunc.returnTypes) : PrimitiveType.VOID;
@@ -18430,6 +18469,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
 function isEmptyBytesLiteral(expr: ExpressionNode): boolean {
   return expr instanceof HexLiteralNode && expr.value.byteLength === 0;
+}
+
+/** The state mutability a callee's declaration states. */
+function declaredStateMutability(callee: InterfaceFunctionNode | FunctionDefinitionNode): string {
+  return callee instanceof InterfaceFunctionNode ? callee.stateMutability
+    : callee.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+      : callee.modifiers.includes(FunctionModifier.VIEW) ? 'view'
+        : callee.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable' : 'nonpayable';
 }
 
 /** The method a framed low-level call routed to its target's fallback names, which no interface declares. */

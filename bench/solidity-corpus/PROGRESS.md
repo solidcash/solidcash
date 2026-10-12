@@ -5485,3 +5485,19 @@ in a later one; evmCompat same-width int <-> uint casts reverted instead of rein
 their own `super` scope and modifiers; library code picked a contract's same-named event; the SDK decoded
 function pointers in state as bytes. 30 remaining mismatches are tryCatch (a failed call cannot be caught; see
 packages/solidc/docs/platform-differences.md).
+
+## 2026-10-12: runtime parity under real BCH size limits; a batch-census hole closed
+
+The semantic runner now runs every spend under the real BCH-2026 size limits (128-byte commitments, 10,000-byte
+inputs and stack items) and reports lines that only pass under the mock's relaxed sizes apart. Measured that way:
+pure 1380/1490 = 92.62%, stateful 673/755 = 89.14% (14 lines still need an oversized record). Corpus 2719/2805 and
+negatives 2009/2158 unchanged. Fixed on the way: evmCompat bounded arrays over 128 B were stored as one oversized
+data-NFT field (now chunk-packed); external function-pointer tables dropped pushed values (the push only bumped a
+separate length counter); array state-variable initializers were silently dropped; deploys under-reserved chunk and
+value-chunk outputs (oscillation stalls) and under-funded wide records; base constructors lost `super` scope and
+modifiers; `layout at` ignored its base slot; tuple assignments ran stores left to right; `interfaceId` folded in
+inherited functions; shifts past the bit width aborted; a free function computing keccak miscounted side-cars;
+mock receipts skipped the token rules. Security: the vmap batch census counted an untaken pure-read slot by
+"non-empty commitment" instead of by entry address, so an own-category NFT outside the collection could stand in
+for a node and another node could be rewritten (VM-proven on the mock; fixed in 6e292ca1f, recorded as DS-7 in the
+per-call audit). Direct functions may now share one absence proof between sorted reads (reviewed twice).

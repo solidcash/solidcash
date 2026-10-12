@@ -47766,7 +47766,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot: the direct
    * epilogue or the framed batch transition binds the node where it stays false. Loop, alias and invoked writes get
    * none, nor does a direct multi-slot batch's target, bar a write (alias or not) sharing a guarded or an
-   * activity-settled batch with a delete, or a framed one the body makes wherever it reaches it.
+   * activity-settled batch with a delete, or a framed one the body makes wherever it reaches it. With the message bus
+   * on, a direct entry flags only the latter's writes.
    */
   private allocateConditionalSortedWriteFlags(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
@@ -47774,13 +47775,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const messageBusDisabled = (this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean })
       .__messageBusExplicitlyDisabled === true;
     const direct = messageBusDisabled && this.compilerOptions.composition !== 'framed' && !this.framedMaster;
-    if (!direct && !this.framedMaster) return;
+    const activityWrites = this.activityBatchWriteSlots(node);
+    // DS-6: with the bus on, the SDK still settles a direct entry's activity batch by what ran (it reads the layout
+    // alone); settlesSortedTargetsByActivity agrees only with each such write's flag. A route, as the SDK names one,
+    // gets none.
+    const busDirect = !direct && !this.framedMaster && activityWrites.size > 0 && !node.name.startsWith('__message_bus')
+      && !node.parameters.some((parameter) => parameter.name === 'batchBlob');
+    if (!direct && !this.framedMaster && !busDirect) return;
     const slots = new Set<number>();
     const invokedWrites = new Set<number>();
     this.collectConditionalSortedWriteSlots(node.body, false, slots, new Map(), invokedWrites);
     const guardedWrites = this.guardedBatchWriteSlots(node);
-    const activityWrites = this.activityBatchWriteSlots(node);
     for (const slotIndex of [...slots].sort((a, b) => a - b)) {
+      if (busDirect && !activityWrites.has(slotIndex)) continue;
       const info = this.entrySlots[slotIndex];
       if (info === undefined || info.inLoop) continue;
       // An invoked subroutine cannot set this frame's flag.

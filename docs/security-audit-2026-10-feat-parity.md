@@ -15,14 +15,16 @@ reconciled when they meet. None of these commits are on feat/per-call.
 | DX-4 | HIGH | a standalone callee refuses any own-category return carrier | 624daa86a | e2e/AuditDX4ReturnBinding |
 | TOOLS-1 | HIGH | libauth pinned to the commit the lockfile resolves | cf8145ecd | - |
 | KB-3 | HIGH | a bound route cannot skip its verifier with a negative index inside a composition | 7afe87c00 | journal-message-bus/e2e/AuditKB3VerifierSkip |
-| DS-6 | HIGH | a conditional sorted delete can no longer switch off its batch: a lone delete settles by what ran and keeps an unrun node at its own input; a delete beside writes (either order, swap-remove included) gives each write a ran flag and keeps an unrun write's node; a framed frame has no guard; a message-bus route never had one | 34ffb8b25 06c633c6d 190d5d5b1 32cc7fbe9 71566d3c6 595d99489 9a4db66bb | e2e/AuditDS6ConditionalDelete, e2e/AuditDS6MultiTargetDelete, e2e/AuditDS6RouteConditionalDelete, framed/hostile/conditional-delete-node |
+| DS-6 | HIGH | a conditional sorted delete can no longer switch off its batch: every direct shape settles each target by what ran (lone delete, a delete beside writes in either order, swap-remove alias writes, chains of writes and a delete on one node), framed frames have no guard and settle absent keys through the bracketing node, and message-bus routes never had one; same-key alias writes keep their value where the delete does not run and later reads see it | 34ffb8b25 06c633c6d 190d5d5b1 32cc7fbe9 71566d3c6 595d99489 34798d030 838aa2f52 67b8003d3 7b98706bc 8a0df1a47 0a19d26ac 3a287499c 3a63dfa6b 974c61954 3cac34e5c 6b7f015e6 93f7a13d8 0dfe6d25f bcb07593b ed04bbcfb ee43ff8bd 9dddd0b5a fcbbea6c4 1ae981ec1 0bee4e7a9 c1b4c1887 daf87ea80 d67c81042 | e2e/AuditDS6*.test.ts, framed/hostile/conditional-delete-node, framed/call/guarded-mapping-delete, framed/call/alias-write-guarded-delete |
 | CRYPTO-4 | HIGH | the blockhash keeper baton sits at a covenant that can only mint oracle records | cfef81dfa | e2e/AuditCrypto4KeeperAuthority |
 | CRYPTO-5 | MEDIUM | a reported height stays below the time threshold; number and timestamp cannot be rewound | cfef81dfa e33869dd4 | e2e/AuditCrypto5OracleRewind |
-| SDKFRAMED-1, -2 | HIGH | a framed deploy proves its own coins before signing; caller-side refusals precede the first genesis | 5e6d501a2 | framed/AuditSdkFramedDeploy |
+| SDKFRAMED-1, -2 | HIGH | a framed deploy proves its own coins before signing; a framed proxy genesis is minted already initialized, and a deploy commits fully or broadcasts nothing | 5e6d501a2 6dad02a18 d9251997a | framed/AuditSdkFramedDeploy, framed/AuditSdkFramedProxyAtomic |
 | DX-8 | HIGH | a delegatecall, direct or message-bus routed, conserves the implementation's own records, in order; the SDK mints no stray event under the implementation's category | cb3c138b6 2f99d5edb 8841257b2 b063526ca | e2e/AuditDX8DelegateRecords, e2e/AuditDX8RoutedDelegateRecords, e2e/DelegateLegacyEventCategory |
 
 SDKFRAMED-1 adds an optional `NetworkProvider.getLedgerOutput`; only `MockNetworkProvider` implements it, for
-simulator coins that have no transaction behind them. Every other provider fails closed.
+simulator coins that have no transaction behind them. Every other provider fails closed. The same own-coin proof now
+also guards the direct stateful deploy (e781670ce) and contract-driven child geneses, `deployFrom` and composition
+children (21aeaeee1); no audit row names those.
 
 ## Overlap with the per-call fixes
 
@@ -36,20 +38,20 @@ DS-7, DS-8, SEM-1, CRYPTO-4 and DX-8 also have a fix in the per-call worker's tr
 
 ## Residuals and findings
 
-- SDKFRAMED-2: the `initialize` hop is still a third transaction (packages/solidc/docs/deferrals.md).
-- DS-6, fails closed: in a sorted batch where a conditional delete sits beside a write, the write arm is refused while
-  the deleted key is absent, the delete arm while the written key is absent, and a write arm covering part of a larger
-  batch; the SDK must re-plan inputs after its first derive pass (deferrals.md).
-- DS-6, framed: the delete's reads and close use the transaction's real commitments, not the frame's declared views,
-  so an honest flow is refused when another frame writes the same node in the same transaction; in a framed
-  multi-target batch an insert-shaped group still rests on the record census.
-- DS-6, pre-existing: in `if (s) { m[j] = v; } else { delete m[k]; }` with the write arm taken and `j == k`, the
-  swap-remove alias gate silently skips the write.
-- Found while fixing DS-6, not fixed here (nearest row DS-1, owned by the per-call worker): a direct conditional
-  sorted write with no delete in its batch, skipped on an absent key, still runs its planned insert, and the honest
-  SDK leaves a duplicate predecessor. The skipped write never binds its slot witness, so a spender can choose that
-  duplicate's `next` and make present keys read absent. A per-write ran flag, as DS-6 now gives writes beside a
-  delete, closes it, at a byte cost in every function with a conditional sorted write.
+- SDKFRAMED-2: a framed proxy initializer that calls another contract is refused by default; its `initializeAs: 'hop'`
+  opt-in still relays three transactions (packages/solidc/docs/deferrals.md).
+- DS-6, fails closed (deferrals.md, "Sorted batch targets sharing a node"): two writes of one key that both run on one
+  node, more than one delete of a batch beside its writes, and a deleted node's own key beside an insert where the
+  value's default is not empty.
+- DS-6, framed: a swap-remove write of a chunkable value followed by a delete that may not run
+  (`m[a] = v; if (c) delete m[k];`) is refused at compile, keys differing included, because its write could be lost;
+  settling it would need chunk runs staged on the delete's node.
+- DS-6: an external self-call (`this.get(k)`) that reads the mapping between a swap-remove write and its delete is
+  refused at compile (`DirectInvokedStaleReadError`); function-pointer calls there are not covered.
+- Found, not fixed (nearest row DS-1, owned by the per-call worker): a direct conditional sorted write with no delete in
+  its batch, skipped on an absent key, still runs its planned insert, and the honest SDK leaves a duplicate
+  predecessor; the skipped write never binds its slot witness, so a spender can choose that duplicate's `next`.
+- Found, not verified: a body invoked through `this.f()` reads mapping entries at its own layout's input slots, not
+  the caller's.
 - Failing on feat/parity and on feat/per-call alike, so not from this work: KernelLoopCompose "recursive event domain
-  step and 64-frame resource bound" (already before f9a6ee114), KernelPhysicalCallerWithScidCompose, and
-  KernelRealUnicrowProxyArbitration (its compile setup).
+  step and 64-frame resource bound", KernelPhysicalCallerWithScidCompose, and KernelRealUnicrowProxyArbitration.

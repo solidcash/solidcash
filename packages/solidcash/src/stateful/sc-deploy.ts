@@ -17,6 +17,7 @@ import {
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../framed/composer/dust.js';
+import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import {
@@ -69,6 +70,14 @@ export async function deployStatefulContract<T extends Artifact>(
       + `Got '${options.fundingUtxo.txid}'.`,
     );
   }
+
+  // The category is the funding coin's txid, so the coin is proven at the funder's own lock before anything is
+  // signed: a coin a provider lists there but that sits at another lock would hand the category to its owner.
+  const coinRefusal = await ownCoinRefusal(
+    options.provider, options.fundingUtxo, options.funder.generateLockingBytecode(),
+    { role: 'funder', tokenFree: true },
+  );
+  if (coinRefusal !== undefined) throw new Error(coinRefusal);
 
   const categoryId = options.fundingUtxo.txid;
   // Mock genesis categories are deterministic across tests. Persist is keyed

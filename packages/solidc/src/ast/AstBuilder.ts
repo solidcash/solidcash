@@ -4,6 +4,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { parameterTypeToken } from '../semantic/parameterTypeToken.js';
 import { byteElementValue } from '../semantic/byteElementValue.js';
 import { getMaxPushdataEncodedSizeForType } from '../semantic/maxEncodedSize.js';
+import { mayWriteState } from '../semantic/LowerRequireMessageEffects.js';
 import { getFixedWidth, isFixedWidthType } from '../generation/utils.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
@@ -4058,10 +4059,24 @@ export default class AstBuilder
     // else: require(cond, <any other expression>) - a dynamic string message (a variable, member access, function
     // call, ternary, string.concat, ...). Solidity treats require as a plain function taking `string memory`; BCH
     // has no dynamic on-chain reason string, so the message is dropped and the require still reverts on false
-    // (same as revert(expression)). The condition still fully covers correctness.
+    // (same as revert(expression)). The condition still fully covers correctness. solc still evaluates the message
+    // after the condition, so one that may write state is kept for LowerRequireMessageEffects.
     const require = new RequireNode(expression, message, errorName, args);
     require.location = Location.fromCtx(ctx);
+    const dynamicMessage = rm && !rm.StringLiteral() && !rm.expressionList() ? rm.expression() : null;
+    if (dynamicMessage) require.messageExpression = this.requireMessageEffect(dynamicMessage);
     return require;
+  }
+
+  // A dynamic require message holding a call or an assignment, else undefined. One that does not build is dropped.
+  private requireMessageEffect(ctx: ExpressionContext): ExpressionNode | undefined {
+    if (!/[(=]|\+\+|--/.test(ctx.getText())) return undefined;
+    try {
+      const expression = this.visit(ctx) as ExpressionNode;
+      return mayWriteState(expression) ? expression : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   visitIfStatement(ctx: IfStatementContext): BranchNode {

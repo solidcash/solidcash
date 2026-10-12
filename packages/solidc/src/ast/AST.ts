@@ -1359,6 +1359,8 @@ export class TimeOpNode extends StatementNode {
 
 export class RequireNode extends StatementNode {
   errorDefinition?: ErrorDefinitionNode;
+  // A dynamic string message that may write state. Parse-time only: LowerRequireMessageEffects consumes it.
+  messageExpression?: ExpressionNode;
 
   constructor(
     public expression: ExpressionNode,

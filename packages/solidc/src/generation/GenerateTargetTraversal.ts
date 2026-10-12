@@ -10354,7 +10354,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_VERIFY, { location: node.location, positionHint: PositionHint.END });
 
-    // Custom error args are not evaluated (no revert data on BCH); record the name for tooling.
+    // Custom error args are not evaluated here (no revert data on BCH; LowerRequireMessageEffects hoisted any that
+    // write state); record the name for tooling.
     this.requires.push({
       ip: this.getMostRecentInstructionPointer(),
       line: node.location.start.line,

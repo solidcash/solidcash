@@ -1,19 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import {
-  bigIntToVmNumber, binToHex, cashAddressToLockingBytecode, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, cashAddressToLockingBytecode, decodeAuthenticationInstructions, decodeTransactionUnsafe,
+  encodeAuthenticationInstructions, encodeDataPush, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
+import type { AuthenticationInstruction } from '@bitauth/libauth';
+import type { AbiFunction } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
+import { keyToSlot, SortedList } from '../../src/stateful/SortedList.js';
 
 /**
- * A conditional delete that shares its sorted batch with a write of the same mapping. The batch transition settles
- * the write only where it ran: on the delete arm the write's slot keeps its node exactly, so a spender cannot rewrite
- * it. The `require` in each arm keeps IfConvertConditionalEntryOp from turning the branch into an unconditional write.
- * The write-first order, and a swap-remove pair under one arm, take the swap-remove alias path: that write takes a ran
- * flag too.
+ * A conditional delete that shares its sorted batch with writes of the same mapping. Each target settles alone: the
+ * delete at its own site, a write by its own transition where it ran and by the node it keeps where it did not. A
+ * write's proof is its own input, so a spender can neither rewrite an unrun write's node nor copy another target's
+ * node into it. Keys whose nodes do not coincide settle whichever arm runs, present or absent; keys whose nodes do
+ * (adjacent keys, one gap, one key) fail closed. The `require` in each arm keeps IfConvertConditionalEntryOp from
+ * turning the branch into an unconditional write. The write-first order, and a swap-remove pair under one arm, take
+ * the swap-remove alias path: they keep the guarded batch, in which that write takes a ran flag too.
  */
 
 const SOURCE = `contract MultiTargetDelete {
@@ -46,14 +52,26 @@ const IN_ARM_SOURCE = `contract SwapRemoveInArm {
   }
 }`;
 
+const PARTIAL_SOURCE = `contract PartialWriteArm {
+  mapping(int => int) m;
+  function set(int k, int v) external { m[k] = v; require(true); }
+  function check(int k, int expected) external { require(m[k] == expected); }
+  function dropOrSetOne(int k, int j, int i, int v, int sel) external {
+    if (sel > 1) { require(k != 3); delete m[k]; } else if (sel > 0) { require(j != 3); m[j] = v; }
+    else { require(i != 3); m[i] = v; }
+    require(true);
+  }
+}`;
+
 type Provider = ReturnType<typeof createTestProvider>;
 type Tx = ReturnType<typeof decodeTransactionUnsafe>;
 
 interface Deployed {
   provider: Provider; sc: StatefulContract<any>; pinned: Contract; cat: string; writeSlot: number; aliased: boolean;
+  fn: AbiFunction;
 }
 
-async function deploy(source = SOURCE, name = 'dropOrSet'): Promise<Deployed> {
+async function deploy(source = SOURCE, name = 'dropOrSet', width = 2): Promise<Deployed> {
   const provider = createTestProvider();
   const artifact = compileString(source, { forceStateful: true });
   const contract = new Contract(artifact, [], { provider });
@@ -65,15 +83,36 @@ async function deploy(source = SOURCE, name = 'dropOrSet'): Promise<Deployed> {
   await sc.getFunction('set')(7n, 70n).send();
   await sc.getFunction('set')(20n, 200n).send();
   const fn = artifact.abi.find((entry) => entry.name === name)!;
-  // One batch holds both targets.
+  // One batch holds every target.
   expect(fn.sortedBatchInfo).toHaveLength(1);
   const targets = fn.sortedBatchInfo![0].slotIndices;
-  expect(targets).toHaveLength(2);
+  expect(targets).toHaveLength(width);
   const write = fn.blockLayout!.slots.find((slot) => slot.kind === 'entry' && !slot.softDelete
     && targets.includes(slot.slotIndex!))!;
   const aliased = fn.entryAccesses?.find((access) => access.slotIndex === write.slotIndex)
     ?.aliasCondDeleteSlot !== undefined;
-  return { provider, sc, pinned, cat: categoryId, writeSlot: write.offset, aliased };
+  return { provider, sc, pinned, cat: categoryId, writeSlot: write.offset, aliased, fn };
+}
+
+async function nodes({ provider, pinned, cat }: Deployed): Promise<SortedList> {
+  const utxos = await provider.getUtxos(getEntryNftAddress(pinned, cat, 'm'));
+  return SortedList.fromUtxos(utxos.filter((utxo) => utxo.token?.category === cat
+    && utxo.token.nft?.capability === 'mutable'));
+}
+
+/** An absent key whose access spends a node none of `keys` spends: a key's own where present, else its predecessor. */
+async function farKey(deployed: Deployed, keys: bigint[]): Promise<bigint> {
+  const list = await nodes(deployed);
+  const spent = (key: bigint): string => {
+    const slot = keyToSlot(bigIntToVmNumber(key));
+    const node = list.find(slot) ?? list.predecessorOf(slot);
+    return `${node.utxo.txid}:${node.utxo.vout}`;
+  };
+  const taken = keys.map(spent);
+  for (let key = 100n; key < 200n; key += 1n) {
+    if (!list.has(keyToSlot(bigIntToVmNumber(key))) && !taken.includes(spent(key))) return key;
+  }
+  throw new Error('no key far from the others');
 }
 
 async function capture(provider: Provider, run: () => Promise<unknown>): Promise<string> {
@@ -111,6 +150,36 @@ async function refuseForgedKeptWrite(deployed: Deployed, run: () => Promise<unkn
   await expect(provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');
 }
 
+/**
+ * The honest spend of a write that did not run, with its proof witness naming the delete slot's input and its slot's
+ * output recreated with the commitment of the node that input spends.
+ */
+async function keptFromDeleteInput(deployed: Deployed, hex: string): Promise<string> {
+  const { provider, pinned, cat, fn } = deployed;
+  const del = fn.blockLayout!.slots.find((slot) => slot.kind === 'entry' && slot.softDelete)!;
+  const write = fn.blockLayout!.slots.find((slot) => slot.kind === 'entry' && !slot.softDelete)!;
+  const tx = decodeTransactionUnsafe(hexToBin(hex));
+  // The master pushes an optional selector, then its arguments last-first, then its redeem script.
+  const pushes = decodeAuthenticationInstructions(tx.inputs[0].unlockingBytecode) as AuthenticationInstruction[];
+  const lead = pushes.length - fn.inputs.length - 1;
+  expect([0, 1]).toContain(lead);
+  const proof = lead + fn.inputs.length - 1
+    - fn.inputs.findIndex((input) => input.name === `__internal__vmapBatchProof_${write.slotIndex}`);
+  const push = (value: number): Uint8Array => encodeDataPush(bigIntToVmNumber(BigInt(value)));
+  expect(binToHex(encodeAuthenticationInstructions([pushes[proof]]))).toBe(binToHex(push(write.offset)));
+  pushes.splice(proof, 1, ...decodeAuthenticationInstructions(push(del.offset)) as AuthenticationInstruction[]);
+  tx.inputs[0] = { ...tx.inputs[0], unlockingBytecode: encodeAuthenticationInstructions(pushes) };
+  const spent = tx.inputs[del.offset];
+  const coin = (await provider.getUtxos(getEntryNftAddress(pinned, cat, 'm'))).find((utxo) => (
+    utxo.txid === binToHex(spent.outpointTransactionHash) && utxo.vout === spent.outpointIndex));
+  expect(coin?.token?.nft?.commitment).toBeTruthy();
+  const node = tx.outputs[write.offset];
+  tx.outputs[write.offset] = { ...node, token: { ...node.token!, nft: {
+    ...node.token!.nft!, commitment: hexToBin(coin!.token!.nft!.commitment),
+  } } };
+  return binToHex(encodeTransaction(tx as Tx));
+}
+
 describe('a conditional delete in a multi-target sorted batch', () => {
   it('settles the write arm and the delete arm, the deleted key present', async () => {
     const { sc } = await deploy();
@@ -130,11 +199,68 @@ describe('a conditional delete in a multi-target sorted batch', () => {
     await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
   }, 300_000);
 
-  // Liveness gap: an absent deleted key fails the guard, so the unrun census refuses the write that ran.
-  it.skip('settles the write arm with the deleted key absent', async () => {
-    const { sc } = await deploy();
-    await sc.getFunction('dropOrSet')(9n, 30n, 300n, 0n).send();
-    await expect(sc.getFunction('check')(30n, 300n).send()).resolves.toBeDefined();
+  it('refuses an unrun write keeping the node its proof copies from the delete slot', async () => {
+    const deployed = await deploy();
+    const { provider, sc } = deployed;
+    const hex = await capture(provider, () => sc.getFunction('dropOrSet')(7n, 20n, 999n, 1n).send());
+    expectScriptRejection(await outcomeOf(provider, await keptFromDeleteInput(deployed, hex)), 0);
+    await expect(provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('settles the write arm with the deleted key absent, the keys far apart', async () => {
+    const deployed = await deploy();
+    const { sc } = deployed;
+    const k = await farKey(deployed, []);
+    const j = await farKey(deployed, [k]);
+    await sc.getFunction('dropOrSet')(k, j, 300n, 0n).send();
+    for (const [key, value] of [[j, 300n], [k, 0n], [7n, 70n], [20n, 200n]]) {
+      await expect(sc.getFunction('check')(key, value).send()).resolves.toBeDefined();
+    }
+    // The head, 7, 20 and the written key: the absent deleted key's predecessor is kept.
+    expect((await nodes(deployed)).all).toHaveLength(4);
+  }, 300_000);
+
+  it('settles the delete arm with the written key absent, the keys far apart', async () => {
+    const deployed = await deploy();
+    const { sc } = deployed;
+    // The deleted key present, then absent. The written key is absent both times: its insert is skipped.
+    const j = await farKey(deployed, [7n]);
+    await sc.getFunction('dropOrSet')(7n, j, 999n, 1n).send();
+    const k = await farKey(deployed, []);
+    const i = await farKey(deployed, [k]);
+    await sc.getFunction('dropOrSet')(k, i, 999n, 1n).send();
+    for (const [key, value] of [[7n, 0n], [j, 0n], [k, 0n], [i, 0n], [20n, 200n]]) {
+      await expect(sc.getFunction('check')(key, value).send()).resolves.toBeDefined();
+    }
+    // The head, the cleared 7 and 20.
+    expect((await nodes(deployed)).all).toHaveLength(3);
+  }, 300_000);
+});
+
+describe('a write arm covering part of a sorted batch it shares with a delete', () => {
+  it('settles the write that ran and keeps the other, the keys far apart', async () => {
+    const deployed = await deploy(PARTIAL_SOURCE, 'dropOrSetOne', 3);
+    const { sc } = deployed;
+    const j = await farKey(deployed, [7n]);
+    const i = await farKey(deployed, [7n, j]);
+    await sc.getFunction('dropOrSetOne')(7n, j, i, 300n, 1n).send();
+    for (const [key, value] of [[j, 300n], [i, 0n], [7n, 70n], [20n, 200n]]) {
+      await expect(sc.getFunction('check')(key, value).send()).resolves.toBeDefined();
+    }
+    expect((await nodes(deployed)).all).toHaveLength(4);
+  }, 300_000);
+
+  it('refuses the arm rewriting the node at the unrun write\'s slot', async () => {
+    const deployed = await deploy(PARTIAL_SOURCE, 'dropOrSetOne', 3);
+    const { sc } = deployed;
+    // The other write runs; the first write's slot keeps 20's node.
+    const i = await farKey(deployed, [7n, 20n]);
+    await refuseForgedKeptWrite(deployed, () => sc.getFunction('dropOrSetOne')(7n, 20n, i, 300n, 0n).send());
+    for (const [key, value] of [[i, 300n], [20n, 200n], [7n, 70n]]) {
+      await expect(sc.getFunction('check')(key, value).send()).resolves.toBeDefined();
+    }
   }, 300_000);
 });
 

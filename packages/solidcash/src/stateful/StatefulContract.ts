@@ -8579,8 +8579,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       // A conditional delete whose key is absent spends the key's predecessor at its slot and keeps it. An
-      // activity-settled body (DS-6) plans no transition for that delete's own batch; any other body's guard skips
-      // the whole batch verifier there, so every batch takes the no-op witnesses.
+      // activity-settled body (DS-6) plans no transition for that delete, and its batch's writes settle alone; any
+      // other body's guard skips the whole batch verifier there, so every batch takes the no-op witnesses.
       const softDeleteSlots = (entryAbiFunction?.blockLayout?.slots ?? [])
         .filter((slot) => slot.kind === 'entry' && slot.softDelete).map((slot) => slot.slotIndex);
       const absentSoftDelete = (slotIndex: number | undefined): boolean => {
@@ -8636,8 +8636,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (batch.linear && inactiveBatchSlots.size > 0) {
           throw new Error(`Linear vmap batch '${batch.collection}' cannot contain inactive message-bus slots`);
         }
-        if (batchNoOp || (settlesByActivity && batch.slotIndices.some((slotIndex) => (
-          softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))))) {
+        const noOpSlots = new Set(batchNoOp ? batch.slotIndices : batch.slotIndices.filter((slotIndex) => (
+          settlesByActivity && softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))));
+        if (noOpSlots.size === batch.slotIndices.length) {
           const noOpRows = batch.linear ? batch.slotIndices.map((slotIndex) => ({
             slotIndex, slot: batchTargetSlots.get(slotIndex)!, next: new Uint8Array(32),
           })).sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1) : [];
@@ -8671,7 +8672,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }));
         const writes = batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex)
-            && !readOnlyBatchSlots.has(slotIndex))
+            && !readOnlyBatchSlots.has(slotIndex) && !noOpSlots.has(slotIndex))
           .map((slotIndex) => ({ slot: settlementSlots.get(slotIndex)!, value: new Uint8Array() }));
         if (writes.some((w) => !w.slot)) throw new Error(`vmap batch '${batch.collection}' is missing a target slot`);
         const plan = list.planBatchUpsert(writes);
@@ -8720,7 +8721,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
           && uniqueBatchTargets.size === 1;
         const linearRows = batch.linear ? batch.slotIndices
-          .filter((slotIndex) => !batchAliasSkips.has(slotIndex))
+          .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !noOpSlots.has(slotIndex))
           .map((slotIndex) => {
             const slot = batchTargetSlots.get(slotIndex)!;
             const out = plan.outputs.find((candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(slot));
@@ -8736,7 +8737,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (!firstLinearPredSlot.has(proofSlot)) firstLinearPredSlot.set(proofSlot, row.slotIndex);
         }
         const ownerByUtxo = new Map<string, number>();
+        // An absent delete keeps the node its slot spends, so a write whose proof is that node is not its own owner.
+        for (const slotIndex of noOpSlots) {
+          const spent = entryNfts.find((entry) => entry.slotIndex === slotIndex)?.utxo;
+          if (spent) ownerByUtxo.set(`${spent.txid}:${spent.vout}`, slotIndex);
+        }
         for (const slotIndex of batch.slotIndices) {
+          if (noOpSlots.has(slotIndex)) {
+            const offset = entryAbiFunction!.blockLayout?.slots.find(
+              (slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex,
+            )?.offset;
+            if (offset === undefined) throw new Error(`vmap no-op slot has no block offset ${slotIndex}`);
+            batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32), -3n,
+              ...(batch.linear ? [0n] : []));
+            continue;
+          }
           if (inactiveBatchSlots.has(slotIndex)) {
             // Sorted batches retain every bounded route lane so their hidden witness vector stays positional,
             // but an inactive selector/row lane is still a balanced funder slot. Its provisional key lookup can

@@ -29873,7 +29873,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DEPTH, loc); this.emit(encodeInt(BigInt(this.stack.length)), loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
+    // The guard's inputs are the spender's: a direct entry settles a batch that did not run as no change at all, and
+    // runs it only where the delete slot's input is a node of its collection.
+    const settlesUnrun = guard?.slotIndex !== undefined && this.directConvention && !this.framedMaster
+      && !this.readsRecordsFromFrame && !this.isCompilerMessageBusRoute(node);
+    const beforeGuard = [...this.stack];
     if (guard?.slotIndex !== undefined) {
+      if (settlesUnrun) {
+        // Tracked, so the guard below picks around it.
+        this.emitFixedEntryInputIndex(guard.slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+        this.emitMasterInputIndex(loc, 1); this.emit(Op.OP_UTXOTOKENCATEGORY, loc); this.emitTakeFirst32(loc);
+        this.emitSortedEntryAddress(computeCollectionHash(this.entrySlots[guard.slotIndex].collectionSignature), loc);
+        this.emit(Op.OP_EQUAL, loc);
+        this.pushToStack('(__vmap_guard_at_address)');
+      }
       this.emitFixedEntryInputIndex(guard.slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
       this.emit(encodeInt(64n), loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc); this.emit(Op.OP_IF, loc);
@@ -29881,6 +29894,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitPickVMapWitness(`__internal__vmapBatchSlot_${guard.slotIndex}`, loc);
       this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_ENDIF, loc);
+      if (settlesUnrun) { this.emit(Op.OP_BOOLAND, loc); this.popFromStack(); }
       this.emit(Op.OP_IF, loc);
     }
     // The verification reads the proof node's declared view, which is the segment the write landed in rather than
@@ -29895,6 +29909,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedBatchTransitionVerification(node);
     this.framedReadSegment = previousReadSegment;
     this.framedReadsWriteSegment = previousReadsWriteSegment;
+    if (settlesUnrun) {
+      const afterRun = this.stack;
+      if (afterRun.length !== beforeGuard.length) throw new Error('Sorted batch verification is not stack-neutral');
+      this.emit(Op.OP_ELSE, loc);
+      this.stack = [...beforeGuard];
+      this.emitUnrunSortedBatchCensus(node, loc);
+      this.stack = afterRun;
+    }
     if (guard?.slotIndex !== undefined) this.emit(Op.OP_ENDIF, loc);
     if (this.framedMaster && this.getStackIndex(BATCH_EXTRA_RECORDS_SLOT, true) >= 0) {
       // Settlement admits a created record wherever the frame declares one, so every record the segment declares
@@ -46953,6 +46975,55 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * A guarded sorted batch that did not run changes no node. No write ran (a flagged one is kept by its flag's
+   * preserver, an unflagged one here; a conditional delete settles its own slot), and each batch collection's
+   * inputs and outputs at its address are exactly its fixed slots' inputs there.
+   */
+  private emitUnrunSortedBatchCensus(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    for (const batch of node.sortedBatchInfo ?? []) {
+      for (const slot of batch.slotIndices) {
+        if (this.condDeleteSlots.has(slot)) continue;
+        const batchFlag = [...this.conditionalSortedBatchFlags].find(([, slots]) => slots.includes(slot))?.[0];
+        const flag = this.conditionalSortedWriteFlagSlots.has(slot)
+          ? GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot)
+          : batchFlag === undefined ? undefined : GenerateTargetTraversalWithLocation.condSortedBatchFlagName(batchFlag);
+        if (flag !== undefined && this.getStackIndex(flag, true) >= 0) {
+          this.emit(encodeInt(BigInt(this.getStackIndex(flag))), loc); this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_NOT, loc); this.emit(Op.OP_VERIFY, loc);
+        } else this.emitEntryPreservationBody(slot, loc);
+      }
+    }
+    for (const collection of new Set((node.sortedBatchInfo ?? []).map((batch) => batch.collection))) {
+      this.emitFixedSlotCollectionCount(collection, this.entrySlots.flatMap((slot, index) => (
+        slot.collection === collection && this.ownsFixedEntrySlot(index) ? [index] : [])), true, loc);
+    }
+  }
+
+  /** The inputs (with `outputs`, also the outputs) at a sorted collection's address are its fixed slots' there. */
+  private emitFixedSlotCollectionCount(
+    collection: string, slots: readonly number[], outputs: boolean, loc: SingleLocationData,
+  ): void {
+    const addr = `(__collection_census_addr_${collection})`;
+    const expected = `(__collection_census_expected_${collection})`;
+    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack(addr);
+    this.emitSortedEntryAddress(computeCollectionHash(this.vmapCollectionSignature(collection)!), loc);
+    this.stack[0] = addr;
+    this.emit(Op.OP_0, loc);
+    this.pushToStack(expected);
+    for (const slot of slots) {
+      this.emitFixedEntryInputIndex(slot, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(addr) + 1)), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_ADD, loc);
+    }
+    this.emitAddressCountCheck(false, loc);
+    if (outputs) this.emitAddressCountCheck(true, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.popFromStack(2);
+  }
+
+  /**
    * Direct convention: an entry node's write path admits any spend beside the master, so a function that no
    * own-category count covers pins each sorted collection's inputs to the fixed slots naming a node at its address,
    * and, for a collection it does not write, its outputs to the same count (each such node is preserved). A
@@ -46977,24 +47048,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         slot.collection === collection.name && this.ownsFixedEntrySlot(index) ? [index] : []));
       const written = slots.some((slot) => this.entrySlots[slot].operations.includes('write')
         || this.entrySlots[slot].operations.includes('delete'));
-      const addr = `(__collection_census_addr_${collection.name})`;
-      const expected = `(__collection_census_expected_${collection.name})`;
-      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emitTakeFirst32(loc);
-      this.pushToStack(addr);
-      this.emitSortedEntryAddress(computeCollectionHash(this.vmapCollectionSignature(collection.name)!), loc);
-      this.stack[0] = addr;
-      this.emit(Op.OP_0, loc);
-      this.pushToStack(expected);
-      for (const slot of slots) {
-        this.emitFixedEntryInputIndex(slot, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-        this.emit(encodeInt(BigInt(this.getStackIndex(addr) + 1)), loc); this.emit(Op.OP_PICK, loc);
-        this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_ADD, loc);
-      }
-      this.emitAddressCountCheck(false, loc);
-      if (!written) this.emitAddressCountCheck(true, loc);
-      this.emit(Op.OP_2DROP, loc);
-      this.popFromStack(2);
+      this.emitFixedSlotCollectionCount(collection.name, slots, !written, loc);
     }
 
     // A data record's covenant self-authorizes on any master spend too, so an extra data NFT co-spent beside a

@@ -74,6 +74,7 @@ import {
 import type { HopCallInputs } from './call-resolution.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
+import { ownCoinRefusal } from '../deploy/own-coin.js';
 import {
   readFramedDeployment, entryRecordReadUnlock, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
@@ -253,6 +254,8 @@ const MAXIMUM_HOP_ATTEMPTS = 4;
 const MAXIMUM_HOP_ATTEMPT_CAP = MAXIMUM_HOP_ATTEMPTS * 16;
 
 const PROXY_MASTER_ID = 'proxy-master';
+const CALLER_LOCK_REFUSAL = 'the caller funding unlocker signs for a lock that is not the hop\'s caller lock, so the '
+  + 'root frame\'s `msg.sender` binding would not hold';
 const IMPLEMENTATION_MASTER_ID = 'implementation-master';
 const RECORD_ID = 'proxy-record';
 const VALIDATOR_ID = 'validator';
@@ -1045,6 +1048,10 @@ export async function deployFramedProxy(
       throw new FramedProxyDeployError('each genesis funding UTXO must be at vout 0 to create a token category');
     }
   }
+  // A refusal knowable now is raised before the first genesis: one raised after the proxy's leaves it uninitialized
+  // for anyone to initialize first (audit SDKFRAMED-2).
+  const upFrontRefusal = await deployFundingRefusal(options);
+  if (upFrontRefusal !== undefined) throw new FramedProxyDeployError(upFrontRefusal);
 
   const validatorProgram = framedValidator.buildValidatorProgram();
   const implementationCategory = hexToBin(options.implementationDeploy.fundingUtxo.txid);
@@ -1321,6 +1328,27 @@ export async function deployFramedProxy(
       ...(broadcast === undefined ? {} : { broadcast }),
     },
   };
+}
+
+/** Why the coins a proxy deployment signs for cannot carry it: both genesis coins and the hop's caller coin. */
+async function deployFundingRefusal(options: FramedProxyDeployOptions): Promise<string | undefined> {
+  const halves = [options.implementationDeploy, options.proxyDeploy];
+  for (const half of halves) {
+    const refusal = await ownCoinRefusal(
+      options.provider, half.fundingUtxo, half.funder.generateLockingBytecode(), { role: 'funder', tokenFree: true });
+    if (refusal !== undefined) return refusal;
+  }
+  const { callerFunding } = options;
+  if (callerFunding === undefined) return undefined;
+  if (!bytesEqual(callerFunding.funder.generateLockingBytecode(), options.callerLockingBytecode)) {
+    return CALLER_LOCK_REFUSAL;
+  }
+  const { txid, vout } = callerFunding.utxo;
+  if (halves.some((half) => half.fundingUtxo.txid.toLowerCase() === txid.toLowerCase()
+    && half.fundingUtxo.vout === vout)) {
+    return `the caller's coin ${txid}:${vout} also funds a genesis, so the hop could not spend it`;
+  }
+  return ownCoinRefusal(options.provider, callerFunding.utxo, options.callerLockingBytecode, { role: 'caller' });
 }
 
 /** The root frame a hop is entered on: the proxy's fallback, carrying the call data it forwards. */
@@ -4749,12 +4777,7 @@ async function traceAssembledDiff(transaction: unknown, program: unknown): Promi
 async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDetails> {
   const { provider, callerFunding, program, draft } = options;
   const callerLock = callerFunding.funder.generateLockingBytecode();
-  if (!bytesEqual(callerLock, options.callerLockingBytecode)) {
-    throw new FramedProxyDeployError(
-      'the caller funding unlocker signs for a lock that is not the hop\'s caller lock, so the root frame\'s '
-      + '`msg.sender` binding would not hold',
-    );
-  }
+  if (!bytesEqual(callerLock, options.callerLockingBytecode)) throw new FramedProxyDeployError(CALLER_LOCK_REFUSAL);
 
   // The pools the two geneses published, read back by category and classified the way a framed deployment mints
   // them, so a participant is placed on the outpoint it actually sits on rather than a genesis output index.

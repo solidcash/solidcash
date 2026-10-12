@@ -1,5 +1,5 @@
 import type { Transaction as LibauthTransaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
-import { type Utxo, Network } from '../interfaces.js';
+import { type TokenDetails, type Utxo, Network } from '../interfaces.js';
 
 /** Exact transaction forms already materialized by an SDK builder. */
 export interface PreparedTransaction {
@@ -35,6 +35,13 @@ export interface ConsensusLimits {
   hashDigestIterationsPerByteStandard?: number;
   /** Nonstandard (consensus) hash-iteration allowance. Real BCH-2026 value: 3.5. See the note above. */
   hashDigestIterationsPerByteNonstandard?: number;
+}
+
+/** A live output as an in-process simulator's own ledger holds it. */
+export interface LedgerOutput {
+  readonly lockingBytecode: Uint8Array;
+  readonly satoshis: bigint;
+  readonly token?: TokenDetails;
 }
 
 export interface NetworkPolicy {
@@ -105,4 +112,11 @@ export default interface NetworkProvider {
    * `sendRawTransaction`; the extra forms only avoid decoding bytes the builder has just encoded.
    */
   sendPreparedTransaction?(prepared: PreparedTransaction): Promise<string>;
+
+  /**
+   * Optional, in-process simulators only: the live output at `txid:vout` as the simulator's own ledger holds it. A
+   * simulator's coins need no transaction behind them, so a coin proven from its transaction falls back to this; a
+   * provider with a remote party behind it must not implement it.
+   */
+  getLedgerOutput?(txid: string, vout: number): Promise<LedgerOutput | undefined>;
 }

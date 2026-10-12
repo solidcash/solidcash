@@ -321,7 +321,8 @@ import {
 } from '../framed/master/declared-view.js';
 import { canonicalPushScript } from '../framed/master/argument-push.js';
 import {
-  deriveFramedTailShape, derivableBatchWitnessNames, framedBatchDerivationRounds, framedBatchKeys,
+  aliasDeleteFollowsWrite, deriveFramedTailShape, derivableBatchWitnessNames, framedBatchDerivationRounds,
+  framedBatchKeys,
   framedBatchWriteFollowsEveryCall, framedBatchWriteSegment, framedLoopChains, framedRunApartFromBatch,
   type FramedBatchKey,
   callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, hasForwardingFallback, isOwnAddress,
@@ -30102,7 +30103,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private framedGuardedDelete(node: FunctionDefinitionNode, slot: number): boolean {
     return (node.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slot))
       && this.sortedEntryLayout(node, slot)?.softDelete === true && !this.conditionalSortedWriteFlagSlots.has(slot)
-      && this.entrySlots[slot]?.operations.includes('write') !== true;
+      && GenerateTargetTraversalWithLocation.deletesOnly(this.entrySlots[slot]);
+  }
+
+  /**
+   * DS-6: an entry access whose one mutation is a delete. A value that does not chunk publishes its delete as the
+   * write of its default, so a slot a branch deletes with one mutation is that delete. The SDK reads the artifact
+   * alike (`guardedDelete`).
+   */
+  private static deletesOnly(info: EntryAccessInfo | undefined): boolean {
+    const written = (info?.operations ?? []).filter((operation) => operation !== 'read');
+    return written.length === 1 && (written[0] === 'delete'
+      || (written[0] === 'write' && info?.mutationEffectOrdinals?.length === 1));
   }
 
   /** A framed batch target whose group the derivation may read as skipped (`-2`): a skippable write's or delete's. */
@@ -30148,7 +30160,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private aliasWriteMayStage(node: MappingAssignNode | MappingDeleteNode, owner: number): boolean {
     const framed = this.framedGroupDelete(owner) && this.currentFunction.name !== '__construct';
     return this.directAliasPair(node, owner, framed)
-      && !this.aliasDeleteFollowsWrite(this.currentFunction.body, node, owner);
+      && !aliasDeleteFollowsWrite(this.currentFunction.body, node, owner);
   }
 
   /**
@@ -30290,38 +30302,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (fn.entryAccesses ?? []).some((access) => access.aliasCondDeleteSlot === slot
         && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slot)
           && batch.slotIndices.includes(access.slotIndex)));
-  }
-
-  /**
-   * True when a swap-remove write's owner delete runs wherever the write has: one statement list holds both, the
-   * delete itself after the write's statement, and nothing between them leaves the list.
-   */
-  private aliasDeleteFollowsWrite(block: BlockNode, write: Node, owner: number): boolean {
-    const holds = (statement: Node): boolean => statement === write
-      || (statement instanceof BlockNode && (statement.statements ?? []).some(holds))
-      || (statement instanceof UncheckedNode && holds(statement.block))
-      || (statement instanceof BranchNode && (holds(statement.ifBlock)
-        || (statement.elseBlock !== undefined && holds(statement.elseBlock))));
-    // A loop, switch or try is not walked: it counts as leaving.
-    const leaves = (statement: Node): boolean => statement instanceof ReturnNode || statement instanceof BreakNode
-      || statement instanceof ContinueNode || statement instanceof WhileNode || statement instanceof DoWhileNode
-      || statement instanceof SwitchNode || statement instanceof TryCatchNode
-      || statement instanceof CollectionIterationNode
-      || (statement instanceof BlockNode && (statement.statements ?? []).some(leaves))
-      || (statement instanceof UncheckedNode && leaves(statement.block))
-      || (statement instanceof BranchNode && (leaves(statement.ifBlock)
-        || (statement.elseBlock !== undefined && leaves(statement.elseBlock))));
-    const statements = block.statements ?? [];
-    const at = statements.findIndex(holds);
-    if (at < 0) return false;
-    const end = statements.findIndex((statement, index) => index > at
-      && statement instanceof MappingDeleteNode && statement.entrySlotIndex === owner);
-    if (end >= 0) return !statements.slice(at, end).some(leaves);
-    const inner = statements[at];
-    if (inner instanceof BlockNode) return this.aliasDeleteFollowsWrite(inner, write, owner);
-    if (inner instanceof UncheckedNode) return this.aliasDeleteFollowsWrite(inner.block, write, owner);
-    return inner instanceof BranchNode && (this.aliasDeleteFollowsWrite(inner.ifBlock, write, owner)
-      || (inner.elseBlock !== undefined && this.aliasDeleteFollowsWrite(inner.elseBlock, write, owner)));
   }
 
   /**
@@ -33003,7 +32983,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const skippable = flagIndex >= 0 && this.framedSkippableSlots.has(slot);
     // A delete a branch guards creates no node: its group is the key's own node, cleared or kept in place (DS-6).
     const keyNodeOnly = flagIndex < 0 && this.condDeleteSlots.has(slot)
-      && this.entrySlots[slot]?.operations.includes('write') !== true;
+      && GenerateTargetTraversalWithLocation.deletesOnly(this.entrySlots[slot]);
     if (skippable) {
       // A group declared skipped is one kept record, whose write site refuses it where the write ran.
       arg(predOut); this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc); this.emit(Op.OP_NUMEQUAL, loc);

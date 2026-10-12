@@ -9,6 +9,7 @@ import {
   type DeployedMaster, type PlacedRecord,
 } from '../../../../solidc/test/framed/master/record-spend.js';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { createUnlockingBytecode } from '../../../src/utils.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -33,7 +34,8 @@ import { participant, type CompositionDraftPlan, type DraftCall } from '../../..
  * of the contract writing the node in the same transaction it refused an honest composition, and held the view it
  * declared for a later frame only on slot and successor. It now reads and closes against its declared views, as a
  * framed write does, and settlement chains them. Beside a write of the same collection the delete is one target of
- * a batch, and a group declaring the deleted key inserted is refused by that close.
+ * a batch, and a group declaring the deleted key inserted is refused by that close. A write of a value that chunks
+ * ahead of the delete is refused by name: where the keys meet and the delete does not run, it would be lost.
  *
  * A key the list does not hold has no node to clear: the group declares the node that brackets the key kept, and the
  * delete, taken or skipped, proves the key absent there and leaves the node as it was. Beside a write of its collection
@@ -409,14 +411,14 @@ const SLOT_HIGH = slotOf(HIGH);
 const OLD = encodeChunkableValueTail(encoder.encode('old'));
 const WRITTEN = encodeChunkableValueTail(encoder.encode('written'));
 
-let editDeployment: DeployedMaster | undefined;
-const editMaster = (): DeployedMaster => (editDeployment ??= deployFramedMaster('pragma solidcash ^0.13.0;'
+/** `edit`'s write precedes a guarded delete of its collection: a swap-remove alias of a value that chunks. */
+const EDIT = 'pragma solidcash ^0.13.0;'
   + ' contract Tags {'
   + '   mapping(string => string) tags;'
   + '   function edit(string a, string v, string k, int c) {'
   + '     this.tags[a] = v; if (c > 0) { delete this.tags[k]; } require(true);'
   + '   }'
-  + ' }', 'framed conditional delete beside a write'));
+  + ' }';
 
 /** The parameter naming each target of `entry`, in the order its frame declares their groups: the targets' slots. */
 const targetKeys = (deployed: DeployedMaster, entry: string): string[] => deployed.artifact.abi
@@ -424,29 +426,34 @@ const targetKeys = (deployed: DeployedMaster, entry: string): string[] => deploy
   .filter((access) => access.operations.includes('write') || access.operations.includes('delete'))
   .sort((left, right) => left.slotIndex! - right.slotIndex!)
   .map((access) => access.keyParams[0]!);
-const editTargets = (): string[] => targetKeys(editMaster(), 'edit');
 
-/** The master's verdict on `edit(HIGH, "written", MID, c)`, each target's group of records declared in frame order. */
-const edits = (c: Uint8Array, groups: Readonly<Record<string, readonly PlacedRecord[]>>): boolean =>
-  evaluateMasterSpend(editMaster(), {
+/** The master's verdict on `tidy(HIGH, "written", MID, c)`, each target's group of records declared in frame order. */
+const tidies = (c: Uint8Array, groups: Readonly<Record<string, readonly PlacedRecord[]>>): boolean =>
+  evaluateMasterSpend(tidyMaster(), {
     args: [c, MID, encoder.encode('written'), HIGH],
-    records: editTargets().flatMap((key) => groups[key] ?? []),
+    records: targetKeys(tidyMaster(), 'tidy').flatMap((key) => groups[key] ?? []),
   }).accepted;
 
 describe('a framed delete a branch guards, in one batch beside a write of its collection', () => {
-  const lock = (): Uint8Array => editMaster().collectionLock('tags');
+  const lock = (): Uint8Array => tidyMaster().collectionLock('tags');
   /** HIGH's node, the list's last, which the write rewrites in place. */
   const write = (): PlacedRecord => spent(lock(), 3, node(SLOT_HIGH, ZERO, OLD), node(SLOT_HIGH, ZERO, WRITTEN));
 
+  it('refuses by name a write of a value that chunks ahead of the delete, which it could not land on', () => {
+    // Where the keys meet and the delete does not run, the write would be lost.
+    expect(compileStringMulti(EDIT, { composition: 'framed' }).Tags!.composition?.refusedEntries)
+      .toStrictEqual([{ functionName: 'Tags.edit()', reason: expect.stringContaining('the write would be lost') }]);
+  });
+
   it('declares the write and the delete as the batch\'s two targets', () => {
-    expect([...editTargets()].sort()).toStrictEqual(['a', 'k']);
+    expect([...targetKeys(tidyMaster(), 'tidy')].sort()).toStrictEqual(['a', 'k']);
   });
 
   it('settles the delete and the skip with the deleted key\'s node rewritten in place', () => {
     // The list `MID -> HIGH`: the delete clears MID's node where it runs and keeps it where it does not.
     const mid = node(SLOT_MID, SLOT_HIGH, OLD);
-    expect(edits(YES, { a: [write()], k: [spent(lock(), 2, mid, node(SLOT_MID, SLOT_HIGH, CLEARED))] })).toBe(true);
-    expect(edits(NO, { a: [write()], k: [spent(lock(), 2, mid)] })).toBe(true);
+    expect(tidies(YES, { a: [write()], k: [spent(lock(), 2, mid, node(SLOT_MID, SLOT_HIGH, CLEARED))] })).toBe(true);
+    expect(tidies(NO, { a: [write()], k: [spent(lock(), 2, mid)] })).toBe(true);
   });
 
   it('refuses the deleted key\'s group declared as an insert: its predecessor relinked to a created node', () => {
@@ -454,8 +461,8 @@ describe('a framed delete a branch guards, in one batch beside a write of its co
     // default, which no write binds: the delete's close finds LOW's node where it ends MID's, cleared or kept.
     const low = spent(lock(), 2, node(SLOT_LOW, SLOT_HIGH, OLD), node(SLOT_LOW, SLOT_MID, OLD));
     const inserted = created(lock(), 4, node(SLOT_MID, SLOT_HIGH, CLEARED));
-    expect(edits(YES, { a: [write()], k: [low, inserted] })).toBe(false);
-    expect(edits(NO, { a: [write()], k: [low, inserted] })).toBe(false);
+    expect(tidies(YES, { a: [write()], k: [low, inserted] })).toBe(false);
+    expect(tidies(NO, { a: [write()], k: [low, inserted] })).toBe(false);
   });
 });
 
@@ -500,7 +507,7 @@ describe('a framed delete a branch guards, of a key the list does not hold', () 
 
 /**
  * `edit` with the delete ahead of the write. `edit`'s write precedes a delete of its collection, so it is a swap-remove
- * alias, which updates in place only; this one is not, and may insert its key.
+ * alias, refused for a value that chunks; this one is not, and may insert its key.
  */
 let tidyDeployment: DeployedMaster | undefined;
 const tidyMaster = (): DeployedMaster => (tidyDeployment ??= deployFramedMaster('pragma solidcash ^0.13.0;'
@@ -551,12 +558,12 @@ describe('a framed delete a branch guards, of a key the list does not hold, besi
     const records = targetKeys(deployed, entry).flatMap((key) => (key === 'a' ? a : k));
     return { records, declared: declarationOf(records) };
   };
-  const edited = (k: Uint8Array): DeclaredSpend => groups(editMaster(), 'edit', [write(editMaster())],
-    [spent(editMaster().collectionLock('tags'), 2, k)]);
+  const edited = (k: Uint8Array): DeclaredSpend => groups(tidyMaster(), 'tidy', [write(tidyMaster())],
+    [spent(tidyMaster().collectionLock('tags'), 2, k)]);
 
   it('settles the delete and the skip with the bracketing node kept beside the write\'s update', () => {
     // The list `LOW -> HIGH` holds no node for MID: LOW brackets it.
-    expect(verdicts(editMaster(), edited(lowNode(SLOT_HIGH)))).toStrictEqual([true, true]);
+    expect(verdicts(tidyMaster(), edited(lowNode(SLOT_HIGH)))).toStrictEqual([true, true]);
   });
 
   it('settles the delete and the skip with the bracketing node the write\'s insert relinks', () => {
@@ -568,7 +575,7 @@ describe('a framed delete a branch guards, of a key the list does not hold, besi
   it('refuses -2 at the delete, outside the skippable writes, where the kept node does not bracket the key', () => {
     // MID held after LOW, its group declared as LOW kept; MID absent and the head kept with LOW between them.
     for (const other of [lowNode(SLOT_MID), head(SLOT_LOW)]) {
-      expect(verdicts(editMaster(), edited(other))).toStrictEqual([false, false]);
+      expect(verdicts(tidyMaster(), edited(other))).toStrictEqual([false, false]);
     }
   });
 

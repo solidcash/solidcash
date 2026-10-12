@@ -907,12 +907,15 @@ function orderedAccesses(
 /**
  * A delete a branch guards (DS-6): its frame creates no node, so at a key the list does not hold its group is the kept
  * node that brackets the key, whether the delete runs or not, alone in its batch or beside a write. The artifact
- * publishes it as a batch target whose entry slot is a soft delete.
+ * publishes it as a batch target whose entry slot is a soft delete with one mutation: a value that does not chunk
+ * publishes its delete as the write of its default (the compiler's `framedGuardedDelete` reads it alike).
  */
 function guardedDelete(fn: AbiFunction, access: NonNullable<AbiFunction['entryAccesses']>[number]): boolean {
   const slotIndex = access.slotIndex;
   const written = access.operations.filter((operation) => operation !== 'read');
-  return slotIndex !== undefined && written.length === 1 && written[0] === 'delete'
+  const deletesOnly = written.length === 1 && (written[0] === 'delete'
+    || (written[0] === 'write' && access.mutationEffectOrdinals?.length === 1));
+  return slotIndex !== undefined && deletesOnly
     && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))
     && (fn.blockLayout?.slots ?? []).some((slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex
       && slot.softDelete === true);

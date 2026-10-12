@@ -5,16 +5,17 @@ import {
   encodeIntegerValue, scriptToBytecode, type RecordEntry,
 } from '@solidcash/utils';
 import {
-  MASTER_INDEX, deployFramedMaster, evaluateMasterSpend, node, spent,
+  MASTER_INDEX, created, deployFramedMaster, evaluateMasterSpend, node, spent, type DeployedMaster, type PlacedRecord,
 } from '../../../../solidc/test/framed/master/record-spend.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { createUnlockingBytecode } from '../../../src/utils.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, layoutWithFacets, master, masterInput, rootOf,
-  seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
+  seededAddress, selectorOf, token, userInput, userInputs, validatorFor, type ShapeOutcome,
 } from '../shapes/harness.js';
-import { participant, type CompositionDraftPlan } from '../../../src/framed/composer/index.js';
+import { participant, type CompositionDraftPlan, type DraftCall } from '../../../src/framed/composer/index.js';
 
 /**
  * A sorted-mapping delete a branch guards, in a framed frame (audit DS-6).
@@ -26,6 +27,12 @@ import { participant, type CompositionDraftPlan } from '../../../src/framed/comp
  * re-deriving the write: the node could be written back with its successor dropped, hiding the rest of the list, or
  * with a value the body did not leave. The frame now settles the delete at the node its group names, wherever it
  * sits. Each verdict is the BCH-2026 machine's on the master's own input.
+ *
+ * The delete then read and closed the node against the transaction's own input and output, so beside another frame
+ * of the contract writing the node in the same transaction it refused an honest composition, and held the view it
+ * declared for a later frame only on slot and successor. It now reads and closes against its declared views, as a
+ * framed write does, and settlement chains them. Beside a write of the same collection the delete is one target of
+ * a batch, and a group declaring the deleted key inserted is refused by that close.
  */
 
 const encoder = new TextEncoder();
@@ -170,5 +177,265 @@ describe('a framed delete a branch guards, called through a composition', () => 
     expect(outcome.verdicts.filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.participant}: ${verdict.objection}`)).toStrictEqual([]);
     expect(bytesToHex(outcome.transaction.outputs[nodeIndex]!.token!.nft!.commitment)).toBe(bytesToHex(DELETED));
+  });
+});
+
+/** The node holding `text`, linked to the next key's. */
+const holding = (text: string): Uint8Array => node(SLOT, NEXT, encodeChunkableValueTail(encoder.encode(text)));
+
+const PAIR_HUB_LABEL = 'framed conditional delete pair hub';
+const PAIR_TAGS_LABEL = 'framed conditional delete pair tags';
+const PAIR_TAGS = hexOf(seededAddress(PAIR_TAGS_LABEL));
+const PAIR_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ITags { function put(string k, string v); function remove(string k, int c); }'
+  + ' contract Tags {'
+  + '   mapping(string => string) tags;'
+  + '   function put(string k, string v) { this.tags[k] = v; require(true); }'
+  + '   function remove(string k, int c) { if (c > 0) { delete this.tags[k]; } require(true); }'
+  + ' }'
+  + ' contract Hub {'
+  + `   function putThenRemove(string v, int c) { ITags(0x${PAIR_TAGS}).put("${KEY_TEXT}", v);`
+  + `     ITags(0x${PAIR_TAGS}).remove("${KEY_TEXT}", c); require(true); }`
+  + `   function removeThenPut(string v) { ITags(0x${PAIR_TAGS}).remove("${KEY_TEXT}", 1);`
+  + `     ITags(0x${PAIR_TAGS}).put("${KEY_TEXT}", v); require(true); }`
+  + ' }';
+
+let pairDeployment: ReturnType<typeof compileAndDeploy> | undefined;
+const deployedPair = (): ReturnType<typeof compileAndDeploy> =>
+  (pairDeployment ??= compileAndDeploy(PAIR_SOURCE, { Hub: PAIR_HUB_LABEL, Tags: PAIR_TAGS_LABEL }));
+
+type Views = Pick<RecordEntry, 'viewIn' | 'viewOut'>;
+
+/** One run of the Hub: its entry, the value `put` writes, `c`, and the views each Tags frame declares. */
+interface PairRun {
+  readonly entry: 'putThenRemove' | 'removeThenPut';
+  readonly value: string;
+  readonly c: bigint;
+  readonly put: Views;
+  readonly remove: Views;
+}
+
+/** The honest run: each frame declares the node as the frame before it left it. */
+function honestRun(entry: PairRun['entry'], value: string, c = 1n): PairRun {
+  const written = holding(value);
+  if (entry === 'removeThenPut') {
+    return { entry, value, c: 1n, remove: { viewIn: BEFORE, viewOut: DELETED }, put: { viewIn: DELETED, viewOut: written } };
+  }
+  const removed = c > 0n ? DELETED : written;
+  return { entry, value, c, put: { viewIn: BEFORE, viewOut: written }, remove: { viewIn: written, viewOut: removed } };
+}
+
+/**
+ * The Hub calls `put` and `remove` of Tags in the run's order, so Tags runs on two masters and the validator the Hub
+ * owns (V9: the root's category) settles the node: one record each frame declares, chained from the input to the
+ * output in the order the frames run.
+ */
+function composePair(run: PairRun): ShapeOutcome {
+  const { artifacts, contracts } = deployedPair();
+  const hub = contracts.Hub!;
+  const tags = contracts.Tags!;
+  const redeem = scriptToBytecode(buildEntryNftCovenantScript(
+    tags.category, computeCollectionHash(artifacts.Tags!.stateLayout!.collections![0]!.signature),
+  ));
+  const entryLock = encodeLockingBytecodeP2sh32(hash256(redeem));
+  const blocks: CompositionDraftPlan['blocks'] = [
+    { contract: 'Hub', masters: ['hub-1'], validator: { id: 'validator', settles: [] }, state: [] },
+    { contract: 'Tags', masters: ['put-1', 'remove-1'], state: ['node'] },
+  ];
+  const layout = layoutWithFacets(blocks);
+  const nodeIndex = participant(layout, 'node').index;
+  const putFirst = run.entry === 'putThenRemove';
+  const value = encoder.encode(run.value);
+  const putPushes = [selectorOf(artifacts, 'Tags', 'put'), value, KEY];
+  const removePushes = [selectorOf(artifacts, 'Tags', 'remove'), encodeIntegerValue(run.c), KEY];
+  const call = (callee: string, argumentPushes: Uint8Array[]): DraftCall => ({
+    kind: FrameKind.CALL, callee, target: tags.address, value: 0n, argumentPushes,
+  });
+  const tagsMaster = (
+    id: string, entry: 'put' | 'remove', pushes: Uint8Array[], views: Views,
+  ): ReturnType<typeof master> => master({
+    master: id, contract: 'Tags', entry, program: tags.program,
+    facts: {
+      contract: 'Tags', functionName: entryName('Tags', entry), kind: FrameKind.CALL,
+      callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 2,
+    },
+    frame: { kind: FrameKind.CALL, sender: hub.address, self: tags.address, value: 0n },
+    enteredBy: 'hub-1', origin: 'user', argumentPushes: pushes, dispatches: true,
+    segments: [[{ in: nodeIndex, out: nodeIndex, ...views }]],
+  });
+  const validator = validatorFor(hub.category);
+  const nodeSource = {
+    lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(tags.category, 'mutable', BEFORE),
+  };
+  const last = putFirst ? run.remove.viewOut : run.put.viewOut;
+  const plan: CompositionDraftPlan = {
+    blocks,
+    userInputs: userInputs(['user'], layout.participantCount),
+    masters: [
+      master({
+        master: 'hub-1', contract: 'Hub', entry: run.entry, program: hub.program,
+        facts: {
+          contract: 'Hub', functionName: entryName('Hub', run.entry), kind: FrameKind.ROOT,
+          callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
+        },
+        frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: hub.address, value: 0n },
+        enteredBy: 'user', origin: 'user', dispatches: true,
+        argumentPushes: [
+          selectorOf(artifacts, 'Hub', run.entry), ...(putFirst ? [encodeIntegerValue(run.c)] : []), value,
+        ],
+        calls: putFirst
+          ? [call('put-1', putPushes), call('remove-1', removePushes)]
+          : [call('remove-1', removePushes), call('put-1', putPushes)],
+      }),
+      tagsMaster('put-1', 'put', putPushes, run.put),
+      tagsMaster('remove-1', 'remove', removePushes, run.remove),
+    ],
+    inputs: {
+      'hub-1': { source: masterInput(hub) },
+      'put-1': { source: masterInput(tags) },
+      'remove-1': { source: masterInput(tags) },
+      validator: {
+        source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(hub.category, 'mutable') },
+      },
+      node: {
+        source: nodeSource,
+        output: { ...nodeSource, token: token(tags.category, 'mutable', last) },
+        // The entry covenant's write path: `<masterInputIndex> <flag 1>`.
+        unlockingBytecode: createUnlockingBytecode('p2sh32', redeem, [
+          encodeFunctionArgument(1n, 'bigint') as Uint8Array,
+          encodeFunctionArgument(BigInt(participant(layout, 'put-1').index), 'bigint') as Uint8Array,
+        ]),
+      },
+      user: userInput(),
+    },
+    validator: {
+      id: 'validator', covers: ['Tags'], settles: [{ category: tags.category, stateInputs: ['node'] }],
+      redeemScript: validator.redeem,
+    },
+  };
+  return composeAndDerive(plan, [artifacts.Hub!, artifacts.Tags!], [rootOf('Hub', run.entry, 'hub-1')]);
+}
+
+/** The participants whose own input the machine refuses in the draft's transaction as it stands. */
+function refusing(draft: ShapeOutcome['draft']): string[] {
+  const program = draft.programFor('hub-1');
+  const vm = compositionMachine();
+  return draft.layout.participants.flatMap((placed) => {
+    const state = vm.evaluate({
+      inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    });
+    return vm.stateSuccess(state) === true ? [] : [placed.id];
+  });
+}
+
+/** Replaces the views the frame's one record declares. */
+function redeclare(draft: ShapeOutcome['draft'], id: string, views: Partial<Views>): void {
+  const block = draft.blockOf(id);
+  block.segments[0] = [{ ...block.segments[0]![0]!, ...views }];
+}
+
+/** The commitment the transaction leaves on the node. */
+const nodeOutput = (outcome: ShapeOutcome): string => {
+  const index = participant(outcome.draft.layout, 'node').index;
+  return bytesToHex(outcome.transaction.outputs[index]!.token!.nft!.commitment);
+};
+
+const refusalsOf = (outcome: ShapeOutcome): string[] => outcome.verdicts.filter((verdict) => !verdict.accepted)
+  .map((verdict) => `${verdict.participant}: ${verdict.objection}`);
+
+describe('a framed delete a branch guards, beside another frame of its contract writing the node', () => {
+  it('settles the delete after an earlier frame rewrote the node: the node ends at the default', () => {
+    const outcome = composePair(honestRun('putThenRemove', 'kept title'));
+    expect(refusalsOf(outcome)).toStrictEqual([]);
+    expect(nodeOutput(outcome)).toBe(bytesToHex(DELETED));
+  });
+
+  it('settles the skip after an earlier frame rewrote the node: the node keeps that frame\'s value', () => {
+    const outcome = composePair(honestRun('putThenRemove', 'kept title', 0n));
+    expect(refusalsOf(outcome)).toStrictEqual([]);
+    expect(nodeOutput(outcome)).toBe(bytesToHex(holding('kept title')));
+  });
+
+  it('settles a later frame\'s write over the deleted node: the node ends at that frame\'s value', () => {
+    const outcome = composePair(honestRun('removeThenPut', 'new title'));
+    expect(refusalsOf(outcome)).toStrictEqual([]);
+    expect(nodeOutput(outcome)).toBe(bytesToHex(holding('new title')));
+  });
+
+  it('refuses the delete frame declaring the node at a view the earlier frame did not leave', () => {
+    // The frame is consistent with its own declaration; settlement holds it to the earlier frame's output.
+    const { draft } = composePair(honestRun('putThenRemove', 'kept title'));
+    redeclare(draft, 'remove-1', { viewIn: BEFORE });
+    const refused = refusing(draft);
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused.filter((id) => !id.startsWith('validator'))).toStrictEqual([]);
+  });
+
+  it('refuses the delete frame leaving the node uncleared for a later frame that clears it', () => {
+    // Each view chains, and the transaction ends at the default, but the delete frame's own end view is not it.
+    const outcome = composePair(honestRun('removeThenPut', ''));
+    expect(refusalsOf(outcome)).toStrictEqual([]);
+    redeclare(outcome.draft, 'remove-1', { viewOut: BEFORE });
+    redeclare(outcome.draft, 'put-1', { viewIn: BEFORE });
+    expect(refusing(outcome.draft)).toStrictEqual(['remove-1']);
+  });
+});
+
+/** Three keys in slot order: a predecessor, the key `edit` deletes, and the key it writes. */
+const [LOW, MID, HIGH] = ['alpha', 'gamma', 'omega'].map((text) => encoder.encode(text)).sort((left, right) => {
+  const [a, b] = [bytesToSlotValue(slotOf(left)), bytesToSlotValue(slotOf(right))];
+  return a < b ? -1 : a > b ? 1 : 0;
+}) as [Uint8Array, Uint8Array, Uint8Array];
+const SLOT_LOW = slotOf(LOW);
+const SLOT_MID = slotOf(MID);
+const SLOT_HIGH = slotOf(HIGH);
+const OLD = encodeChunkableValueTail(encoder.encode('old'));
+const WRITTEN = encodeChunkableValueTail(encoder.encode('written'));
+
+let editDeployment: DeployedMaster | undefined;
+const editMaster = (): DeployedMaster => (editDeployment ??= deployFramedMaster('pragma solidcash ^0.13.0;'
+  + ' contract Tags {'
+  + '   mapping(string => string) tags;'
+  + '   function edit(string a, string v, string k, int c) {'
+  + '     this.tags[a] = v; if (c > 0) { delete this.tags[k]; } require(true);'
+  + '   }'
+  + ' }', 'framed conditional delete beside a write'));
+
+/** The parameter naming each target of `edit`, in the order its frame declares their groups: the targets' slots. */
+const editTargets = (): string[] => editMaster().artifact.abi.find((fn) => fn.name === 'edit')!.entryAccesses!
+  .filter((access) => access.operations.includes('write') || access.operations.includes('delete'))
+  .sort((left, right) => left.slotIndex! - right.slotIndex!)
+  .map((access) => access.keyParams[0]!);
+
+/** The master's verdict on `edit(HIGH, "written", MID, c)`, each target's group of records declared in frame order. */
+const edits = (c: Uint8Array, groups: Readonly<Record<string, readonly PlacedRecord[]>>): boolean =>
+  evaluateMasterSpend(editMaster(), {
+    args: [c, MID, encoder.encode('written'), HIGH],
+    records: editTargets().flatMap((key) => groups[key] ?? []),
+  }).accepted;
+
+describe('a framed delete a branch guards, in one batch beside a write of its collection', () => {
+  const lock = (): Uint8Array => editMaster().collectionLock('tags');
+  /** HIGH's node, the list's last, which the write rewrites in place. */
+  const write = (): PlacedRecord => spent(lock(), 3, node(SLOT_HIGH, ZERO, OLD), node(SLOT_HIGH, ZERO, WRITTEN));
+
+  it('declares the write and the delete as the batch\'s two targets', () => {
+    expect([...editTargets()].sort()).toStrictEqual(['a', 'k']);
+  });
+
+  it('settles the delete and the skip with the deleted key\'s node rewritten in place', () => {
+    // The list `MID -> HIGH`: the delete clears MID's node where it runs and keeps it where it does not.
+    const mid = node(SLOT_MID, SLOT_HIGH, OLD);
+    expect(edits(YES, { a: [write()], k: [spent(lock(), 2, mid, node(SLOT_MID, SLOT_HIGH, CLEARED))] })).toBe(true);
+    expect(edits(NO, { a: [write()], k: [spent(lock(), 2, mid)] })).toBe(true);
+  });
+
+  it('refuses the deleted key\'s group declared as an insert: its predecessor relinked to a created node', () => {
+    // The list `LOW -> HIGH` holds no node for MID. The group relinks LOW to MID beside MID's node created at the
+    // default, which no write binds: the delete's close finds LOW's node where it ends MID's, cleared or kept.
+    const low = spent(lock(), 2, node(SLOT_LOW, SLOT_HIGH, OLD), node(SLOT_LOW, SLOT_MID, OLD));
+    const inserted = created(lock(), 4, node(SLOT_MID, SLOT_HIGH, CLEARED));
+    expect(edits(YES, { a: [write()], k: [low, inserted] })).toBe(false);
+    expect(edits(NO, { a: [write()], k: [low, inserted] })).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
-=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1375/1475 executed lines matched (93.22%) | 7 matched-with-density-reserve | 83 mismatched | 9 mismatched-with-density-reserve | 0 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | 1 refused-at-compile | 115 skipped | 0 error | 438 fixtures run of 1542 compiled candidates | 641.6s ===
-=== STATEFUL SLICE (deploy once, lines in order): 706/782 executed lines matched (90.28%) | 6 matched-with-density-reserve | 46 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 21/54 matched | 4 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 326 fixtures run of 621 with state variables + 6 routed from the pure slice ===
+=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1375/1475 executed lines matched (93.22%) | 7 matched-with-density-reserve | 83 mismatched | 9 mismatched-with-density-reserve | 0 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | 1 refused-at-compile | 115 skipped | 0 error | 438 fixtures run of 1542 compiled candidates | 627.1s ===
+=== STATEFUL SLICE (deploy once, lines in order): 710/783 executed lines matched (90.68%) | 6 matched-with-density-reserve | 43 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 21/53 matched | 4 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 326 fixtures run of 621 with state variables + 6 routed from the pure slice ===
 === PIPELINE-SPECIFIC EXPECTATIONS (compileViaYul true/false, excluded from both rates): legacy 26/30 | via-IR 94/103 executed lines matched | 42 fixtures run of 84 | 8 twin pairs: 3 legacy, 2 both, 1 neither, 1 unmeasured, 1 via-IR ===
 
 --- FIXTURES SKIPPED (by reason) ---
@@ -190,7 +190,7 @@ test/libsolidity/semanticTests/various/codehash_assembly.sol:22  g() -> 0xc5d246
 test/libsolidity/semanticTests/various/codehash_assembly.sol:23  h() -> true  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115792089237316195423570985008687907853269984665640564039457584007913129639935 -> -1  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 752000 (density control length: 940); operation cost following operation: 752070.
 
-=== STATEFUL SLICE (deploy once, lines in order): 706/782 executed lines matched (90.28%) | 6 matched-with-density-reserve | 46 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 21/54 matched | 4 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 326 fixtures run of 621 with state variables + 6 routed from the pure slice ===
+=== STATEFUL SLICE (deploy once, lines in order): 710/783 executed lines matched (90.68%) | 6 matched-with-density-reserve | 43 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 21/53 matched | 4 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 326 fixtures run of 621 with state variables + 6 routed from the pure slice ===
 
 --- STATEFUL FIXTURES SKIPPED (by reason) ---
    30  constructor-params
@@ -219,15 +219,15 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
 
 --- STATEFUL LINES (selected fixtures; after-divergence lines counted apart) ---
   850  selected
-  706  matched
+  710  matched
     6  matched-with-density-reserve
-   46  mismatched
+   43  mismatched
     9  mismatched-with-density-reserve
    14  matched-under-mock-size-limits
     1  mismatched-under-mock-size-limits
    21  matched after-divergence
     0  matched-under-mock-size-limits after-divergence
-   33  mismatched after-divergence
+   32  mismatched after-divergence
     4  refused-at-compile
    10  refused-at-deploy
     0  skipped
@@ -236,22 +236,22 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
 --- STATEFUL LINES SKIPPED (by reason) ---
 
 --- STATEFUL MISMATCH SHAPES ---
-   22  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
+   16  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
     9  expected values, got (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
     8  expected values, got (after divergence) (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
     7  expected values, got (after divergence) wrong value
     7  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction o
-    6  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
     5  expected values, got (after divergence) (with density reserve) revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
+    5  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
     5  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program called an OP_SPLIT operation with an invalid in
     5  expected values, got wrong value
-    3  expected values, got (after divergence) (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
+    4  expected values, got build-error: Error: keccakN batch too large (N total blocks); a single side-car input funds at most N keccak b
+    3  expected values, got (after divergence) (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NcNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
     2  expected values, got (after divergence) (with density reserve) wrong value
     2  expected values, got revert: messageBus: BCH-N preflight failed at input N: Tried to read from an invalid stack index. Current stac
-    1  expected FAILURE, got success (no revert)
     1  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction U
     1  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Tried to read from an invalid stack index. Current stac
-    1  expected values, got (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
+    1  expected values, got (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NcNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
     1  expected values, got build-error: Error: Cannot resolve deploy mapping key expression 'map:map(id:__aN)' for collection 'map'.
     1  expected values, got build-error: Error: messageBus: atomic messageEnvelope must be at least N bytes
     1  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction U
@@ -259,7 +259,7 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
 
 --- STATEFUL FAILURE LINES MATCHED (by revert reason) ---
    31  revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
-   11  revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.; failing require in __Chec
+   12  revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.; failing require in __Chec
     7  revert: messageBus: BCH-N preflight failed at input N: Program attempted to OP_INVOKE an undefined function identifier. 
     5  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: N (de
     3  revert: mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index N: Program fa
@@ -360,10 +360,10 @@ test/libsolidity/semanticTests/array/copying/array_copy_storage_storage_differen
 test/libsolidity/semanticTests/array/copying/array_copy_storage_storage_different_base_nested.sol:23  test() -> 3, 4  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/array/copying/calldata_1d_array_into_2d_memory_array_element.sol:37  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 3; requested index: -1.
 test/libsolidity/semanticTests/array/copying/copy_byte_array_to_storage.sol:48  f() -> 0xff  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:70  test1() ->  =>  (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
-test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:75  test2() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
-test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:80  test3() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
-test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:85  test4() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
+test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:70  test1() ->  =>  (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
+test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:75  test2() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
+test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:80  test3() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
+test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:85  test4() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
 test/libsolidity/semanticTests/array/copying/nested_array_memory_to_storage.sol:45  test1() -> 3  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 6; requested split index: 132.
 test/libsolidity/semanticTests/array/copying/nested_array_memory_to_storage.sol:49  test3() -> 24  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/array/delete/bytes_delete_element.sol:18  test1() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 1; requested split index: 94.
@@ -373,15 +373,11 @@ test/libsolidity/semanticTests/array/push/push_no_args_2d.sol:43  ll(uint256): 1
 test/libsolidity/semanticTests/array/push/push_no_args_2d.sol:45  a(uint256,uint256): 1, 84 -> 128  =>  (after divergence) (with density reserve) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/array/push/push_no_args_2d.sol:47  a(uint256,uint256): 2, 0 -> 512  =>  (after divergence) (with density reserve) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/array/reusing_memory.sol:26  f(uint256): 0x34 -> 0x46bddb1178e94d7f2892ff5f366840eb658911794f2c3a44c450aa2c505186c1  =>  build-error: Error: Cannot resolve deploy mapping key expression 'map:map(id:__a0)' for collection 'map'.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_equivalent_solidity_spec.sol:25  builtinMatchesSolidityImplementation() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_equivalent_solidity_spec.sol:26  builtinOutput() -> 0x183a6125c38840424c4a85fa12bab2ab606c4b6d0e7cc73c0c06ba5300eab500  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_unicode_string_variable.sol:15  builtinMatchesSolidityImplementation() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/builtinFunctions/keccak256_packed_complex_types.sol:14  f() -> 0xba4f20407251e4607cd66b90bfea19ec6971699c03e4a4f3ea737d5818ac27ae, 0xba4f20407251e4607cd66b90bfea19ec6971699c03e4a4f3ea737d5818ac27ae, 0xe7490fade3a8e31113ecb6c0d2635e28a6f5ca8359a57afe914827f41ddf0848  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 2; requested split index: 3.
-test/libsolidity/semanticTests/deployedCodeExclusion/library_function_deployed.sol:31  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/deployedCodeExclusion/static_base_function_deployed.sol:31  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/deployedCodeExclusion/super_function_deployed.sol:31  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/deployedCodeExclusion/virtual_function_deployed.sol:35  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/errors/require_error_evaluation_order_revert_strings_strip.sol:22  flip() -> FAILURE, hex"002ff067", 2  =>  success (no revert)
+test/libsolidity/semanticTests/deployedCodeExclusion/library_function_deployed.sol:31  test() -> true  =>  build-error: Error: keccak256 batch too large (7 total blocks); a single side-car input funds at most 3 keccak blocks. Use a smaller batch or multiple side-cars.
+test/libsolidity/semanticTests/deployedCodeExclusion/static_base_function_deployed.sol:31  test() -> true  =>  build-error: Error: keccak256 batch too large (7 total blocks); a single side-car input funds at most 3 keccak blocks. Use a smaller batch or multiple side-cars.
+test/libsolidity/semanticTests/deployedCodeExclusion/super_function_deployed.sol:31  test() -> true  =>  build-error: Error: keccak256 batch too large (7 total blocks); a single side-car input funds at most 3 keccak blocks. Use a smaller batch or multiple side-cars.
+test/libsolidity/semanticTests/deployedCodeExclusion/virtual_function_deployed.sol:35  test() -> true  =>  build-error: Error: keccak256 batch too large (7 total blocks); a single side-car input funds at most 3 keccak blocks. Use a smaller batch or multiple side-cars.
 test/libsolidity/semanticTests/functionCall/call_function_returning_nothing_via_pointer.sol:15  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Tried to read from an invalid stack index. Current stack depth: 2; requested depth: 2.
 test/libsolidity/semanticTests/functionCall/call_function_returning_nothing_via_pointer.sol:16  flag() -> true  =>  (after divergence) wrong value
 test/libsolidity/semanticTests/functionCall/calling_nonexisting_contract_throws.sol:28  h() -> 7  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 3; requested index: -1.

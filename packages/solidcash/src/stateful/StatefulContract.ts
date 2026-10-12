@@ -52,7 +52,9 @@ import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.j
 import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
 import { encodeEvmInvocationResult } from './evm-abi-result.js';
-import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
+import {
+  buildKeccakComputeSidecar, learnKeccakPreimages, scanKeccakPreimageReads,
+} from '../keccak/keccakComputeSidecar.js';
 import { encodeMessageBatch } from '../message-bus/message-bus.js';
 import type { FixedEffectEntryResolver } from '../message-bus/fixed-effect-entries.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/route-witness.js';
@@ -5224,8 +5226,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // minimal tx (master + data NFTs + placeholder keccak side-cars at their block-layout slots), debug the
   // master, and read each unresolved call's argument off the trace at its OP_INPUTBYTECODE step (before the
   // binding OP_EQUALVERIFY aborts). Nested calls resolve one per probe (inner-to-outer), like the stateless
-  // path. Requires the probe context; unsupported alongside front-region oracles/reads that shift the keccak
-  // slot (throws). Mutates `preimages` in place.
+  // path, which also ends probing the same way when a probe learns nothing. Requires the probe context;
+  // unsupported alongside front-region oracles/reads that shift the keccak slot (throws). Mutates `preimages`.
   private async _extractStatefulKeccakPreimages(
     abiFunction: AbiFunction, preimages: (Uint8Array | null)[], salt: Uint8Array, scUtxos: Utxo[],
     probeCtx?: {
@@ -5282,8 +5284,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const transaction = probe.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
       const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
-      const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n, batchCount);
-      preimages[callIndex] = preimage;
+      if (!learnKeccakPreimages(preimages, scanKeccakPreimageReads(trace, base, n, batchCount))) {
+        // Nothing new to learn: the unreached calls keep the empty placeholder, so the transaction reports the
+        // contract's own failure (or succeeds when a short-circuit skips them).
+        preimages.forEach((preimage, index) => { if (preimage === null) preimages[index] = new Uint8Array(0); });
+      }
     }
   }
 

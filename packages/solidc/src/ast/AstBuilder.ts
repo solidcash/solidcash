@@ -4880,7 +4880,8 @@ export default class AstBuilder
         at(new FunctionCallNode(at(new IdentifierNode('keccak256')), [value]));
       const innerHash = callKeccak(at(new CastNode(new BytesType(), arg, false)));
       const innerNumber = at(new CastNode(uint256, innerHash, false));
-      const decremented = at(new BinaryOpNode(innerNumber, BinaryOperator.MINUS, at(new IntLiteralNode(1n))));
+      // Source arithmetic, as the spec writes it: `- 1` stays uint256, so bytes32() re-encodes a top-bit-set word.
+      const decremented = at(sourceBinaryOp(innerNumber, BinaryOperator.MINUS, at(new IntLiteralNode(1n))));
       const encodedWord = at(new CastNode(bytes32, decremented, false));
       const encoded = at(new BytesConcatNode([encodedWord]));
       const outerHash = callKeccak(encoded);

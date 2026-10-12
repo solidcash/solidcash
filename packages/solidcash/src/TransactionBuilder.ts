@@ -33,8 +33,8 @@ import {
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
-  pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
-  OP_INPUTBYTECODE, leSmallNumber,
+  pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace, scanKeccakPreimageReads,
+  learnKeccakPreimages, OP_INPUTBYTECODE, leSmallNumber,
 } from './keccak/keccakComputeSidecar.js';
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness,
@@ -604,6 +604,8 @@ export class TransactionBuilder {
    * resolved preimages (placeholders for the not-yet-resolved), the contract input is evaluated, and the arg is
    * read off the stack at that call's OP_INPUTBYTECODE step (captured before the binding OP_EQUALVERIFY aborts).
    * Nulls resolve one per probe in call order, so a resolved call's real side-car lets execution reach the next.
+   * A probe that learns nothing ends probing: the calls it never reached keep the empty placeholder, so the
+   * transaction reports the contract's own failure (or succeeds when a short-circuit skips them).
    */
   private async resolveKeccakPreimages(
     input: UnlockableUtxo, salt: Uint8Array, params: readonly (string | null)[],
@@ -634,21 +636,18 @@ export class TransactionBuilder {
     const savedInputs = [...this.inputs];
     const savedOutputs = [...this.outputs];
     try {
-      // Each probe co-spends N side-cars (real preimage/commitment for resolved calls, placeholders for the
-      // rest) and reads the LAST in-range side-car read off the contract's trace: the call whose binding
-      // OP_EQUALVERIFY aborts on the placeholder. Nested calls abort inner-to-outer, so one null resolves per
-      // probe (by its slot index, not emission order). Loop until every preimage is known.
+      // Each probe co-spends N side-cars (real preimage/commitment for resolved calls, the empty placeholder and
+      // its real digest for the rest) and learns from the contract's in-range side-car reads: the last is the
+      // call whose binding OP_EQUALVERIFY aborts on the placeholder. Nested calls abort inner-to-outer, so a null
+      // resolves per probe (by its ordinal, not emission order). Loop until every preimage is known.
       let guard = 0;
       while (preimages.some((p) => p === null)) {
         if (guard++ > n) throw new Error('keccak256 preimage extraction did not converge.');
         this.inputs = [...savedInputs];
         this.outputs = [...savedOutputs];
         for (let j = 0; j < batchCount; j++) {
-          const batch = preimages.slice(j * 3, Math.min(n, j * 3 + 3));
-          const pms = batch.map((resolved) => resolved ?? new Uint8Array(0));
-          const commit = Uint8Array.from(batch.flatMap(
-            (resolved) => [...(resolved ? keccak_256(resolved) : new Uint8Array(32))],
-          ));
+          const pms = preimages.slice(j * 3, Math.min(n, j * 3 + 3)).map((resolved) => resolved ?? new Uint8Array(0));
+          const commit = Uint8Array.from(pms.flatMap((pm) => [...keccak_256(pm)]));
           this.inputs.push({
             ...scUtxos[j],
             unlocker: {
@@ -669,14 +668,13 @@ export class TransactionBuilder {
         const transaction = this.buildLibauthTransaction(true);
         const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
         const trace = keccakProbeVm.debug({ inputIndex: contractIdx, sourceOutputs, transaction }) as unknown[];
-        const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n, batchCount);
-        preimages[callIndex] = preimage;
+        if (!learnKeccakPreimages(preimages, scanKeccakPreimageReads(trace, base, n, batchCount))) break;
       }
     } finally {
       this.inputs = savedInputs;
       this.outputs = savedOutputs;
     }
-    return preimages as Uint8Array[];
+    return preimages.map((preimage) => preimage ?? new Uint8Array(0));
   }
 
   /**

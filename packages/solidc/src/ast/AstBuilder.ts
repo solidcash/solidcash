@@ -120,6 +120,7 @@ import {
   SwitchCaseNode,
   UsingForDirectiveNode,
   type UsingForBinding,
+  exactArrayBounds,
 } from './AST.js';
 import { cloneNode } from './clone.js';
 import { createDefaultValueExpression } from './defaults.js';
@@ -373,9 +374,6 @@ function declaredInEnclosingCallable(ctx: ParserRuleContext, name: string): bool
   };
   return callable !== undefined && declares(callable);
 }
-
-/** The exact length of an array type whose bound is past Number.MAX_SAFE_INTEGER (`ArrayType.bound` rounds it). */
-export const exactArrayBounds = new WeakMap<ArrayType, bigint>();
 
 // BCH 2026 consensus sizes that decide whether a bounded state array is packed or chunk-packed.
 const BOUNDED_ARRAY_COMMITMENT_LIMIT = 128;

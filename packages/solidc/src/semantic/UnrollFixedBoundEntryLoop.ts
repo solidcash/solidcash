@@ -35,6 +35,7 @@ import {
   StateAccessNode,
   BranchNode,
   BoolLiteralNode,
+  exactArrayLength,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -454,11 +455,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
         if (local !== undefined) return local;
         const t = this.varTypes.get(expr.expression.name) ?? this.stateVarTypes.get(expr.expression.name)
           ?? this.collectionTypes.get(expr.expression.name);
-        if (t instanceof ArrayType && t.bound !== undefined) return BigInt(t.bound);
+        if (t instanceof ArrayType && t.bound !== undefined) return exactArrayLength(t);
       }
       if (expr.expression instanceof StateAccessNode) {
         const t = this.stateVarTypes.get(expr.expression.name);
-        if (t instanceof ArrayType && t.bound !== undefined) return BigInt(t.bound);
+        if (t instanceof ArrayType && t.bound !== undefined) return exactArrayLength(t);
       }
       if (expr.expression instanceof NewArrayNode && expr.expression.size instanceof IntLiteralNode) {
         return expr.expression.size.value;

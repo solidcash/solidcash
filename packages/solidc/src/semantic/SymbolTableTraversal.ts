@@ -122,6 +122,7 @@ import {
   UncheckedNode,
   type CallOptions,
   type GraphEffectFrame,
+  exactArrayLength,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
@@ -3438,7 +3439,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             ) : undefined;
           const literalIndex = statement.keys[0] instanceof IntLiteralNode ? statement.keys[0].value : -1n;
           if (!key || !value
-            || (fixedScalarArray && (literalIndex < 0n || literalIndex >= BigInt(fixedArrayType!.bound!)))) {
+            || (fixedScalarArray && (literalIndex < 0n || literalIndex >= exactArrayLength(fixedArrayType!)!))) {
             failed = true;
             continue;
           }
@@ -16335,7 +16336,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.operator === UnaryOperator.SIZE && node.expression instanceof IdentifierNode) {
       const collection = this.collectionMap.get(node.expression.name);
       if (collection?.type instanceof ArrayType && collection.type.bound !== undefined) {
-        const length = new IntLiteralNode(BigInt(collection.type.bound));
+        const length = new IntLiteralNode(exactArrayLength(collection.type)!);
         length.location = node.location;
         return length;
       }

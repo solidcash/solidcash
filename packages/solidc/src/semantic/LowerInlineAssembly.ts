@@ -16,6 +16,7 @@ import {
   TernaryOpNode, TupleIndexOpNode, SourceFileNode,
   FunctionModifier, AbiEncodeNode, AbiEncodePackedNode,
   LiteralNode, type YulWordBuiltin,
+  exactArrayLength,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
@@ -452,42 +453,42 @@ function valueByteWidth(t: Type): number {
 // byte width within a 32-byte word; a nested struct / fixed array starts a new slot and occupies whole slots.
 // Returns the number of 32-byte slots the members occupy. EVM-exact for value + nested-composite members
 // (Types.cpp computeOffsets); mirrors computeStorageLayout's own packing.
-function packWords(types: Type[]): number {
-  let slot = 0;
+function packWords(types: Type[]): bigint {
+  let slot = 0n;
   let byteOff = 0;
   for (const t of types) {
     const inner = compositeSlotWords(t);
-    if (inner > 0) {
-      if (byteOff > 0) { slot += 1; byteOff = 0; }
+    if (inner > 0n) {
+      if (byteOff > 0) { slot += 1n; byteOff = 0; }
       slot += inner;
       continue;
     }
     const w = valueByteWidth(t);
-    if (byteOff + w > 32) { slot += 1; byteOff = 0; }
+    if (byteOff + w > 32) { slot += 1n; byteOff = 0; }
     byteOff += w;
-    if (byteOff >= 32) { slot += 1; byteOff = 0; }
+    if (byteOff >= 32) { slot += 1n; byteOff = 0; }
   }
-  return slot + (byteOff > 0 ? 1 : 0);
+  return slot + (byteOff > 0 ? 1n : 0n);
 }
 
 // The whole-slot footprint of a fixed-size array or struct type (>0), else 0 for a value / mapping / dynamic
 // type (those pack by byte width). A fixed array T[k] and a struct occupy whole slots in EVM and never pack with
 // a neighbour, so the following var starts a fresh slot. This fixes the prior one-slot collapsed layout.
-function compositeSlotWords(t: Type): number {
+function compositeSlotWords(t: Type): bigint {
+  const atLeastOne = (words: bigint): bigint => (words > 1n ? words : 1n);
   if (t instanceof ArrayType && t.bound !== undefined) {
     // Compute the fixed array's whole-slot footprint ARITHMETICALLY (all elements share one type), rather than
     // materializing `bound` copies and byte-packing them - a `uint[2 gwei]` (2e9-element) declaration would OOM
     // the fill. This is the exact result packWords([T,..,T]) returns: a composite element occupies `inner` whole
-    // slots each (bound*inner); a value element of width w packs floor(32/w) per slot.
-    const k = Number(t.bound);
+    // slots each (bound*inner); a value element of width w packs floor(32/w) per slot. Exact past 2^53 too.
+    const k = exactArrayLength(t)!;
     const inner = compositeSlotWords(t.elementType);
-    if (inner > 0) return Math.max(1, k * inner);
-    const w = valueByteWidth(t.elementType);
-    const perSlot = Math.max(1, Math.floor(32 / w));
-    return Math.max(1, Math.ceil(k / perSlot));
+    if (inner > 0n) return atLeastOne(k * inner);
+    const perSlot = BigInt(Math.max(1, Math.floor(32 / valueByteWidth(t.elementType))));
+    return atLeastOne((k + perSlot - 1n) / perSlot);
   }
-  if (t instanceof StructType) return Math.max(1, packWords(t.fields.map((f) => f.type)));
-  return 0;
+  if (t instanceof StructType) return atLeastOne(packWords(t.fields.map((f) => f.type)));
+  return 0n;
 }
 
 // Source ordering key for a state member (declaration order = EVM slot order). Absent location sorts last, stable.
@@ -531,12 +532,12 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
     const lengthSlot = sv.isDynamic && !(sv.type instanceof ArrayType && sv.type.bound !== undefined);
     if (lengthSlot && sv.type instanceof ArrayType) currentDynamicArrayTypes.set(sv.name, sv.type);
     // A fixed struct/array (non-dynamic) occupies whole EVM slots and does not pack; the next var starts fresh.
-    const composite = lengthSlot ? 0 : compositeSlotWords(sv.type);
-    if (composite > 0) {
+    const composite = lengthSlot ? 0n : compositeSlotWords(sv.type);
+    if (composite > 0n) {
       if (byteOff > 0) { slot += 1n; byteOff = 0; }
       currentVarSlot.set(sv.name, slot);
-      compositeRanges.push({ base: slot, words: BigInt(composite), sv });
-      slot += BigInt(composite);
+      compositeRanges.push({ base: slot, words: composite, sv });
+      slot += composite;
       continue;
     }
     const w = stateVarByteWidth(sv);
@@ -835,13 +836,13 @@ function compositeArraySlotElems(sv: StateVariableNode, rel: bigint):
   const t = sv.type;
   if (!(t instanceof ArrayType) || t.bound === undefined) return undefined;
   const et = t.elementType;
-  if (compositeSlotWords(et) > 0 || !isSupportedSlotField(et)) return undefined;
+  if (compositeSlotWords(et) > 0n || !isSupportedSlotField(et)) return undefined;
   const w = valueByteWidth(et);
   const perSlot = Math.floor(32 / w); // w in [1,32] for value types
   if (perSlot < 1) return undefined;
   const start = rel * BigInt(perSlot);
   const elems: { index: number; bitOffset: bigint; bitWidth: bigint }[] = [];
-  for (let j = 0; j < perSlot && start + BigInt(j) < t.bound; j += 1) {
+  for (let j = 0; j < perSlot && start + BigInt(j) < exactArrayLength(t)!; j += 1) {
     elems.push({ index: Number(start) + j, bitOffset: BigInt(j * w * 8), bitWidth: BigInt(w * 8) });
   }
   return elems.length ? { elemType: et, elems } : undefined;
@@ -1265,7 +1266,7 @@ function calldataHeadWords(t: Type): number | undefined {
   if (t instanceof IntType || t instanceof AddressType || t === PrimitiveType.BOOL
     || t instanceof EnumType || t instanceof ValueType || (t instanceof BytesType && t.bound !== undefined)) return 1;
   const words = compositeSlotWords(t);
-  return words > 0 ? words : undefined;
+  return words > 0n ? Number(words) : undefined;
 }
 
 // The compile-time ABI calldata byte offset of a dynamic param's DATA (`x.offset`): 4 (selector) + head size + 32
@@ -1311,9 +1312,9 @@ function collectCalldataPointers(node: Node): void {
       const base = currentCalldataPointers.get(array.name);
       const baseType = currentVars.get(array.name);
       const elementType = baseType instanceof ArrayType ? baseType.elementType : undefined;
-      const words = elementType ? compositeSlotWords(elementType) : 0;
-      if (base && words > 0) {
-        const delta = new IntLiteralNode(index * BigInt(words) * 32n);
+      const words = elementType ? compositeSlotWords(elementType) : 0n;
+      if (base && words > 0n) {
+        const delta = new IntLiteralNode(index * words * 32n);
         delta.location = node.location;
         const ptr = new BinaryOpNode(cloneNode(base) as ExpressionNode, BinaryOperator.PLUS, delta);
         ptr.location = node.location;

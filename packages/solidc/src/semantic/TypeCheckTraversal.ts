@@ -113,6 +113,7 @@ import {
   FunctionModifier,
   TryCatchNode,
   type EmitInfo,
+  exactArrayLength,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -3465,7 +3466,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     expectInt(node as any, node.index.type);
     if (node.array.type.bound !== undefined && constantIndex !== undefined
-      && constantIndex >= BigInt(node.array.type.bound)) {
+      && constantIndex >= exactArrayLength(node.array.type)!) {
       throw new IndexOutOfBoundsError(node as any);
     }
     node.type = node.array.type.elementType;

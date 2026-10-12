@@ -4,7 +4,7 @@
  */
 
 import type { Artifact, ExternalCallAbi } from '@solidcash/utils';
-import type { AddressType, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
+import type { AddressType, Output, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
 import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -29,6 +29,11 @@ export interface DeployOptions {
    * layout does not carry, since a head is minted only at genesis.
    */
   headCollections?: readonly FramedGenesisHeadCollection[];
+  /**
+   * Internal, framed only: the state outputs the genesis mints beside its pools, in place of the ones its constructor
+   * frame derives. A proxy's genesis mints its records as its derived `initialize` left them.
+   */
+  mintedState?: readonly Output[];
   changeAddress: string;
   masterAmount?: bigint;   // default 1200n
   dataNftAmount?: bigint;  // default 1200n per data NFT

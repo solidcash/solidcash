@@ -150,10 +150,11 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   offsets, the master and validator pools, the genesis state a constructor's own frame computes (including the
   events a constructor emits), the record discovery a deployed contract is read through - the token category is
   enumerated and each UTXO's capability and commitment classify it as a master, a validator or a record at its
-  state index - and a proxy deployment in three transactions, whose third is an `initialize` delegate hop the
-  composer plans and the shipped derivation fills. `proxy-initialize-broadcast.test.ts` drives that hop when the
-  entry *writes*: the state it leaves is read back out of the broadcast outputs rather than stated in advance, and
-  the record keeps the implementation's address. `proxy-initialize-write.test.ts` refuses a second call offered the
+  state index - and a proxy deployment in two transactions, the proxy's genesis minting the state its `initialize`
+  delegate hop leaves, which the composer plans and the shipped derivation fills but nobody broadcasts
+  (`AuditSdkFramedProxyAtomic.test.ts`). `proxy-initialize-broadcast.test.ts` drives the explicit separate hop
+  (`initializeAs: 'hop'`) when the entry *writes*: the state it leaves is read back out of the broadcast outputs
+  rather than stated in advance, and the record keeps the implementation's address. `proxy-initialize-write.test.ts` refuses a second call offered the
   record the first one left, beside a control that the same plan offered the state the entry expects is accepted,
   and a proxy whose record does not declare the implementation's fields, by name.
 - **`solidcash/test/framed/frames/`** — the witness-block reader, evaluated in the BCH-2026 virtual machine

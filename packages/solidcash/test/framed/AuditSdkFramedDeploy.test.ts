@@ -199,7 +199,8 @@ describe('audit SDKFRAMED-2: a hop the SDK can refuse up front is refused before
     const { network, options, geneses } = await proxyChain();
     const callerUtxo = await ledgerCoin(network, binToHex(deployerLock), 100_000n);
     await expect(deployFramedProxy({
-      ...options, callerFunding: { utxo: callerUtxo, funder: new SignatureTemplate(bobPriv).unlockP2PKH() },
+      ...options, initializeAs: 'hop',
+      callerFunding: { utxo: callerUtxo, funder: new SignatureTemplate(bobPriv).unlockP2PKH() },
     })).rejects.toThrow(/not the hop's caller lock/);
     await expectNoGenesis(network, geneses);
   }, 600_000);
@@ -208,7 +209,7 @@ describe('audit SDKFRAMED-2: a hop the SDK can refuse up front is refused before
     const { network, options, geneses } = await proxyChain();
     const elsewhere = await ledgerCoin(network, new Signer(ATTACKER_KEY, network).getAddress(), 100_000n);
     await expect(deployFramedProxy({
-      ...options, callerFunding: { utxo: elsewhere, funder: signature.unlockP2PKH() },
+      ...options, initializeAs: 'hop', callerFunding: { utxo: elsewhere, funder: signature.unlockP2PKH() },
     })).rejects.toThrow(/sits at .*not the caller's own lock/);
     await expectNoGenesis(network, geneses);
   }, 600_000);

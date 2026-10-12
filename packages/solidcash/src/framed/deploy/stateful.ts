@@ -13,7 +13,8 @@
  * covenant the body rebuilt. Both pools default to the composing size and are overridden per contract through the
  * deployment options.
  * The state comes from `deriveFramedGenesis`, which runs that frame against the BCH-2026 machine; nothing here
- * supplies a commitment the constructor did not compute.
+ * supplies a commitment the constructor did not compute. The one exception is internal: a proxy's genesis mints the
+ * state its own derived `initialize` computed (`mintedState`), so the proxy is never on chain uninitialized.
  *
  * The records are minted at the data-NFT covenant the category derives, the same lock the direct convention's data
  * NFTs sit at, so a composition spends and recreates each record under the covenant's own rules and a spent UTXO
@@ -33,6 +34,7 @@ import { getNetworkPrefix } from '../../utils.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { deriveFramedGenesis } from './genesis.js';
+import { deployMaster } from './material.js';
 import { resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 import { ownCoinRefusal } from './own-coin.js';
@@ -55,8 +57,8 @@ async function measuredFee(builder: { buildLibauthTransaction: () => unknown }):
 }
 
 /**
- * Deploys a framed stateful contract: derives the genesis state from the constructor frame, funds the master and
- * validator pools, mints one state record per data NFT, and returns the connected contract handle.
+ * Deploys a framed stateful contract: derives the genesis state from the constructor frame (or takes a supplied
+ * `mintedState`), funds the master and validator pools, mints the state, and returns the connected contract handle.
  */
 export async function deployFramedStatefulContract<T extends Artifact>(
   artifact: T,
@@ -105,7 +107,9 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     .map((collection) => ({ name: collection.name, signature: collection.signature }));
   const headCollections = [...(options.headCollections ?? []), ...declaredHeads]
     .filter((collection, index, all) => all.findIndex((other) => other.name === collection.name) === index);
-  const genesis = deriveFramedGenesis({
+  // A supplied state (a proxy's, as its derived `initialize` left it) replaces the constructor frame's derivation.
+  const minted = options.mintedState;
+  const genesis = minted !== undefined ? undefined : deriveFramedGenesis({
     artifact,
     category,
     validatorProgram,
@@ -117,6 +121,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     ...(options.provider.consensusLimits?.maximumNftCommitmentBytes === undefined
       ? {} : { maximumNftCommitmentBytes: options.provider.consensusLimits.maximumNftCommitmentBytes }),
   });
+  const master = genesis?.master ?? deployMaster(artifact, category, validatorProgram);
 
   const masterAmount = options.masterAmount ?? 1200n;
   const dataNftAmount = options.dataNftAmount ?? 1200n;
@@ -150,7 +155,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
 
   for (let index = 0; index < pool.masters; index += 1) {
     addFunded({
-      to: genesis.master.lockingBytecode,
+      to: master.lockingBytecode,
       amount: masterAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
     });
@@ -159,7 +164,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // the pool bounds how many compositions the contract can root at once.
   for (let index = 0; index < pool.validators; index += 1) {
     addFunded({
-      to: genesis.master.address,
+      to: master.address,
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
     });
@@ -172,10 +177,18 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       amount: FACET_SATOSHIS,
     });
   }
+  // A supplied state is minted as given, and nothing else: each output has to be this category's own state.
+  for (const output of minted ?? []) {
+    if (output.token?.category.toLowerCase() !== categoryId.toLowerCase()
+      || output.token.nft?.capability === 'minting') {
+      throw new FramedDeployError('a supplied genesis state may only hold this category\'s own non-minting tokens');
+    }
+    addFunded(output);
+  }
   // The events the constructor's own frame emitted, at the covenant locks the body rebuilt. They lead the
   // trailing region, ahead of the records the genesis creates, which is the order a composition's outputs use; an
   // event output carries the contract's category with no capability.
-  for (const event of genesis.events) {
+  for (const event of genesis?.events ?? []) {
     addFunded({
       to: event.lockingBytecode,
       amount: dataNftAmount,
@@ -188,7 +201,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // A state record's covenant pins its value on every later spend, so no write can fund a record it widens: the
   // genesis funds each one for the widest commitment its own variables pack to. A record holding a value with no
   // bound (unbounded bytes, an unbounded or packed array, `int`) is funded for its genesis width and keeps that value.
-  genesis.commitments.forEach((commitment, nftIndex) => {
+  (genesis?.commitments ?? []).forEach((commitment, nftIndex) => {
     const bound = artifact.stateLayout === undefined
       ? undefined : widestRecordCommitmentBytes(artifact.stateLayout, nftIndex);
     const widest = '00'.repeat(Math.max(commitment.length / 2, bound ?? 0));
@@ -204,7 +217,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // The mapping nodes the constructor's frame materialized: the empty list's head sentinel and any node its writes
   // created. Each sits at its collection's entry covenant, so a composition spends and recreates it under the
   // covenant's own rules; the collection's signature derives that lock.
-  for (const entry of genesis.entries) {
+  for (const entry of genesis?.entries ?? []) {
     // A collection the artifact's own layout publishes carries its signature; one the deployment names (a proxy's,
     // from its implementation) carries the signature the deployment gave it.
     const signature = entry.signature
@@ -222,7 +235,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   }
   // The chunk records the constructor's frame wrote, each at the value's own collection covenant carrying the
   // commitment the shipped chunk encoder produced for the value the constructor stored.
-  for (const chunk of genesis.chunks) {
+  for (const chunk of genesis?.chunks ?? []) {
     addFunded({
       to: chunk.lockingBytecode,
       amount: dataNftAmount,
@@ -232,7 +245,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
 
   // Immutable CREATE identity anchors: category-bearing discovery records the factory path expects to find at the
   // deploying account's logical address after the genesis.
-  for (const anchor of options.identityAnchors ?? []) {
+  for (const anchor of minted === undefined ? options.identityAnchors ?? [] : []) {
     addFunded({
       to: anchor.to,
       amount: anchor.amount ?? dataNftAmount,
@@ -278,7 +291,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // - carried rather than recomputed from the artifact. A caller resolving an address therefore lands on this
   // deployment, not on a Solidity-facing logical CREATE address.
   const ownAddress = lockingBytecodeToCashAddress({
-    bytecode: genesis.master.address,
+    bytecode: master.address,
     prefix: getNetworkPrefix(options.provider.network),
     tokenSupport: true,
   });

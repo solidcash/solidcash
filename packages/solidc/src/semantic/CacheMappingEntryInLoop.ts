@@ -55,7 +55,9 @@ import {
   type ExternalCallExpression,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
-import { MappingType, ArrayType, StructType, type Type, PrimitiveType } from '@solidcash/utils';
+import {
+  MappingType, ArrayType, StructType, type Type, PrimitiveType, isChunkableValueType,
+} from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
@@ -566,8 +568,13 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private contractFunctionNames: Set<string> = new Set();
   private counter = 0;
 
-  /** `callsCloseSegments` holds under the framed composition, whose calls each close a segment. */
-  constructor(private routeSnapshotKeysOnly = false, private callsCloseSegments = false) { super(); }
+  /**
+   * `callsCloseSegments` holds under the framed composition, whose calls each close a segment. `composesAliases`
+   * holds when no message-bus route can clone a body after this pass: only then is a composed mapping left uncached.
+   */
+  constructor(
+    private routeSnapshotKeysOnly = false, private callsCloseSegments = false, private composesAliases = false,
+  ) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.sourceFunctionNames = new Set(node.freeFunctions.map((fn) => fn.name));
@@ -608,16 +615,18 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
    * Scalar sorted mappings the direct convention composes on runtime aliasing (SymbolTableTraversal
    * assignComposeAliasPriors) rather than caches: two or more entries of keys that are not distinct literals, each
    * written once by a whole-value statement of the body itself before any return. A cache would read every entry
-   * before any is written, so a write could not reach the read of an entry its key aliases.
+   * before any is written, so a write could not reach the read of an entry its key aliases. Only under
+   * `composesAliases`: a message-bus route cloned from the body after this pass never composes and keeps the cache.
+   * A chunkable value never composes either.
    */
   private composedMappings(fn: FunctionDefinitionNode, constructor: boolean): Set<string> {
     const composed = new Set<string>();
-    if (this.routeSnapshotKeysOnly || this.callsCloseSegments || constructor || fn.messageBusRoute
-      || fn.name.startsWith('__message_bus_') || fn.modifiers.includes(FunctionModifier.DELEGATE)
+    if (!this.composesAliases || this.routeSnapshotKeysOnly || this.callsCloseSegments || constructor
+      || fn.messageBusRoute || fn.name.startsWith('__message_bus_') || fn.modifiers.includes(FunctionModifier.DELEGATE)
       || !(fn.body instanceof BlockNode)) return composed;
     const statements = fn.body.statements ?? [];
     for (const [mapping, info] of this.scalarMappings) {
-      if (info.depth !== 1) continue;
+      if (info.depth !== 1 || isChunkableValueType(info.valueType)) continue;
       const writes = new Map<string, number>();
       let eligible = true;
       let lastWrite = -1;

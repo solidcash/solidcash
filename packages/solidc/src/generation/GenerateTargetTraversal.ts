@@ -29883,6 +29883,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (produces) this.pushToStack('(__compose_preflight)');
     };
     const witness = (kind: string, slot: number): string => `__internal__vmapBatch${kind}_${slot}`;
+    // The write binds 32-byte slot and next windows, so the raw comparisons below take only 32-byte witnesses.
+    // Slot reads are unconditional and sized once each; a Next read runs under its slot equality and is sized there.
+    const sizedSlots = new Set<number>();
+    const pick32 = (kind: 'Slot' | 'Next', slot: number): void => {
+      pick(witness(kind, slot));
+      if (kind === 'Slot' && sizedSlots.has(slot)) return;
+      if (kind === 'Slot') sizedSlots.add(slot);
+      this.emit(Op.OP_SIZE, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    };
     for (const batch of node.sortedBatchInfo ?? []) {
       if (batch.slotIndices.length === 0 || this.composeBatchSlots(batch.slotIndices[0]) === undefined) continue;
       for (const slot of batch.slotIndices) {
@@ -29894,10 +29903,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           continue;
         }
         priors.forEach((prior, index) => {
-          pick(witness('Slot', slot)); pick(witness('Slot', prior)); apply(Op.OP_EQUAL, 2, true);
+          pick32('Slot', slot); pick32('Slot', prior); apply(Op.OP_EQUAL, 2, true);
           this.emit(Op.OP_DUP, loc); this.emit(Op.OP_IF, loc);
           pick(witness('Proof', slot)); pick(witness('Proof', prior)); apply(Op.OP_NUMEQUALVERIFY, 2, false);
-          pick(witness('Next', slot)); pick(witness('Next', prior)); apply(Op.OP_EQUALVERIFY, 2, false);
+          pick32('Next', slot); pick32('Next', prior); apply(Op.OP_EQUALVERIFY, 2, false);
           this.emit(Op.OP_ENDIF, loc);
           if (index > 0) apply(Op.OP_BOOLOR, 2, true);
         });

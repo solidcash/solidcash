@@ -599,15 +599,64 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // functions. Their original semantic metadata may still reference the
       // pre-lowered body until the next symbol pass; never synthesize physical
       // entry caching inside that handler.
-      if (fn?.body && !fn.collectionJournal) this.transformFunction(fn);
+      if (fn?.body && !fn.collectionJournal) this.transformFunction(fn, fn === node.constructorDef);
     }
     return node;
   }
 
-  private transformFunction(fn: FunctionDefinitionNode): void {
+  /**
+   * Scalar sorted mappings the direct convention composes on runtime aliasing (SymbolTableTraversal
+   * assignComposeAliasPriors) rather than caches: two or more entries of keys that are not distinct literals, each
+   * written once by a whole-value statement of the body itself before any return. A cache would read every entry
+   * before any is written, so a write could not reach the read of an entry its key aliases.
+   */
+  private composedMappings(fn: FunctionDefinitionNode, constructor: boolean): Set<string> {
+    const composed = new Set<string>();
+    if (this.routeSnapshotKeysOnly || this.callsCloseSegments || constructor || fn.messageBusRoute
+      || fn.name.startsWith('__message_bus_') || fn.modifiers.includes(FunctionModifier.DELEGATE)
+      || !(fn.body instanceof BlockNode)) return composed;
+    const statements = fn.body.statements ?? [];
+    for (const [mapping, info] of this.scalarMappings) {
+      if (info.depth !== 1) continue;
+      const writes = new Map<string, number>();
+      let eligible = true;
+      let lastWrite = -1;
+      reaches(fn.body, (node) => {
+        const named = (node as { readonly name?: unknown }).name === mapping;
+        const whole = node instanceof ArrayAssignNode || node instanceof StateArrayAssignNode
+          || (node instanceof MappingAssignNode && node.keys.length === 1 && node.arrayIndex === undefined
+            && node.arrayPush !== true && node.arrayPop !== true);
+        if (!named || !(whole || node instanceof MappingAssignNode || node instanceof MappingDeleteNode
+          || node instanceof MappingFieldAssignNode || node instanceof ArrayDeleteNode)) return false;
+        const index = statements.indexOf(node as StatementNode);
+        if (!whole || index < 0) {
+          eligible = false;
+          return false;
+        }
+        const key = node instanceof MappingAssignNode ? node.keys[0]
+          : (node as ArrayAssignNode | StateArrayAssignNode).index;
+        // A key no cache can name is never cached; it counts as an entry of its own.
+        const canon = canonKeyOf(key, true)?.canon ?? `opaque:${index}`;
+        writes.set(canon, (writes.get(canon) ?? 0) + 1);
+        lastWrite = Math.max(lastWrite, index);
+        return false;
+      });
+      const canons = [...writes.keys()];
+      if (!eligible || canons.length < 2 || [...writes.values()].some((count) => count !== 1)
+        || canons.every((canon) => canon.startsWith('literal:'))
+        || statements.slice(0, lastWrite).some((statement) =>
+          reaches(statement, (node) => node instanceof ReturnNode))) continue;
+      composed.add(mapping);
+    }
+    return composed;
+  }
+
+  private transformFunction(fn: FunctionDefinitionNode, constructor = false): void {
     // The kernel's pre-write key recipes; a framed body plans its keys from its own frame and takes none.
     if (!this.callsCloseSegments) this.publishStraightLineMappingKeyValues(fn);
-    const selected = this.collectCacheableEntries(fn.body).filter((e) => !(this.routeSnapshotKeysOnly
+    const composed = this.composedMappings(fn, constructor);
+    const selected = this.collectCacheableEntries(fn.body).filter((e) => !composed.has(e.mapping)
+      && !(this.routeSnapshotKeysOnly
       && e.keys.length === 1
       && !e.keys.some((key) => key.kind === 'expression'
         || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))

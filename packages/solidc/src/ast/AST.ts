@@ -281,6 +281,10 @@ export interface EntryAccessInfo {
   // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
   // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
   runtimeAliasPriorSlots?: number[];
+  // Direct-convention compose-on-alias: earlier fixed batch writes of this collection whose key this write may share
+  // at runtime. It is the alias row (predOut -2) iff its slot hash equals one of theirs; it still runs, reading the
+  // entry's pending value, and the key's last write in source order pins the earliest such slot's output.
+  composeAliasPriorSlots?: number[];
   // Direct-convention pure sorted read: when its own entry input holds no node of the collection, it proves its key
   // with this earlier slot's proof input (two slots needing one node). The SDK funds the read's own input.
   sharedProofPriorSlot?: number;

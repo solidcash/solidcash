@@ -1934,6 +1934,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // On the direct convention, the writes to a sorted entry whose value a later read takes, and the reads they serve.
   private directKeptSortedWrites: WeakSet<Node> = new WeakSet();
   private directServedSortedReads: WeakSet<Node> = new WeakSet();
+  // Direct compose-on-alias: the batch writes emitted so far in source order, and the values kept for later reads.
+  private composeWritesEmitted: number[] = [];
+  private composeKeptValues: Map<number, string> = new Map();
   // In a constructor, the writes whose value (and, where a read compares keys, key hash) a later genesis read takes,
   // the stack names they are kept under, and each served read's plan.
   private genesisKeptWrites: WeakSet<Node> = new WeakSet();
@@ -8916,6 +8919,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       scan(node.body);
     }
     this.countSortedEntryAccesses(node);
+    this.composeWritesEmitted = [];
+    this.composeKeptValues = new Map();
     this.refuseDirectStaleSortedReads(node);
     this.planGenesisReads(node);
 
@@ -26011,6 +26016,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. H(k) (composite for nested m[a][b]) computed FIRST so it sits at the bottom of the working area, giving
     // the proven [Hk32, slot32, nextKey32] layout.
     this.emitSortedKeyHash(node, slotIndex, loc);     // [Hk32]
+    // A compose read keeps its key hash beneath the proof: an earlier write of the same key overrides the pre-state.
+    const composeWrites = this.composeEarlierWrites(slotIndex);
+    if (composeWrites.length > 0) {
+      this.emit(Op.OP_DUP, loc);
+      this.pushToStack('(__vmap_compose_key)');
+    }
     if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) === undefined) {
       this.emitFramedAliasedReadGuard(node, loc);
     }
@@ -26088,6 +26099,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !this.isCompilerMessageBusRoute() && this.directConvention) {
         this.emitSortedIntReadProof(loc);
         this.pushToStack('(value)');
+        if (composeWrites.length > 0) this.emitComposeReadFold(composeWrites, loc);
         return node;
       }
       this.emit(Op.OP_2DUP, loc);                     // [Hk32, entryAddr, idx, entryAddr, idx]
@@ -26118,6 +26130,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (routeBatch) this.emit(Op.OP_ENDIF, loc);
 
     this.pushToStack('(value)');
+    if (composeWrites.length > 0) this.emitComposeReadFold(composeWrites, loc);
     return node;
   }
 
@@ -26635,6 +26648,85 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);
   }
 
+  /** The slots of the direct compose-on-alias batch holding `slot`, or undefined when its batch composes nothing. */
+  private composeBatchSlots(slot: number): readonly number[] | undefined {
+    if (this.isDefineSubTraversal || this.readsRecordsFromFrame || slot < 0) return undefined;
+    const batch = this.currentFunction.sortedBatchInfo?.find((candidate) => candidate.slotIndices.includes(slot));
+    return batch?.slotIndices.some((member) => (this.entrySlots[member]?.composeAliasPriorSlots?.length ?? 0) > 0)
+      ? batch.slotIndices : undefined;
+  }
+
+  /** True when two slots of a compose batch may name one entry at runtime. */
+  private composeMayAlias(left: number, right: number): boolean {
+    const [low, high] = left < right ? [left, right] : [right, left];
+    return this.entrySlots[high]?.composeAliasPriorSlots?.includes(low) ?? false;
+  }
+
+  /** The compose batch writes still to be emitted, in source order after `slot`'s, that may meet its key. */
+  private composeLaterWrites(slot: number): number[] {
+    return (this.composeBatchSlots(slot) ?? []).filter((other) => other !== slot
+      && !this.composeWritesEmitted.includes(other) && this.composeMayAlias(slot, other));
+  }
+
+  /** True when a read of the written collection follows this top-level write in the body. */
+  private composeWriteKeepsValue(node: MappingAssignNode): boolean {
+    const statements = this.currentFunction.body?.statements ?? [];
+    const index = statements.indexOf(node);
+    if (index < 0) return true;
+    let read = false;
+    walkInvocationAst(new BlockNode(statements.slice(index + 1)), (candidate) => {
+      if (candidate instanceof MappingAccessNode && candidate.collection?.name === node.collection?.name) read = true;
+    });
+    return read;
+  }
+
+  /**
+   * [.., H, addr] -> [.., H, addr, outIdx]: the entry output of the earliest compose slot whose authenticated slot
+   * hash equals this write's key hash H. An alias row shares that slot's node, so the key's last write pins it there.
+   */
+  private emitComposeOwnerOutputIndex(slot: number, loc: SingleLocationData): void {
+    this.emitEntryOutputIndex(slot, loc, 0);
+    const priors = [...(this.entrySlots[slot]?.composeAliasPriorSlots ?? [])].sort((a, b) => b - a);
+    for (const prior of priors) {
+      this.emitPickVMapWitness(`__internal__vmapBatchSlot_${prior}`, loc);
+      this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // H below [addr, outIdx, priorSlot]
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
+      this.emitEntryOutputIndex(prior, loc, 0);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+  }
+
+  /** The compose writes already emitted whose entry a read of `slot` may name, in source order. */
+  private composeEarlierWrites(slot: number): number[] {
+    if (this.composeBatchSlots(slot) === undefined) return [];
+    return this.composeWritesEmitted.filter((write) => this.composeKeptValues.has(write)
+      && (write === slot || this.composeMayAlias(write, slot)));
+  }
+
+  /**
+   * [.., K, value] -> [.., value]: a compose read takes the value of the latest earlier write whose authenticated
+   * slot hash equals its own key hash K, else the authenticated pre-state value it proved.
+   */
+  private emitComposeReadFold(writes: readonly number[], loc: SingleLocationData): void {
+    const key = '(__vmap_compose_key)';
+    for (const write of writes) {
+      this.emitPickVMapWitness(`__internal__vmapBatchSlot_${write}`, loc);
+      this.pushToStack('(__compose_slot)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(key))), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(__compose_key)');
+      this.emit(Op.OP_EQUAL, loc); this.popFromStack(2);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc); this.popFromStack();
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.composeKeptValues.get(write)!))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    this.emit(Op.OP_NIP, loc);
+    this.nipFromStack();
+  }
+
   private emitSortedValueUpsert(node: MappingAssignNode | MappingDeleteNode, emitValue: () => void): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const collection = node.collection!;
@@ -26677,6 +26769,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.keepGenesisKeyHash(node, loc);
     const aliasOwner = this.entrySlots[slotIndex]?.aliasCondDeleteSlot;
     const runtimeAliasOwners = this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? [];
+    // A compose-on-alias write always runs: its predOut -2 marks a shared entry, not an inactive row.
+    const compose = inBatch && aliasOwner === undefined && node instanceof MappingAssignNode
+      && this.composeBatchSlots(slotIndex) !== undefined;
     if (aliasOwner !== undefined) {
       // Bind H(lastKey) before deciding whether swap-remove aliases its later delete. On the alias arm the upsert
       // must be a true no-op (including not evaluating its value); the owner delete remains independently proven.
@@ -26688,7 +26783,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
       this.emit(Op.OP_ELSE, loc);
-    } else if (inBatch) {
+    } else if (inBatch && !compose) {
       // A funded fixed slot does not imply an inactive logical write: distinct absent targets can share one
       // predecessor proof, in which case this slot is funded while __internal__vmapBatchProof_N points at the
       // earlier physical input. Only predOut=-2 denotes either a true same-target alias (bound to an allowed
@@ -26755,6 +26850,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       keptValue = this.keepDirectSortedWrittenValue(slotIndex, loc);
     }
     keptValue = this.keepGenesisWrittenValue(node, slotIndex, keptValue, loc);
+    if (compose && this.composeWriteKeepsValue(node)) {
+      // A later read of the collection may name this entry: it takes this value when its key hash matches.
+      const name = `(__vmap_compose_${slotIndex})`;
+      this.emit(Op.OP_DUP, loc);
+      this.stack[0] = name;
+      this.pushToStack('(value)');
+      this.composeKeptValues.set(slotIndex, name);
+    }
     if (this.isChunkableValue(collection.innermostValueType)) {
       // Design D: pin the value chunks from the on-stack value BEFORE transforming it into the digest tail. This
       // works for ANY value (computed or a direct param) and rejects forged/absent chunks at write time.
@@ -26819,7 +26922,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ENDIF, loc);
         this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
         // A delegate's target follows the co-spent implementation block, which emitEntryOutputIndex resolves.
-        this.emitEntryOutputIndex(slotIndex, loc, 0);
+        if (compose) this.emitComposeOwnerOutputIndex(slotIndex, loc);
+        else this.emitEntryOutputIndex(slotIndex, loc, 0);
       } else {
         this.emit(Op.OP_IF, loc);
         this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
@@ -26857,12 +26961,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // at the logical fixed output: H(k) || plannedNext || computedValue.
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.emit(Op.OP_SWAP, loc);                              // [v,H,addr,next,outIdx]
+      // A compose write whose key a later write of the batch meets leaves the entry to that write's pin.
+      const laterWrites = compose ? this.composeLaterWrites(slotIndex) : [];
+      laterWrites.forEach((later, index) => {
+        this.emitPickVMapWitness(`__internal__vmapBatchSlot_${later}`, loc);
+        this.emit(encodeInt(index === 0 ? 4n : 5n), loc); this.emit(Op.OP_PICK, loc); // H
+        this.emit(Op.OP_EQUAL, loc);
+        if (index > 0) this.emit(Op.OP_BOOLOR, loc);
+      });
+      if (laterWrites.length > 0) {
+        this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_ELSE, loc);
+      }
       this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4, 4, declaredOrdinal !== undefined);
+      if (laterWrites.length > 0) this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // next, addr, H
       this.emit(Op.OP_DROP, loc); this.popFromStack(); // v
+      if (compose) this.composeWritesEmitted.push(slotIndex);
       if (aliasOwner !== undefined) {
         this.emit(Op.OP_ENDIF, loc);
-      } else if (inBatch || runtimeAliasOwners.length > 0) {
+      } else if ((inBatch && !compose) || runtimeAliasOwners.length > 0) {
         // The inactive/alias guard is emitted after H(k) has been computed. Its skipped arm therefore still owns
         // that hash even though the write body (which normally consumes it) is skipped. Leaving it behind widens
         // the runtime stack and eventually corrupts the caller's frame. Balance the guard at its source.
@@ -27875,9 +27992,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     });
 
+    // A compose batch's reads take earlier writes of their key by slot-hash comparison (emitComposeReadFold).
+    const composes = (slot: number): boolean => this.composeBatchSlots(slot) !== undefined;
     const read = (node: MappingAccessNode, flow: Flow | undefined): void => {
       if (flow === undefined || carried.has(node) || node.collection?.sorted !== true
-        || node.isTokenContainerAccess === true || node.isGenesisRead === true || node.entrySlotIndex < 0) return;
+        || node.isTokenContainerAccess === true || node.isGenesisRead === true || node.entrySlotIndex < 0
+        || composes(node.entrySlotIndex)) return;
       const pending = flow.get(node.entrySlotIndex);
       if (pending === undefined) return;
       if (pending.shape === undefined) {
@@ -27897,7 +28017,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const arrayOp = isArrayOp(node);
       const chained = arrayOp && (chainLeft.get(slot) ?? 1) > 1;
       if (arrayOp) chainLeft.set(slot, (chainLeft.get(slot) ?? 1) - 1);
-      if (flow === undefined || slot < 0) return flow;
+      if (flow === undefined || slot < 0 || composes(slot)) return flow;
       const pending = flow.get(slot);
       if (node instanceof MappingAssignNode && (node.arrayPush === true || node.arrayPop === true)
         && pending?.shape !== undefined) {
@@ -29700,6 +29820,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
       }
     }
+    this.emitComposeAliasPreflight(node, loc);
     // Keep an untouched copy of every topology witness above the mutable handler frame. Internal handler calls
     // may legally reorder the original parameter cells while preserving stack depth; all post-body vmap work reads
     // these snapshots instead. Freeze the name list here - restore MUST pop the same sequence.
@@ -29744,6 +29865,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (i === 0) this.pushToStack(upsertCapsuleName);
       else this.emit(Op.OP_CAT, loc);
+    }
+  }
+
+  /**
+   * Binds a direct compose batch's alias rows before the body runs. A row is the alias row (predOut -2) exactly when
+   * its slot hash equals an earlier row's, and then names that row's proof input and planned successor, so the one
+   * node is spent once and relinked once. Every other row is active. The batch verifier skips alias rows' topology
+   * and census, and the key's last write pins the node at the earliest equal row's output.
+   */
+  private emitComposeAliasPreflight(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    const pick = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(__compose_preflight)');
+    };
+    const apply = (op: Op, consumed: number, produces: boolean): void => {
+      this.emit(op, loc); this.popFromStack(consumed);
+      if (produces) this.pushToStack('(__compose_preflight)');
+    };
+    const witness = (kind: string, slot: number): string => `__internal__vmapBatch${kind}_${slot}`;
+    for (const batch of node.sortedBatchInfo ?? []) {
+      if (batch.slotIndices.length === 0 || this.composeBatchSlots(batch.slotIndices[0]) === undefined) continue;
+      for (const slot of batch.slotIndices) {
+        const priors = (this.entrySlots[slot]?.composeAliasPriorSlots ?? [])
+          .filter((prior) => batch.slotIndices.includes(prior));
+        if (priors.length === 0) {
+          pick(witness('PredOut', slot)); this.emit(encodeInt(-2n), loc); this.pushToStack('(__compose_preflight)');
+          apply(Op.OP_NUMNOTEQUAL, 2, true); apply(Op.OP_VERIFY, 1, false);
+          continue;
+        }
+        priors.forEach((prior, index) => {
+          pick(witness('Slot', slot)); pick(witness('Slot', prior)); apply(Op.OP_EQUAL, 2, true);
+          this.emit(Op.OP_DUP, loc); this.emit(Op.OP_IF, loc);
+          pick(witness('Proof', slot)); pick(witness('Proof', prior)); apply(Op.OP_NUMEQUALVERIFY, 2, false);
+          pick(witness('Next', slot)); pick(witness('Next', prior)); apply(Op.OP_EQUALVERIFY, 2, false);
+          this.emit(Op.OP_ENDIF, loc);
+          if (index > 0) apply(Op.OP_BOOLOR, 2, true);
+        });
+        pick(witness('PredOut', slot)); this.emit(encodeInt(-2n), loc); this.pushToStack('(__compose_preflight)');
+        apply(Op.OP_NUMEQUAL, 2, true); apply(Op.OP_EQUALVERIFY, 2, false);
+      }
     }
   }
 
@@ -30604,24 +30765,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return owner !== undefined && targets.includes(owner);
       });
       const aliasOwner = aliasWrite === undefined ? undefined : this.entrySlots[aliasWrite].aliasCondDeleteSlot;
-      // A framed frame takes the general arm for a swap-remove pair too: where the keys meet, the write is a no-op
-      // its frame declares skipped, as any skipped target.
-      if (aliasWrite !== undefined && aliasOwner !== undefined && !this.readsRecordsFromFrame) {
-        const fixedField = (field: 'slot' | 'next'): void => commitmentField(() => {
-          this.emitFixedEntryInputIndex(aliasOwner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-        }, field);
-        fixedField('slot'); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
-        fixedField('next'); arg(`__internal__vmapBatchNext_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
-        arg(`__internal__vmapBatchPredOut_${aliasOwner}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
-        // SDK sentinel iff runtime keys alias.
-        arg(`__internal__vmapBatchSlot_${aliasWrite}`); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1);
-        bin(Op.OP_EQUAL);
-        arg(`__internal__vmapBatchPredOut_${aliasWrite}`, 1); this.emit(encodeInt(-2n), loc);
-        bin(Op.OP_NUMEQUAL); bin(Op.OP_EQUALVERIFY);
-      } else if (targets.length === 1 && this.readsRecordsFromFrame) {
-        this.emitFramedSingleTargetTransition(targets[0], collectionHash, loc);
-      } else if (targets.length === 1) {
-        const slot = targets[0];
+      const singleTarget = (slot: number): void => {
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => {
             proofIndex(slot, extra);
@@ -30655,6 +30799,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
         bin(Op.OP_ENDIF);
         bin(Op.OP_ENDIF);
+      };
+      // A framed frame takes the general arm for a swap-remove pair too: where the keys meet, the write is a no-op
+      // its frame declares skipped, as any skipped target.
+      if (aliasWrite !== undefined && aliasOwner !== undefined && !this.readsRecordsFromFrame) {
+        const fixedField = (field: 'slot' | 'next'): void => commitmentField(() => {
+          this.emitFixedEntryInputIndex(aliasOwner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+        }, field);
+        fixedField('slot'); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
+        fixedField('next'); arg(`__internal__vmapBatchNext_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
+        arg(`__internal__vmapBatchPredOut_${aliasOwner}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+        // SDK sentinel iff runtime keys alias.
+        arg(`__internal__vmapBatchSlot_${aliasWrite}`); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1);
+        bin(Op.OP_EQUAL);
+        arg(`__internal__vmapBatchPredOut_${aliasWrite}`, 1); this.emit(encodeInt(-2n), loc);
+        bin(Op.OP_NUMEQUAL); bin(Op.OP_EQUALVERIFY);
+      } else if (targets.length === 1 && this.readsRecordsFromFrame) {
+        this.emitFramedSingleTargetTransition(targets[0], collectionHash, loc);
+      } else if (targets.length === 1) {
+        singleTarget(targets[0]);
       } else if (batch.linear && targets.length === 2) {
         // For two fixed targets, the two authenticated slot hashes themselves define the complete sorted row
         // order. The rank permutation and packed row witness used by larger batches add no information here.
@@ -30672,6 +30835,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_LESSTHAN);
         };
 
+        // A compose batch's second row is the alias row exactly when the keys meet: the first target is then the
+        // batch's one node, settled as a single target.
+        const composeAlias = this.composeBatchSlots(first) !== undefined;
+        if (composeAlias) {
+          arg(`__internal__vmapBatchPredOut_${second}`); this.emit(encodeInt(-2n), loc);
+          bin(Op.OP_NUMEQUAL); bin(Op.OP_IF);
+          singleTarget(first);
+          bin(Op.OP_ELSE);
+        }
         targetSlot(first); bin(Op.OP_BIN2NUM);
         targetSlot(second, 1); bin(Op.OP_BIN2NUM);
         bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
@@ -30741,6 +30913,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_ENDIF);
           if (rotate) rotateTopWitnessGroups();
         }
+        if (composeAlias) bin(Op.OP_ENDIF);
       } else if (batch.linear) {
         const rowsName = `__internal__vmapBatchRows_${batch.collection}`;
         const rankName = (slot: number): string => `__internal__vmapBatchRank_${slot}`;
@@ -30768,13 +30941,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const directProofFieldFor = (slot: number, field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => { proofIndex(slot, extra); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); }, field);
         };
+        // A compose batch's alias rows (predOut -2) share their owner's node: the rows are the distinct targets, so
+        // their count, and each rank's bound, follow the row blob's size.
+        const composeRows = this.composeBatchSlots(targets[0]) === undefined ? new Set<number>()
+          : new Set(targets.filter((slot) => (this.entrySlots[slot]?.composeAliasPriorSlots?.length ?? 0) > 0));
+        const aliasRow = (slot: number): void => {
+          arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc); bin(Op.OP_NUMEQUAL);
+        };
+        const rowsSize = (): void => { arg(rowsName); bin(Op.OP_SIZE); bin(Op.OP_NIP); };
 
         arg(rowsName); bin(Op.OP_SIZE); bin(Op.OP_NIP);
-        this.emit(encodeInt(BigInt(targets.length * 64)), loc); bin(Op.OP_NUMEQUALVERIFY);
+        this.emit(encodeInt(BigInt(targets.length * 64)), loc);
+        for (const slot of composeRows) {
+          aliasRow(slot); this.emit(encodeInt(64n), loc); bin(Op.OP_MUL); bin(Op.OP_SUB);
+        }
+        bin(Op.OP_NUMEQUALVERIFY);
         for (let ordinal = 0; ordinal + 1 < targets.length; ordinal++) {
+          if (composeRows.size > 0) {
+            rowsSize(); this.emit(encodeInt(BigInt((ordinal + 2) * 64)), loc); bin(Op.OP_GREATERTHANOREQUAL);
+            bin(Op.OP_IF);
+          }
           rowFieldAt(ordinal, 'slot'); bin(Op.OP_BIN2NUM);
           rowFieldAt(ordinal + 1, 'slot', 1); bin(Op.OP_BIN2NUM);
           bin(Op.OP_LESSTHAN); bin(Op.OP_VERIFY);
+          if (composeRows.size > 0) bin(Op.OP_ENDIF);
         }
 
         // A malicious spender must not bind two logical writes to one row when their runtime keys alias. Strict
@@ -30783,17 +30973,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         for (let i = 0; i < targets.length; i++) {
           for (let j = i + 1; j < targets.length; j++) {
             arg(rankName(targets[i])); arg(rankName(targets[j]), 1);
-            bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
+            bin(Op.OP_NUMNOTEQUAL);
+            for (const slot of [targets[i], targets[j]]) {
+              if (composeRows.has(slot)) { aliasRow(slot); bin(Op.OP_BOOLOR); }
+            }
+            bin(Op.OP_VERIFY);
           }
         }
 
         for (const slot of targets) {
+          if (composeRows.has(slot)) { aliasRow(slot); bin(Op.OP_NOTIF); }
           arg(rankName(slot)); bin(Op.OP_DUP); bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY);
-          this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_LESSTHAN); bin(Op.OP_VERIFY);
+          if (composeRows.size > 0) {
+            this.emit(encodeInt(64n), loc); bin(Op.OP_MUL); rowsSize();
+          } else this.emit(encodeInt(BigInt(targets.length)), loc);
+          bin(Op.OP_LESSTHAN); bin(Op.OP_VERIFY);
           rowFieldByRank(slot, 'slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
           rowFieldByRank(slot, 'next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
 
-          arg(rankName(slot)); this.emit(encodeInt(BigInt(targets.length - 1)), loc);
+          if (composeRows.size > 0) {
+            arg(rankName(slot)); bin(Op.OP_1ADD); this.emit(encodeInt(64n), loc); bin(Op.OP_MUL); rowsSize();
+          } else {
+            arg(rankName(slot)); this.emit(encodeInt(BigInt(targets.length - 1)), loc);
+          }
           bin(Op.OP_LESSTHAN); bin(Op.OP_IF);
           rowFieldByRank(slot, 'slot', 1);
           directProofFieldFor(slot, 'next', 1); // [nextTarget, proofNext]
@@ -30833,6 +31035,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
           bin(Op.OP_ENDIF);
           bin(Op.OP_ENDIF);
+          if (composeRows.has(slot)) bin(Op.OP_ENDIF);
         }
       } else {
         if (this.readsRecordsFromFrame) this.emitFramedDistinctBatchTargets(node, targets, loc);
@@ -31069,6 +31272,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
       if (readSlots.length > 0) pushAddr();
       const expected = `(__vmap_batch_expected_${batch.collection})`;
+      // A linear compose batch's alias rows (predOut -2) share their owner's node and add no output.
+      const composeAliasRows = batch.linear && this.composeBatchSlots(targets[0]) !== undefined
+        ? targets.filter((slot) => (this.entrySlots[slot]?.composeAliasPriorSlots?.length ?? 0) > 0) : [];
+      const subtractComposeAliasRows = (): void => {
+        for (const slot of composeAliasRows) {
+          arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
+          bin(Op.OP_NUMEQUAL); bin(Op.OP_SUB);
+        }
+      };
       if (directSmallCensus) {
         // Every active write contributes one output and each nonnegative predOut one recreated predecessor.
         for (const slot of targets) {
@@ -31077,8 +31289,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         if (targets.length === 2) bin(Op.OP_ADD);
         this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_ADD);
+        subtractComposeAliasRows();
       } else if (batch.linear) {
         this.emit(encodeInt(BigInt(targets.length)), loc);
+        subtractComposeAliasRows();
       } else if (aliasWrite !== undefined && aliasOwner !== undefined) {
         arg(`__internal__vmapBatchSlot_${aliasWrite}`); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1);
         bin(Op.OP_EQUAL); bin(Op.OP_IF); this.emit(encodeInt(BigInt(targets.length - 1)), loc);

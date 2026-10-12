@@ -19627,14 +19627,33 @@ function compileReferencedContracts(
     // standalone compile, which is the artifact a caller deploys and predicts the address from. A child the source
     // cannot compile on its own (an unrelated file-level helper embedding its own runtimeCode, say) has no such
     // artifact to differ from, so it keeps the bytes generated here.
-    compiledBytecodes.set(
-      contractName,
-      compileReferencedContractStandalone(code, contractName, childOptions)
-        ?? scriptToBytecode(optimisationResult.script),
-    );
+    const standalone = compileReferencedContractStandalone(code, contractName, childOptions);
+    if (standalone.bytecode === undefined) {
+      // The bytes generated here never expanded the child's modifiers: embedding them would drop its guards.
+      const host = unexpandedModifierHost(contract, new Set([ast.contract.name, ...contractMap.keys()]));
+      if (host !== undefined) {
+        throw standalone.error ?? new Error(`Contract '${contractName}' cannot be embedded: its standalone compile `
+          + `is unavailable and '${host}' carries modifiers the embedded pipeline does not expand`);
+      }
+    }
+    compiledBytecodes.set(contractName, standalone.bytecode ?? scriptToBytecode(optimisationResult.script));
   }
 
   return compiledBytecodes;
+}
+
+/** The name of a body of `contract` that still carries a modifier invocation, or undefined when none does. */
+function unexpandedModifierHost(contract: ContractNode, contractNames: Set<string>): string | undefined {
+  for (const fn of [...contract.functions, contract.fallbackDef, contract.receiveDef]) {
+    if (fn !== undefined && fn.customModifiers.length > 0) return fn.name;
+  }
+  const ctor = contract.constructorDef;
+  if (ctor === undefined) return undefined;
+  // A constructor's base-contract invocations share the modifier list; only a non-contract name is a modifier.
+  const pending = (ctor.body.statements ?? []).some((statement) =>
+    statement instanceof BlockNode && statement.pendingConstructorModifiers !== undefined);
+  if (pending || ctor.customModifiers.some((invocation) => !contractNames.has(invocation.name))) return 'constructor';
+  return undefined;
 }
 
 // Referenced-contract wrappers must carry the file-level helpers that child actually calls (including transitive
@@ -19714,10 +19733,11 @@ function publicCompilerOptions(options: CompilerOptions): CompilerOptions {
 const referencedContractCompileStack: string[] = [];
 
 /**
- * The bytes of `contractName`'s standalone compile, nested inside the compile that embeds it, or undefined when the
- * source does not compile with that contract selected. It goes through the same entry a primary does, so the
- * embedded bytes cannot drift from the artifact. The artifact cache is keyed exactly as that standalone compile, so
- * a child the caller compiled already is reused and the admission passes of one enclosing compile build it once.
+ * The bytes of `contractName`'s standalone compile, nested inside the compile that embeds it, or the error when the
+ * source does not compile with that contract selected (neither for a creation cycle). It goes through the same
+ * entry a primary does, so the embedded bytes cannot drift from the artifact. The artifact cache is keyed exactly as
+ * that standalone compile, so a child the caller compiled already is reused and the admission passes of one
+ * enclosing compile build it once.
  *
  * The bytes are the artifact's published `bytecode`, the program the SDK deploys and derives the address from. A
  * kernel artifact publishes its plan digest there (`<SCKP digest> OP_DROP` after the program), which the debug copy
@@ -19725,9 +19745,9 @@ const referencedContractCompileStack: string[] = [];
  */
 function compileReferencedContractStandalone(
   code: string, contractName: string, options: CompilerOptions,
-): Uint8Array | undefined {
+): { bytecode?: Uint8Array; error?: Error } {
   // A contract that creates itself, directly or through another, has no standalone compile to embed.
-  if (referencedContractCompileStack.includes(contractName)) return undefined;
+  if (referencedContractCompileStack.includes(contractName)) return {};
   // The enclosing compile may have recorded its own admission analysis; the nested one starts by clearing it.
   const enclosingAdmissionAnalysis = pendingSpanAdmissionAnalysis;
   referencedContractCompileStack.push(contractName);
@@ -19738,9 +19758,9 @@ function compileReferencedContractStandalone(
       suppressWarnings: true,
       __artifactCache: true,
     } as CompileOptions));
-    return scriptToBytecode(asmToScript(artifact.bytecode));
-  } catch {
-    return undefined;
+    return { bytecode: scriptToBytecode(asmToScript(artifact.bytecode)) };
+  } catch (error) {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
   } finally {
     referencedContractCompileStack.pop();
     pendingSpanAdmissionAnalysis = enclosingAdmissionAnalysis;

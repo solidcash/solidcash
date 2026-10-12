@@ -214,6 +214,24 @@ Fix. Count the slot only when `OP_UTXOBYTECODE` of its fixed input equals the en
 
 ---
 
+## DS-8  HIGH  VM-PROVEN (mock), added after the audit
+### A batch proof index may name a pure-read slot's input, which the census then counts twice
+
+Found and proved by the `feat/parity` work, reported as pre-existing; not re-read on `feat/per-call` here.
+
+Root cause. A batch target's proof input is the master input plus a spender-chosen offset (`proofIndex`,
+GTT:30106-30110 at `25e887d0a`). Nothing keeps that offset off the fixed input of a pure-read slot of the same
+collection, and the census counts both the proof and the read slot, so one input fills two expected places.
+
+Effect (mock test). One node escapes the per-position checks: a record left the collection and the updated key
+was duplicated.
+
+Fix. Check every batch target's proof index against every read slot's input. Done for direct functions on
+`feat/parity` by `228ea4a5e` (merged as `cc52f07e8`), with the test
+`packages/solidcash/test/e2e/BatchProofReadSlotOverlap.test.ts`. Message-bus routes are not covered by that guard.
+
+---
+
 ## Checked and sound
 - Absence bracket is strict on both sides, `next == 0` is the only +inf, operands BIN2NUM-compared (GTT:25507-25523, 37952-37965).
 - Present arm compares the full 32-byte slot bytes with H(k) (GTT:25483-25485, 25775-25777).

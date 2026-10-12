@@ -127,7 +127,7 @@ generation/GenerateTargetTraversal.ts.
   funds can be stranded if that was the only path). :1056-1062 and :1083-1088 inline a parent constructor body
   without its `customModifiers` (constructors run only in genesis, GTT:9805-9815, so deploy-time only).
 
-### SEM-11 HIGH, CODE-CONFIRMED (reach) / SUSPECTED (impact) - a function-typed entry parameter invokes any function
+### SEM-11 HIGH, VM-PROVEN (mock) - a function-typed entry parameter invokes any function
 Added after the audit. Reported by the `feat/parity` work and re-read at `25e887d0a`; nothing run.
 - semantic/LowerForeignFunctionPointerParams.ts:41-43, 110-116: an external function-type parameter that receives a
   self-ref (`this.f`) at ANY internal call site is not lowered to the `(address, selector)` foreign call; it stays
@@ -141,10 +141,13 @@ Added after the audit. Reported by the `feat/parity` work and re-read at `25e887
   In Solidity such a parameter is `(address, selector)` and reaches only public and external functions.
 - Checked: an internal function type in an entry signature is refused (SymbolTableTraversal.ts:1986-1995,
   `FunctionTypeNotEncodableError`), as solc does, so only the self-ref path above hands the caller an id.
-- Impact not traced: what a foreign body does under the calling entry's block layout (state reads and writes, side
-  cars) needs a VM test. If an internal state writer such as `_mint` runs, this is CRITICAL.
+- VM result (mock, `feat/parity`): a private helper ran on caller-chosen arguments, directly and through an id a
+  public setter stored in state. Compiler helper and outlined-span bodies sit in the same OP_DEFINE table.
+  Wrong-type and undefined ids already failed.
 - Fix: accept only the ids the parameter can hold (the self-refs passed to it, or public and external functions of
-  the matching type) and refuse any other.
+  the matching type) and refuse any other. Done on `feat/parity` by `3df64a824` (merged as `e5e3013f5`, test
+  `packages/solidcash/test/FnPtrEntryIdValidation.test.ts`); deeper nesting is refused. Not covered yet: ids from
+  `abi.decode` of caller bytes and ids returned by other contracts.
 
 ## Checked and sound
 1. Modifier expansion covers functions, constructor (after the base prelude), library/free functions, fallback and

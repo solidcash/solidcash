@@ -16,19 +16,24 @@ export function settlesSortedTargetsByActivity(fn: AbiFunction | undefined): boo
   if (fn === undefined || fn.name.startsWith('__message_bus')
     || fn.inputs.some((input) => input.name === 'batchBlob')) return false;
   const softDelete = (slot: number): boolean => entryLayout(fn, slot)?.softDelete === true;
-  // A write a shared batch settles alone: one a branch guards, with no alias of its own.
-  const settlesAlone = (slot: number): boolean => {
+  // A write a shared batch settles alone: one a branch guards, with no alias of its own bar the batch's delete.
+  // A swap-remove whose moved key is a state array's last keeps the guarded batch and its alias sentinel.
+  const settlesAlone = (slot: number, targets: readonly number[]): boolean => {
     const access = fn.entryAccesses?.find((candidate, dense) => (candidate.slotIndex ?? dense) === slot);
+    const owner = access?.aliasCondDeleteSlot;
     return entryLayout(fn, slot)?.conditional === true && access !== undefined
       && access.operations.includes('write') && !access.operations.includes('delete')
-      && access.aliasCondDeleteSlot === undefined && (access.runtimeAliasPriorSlots?.length ?? 0) === 0;
+      && (owner === undefined || (targets.includes(owner)
+        && !(access.keySources ?? []).some((source) => source.kind === 'stateArrayLast')))
+      && (access.runtimeAliasPriorSlots?.length ?? 0) === 0;
   };
   const runtime = (collection: string): boolean => fn.inputs.some((input) => (
     input.name === `__internal__vmapRuntimeInputCount_${collection}`
     || input.name === `__internal__vmapRuntimeOutputCount_${collection}`));
   const batches = (fn.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.some(softDelete));
   return batches.length > 0 && batches.every((batch) => batch.slotIndices.length === 1
-    || (!runtime(batch.collection) && batch.slotIndices.every((slot) => softDelete(slot) || settlesAlone(slot))));
+    || (!runtime(batch.collection) && batch.slotIndices.every((slot) => (
+      softDelete(slot) || settlesAlone(slot, batch.slotIndices)))));
 }
 
 /** DS-6: the writes an activity-settled body's sorted batches share with a conditional delete; each settles alone. */

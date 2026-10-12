@@ -1965,9 +1965,15 @@ slot and an extra node beside the chain are refused at the master (AuditDS6TwoWr
 costs 110 B; other bodies are byte-identical. Still failing closed: more than two writes that run on one node, or a
 delete that runs on the node a write that ran spends; each needs the node at its own slot.
 
-The write-first order and a swap-remove pair under one arm take the alias path and keep the guarded batch.
+A write ahead of the delete (the write-first order, a swap-remove pair under one arm, an earlier arm or a cached
+loop's flush) is the delete's swap-remove alias write and settles the same way: it is flagged only where its key
+differs from the delete's, and may then insert. Where the keys meet the node is the delete's, and the write stages
+its value there where the delete may not run after it, so a write arm on one absent key stays refused. A swap-remove
+whose moved key is a state array's last (IterableMapping) keeps the guarded batch. A pair under one arm whose keys
+differ but whose nodes coincide is this residual.
 
 **Proposed design:** extend the chain past a pair (the linear batch's rank rows), and let a delete that ran chain as
 a pair member.
 
-**Why deferred:** it is a covenant change and no tested shape runs more than a pair on one node.
+**Why deferred:** it is a covenant change: no tested shape runs more than a pair on one node, and the alias
+tests keep a swap-remove pair's keys far apart.

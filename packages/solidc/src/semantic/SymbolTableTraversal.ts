@@ -2024,6 +2024,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
       }
+      for (const special of [node.fallbackDef, node.receiveDef]) {
+        if (special?.isAbstract && special.inheritedFrom) {
+          throw new UnimplementedAbstractFunctionError(
+            node, special.isFallback ? 'fallback' : 'receive', special.inheritedFrom,
+          );
+        }
+      }
     }
 
     // Compute 4-byte hash selectors for entry-point functions

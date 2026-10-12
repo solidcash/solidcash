@@ -201,9 +201,7 @@ export class ContractNode extends Node implements Named {
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;
   receiveDef: FunctionDefinitionNode | undefined;
-  // Validation-only provenance for inherited fallback/receive declarations.
-  // These special functions historically are not copied into the flattened BCH
-  // entry points, so retain only override metadata rather than cloning bodies.
+  // Override provenance for inherited fallback/receive declarations (their bodies are copied into the child).
   inheritedSpecialFunctions: Partial<Record<'fallback' | 'receive', {
     origin: string;
     isVirtual: boolean;

@@ -1210,8 +1210,8 @@ function mergeParent(
 
   // 1. Merge functions (with optional substitution)
   mergeFunctions(child, parent, subs, isAncestor);
-  mergeSpecialFunction(child, parent, 'fallbackDef', 'fallback');
-  mergeSpecialFunction(child, parent, 'receiveDef', 'receive');
+  mergeSpecialFunction(child, parent, 'fallbackDef', 'fallback', subs, isAncestor);
+  mergeSpecialFunction(child, parent, 'receiveDef', 'receive', subs, isAncestor);
 
   // 2. Merge constructor params only if no explicit invocation
   if (!invocation) {
@@ -1276,6 +1276,8 @@ function mergeSpecialFunction(
   parent: ContractNode,
   key: 'fallbackDef' | 'receiveDef',
   label: string,
+  subs?: Map<string, ExpressionNode>,
+  isAncestor?: (ancestor: string, descendant: string) => boolean,
 ): void {
   const parentFunction = parent[key];
   const inherited = parent.inheritedSpecialFunctions[label as 'fallback' | 'receive'];
@@ -1284,10 +1286,31 @@ function mergeSpecialFunction(
   const isVirtual = parentFunction
     ? parentFunction.modifiers.includes(FunctionModifier.VIRTUAL)
     : inherited!.isVirtual;
+  const inheritCopy = (): void => {
+    child.inheritedSpecialFunctions[label as 'fallback' | 'receive'] = { origin, isVirtual };
+    if (!parentFunction) return;
+    // Solidity inherits fallback/receive like any function: the derived contract runs the base body.
+    const cloned = cloneNode(parentFunction);
+    cloned.inheritedFrom = origin;
+    if (subs) {
+      substituteInFunction(cloned, subs, storagePointerContext(child, effectiveConstructorParams(parent), subs));
+    }
+    child[key] = cloned;
+  };
   const childFunction = child[key];
   if (!childFunction) {
-    child.inheritedSpecialFunctions[label as 'fallback' | 'receive'] = { origin, isVirtual };
+    inheritCopy();
     return;
+  }
+  // A copy inherited from an earlier base: a shared or more-derived origin wins, two unrelated ones need an override.
+  const childOrigin = childFunction.inheritedFrom;
+  if (childOrigin !== undefined) {
+    if (childOrigin === origin || isAncestor?.(origin, childOrigin)) return;
+    if (isAncestor?.(childOrigin, origin)) {
+      inheritCopy();
+      return;
+    }
+    throw new DiamondInheritanceError(child, 'Function', label, childOrigin, origin);
   }
   if (!childFunction.modifiers.includes(FunctionModifier.OVERRIDE)) {
     throw new MissingOverrideError(child, label, parent.name);
@@ -1632,7 +1655,7 @@ function resolveSuperAndBaseCalls(
     // An inlined base constructor statement resolves `super` from the base that wrote it.
     special.body.statements = (special.body.statements ?? []).map((statement) => {
       if (statement instanceof PlaceholderStatementNode) return statement;
-      const writer = statement.baseConstructorOf;
+      const writer = statement.baseConstructorOf ?? special.inheritedFrom;
       const definingContract = writer !== undefined && indexOf.has(writer) ? writer : contract.name;
       return new SuperCallRewriter(
         makeResolve(definingContract, entryRoots), isDiscardedBaseReference, entryRoots,

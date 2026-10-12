@@ -1941,20 +1941,29 @@ initialized, as the plain framed deploy does.
 
 **Why deferred:** it is a protocol change to the proxy genesis.
 
-## A conditional delete beside a write in one sorted batch refuses keys whose nodes coincide (DS-6 residual, 2026-10-12)
+## Sorted batch targets sharing a node: two absent keys in one gap, or two that both run (DS-6 residual, 2026-10-12)
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
-two-target batch. Each target now settles alone: the delete at its own site as a lone delete does (06c633c6d), each
+two-target batch. Each target settles alone: the delete at its own site as a lone delete does (06c633c6d), each
 write by its own ran flag (its single-target transition where it ran, its node kept where it did not), and the
 collection counts add per target. Every write's proof must be its own slot's input, so no two targets name one
-node. The write arm with `k` absent, the delete arm with `j` absent and a write arm covering part of a larger batch
-settle wherever the targets' nodes differ (AuditDS6MultiTargetDelete.test.ts). Where they coincide (adjacent keys,
-one gap, or one key) the SDK points the write's proof at the other target's input and the covenant refuses the call.
+node. Where the targets' nodes coincide the SDK spends the node once, at the slot of the target that runs, and funds
+the other target's slot: a funded slot is no node, so its existence-gated checks skip and the counts leave it out.
+The SDK places that node at the first target's slot and, where the probe refuses that, rebuilds with each other
+target as its owner (`sortedNodeOwners`); the covenant is unchanged. One key (present or absent), a write landing in
+the deleted key's gap and a deleted key absent in the written key's gap settle in each arm
+(AuditDS6MultiTargetDelete.test.ts). Two residuals fail closed:
+- two distinct absent keys in one gap: refused at send (input 0, OP_VERIFY) in the one run of its test, which is
+  skipped; arm and cause not found. That refusal matches the first placement's, so the rebuilt placement's probe
+  likely reported an error too and the SDK kept the first builder.
+- two targets that both run on one node, such as two writes in one arm on adjacent keys: each needs the node at its
+  own slot.
+
 The write-first order and a swap-remove pair under one arm take the alias path and keep the guarded batch.
 
-**Proposed design:** for coinciding nodes, settle the shared node once: the delete's input is the write's proof node,
-and the arm that runs decides whether that node is cleared, relinked or kept.
+**Proposed design:** for the first, probe each placement and read which target ran from the trace rather than from
+`__vmErrored`. For the second, settle the targets that ran on one node as one transition, as the linear two-target
+arm settles two writes in one gap, behind their ran flags.
 
-**Why deferred:** the SDK places inputs before its VM probe, but the slot that must hold the shared node depends on
-which branch runs. It needs a re-plan after the first derive pass and a covenant check that binds one input to both
-targets under each arm.
+**Why deferred:** the first needs a diagnostic run the DS-6 item did not budget; the second is a covenant change and
+no tested shape runs two targets in one arm.
